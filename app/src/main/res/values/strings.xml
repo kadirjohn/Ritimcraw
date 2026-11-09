@@ -1,3 +1,69 @@
 <resources>
     <string name="app_name">Ritimcraw</string>
+
+    <!-- Destinations -->
+    <string name="nav_library">Library</string>
+    <string name="nav_projects">Projects</string>
+    <string name="nav_exports">Exports</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Library -->
+    <string name="library_title">Library</string>
+    <string name="library_filter_all">All</string>
+    <string name="library_filter_mcraw">MCRAW</string>
+    <string name="library_filter_dng">DNG</string>
+    <string name="library_filter_milog">Mi-Log</string>
+    <string name="library_filter_encoded">Encoded</string>
+    <string name="library_filter_photos">Photos</string>
+    <string name="library_import">Import</string>
+    <string name="library_empty_title">No clips yet</string>
+    <string name="library_empty_body">Import an MCRAW clip from your device to start grading.</string>
+    <string name="library_row_access_lost">Access lost</string>
+    <string name="library_row_grant_access">Grant access</string>
+    <string name="library_row_kind_mcraw">MCRAW · RAW video</string>
+    <string name="library_row_kind_encoded">Encoded video</string>
+    <string name="library_import_failed_title">Import failed</string>
+    <string name="library_import_failed_opening">Import failed while opening the file: %1$s. Recovery: pick the clip again from its original location.</string>
+
+    <!-- Clip editor -->
+    <string name="editor_back">Back to library</string>
+    <string name="editor_preview_placeholder">Preview appears once the engine is wired</string>
+    <string name="editor_tab_light">Light</string>
+    <string name="editor_tab_color">Color</string>
+    <string name="editor_tab_detail">Detail</string>
+    <string name="editor_slider_exposure">Exposure</string>
+    <string name="editor_slider_highlights">Highlights</string>
+    <string name="editor_slider_temperature">Temperature</string>
+    <string name="editor_slider_tint">Tint</string>
+    <string name="editor_value_ev">%1$+.1f EV</string>
+    <string name="editor_value_signed">%1$+d</string>
+    <string name="editor_value_kelvin">%1$,d K</string>
+    <string name="editor_timecode">%1$s / %2$s</string>
+    <string name="editor_not_loaded_title">Clip not open</string>
+    <string name="editor_not_loaded_body">The clip could not be opened by the native engine in this build. Recovery: reopen the clip from the library once the engine build is enabled.</string>
+
+    <!-- Exports -->
+    <string name="exports_title">Exports</string>
+    <string name="exports_empty_title">Nothing exported yet</string>
+    <string name="exports_empty_body">Exported clips appear here with their progress and results.</string>
+    <string name="exports_job_queued">Queued</string>
+    <string name="exports_job_running">Exporting… %1$d%%</string>
+    <string name="exports_job_done">Done</string>
+    <string name="exports_job_cancelled">Cancelled</string>
+    <string name="exports_job_failed_stage">Export failed at %1$s</string>
+    <string name="exports_job_failed_cause">Cause: %1$s</string>
+    <string name="exports_job_failed_written">Nothing was written.</string>
+    <string name="exports_job_retry">Retry</string>
+    <string name="exports_job_show_log">Show log</string>
+
+    <!-- Projects -->
+    <string name="projects_title">Projects</string>
+    <string name="projects_empty_title">No projects yet</string>
+    <string name="projects_empty_body">Projects group graded clips and their exports. Create one from the library once timelines land.</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_device_report">Device report</string>
+    <string name="settings_device_report_body">Codec capabilities of this device appear here once the codec probe lands.</string>
+    <string name="settings_version">Version %1$s</string>
 </resources>

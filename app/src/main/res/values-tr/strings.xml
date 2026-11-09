@@ -1,0 +1,69 @@
+<resources>
+    <string name="app_name">Ritimcraw</string>
+
+    <!-- Destinations -->
+    <string name="nav_library">Kitaplık</string>
+    <string name="nav_projects">Projeler</string>
+    <string name="nav_exports">Dışa aktarım</string>
+    <string name="nav_settings">Ayarlar</string>
+
+    <!-- Library -->
+    <string name="library_title">Kitaplık</string>
+    <string name="library_filter_all">Tümü</string>
+    <string name="library_filter_mcraw">MCRAW</string>
+    <string name="library_filter_dng">DNG</string>
+    <string name="library_filter_milog">Mi-Log</string>
+    <string name="library_filter_encoded">Sıkıştırılmış</string>
+    <string name="library_filter_photos">Fotoğraflar</string>
+    <string name="library_import">İçe aktar</string>
+    <string name="library_empty_title">Henüz klip yok</string>
+    <string name="library_empty_body">Renk düzenlemeye başlamak için cihazınızdan bir MCRAW klip içe aktarın.</string>
+    <string name="library_row_access_lost">Erişim kaldırıldı</string>
+    <string name="library_row_grant_access">Erişim izni ver</string>
+    <string name="library_row_kind_mcraw">MCRAW · RAW video</string>
+    <string name="library_row_kind_encoded">Sıkıştırılmış video</string>
+    <string name="library_import_failed_title">İçe aktarma başarısız</string>
+    <string name="library_import_failed_opening">Dosya açılırken içe aktarma başarısız oldu: %1$s. Çözüm: klibi özgün konumundan yeniden seçin.</string>
+
+    <!-- Clip editor -->
+    <string name="editor_back">Kitaplığa dön</string>
+    <string name="editor_preview_placeholder">Motor bağlandığında önizleme görünür</string>
+    <string name="editor_tab_light">Işık</string>
+    <string name="editor_tab_color">Renk</string>
+    <string name="editor_tab_detail">Detay</string>
+    <string name="editor_slider_exposure">Pozlama</string>
+    <string name="editor_slider_highlights">Işıklar</string>
+    <string name="editor_slider_temperature">Sıcaklık</string>
+    <string name="editor_slider_tint">Ton</string>
+    <string name="editor_value_ev">%1$+.1f EV</string>
+    <string name="editor_value_signed">%1$+d</string>
+    <string name="editor_value_kelvin">%1$,d K</string>
+    <string name="editor_timecode">%1$s / %2$s</string>
+    <string name="editor_not_loaded_title">Klip açılamadı</string>
+    <string name="editor_not_loaded_body">Klip bu derlemede yerel motorla açılamadı. Çözüm: motor derlemesi etkinleştirildikten sonra klibi kitaplıktan yeniden açın.</string>
+
+    <!-- Exports -->
+    <string name="exports_title">Dışa aktarımlar</string>
+    <string name="exports_empty_title">Henüz dışa aktarım yok</string>
+    <string name="exports_empty_body">Dışa aktarılan klipler ilerleme durumu ve sonuçlarıyla burada görünür.</string>
+    <string name="exports_job_queued">Sırada</string>
+    <string name="exports_job_running">Dışa aktarılıyor… %1$d%%</string>
+    <string name="exports_job_done">Tamamlandı</string>
+    <string name="exports_job_cancelled">İptal edildi</string>
+    <string name="exports_job_failed_stage">Dışa aktarım şurada başarısız oldu: %1$s</string>
+    <string name="exports_job_failed_cause">Neden: %1$s</string>
+    <string name="exports_job_failed_written">Hiçbir şey yazılmadı.</string>
+    <string name="exports_job_retry">Yeniden dene</string>
+    <string name="exports_job_show_log">Günlüğü göster</string>
+
+    <!-- Projects -->
+    <string name="projects_title">Projeler</string>
+    <string name="projects_empty_title">Henüz proje yok</string>
+    <string name="projects_empty_body">Projeler, renk düzenlenmiş klipleri ve dışa aktarımlarını gruplar. Zaman çizelgeleri geldiğinde kitaplıktan bir tane oluşturun.</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Ayarlar</string>
+    <string name="settings_device_report">Cihaz raporu</string>
+    <string name="settings_device_report_body">Codec yoklaması geldiğinde bu cihazın codec yetenekleri burada görünür.</string>
+    <string name="settings_version">Sürüm %1$s</string>
+</resources>

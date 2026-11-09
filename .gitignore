@@ -5,6 +5,17 @@ app/build
 /captures
 .externalNativeBuild
 .cxx
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# C++ / CLI build dizinleri
+build/
+build-desktop/
+core/build/
+*.o
+*.dSYM/
 
 # Gradle
 .gradle/
@@ -25,14 +36,16 @@ local.properties
 *.keystore
 !debug.keystore
 
-# APK / AAB çıktıları
-*.apk
-*.aab
-*.ap_
-*.dex
-
 # Adım kayıtları — repoya dahil edilmez
 STEPS/
 
-# Loglar
+# GSD planlama dosyaları — yerel çalışma notları
+.planning/
+
+# Impeccable çalışma zamanı
+.impeccable/
+
+# Geçici dosyalar / loglar
 *.log
+*.tmp
+/tmp/
