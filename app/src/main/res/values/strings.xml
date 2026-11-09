@@ -22,6 +22,7 @@
     <string name="library_row_grant_access">Grant access</string>
     <string name="library_row_kind_mcraw">MCRAW · RAW video</string>
     <string name="library_row_kind_encoded">Encoded video</string>
+    <string name="library_frames">frames</string>
     <string name="library_import_failed_title">Import failed</string>
     <string name="library_import_failed_opening">Import failed while opening the file: %1$s. Recovery: pick the clip again from its original location.</string>
     <string name="library_import_failed_access">Import failed: access to the file was not granted or was revoked (%1$s). Recovery: pick the clip again and allow access.</string>

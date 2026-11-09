@@ -19,7 +19,20 @@ data class MediaSource(
     val fingerprint: String,
     val kind: SourceKind,
     val access: Access,
-)
+    /**
+     * Clip stats for the format line (Format.formatClipLine). Zero/blank
+     * until the engine pass probes the clip on device; the Library row
+     * degrades to the kind line while they are unknown.
+     */
+    val width: Int = 0,
+    val height: Int = 0,
+    val frameCount: Int = 0,
+    val cfa: String = "",
+) {
+    /** True when the engine pass has filled in the format-line stats. */
+    val hasStats: Boolean
+        get() = (width > 0 && height > 0) || frameCount > 0 || cfa.isNotBlank()
+}
 
 /**
  * The storage operations the repository needs from the platform. The
@@ -186,7 +199,16 @@ class SourceRepository(
                     .append(",\"fingerprint\":").append(jsonString(s.fingerprint))
                     .append(",\"kind\":\"").append(s.kind.name).append('"')
                     .append(",\"access\":\"").append(s.access.name).append('"')
-                    .append('}')
+                if (s.hasStats) {
+                    // Format-line stats (filled by the engine pass); omitted
+                    // entirely while unknown so older project.json files
+                    // stay byte-identical.
+                    sb.append(",\"width\":").append(s.width)
+                        .append(",\"height\":").append(s.height)
+                        .append(",\"frameCount\":").append(s.frameCount)
+                        .append(",\"cfa\":").append(jsonString(s.cfa))
+                }
+                sb.append('}')
             }
             sb.append(']')
             return sb.toString()
@@ -246,6 +268,12 @@ class SourceRepository(
                         .getOrDefault(SourceKind.MCRAW),
                     access = runCatching { Access.valueOf(m["access"] as? String ?: "") }
                         .getOrDefault(Access.OK),
+                    // Stats are absent in schema-1 files written before the
+                    // engine pass; JsonParser2 yields Double for numbers.
+                    width = (m["width"] as? Double)?.toInt() ?: 0,
+                    height = (m["height"] as? Double)?.toInt() ?: 0,
+                    frameCount = (m["frameCount"] as? Double)?.toInt() ?: 0,
+                    cfa = m["cfa"] as? String ?: "",
                 )
             }
         }

@@ -44,6 +44,7 @@ import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.launch
 
 /** Library filter chips (DESIGN.md Library). */
@@ -193,16 +194,33 @@ private fun LibraryRow(
     onGrantAccess: () -> Unit,
 ) {
     val accessLost = source.access == Access.LOST
+    val framesLabel = stringResource(R.string.library_frames)
     ListItem(
         headlineContent = { Text(source.id) },
         supportingContent = {
             Column {
-                Text(
-                    stringResource(
-                        if (source.kind == SourceKind.MCRAW) R.string.library_row_kind_mcraw
-                        else R.string.library_row_kind_encoded
-                    ),
-                )
+                // Format line (body-small per DESIGN.md Typography): dimensions,
+                // frame count, CFA — shown once the engine pass probes the clip;
+                // the kind line degrades gracefully until then.
+                if (source.hasStats) {
+                    Text(
+                        Format.formatClipLine(
+                            source.width,
+                            source.height,
+                            source.frameCount,
+                            source.cfa,
+                            framesLabel,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text(
+                        stringResource(
+                            if (source.kind == SourceKind.MCRAW) R.string.library_row_kind_mcraw
+                            else R.string.library_row_kind_encoded
+                        ),
+                    )
+                }
                 if (accessLost) {
                     Text(
                         stringResource(R.string.library_row_access_lost),

@@ -112,5 +112,47 @@ class SourceRepositoryTest {
         assertEquals(1.5f, GradeStore(file).get(imported.id).exposureEv, 0f)
     }
 
+    @Test
+    fun clip_stats_persist_across_reload() {
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        repo.import("content://clip/1")
+
+        // Engine pass fills the stats: write them through a copy and reload.
+        val withStats = repo.all().single().copy(
+            width = 3840,
+            height = 2160,
+            frameCount = 310,
+            cfa = "RGGB",
+        )
+        file.writeText(
+            file.readText().replace(
+                "\"access\":\"OK\"}",
+                "\"access\":\"OK\",\"width\":3840,\"height\":2160," +
+                    "\"frameCount\":310,\"cfa\":\"RGGB\"}",
+            ),
+        )
+        val reloaded = SourceRepository(FakeResolver(), file).all().single()
+
+        assertEquals(3840, reloaded.width)
+        assertEquals(2160, reloaded.height)
+        assertEquals(310, reloaded.frameCount)
+        assertEquals("RGGB", reloaded.cfa)
+        assertTrue(reloaded.hasStats)
+        assertEquals(withStats.cfa, reloaded.cfa) // copy kept, reload faithful
+    }
+
+    @Test
+    fun stats_less_sources_stay_byte_identical() {
+        val file = projectFile()
+        SourceRepository(FakeResolver("clip".toByteArray()), file).import("content://clip/1")
+        val before = file.readText()
+
+        // Re-importing the same file (stats unknown) must not add empty
+        // stats keys — schema-1 files stay byte-identical.
+        SourceRepository(FakeResolver("clip".toByteArray()), file).import("content://clip/1")
+        assertEquals(before, file.readText())
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }

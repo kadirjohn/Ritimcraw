@@ -22,6 +22,7 @@
     <string name="library_row_grant_access">Erişim izni ver</string>
     <string name="library_row_kind_mcraw">MCRAW · RAW video</string>
     <string name="library_row_kind_encoded">Sıkıştırılmış video</string>
+    <string name="library_frames">kare</string>
     <string name="library_import_failed_title">İçe aktarma başarısız</string>
     <string name="library_import_failed_opening">Dosya açılırken içe aktarma başarısız oldu: %1$s. Çözüm: klibi özgün konumundan yeniden seçin.</string>
     <string name="library_import_failed_access">İçe aktarma başarısız oldu: dosya erişimi verilmedi ya da kaldırıldı (%1$s). Çözüm: klibi yeniden seçin ve erişime izin verin.</string>

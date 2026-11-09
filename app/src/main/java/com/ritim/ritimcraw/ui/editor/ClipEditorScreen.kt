@@ -36,6 +36,7 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
+import com.ritim.ritimcraw.util.Format
 
 /**
  * Clip editor (DESIGN.md Editor): preview placeholder frame on
@@ -163,7 +164,7 @@ private fun LightPanel(
             value = grade.exposureEv,
             valueRange = -5f..5f,
             step = SliderSteps.EXPOSURE_STEP,
-            valueLabel = stringResource(R.string.editor_value_ev, grade.exposureEv),
+            valueLabel = Format.formatEv(grade.exposureEv),
             onChange = { v -> onChange(grade.copy(exposureEv = SliderSteps.snapExposure(v))) },
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.EXPOSURE, grade))
@@ -174,7 +175,7 @@ private fun LightPanel(
             value = grade.highlights,
             valueRange = -100f..100f,
             step = SliderSteps.UNIT_STEP,
-            valueLabel = stringResource(R.string.editor_value_signed, grade.highlights.toInt()),
+            valueLabel = Format.formatSigned(grade.highlights.toInt()),
             onChange = { v -> onChange(grade.copy(highlights = SliderSteps.snapHighlights(v))) },
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.HIGHLIGHTS, grade))
@@ -185,7 +186,7 @@ private fun LightPanel(
             value = grade.tempK,
             valueRange = 2000f..50000f,
             step = SliderSteps.TEMP_STEP_K,
-            valueLabel = stringResource(R.string.editor_value_kelvin, grade.tempK.toInt()),
+            valueLabel = Format.formatKelvin(grade.tempK.toInt()),
             onChange = { v -> onChange(grade.copy(tempK = SliderSteps.snapTemperature(v))) },
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPERATURE, grade))
@@ -196,7 +197,7 @@ private fun LightPanel(
             value = grade.tint,
             valueRange = -100f..100f,
             step = SliderSteps.UNIT_STEP,
-            valueLabel = stringResource(R.string.editor_value_signed, grade.tint.toInt()),
+            valueLabel = Format.formatSigned(grade.tint.toInt()),
             onChange = { v -> onChange(grade.copy(tint = SliderSteps.snapTint(v))) },
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TINT, grade))
