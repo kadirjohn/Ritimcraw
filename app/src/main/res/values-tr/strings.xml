@@ -24,6 +24,10 @@
     <string name="library_row_kind_encoded">Sıkıştırılmış video</string>
     <string name="library_import_failed_title">İçe aktarma başarısız</string>
     <string name="library_import_failed_opening">Dosya açılırken içe aktarma başarısız oldu: %1$s. Çözüm: klibi özgün konumundan yeniden seçin.</string>
+    <string name="library_import_failed_access">İçe aktarma başarısız oldu: dosya erişimi verilmedi ya da kaldırıldı (%1$s). Çözüm: klibi yeniden seçin ve erişime izin verin.</string>
+    <string name="library_import_failed_storage">İçe aktarma başarısız oldu: dosya depolamadan okunamadı (%1$s). Çözüm: klibin hâlâ mevcut olduğunu kontrol edin, sonra yeniden seçin.</string>
+    <string name="library_import_failed_unknown">İçe aktarma başarısız oldu: %1$s. Çözüm: klibi özgün konumundan yeniden seçin.</string>
+    <string name="library_import_done">İçe aktarıldı</string>
 
     <!-- Clip editor -->
     <string name="editor_back">Kitaplığa dön</string>

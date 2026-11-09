@@ -137,10 +137,16 @@ fun AppNav() {
                         Destination.LIBRARY -> LibraryScreen(
                             sources = sources,
                             onOpenClip = { sourceId -> editorRoute = EditorRoute(sourceId) },
-                            onImport = {
-                                // SAF picker lands with the device pass; for now
-                                // re-check access so revoked rows update (QA-23).
-                                sources = stores.sources.refreshAccess()
+                            onImport = { uri ->
+                                // SAF pick landed: import through the repository
+                                // (fingerprint dedupe keeps ids and grades stable).
+                                try {
+                                    val imported = stores.sources.import(uri)
+                                    sources = stores.sources.all()
+                                    Result.success(imported)
+                                } catch (e: Exception) {
+                                    Result.failure(e)
+                                }
                             },
                             onGrantAccess = { sources = stores.sources.refreshAccess() },
                         )

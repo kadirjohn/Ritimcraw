@@ -1,5 +1,8 @@
 package com.ritim.ritimcraw.ui.library
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -21,20 +24,27 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
+import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.data.SourceRepository
+import kotlinx.coroutines.launch
 
 /** Library filter chips (DESIGN.md Library). */
 enum class LibraryFilter(val labelRes: Int) {
@@ -48,7 +58,13 @@ enum class LibraryFilter(val labelRes: Int) {
 
 /**
  * Library of imported clips (DESIGN.md Library): filter chips with a check
- * icon on the selected chip, ListItem rows, and an extended FAB "Import".
+ * icon on the selected chip, ListItem rows, and an extended FAB "Import"
+ * that opens the SAF document picker (ACTION_OPEN_DOCUMENT).
+ *
+ * The picked document is imported through [SourceRepository.import] with
+ * takePersistableUriPermission so the clip survives reboots. Failures show
+ * an error snackbar naming stage + cause + recovery (DESIGN.md Error states)
+ * via the pure [ImportErrors] mapping.
  *
  * Rows with revoked access show "Access lost" with a "Grant access" action
  * instead of disappearing (QA-23).
@@ -58,18 +74,55 @@ enum class LibraryFilter(val labelRes: Int) {
 fun LibraryScreen(
     sources: List<MediaSource>,
     onOpenClip: (String) -> Unit,
-    onImport: () -> Unit,
+    onImport: (uri: String) -> Result<MediaSource>,
     onGrantAccess: (MediaSource) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
     val visible = sources.filter { matches(filter, it) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val importFailedTitle = stringResource(R.string.library_import_failed_title)
+    val importDone = stringResource(R.string.library_import_done)
+    val unknownCause = stringResource(R.string.library_import_failed_unknown, "")
+
+    // SAF picker: ACTION_OPEN_DOCUMENT with a persistable read grant.
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult // user backed out
+        try {
+            // Persistable permission: the clip stays readable across reboots.
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        } catch (e: SecurityException) {
+            // Non-fatal: refreshAccess() will surface a lost row if this
+            // grant really is required; the import attempt still runs.
+        }
+        val result = runCatching { onImport(uri.toString()) }
+            .getOrElse { e -> Result.failure(e) }
+        result.fold(
+            onSuccess = { scope.launch { snackbarHostState.showSnackbar(importDone) } },
+            onFailure = { e ->
+                val msg = ImportErrors.fromException("import", e)
+                val text = context.getString(
+                    msg.messageRes,
+                    msg.causeArg ?: e.javaClass.simpleName,
+                )
+                scope.launch { snackbarHostState.showSnackbar("$importFailedTitle: $text") }
+            },
+        )
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(data) } },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = onImport,
+                onClick = { picker.launch(arrayOf("*/*")) },
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
                 text = { Text(stringResource(R.string.library_import)) },
             )
@@ -183,7 +236,7 @@ private fun LibraryRow(
 private fun EmptyLibrary(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
