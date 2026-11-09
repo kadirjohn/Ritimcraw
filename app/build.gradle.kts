@@ -25,17 +25,17 @@ android {
         }
     }
 
-    // NDK 30.0.16248370 is installed; the JNI bridge builds through the SDK
-    // CMake. Kept commented while the CMake 4.1.2 / AGP 8.13.2 pairing is
-    // verified; NativeSource guards the missing .so either way.
-    // TODO(ndk): enable once the CMake/AGP pairing is verified on CI.
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/CMakeLists.txt")
-    //         version = "3.22.1"
-    //     }
-    // }
-    // ndkVersion = "30.0.16248370"
+    // NDK 30.0.16248370 + the SDK's CMake 4.1.2 build librawedit_jni.so from
+    // app/src/main/cpp (which pulls in core/ as a static lib). The version
+    // pin is required: AGP defaults to CMake 3.22.1, which is not installed
+    // (CXX1300), so point it at the only installed SDK CMake.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "4.1.2"
+        }
+    }
+    ndkVersion = "30.0.16248370"
 
     buildTypes {
         release {
