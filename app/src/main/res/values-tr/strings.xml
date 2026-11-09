@@ -32,6 +32,7 @@
     <!-- Clip editor -->
     <string name="editor_back">Kitaplığa dön</string>
     <string name="editor_preview_placeholder">Motor bağlandığında önizleme görünür</string>
+    <string name="editor_preview_device_pending">Henüz önizleme yok — cihaz geçişi bekleniyor</string>
     <string name="editor_tab_light">Işık</string>
     <string name="editor_tab_color">Renk</string>
     <string name="editor_tab_detail">Detay</string>

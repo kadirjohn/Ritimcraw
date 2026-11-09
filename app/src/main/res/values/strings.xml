@@ -32,6 +32,7 @@
     <!-- Clip editor -->
     <string name="editor_back">Back to library</string>
     <string name="editor_preview_placeholder">Preview appears once the engine is wired</string>
+    <string name="editor_preview_device_pending">No preview yet — device pass pending</string>
     <string name="editor_tab_light">Light</string>
     <string name="editor_tab_color">Color</string>
     <string name="editor_tab_detail">Detail</string>
