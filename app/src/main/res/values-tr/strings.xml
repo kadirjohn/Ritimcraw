@@ -69,5 +69,6 @@
     <string name="settings_title">Ayarlar</string>
     <string name="settings_device_report">Cihaz raporu</string>
     <string name="settings_device_report_body">Codec yoklaması geldiğinde bu cihazın codec yetenekleri burada görünür.</string>
+    <string name="settings_device_report_count">%1$d codec</string>
     <string name="settings_version">Sürüm %1$s</string>
 </resources>

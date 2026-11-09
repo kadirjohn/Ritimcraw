@@ -69,5 +69,6 @@
     <string name="settings_title">Settings</string>
     <string name="settings_device_report">Device report</string>
     <string name="settings_device_report_body">Codec capabilities of this device appear here once the codec probe lands.</string>
+    <string name="settings_device_report_count">%1$d codecs</string>
     <string name="settings_version">Version %1$s</string>
 </resources>
