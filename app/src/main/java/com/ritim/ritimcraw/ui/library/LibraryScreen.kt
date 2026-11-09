@@ -84,9 +84,7 @@ fun LibraryScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val importFailedTitle = stringResource(R.string.library_import_failed_title)
     val importDone = stringResource(R.string.library_import_done)
-    val unknownCause = stringResource(R.string.library_import_failed_unknown, "")
 
     // SAF picker: ACTION_OPEN_DOCUMENT with a persistable read grant.
     val picker = rememberLauncherForActivityResult(
@@ -113,7 +111,9 @@ fun LibraryScreen(
                     msg.messageRes,
                     msg.causeArg ?: e.javaClass.simpleName,
                 )
-                scope.launch { snackbarHostState.showSnackbar("$importFailedTitle: $text") }
+                // The message resource already begins with "Import failed:"
+                // (stage), so the snackbar shows it as-is — no duplicate title.
+                scope.launch { snackbarHostState.showSnackbar(text) }
             },
         )
     }

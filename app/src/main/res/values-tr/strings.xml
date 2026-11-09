@@ -23,8 +23,6 @@
     <string name="library_row_kind_mcraw">MCRAW · RAW video</string>
     <string name="library_row_kind_encoded">Sıkıştırılmış video</string>
     <string name="library_frames">kare</string>
-    <string name="library_import_failed_title">İçe aktarma başarısız</string>
-    <string name="library_import_failed_opening">Dosya açılırken içe aktarma başarısız oldu: %1$s. Çözüm: klibi özgün konumundan yeniden seçin.</string>
     <string name="library_import_failed_access">İçe aktarma başarısız oldu: dosya erişimi verilmedi ya da kaldırıldı (%1$s). Çözüm: klibi yeniden seçin ve erişime izin verin.</string>
     <string name="library_import_failed_storage">İçe aktarma başarısız oldu: dosya depolamadan okunamadı (%1$s). Çözüm: klibin hâlâ mevcut olduğunu kontrol edin, sonra yeniden seçin.</string>
     <string name="library_import_failed_unknown">İçe aktarma başarısız oldu: %1$s. Çözüm: klibi özgün konumundan yeniden seçin.</string>
@@ -41,10 +39,6 @@
     <string name="editor_slider_highlights">Işıklar</string>
     <string name="editor_slider_temperature">Sıcaklık</string>
     <string name="editor_slider_tint">Ton</string>
-    <string name="editor_value_ev">%1$+.1f EV</string>
-    <string name="editor_value_signed">%1$+d</string>
-    <string name="editor_value_kelvin">%1$,d K</string>
-    <string name="editor_timecode">%1$s / %2$s</string>
     <string name="editor_not_loaded_title">Klip açılamadı</string>
     <string name="editor_not_loaded_body">Klip bu derlemede yerel motorla açılamadı. Çözüm: motor derlemesi etkinleştirildikten sonra klibi kitaplıktan yeniden açın.</string>
 
@@ -56,14 +50,12 @@
     <string name="exports_format_mp4">H.264 MP4</string>
     <string name="exports_job_queued">Sırada</string>
     <string name="exports_job_running">Dışa aktarılıyor…</string>
-    <string name="exports_job_done">Tamamlandı</string>
     <string name="exports_job_done_named">Tamamlandı — %1$s</string>
     <string name="exports_job_cancelled">İptal edildi</string>
     <string name="exports_job_failed_stage">Dışa aktarım başarısız oldu: %1$s</string>
     <string name="exports_job_failed_cause">Neden: %1$s</string>
     <string name="exports_job_failed_written">Hiçbir şey yazılmadı.</string>
     <string name="exports_job_retry">Yeniden dene</string>
-    <string name="exports_job_show_log">Günlüğü göster</string>
     <string name="exports_clear">Temizle</string>
 
     <!-- Projects -->

@@ -23,8 +23,6 @@
     <string name="library_row_kind_mcraw">MCRAW · RAW video</string>
     <string name="library_row_kind_encoded">Encoded video</string>
     <string name="library_frames">frames</string>
-    <string name="library_import_failed_title">Import failed</string>
-    <string name="library_import_failed_opening">Import failed while opening the file: %1$s. Recovery: pick the clip again from its original location.</string>
     <string name="library_import_failed_access">Import failed: access to the file was not granted or was revoked (%1$s). Recovery: pick the clip again and allow access.</string>
     <string name="library_import_failed_storage">Import failed: the file could not be read from storage (%1$s). Recovery: check the clip still exists, then pick it again.</string>
     <string name="library_import_failed_unknown">Import failed: %1$s. Recovery: pick the clip again from its original location.</string>
@@ -41,10 +39,6 @@
     <string name="editor_slider_highlights">Highlights</string>
     <string name="editor_slider_temperature">Temperature</string>
     <string name="editor_slider_tint">Tint</string>
-    <string name="editor_value_ev">%1$+.1f EV</string>
-    <string name="editor_value_signed">%1$+d</string>
-    <string name="editor_value_kelvin">%1$,d K</string>
-    <string name="editor_timecode">%1$s / %2$s</string>
     <string name="editor_not_loaded_title">Clip not open</string>
     <string name="editor_not_loaded_body">The clip could not be opened by the native engine in this build. Recovery: reopen the clip from the library once the engine build is enabled.</string>
 
@@ -56,14 +50,12 @@
     <string name="exports_format_mp4">H.264 MP4</string>
     <string name="exports_job_queued">Queued</string>
     <string name="exports_job_running">Exporting…</string>
-    <string name="exports_job_done">Done</string>
     <string name="exports_job_done_named">Done — %1$s</string>
     <string name="exports_job_cancelled">Cancelled</string>
     <string name="exports_job_failed_stage">Export failed: %1$s</string>
     <string name="exports_job_failed_cause">Cause: %1$s</string>
     <string name="exports_job_failed_written">Nothing was written.</string>
     <string name="exports_job_retry">Retry</string>
-    <string name="exports_job_show_log">Show log</string>
     <string name="exports_clear">Clear</string>
 
     <!-- Projects -->
