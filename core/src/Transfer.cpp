@@ -1,0 +1,120 @@
+// Mi-Log transfer curves + encoded-frame develop. See rawedit/Transfer.h
+// for the interface contract.
+
+#include <rawedit/Transfer.h>
+
+#include <cmath>
+
+namespace rawedit {
+
+// Constants copied verbatim from
+// third_party/xiaomi-milog/Mi-Log_to_ACES_AP0.dctl, mlog_to_lin().
+namespace {
+const float kR0 = -0.09023729f;
+const float kRt = 0.01974185f;
+const float kA  = 0.09271529f;
+const float kB  = 0.01384578f;
+const float kG  = 0.67291850f;
+const float kC  = 18.10531998f;
+const float kPt = kC * (kRt - kR0) * (kRt - kR0); // c*(R_t - R_0)^2
+} // namespace
+
+float miLogToLinear(float x) {
+    if (x < 0.0f) return kR0;
+    if (x >= kPt) {
+        return std::pow(2.0f, (x - kG) / kA) - kB;
+    }
+    return std::sqrt(x / kC) + kR0;
+}
+
+float linearToRec709(float lin) {
+    if (lin < 0.018f) return 4.5f * lin;
+    return 1.099f * std::pow(lin, 0.45f) - 0.099f;
+}
+
+// BT.601 limited-range YUV -> full-range RGB (JFIF-style coefficients).
+namespace {
+void yuv601ToRgb(float y, float u, float v, float& r, float& g, float& b) {
+    const float yc = (y - 16.0f) / 219.0f;
+    const float cb = (u - 128.0f) / 224.0f;
+    const float cr = (v - 128.0f) / 224.0f;
+    r = yc                + 1.402f  * cr;
+    g = yc - 0.344136f * cb - 0.714136f * cr;
+    b = yc + 1.772f   * cb;
+}
+} // namespace
+
+// BT.709 limited-range YUV -> full-range RGB.
+namespace {
+void yuv709ToRgb(float y, float u, float v, float& r, float& g, float& b) {
+    const float yc = (y - 16.0f) / 219.0f;
+    const float cb = (u - 128.0f) / 224.0f;
+    const float cr = (v - 128.0f) / 224.0f;
+    r = yc                + 1.5748f  * cr;
+    g = yc - 0.187324f * cb - 0.468124f * cr;
+    b = yc + 1.8556f   * cb;
+}
+} // namespace
+
+ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
+    ImageF out;
+    out.w = frame.width;
+    out.h = frame.height;
+    out.rgb.assign(static_cast<size_t>(out.w) * out.h * 3, 0.0f);
+    if (frame.width == 0 || frame.height == 0) return out;
+
+    const int stride = frame.stride > 0 ? frame.stride : static_cast<int>(frame.width);
+    const int uvStride = frame.uvStride > 0 ? frame.uvStride
+                                            : static_cast<int>(frame.width / 2);
+    const size_t uvW = frame.width / 2;
+    const size_t uvH = frame.height / 2;
+
+    // WB/temp/tint gains: as-shot neutral gains plus the temp/tint offsets,
+    // matching the Grade semantics of the MCRAW path (gains >= 1 scale the
+    // channel; exposure is applied last as 2^ev).
+    float gains[3] = {1.0f, 1.0f, 1.0f};
+    // temp/tint: +100 temp warms (R up, B down); +100 tint magenta (R/B up,
+    // G down). Range in Grade is unbounded; the UI clamps.
+    const float t = grade.tempK - 5600.0f;
+    const float ti = grade.tint;
+    gains[0] = 1.0f + t * 0.002f + ti * 0.002f;
+    gains[1] = 1.0f - ti * 0.002f;
+    gains[2] = 1.0f - t * 0.002f + ti * 0.002f;
+    const float exposure = std::pow(2.0f, grade.exposureEv);
+
+    for (size_t row = 0; row < out.h; ++row) {
+        const size_t uvRow = row / 2;
+        for (size_t col = 0; col < out.w; ++col) {
+            const size_t uvCol = col / 2;
+            const float yv = frame.y[row * stride + col];
+            float u = 128.0f, v = 128.0f;
+            if (frame.semiPlanar) {
+                u = frame.u[uvRow * uvStride + uvCol * 2];
+                v = frame.u[uvRow * uvStride + uvCol * 2 + 1];
+            } else {
+                u = frame.u[uvRow * uvStride + uvCol];
+                v = frame.v[uvRow * uvStride + uvCol];
+            }
+            float r, g, b;
+            if (isBt709)
+                yuv709ToRgb(yv, u, v, r, g, b);
+            else
+                yuv601ToRgb(yv, u, v, r, g, b);
+            // Mi-Log decode per channel.
+            r = miLogToLinear(r);
+            g = miLogToLinear(g);
+            b = miLogToLinear(b);
+            // Grade: WB/temp/tint gains then exposure.
+            r = r * gains[0] * exposure;
+            g = g * gains[1] * exposure;
+            b = b * gains[2] * exposure;
+            float* px = &out.rgb[(row * out.w + col) * 3];
+            px[0] = r;
+            px[1] = g;
+            px[2] = b;
+        }
+    }
+    return out;
+}
+
+} // namespace rawedit
