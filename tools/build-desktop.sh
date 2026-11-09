@@ -35,7 +35,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -53,6 +53,8 @@ echo "== building tests =="
 # test_transfer runs from the repo root so it finds the vendor cube LUT.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_transfer.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_transfer"
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_dng.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_dng"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -65,6 +67,8 @@ echo "== running test_develop =="
 "$BUILD/test_develop"
 echo "== running test_transfer =="
 (cd "$ROOT" && "$BUILD/test_transfer")
+echo "== running test_dng =="
+"$BUILD/test_dng"
 
 echo
 echo "ALL TESTS DONE. Binaries in $BUILD:"

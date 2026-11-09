@@ -5,13 +5,18 @@
 //   rawcli wav  <file> <out.wav> writes the clip's audio as 16-bit PCM WAV
 //                                (RIFF header written manually — no audiofile
 //                                dependency)
+//   rawcli dng  <file> <out.dng> [frameIndex]
+//                                writes one frame's CFA as an uncompressed
+//                                16-bit DNG (default frame 0)
 //
 // Exit codes: 0 ok, 1 usage, 2 source error (message on stderr).
 
+#include <rawedit/DngWriter.h>
 #include <rawedit/Result.h>
 #include <rawedit/Source.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -141,6 +146,49 @@ int cmdWav(const std::string& path, const std::string& outPath) {
     return 0;
 }
 
+int cmdDng(const std::string& path, const std::string& outPath,
+           const std::string& frameArg) {
+    auto res = Source::open(path);
+    if (!res.isOk()) {
+        std::fprintf(stderr, "error: %s (%s): %s\n",
+                     path.c_str(), errorName(res.code), res.detail.c_str());
+        return 2;
+    }
+    auto& src = *res.value;
+
+    size_t frameIndex = 0;
+    if (!frameArg.empty()) {
+        char* end = nullptr;
+        const long v = std::strtol(frameArg.c_str(), &end, 10);
+        if (end == frameArg.c_str() || *end != '\0' || v < 0 ||
+            static_cast<unsigned long>(v) >= src->frameCount()) {
+            std::fprintf(stderr, "error: invalid frame index %s (clip has %zu frames)\n",
+                         frameArg.c_str(), src->frameCount());
+            return 1;
+        }
+        frameIndex = static_cast<size_t>(v);
+    }
+
+    auto frame = src->readFrame(frameIndex);
+    if (!frame.isOk()) {
+        std::fprintf(stderr, "error: readFrame (%s): %s\n",
+                     errorName(frame.code), frame.detail.c_str());
+        return 2;
+    }
+
+    const FrameInfo info = src->frameInfo(frameIndex);
+    const Result<void> w = writeCfaDng(outPath, frame->data(), info, src->rawMeta());
+    if (!w.isOk()) {
+        std::fprintf(stderr, "error: writeCfaDng (%s): %s\n",
+                     errorName(w.code), w.detail.c_str());
+        return 2;
+    }
+    std::fprintf(stderr, "wrote %s: frame %zu, %ux%u, %u bytes\n",
+                 outPath.c_str(), frameIndex, info.width, info.height,
+                 static_cast<unsigned>(info.width) * info.height * 2);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -148,10 +196,13 @@ int main(int argc, char** argv) {
         return cmdInfo(argv[2]);
     if (argc >= 4 && std::strcmp(argv[1], "wav") == 0 && argc == 4)
         return cmdWav(argv[2], argv[3]);
+    if (argc >= 4 && argc <= 5 && std::strcmp(argv[1], "dng") == 0)
+        return cmdDng(argv[2], argv[3], argc == 5 ? argv[4] : "");
 
     std::fprintf(stderr,
         "usage:\n"
         "  rawcli info <file.mcraw>\n"
-        "  rawcli wav  <file.mcraw> <out.wav>\n");
+        "  rawcli wav  <file.mcraw> <out.wav>\n"
+        "  rawcli dng  <file.mcraw> <out.dng> [frameIndex]\n");
     return 1;
 }
