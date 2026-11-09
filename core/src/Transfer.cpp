@@ -66,8 +66,6 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
     const int stride = frame.stride > 0 ? frame.stride : static_cast<int>(frame.width);
     const int uvStride = frame.uvStride > 0 ? frame.uvStride
                                             : static_cast<int>(frame.width / 2);
-    const size_t uvW = frame.width / 2;
-    const size_t uvH = frame.height / 2;
 
     // WB/temp/tint gains: as-shot neutral gains plus the temp/tint offsets,
     // matching the Grade semantics of the MCRAW path (gains >= 1 scale the
