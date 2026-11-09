@@ -31,5 +31,8 @@ local.properties
 *.ap_
 *.dex
 
+# Adım kayıtları — repoya dahil edilmez
+STEPS/
+
 # Loglar
 *.log
