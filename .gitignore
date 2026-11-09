@@ -1,0 +1,35 @@
+# Build çıktıları
+/build
+app/build
+**/build/
+/captures
+.externalNativeBuild
+.cxx
+
+# Gradle
+.gradle/
+local.properties
+
+# Kotlin daemon / compiler session verileri
+.kotlin/
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+
+# macOS
+.DS_Store
+
+# İmza / keystore dosyaları (asla commit'lenmemeli)
+*.jks
+*.keystore
+!debug.keystore
+
+# APK / AAB çıktıları
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Loglar
+*.log
