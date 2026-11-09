@@ -1,5 +1,9 @@
 package com.ritim.ritimcraw.data
 
+import com.ritim.ritimcraw.export.ExportJob
+import com.ritim.ritimcraw.export.ExportStore
+import com.ritim.ritimcraw.export.State
+import com.ritim.ritimcraw.export.Target
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -59,6 +63,30 @@ class GradeStoreTest {
 
         assertEquals(1, SourceRepository(FakeResolver(), file).all().size)
         assertEquals(2f, GradeStore(file).get(imported.id).exposureEv, 0f)
+    }
+
+    @Test
+    fun write_survives_exports_section_in_same_file() {
+        // ExportStore also writes project.json; a grade write must not
+        // clobber the exports section (and an exports write keeps grades).
+        val file = projectFile()
+        val exports = ExportStore(file)
+        exports.add(
+            ExportJob(
+                id = "job-1",
+                sourceId = "clip-a",
+                snapshot = GradeK(exposureEv = 1f),
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        GradeStore(file).put("clip-a", GradeK(tempK = 4300f))
+
+        val reloaded = ExportStore(file).all()
+        assertEquals(1, reloaded.size)
+        assertEquals(Target.MP4, reloaded.single().target)
+        assertEquals(4300f, GradeStore(file).get("clip-a").tempK, 0f)
     }
 
     @Test

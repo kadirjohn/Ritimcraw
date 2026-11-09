@@ -163,21 +163,17 @@ class SourceRepository(
 
         /**
          * Renders the whole project.json with the given sources, preserving any
-         * "grades" section already in [existingText] (GradeStore writes the
-         * same file).
+         * "grades" and "exports" sections already in [existingText]
+         * (GradeStore and ExportStore write the same file; see
+         * [ProjectJson.withSection]).
          */
         internal fun mergeInto(existingText: String?, sources: List<MediaSource>): String {
-            val grades = existingText?.let {
-                runCatching { JsonParser2(it).parseValue() as? Map<*, *> }.getOrNull()
-            }?.get("grades")
-            val sb = StringBuilder()
-            sb.append("{\"version\":").append(SCHEMA_VERSION)
-            if (grades is Map<*, *>) {
-                sb.append(",\"grades\":").append(renderRawGrades(grades))
-            }
-            sb.append(",\"sources\":").append(renderSourcesArray(sources))
-            sb.append('}')
-            return sb.toString()
+            return ProjectJson.withSection(
+                existingText = existingText,
+                section = "sources",
+                renderedSection = renderSourcesArray(sources),
+                version = SCHEMA_VERSION,
+            )
         }
 
         internal fun renderSourcesArray(sources: List<MediaSource>): String {
@@ -196,7 +192,8 @@ class SourceRepository(
             return sb.toString()
         }
 
-        /** Re-renders a parsed grades object without interpreting it. */
+        /** Re-renders a parsed grades object without interpreting it (kept for
+         *  direct callers/tests; ProjectJson.renderRaw is the shared path). */
         private fun renderRawGrades(grades: Map<*, *>): String {
             val sb = StringBuilder()
             sb.append('{')

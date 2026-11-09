@@ -46,15 +46,19 @@
     <string name="exports_title">Exports</string>
     <string name="exports_empty_title">Nothing exported yet</string>
     <string name="exports_empty_body">Exported clips appear here with their progress and results.</string>
+    <string name="exports_format_dng">CFA DNG</string>
+    <string name="exports_format_mp4">H.264 MP4</string>
     <string name="exports_job_queued">Queued</string>
-    <string name="exports_job_running">Exporting… %1$d%%</string>
+    <string name="exports_job_running">Exporting…</string>
     <string name="exports_job_done">Done</string>
+    <string name="exports_job_done_named">Done — %1$s</string>
     <string name="exports_job_cancelled">Cancelled</string>
-    <string name="exports_job_failed_stage">Export failed at %1$s</string>
+    <string name="exports_job_failed_stage">Export failed: %1$s</string>
     <string name="exports_job_failed_cause">Cause: %1$s</string>
     <string name="exports_job_failed_written">Nothing was written.</string>
     <string name="exports_job_retry">Retry</string>
     <string name="exports_job_show_log">Show log</string>
+    <string name="exports_clear">Clear</string>
 
     <!-- Projects -->
     <string name="projects_title">Projects</string>

@@ -46,15 +46,19 @@
     <string name="exports_title">Dışa aktarımlar</string>
     <string name="exports_empty_title">Henüz dışa aktarım yok</string>
     <string name="exports_empty_body">Dışa aktarılan klipler ilerleme durumu ve sonuçlarıyla burada görünür.</string>
+    <string name="exports_format_dng">CFA DNG</string>
+    <string name="exports_format_mp4">H.264 MP4</string>
     <string name="exports_job_queued">Sırada</string>
-    <string name="exports_job_running">Dışa aktarılıyor… %1$d%%</string>
+    <string name="exports_job_running">Dışa aktarılıyor…</string>
     <string name="exports_job_done">Tamamlandı</string>
+    <string name="exports_job_done_named">Tamamlandı — %1$s</string>
     <string name="exports_job_cancelled">İptal edildi</string>
-    <string name="exports_job_failed_stage">Dışa aktarım şurada başarısız oldu: %1$s</string>
+    <string name="exports_job_failed_stage">Dışa aktarım başarısız oldu: %1$s</string>
     <string name="exports_job_failed_cause">Neden: %1$s</string>
     <string name="exports_job_failed_written">Hiçbir şey yazılmadı.</string>
     <string name="exports_job_retry">Yeniden dene</string>
     <string name="exports_job_show_log">Günlüğü göster</string>
+    <string name="exports_clear">Temizle</string>
 
     <!-- Projects -->
     <string name="projects_title">Projeler</string>

@@ -35,6 +35,7 @@ import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.export.ExportStore
 import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
 import com.ritim.ritimcraw.ui.exports.ExportsScreen
 import com.ritim.ritimcraw.ui.library.LibraryScreen
@@ -81,9 +82,11 @@ fun AppNav() {
         Stores(
             sources = SourceRepository(AndroidUriResolver(context), project),
             grades = GradeStore(project),
+            exports = ExportStore(project),
         )
     }
     var sources by remember { mutableStateOf(stores.sources.all()) }
+    var exportJobs by remember { mutableStateOf(stores.exports.all()) }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     var editorRoute by rememberSaveable { mutableStateOf<EditorRoute?>(null) }
 
@@ -142,7 +145,18 @@ fun AppNav() {
                             onGrantAccess = { sources = stores.sources.refreshAccess() },
                         )
                         Destination.PROJECTS -> ProjectsScreen()
-                        Destination.EXPORTS -> ExportsScreen()
+                        Destination.EXPORTS -> ExportsScreen(
+                            jobs = exportJobs,
+                            onRetry = { job ->
+                                // Retry re-queues with the same snapshot.
+                                stores.exports.retry(job.id)
+                                exportJobs = stores.exports.all()
+                            },
+                            onClear = {
+                                stores.exports.clear()
+                                exportJobs = stores.exports.all()
+                            },
+                        )
                         Destination.SETTINGS -> SettingsScreen()
                     }
                 }
@@ -154,4 +168,5 @@ fun AppNav() {
 private class Stores(
     val sources: SourceRepository,
     val grades: GradeStore,
+    val exports: ExportStore,
 )
