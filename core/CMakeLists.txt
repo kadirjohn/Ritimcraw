@@ -23,13 +23,15 @@ set_property(TARGET motioncam_decoder PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 # rawedit core library.
 # Thumbnail.cpp + Transfer.cpp are linked by the app's preview path
-# (jni_bridge.cpp: developThumbnail + linearToRec709). Gyro.cpp and
-# DngWriter.cpp stay desktop-only until the app calls them.
+# (jni_bridge.cpp: developThumbnail + linearToRec709); DngWriter.cpp is
+# linked by the app's DNG export path (jni_bridge.cpp: writeCfaDng).
+# Gyro.cpp stays desktop-only until the app calls it.
 add_library(rawedit STATIC
     src/Source.cpp
     src/Develop.cpp
     src/Thumbnail.cpp
-    src/Transfer.cpp)
+    src/Transfer.cpp
+    src/DngWriter.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)

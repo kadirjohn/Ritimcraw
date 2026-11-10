@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include <rawedit/DngWriter.h>
 #include <rawedit/Result.h>
 #include <rawedit/Source.h>
 #include <rawedit/Thumbnail.h>
@@ -37,10 +38,11 @@ thread_local std::string gLastError;
 // failed. Updated by the preview setError only on failure paths.
 thread_local int gLastErrorCode = 0;
 
-// Stage tokens (shared contract with PreviewRenderer.kt).
+// Stage tokens (shared contract with PreviewRenderer.kt / DngExporter.kt).
 constexpr int kStageOpen = 0;
 constexpr int kStageFrameRead = 1;
 constexpr int kStageDevelop = 2;
+constexpr int kStageDngWrite = 3;
 
 thread_local int gLastErrorStage = kStageOpen;
 
@@ -421,6 +423,69 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewErrorCode(JNIEnv*, jcl
 JNIEXPORT jint JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewErrorStage(JNIEnv*, jclass) {
     return gLastErrorStage;
+}
+
+// DNG export -------------------------------------------------------------------
+//
+// One-shot: open the clip from fd, decode frame [frameIndex], write the raw
+// CFA mosaic as a DNG 1.4 file at outPath (the Kotlin layer passes its
+// out.partial staging path in app cache; writeCfaDng already removes a
+// partially written file on failure). No grade fields: a CFA DNG is the raw
+// mosaic — developCpu is not part of this path. The handle registry is not
+// used (the Source lives only for this call), so the function is safe to
+// call from any single engine thread.
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
+        JNIEnv* env, jclass, jint fd, jint frameIndex, jstring outPath) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    const char* pathChars = env->GetStringUTFChars(outPath, nullptr);
+    if (pathChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDngWrite,
+                 "dng export: out of memory reading the output path "
+                 "(recovery: free memory and retry)");
+        return JNI_FALSE;
+    }
+    const std::string path(pathChars);
+    env->ReleaseStringUTFChars(outPath, pathChars);
+
+    // 1. Open the clip from the SAF fd (the bridge dups it; the caller's fd
+    //    is untouched).
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("open: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail);
+        return JNI_FALSE;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+
+    // 2. Decode the frame (the expensive step — seconds on a 4K frame).
+    gLastErrorStage = kStageFrameRead;
+    auto frame = src->readFrame(static_cast<size_t>(frameIndex));
+    if (!frame.isOk()) {
+        setError(static_cast<int>(frame.code), kStageFrameRead,
+                 std::string("frame read: ") + rawedit::errorName(frame.code) +
+                     " — " + frame.detail);
+        return JNI_FALSE;
+    }
+    const rawedit::FrameInfo info = src->frameInfo(static_cast<size_t>(frameIndex));
+    const rawedit::RawMeta& meta = src->rawMeta();
+
+    // 3. Write the CFA DNG to the staging path (writeCfaDng removes a
+    //    partial file on failure, so the staging file exists only on
+    //    success — the Kotlin layer renames it into place).
+    gLastErrorStage = kStageDngWrite;
+    rawedit::Result<void> written = rawedit::writeCfaDng(
+        path, frame.value->data(), info, meta);
+    if (!written.isOk()) {
+        setError(static_cast<int>(written.code), kStageDngWrite,
+                 std::string("dng write: ") + rawedit::errorName(written.code) +
+                     " — " + written.detail);
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
 }
 
 } // extern "C"

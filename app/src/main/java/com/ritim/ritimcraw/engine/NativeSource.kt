@@ -193,6 +193,21 @@ class NativeSource private constructor(
         /** Pipeline stage of the last failed preview call (0 open, 1 frame read, 2 develop). */
         @JvmStatic internal external fun nativePreviewErrorStage(): Int
 
+        // ---- DNG export JNI (decode frame -> writeCfaDng to a staging path) ----
+
+        /**
+         * Decodes frame [frameIndex] from the clip at [fd] and writes it as a
+         * CFA DNG 1.4 file at [outPath] (the caller's out.partial staging
+         * path in app cache). True on success; on false read
+         * [previewErrorCode] / [previewErrorStage] / [previewLastError] from
+         * the same thread. Stages: 0 open, 1 frame read, 3 dng write.
+         */
+        @JvmStatic internal external fun nativeDngExport(
+            fd: Int,
+            frameIndex: Int,
+            outPath: String,
+        ): Boolean
+
         /** Last-error detail from the engine thread (thread-local in the bridge). */
         internal fun previewLastError(): String? = nativeLastError()
     }
