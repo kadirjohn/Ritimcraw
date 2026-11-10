@@ -23,13 +23,16 @@
 
 namespace rawedit {
 
-// Grade parameters (subset used by the reference develop).
+// Grade parameters. All four drive developCpu (the shared RAW color path):
+//   exposureEv  : linear gain 2^ev (stage 7)
+//   highlights  : [-100,100] soft shoulder on near-clipped highlights (8)
+//   tempK       : [2000,50000] warm/cool diagonal gain around 5600 K (9)
+//   tint        : [-100,100] green/magenta push (10)
 struct Grade {
     float exposureEv = 0.0f;
-    float highlights  = 0.0f; // reserved; the reference pipeline currently
-                             // applies highlight reconstruction only
-    float tempK = 5600.0f;   // reserved for the graded path
-    float tint  = 0.0f;      // reserved for the graded path
+    float highlights  = 0.0f;
+    float tempK = 5600.0f;
+    float tint  = 0.0f;
 };
 
 // Linear RGB float image, row-major, 3 floats per pixel (r, g, b).

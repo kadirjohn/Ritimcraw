@@ -395,6 +395,57 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
             v *= scale;
     }
 
+    // ---- Stage 8: highlights (grade.highlights in [-100, 100]). ----
+    // Negative = recovery: a soft shoulder compresses the over-knee region
+    // toward the knee (filmic rolloff, detail comes back). Positive = a
+    // gentle lift of the same region. Neutrals stay neutral (uniform gain per
+    // pixel), mid-tones below the knee are untouched.
+    if (grade.highlights != 0.0f) {
+        const float knee = 0.75f;
+        const float s = -grade.highlights / 100.0f; // recovery -> +1, lift -> -1
+        for (size_t i = 0; i < img.rgb.size(); i += 3) {
+            const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
+            if (mx <= knee)
+                continue;
+            const float over = mx - knee;
+            const float t = over / (1.0f - knee);       // 0..1 above the knee
+            const float factor = 1.0f - 0.65f * s * t;   // <1 compress, >1 lift
+            const float newMx = knee + over * factor;
+            const float gain = mx > 0.0f ? newMx / mx : 1.0f;
+            img.rgb[i + 0] *= gain;
+            img.rgb[i + 1] *= gain;
+            img.rgb[i + 2] *= gain;
+        }
+    }
+
+    // ---- Stage 9: temperature (grade.tempK, 2000..50000, neutral 5600). ----
+    // Warm/cool adjustment in linear space around the as-shot state: a
+    // smooth red/blue push proportional to log2(tempK/5600), applied as a
+    // diagonal gain so neutrals stay neutral (no cast on gray).
+    {
+        const float tempShift =
+            grade.tempK > 0.0f ? std::log2(grade.tempK / 5600.0f) : 0.0f;
+        if (std::abs(tempShift) > 1e-4f) {
+            const float warmGain = std::pow(2.0f, 0.35f * tempShift);   // red up when warm
+            const float coolGain = std::pow(2.0f, -0.35f * tempShift);  // blue up when cool
+            for (size_t i = 0; i < img.rgb.size(); i += 3) {
+                img.rgb[i + 0] *= warmGain;
+                // Green rides the geometric mean so luminance is preserved.
+                img.rgb[i + 1] *= std::sqrt(warmGain * coolGain);
+                img.rgb[i + 2] *= coolGain;
+            }
+        }
+    }
+
+    // ---- Stage 10: tint (grade.tint in [-100, 100], 0 = neutral). ----
+    // Green/magenta push on the green channel only: negative -> magenta
+    // (green down), positive -> green up. Smooth, bounded, neutral-safe.
+    if (grade.tint != 0.0f) {
+        const float greenGain = std::pow(2.0f, 0.4f * (grade.tint / 100.0f));
+        for (size_t i = 0; i < img.rgb.size(); i += 3)
+            img.rgb[i + 1] *= greenGain;
+    }
+
     return img;
 }
 

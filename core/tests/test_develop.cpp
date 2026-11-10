@@ -267,3 +267,46 @@ TEST_CASE("dng_forward_matrix_maps_neutral_to_rec709") {
     CHECK(r > 0.9f);
     CHECK(b > 0.9f);
 }
+
+TEST_CASE("highlights_slider_changes_bright_region_only") {
+    // A bright (near-white, unclipped) patch must darken with highlights
+    // recovery; a mid-gray patch must stay put.
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.95f, 0.95f, 0.95f);
+    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.3f, 0.3f, 0.3f);
+    Grade g; g.highlights = -100.0f;
+    auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
+    auto b1 = developCpu(bright.cfa.data(), bright.info, bright.meta, g);
+    auto m0 = developCpu(mid.cfa.data(), mid.info, mid.meta, Grade{});
+    auto m1 = developCpu(mid.cfa.data(), mid.info, mid.meta, g);
+    CHECK(centerMean(b1, 1) < centerMean(b0, 1) - 0.02f);   // bright got pulled
+    CHECK(std::abs(centerMean(m1, 1) - centerMean(m0, 1)) < 0.001f); // mid untouched
+}
+
+TEST_CASE("temperature_slider_moves_red_and_blue_opposite") {
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
+    Grade warm; warm.tempK = 32000.0f;   // >> 5600: warm
+    Grade cool; cool.tempK = 3000.0f;   // << 5600: cool
+    auto base = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto w = developCpu(s.cfa.data(), s.info, s.meta, warm);
+    auto c = developCpu(s.cfa.data(), s.info, s.meta, cool);
+    const float br = centerMean(base, 0), bb = centerMean(base, 2);
+    CHECK(centerMean(w, 0) > br + 0.05f);   // red up when warm
+    CHECK(centerMean(w, 2) < bb - 0.05f);   // blue down when warm
+    CHECK(centerMean(c, 0) < br - 0.05f);   // red down when cool
+    CHECK(centerMean(c, 2) > bb + 0.05f);   // blue up when cool
+}
+
+TEST_CASE("tint_slider_moves_green_only") {
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
+    Grade magenta; magenta.tint = -100.0f;
+    Grade green; green.tint = 100.0f;
+    auto base = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto mg = developCpu(s.cfa.data(), s.info, s.meta, magenta);
+    auto gr = developCpu(s.cfa.data(), s.info, s.meta, green);
+    const float bg = centerMean(base, 1);
+    CHECK(centerMean(mg, 1) < bg - 0.05f);  // magenta: green down
+    CHECK(centerMean(gr, 1) > bg + 0.05f);  // green up
+    // R and B stay put.
+    CHECK(std::abs(centerMean(mg, 0) - centerMean(base, 0)) < 0.001f);
+    CHECK(std::abs(centerMean(gr, 2) - centerMean(base, 2)) < 0.001f);
+}
