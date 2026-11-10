@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <rawedit/Lut.h>
 
 namespace rawedit {
 
@@ -83,9 +84,14 @@ void encodedTonemapStage(ImageF& img, const Grade& grade) {
     if (grade.tonemap != 0)
         tonemapFrame(img, grade.tonemap);
 }
+
+void encodedLutStage(ImageF& img, const Grade& grade, const Lut* lut) {
+    if (lut != nullptr && grade.lutStrength != 0.0f)
+        applyLut(img, *lut, grade.lutStrength);
+}
 } // namespace
 
-ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
+ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, const Lut* lut) {
     ImageF out;
     out.w = frame.width;
     out.h = frame.height;
@@ -142,15 +148,17 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
         }
     }
 
-    // ---- Detail controls (COL-15) and tonemapping (COL-16). ----
-    // The same stages 17-19 the MCRAW path runs, on the decoded and graded
+    // ---- Detail controls (COL-15), tonemapping (COL-16), LUT (COL-07). ----
+    // The same stages 17-20 the MCRAW path runs, on the decoded and graded
     // RGB: sharpness (radius 1.5 px) and detail (radius 0.75 px) as
-    // luminance-only unsharp masks, then the optional ACES/AgX tonemap. All
-    // three genuinely apply to an encoded clip: its pixels are ordinary
-    // linear RGB once the Mi-Log decode and grade have run. Neutral grades
-    // skip every stage (exact passthrough, the old look).
+    // luminance-only unsharp masks, then the optional ACES/AgX tonemap,
+    // then the optional .cube LUT. All four genuinely apply to an encoded
+    // clip: its pixels are ordinary linear RGB once the Mi-Log decode and
+    // grade have run. Neutral grades skip every stage (exact passthrough,
+    // the old look).
     encodedDetailStages(out, grade);
     encodedTonemapStage(out, grade);
+    encodedLutStage(out, grade, lut);
 
     return out;
 }
