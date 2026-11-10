@@ -77,6 +77,8 @@ class SliderStepsTest {
                 shadows = -25f,
                 midtones = 5f,
                 contrast = 60f,
+                sharpness = 30f,
+                detail = -15f,
             )
         )
         assertEquals(0.5f, g.exposureEv, 1e-4f)
@@ -89,6 +91,17 @@ class SliderStepsTest {
         assertEquals(-25f, g.shadows, 1e-4f)
         assertEquals(5f, g.midtones, 1e-4f)
         assertEquals(60f, g.contrast, 1e-4f)
+        assertEquals(30f, g.sharpness, 1e-4f)
+        assertEquals(-15f, g.detail, 1e-4f)
+    }
+
+    @Test
+    fun sharpness_and_detail_snap_to_whole_numbers() {
+        // COL-15: the Detail tab sliders are integer steps like the tone
+        // controls (the native pipeline maps [-100, 100] -> amount).
+        val g = SliderSteps.snap(GradeK(sharpness = 42.7f, detail = -8.3f))
+        assertEquals(43f, g.sharpness, 1e-4f)
+        assertEquals(-8f, g.detail, 1e-4f)
     }
 
     // ---- double-tap reset ----
@@ -179,6 +192,26 @@ class SliderStepsTest {
         val contrast = SliderSteps.resetToDefault(SliderSteps.Axis.CONTRAST, current)
         assertEquals(0f, contrast.contrast, 0f)
         assertEquals(-15f, contrast.shadows, 0f)
+    }
+
+    @Test
+    fun double_tap_resets_sharpness_and_detail_only() {
+        // COL-15: each Detail slider resets independently — the tapped
+        // control goes neutral, tonemap and every other axis stay put.
+        val current = GradeK(
+            exposureEv = 1f, sharpness = 55f, detail = -30f, tonemap = 2,
+        )
+
+        val sharpness = SliderSteps.resetToDefault(SliderSteps.Axis.SHARPNESS, current)
+        assertEquals(0f, sharpness.sharpness, 0f)
+        assertEquals(-30f, sharpness.detail, 0f)
+        assertEquals(2, sharpness.tonemap)
+        assertEquals(1f, sharpness.exposureEv, 0f)
+
+        val detail = SliderSteps.resetToDefault(SliderSteps.Axis.DETAIL, current)
+        assertEquals(0f, detail.detail, 0f)
+        assertEquals(55f, detail.sharpness, 0f)
+        assertEquals(2, detail.tonemap)
     }
 
     // ---- Compose steps argument ----

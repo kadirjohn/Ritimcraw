@@ -199,6 +199,9 @@ class NativeSource private constructor(
             asShot: Boolean,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
             maxDim: Int,
         ): IntArray?
 
@@ -225,6 +228,9 @@ class NativeSource private constructor(
             asShot: Boolean,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
             maxDim: Int,
         ): IntArray?
 
@@ -275,6 +281,9 @@ class NativeSource private constructor(
             asShot: Boolean,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -293,12 +302,14 @@ class NativeSource private constructor(
          * Develops one decoded encoded-frame (NV12 when [semiPlanar] is
          * true: [yPlane] + interleaved UV in [uPlane]; I420 otherwise) with
          * the grade: developEncoded (limited-range YUV -> RGB -> Mi-Log
-         * decode -> WB/temp/tint/exposure) -> linearToRec709 -> clamp ->
+         * decode -> WB/temp/tint/exposure -> sharpness/detail/tonemap, the
+         * shared COL-15/COL-16 stages) -> linearToRec709 -> clamp ->
          * 8-bit ARGB, rotated upright by [orientationDeg]. Returns
          * [width, height, then w*h ARGB_8888 ints] (the preview contract) or
          * null on failure (read the error accessors from the same thread).
-         * Uses only tempK/tint/exposureEv of the grade (developEncoded's
-         * contract). No handle: the frame is stateless input.
+         * Uses tempK/tint/exposureEv plus the detail/tonemap fields of the
+         * grade (developEncoded's contract). No handle: the frame is
+         * stateless input.
          */
         @JvmStatic private external fun nativeEncodedDevelop(
             yPlane: ByteArray,
@@ -324,6 +335,9 @@ class NativeSource private constructor(
             asShot: Boolean,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
         ): IntArray?
 
         // ---- Cross-module wrappers (external decls stay private; see the
@@ -349,12 +363,16 @@ class NativeSource private constructor(
             asShot: Boolean,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
             maxDim: Int,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
             asShot, highlightReconstruction, keepVignetting,
+            sharpness, detail, tonemap,
             maxDim,
         )
 
@@ -375,12 +393,16 @@ class NativeSource private constructor(
             asShot: Boolean,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
             maxDim: Int,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
             asShot, highlightReconstruction, keepVignetting,
+            sharpness, detail, tonemap,
             maxDim,
         )
 
@@ -411,11 +433,15 @@ class NativeSource private constructor(
             asShot: Boolean,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
         ): ByteArray? = nativeExportFrame(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
             asShot, highlightReconstruction, keepVignetting,
+            sharpness, detail, tonemap,
         )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
@@ -449,6 +475,9 @@ class NativeSource private constructor(
             asShot: Boolean,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
         ): IntArray? = nativeEncodedDevelop(
             yPlane, uPlane, vPlane,
             width, height, stride, uvStride,
@@ -456,6 +485,7 @@ class NativeSource private constructor(
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
             asShot, highlightReconstruction, keepVignetting,
+            sharpness, detail, tonemap,
         )
 
         /** JNI bridge: readAudio for export sessions. */

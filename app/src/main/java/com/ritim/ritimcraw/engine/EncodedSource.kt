@@ -271,9 +271,10 @@ interface EncodedFrameDecoder {
 interface EncodedDeveloper {
     /**
      * Develops one packed frame: developEncoded (limited-range YUV -> RGB ->
-     * Mi-Log decode -> WB/temp/tint/exposure) -> Rec.709 -> ARGB, rotated
-     * upright by [orientationDeg]. Returns [width, height, then w*h ARGB_8888
-     * ints] (the preview contract) or null on failure.
+     * Mi-Log decode -> WB/temp/tint/exposure -> sharpness/detail/tonemap, the
+     * shared COL-15/COL-16 stages) -> Rec.709 -> ARGB, rotated upright by
+     * [orientationDeg]. Returns [width, height, then w*h ARGB_8888 ints]
+     * (the preview contract) or null on failure.
      */
     fun develop(frame: YuvFrameK, isBt709: Boolean, orientationDeg: Int, grade: GradeK): IntArray?
 
@@ -353,6 +354,7 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             grade.saturation, grade.blackPoint, grade.whitePoint,
             grade.shadows, grade.midtones, grade.contrast,
             grade.asShot, grade.highlightReconstruction, grade.keepVignetting,
+            grade.sharpness, grade.detail, grade.tonemap,
         )
     }
 

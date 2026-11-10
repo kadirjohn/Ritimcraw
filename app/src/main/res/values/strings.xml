@@ -48,6 +48,12 @@
     <string name="editor_as_shot">As Shot</string>
     <string name="editor_highlight_reconstruction">Highlight Reconstruction</string>
     <string name="editor_keep_vignetting">Keep Vignetting</string>
+    <string name="editor_slider_sharpness">Sharpness</string>
+    <string name="editor_slider_detail">Detail</string>
+    <string name="editor_tonemapping">Tonemapping</string>
+    <string name="editor_tonemap_off">Off</string>
+    <string name="editor_tonemap_aces">ACES</string>
+    <string name="editor_tonemap_agx">AgX</string>
     <string name="editor_render_preview">Render preview</string>
     <string name="editor_play">Play</string>
     <string name="editor_pause">Pause</string>

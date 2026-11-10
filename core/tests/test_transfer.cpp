@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -181,4 +182,89 @@ TEST_CASE("developEncoded_grade_and_range") {
     ImageF imgW = developEncoded(f, warm, true);
     CHECK(imgW.rgb[0] > mid);
     CHECK(imgW.rgb[2] < mid);
+}
+
+TEST_CASE("developEncoded_detail_and_tonemap_stages") {
+    // COL-15/COL-16 on the encoded (Mi-Log) path: the same stages 17-19 the
+    // MCRAW pipeline runs apply to a decoded, graded encoded frame. On a
+    // FLAT frame every stage is a no-op (a flat region's blur equals its
+    // value; tonemap off is passthrough), so the neutral look is preserved
+    // exactly — the binding requirement.
+    YuvFrame f;
+    f.width = 8;
+    f.height = 8;
+    f.semiPlanar = true;
+    f.y.assign(64, 128);
+    f.u.assign(64, 128);
+
+    Grade neutral;
+    ImageF base = developEncoded(f, neutral, true);
+
+    Grade detail;
+    detail.sharpness = 100.0f;
+    detail.detail = 100.0f;
+    detail.tonemap = 0;
+    ImageF flat = developEncoded(f, detail, true);
+    for (size_t i = 0; i < base.rgb.size(); ++i)
+        CHECK(flat.rgb[i] == doctest::Approx(base.rgb[i]).epsilon(1e-7));
+
+    // Tonemap 0 vs the pre-stage output: bit-for-bit.
+    Grade off;
+    off.tonemap = 0;
+    ImageF offImg = developEncoded(f, off, true);
+    for (size_t i = 0; i < base.rgb.size(); ++i)
+        CHECK(offImg.rgb[i] == base.rgb[i]);
+
+    // ACES and AgX genuinely apply: the flat frame's linear value is
+    // miLogToLinear((128-16)/219) ~= 0.28512 (limited-range Y=128 through
+    // the Mi-Log curve), and the fits evaluated at that value are the
+    // anchors: ACES 0.42036064, AgX 0.58001508 (computed in float64 from
+    // the same definitions test_develop locks for the MCRAW path; a flat
+    // linear patch through ACES/AgX depends only on the value, not on
+    // where the pixels came from).
+    Grade aces;
+    aces.tonemap = 1;
+    ImageF acesImg = developEncoded(f, aces, true);
+    CHECK(acesImg.rgb[0] == doctest::Approx(0.42036064f).epsilon(1e-3));
+    CHECK(acesImg.rgb[0] > 0.0f);
+    CHECK(acesImg.rgb[0] < 1.0f);
+
+    Grade agx;
+    agx.tonemap = 2;
+    ImageF agxImg = developEncoded(f, agx, true);
+    CHECK(agxImg.rgb[0] == doctest::Approx(0.58001508f).epsilon(1e-3));
+    CHECK(agxImg.rgb[0] < 1.0f);
+
+    // And a TEXTURED frame really sharpens: a vertical edge in the luma
+    // plane gains local contrast with sharpness on, flat rows untouched.
+    YuvFrame e;
+    e.width = 16;
+    e.height = 16;
+    e.semiPlanar = true;
+    e.y.assign(256, 0);
+    e.u.assign(256, 128);
+    for (uint32_t row = 0; row < 16; ++row)
+        for (uint32_t col = 0; col < 16; ++col)
+            e.y[row * 16 + col] = static_cast<uint8_t>(col < 8 ? 96 : 160);
+    ImageF edgePlain = developEncoded(e, Grade{}, true);
+    Grade sharp;
+    sharp.sharpness = 100.0f;
+    ImageF edgeSharp = developEncoded(e, sharp, true);
+    auto rowRange = [&](const ImageF& img, uint32_t row) {
+        float lo = 1e9f, hi = -1e9f;
+        for (uint32_t col = 0; col < 16; ++col) {
+            const float v = img.rgb[(size_t(row) * 16 + col) * 3 + 1];
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+        return hi - lo;
+    };
+    CHECK(rowRange(edgeSharp, 8) > rowRange(edgePlain, 8) + 0.005f);
+    // Flat interior column far from the edge: unchanged to float rounding
+    // (the luma sum and blur normalization round, so a flat region can
+    // shift by an ulp or two — visually zero, exactly the old look).
+    const size_t left = (size_t(8) * 16 + 2) * 3;
+    CHECK(std::abs(edgeSharp.rgb[left + 0] - edgePlain.rgb[left + 0]) < 1e-6f);
+    CHECK(std::abs(edgeSharp.rgb[left + 1] - edgePlain.rgb[left + 1]) < 1e-6f);
+    CHECK(std::abs(edgeSharp.rgb[left + 2] - edgePlain.rgb[left + 2]) < 1e-6f);
 }

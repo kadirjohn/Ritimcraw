@@ -24,6 +24,13 @@ import java.nio.charset.StandardCharsets
  * temp/tint neutrality (neutral -> true, manual -> false) so old grades keep
  * their exact old look.
  *
+ * The detail/tonemap fields (owner request 2026-11-10 section 3, COL-15/
+ * COL-16) also default to neutral (sharpness 0, detail 0, tonemap 0 = off),
+ * so old schema-1 files that predate them load with the new fields neutral
+ * and keep their exact old look. tonemap: 0 = off, 1 = ACES, 2 = AgX (the
+ * native stage records the selected transform's version, working space and
+ * target display; see Grade in core/include/rawedit/Develop.h).
+ *
  * A grade set on clip A must never appear on clip B, including after closing
  * and reopening the app (QA-05) — GradeStoreTest.grades_do_not_leak_between_clips.
  */
@@ -42,6 +49,9 @@ data class GradeK(
     val asShot: Boolean = true,
     val highlightReconstruction: Boolean = true,
     val keepVignetting: Boolean = true,
+    val sharpness: Float = 0f,
+    val detail: Float = 0f,
+    val tonemap: Int = 0,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -165,7 +175,10 @@ class GradeStore(private val file: File) {
                     .append("\"contrast\":").append(num(g.contrast)).append(',')
                     .append("\"asShot\":").append(g.asShot).append(',')
                     .append("\"highlightReconstruction\":").append(g.highlightReconstruction).append(',')
-                    .append("\"keepVignetting\":").append(g.keepVignetting)
+                    .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
+                    .append("\"sharpness\":").append(num(g.sharpness)).append(',')
+                    .append("\"detail\":").append(num(g.detail)).append(',')
+                    .append("\"tonemap\":").append(g.tonemap)
                     .append('}')
             }
             sb.append('}')
@@ -268,6 +281,13 @@ class GradeStore(private val file: File) {
                         ?: (parsedTempK == 5600f && parsedTint == 0f),
                     highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
                     keepVignetting = m["keepVignetting"] as? Boolean ?: true,
+                    // Detail/tonemap fields (COL-15/COL-16) postdate older
+                    // schema-1 files: fall back to neutral (0), which the
+                    // native pipeline treats as a no-op — the old look is
+                    // preserved exactly.
+                    sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
+                    detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
+                    tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
                 )
             }
             return out

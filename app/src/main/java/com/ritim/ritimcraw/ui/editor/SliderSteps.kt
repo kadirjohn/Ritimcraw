@@ -5,8 +5,8 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
- * Slider step semantics and double-tap reset for the Light and Color tabs
- * (DESIGN.md Inputs: "M3 Slider with label and tabular value; double tap
+ * Slider step semantics and double-tap reset for the Light, Color and Detail
+ * tabs (DESIGN.md Inputs: "M3 Slider with label and tabular value; double tap
  * resets"). Pure functions so the mapping is JVM-testable without Compose.
  */
 object SliderSteps {
@@ -31,6 +31,8 @@ object SliderSteps {
     fun snapShadows(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapMidtones(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapContrast(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapSharpness(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapDetail(value: Float): Float = quantize(value, UNIT_STEP)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
@@ -49,6 +51,8 @@ object SliderSteps {
             shadows = snapShadows(grade.shadows),
             midtones = snapMidtones(grade.midtones),
             contrast = snapContrast(grade.contrast),
+            sharpness = snapSharpness(grade.sharpness),
+            detail = snapDetail(grade.detail),
         )
     }
 
@@ -60,6 +64,7 @@ object SliderSteps {
     enum class Axis {
         EXPOSURE, HIGHLIGHTS, TEMPERATURE, TINT,
         SATURATION, BLACK_POINT, WHITE_POINT, SHADOWS, MIDTONES, CONTRAST,
+        SHARPNESS, DETAIL,
     }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
@@ -73,6 +78,8 @@ object SliderSteps {
         Axis.SHADOWS -> current.copy(shadows = GradeK().shadows)
         Axis.MIDTONES -> current.copy(midtones = GradeK().midtones)
         Axis.CONTRAST -> current.copy(contrast = GradeK().contrast)
+        Axis.SHARPNESS -> current.copy(sharpness = GradeK().sharpness)
+        Axis.DETAIL -> current.copy(detail = GradeK().detail)
     }
 
     /**

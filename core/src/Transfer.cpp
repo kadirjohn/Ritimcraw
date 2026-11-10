@@ -3,6 +3,7 @@
 
 #include <rawedit/Transfer.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace rawedit {
@@ -56,6 +57,34 @@ void yuv709ToRgb(float y, float u, float v, float& r, float& g, float& b) {
 }
 } // namespace
 
+// Detail controls (COL-15) and tonemapping (COL-16), shared with the MCRAW
+// path. All three genuinely apply to a decoded, linearized encoded frame:
+// sharpness/detail are spatial operators on the developed RGB (they do not
+// care where the pixels came from), and tonemapping compresses the linear
+// scene range the Mi-Log decode produced. The implementations live in
+// Develop.cpp (unsharpLuma / tonemapFrame); see Develop.h for the full
+// COL-15/COL-16 record (radii, amount mapping, ACES/AgX versions, working
+// space, target display).
+namespace {
+void encodedDetailStages(ImageF& img, const Grade& grade) {
+    if (grade.sharpness != 0.0f) {
+        const float amount =
+            std::min(std::max(0.5f * (grade.sharpness / 100.0f), -0.5f), 0.5f);
+        unsharpLuma(img, 1.5f, amount);
+    }
+    if (grade.detail != 0.0f) {
+        const float amount =
+            std::min(std::max(0.5f * (grade.detail / 100.0f), -0.5f), 0.5f);
+        unsharpLuma(img, 0.75f, amount);
+    }
+}
+
+void encodedTonemapStage(ImageF& img, const Grade& grade) {
+    if (grade.tonemap != 0)
+        tonemapFrame(img, grade.tonemap);
+}
+} // namespace
+
 ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
     ImageF out;
     out.w = frame.width;
@@ -69,7 +98,7 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
 
     // WB/temp/tint gains: as-shot neutral gains plus the temp/tint offsets,
     // matching the Grade semantics of the MCRAW path (gains >= 1 scale the
-    // channel; exposure is applied last as 2^ev).
+    // channel; exposure is applied as 2^ev in the per-pixel loop below).
     float gains[3] = {1.0f, 1.0f, 1.0f};
     // temp/tint: +100 temp warms (R up, B down); +100 tint magenta (R/B up,
     // G down). Range in Grade is unbounded; the UI clamps.
@@ -112,6 +141,17 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
             px[2] = b;
         }
     }
+
+    // ---- Detail controls (COL-15) and tonemapping (COL-16). ----
+    // The same stages 17-19 the MCRAW path runs, on the decoded and graded
+    // RGB: sharpness (radius 1.5 px) and detail (radius 0.75 px) as
+    // luminance-only unsharp masks, then the optional ACES/AgX tonemap. All
+    // three genuinely apply to an encoded clip: its pixels are ordinary
+    // linear RGB once the Mi-Log decode and grade have run. Neutral grades
+    // skip every stage (exact passthrough, the old look).
+    encodedDetailStages(out, grade);
+    encodedTonemapStage(out, grade);
+
     return out;
 }
 
