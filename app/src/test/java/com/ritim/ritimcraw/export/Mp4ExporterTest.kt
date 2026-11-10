@@ -257,7 +257,7 @@ class Mp4ExporterTest {
             return Mp4SessionInfo(1L, frames, width, height, 0, 90)
         }
 
-        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK): ByteArray? {
+        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?): ByteArray? {
             if (frameIndex == failAtFrame) {
                 lastCode = Mp4ExportErrors.CODE_IO
                 lastStage = Mp4ExportErrors.STAGE_DEVELOP

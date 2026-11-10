@@ -54,6 +54,12 @@
     <string name="editor_tonemap_off">Kapalı</string>
     <string name="editor_tonemap_aces">ACES</string>
     <string name="editor_tonemap_agx">AgX</string>
+    <string name="editor_lut">LUT</string>
+    <string name="editor_lut_import">LUT içe aktar</string>
+    <string name="editor_lut_import_failed">LUT dosyası içe aktarılamadı. Çözüm: geçerli bir .cube dosyası seçin.</string>
+    <string name="editor_lut_strength">Güç</string>
+    <string name="editor_lut_remove">Kaldır</string>
+    <string name="editor_lut_none">Yok</string>
     <string name="editor_render_preview">Önizlemeyi oluştur</string>
     <string name="editor_play">Oynat</string>
     <string name="editor_pause">Duraklat</string>

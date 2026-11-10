@@ -56,11 +56,18 @@ class PreviewSession private constructor(
 
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
-     * [maxDim]. Suspends until done; resumes with the frame or a failure
-     * carrying stage + cause + recovery. A closed session fails cleanly
-     * instead of touching the dead handle.
+     * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
+     * stage 20 bypassed, the old look; COL-07). Suspends until done;
+     * resumes with the frame or a failure carrying stage + cause +
+     * recovery. A closed session fails cleanly instead of touching the
+     * dead handle.
      */
-    override suspend fun render(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    override suspend fun render(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String?,
+    ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
                 PreviewRenderer.Companion.PreviewRenderException(
@@ -88,7 +95,7 @@ class PreviewSession private constructor(
                                 )
                             )
                         } else {
-                            renderBlocking(frameIndex, grade, maxDim)
+                            renderBlocking(frameIndex, grade, maxDim, lutPath)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)
@@ -109,7 +116,12 @@ class PreviewSession private constructor(
     }
 
     /** Blocking render; MUST run on the engine thread (thread-local error state). */
-    private fun renderBlocking(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    private fun renderBlocking(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String? = null,
+    ): Result<PreviewFrame> {
         val args = GradeMapping.toNative(grade)
         return renderArray(
             NativeSource.jniPreviewRender(
@@ -119,19 +131,26 @@ class PreviewSession private constructor(
                 args.shadows, args.midtones, args.contrast,
                 args.asShot, args.highlightReconstruction, args.keepVignetting,
                 args.sharpness, args.detail, args.tonemap,
+                lutPath, args.lutStrength,
                 maxDim,
             )
         )
     }
 
     /**
-     * Interactive slider render: same contract as [render], but the bridge
-     * reuses the session's cached CFA when [frameIndex] is the frame already
-     * decoded — a grade-only change skips the decode entirely (owner request
-     * 2026-11-10 section 1). Meant for the low-latency drag tier; the
-     * full-quality settle render can keep using [render].
+     * Interactive slider render: same contract as [render] (including
+     * [lutPath], COL-07), but the bridge reuses the session's cached CFA
+     * when [frameIndex] is the frame already decoded — a grade-only change
+     * skips the decode entirely (owner request 2026-11-10 section 1).
+     * Meant for the low-latency drag tier; the full-quality settle render
+     * can keep using [render].
      */
-    override suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    override suspend fun renderCached(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String?,
+    ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
                 PreviewRenderer.Companion.PreviewRenderException(
@@ -167,6 +186,7 @@ class PreviewSession private constructor(
                                     args.shadows, args.midtones, args.contrast,
                                     args.asShot, args.highlightReconstruction, args.keepVignetting,
                                     args.sharpness, args.detail, args.tonemap,
+                                    lutPath, args.lutStrength,
                                     maxDim,
                                 )
                             )

@@ -23,6 +23,7 @@
 //  17. sharpness (luminance unsharp mask at edge scale; chroma untouched)
 //  18. detail (luminance unsharp mask at fine-texture scale; chroma untouched)
 //  19. tonemapping (optional display tone compression; LAST, after grade)
+//  20. LUT (optional .cube 3D LUT; COL-07 — see rawedit/Lut.h)
 //
 // Stages 7-11 (the tone controls) run after the camera->Rec.709 transform
 // and before exposure: their weights and pivots are defined in scene-referred
@@ -49,6 +50,7 @@
 #include <cstdint>
 #include <vector>
 
+#include <rawedit/Lut.h>
 #include <rawedit/Source.h>
 
 namespace rawedit {
@@ -142,6 +144,19 @@ namespace rawedit {
 // The Highlights TONE slider (stage 13) is independent of
 // highlightReconstruction: it remaps near-clipped tones after the fact and
 // never decides whether the sensor channels are reconstructed.
+//
+// LUT strength (owner request 2026-11-10 section 3, COL-07):
+//   lutStrength : [0,1] blend of the selected .cube 3D LUT against the
+//                 un-LUT'd pixel — out = lut(rgb) * strength + rgb *
+//                 (1 - strength); 1 is the pure table, 0 an exact bypass
+//                 (20). The TABLE itself is per-clip user data, not a
+//                 grade scalar: developCpu/developEncoded take it as a
+//                 separate `const Lut*` (nullptr = no LUT selected), so
+//                 the neutral fast path stays allocation-free and a
+//                 default-constructed Grade stays bit-identical to the
+//                 old output. The per-clip selection (which LUT) travels
+//                 with the app's grade persistence as its own field,
+//                 saved separately from this strength per the request.
 struct Grade {
     float exposureEv = 0.0f;
     float highlights  = 0.0f;
@@ -159,6 +174,7 @@ struct Grade {
     float sharpness = 0.0f;
     float detail = 0.0f;
     int tonemap = 0; // 0 off, 1 ACES, 2 AgX — see the comment block above
+    float lutStrength = 0.0f; // 0 = bypass — see the COL-07 block above
 };
 
 // Linear RGB float image, row-major, 3 floats per pixel (r, g, b).
@@ -169,10 +185,11 @@ struct ImageF {
 };
 
 // Internal stage helpers shared by developCpu and developEncoded: the
-// encoded (Mi-Log) path runs the SAME detail stages (17-18) and tonemapping
-// stage (19) on its decoded RGB, so both pipelines stay in lockstep
-// (COL-15/COL-16). Not part of the stable surface — declared here only so
-// the two develop implementations share one definition.
+// encoded (Mi-Log) path runs the SAME detail stages (17-18), tonemapping
+// stage (19) and LUT stage (20) on its decoded RGB, so both pipelines stay
+// in lockstep (COL-15/COL-16/COL-07). Not part of the stable surface —
+// declared here only so the two develop implementations share one
+// definition. applyLut itself lives in rawedit/Lut.h.
 void unsharpLuma(ImageF& img, float radius, float amount);
 void tonemapFrame(ImageF& img, int mode);
 
@@ -180,8 +197,13 @@ void tonemapFrame(ImageF& img, int mode);
 //   cfa: width*height uint16 samples, row-major, 2x2 repeating pattern
 //        given by info.cfa.
 //   meta: per-clip RAW metadata (levels, color matrix, WB, shading map).
+//   lut: optional .cube 3D LUT applied as stage 20 (COL-07). nullptr =
+//        no LUT selected — the stage is skipped entirely and the neutral
+//        fast path stays allocation-free. Combined with the default
+//        Grade.lutStrength 0 this keeps every existing call site
+//        bit-identical to the pre-LUT pipeline.
 // Returns a (width x height) ImageF in the linear working space.
-ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade);
+ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut = nullptr);
 
 // Bilinearly samples the lens shading gain map at normalized sensor
 // coordinates (u, v in [0,1]). plane selects the CFA channel plane (0..3,

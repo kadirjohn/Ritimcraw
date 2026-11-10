@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <rawedit/DngWriter.h>
+#include <rawedit/Lut.h>
 #include <rawedit/Result.h>
 #include <rawedit/Source.h>
 #include <rawedit/Thumbnail.h>
@@ -55,6 +56,62 @@ void setError(int code, int stage, const std::string& message) {
     gLastErrorCode = code;
     gLastErrorStage = stage;
     gLastError = message;
+}
+
+// Stage-20 LUT cache (COL-07) -------------------------------------------------
+//
+// The preview engine thread and the export engine thread each call the
+// develop entry points per frame; both hand the selected .cube's path as a
+// jstring. Parsing a cube is expensive (up to 128^3 * 3 floats), so each
+// thread keeps ONE parsed table: the path of the last parse and the table
+// itself. Same path = reuse; different path = reparse; null/empty path =
+// no LUT. A parse failure clears the cache and reports through the
+// thread-local error state like every other pipeline failure.
+thread_local std::string gLutPath;
+thread_local std::unique_ptr<rawedit::Lut> gLut;
+
+// Resolves the Kotlin lutPath argument into a table for this render.
+// Returns false ONLY on a parse failure (error state set, cache cleared —
+// the render fails loudly rather than silently dropping stage 20). Returns
+// true with *out == nullptr when no LUT is selected (null or empty path —
+// the old no-LUT look) or the path's file is missing (IoError is treated
+// as no-LUT: LutStore.pathFor already checked existence, but a file
+// removed between the Kotlin check and the open renders as no LUT rather
+// than failing the whole clip — the grade still loads and the user can
+// re-import the cube).
+bool resolveLut(JNIEnv* env, jstring lutPath, const rawedit::Lut** out) {
+    *out = nullptr;
+    if (lutPath == nullptr) return true;
+    const char* chars = env->GetStringUTFChars(lutPath, nullptr);
+    if (chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "lut: out of memory reading the path (recovery: free memory and retry)");
+        return false;
+    }
+    const std::string path(chars);
+    env->ReleaseStringUTFChars(lutPath, chars);
+    if (path.empty()) return true;
+
+    if (gLut != nullptr && path == gLutPath) {
+        *out = gLut.get();
+        return true;
+    }
+
+    auto parsed = rawedit::parseCubeFile(path);
+    if (!parsed.isOk()) {
+        // Clear the stale cache so the next call with a good path reparses.
+        gLut.reset();
+        gLutPath.clear();
+        setError(static_cast<int>(parsed.code), kStageDevelop,
+                 std::string("lut: ") + rawedit::errorName(parsed.code) +
+                     " — " + parsed.detail +
+                     " (recovery: pick a valid .cube file)");
+        return false;
+    }
+    gLut = std::make_unique<rawedit::Lut>(std::move(*parsed.value));
+    gLutPath = path;
+    *out = gLut.get();
+    return true;
 }
 
 // Handle registry: a small fixed table keeps the bridge simple and avoids
@@ -160,12 +217,16 @@ int strideFor(const rawedit::FrameInfo& info, int maxDim) {
 // selector int in the same style. Parameter order = GradeK field order
 // (Develop.h Grade order): exposureEv, highlights, tempK, tint, saturation,
 // blackPoint, whitePoint, shadows, midtones, contrast, asShot,
-// highlightReconstruction, keepVignetting, sharpness, detail, tonemap.
+// highlightReconstruction, keepVignetting, sharpness, detail, tonemap. The
+// LUT package (COL-07) appends the strength blend float in the same style;
+// the Kotlin layer maps GradeK's 0..100 percent to rawedit's 0..1 blend
+// before the call, so the jfloat here is already native-scale.
 rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, float tint,
                                float saturation, float blackPoint, float whitePoint,
                                float shadows, float midtones, float contrast,
                                bool asShot, bool highlightReconstruction, bool keepVignetting,
-                               float sharpness, float detail, int tonemap) {
+                               float sharpness, float detail, int tonemap,
+                               float lutStrength) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
@@ -183,6 +244,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.sharpness = sharpness;
     g.detail = detail;
     g.tonemap = tonemap;
+    g.lutStrength = lutStrength;
     return g;
 }
 
@@ -199,7 +261,8 @@ inline uint8_t toByte(float rec709) {
 // Develop a decoded CFA into the preview's ARGB_8888 jint array
 // ([width, height, pixels...], rotated upright per FrameInfo.orientationDeg).
 // Shared by the plain preview render and the cached interactive render so the
-// two paths stay pixel-identical. Returns nullptr (error state set) on a
+// two paths stay pixel-identical. lut is the already-resolved stage-20 table
+// (nullptr = no LUT). Returns nullptr (error state set) on a
 // develop failure; a NewIntArray failure propagates as nullptr with a
 // pending JNI exception, which the Kotlin wrapper already maps to a render
 // failure.
@@ -208,10 +271,11 @@ jintArray developToArgb(JNIEnv* env,
                          const rawedit::FrameInfo& info,
                          const rawedit::RawMeta& meta,
                          const rawedit::Grade& grade,
+                         const rawedit::Lut* lut,
                          int maxDim) {
     const int strideEvery = strideFor(info, maxDim);
     rawedit::ImageF img = rawedit::developThumbnail(
-        cfa.data(), info, meta, grade, strideEvery);
+        cfa.data(), info, meta, grade, strideEvery, lut);
     if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                  "develop: unsupported — the frame is too small to develop "
@@ -451,9 +515,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jfloat sharpness, jfloat detail, jint tonemap,
+        jstring lutPath, jfloat lutStrength,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
+    // 0. Resolve the stage-20 LUT first (COL-07): a parse failure fails the
+    // render with the lut error instead of a frame-read error.
+    const rawedit::Lut* lut = nullptr;
+    if (!resolveLut(env, lutPath, &lut)) return nullptr;
     rawedit::Source* s = sourceFor(handle);
     if (!s) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
@@ -479,8 +548,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
                                              keepVignetting, sharpness, detail,
-                                             tonemap),
-                             maxDim);
+                                             tonemap, lutStrength),
+                             lut, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -509,9 +578,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jfloat sharpness, jfloat detail, jint tonemap,
+        jstring lutPath, jfloat lutStrength,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
+    // 0. Resolve the stage-20 LUT first (COL-07): a parse failure fails the
+    // render with the lut error instead of a frame-read error.
+    const rawedit::Lut* lut = nullptr;
+    if (!resolveLut(env, lutPath, &lut)) return nullptr;
     if (handle <= 0 || handle > kMaxSources) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
                  "invalid clip handle (recovery: reopen the clip)");
@@ -547,8 +621,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
                                              keepVignetting, sharpness, detail,
-                                             tonemap),
-                             maxDim);
+                                             tonemap, lutStrength),
+                             lut, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -571,6 +645,47 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewErrorStage(JNIEnv*, jc
     return gLastErrorStage;
 }
 
+// LUT probe (COL-07) -----------------------------------------------------------
+//
+// Stateless validation for the import flow: parses the .cube at path and
+// returns its TITLE (a non-null jstring, possibly empty when the file has
+// no TITLE line), or nullptr on a parse failure with the error state set
+// — the Kotlin layer reads nativeLastError() for the cause. No handle, no
+// cache: the render-path cache (gLut/gLutPath) is deliberately untouched,
+// so probing never poisons a render and is safe to call from any thread
+// (the screen probes on the import click; the render threads keep their
+// own parsed tables).
+
+JNIEXPORT jstring JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeLutProbe(
+        JNIEnv* env, jclass, jstring path) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    const char* chars = env->GetStringUTFChars(path, nullptr);
+    if (chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "lut: out of memory reading the path (recovery: free memory and retry)");
+        return nullptr;
+    }
+    const std::string file(chars);
+    env->ReleaseStringUTFChars(path, chars);
+    if (file.empty()) {
+        setError(static_cast<int>(rawedit::ErrorCode::BadHeader), kStageDevelop,
+                 "lut: bad header — the path is empty "
+                 "(recovery: pick a valid .cube file)");
+        return nullptr;
+    }
+    auto parsed = rawedit::parseCubeFile(file);
+    if (!parsed.isOk()) {
+        setError(static_cast<int>(parsed.code), kStageDevelop,
+                 std::string("lut: ") + rawedit::errorName(parsed.code) +
+                     " — " + parsed.detail +
+                     " (recovery: pick a valid .cube file)");
+        return nullptr;
+    }
+    return toJavaString(env, parsed.value->title);
+}
+
 // MP4 export pipeline ----------------------------------------------------------
 //
 // The exporter opens a session with nativePreviewOpen (same handle registry,
@@ -591,9 +706,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jfloat sharpness, jfloat detail, jint tonemap) {
+        jfloat sharpness, jfloat detail, jint tonemap,
+        jstring lutPath, jfloat lutStrength) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
+    // 0. Resolve the stage-20 LUT first (COL-07): a parse failure fails the
+    // export frame with the lut error instead of a frame-read error.
+    const rawedit::Lut* lut = nullptr;
+    if (!resolveLut(env, lutPath, &lut)) return nullptr;
     rawedit::Source* s = sourceFor(handle);
     if (!s) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
@@ -620,7 +740,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
-                            sharpness, detail, tonemap));
+                            sharpness, detail, tonemap, lutStrength),
+            lut);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "
@@ -765,7 +886,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
 // adapters on the Kotlin side), packs it as NV12 (or I420), and hands it
 // here. This entry develops it with the same preview tail as the MCRAW path —
 // developEncoded (limited-range YUV -> RGB -> Mi-Log decode -> WB/temp/tint/
-// exposure -> sharpness/detail/tonemap, the shared COL-15/COL-16 stages) ->
+// exposure -> sharpness/detail/tonemap, the shared COL-15/COL-16 stages,
+// then the optional stage-20 LUT, COL-07) ->
 // linearToRec709 -> clamp -> 8-bit ARGB, rotated upright by the container's
 // rotation hint — the same [width, height, then w*h ARGB_8888 ints] contract
 // as nativePreviewRender, so the preview UI is identical for both source
@@ -789,9 +911,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jfloat sharpness, jfloat detail, jint tonemap) {
+        jfloat sharpness, jfloat detail, jint tonemap,
+        jstring lutPath, jfloat lutStrength) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageDevelop;
+    // Resolve the stage-20 LUT first (COL-07): a parse failure fails the
+    // develop with the lut error.
+    const rawedit::Lut* lut = nullptr;
+    if (!resolveLut(env, lutPath, &lut)) return nullptr;
 
     if (width <= 0 || height <= 0 || yPlane == nullptr || uPlane == nullptr ||
         (semiPlanar == JNI_FALSE && vPlane == nullptr)) {
@@ -865,8 +992,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
-                            sharpness, detail, tonemap),
-            isBt709 != JNI_FALSE);
+                            sharpness, detail, tonemap, lutStrength),
+            isBt709 != JNI_FALSE, lut);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "

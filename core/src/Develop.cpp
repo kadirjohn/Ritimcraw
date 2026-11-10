@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <rawedit/Lut.h>
 
 namespace rawedit {
 
@@ -401,7 +402,7 @@ ImageF demosaicBilinear(const std::vector<float>& cfa, uint32_t w, uint32_t h, C
     return img;
 }
 
-ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade) {
+ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut) {
     const uint32_t w = info.width;
     const uint32_t h = info.height;
     ImageF img;
@@ -789,6 +790,17 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // passthrough (the old look).
     if (grade.tonemap != 0)
         tonemapFrame(img, grade.tonemap);
+
+    // ---- Stage 20: LUT (lut + grade.lutStrength in [0, 1], 0 = bypass). ----
+    // COL-07: optional .cube 3D LUT, LAST, after tonemapping. Input/output
+    // is the linear working space (linear Rec.709 primaries); the Rec.709
+    // OETF stays in the JNI bridge tail. The table is per-clip user data
+    // passed as `lut` (nullptr = none selected); the strength blend and the
+    // color-space contract are recorded in rawedit/Lut.h and the Grade
+    // comment block. No LUT or strength 0 = exact passthrough (the old
+    // look); the guard keeps the neutral fast path allocation-free.
+    if (lut != nullptr && grade.lutStrength != 0.0f)
+        applyLut(img, *lut, grade.lutStrength);
 
     return img;
 }

@@ -398,6 +398,7 @@ class EncodedPreviewSessionTest {
             isBt709: Boolean,
             orientationDeg: Int,
             grade: GradeK,
+            lutPath: String?,
         ): IntArray? {
             frames.add(frame)
             grades.add(grade)

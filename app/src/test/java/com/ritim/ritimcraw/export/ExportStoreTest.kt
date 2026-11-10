@@ -299,6 +299,44 @@ class ExportStoreTest {
     }
 
     @Test
+    fun snapshot_round_trips_lut_selection_and_strength() {
+        // COL-07: the job snapshot carries the LUT fields with the grade, so
+        // the export applies the same selection + Strength the user saw when
+        // enqueuing — and an old (pre-LUT) snapshot parses as no LUT.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(
+            ExportJob(
+                id = "lut-job",
+                sourceId = "clip-a",
+                snapshot = GradeK(exposureEv = 1f, lutId = "abc123def4567890", lutStrength = 62f),
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        val job = ExportStore(file).all().single { it.id == "lut-job" }
+        assertEquals("abc123def4567890", job.snapshot.lutId)
+        assertEquals(62f, job.snapshot.lutStrength, 0f)
+
+        // A pre-LUT snapshot (no lutId/lutStrength in the JSON) parses
+        // neutral: no selection, full strength — the export keeps the old
+        // look instead of failing the job.
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-b","snapshot":{"version":1,"exposureEv":0.5,"tempK":5600.0,"tint":0.0},"target":"MP4","state":"QUEUED"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+        val old = ExportStore(file).all().single { it.id == "old-job" }
+        assertNull(old.snapshot.lutId)
+        assertEquals(100f, old.snapshot.lutStrength, 0f)
+    }
+
+    @Test
     fun clear_empties_queue() {
         val file = projectFile()
         val store = ExportStore(file)

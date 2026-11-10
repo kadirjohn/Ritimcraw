@@ -31,6 +31,7 @@ add_library(rawedit STATIC
     src/Develop.cpp
     src/Thumbnail.cpp
     src/Transfer.cpp
+    src/Lut.cpp
     src/DngWriter.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder)
