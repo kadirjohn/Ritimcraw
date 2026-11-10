@@ -41,11 +41,38 @@ class ExportQueue(
     fun nextJob(): ExportJob? = store.all().firstOrNull { it.state == State.QUEUED }
 
     /**
+     * Marks every persisted RUNNING job FAILED (owner finding 2026-11-10:
+     * a crash killed the process with MP4 jobs RUNNING; on restart the
+     * runner skips non-QUEUED jobs, so those rows displayed "Exporting…"
+     * forever). A RUNNING row on drain can only be a dead process's — this
+     * runner writes RUNNING and the terminal state inside one [runOne]
+     * call, so a live job is never left RUNNING between drains. Idempotent;
+     * returns how many rows were recovered.
+     */
+    fun recoverInterrupted(): Int {
+        var recovered = 0
+        while (true) {
+            val stale = store.all().firstOrNull { it.state == State.RUNNING } ?: break
+            store.update(
+                stale.copy(
+                    state = State.FAILED,
+                    detail = ExportQueue.INTERRUPTED_DETAIL,
+                )
+            )
+            recovered++
+        }
+        return recovered
+    }
+
+    /**
      * Runs every currently-QUEUED job, one at a time, until the queue holds
      * no QUEUED job. Returns the number of jobs run (any outcome). A failed
-     * job does not stop the loop — the next queued job still runs.
+     * job does not stop the loop — the next queued job still runs. Stale
+     * RUNNING rows (a previous process died mid-export) are recovered to
+     * FAILED first.
      */
     suspend fun runAll(): Int {
+        recoverInterrupted()
         var ran = 0
         while (true) {
             val job = nextJob() ?: break
@@ -85,6 +112,14 @@ class ExportQueue(
     }
 
     companion object {
+
+        /**
+         * Failure detail for a stale RUNNING row (a dead process's export):
+         * cause + recovery, per DESIGN.md error wording.
+         */
+        const val INTERRUPTED_DETAIL =
+            "interrupted — the app closed during this export — " +
+                "recovery: Retry re-queues the same grade snapshot"
 
         /**
          * Pure output-name decision (JVM-testable): the export lands in the

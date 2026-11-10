@@ -155,6 +155,16 @@ fun AppNav() {
     var measuring by remember { mutableStateOf(false) }
     var measureKick by remember { mutableStateOf(0) }
 
+    // Process-start recovery (owner finding 2026-11-10): a crash can leave
+    // jobs persisted as RUNNING — a dead process's export. Mark them FAILED
+    // with the interrupted cause BEFORE the UI shows "Exporting…" forever;
+    // runAll() also recovers, but it only runs after an enqueue kick.
+    LaunchedEffect(Unit) {
+        if (queue.recoverInterrupted() > 0) {
+            exportJobs = stores.exports.all()
+        }
+    }
+
     // The runner: drains every QUEUED job serially, then refreshes the UI
     // list. Runs whenever something was enqueued or retried.
     LaunchedEffect(queueKick) {

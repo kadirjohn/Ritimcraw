@@ -265,6 +265,65 @@ class ExportQueueTest {
     }
 
     @Test
+    fun stale_running_job_is_recovered_to_failed_on_drain() = runBlocking {
+        // Owner finding 2026-11-10: a crash killed the process with jobs
+        // RUNNING; the restarted runner skips non-QUEUED rows, so they
+        // displayed "Exporting…" forever. The drain must first mark them
+        // FAILED with the interrupted cause + recovery.
+        val store = store()
+        val snapshot = GradeK(exposureEv = 0.75f)
+        store.add(
+            job("j1", "clip1", snapshot = snapshot)
+                .copy(state = State.RUNNING)
+        )
+        store.add(job("j2", "clip2")) // a live QUEUED job still runs
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        val ran = queue.runAll()
+        val jobs = store.all()
+        // The stale row was recovered (not run), the queued one ran.
+        assertEquals(1, ran)
+        assertEquals(State.FAILED, jobs[0].state)
+        assertEquals(ExportQueue.INTERRUPTED_DETAIL, jobs[0].detail)
+        assertEquals(snapshot, jobs[0].snapshot) // snapshot untouched
+        assertEquals(State.DONE, jobs[1].state)
+        // Only clip2 reached an exporter.
+        assertEquals(1, log.size)
+        assertTrue(log[0].contains("clip2"))
+    }
+
+    @Test
+    fun recover_interrupted_is_idempotent_and_retry_still_requeues() = runBlocking {
+        val store = store()
+        val snapshot = GradeK(tempK = 5000f)
+        store.add(job("j1", "clip1", snapshot = snapshot).copy(state = State.RUNNING))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        assertEquals(1, queue.recoverInterrupted())
+        // Second pass: nothing left RUNNING — no double failure, no wedge.
+        assertEquals(0, queue.recoverInterrupted())
+        assertEquals(State.FAILED, store.all().single().state)
+
+        // Retry after recovery still re-queues the same snapshot and runs.
+        store.retry("j1")
+        val requeued = store.all().single()
+        assertEquals(State.QUEUED, requeued.state)
+        assertNull(requeued.detail)
+        assertEquals(snapshot, requeued.snapshot)
+        queue.runAll()
+        assertEquals(State.DONE, store.all().single().state)
+        assertEquals(snapshot, store.all().single().snapshot)
+    }
+
+    @Test
     fun queue_skips_non_queued_jobs() = runBlocking {
         val store = store()
         // A DONE and a FAILED job from an earlier session: neither runs again.
