@@ -49,12 +49,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.engine.EditorPreviewSession
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
-import com.ritim.ritimcraw.engine.PreviewSession
+import com.ritim.ritimcraw.engine.PreviewSessions
 import com.ritim.ritimcraw.engine.PreviewTiers
+import com.ritim.ritimcraw.engine.SourcePath
+import com.ritim.ritimcraw.engine.SourcePathDecision
 import com.ritim.ritimcraw.engine.PtsTimeline
 import com.ritim.ritimcraw.engine.RenderGate
 import com.ritim.ritimcraw.engine.RenderRequest
@@ -96,6 +100,17 @@ object EditorPreviewLogic {
      * button stays disabled — the editor is still a working grade panel.
      */
     fun canRender(fd: Int, nativeAvailable: Boolean): Boolean = fd >= 0 && nativeAvailable
+
+    /**
+     * True when the clip's CFA-stage toggle rows (Highlight Reconstruction,
+     * Keep Vignetting) belong in the Color tab: those toggles drive MCRAW
+     * develop stages that have no meaning on decoded YUV frames, so encoded
+     * (Mi-Log MP4) clips hide them. Everything else stays — the sliders and
+     * As Shot work identically on both paths (the full Grade passes through
+     * the seam; developEncoded consumes tempK/tint/exposureEv today and more
+     * stages can consume later).
+     */
+    fun showRawStageToggles(path: SourcePath): Boolean = path == SourcePath.MCRAW
 }
 
 enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
@@ -138,6 +153,12 @@ fun ClipEditorScreen(
     // fallback chain lives in PreviewSurface.kt.
     sourceWidth: Int = 0,
     sourceHeight: Int = 0,
+    // Which engine opens the clip: the stored kind is authoritative for
+    // ENCODED clips; the mime rescues pre-detection imports (a video/mp4
+    // mime routes to the encoded path — SourcePathDecision.decide). Defaults
+    // keep every existing MCRAW caller byte-identical.
+    sourceKind: SourceKind = SourceKind.MCRAW,
+    sourceMime: String? = null,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -155,12 +176,14 @@ fun ClipEditorScreen(
         // publishes, because the whole bookkeeping block is keyed to the clip.
         var renderSeq by remember(sourceId) { mutableStateOf(0L) }
         // The persistent preview session: opened once when the editor opens
-        // with a usable fd, closed exactly once on dispose (all native calls
+        // with a usable fd, closed exactly once on dispose (all engine calls
         // funnel through the single preview engine thread, so the dispose
         // close runs after every render submitted before it — a drained
         // close). Null while opening / when the session path failed (the
-        // per-render fallback below covers that).
-        var session by remember(sourceId) { mutableStateOf<PreviewSession?>(null) }
+        // per-render fallback below covers that). The type is the seam
+        // (EditorPreviewSession): MCRAW and encoded clips open through the
+        // SAME interface, so the pump/transport below never branch on kind.
+        var session by remember(sourceId) { mutableStateOf<EditorPreviewSession?>(null) }
         var sessionRender by remember(sourceId) { mutableStateOf(false) }
 
         // Transport state: play/pause, the current frame shown by the
@@ -186,6 +209,11 @@ fun ClipEditorScreen(
 
         val nativeAvailable = NativeSource.nativeAvailable
         val canRender = EditorPreviewLogic.canRender(sourceFd, nativeAvailable)
+        // Which engine owns this clip — decided before any fd is taken (the
+        // decision is pure: stored kind + container mime; both arrive
+        // remember(sourceId)-keyed from AppNav, so the path is stable for
+        // the clip's whole editor lifetime).
+        val sourcePath = SourcePathDecision.decide(sourceKind, sourceMime)
 
         /** Offers a render to the pipeline (replaces any pending one). */
         fun requestRender(frameIndex: Int, g: GradeK, maxDim: Int, cached: Boolean = false) {
@@ -208,33 +236,31 @@ fun ClipEditorScreen(
         }
 
         // Session open: once, when the editor opens with a usable fd. The
-        // session path keeps the decoder open for the whole editor lifetime
-        // (no per-render open); when it fails, sessionRender stays false and
-        // the per-render fallback path (fresh fd per render) takes over.
-        LaunchedEffect(sourceFd, nativeAvailable) {
+        // seam routes by sourcePath: MCRAW opens the native session, encoded
+        // clips open the EncodedSource session — the fd-ownership rules are
+        // the factory's business (MCRAW dup's, encoded adopts), never the
+        // screen's. Both keep the decoder open for the whole editor
+        // lifetime; when the open fails, sessionRender stays false and the
+        // per-render fallback (MCRAW-only, below) takes over.
+        LaunchedEffect(sourceFd, nativeAvailable, sourcePath) {
             if (!canRender) return@LaunchedEffect
-            val fdForSession = sourceFdProvider()
-            if (fdForSession < 0) {
-                errorText = "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
-                lastRenderFailed = true
-                return@LaunchedEffect
-            }
-            val opened = PreviewSession.open(fdForSession, PreviewRenderer.previewEngine)
+            val opened = PreviewSessions.open(
+                path = sourcePath,
+                fdProvider = sourceFdProvider,
+                engine = PreviewRenderer.previewEngine,
+            )
             val s = opened.getOrNull()
             if (s != null) {
-                // The session dup'd the fd; close the caller's copy —
-                // the native side owns its own descriptor from here.
-                PreviewRenderer.closeFdQuietly(fdForSession)
                 session = s
                 sessionRender = true
-                // Real MCRAW timestamps for the transport (fetched once
-                // on the engine thread; ptsUs[i] is frame i's pts).
+                // Real timestamps for the transport (fetched once on the
+                // engine thread; ptsUs[i] is frame i's pts) — identical
+                // for both paths: EncodedSource gives ptsUs per frame.
                 ptsUs = LongArray(s.frames) { i -> s.framePtsUs(i.toInt()) }
                 // First frame auto-visible (owner request §1).
                 requestRender(0, grade, PreviewTiers.PAUSED_MAX_DIM)
                 positionFrame = 0
             } else {
-                PreviewRenderer.closeFdQuietly(fdForSession)
                 errorText = opened.exceptionOrNull()?.message
                 lastRenderFailed = true
             }
@@ -298,18 +324,31 @@ fun ClipEditorScreen(
                             s.render(req.frameIndex, req.grade, req.maxDim)
                         }
                     } else {
-                        val fdForRender = sourceFdProvider()
-                        if (fdForRender < 0) {
+                        // No session. The per-render fallback is the MCRAW
+                        // engine's path (PreviewRenderer.render opens the
+                        // clip through the native MCRAW pipeline); it cannot
+                        // read an encoded container, so an encoded clip
+                        // without a session fails with the same
+                        // stage/cause/recovery shape instead of feeding an
+                        // MP4 to the RAW engine.
+                        if (sourcePath == SourcePath.ENCODED) {
                             Result.failure(IllegalStateException(
-                                "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
+                                "Preview failed (stage: open): encoded clip session unavailable — recovery: reopen the clip"
                             ))
                         } else {
-                            PreviewRenderer.render(
-                                sourceFd = fdForRender,
-                                frameIndex = req.frameIndex,
-                                grade = req.grade,
-                                maxDim = req.maxDim,
-                            )
+                            val fdForRender = sourceFdProvider()
+                            if (fdForRender < 0) {
+                                Result.failure(IllegalStateException(
+                                    "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
+                                ))
+                            } else {
+                                PreviewRenderer.render(
+                                    sourceFd = fdForRender,
+                                    frameIndex = req.frameIndex,
+                                    grade = req.grade,
+                                    maxDim = req.maxDim,
+                                )
+                            }
                         }
                     }
                     if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
@@ -543,6 +582,11 @@ fun ClipEditorScreen(
                     )
                     1 -> ColorPanel(
                         grade = grade,
+                        // The CFA-stage toggles (Highlight Reconstruction, Keep
+                        // Vignetting) exist only on the MCRAW path; encoded
+                        // clips keep As Shot + every slider (pure decision in
+                        // EditorPreviewLogic.showRawStageToggles).
+                        showRawStageToggles = EditorPreviewLogic.showRawStageToggles(sourcePath),
                         onChange = { g ->
                             grade = g
                             onGradeChange(g)
@@ -770,10 +814,14 @@ private fun LightPanel(
  * - Highlight Reconstruction and Keep Vignetting are M3 Switch rows (48dp
  *   touch targets, DESIGN.md Inputs): they toggle native develop stages, not
  *   tone — the Highlights TONE slider stays independent (stage 13 vs stage 3).
+ *   CFA-stage rows show only when [showRawStageToggles] is true (MCRAW);
+ *   encoded (Mi-Log MP4) clips decode YUV with no CFA stage, so they get the
+ *   same white balance + saturation controls without the two RAW toggles.
  */
 @Composable
 private fun ColorPanel(
     grade: GradeK,
+    showRawStageToggles: Boolean,
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
     onToggleChange: (GradeK) -> Unit = {},
@@ -848,20 +896,25 @@ private fun ColorPanel(
             },
             onDragActiveChange = onDragActiveChange,
         )
-        RawToggleRow(
-            label = stringResource(R.string.editor_highlight_reconstruction),
-            checked = grade.highlightReconstruction,
-            onCheckedChange = { checked ->
-                onToggleChange(grade.copy(highlightReconstruction = checked))
-            },
-        )
-        RawToggleRow(
-            label = stringResource(R.string.editor_keep_vignetting),
-            checked = grade.keepVignetting,
-            onCheckedChange = { checked ->
-                onToggleChange(grade.copy(keepVignetting = checked))
-            },
-        )
+        // CFA-stage toggles: MCRAW only (encoded clips decode YUV — there is
+        // no CFA stage to reconstruct or vignette; the decision is pure and
+        // JVM-tested).
+        if (showRawStageToggles) {
+            RawToggleRow(
+                label = stringResource(R.string.editor_highlight_reconstruction),
+                checked = grade.highlightReconstruction,
+                onCheckedChange = { checked ->
+                    onToggleChange(grade.copy(highlightReconstruction = checked))
+                },
+            )
+            RawToggleRow(
+                label = stringResource(R.string.editor_keep_vignetting),
+                checked = grade.keepVignetting,
+                onCheckedChange = { checked ->
+                    onToggleChange(grade.copy(keepVignetting = checked))
+                },
+            )
+        }
         GradeSlider(
             label = stringResource(R.string.editor_slider_saturation),
             value = grade.saturation,

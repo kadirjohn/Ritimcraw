@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.editor
 
+import com.ritim.ritimcraw.engine.SourcePath
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -96,5 +97,22 @@ class EditorPreviewLogicTest {
     @Test
     fun fd_plus_engine_can_render() {
         assertTrue(EditorPreviewLogic.canRender(fd = 5, nativeAvailable = true))
+    }
+
+    // ---- RAW-stage toggle visibility (encoded clips hide the CFA rows) ----
+
+    @Test
+    fun mcraw_shows_raw_stage_toggles() {
+        // Highlight Reconstruction / Keep Vignetting drive MCRAW develop
+        // stages — they belong on the Color tab for RAW clips.
+        assertTrue(EditorPreviewLogic.showRawStageToggles(SourcePath.MCRAW))
+    }
+
+    @Test
+    fun encoded_hides_raw_stage_toggles() {
+        // Decoded YUV has no CFA stage to reconstruct or vignette: the two
+        // RAW rows are meaningless on a Mi-Log MP4 clip. Everything else
+        // (sliders, As Shot) stays — the full Grade still passes through.
+        assertFalse(EditorPreviewLogic.showRawStageToggles(SourcePath.ENCODED))
     }
 }
