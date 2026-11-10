@@ -109,9 +109,11 @@ interface Mp4Session {
      * developCpu -> linearToRec709 -> clamp -> 8-bit RGB888 (row-major,
      * NOT rotated — orientation travels as the muxer hint). [lutPath] is
      * the job snapshot's selected .cube path (null = no LUT, the old
-     * look; COL-07) — the SAME stage-20 apply as the preview, so the
+     * look; COL-07) — the SAME stage-22 apply as the preview, so the
      * owner's preview-vs-export acceptance check compares like with like.
-     * Null on failure (read the error accessors from the same thread).
+     * The snapshot's denoise percents (DN-01..08) apply with the same
+     * native 0..100 scale as the preview. Null on failure (read the
+     * error accessors from the same thread).
      */
     fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String? = null): ByteArray?
 
@@ -179,6 +181,9 @@ internal object NativeMp4Session : Mp4Session {
             // COL-07: percent 0..100 -> rawedit's 0..1 blend, same mapping
             // as GradeMapping.toNative (every JNI call site passes 0..1).
             lutPath, grade.lutStrength / 100f,
+            // DN-01..08: native 0..100 scale already — pass through (the
+            // core clamps), same as GradeMapping.toNative.
+            grade.noiseReduction, grade.chromaDenoise,
         )
     }
 
@@ -421,7 +426,7 @@ class Mp4Exporter(
      * job's grade snapshot — including its LUT selection (COL-07):
      * [lutPathFor] turns the snapshot's lutId into the copied cube's path
      * (null = no LUT), resolved ONCE here so every frame of the export
-     * runs the same stage-20 apply as the preview. Returns the updated
+     * runs the same stage-22 apply as the preview. Returns the updated
      * job: DONE on success (detail = output file name), FAILED with a
      * stage + cause + recovery detail on failure. Never throws; a
      * failure leaves neither [out] nor its partial behind.

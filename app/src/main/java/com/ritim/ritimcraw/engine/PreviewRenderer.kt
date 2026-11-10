@@ -48,6 +48,8 @@ object GradeMapping {
         val detail: Float,
         val tonemap: Int,
         val lutStrength: Float,
+        val noiseReduction: Float,
+        val chromaDenoise: Float,
     )
 
     fun toNative(grade: GradeK): NativeArgs = NativeArgs(
@@ -70,6 +72,11 @@ object GradeMapping {
         // COL-07: the UI percent 0..100 becomes rawedit's 0..1 blend here,
         // at the Kotlin boundary — every JNI call site passes native scale.
         lutStrength = grade.lutStrength / 100f,
+        // DN-01..08: both denoise controls are ALREADY at rawedit's native
+        // 0..100 scale in GradeK (unlike lutStrength) — pass through; the
+        // core clamps [0,100] itself.
+        noiseReduction = grade.noiseReduction,
+        chromaDenoise = grade.chromaDenoise,
     )
 }
 
@@ -129,7 +136,7 @@ class PreviewRenderer private constructor(
     /**
      * Renders frame [frameIndex] with [grade] scaled so the long edge fits
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
-     * stage 20 bypassed, the old look; COL-07). MUST run on the renderer's
+     * stage 22 bypassed, the old look; COL-07). MUST run on the renderer's
      * engine thread (the bridge's error state is thread-local) — the
      * suspend [render] companion function does that for callers.
      */
@@ -155,6 +162,7 @@ class PreviewRenderer private constructor(
             args.asShot, args.highlightReconstruction, args.keepVignetting,
             args.sharpness, args.detail, args.tonemap,
             lutPath, args.lutStrength,
+            args.noiseReduction, args.chromaDenoise,
             maxDim,
         )
         if (out == null || out.size < 2) {

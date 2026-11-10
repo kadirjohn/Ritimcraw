@@ -339,5 +339,48 @@ class GradeStoreTest {
         assertEquals(100f, g.lutStrength, 0f)
     }
 
+    @Test
+    fun denoise_percents_survive_persist_and_reload() {
+        // DN-01..08: both denoise percents are ordinary grade fields — what
+        // the user set survives a persist + reload exactly.
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            noiseReduction = 42f,
+            chromaDenoise = 77f,
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(42f, reloaded.noiseReduction, 0f)
+        assertEquals(77f, reloaded.chromaDenoise, 0f)
+        assertEquals(grade, reloaded)
+    }
+
+    @Test
+    fun old_format_file_loads_denoise_as_neutral() {
+        // A project.json written by the pre-denoise build (DN-01..08): the
+        // two new fields are absent and must parse as 0 (both native stages
+        // 7/8 skipped) — the old look is preserved exactly, the binding
+        // requirement of this feature.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-dn-clip":{"version":1,"exposureEv":0.8,"highlights":-25.0,"tempK":4600.0,"tint":3.0,"saturation":10.0,"blackPoint":-5.0,"whitePoint":4.0,"shadows":-2.0,"midtones":1.0,"contrast":8.0,"asShot":false,"highlightReconstruction":true,"keepVignetting":true,"sharpness":15.0,"detail":-3.0,"tonemap":1,"lutId":null,"lutStrength":100.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-dn-clip")
+        // The pre-existing fields keep their saved values...
+        assertEquals(0.8f, g.exposureEv, 0f)
+        assertEquals(15f, g.sharpness, 0f)
+        assertNull(g.lutId)
+        // ...and the two denoise fields are neutral (0 = stage skipped).
+        assertEquals(0f, g.noiseReduction, 0f)
+        assertEquals(0f, g.chromaDenoise, 0f)
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }

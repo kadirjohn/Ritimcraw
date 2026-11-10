@@ -942,13 +942,18 @@ private fun ColorPanel(
 }
 
 /**
- * Detail tab (COL-15/COL-16): Sharpness (edge sharpness, unsharp radius 1.5)
- * and Detail (fine-texture contrast, unsharp radius 0.75) sliders, then the
- * Tonemapping choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md
- * Inputs: "segmented buttons for codec and scope choice" — the same single
- * choice pattern). All three controls run on BOTH clip kinds: the native
- * develop pipeline and developEncoded share the same stages, so encoded
- * (Mi-Log MP4) clips get the same Detail tab with nothing hidden.
+ * Detail tab (COL-15/COL-16), in order: Noise Reduction and Chroma Denoise
+ * (DN-01..08 spatial denoise, percent 0..100, 0 = the stage skipped — the
+ * old look), then Sharpness (edge sharpness, unsharp radius 1.5) and Detail
+ * (fine-texture contrast, unsharp radius 0.75) sliders, then the Tonemapping
+ * choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md Inputs:
+ * "segmented buttons for codec and scope choice" — the same single choice
+ * pattern). The denoise pair leads because native stages 7/8 run BEFORE
+ * sharpness/detail (19/20): sliders read in pipeline order, and denoising
+ * first is also what makes the sharpeners amplify signal, not noise. All
+ * five controls run on BOTH clip kinds: the native develop pipeline and
+ * developEncoded share the same stages, so encoded (Mi-Log MP4) clips get
+ * the same Detail tab with nothing hidden.
  *
  * Tonemap values (rawedit::Grade): 0 = off, 1 = ACES (Narkowicz 2015 fit),
  * 2 = AgX (2022 Filmic AgX essential fit). The grade stores the choice, so
@@ -980,6 +985,38 @@ private fun DetailPanel(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // DN-01..08: both denoise controls first, in native pipeline order
+        // (stage 7 chroma, stage 8 luma — before sharpness/detail 19/20).
+        // Percent 0..100 like LUT Strength, whole steps, default 0 = the
+        // stage skipped (bit-identical to the pre-DN look).
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_noise_reduction),
+            value = grade.noiseReduction,
+            valueRange = 0f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = "${grade.noiseReduction.toInt()} %",
+            onChange = { v ->
+                onChange(grade.copy(noiseReduction = SliderSteps.snapNoiseReduction(v)))
+            },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.NOISE_REDUCTION, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_chroma_denoise),
+            value = grade.chromaDenoise,
+            valueRange = 0f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = "${grade.chromaDenoise.toInt()} %",
+            onChange = { v ->
+                onChange(grade.copy(chromaDenoise = SliderSteps.snapChromaDenoise(v)))
+            },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.CHROMA_DENOISE, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
         GradeSlider(
             label = stringResource(R.string.editor_slider_sharpness),
             value = grade.sharpness,

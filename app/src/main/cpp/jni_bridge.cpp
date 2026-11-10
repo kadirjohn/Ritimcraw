@@ -58,7 +58,7 @@ void setError(int code, int stage, const std::string& message) {
     gLastError = message;
 }
 
-// Stage-20 LUT cache (COL-07) -------------------------------------------------
+// Stage-22 LUT cache (COL-07) -------------------------------------------------
 //
 // The preview engine thread and the export engine thread each call the
 // develop entry points per frame; both hand the selected .cube's path as a
@@ -220,13 +220,16 @@ int strideFor(const rawedit::FrameInfo& info, int maxDim) {
 // highlightReconstruction, keepVignetting, sharpness, detail, tonemap. The
 // LUT package (COL-07) appends the strength blend float in the same style;
 // the Kotlin layer maps GradeK's 0..100 percent to rawedit's 0..1 blend
-// before the call, so the jfloat here is already native-scale.
+// before the call, so the jfloat here is already native-scale. The noise
+// package (DN-01..08) appends its two floats last, in rawedit's native
+// 0..100 scale (unlike lutStrength): the core clamps [0,100] itself.
 rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, float tint,
                                float saturation, float blackPoint, float whitePoint,
                                float shadows, float midtones, float contrast,
                                bool asShot, bool highlightReconstruction, bool keepVignetting,
                                float sharpness, float detail, int tonemap,
-                               float lutStrength) {
+                               float lutStrength,
+                               float noiseReduction, float chromaDenoise) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
@@ -245,6 +248,8 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.detail = detail;
     g.tonemap = tonemap;
     g.lutStrength = lutStrength;
+    g.noiseReduction = noiseReduction;
+    g.chromaDenoise = chromaDenoise;
     return g;
 }
 
@@ -261,7 +266,7 @@ inline uint8_t toByte(float rec709) {
 // Develop a decoded CFA into the preview's ARGB_8888 jint array
 // ([width, height, pixels...], rotated upright per FrameInfo.orientationDeg).
 // Shared by the plain preview render and the cached interactive render so the
-// two paths stay pixel-identical. lut is the already-resolved stage-20 table
+// two paths stay pixel-identical. lut is the already-resolved stage-22 table
 // (nullptr = no LUT). Returns nullptr (error state set) on a
 // develop failure; a NewIntArray failure propagates as nullptr with a
 // pending JNI exception, which the Kotlin wrapper already maps to a render
@@ -516,10 +521,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
+        jfloat noiseReduction, jfloat chromaDenoise,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-20 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
     // render with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -548,7 +554,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
                                              keepVignetting, sharpness, detail,
-                                             tonemap, lutStrength),
+                                             tonemap, lutStrength,
+                                             noiseReduction, chromaDenoise),
                              lut, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -579,10 +586,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
+        jfloat noiseReduction, jfloat chromaDenoise,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-20 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
     // render with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -621,7 +629,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
                                              keepVignetting, sharpness, detail,
-                                             tonemap, lutStrength),
+                                             tonemap, lutStrength,
+                                             noiseReduction, chromaDenoise),
                              lut, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -707,10 +716,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jfloat sharpness, jfloat detail, jint tonemap,
-        jstring lutPath, jfloat lutStrength) {
+        jstring lutPath, jfloat lutStrength,
+        jfloat noiseReduction, jfloat chromaDenoise) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-20 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
     // export frame with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -740,7 +750,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
-                            sharpness, detail, tonemap, lutStrength),
+                            sharpness, detail, tonemap, lutStrength,
+                            noiseReduction, chromaDenoise),
             lut);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
@@ -887,7 +898,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
 // here. This entry develops it with the same preview tail as the MCRAW path —
 // developEncoded (limited-range YUV -> RGB -> Mi-Log decode -> WB/temp/tint/
 // exposure -> sharpness/detail/tonemap, the shared COL-15/COL-16 stages,
-// then the optional stage-20 LUT, COL-07) ->
+// then the optional stage-22 LUT, COL-07) ->
 // linearToRec709 -> clamp -> 8-bit ARGB, rotated upright by the container's
 // rotation hint — the same [width, height, then w*h ARGB_8888 ints] contract
 // as nativePreviewRender, so the preview UI is identical for both source
@@ -912,10 +923,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jfloat sharpness, jfloat detail, jint tonemap,
-        jstring lutPath, jfloat lutStrength) {
+        jstring lutPath, jfloat lutStrength,
+        jfloat noiseReduction, jfloat chromaDenoise) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageDevelop;
-    // Resolve the stage-20 LUT first (COL-07): a parse failure fails the
+    // Resolve the stage-22 LUT first (COL-07): a parse failure fails the
     // develop with the lut error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -992,7 +1004,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
-                            sharpness, detail, tonemap, lutStrength),
+                            sharpness, detail, tonemap, lutStrength,
+                            noiseReduction, chromaDenoise),
             isBt709 != JNI_FALSE, lut);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,

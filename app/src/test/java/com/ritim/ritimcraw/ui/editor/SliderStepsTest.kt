@@ -104,6 +104,16 @@ class SliderStepsTest {
         assertEquals(-8f, g.detail, 1e-4f)
     }
 
+    @Test
+    fun denoise_percents_snap_to_whole_numbers() {
+        // DN-01..08: both denoise sliders are percent 0..100 with integer
+        // steps, like LUT Strength (the native stages take 0..100 and clamp
+        // themselves).
+        val g = SliderSteps.snap(GradeK(noiseReduction = 47.6f, chromaDenoise = 82.3f))
+        assertEquals(48f, g.noiseReduction, 1e-4f)
+        assertEquals(82f, g.chromaDenoise, 1e-4f)
+    }
+
     // ---- double-tap reset ----
 
     @Test
@@ -212,6 +222,28 @@ class SliderStepsTest {
         assertEquals(0f, detail.detail, 0f)
         assertEquals(55f, detail.sharpness, 0f)
         assertEquals(2, detail.tonemap)
+    }
+
+    @Test
+    fun double_tap_resets_denoise_controls_only() {
+        // DN-01..08: each denoise slider resets independently to 0 (neutral
+        // = the native stage skipped, the old look) — the tapped control goes
+        // neutral, the OTHER denoise control and every other axis stay put.
+        val current = GradeK(
+            exposureEv = 1f, sharpness = 55f,
+            noiseReduction = 70f, chromaDenoise = 35f,
+        )
+
+        val nr = SliderSteps.resetToDefault(SliderSteps.Axis.NOISE_REDUCTION, current)
+        assertEquals(0f, nr.noiseReduction, 0f)
+        assertEquals(35f, nr.chromaDenoise, 0f)
+        assertEquals(55f, nr.sharpness, 0f)
+        assertEquals(1f, nr.exposureEv, 0f)
+
+        val cd = SliderSteps.resetToDefault(SliderSteps.Axis.CHROMA_DENOISE, current)
+        assertEquals(0f, cd.chromaDenoise, 0f)
+        assertEquals(70f, cd.noiseReduction, 0f)
+        assertEquals(55f, cd.sharpness, 0f)
     }
 
     // ---- Compose steps argument ----
