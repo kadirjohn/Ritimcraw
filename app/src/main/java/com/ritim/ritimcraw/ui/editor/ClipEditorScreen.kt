@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.engine.NativeSource
+import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
 import com.ritim.ritimcraw.engine.RenderDebounce
@@ -105,6 +107,7 @@ fun ClipEditorScreen(
     onBack: () -> Unit,
     initialGrade: GradeK = GradeK(),
     onGradeChange: (GradeK) -> Unit = {},
+    onExport: (Target) -> Unit = {},
     sourceFd: Int = -1,
     frameIndex: Int = 0,
     accessLost: Boolean = false,
@@ -263,13 +266,17 @@ fun ClipEditorScreen(
                 }
             }
             // Render affordance (DESIGN.md: tonal button for a secondary
-            // action). Disabled without a fd/engine; tapping re-renders the
-            // current frame with the current grade.
+            // action) + the Export actions (filled button for the one
+            // primary action DNG, tonal for the secondary MP4). Export is
+            // offered whenever the clip is loaded — the job snapshots the
+            // CURRENT grade, so a queue-time snapshot of the user's edit is
+            // what gets exported; the queue runs it when the engine is
+            // available. Disabled without a fd (nothing to export).
             Row(
                 Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.Start,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 FilledTonalButton(
@@ -277,6 +284,19 @@ fun ClipEditorScreen(
                     enabled = canRender,
                 ) {
                     Text(stringResource(R.string.editor_render_preview))
+                }
+                // Export: DNG filled (primary), MP4 tonal (secondary).
+                Button(
+                    onClick = { onExport(Target.DNG) },
+                    enabled = sourceFd >= 0,
+                ) {
+                    Text(stringResource(R.string.editor_export_dng))
+                }
+                FilledTonalButton(
+                    onClick = { onExport(Target.MP4) },
+                    enabled = sourceFd >= 0,
+                ) {
+                    Text(stringResource(R.string.editor_export_mp4))
                 }
             }
             // Tabs: Light / Color / Detail.

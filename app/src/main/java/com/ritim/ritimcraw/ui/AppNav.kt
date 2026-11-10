@@ -39,7 +39,14 @@ import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.export.DngExporter
+import com.ritim.ritimcraw.export.ExportIo
+import com.ritim.ritimcraw.export.ExportJob
+import com.ritim.ritimcraw.export.ExportQueue
 import com.ritim.ritimcraw.export.ExportStore
+import com.ritim.ritimcraw.export.Mp4Exporter
+import com.ritim.ritimcraw.export.State
+import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
 import com.ritim.ritimcraw.ui.exports.ExportsScreen
 import com.ritim.ritimcraw.ui.library.LibraryScreen
@@ -89,10 +96,61 @@ fun AppNav() {
             exports = ExportStore(project),
         )
     }
+    // The serial queue runner: one job at a time, DNG via DngExporter, MP4
+    // via Mp4Exporter. The output lands in the app's export directory.
+    val exportDir = remember { File(context.filesDir, "exports").apply { mkdirs() } }
+    val queue = remember {
+        ExportQueue(
+            store = stores.exports,
+            dng = DngExporter(),
+            mp4 = Mp4Exporter(),
+            io = object : ExportIo {
+                override fun sourceFd(job: ExportJob): Int {
+                    // The editor's open read-only fd is per-screen; the queue
+                    // opens its own through the resolver (same pattern as the
+                    // preview path).
+                    val source = stores.sources.get(job.sourceId) ?: return -1
+                    return try {
+                        val p = context.contentResolver
+                            .openFileDescriptor(Uri.parse(source.uri), "r")
+                        p?.detachFd() ?: -1 // the runner owns the fd's lifetime
+                    } catch (e: Exception) {
+                        -1
+                    }
+                }
+
+                override fun closeFd(fd: Int) {
+                    // The runner hands the fd back after the job; the native
+                    // side dup'ed it on open, so closing the original here
+                    // cannot cut the export short — it only stops the leak.
+                    // adoptFd takes ownership of the raw int fd (no dup) and
+                    // close() closes it.
+                    if (fd >= 0) {
+                        runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
+                    }
+                }
+
+                override fun outputFile(job: ExportJob, target: Target): File =
+                    File(exportDir, ExportQueue.outputName(job.sourceId, target))
+            },
+        )
+    }
+    // Queue bookkeeping: a monotonically increasing kick counter — every
+    // enqueue/retry bumps it and the runner effect drains the queue.
+    var queueKick by remember { mutableStateOf(0) }
     var sources by remember { mutableStateOf(stores.sources.all()) }
     var exportJobs by remember { mutableStateOf(stores.exports.all()) }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     var editorRoute by rememberSaveable { mutableStateOf<EditorRoute?>(null) }
+
+    // The runner: drains every QUEUED job serially, then refreshes the UI
+    // list. Runs whenever something was enqueued or retried.
+    LaunchedEffect(queueKick) {
+        if (queueKick > 0) {
+            queue.runAll()
+            exportJobs = stores.exports.all()
+        }
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -170,6 +228,22 @@ fun AppNav() {
                         onBack = { editorRoute = null },
                         initialGrade = stores.grades.get(r.sourceId),
                         onGradeChange = { g -> stores.grades.put(r.sourceId, g) },
+                        onExport = { target ->
+                            // Snapshot the CURRENT grade at queue time (the
+                            // spec: a later edit must not change an in-flight
+                            // export) and enqueue; the runner picks it up.
+                            stores.exports.add(
+                                ExportJob(
+                                    id = "job-" + System.nanoTime(),
+                                    sourceId = r.sourceId,
+                                    snapshot = stores.grades.get(r.sourceId),
+                                    target = target,
+                                    state = State.QUEUED,
+                                )
+                            )
+                            exportJobs = stores.exports.all()
+                            queueKick += 1
+                        },
                         sourceFd = sourceFd,
                         accessLost = accessLost,
                     )
@@ -200,6 +274,7 @@ fun AppNav() {
                                 // Retry re-queues with the same snapshot.
                                 stores.exports.retry(job.id)
                                 exportJobs = stores.exports.all()
+                                queueKick += 1
                             },
                             onClear = {
                                 stores.exports.clear()
