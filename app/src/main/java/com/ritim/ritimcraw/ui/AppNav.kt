@@ -51,6 +51,7 @@ import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.ExportQueue
 import com.ritim.ritimcraw.export.ExportStore
+import com.ritim.ritimcraw.export.MediaStorePublisher
 import com.ritim.ritimcraw.export.Mp4Exporter
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
@@ -141,6 +142,11 @@ fun AppNav() {
                 override fun outputFile(job: ExportJob, target: Target): File =
                     File(exportDir, ExportQueue.outputName(job.sourceId, target))
             },
+            // Finished exports are also published to the system media store
+            // (Movies/ritiMCRAW for MP4, Pictures/ritiMCRAW for DNG): the
+            // internal copy stays the source of truth, the publish is
+            // best-effort, and a publish failure never fails the job.
+            publisher = MediaStorePublisher(context),
         )
     }
     // Queue bookkeeping: a monotonically increasing kick counter — every

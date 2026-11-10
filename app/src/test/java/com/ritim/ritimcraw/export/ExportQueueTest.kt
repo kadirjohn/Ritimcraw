@@ -413,6 +413,89 @@ class ExportQueueTest {
     }
 
     @Test
+    fun mediastore_placement_maps_each_target_to_collection_folder_mime() {
+        // The publish destination per target (owner finding 2026-11-10:
+        // finished exports were invisible outside the app). MP4 -> the
+        // video collection under Movies/ritiMCRAW; DNG -> the images
+        // collection under Pictures/ritiMCRAW with the DNG mime (some
+        // viewers will not render a CFA DNG — the raw mosaic is intact).
+        val mp4 = MediaPublish.placement("clip1", Target.MP4)
+        assertEquals(MediaPublish.Collection.VIDEO, mp4.collection)
+        assertEquals("Movies/ritiMCRAW", mp4.relativePath)
+        assertEquals("video/mp4", mp4.mime)
+        assertEquals("clip1-mp4.mp4", mp4.name)
+
+        val dng = MediaPublish.placement("clip1", Target.DNG)
+        assertEquals(MediaPublish.Collection.IMAGES, dng.collection)
+        assertEquals("Pictures/ritiMCRAW", dng.relativePath)
+        assertEquals("image/x-adobe-dng", dng.mime)
+        assertEquals("clip1-dng.dng", dng.name)
+    }
+
+    @Test
+    fun done_job_publishes_output_and_publish_failure_never_fails_job() = runBlocking {
+        // The queue asks the publisher for every DONE job, with the job's
+        // own output file — and a THROWING publisher must not fail the job
+        // or wedge the queue (the next job still runs).
+        val store = store()
+        store.add(job("j1", "clip1"))
+        store.add(job("j2", "clip2"))
+        val log = mutableListOf<String>()
+        val published = mutableListOf<Pair<String, String>>()
+        var failFirst = true
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): Boolean {
+                if (failFirst) {
+                    failFirst = false
+                    throw IllegalStateException("resolver exploded")
+                }
+                published.add(job.id to output.name)
+                return true
+            }
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        val ran = queue.runAll()
+        assertEquals(2, ran)
+        val jobs = store.all()
+        // j1: the publisher threw — the job is still DONE and the queue
+        // moved on to j2, which published normally.
+        assertEquals(State.DONE, jobs[0].state)
+        assertEquals(State.DONE, jobs[1].state)
+        assertEquals(listOf("j2" to "clip2-dng.dng"), published)
+        // The published file is the job's own internal output (the source
+        // of truth stays files/exports; the MediaStore copy is additive).
+        assertTrue(File(tmp.root, "clip1-dng.dng").exists())
+        assertTrue(File(tmp.root, "clip2-dng.dng").exists())
+    }
+
+    @Test
+    fun failed_job_is_not_published() = runBlocking {
+        // Only DONE jobs publish: a FAILED export (nothing was written)
+        // must not put a half-file into the media store.
+        val store = store()
+        store.add(job("j1", "clip1")) // fails (failOn)
+        val log = mutableListOf<String>()
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): Boolean {
+                throw AssertionError("a failed job must not be published")
+            }
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log, failOn = "clip1-dng"), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        queue.runAll()
+        assertEquals(State.FAILED, store.all().single().state)
+    }
+
+    @Test
     fun queue_skips_non_queued_jobs() = runBlocking {
         val store = store()
         // A DONE and a FAILED job from an earlier session: neither runs again.

@@ -28,13 +28,16 @@ import java.util.concurrent.atomic.AtomicReference
  * opens the SAF fd read-only and hands over the raw fd; the runner owns
  * its lifetime from there and closes it after the job (the native side
  * dups the fd per open, so closing the original is safe). The runner never
- * touches content resolvers itself.
+ * touches content resolvers itself. Finished exports are ALSO published to
+ * the system media store through the injected [ExportPublisher] —
+ * best-effort, after the terminal write, never failing the job.
  */
 class ExportQueue(
     private val store: ExportStore,
     private val dng: DngExporter,
     private val mp4: Mp4Exporter,
     private val io: ExportIo,
+    private val publisher: ExportPublisher = ExportPublisher.None,
     private val progressClock: () -> Long = System::currentTimeMillis,
 ) {
 
@@ -131,6 +134,19 @@ class ExportQueue(
         // so the store keeps the freshest state for this id. The terminal
         // job carries null counts (progress only shows while RUNNING).
         store.update(result.copy(framesDone = null, framesTotal = null))
+
+        // A finished export is ALSO published to the system media store
+        // (owner finding 2026-11-10: exports were invisible outside the
+        // app). Best-effort and AFTER the terminal write: the internal
+        // copy is the source of truth, a publish failure never fails or
+        // wedges the job, and the queue keeps moving either way.
+        if (result.state == State.DONE) {
+            try {
+                publisher.publish(result, io.outputFile(result, result.target))
+            } catch (e: Throwable) {
+                // Never propagate: publishing is additive.
+            }
+        }
     }
 
     companion object {
