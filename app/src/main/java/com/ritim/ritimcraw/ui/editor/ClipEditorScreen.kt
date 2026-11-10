@@ -1,32 +1,30 @@
 package com.ritim.ritimcraw.ui.editor
 
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.interaction.DragInteraction
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
@@ -42,10 +40,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.material3.Slider
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -141,7 +140,6 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * exposure, 50 K temperature) and a double tap on a slider row resets that
  * one control to its GradeK default (DESIGN.md Inputs).
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ClipEditorScreen(
     sourceId: String,
@@ -412,50 +410,82 @@ fun ClipEditorScreen(
         val elapsedUs = pts?.let { PtsTimeline.positionUs(it, positionFrame) } ?: 0L
         val seekFraction = pts?.let { PtsTimeline.fractionForFrame(it, positionFrame) } ?: 0f
 
+        // Preview state: computed ONCE here (top bar refresh control and
+        // the PreviewSurface share it).
+        val previewState = EditorPreviewLogic.stateOf(
+            renderRequested = renderSeq > 0L,
+            renderInFlight = renderInFlight,
+            hasFrame = frame != null,
+            lastRenderFailed = lastRenderFailed,
+        )
+
+        // Clip facts for the top bar's info sheet (review phase 1: name,
+        // resolution, duration, frame count, FPS when derivable). FPS comes
+        // from the real timestamps: frames / duration.
+        val clipInfo = ClipInfo(
+            name = sourceId,
+            width = sourceWidth,
+            height = sourceHeight,
+            totalUs = totalUs,
+            frameCount = pts?.size ?: 0,
+            fps = if (pts != null && totalUs > 0L) (pts.size.toFloat() / (totalUs / 1_000_000f)) else 0f,
+        )
+
+        // Neutral root surface (design review 2026-11-10, maroon bug): the
+        // editor's own Column painted NO background, so AppNav's Scaffold
+        // surface (dynamic wallpaper color) showed through. The editor now
+        // paints its own fixed-neutral surface INSIDE RitimTheme(editor =
+        // true); inset ownership stays in AppNav.
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxSize(),
+        ) {
         Column(Modifier.fillMaxSize()) {
-            // Top bar: back + clip id.
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = stringResource(R.string.editor_back),
-                    )
-                }
-                Text(
-                    text = sourceId,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(start = 4.dp),
-                )
-            }
-            // Preview frame: shaped like the clip itself (PreviewSurface;
-            // owner finding 2026-11-10 — fixed box out, clip aspect ratio
-            // in). The weighted Box leaves the leftover vertical space when
-            // the surface bounds by height (very tall clips); the surface
-            // centers inside it.
+            // Fixed top bar (design review "Onerilen ilk yerlesim"): back +
+            // single-line name + one Export icon (opens the export sheet)
+            // + "..." (opens the clip-info sheet).
+            EditorTopBar(
+                sourceId = sourceId,
+                onBack = onBack,
+                onExport = onExport,
+                exportEnabled = sourceFd >= 0,
+                clipInfo = clipInfo,
+            )
+            // Bounded preview region (design review: the frame never shifts
+            // when the tab content changes): the preview is capped at
+            // EditorLayout.PREVIEW_HEIGHT_FRACTION of the available height
+            // instead of taking the flex space, so the frame's position is
+            // deterministic across tabs. PreviewSurface still shapes itself
+            // by the clip's ratio (ratio chain preserved) and centers
+            // inside the bounded Box.
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .heightIn(max = EditorLayout.previewMaxHeight()),
                 contentAlignment = Alignment.Center,
             ) {
                 PreviewSurface(
                     frame = frame,
-                    state = EditorPreviewLogic.stateOf(
-                        renderRequested = renderSeq > 0L,
-                        renderInFlight = renderInFlight,
-                        hasFrame = frame != null,
-                        lastRenderFailed = lastRenderFailed,
-                    ),
+                    state = previewState,
                     errorText = errorText,
                     accessLost = accessLost,
                     sourceWidth = sourceWidth,
                     sourceHeight = sourceHeight,
                     modifier = Modifier.fillMaxWidth(),
+                )
+                // Small corner refresh control (design review: the manual
+                // render leaves the prime area): status from the existing
+                // PreviewState data, tap = the old Render-preview button's
+                // onClick (full paused tier at the current position).
+                PreviewRefreshControl(
+                    state = previewState,
+                    canRender = canRender,
+                    onRefresh = {
+                        requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp),
                 )
             }
             // Transport row (owner request 2026-11-10 §1, MotionCam Pro
@@ -498,48 +528,8 @@ fun ClipEditorScreen(
                 onSeekStarted = { applyTierEvent(SliderTiers.Event.DragStarted) },
                 onSeekFinished = { applyTierEvent(SliderTiers.Event.DragEnded) },
             )
-            // Render affordance (DESIGN.md: tonal button for a secondary
-            // action) + the Export actions (filled button for the one
-            // primary action DNG, tonal for the secondary MP4). Export is
-            // offered whenever the clip is loaded — the job snapshots the
-            // CURRENT grade, so a queue-time snapshot of the user's edit is
-            // what gets exported; the queue runs it when the engine is
-            // available. Disabled without a fd (nothing to export).
-            // FlowRow: three buttons do not fit one narrow row without
-            // wrapping text vertically (seen on a 1080p phone) — let them
-            // flow onto a second line instead.
-            FlowRow(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                FilledTonalButton(
-                    onClick = {
-                        // Manual re-render of the current transport position
-                        // at the full paused tier.
-                        requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
-                    },
-                    enabled = canRender,
-                ) {
-                    Text(stringResource(R.string.editor_render_preview))
-                }
-                // Export: DNG filled (primary), MP4 tonal (secondary).
-                Button(
-                    onClick = { onExport(Target.DNG) },
-                    enabled = sourceFd >= 0,
-                ) {
-                    Text(stringResource(R.string.editor_export_dng))
-                }
-                FilledTonalButton(
-                    onClick = { onExport(Target.MP4) },
-                    enabled = sourceFd >= 0,
-                ) {
-                    Text(stringResource(R.string.editor_export_mp4))
-                }
-            }
-            // Tabs: Light / Color / Detail.
+            // Tabs: Light / Color / Detail (independent of the panel —
+            // design review: the tab row sits between transport and panel).
             TabRow(selectedTabIndex = tab, modifier = Modifier.fillMaxWidth()) {
                 Tab(
                     selected = tab == 0,
@@ -557,11 +547,22 @@ fun ClipEditorScreen(
                     text = { Text(stringResource(R.string.editor_tab_detail)) },
                 )
             }
-            // Panel with sliders (Light and Color tabs complete; Detail deferred).
+            // Settings panel — the ONLY region that scrolls (design review
+            // "Onerilen ilk yerlesim": sabit ust bar + sinirlandirilmis
+            // onizleme + kayan ayar paneli). The panel takes the flex
+            // space left by the bounded preview and scrolls inside it, so
+            // short screens + 1.3x text never squeeze the preview.
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainer,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
             ) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
                 when (tab) {
                     0 -> LightPanel(
                         grade = grade,
@@ -643,10 +644,13 @@ fun ClipEditorScreen(
                         },
                     )
                 }
+                }
             }
         }
     }
+    }
 }
+
 
 /**
  * Compact transport row under the preview (owner request 2026-11-10 §1):
