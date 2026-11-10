@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -533,5 +534,111 @@ class ExportQueueTest {
         // on the failure path.
         assertEquals(io.opened, io.closed)
         assertEquals(2, io.opened.size)
+    }
+
+    // ---- LIVE STATUS (owner request 2026-11-11 §1) ----
+
+    @Test
+    fun progress_writes_preserve_the_eta_anchor() {
+        // The RUNNING row anchors the UI's ETA with startedAtMs, and every
+        // throttled progress write must PRESERVE the anchor — the writer is
+        // built from the RUNNING row, not the QUEUED input (which has a
+        // null anchor; building from it would null the anchor on the first
+        // progress write and the ETA would never appear).
+        var now = 1_000L
+        val store = store()
+        store.add(job("j1", "clip1"))
+        // runOne's RUNNING write, simulated: sets the anchor from the clock.
+        val running = store.all().single().copy(
+            state = State.RUNNING,
+            startedAtMs = now,
+        )
+        store.update(running)
+        val w = ProgressWriter(store, running, { now })
+        assertTrue(w.report(0, 310))
+        assertEquals(1_000L, store.all().single().startedAtMs)
+        now += ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS
+        assertTrue(w.report(150, 310))
+        val persisted = store.all().single()
+        assertEquals(150, persisted.framesDone)
+        assertEquals(310, persisted.framesTotal)
+        assertEquals(1_000L, persisted.startedAtMs)
+    }
+
+    @Test
+    fun revision_flow_bumps_on_every_queue_store_write() = runBlocking {
+        // The revision flow is the live-status signal: every store write the
+        // queue makes bumps it, so the UI collecting it re-reads the store
+        // while the job runs (the flow carries the write count, not data).
+        // The injected clock is CONSTANT, so the throttle is deterministic:
+        // RUNNING write + first progress write land, the DNG exporter's
+        // second report (1/1) is throttled out, then the terminal write.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            progressClock = { 1_000L },
+        )
+        val before = queue.revisionFlow().value
+        queue.runAll()
+        val after = queue.revisionFlow().value
+        // RUNNING write + first progress write + terminal write = 3 bumps.
+        assertEquals(before + 3, after)
+    }
+
+    @Test
+    fun kick_during_active_drain_is_a_noop_and_never_marks_live_job_failed() = runBlocking {
+        // KICK SAFETY (owner request 2026-11-11 §1): a second runAll while a
+        // drain is active must NOT double-start the running job and must NOT
+        // recoverInterrupted (which would mark the LIVE RUNNING job FAILED).
+        // The active drain picks up the new job itself.
+        val store = store()
+        store.add(job("j1", "clip1", Target.MP4))
+        val log = mutableListOf<String>()
+        // A session whose open BLOCKS until the test releases it: the first
+        // drain is held mid-job so the second call overlaps it.
+        val opened = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val session = object : Mp4Session {
+            override fun open(fd: Int): Mp4SessionInfo? {
+                opened.countDown()
+                release.await()
+                return Mp4SessionInfo(1L, 1, 4, 4, 0, 0)
+            }
+
+            override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK) =
+                ByteArray(4 * 4 * 3)
+
+            override fun framePts(handle: Long, frameIndex: Int): Long = 0
+            override fun audioInfo(handle: Long): IntArray? = null
+            override fun readAudio(handle: Long): ShortArray? = null
+            override fun close(handle: Long) {}
+            override fun code(): Int = 0
+            override fun stage(): Int = 0
+            override fun detail(): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(session, { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        // Start the first drain on a real dispatcher thread (NOT the
+        // runBlocking event loop — the latch waits below are JVM blocking
+        // calls that would starve a loop-queued coroutine); hold it mid-job.
+        val drain = async(kotlinx.coroutines.Dispatchers.Default) { queue.runAll() }
+        assertTrue(opened.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // The kick: a second runAll while the drain is active. It must
+        // return 0 WITHOUT touching the live RUNNING row.
+        assertEquals(0, queue.runAll())
+        // The live row is still RUNNING (not recovered to FAILED).
+        assertEquals(State.RUNNING, store.all().single().state)
+        release.countDown()
+        assertEquals(1, drain.await())
+        // The job ran EXACTLY once (no double-start) and finished DONE —
+        // never FAILED by a kick's recoverInterrupted.
+        assertEquals(State.DONE, store.all().single().state)
     }
 }

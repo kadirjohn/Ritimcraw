@@ -73,6 +73,8 @@
     <string name="exports_job_queued">Sırada</string>
     <string name="exports_job_running">Dışa aktarılıyor…</string>
     <string name="exports_job_running_frames">Dışa aktarılıyor… %1$d/%2$d kare</string>
+    <string name="exports_job_finalizing">Dosya tamamlanıyor…</string>
+    <string name="exports_job_eta">Yaklaşık %1$s kaldı</string>
     <string name="exports_job_done_named">Tamamlandı — %1$s</string>
     <string name="exports_job_cancelled">İptal edildi</string>
     <string name="exports_job_failed_stage">Dışa aktarım başarısız oldu: %1$s</string>

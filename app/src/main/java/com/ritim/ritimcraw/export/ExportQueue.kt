@@ -1,7 +1,9 @@
 package com.ritim.ritimcraw.export
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.io.File
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Serial export queue runner (sprint plan Task 5 queue wiring).
@@ -31,6 +33,22 @@ import java.util.concurrent.atomic.AtomicReference
  * touches content resolvers itself. Finished exports are ALSO published to
  * the system media store through the injected [ExportPublisher] —
  * best-effort, after the terminal write, never failing the job.
+ *
+ * LIVE STATUS (owner finding 2026-11-11): the queue used to be visible
+ * only when [runAll] returned — a RUNNING job showed "Queued" on screen
+ * until the whole drain finished. The queue now bumps [revisions] on every
+ * store write it makes (RUNNING start, each throttled progress write, the
+ * terminal write); the UI collects that flow and re-reads the store, so
+ * the persisted store stays the single source of truth and the flow is
+ * only a "something changed" signal (it carries the write count, not job
+ * data — the UI never trusts it over the store).
+ *
+ * KICK SAFETY: a kick used to RESTART the drain — a second enqueue while
+ * one ran cancelled the in-flight runAll, and the restarted drain's
+ * [recoverInterrupted] marked the LIVE RUNNING job FAILED. The guard in
+ * [runAll] makes a kick while a drain is active a NO-OP: the active drain
+ * loops until no job is QUEUED, so it picks up the new job itself; the
+ * second call simply returns without touching RUNNING rows.
  */
 class ExportQueue(
     private val store: ExportStore,
@@ -40,6 +58,22 @@ class ExportQueue(
     private val publisher: ExportPublisher = ExportPublisher.None,
     private val progressClock: () -> Long = System::currentTimeMillis,
 ) {
+
+    /**
+     * Store-write revision counter (live status signal): bumped on every
+     * write the queue makes. The UI collects this and re-reads the store —
+     * the flow is conflation-safe (a coalesced bump only means "re-read now")
+     * and never carries job data itself.
+     */
+    private val revisions = MutableStateFlow(0)
+
+    /** Read-only [revisions] for the UI to collect. */
+    fun revisionFlow(): StateFlow<Int> = revisions
+
+    /** Bumps [revisions] — every store write the queue makes calls this. */
+    private fun publishRevision() {
+        revisions.value = revisions.value + 1
+    }
 
     /** The next job to run, or null when no job is QUEUED. */
     fun nextJob(): ExportJob? = store.all().firstOrNull { it.state == State.QUEUED }
@@ -52,6 +86,10 @@ class ExportQueue(
      * runner writes RUNNING and the terminal state inside one [runOne]
      * call, so a live job is never left RUNNING between drains. Idempotent;
      * returns how many rows were recovered.
+     *
+     * LIVE-SAFETY: [runAll] only calls this when NO drain is active (the
+     * guard below), so a RUNNING row recovered here can never be the
+     * active drain's own job.
      */
     fun recoverInterrupted(): Int {
         var recovered = 0
@@ -63,12 +101,17 @@ class ExportQueue(
                     detail = ExportQueue.INTERRUPTED_DETAIL,
                     framesDone = null,
                     framesTotal = null,
+                    startedAtMs = null,
                 )
             )
+            publishRevision()
             recovered++
         }
         return recovered
     }
+
+    /** True while a [runAll] drain is active (the kick guard). */
+    private val draining = AtomicBoolean(false)
 
     /**
      * Runs every currently-QUEUED job, one at a time, until the queue holds
@@ -76,31 +119,55 @@ class ExportQueue(
      * job does not stop the loop — the next queued job still runs. Stale
      * RUNNING rows (a previous process died mid-export) are recovered to
      * FAILED first.
+     *
+     * KICK SAFETY (owner finding 2026-11-11): only ONE drain runs at a
+     * time. A second call while one is active returns 0 immediately — it
+     * does NOT cancel the active drain and does NOT recoverInterrupted
+     * (which would mark the LIVE RUNNING job FAILED). The active drain
+     * loops until no job is QUEUED, so it picks up anything enqueued
+     * after it started by itself.
      */
     suspend fun runAll(): Int {
-        recoverInterrupted()
-        var ran = 0
-        while (true) {
-            val job = nextJob() ?: break
-            runOne(job)
-            ran++
+        if (!draining.compareAndSet(false, true)) {
+            return 0 // a drain is already active; it will pick up new work
         }
-        return ran
+        try {
+            recoverInterrupted()
+            var ran = 0
+            while (true) {
+                val job = nextJob() ?: break
+                runOne(job)
+                ran++
+            }
+            return ran
+        } finally {
+            draining.set(false)
+        }
     }
 
     /** Runs one job end to end and writes the outcome back to the store. */
     internal suspend fun runOne(job: ExportJob) {
         // RUNNING first: the UI shows "Exporting…" while this runs. Progress
-        // counts reset per run (a retry restarts from frame 0).
-        store.update(
-            job.copy(state = State.RUNNING, detail = null, framesDone = null, framesTotal = null)
+        // counts reset per run (a retry restarts from frame 0). startedAtMs
+        // anchors the UI's linear ETA estimate (owner request §1). The
+        // ProgressWriter is built from THIS row (not the QUEUED input) so
+        // every throttled progress write carries the anchor — building it
+        // from the input would null startedAtMs on the first report.
+        val running = job.copy(
+            state = State.RUNNING,
+            detail = null,
+            framesDone = null,
+            framesTotal = null,
+            startedAtMs = progressClock(),
         )
+        store.update(running)
+        publishRevision()
 
         // Progress callback the queue owns: the exporter reports frame
         // counts; writes are THROTTLED (project.json is rewritten on every
         // store write, so a per-frame write would hammer it — see
         // [ProgressWriter]) and the terminal write below always lands.
-        val progress = ProgressWriter(store, job, progressClock)
+        val progress = ProgressWriter(store, running, progressClock, ::publishRevision)
 
         // The runner owns the source fd's lifetime: acquire once, close in
         // finally (the native side dups it per open, so closing after the
@@ -132,8 +199,12 @@ class ExportQueue(
 
         // The job may have been retried/cleared while it ran: write by id
         // so the store keeps the freshest state for this id. The terminal
-        // job carries null counts (progress only shows while RUNNING).
-        store.update(result.copy(framesDone = null, framesTotal = null))
+        // job carries null counts (progress only shows while RUNNING) and
+        // no start time (the job is over; a DONE row never shows an ETA).
+        store.update(
+            result.copy(framesDone = null, framesTotal = null, startedAtMs = null)
+        )
+        publishRevision()
 
         // A finished export is ALSO published to the system media store
         // (owner finding 2026-11-10: exports were invisible outside the
@@ -196,11 +267,14 @@ class ExportQueue(
  *
  * The filter is write-side only — the exporter still hears every frame; the
  * persisted value may lag the real count by up to one throttle window.
+ * Every write also bumps the queue's revision signal ([onWrite]) so the
+ * UI re-reads the store live while the job runs.
  */
 internal class ProgressWriter(
     private val store: ExportStore,
     private val job: ExportJob,
     private val clock: () -> Long,
+    private val onWrite: () -> Unit = {},
 ) {
     private var lastWriteMs = -1L
 
@@ -216,6 +290,7 @@ internal class ProgressWriter(
         store.update(
             job.copy(state = State.RUNNING, framesDone = framesDone, framesTotal = framesTotal)
         )
+        onWrite()
         return true
     }
 }

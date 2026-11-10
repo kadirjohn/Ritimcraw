@@ -311,6 +311,57 @@ class ExportStoreTest {
     }
 
     @Test
+    fun started_at_persists_across_reload_and_clears_on_terminal() {
+        // startedAtMs (ETA anchor, owner request 2026-11-11 §1): set on the
+        // RUNNING write, omitted-when-null in the JSON (old files stay
+        // byte-identical), cleared on terminal rows and on retry.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "a"))
+        store.update(
+            store.all().single().copy(state = State.RUNNING, startedAtMs = 1_730_000_000_000L)
+        )
+
+        val running = ExportStore(file).all().single()
+        assertEquals(1_730_000_000_000L, running.startedAtMs)
+
+        // Terminal write clears the anchor (a DONE row never shows an ETA).
+        store.update(
+            store.all().single().copy(state = State.DONE, startedAtMs = null)
+        )
+        assertNull(ExportStore(file).all().single().startedAtMs)
+
+        // Retry of a terminal row also clears it.
+        store.retry("a")
+        val requeued = ExportStore(file).all().single()
+        assertEquals(State.QUEUED, requeued.state)
+        assertNull(requeued.startedAtMs)
+    }
+
+    @Test
+    fun old_export_row_without_started_at_parses_null() {
+        // A project.json written before startedAtMs existed (schema 1, no
+        // anchor field): the row parses with a null anchor and the UI simply
+        // hides the ETA.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.0},"target":"MP4","state":"RUNNING","framesDone":10,"framesTotal":310}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val job = ExportStore(file).all().single()
+        assertEquals(State.RUNNING, job.state)
+        assertEquals(10, job.framesDone)
+        assertEquals(310, job.framesTotal)
+        assertNull(job.startedAtMs)
+    }
+
+    @Test
     fun corrupt_store_falls_back_to_empty_queue() {
         val file = projectFile()
         file.parentFile?.mkdirs()

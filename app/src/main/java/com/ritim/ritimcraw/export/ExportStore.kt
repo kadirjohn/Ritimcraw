@@ -119,6 +119,12 @@ class ExportStore(private val file: File) {
                     sb.append(",\"framesDone\":").append(j.framesDone)
                     sb.append(",\"framesTotal\":").append(j.framesTotal)
                 }
+                // startedAtMs (ETA anchor, owner request 2026-11-11 §1):
+                // omit-when-null like the counts, so pre-ETA files stay
+                // byte-identical and old rows parse with a null anchor.
+                if (j.startedAtMs != null) {
+                    sb.append(",\"startedAtMs\":").append(j.startedAtMs)
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -171,6 +177,7 @@ class ExportStore(private val file: File) {
                     detail = m["detail"] as? String,
                     framesDone = (m["framesDone"] as? Double)?.toInt(),
                     framesTotal = (m["framesTotal"] as? Double)?.toInt(),
+                    startedAtMs = (m["startedAtMs"] as? Double)?.toLong(),
                 )
             }
         }

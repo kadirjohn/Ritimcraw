@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -25,6 +26,7 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.ui.theme.Tnum
+import com.ritim.ritimcraw.util.Format
 
 /**
  * Exports screen (DESIGN.md Export job): job rows with the format line, DONE
@@ -119,27 +121,7 @@ private fun ExportJobRow(
                     when (job.state) {
                         State.QUEUED ->
                             Text(stringResource(R.string.exports_job_queued))
-                        State.RUNNING -> {
-                            // Frame counts when the exporter has reported
-                            // (tabular numerals per DESIGN.md), else the
-                            // existing indeterminate line — the count can be
-                            // absent briefly between RUNNING and the first
-                            // throttled progress write.
-                            val frames = job.framesDone
-                            val total = job.framesTotal
-                            if (frames != null && total != null && total > 0) {
-                                Text(
-                                    stringResource(
-                                        R.string.exports_job_running_frames, frames, total
-                                    ),
-                                    // Frame counts are numbers: tnum keeps the
-                                    // digits from jittering as they tick up.
-                                    style = MaterialTheme.typography.bodyMedium.merge(Tnum),
-                                )
-                            } else {
-                                Text(stringResource(R.string.exports_job_running))
-                            }
-                        }
+                        State.RUNNING -> RunningJobProgress(job)
                         State.DONE ->
                             // DONE stamp with the output name (detail on a DONE
                             // job is the output file name).
@@ -156,6 +138,74 @@ private fun ExportJobRow(
                 }
             },
         )
+    }
+}
+
+/**
+ * A RUNNING job's live line (owner request 2026-11-11 §1): a linear
+ * progress bar plus the frame-count text. Determinate (percent from
+ * done/total, tabular numerals) once the exporter reported a total;
+ * indeterminate while the total is still unknown. When the frames are
+ * done but the job is still RUNNING, the mux/finalize stage is running —
+ * the bar shows full and the text says "Finishing file…" instead of a
+ * misleading "310/310". The ETA is a simple linear estimate shown only
+ * after enough data (see [Format.etaSeconds] — fewer than 10 frames
+ * extrapolates wildly).
+ */
+@Composable
+private fun RunningJobProgress(job: ExportJob) {
+    val frames = job.framesDone
+    val total = job.framesTotal
+    Column(Modifier.padding(top = 2.dp)) {
+        if (frames != null && total != null && total > 0) {
+            val finalizing = frames >= total
+            LinearProgressIndicator(
+                progress = {
+                    (frames.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp, bottom = 4.dp),
+            )
+            if (finalizing) {
+                // All frames encoded; the muxer/finalize stage is running.
+                Text(stringResource(R.string.exports_job_finalizing))
+            } else {
+                val eta = job.startedAtMs?.let { start ->
+                    Format.etaSeconds(frames, total, start, System.currentTimeMillis())
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        stringResource(R.string.exports_job_running_frames, frames, total),
+                        // Frame counts are numbers: tnum keeps the digits
+                        // from jittering as they tick up (DESIGN.md).
+                        style = MaterialTheme.typography.bodyMedium.merge(Tnum),
+                    )
+                    if (eta != null) {
+                        Text(
+                            stringResource(
+                                R.string.exports_job_eta,
+                                Format.formatDuration(eta * 1000L),
+                            ),
+                            style = MaterialTheme.typography.bodyMedium.merge(Tnum),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        } else {
+            // Total not reported yet (between RUNNING and the first
+            // throttled progress write): indeterminate bar + plain line.
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp, bottom = 4.dp),
+            )
+            Text(stringResource(R.string.exports_job_running))
+        }
     }
 }
 

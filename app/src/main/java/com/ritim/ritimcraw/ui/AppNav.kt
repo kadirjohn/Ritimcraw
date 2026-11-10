@@ -34,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -189,12 +190,32 @@ fun AppNav() {
         }
     }
 
-    // The runner: drains every QUEUED job serially, then refreshes the UI
-    // list. Runs whenever something was enqueued or retried.
-    LaunchedEffect(queueKick) {
-        if (queueKick > 0) {
-            queue.runAll()
-            exportJobs = stores.exports.all()
+    // LIVE STATUS (owner request 2026-11-11 §1): the queue bumps a revision
+    // counter on EVERY store write it makes (RUNNING start, each throttled
+    // progress write, the terminal write). Collecting it and re-reading the
+    // store refreshes the Exports list WHILE a job runs — "Queued" alone no
+    // longer has to mean "it started". The flow is a change signal only:
+    // the persisted store stays the single source of truth, so a conflated
+    // bump just means "re-read now" and the data itself is never stale.
+    LaunchedEffect(queue) {
+        queue.revisionFlow().collect { exportJobs = stores.exports.all() }
+    }
+
+    // The runner: drains every QUEUED job serially, one at a time. Kicks
+    // (enqueue/retry) arrive through snapshotFlow, so THIS EFFECT NEVER
+    // RESTARTS — a LaunchedEffect(queueKick) restart would cancel the
+    // in-flight drain mid-job (the exporter's engine work would be stranded
+    // between the RUNNING and terminal writes). Kicks are collected
+    // SEQUENTIALLY: a kick that arrives while a drain runs waits until the
+    // drain returns, and the drain's own loop (it runs until no job is
+    // QUEUED) has usually consumed the new job already; runAll's kick guard
+    // makes a concurrent call a no-op anyway. The initial value (0) is
+    // skipped.
+    LaunchedEffect(Unit) {
+        snapshotFlow { queueKick }.collect {
+            if (it > 0) {
+                queue.runAll()
+            }
         }
     }
 

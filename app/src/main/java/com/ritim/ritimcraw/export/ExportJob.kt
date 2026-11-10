@@ -25,6 +25,12 @@ enum class State { QUEUED, RUNNING, DONE, CANCELLED, FAILED }
  * are written throttled — see ExportQueue — so project.json is not
  * hammered; the persisted value may lag the real count by up to the
  * throttle interval.
+ *
+ * [startedAtMs] (owner request 2026-11-11 §1: ETA after enough data) is the
+ * wall clock when the job's drain started it (RUNNING write); null until
+ * then and on terminal rows. The ETA is a UI-side linear estimate from the
+ * observed rate (see [ExportEta] in ExportsScreen); the queue persists
+ * only the raw start time so a restarted UI can still estimate.
  */
 data class ExportJob(
     val id: String,
@@ -35,11 +41,18 @@ data class ExportJob(
     val detail: String? = null,
     val framesDone: Int? = null,
     val framesTotal: Int? = null,
+    val startedAtMs: Long? = null,
 ) {
     /**
      * Retry source: the same job re-queued with the same snapshot. The id and
      * queued state stay; the old failure detail and progress are cleared.
      */
     fun requeued(): ExportJob =
-        copy(state = State.QUEUED, detail = null, framesDone = null, framesTotal = null)
+        copy(
+            state = State.QUEUED,
+            detail = null,
+            framesDone = null,
+            framesTotal = null,
+            startedAtMs = null,
+        )
 }
