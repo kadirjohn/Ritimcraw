@@ -250,6 +250,51 @@ class PreviewSession private constructor(
         }
     }
 
+    /**
+     * The MCRAW clip's audio for editor playback (owner request
+     * 2026-11-11 section 4): the native readAudio one-shot (whole-clip
+     * interleaved 16-bit PCM — the core/Source.h contract), read ONCE on
+     * the engine thread (thread-local error state; the read is one-shot,
+     * never per-chunk) and handed to the pure [PcmClipAudioSource], which
+     * slices chunks and seeks in plain memory afterwards. [fdProvider] is
+     * ignored — the handle already owns the dup'd descriptor.
+     *
+     * Null (never a throw) when the clip has no audio — audioInfo 0/0 or
+     * an empty PCM — or the session is closed: silent playback, the
+     * previous behavior. The AUD-06 rule holds: the sample rate travels
+     * with the PCM, it is never assumed.
+     */
+    override suspend fun openAudio(fdProvider: () -> Int): ClipAudioSource? {
+        if (!SessionRules.isActive(opened = true, closed = closed.get())) return null
+        return suspendCoroutine { cont ->
+            try {
+                engine.execute {
+                    val source: ClipAudioSource? = try {
+                        if (closed.get()) {
+                            null
+                        } else {
+                            pcmAudioSource()
+                        }
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    cont.resume(source)
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(null)
+            }
+        }
+    }
+
+    /** Blocking PCM read; MUST run on the engine thread. */
+    private fun pcmAudioSource(): ClipAudioSource? {
+        val info = NativeSource.jniAudioInfo(handle)
+        if (info == null || info.size < 2 || info[0] <= 0 || info[1] <= 0) return null
+        val pcm = NativeSource.jniReadAudio(handle) ?: return null
+        if (pcm.isEmpty()) return null
+        return PcmClipAudioSource(info[0], info[1], pcm)
+    }
+
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             try {
