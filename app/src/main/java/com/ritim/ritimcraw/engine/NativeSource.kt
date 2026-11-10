@@ -155,7 +155,7 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeFrameCount(handle: Long): Int
         @JvmStatic private external fun nativeFrameInfo(handle: Long, i: Int): FrameInfoK?
         @JvmStatic private external fun nativeReadFrame(handle: Long, i: Int): ShortArray?
-        @JvmStatic private external fun nativeReadAudio(handle: Long): ShortArray?
+        @JvmStatic internal external fun nativeReadAudio(handle: Long): ShortArray?
         @JvmStatic internal external fun nativeCloseSource(handle: Long): Long
         @JvmStatic private external fun nativeLastError(): String?
 
@@ -207,6 +207,35 @@ class NativeSource private constructor(
             frameIndex: Int,
             outPath: String,
         ): Boolean
+
+        // ---- MP4 export JNI (full-res developCpu -> Rec709 -> RGB888) ----
+
+        /**
+         * Develops frame [frameIndex] of the opened export session
+         * ([handle] from nativePreviewOpen) at FULL resolution with the job's
+         * grade snapshot: developCpu -> linearToRec709 -> clamp -> 8-bit
+         * RGB888, row-major, 3 bytes per pixel, NOT rotated (orientation
+         * travels as the muxer's orientation hint). Returns w*h*3 bytes or
+         * null on failure (read the error accessors from the same thread).
+         */
+        @JvmStatic internal external fun nativeExportFrame(
+            handle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+        ): ByteArray?
+
+        /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
+        @JvmStatic internal external fun nativeFramePtsUs(handle: Long, index: Int): Long
+
+        /**
+         * [sampleRate, channels] of the clip's audio, or null when the clip
+         * has no audio / on failure (read the error accessors). 0/0 means no
+         * audio track should be written.
+         */
+        @JvmStatic internal external fun nativeAudioInfo(handle: Long): IntArray?
 
         /** Last-error detail from the engine thread (thread-local in the bridge). */
         internal fun previewLastError(): String? = nativeLastError()

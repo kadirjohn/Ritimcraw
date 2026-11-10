@@ -425,6 +425,122 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewErrorStage(JNIEnv*, jc
     return gLastErrorStage;
 }
 
+// MP4 export pipeline ----------------------------------------------------------
+//
+// The exporter opens a session with nativePreviewOpen (same handle registry,
+// same [handle, frameCount, w, h, cfa, orient] contract) and then calls
+// nativeExportFrame per frame: full-res developCpu (NO thumbnail
+// downscale) -> linearToRec709 -> clamp [0,1] -> quantize 8-bit RGB888.
+// The clamp is inherent to 8-bit quantization (linearToRec709 itself is
+// unclamped); values above 1.0 clip at 255, below 0 at 0. A 4K frame is
+// ~25 MB of RGB — acceptable for the CPU reference path (a GPU path lands
+// later). PTS comes from nativeFramePtsUs; audio description from
+// nativeAudioInfo, samples from nativeReadAudio (all existing entry points
+// except the two new ones below).
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
+        JNIEnv* env, jclass, jlong handle, jint frameIndex,
+        jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 gLastError);
+        return nullptr;
+    }
+    try {
+        // 1. Frame read.
+        auto frame = s->readFrame(static_cast<size_t>(frameIndex));
+        if (!frame.isOk()) {
+            setError(static_cast<int>(frame.code), kStageFrameRead,
+                     std::string("frame read: ") + rawedit::errorName(frame.code) +
+                         " — " + frame.detail);
+            return nullptr;
+        }
+        const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
+        const rawedit::RawMeta& meta = s->rawMeta();
+
+        // 2. Full-res develop with the job's grade snapshot (core/Develop.h).
+        gLastErrorStage = kStageDevelop;
+        rawedit::ImageF img = rawedit::developCpu(
+            frame.value->data(), info, meta,
+            gradeFromKotlin(exposureEv, highlights, tempK, tint));
+        if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop: unsupported — the frame is too small to develop "
+                     "(recovery: re-import the clip)");
+            return nullptr;
+        }
+
+        // 3. linearToRec709 -> clamp -> 8-bit RGB888, row-major, 3 bytes
+        //    per pixel. Not rotated: the exporter passes orientationDeg to
+        //    MediaMuxer.setOrientationHint so players rotate at display time.
+        const jsize w = static_cast<jsize>(img.w);
+        const jsize h = static_cast<jsize>(img.h);
+        const jsize n = w * h * 3;
+        std::vector<jbyte> out(static_cast<size_t>(n));
+        for (jsize i = 0; i < w * h; ++i) {
+            out[static_cast<size_t>(i) * 3 + 0] = static_cast<jbyte>(
+                toByte(rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 0])));
+            out[static_cast<size_t>(i) * 3 + 1] = static_cast<jbyte>(
+                toByte(rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 1])));
+            out[static_cast<size_t>(i) * 3 + 2] = static_cast<jbyte>(
+                toByte(rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 2])));
+        }
+        jbyteArray arr = env->NewByteArray(n);
+        if (arr == nullptr) return nullptr;
+        env->SetByteArrayRegion(arr, 0, n, out.data());
+        return arr;
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "develop: out of memory decoding the frame "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("develop: ") + e.what() + " (recovery: reopen the clip)");
+        return nullptr;
+    }
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
+        JNIEnv*, jclass, jlong handle, jint index) {
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) return -1;
+    // frameInfo returns a zeroed FrameInfo for out-of-range indices (no
+    // throw), so this is always safe; the exporter only walks 0..frameCount.
+    return static_cast<jlong>(s->frameInfo(static_cast<size_t>(index)).ptsUs);
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfo(
+        JNIEnv* env, jclass, jlong handle) {
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) return nullptr;
+    try {
+        auto info = s->audioInfo();
+        if (!info.isOk()) {
+            setError(static_cast<int>(info.code), kStageFrameRead,
+                     std::string("audio info: ") + rawedit::errorName(info.code) +
+                         " — " + info.detail);
+            return nullptr;
+        }
+        jint out[2] = {static_cast<jint>(info.value->sampleRate),
+                       static_cast<jint>(info.value->channels)};
+        jintArray arr = env->NewIntArray(2);
+        if (arr == nullptr) return nullptr;
+        env->SetIntArrayRegion(arr, 0, 2, out);
+        return arr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 std::string("audio info: ") + e.what() + " (recovery: reopen the clip)");
+        return nullptr;
+    }
+}
+
 // DNG export -------------------------------------------------------------------
 //
 // One-shot: open the clip from fd, decode frame [frameIndex], write the raw
