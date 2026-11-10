@@ -57,7 +57,7 @@ class PreviewSession private constructor(
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
-     * stage 20 bypassed, the old look; COL-07). Suspends until done;
+     * stage 22 bypassed, the old look; COL-07). Suspends until done;
      * resumes with the frame or a failure carrying stage + cause +
      * recovery. A closed session fails cleanly instead of touching the
      * dead handle.
@@ -132,6 +132,7 @@ class PreviewSession private constructor(
                 args.asShot, args.highlightReconstruction, args.keepVignetting,
                 args.sharpness, args.detail, args.tonemap,
                 lutPath, args.lutStrength,
+                args.noiseReduction, args.chromaDenoise,
                 maxDim,
             )
         )
@@ -187,6 +188,7 @@ class PreviewSession private constructor(
                                     args.asShot, args.highlightReconstruction, args.keepVignetting,
                                     args.sharpness, args.detail, args.tonemap,
                                     lutPath, args.lutStrength,
+                                    args.noiseReduction, args.chromaDenoise,
                                     maxDim,
                                 )
                             )

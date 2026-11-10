@@ -47,16 +47,19 @@ struct YuvFrame {
 // Develops one decoded Mi-Log frame: limited->full YUV (BT.601/709 chosen
 // by matrixFromIsbt709; encoded clips carry BT.709 tags, BT.601 kept for
 // legacy clips), YUV->RGB, then WB/temp/tint + exposure grade, and after the
-// grade the same detail stages, optional tonemapping and optional LUT the
-// MCRAW path runs (Grade.sharpness radius 1.5 px, Grade.detail radius 0.75
-// px — luminance-only unsharp masks — then Grade.tonemap ACES/AgX, then
-// the COL-07 .cube LUT; see Develop.h and rawedit/Lut.h for the records).
-// All four genuinely apply to an encoded clip: its decoded pixels are
+// grade the same denoise stages, detail stages, optional tonemapping and
+// optional LUT the MCRAW path runs (Grade.chromaDenoise radius 2 px and
+// Grade.noiseReduction 3x3 bilateral FIRST — the codec's noise is in the
+// decoded pixels and the detail stages would amplify it; then
+// Grade.sharpness radius 1.5 px, Grade.detail radius 0.75 px —
+// luminance-only unsharp masks — then Grade.tonemap ACES/AgX, then the
+// COL-07 .cube LUT; see Develop.h and rawedit/Lut.h for the records).
+// All genuinely apply to an encoded clip: its decoded pixels are
 // ordinary linear RGB. Neutral grades skip every new stage (exact
 // passthrough, the old look). Mi-Log clips carry Rec.2020 primaries (see
 // the DCTL); the gamut conversion to the working space lands with the ACES
 // pass, so today the RGB is treated as the working space directly.
-//   lut: optional stage-20 LUT (COL-07). nullptr = no LUT selected — the
+//   lut: optional stage-22 LUT (COL-07). nullptr = no LUT selected — the
 //   stage is skipped entirely, so every existing call site stays
 //   bit-identical to the pre-LUT pipeline.
 ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, const Lut* lut = nullptr);

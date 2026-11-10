@@ -50,6 +50,9 @@ echo "== building tests =="
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_source"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_develop.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_develop"
+# test_noise: denoise stages (DN-01..08) on synthetic fixtures — no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_noise.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_noise"
 # test_transfer runs from the repo root so it finds the vendor cube LUT.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_transfer.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_transfer"
@@ -73,6 +76,8 @@ echo "== running test_source =="
 "$BUILD/test_source"
 echo "== running test_develop =="
 "$BUILD/test_develop"
+echo "== running test_noise =="
+"$BUILD/test_noise"
 echo "== running test_transfer =="
 (cd "$ROOT" && "$BUILD/test_transfer")
 echo "== running test_dng =="

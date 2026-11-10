@@ -184,9 +184,13 @@ class NativeSource private constructor(
          * (read the error accessors from the same thread).
          *
          * lutPath/lutStrength (COL-07): the selected .cube's path (null =
-         * no LUT — stage 20 bypassed, the old look) and the strength blend
+         * no LUT — stage 22 bypassed, the old look) and the strength blend
          * ALREADY mapped to rawedit's 0..1 scale (GradeK's percent / 100).
          * A parse failure fails the render with the lut error.
+         *
+         * noiseReduction/chromaDenoise (DN-01..08): the two denoise
+         * strengths at GradeK's native 0..100 scale (the core clamps);
+         * 0 = the stage is skipped entirely (the old look).
          */
         @JvmStatic private external fun nativePreviewRender(
             handle: Long,
@@ -209,6 +213,8 @@ class NativeSource private constructor(
             tonemap: Int,
             lutPath: String?,
             lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -218,7 +224,8 @@ class NativeSource private constructor(
          * last decoded CFA — a render of the SAME frameIndex skips the decode
          * and only re-develops (grade-only change). A frameIndex change
          * decodes and replaces the cache; a reopened handle starts uncached.
-         * lutPath/lutStrength as in nativePreviewRender (COL-07).
+         * lutPath/lutStrength as in nativePreviewRender (COL-07);
+         * noiseReduction/chromaDenoise as in nativePreviewRender (DN-01..08).
          */
         @JvmStatic private external fun nativePreviewSessionRenderCached(
             handle: Long,
@@ -241,6 +248,8 @@ class NativeSource private constructor(
             tonemap: Int,
             lutPath: String?,
             lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -277,8 +286,10 @@ class NativeSource private constructor(
          *
          * lutPath/lutStrength (COL-07): the job snapshot's LUT path (null =
          * no LUT) and the strength blend already mapped to 0..1 (percent /
-         * 100). The SAME stage-20 apply as the preview, so the owner's
+         * 100). The SAME stage-22 apply as the preview, so the owner's
          * preview-vs-export acceptance check compares like with like.
+         * noiseReduction/chromaDenoise (DN-01..08): the job snapshot's
+         * denoise strengths at the native 0..100 scale (0 = stage skipped).
          */
         @JvmStatic private external fun nativeExportFrame(
             handle: Long,
@@ -301,6 +312,8 @@ class NativeSource private constructor(
             tonemap: Int,
             lutPath: String?,
             lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -319,9 +332,10 @@ class NativeSource private constructor(
          * Develops one decoded encoded-frame (NV12 when [semiPlanar] is
          * true: [yPlane] + interleaved UV in [uPlane]; I420 otherwise) with
          * the grade: developEncoded (limited-range YUV -> RGB -> Mi-Log
-         * decode -> WB/temp/tint/exposure -> sharpness/detail/tonemap, the
-         * shared COL-15/COL-16 stages, then the optional stage-20 LUT,
-         * COL-07) -> linearToRec709 -> clamp ->
+         * decode -> WB/temp/tint/exposure -> denoise stages 7/8 (DN-01..08,
+         * the same kernels as the RAW path; 0 = skipped) ->
+         * sharpness/detail/tonemap, the shared COL-15/COL-16 stages, then
+         * the optional stage-22 LUT, COL-07) -> linearToRec709 -> clamp ->
          * 8-bit ARGB, rotated upright by [orientationDeg]. Returns
          * [width, height, then w*h ARGB_8888 ints] (the preview contract) or
          * null on failure (read the error accessors from the same thread).
@@ -329,6 +343,8 @@ class NativeSource private constructor(
          * grade (developEncoded's contract). No handle: the frame is
          * stateless input. lutPath null = no LUT; lutStrength already
          * mapped to rawedit's 0..1 scale (GradeK percent / 100).
+         * noiseReduction/chromaDenoise (DN-01..08): the denoise strengths at
+         * the native 0..100 scale (0 = stage skipped, the old look).
          */
         @JvmStatic private external fun nativeEncodedDevelop(
             yPlane: ByteArray,
@@ -359,6 +375,8 @@ class NativeSource private constructor(
             tonemap: Int,
             lutPath: String?,
             lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
         ): IntArray?
 
         /**
@@ -399,6 +417,8 @@ class NativeSource private constructor(
             tonemap: Int,
             lutPath: String?,
             lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
@@ -407,6 +427,7 @@ class NativeSource private constructor(
             asShot, highlightReconstruction, keepVignetting,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
+            noiseReduction, chromaDenoise,
             maxDim,
         )
 
@@ -432,6 +453,8 @@ class NativeSource private constructor(
             tonemap: Int,
             lutPath: String?,
             lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
@@ -440,6 +463,7 @@ class NativeSource private constructor(
             asShot, highlightReconstruction, keepVignetting,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
+            noiseReduction, chromaDenoise,
             maxDim,
         )
 
@@ -475,6 +499,8 @@ class NativeSource private constructor(
             tonemap: Int,
             lutPath: String?,
             lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
         ): ByteArray? = nativeExportFrame(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -482,6 +508,7 @@ class NativeSource private constructor(
             asShot, highlightReconstruction, keepVignetting,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
+            noiseReduction, chromaDenoise,
         )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
@@ -520,6 +547,8 @@ class NativeSource private constructor(
             tonemap: Int,
             lutPath: String?,
             lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
         ): IntArray? = nativeEncodedDevelop(
             yPlane, uPlane, vPlane,
             width, height, stride, uvStride,
@@ -529,6 +558,7 @@ class NativeSource private constructor(
             asShot, highlightReconstruction, keepVignetting,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
+            noiseReduction, chromaDenoise,
         )
 
         /** JNI bridge: readAudio for export sessions. */

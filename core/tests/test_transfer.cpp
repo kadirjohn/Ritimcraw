@@ -185,7 +185,7 @@ TEST_CASE("developEncoded_grade_and_range") {
 }
 
 TEST_CASE("developEncoded_detail_and_tonemap_stages") {
-    // COL-15/COL-16 on the encoded (Mi-Log) path: the same stages 17-19 the
+    // COL-15/COL-16 on the encoded (Mi-Log) path: the same stages 19-21 the
     // MCRAW pipeline runs apply to a decoded, graded encoded frame. On a
     // FLAT frame every stage is a no-op (a flat region's blur equals its
     // value; tonemap off is passthrough), so the neutral look is preserved

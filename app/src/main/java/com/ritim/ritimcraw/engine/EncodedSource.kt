@@ -271,12 +271,13 @@ interface EncodedFrameDecoder {
 interface EncodedDeveloper {
     /**
      * Develops one packed frame: developEncoded (limited-range YUV -> RGB ->
-     * Mi-Log decode -> WB/temp/tint/exposure -> sharpness/detail/tonemap, the
-     * shared COL-15/COL-16 stages, then the optional stage-20 LUT, COL-07)
-     * -> Rec.709 -> ARGB, rotated upright by [orientationDeg]. [lutPath] is
-     * the selected .cube's path (null = no LUT, the old look). Returns
-     * [width, height, then w*h ARGB_8888 ints] (the preview contract) or
-     * null on failure.
+     * Mi-Log decode -> WB/temp/tint/exposure -> denoise stages 7/8
+     * (DN-01..08, the same kernels as the RAW path; 0 = skipped) ->
+     * sharpness/detail/tonemap, the shared COL-15/COL-16 stages, then the
+     * optional stage-22 LUT, COL-07) -> Rec.709 -> ARGB, rotated upright by
+     * [orientationDeg]. [lutPath] is the selected .cube's path (null = no
+     * LUT, the old look). Returns [width, height, then w*h ARGB_8888 ints]
+     * (the preview contract) or null on failure.
      */
     fun develop(
         frame: YuvFrameK,
@@ -367,6 +368,9 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             // COL-07: percent 0..100 -> rawedit's 0..1 blend, same mapping
             // as GradeMapping.toNative (every JNI call site passes 0..1).
             lutPath, grade.lutStrength / 100f,
+            // DN-01..08: native 0..100 scale already — pass through (the
+            // core clamps), same as GradeMapping.toNative.
+            grade.noiseReduction, grade.chromaDenoise,
         )
     }
 

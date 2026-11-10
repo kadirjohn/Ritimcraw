@@ -337,6 +337,44 @@ class ExportStoreTest {
     }
 
     @Test
+    fun snapshot_round_trips_denoise_percents() {
+        // DN-01..08: the job snapshot carries both denoise percents with the
+        // grade, so the export runs the same stages 7/8 the user saw when
+        // enqueuing — and an old (pre-DN) snapshot parses as neutral.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(
+            ExportJob(
+                id = "dn-job",
+                sourceId = "clip-a",
+                snapshot = GradeK(exposureEv = 1f, noiseReduction = 28f, chromaDenoise = 64f),
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        val job = ExportStore(file).all().single { it.id == "dn-job" }
+        assertEquals(28f, job.snapshot.noiseReduction, 0f)
+        assertEquals(64f, job.snapshot.chromaDenoise, 0f)
+
+        // A pre-DN snapshot (no noiseReduction/chromaDenoise in the JSON)
+        // parses neutral: both 0 = the stages skipped — the queued job keeps
+        // its exact old look instead of failing.
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-b","snapshot":{"version":1,"exposureEv":0.5,"tempK":5600.0,"tint":0.0},"target":"MP4","state":"QUEUED"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+        val old = ExportStore(file).all().single { it.id == "old-job" }
+        assertEquals(0f, old.snapshot.noiseReduction, 0f)
+        assertEquals(0f, old.snapshot.chromaDenoise, 0f)
+    }
+
+    @Test
     fun clear_empties_queue() {
         val file = projectFile()
         val store = ExportStore(file)
