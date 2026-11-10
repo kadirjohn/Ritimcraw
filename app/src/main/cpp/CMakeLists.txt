@@ -8,6 +8,17 @@ project(rawedit_jni CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Always optimize the native pipeline, including Debug builds (owner finding
+# 2026-11-10: AGP passes NO -O flag for the debug native build type — its
+# CMAKE_CXX_FLAGS_DEBUG is empty in the cache — so clang defaults to -O0 and
+# the develop/demosaic loops ran 5-10x slower than they should (device
+# measure: 97-158 ms cached slider renders, ~1 fps playback at 720 px; the
+# same Mac-side real-clip test: ~314 ms/frame at -O0 vs ~9.4 ms at -O2).
+# Appended AFTER any existing flags so it wins over the empty debug set;
+# debug info is unaffected (-O2 does not remove -g). The flag is set BEFORE
+# add_subdirectory so the core and the vendored decoder targets inherit it.
+add_compile_options(-O2)
+
 # core/ builds rawedit + motioncam_decoder from third_party/.
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../../core ${CMAKE_CURRENT_BINARY_DIR}/rawedit-core)
 
