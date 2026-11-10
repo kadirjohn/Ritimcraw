@@ -747,4 +747,168 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
     return JNI_TRUE;
 }
 
+// Encoded (Mi-Log MP4) develop ---------------------------------------------------
+//
+// The encoded decode path (sprint plan Task 6): the Kotlin EncodedSource
+// state machine decodes a frame via MediaCodec (MediaExtractor/MediaCodec
+// adapters on the Kotlin side), packs it as NV12 (or I420), and hands it
+// here. This entry develops it with the same preview tail as the MCRAW path —
+// developEncoded (limited-range YUV -> RGB -> Mi-Log decode -> WB/temp/tint/
+// exposure) -> linearToRec709 -> clamp -> 8-bit ARGB, rotated upright by the
+// container's rotation hint — the same [width, height, then w*h ARGB_8888
+// ints] contract as nativePreviewRender, so the preview UI is identical for
+// both source kinds. No handle registry: the frame is stateless input.
+//
+// The frame bytes arrive as three flat arrays (mirroring rawedit::YuvFrame):
+//   semiPlanar true  = NV12: yPlane + interleaved UV in uPlane (vPlane unused)
+//   semiPlanar false = I420: y, u, v planes
+// stride/uvStride are bytes per luma/chroma row (0 = width / width/2). The
+// develop uses ONLY tempK/tint/exposureEv of the grade (developEncoded's
+// contract); the other grade fields travel anyway (flat-register style, one
+// signature for every develop entry point).
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
+        JNIEnv* env, jclass,
+        jbyteArray yPlane, jbyteArray uPlane, jbyteArray vPlane,
+        jint width, jint height, jint stride, jint uvStride,
+        jboolean semiPlanar, jboolean isBt709, jint orientationDeg,
+        jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
+        jfloat saturation, jfloat blackPoint, jfloat whitePoint,
+        jfloat shadows, jfloat midtones, jfloat contrast,
+        jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+
+    if (width <= 0 || height <= 0 || yPlane == nullptr || uPlane == nullptr ||
+        (semiPlanar == JNI_FALSE && vPlane == nullptr)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: unsupported — the decoded frame is empty or malformed "
+                 "(recovery: re-import the clip)");
+        return nullptr;
+    }
+
+    // Copy the plane bytes (GetByteArrayElements may pin/copy; the release
+    // mode below is abort for read-only use, so no writeback is expected).
+    const jsize yLen = env->GetArrayLength(yPlane);
+    const jsize uLen = env->GetArrayLength(uPlane);
+    const jsize vLen = vPlane != nullptr ? env->GetArrayLength(vPlane) : 0;
+    const int s = stride > 0 ? stride : width;
+    const int us = uvStride > 0 ? uvStride : width / 2;
+
+    rawedit::YuvFrame frame;
+    frame.width = static_cast<uint32_t>(width);
+    frame.height = static_cast<uint32_t>(height);
+    frame.semiPlanar = semiPlanar != JNI_FALSE;
+    frame.stride = s;
+    frame.uvStride = us;
+
+    // Size check before any copy: the develop indexes y up to
+    // (height-1)*stride + width-1 and the chroma grid up to
+    // (ch-1)*uvStride + (cw-1)*2 (+1 for the interleaved V byte).
+    const long long cw = (static_cast<long long>(width) + 1) / 2;
+    const long long ch = (static_cast<long long>(height) + 1) / 2;
+    const long long yNeed = static_cast<long long>(height - 1) * s + width;
+    const long long cNeed = frame.semiPlanar
+        ? static_cast<long long>(ch - 1) * us + (cw - 1) * 2 + 2
+        : static_cast<long long>(ch - 1) * us + cw;
+    if (yLen < yNeed || uLen < cNeed ||
+        (!frame.semiPlanar && (vLen < cNeed))) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: unsupported — the decoded frame's planes are smaller "
+                 "than its dimensions (recovery: re-import the clip)");
+        return nullptr;
+    }
+
+    {
+        jbyte* yBytes = env->GetByteArrayElements(yPlane, nullptr);
+        if (yBytes == nullptr) return nullptr;
+        frame.y.assign(reinterpret_cast<const uint8_t*>(yBytes),
+                       reinterpret_cast<const uint8_t*>(yBytes) + yLen);
+        env->ReleaseByteArrayElements(yPlane, yBytes, JNI_ABORT);
+
+        jbyte* uBytes = env->GetByteArrayElements(uPlane, nullptr);
+        if (uBytes == nullptr) return nullptr;
+        frame.u.assign(reinterpret_cast<const uint8_t*>(uBytes),
+                       reinterpret_cast<const uint8_t*>(uBytes) + uLen);
+        env->ReleaseByteArrayElements(uPlane, uBytes, JNI_ABORT);
+
+        if (vPlane != nullptr) {
+            jbyte* vBytes = env->GetByteArrayElements(vPlane, nullptr);
+            if (vBytes == nullptr) return nullptr;
+            frame.v.assign(reinterpret_cast<const uint8_t*>(vBytes),
+                           reinterpret_cast<const uint8_t*>(vBytes) + vLen);
+            env->ReleaseByteArrayElements(vPlane, vBytes, JNI_ABORT);
+        }
+    }
+
+    try {
+        // 1. developEncoded: limited-range YUV -> RGB -> Mi-Log decode ->
+        //    WB/temp/tint/exposure (core/Transfer.h).
+        rawedit::ImageF img = rawedit::developEncoded(
+            frame,
+            gradeFromKotlin(exposureEv, highlights, tempK, tint,
+                            saturation, blackPoint, whitePoint,
+                            shadows, midtones, contrast,
+                            asShot, highlightReconstruction, keepVignetting),
+            isBt709 != JNI_FALSE);
+        if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop: unsupported — the frame is too small to develop "
+                     "(recovery: re-import the clip)");
+            return nullptr;
+        }
+
+        // 2. linearToRec709 -> clamp -> 8-bit ARGB, rotated upright (the
+        //    same rotation math as developToArgb, so an encoded clip and an
+        //    MCRAW clip of the same scene show identical orientation).
+        const jsize w = static_cast<jsize>(img.w);
+        const jsize h = static_cast<jsize>(img.h);
+        const int orient = ((orientationDeg % 360) + 360) % 360;
+        jsize outW = w;
+        jsize outH = h;
+        if (orient == 90 || orient == 270) {
+            outW = h;
+            outH = w;
+        }
+        const jsize n = outW * outH;
+        std::vector<jint> out(static_cast<size_t>(n) + 2);
+        out[0] = outW;
+        out[1] = outH;
+        jint* px = out.data() + 2;
+        for (jsize y = 0; y < outH; ++y) {
+            for (jsize x = 0; x < outW; ++x) {
+                jsize si;
+                switch (orient) {
+                    case 90:  si = static_cast<jsize>(h - 1 - x) * w + y; break;
+                    case 180: si = static_cast<jsize>(h - 1 - y) * w + (w - 1 - x); break;
+                    case 270: si = x * w + (w - 1 - y); break;
+                    default:  si = y * w + x; break;
+                }
+                const float r = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 0]);
+                const float g = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 1]);
+                const float b = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 2]);
+                px[static_cast<size_t>(y) * outW + x] =
+                    0xFF000000 |
+                    (static_cast<jint>(toByte(r)) << 16) |
+                    (static_cast<jint>(toByte(g)) << 8) |
+                    static_cast<jint>(toByte(b));
+            }
+        }
+        jintArray arr = env->NewIntArray(n + 2);
+        if (arr == nullptr) return nullptr;
+        env->SetIntArrayRegion(arr, 0, n + 2, out.data());
+        return arr;
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "develop: out of memory developing the frame "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("develop: ") + e.what() + " (recovery: reopen the clip)");
+        return nullptr;
+    }
+}
+
 } // extern "C"
