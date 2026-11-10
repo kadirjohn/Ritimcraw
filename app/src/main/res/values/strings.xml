@@ -76,6 +76,12 @@
     <string name="exports_job_finalizing">Finishing file…</string>
     <string name="exports_job_eta">About %1$s left</string>
     <string name="exports_job_done_named">Done — %1$s</string>
+    <string name="exports_job_open">Open</string>
+    <string name="exports_open_missing_title">Export not available</string>
+    <string name="exports_open_missing_body">The finished file could not be found or opened. Recovery: export the clip again.</string>
+    <string name="exports_open_dng_title">No DNG viewer installed</string>
+    <string name="exports_open_dng_body">No app on this device can open a raw DNG. Share the file to a reader that can.</string>
+    <string name="exports_open_share">Share</string>
     <string name="exports_job_cancelled">Cancelled</string>
     <string name="exports_job_failed_stage">Export failed: %1$s</string>
     <string name="exports_job_failed_cause">Cause: %1$s</string>

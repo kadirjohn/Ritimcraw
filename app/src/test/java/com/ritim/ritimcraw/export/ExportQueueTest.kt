@@ -445,13 +445,13 @@ class ExportQueueTest {
         val published = mutableListOf<Pair<String, String>>()
         var failFirst = true
         val publisher = object : ExportPublisher {
-            override suspend fun publish(job: ExportJob, output: File): Boolean {
+            override suspend fun publish(job: ExportJob, output: File): String? {
                 if (failFirst) {
                     failFirst = false
                     throw IllegalStateException("resolver exploded")
                 }
                 published.add(job.id to output.name)
-                return true
+                return "content://media/external/${job.id}"
             }
         }
         val queue = ExportQueue(
@@ -482,7 +482,7 @@ class ExportQueueTest {
         store.add(job("j1", "clip1")) // fails (failOn)
         val log = mutableListOf<String>()
         val publisher = object : ExportPublisher {
-            override suspend fun publish(job: ExportJob, output: File): Boolean {
+            override suspend fun publish(job: ExportJob, output: File): String? {
                 throw AssertionError("a failed job must not be published")
             }
         }
@@ -494,6 +494,91 @@ class ExportQueueTest {
         )
         queue.runAll()
         assertEquals(State.FAILED, store.all().single().state)
+    }
+
+    @Test
+    fun done_job_stores_the_published_uri_on_its_row() = runBlocking {
+        // DONE rows open on tap (owner request 2026-11-11 §1): the publish
+        // returns the media-store row's URI and the queue stamps it on the
+        // job's own terminal row — so the row opens ITS OWN file, never a
+        // newer export of the same clip.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        store.add(job("j2", "clip2"))
+        val log = mutableListOf<String>()
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): String? =
+                "content://media/external/${job.sourceId}/${output.name}"
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        queue.runAll()
+        val jobs = store.all()
+        assertEquals(State.DONE, jobs[0].state)
+        assertEquals(State.DONE, jobs[1].state)
+        assertEquals("content://media/external/clip1/clip1-dng.dng", jobs[0].publishedUri)
+        assertEquals("content://media/external/clip2/clip2-dng.dng", jobs[1].publishedUri)
+        // The URI survives a store reload (it lives in project.json).
+        assertEquals(
+            "content://media/external/clip1/clip1-dng.dng",
+            ExportStore(File(tmp.root, "project.json")).all()[0].publishedUri,
+        )
+    }
+
+    @Test
+    fun null_publish_leaves_the_done_row_without_a_uri() = runBlocking {
+        // A publish that returns null (skipped or failed) never fails the
+        // job; the DONE row simply has no URI and the open path falls back
+        // to the job's own internal output file.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val log = mutableListOf<String>()
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        queue.runAll()
+        val job = store.all().single()
+        assertEquals(State.DONE, job.state)
+        assertNull(job.publishedUri)
+        // The output file exists: the fallback path has something to open.
+        assertTrue(File(tmp.root, "clip1-dng.dng").exists())
+    }
+
+    @Test
+    fun cleared_queue_is_not_resurrected_by_a_late_publish() = runBlocking {
+        // The URI stamp re-reads the row BY ID and only stamps a row that is
+        // still DONE: a queue cleared while the publish ran must stay empty
+        // (update() would otherwise re-add the row), and a row that moved
+        // on (retry) keeps its fresh state.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val log = mutableListOf<String>()
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): String? {
+                // The queue is cleared WHILE the publish runs (the terminal
+                // row has already been written; only the URI stamp is left).
+                store.clear()
+                return "content://media/external/late"
+            }
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        queue.runAll()
+        assertTrue(store.all().isEmpty())
     }
 
     @Test

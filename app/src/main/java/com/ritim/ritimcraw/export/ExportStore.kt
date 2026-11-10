@@ -125,6 +125,14 @@ class ExportStore(private val file: File) {
                 if (j.startedAtMs != null) {
                     sb.append(",\"startedAtMs\":").append(j.startedAtMs)
                 }
+                // publishedUri (DONE rows open on tap, owner request §1):
+                // omit-when-null for the same reason — files written before
+                // this field stay byte-identical and old rows parse with a
+                // null URI (the open path then falls back to the job's own
+                // output file).
+                if (j.publishedUri != null) {
+                    sb.append(",\"publishedUri\":").append(ProjectJson.quote(j.publishedUri))
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -178,6 +186,7 @@ class ExportStore(private val file: File) {
                     framesDone = (m["framesDone"] as? Double)?.toInt(),
                     framesTotal = (m["framesTotal"] as? Double)?.toInt(),
                     startedAtMs = (m["startedAtMs"] as? Double)?.toLong(),
+                    publishedUri = m["publishedUri"] as? String,
                 )
             }
         }

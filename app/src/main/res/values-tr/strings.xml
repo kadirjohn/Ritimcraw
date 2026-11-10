@@ -76,6 +76,12 @@
     <string name="exports_job_finalizing">Dosya tamamlanıyor…</string>
     <string name="exports_job_eta">Yaklaşık %1$s kaldı</string>
     <string name="exports_job_done_named">Tamamlandı — %1$s</string>
+    <string name="exports_job_open">Aç</string>
+    <string name="exports_open_missing_title">Dışa aktarım kullanılamıyor</string>
+    <string name="exports_open_missing_body">Tamamlanan dosya bulunamadı veya açılamadı. Çözüm: klibi tekrar dışa aktarın.</string>
+    <string name="exports_open_dng_title">DNG görüntüleyici yok</string>
+    <string name="exports_open_dng_body">Bu cihazda hiçbir uygulama ham DNG açamaz. Dosyayı açabilen bir okuyucuya paylaşın.</string>
+    <string name="exports_open_share">Paylaş</string>
     <string name="exports_job_cancelled">İptal edildi</string>
     <string name="exports_job_failed_stage">Dışa aktarım başarısız oldu: %1$s</string>
     <string name="exports_job_failed_cause">Neden: %1$s</string>

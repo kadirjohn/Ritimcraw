@@ -362,6 +362,52 @@ class ExportStoreTest {
     }
 
     @Test
+    fun published_uri_persists_across_reload_and_clears_on_retry() {
+        // publishedUri (DONE rows open on tap, owner request 2026-11-11 §1):
+        // stamped when the job's publish succeeded, omitted-when-null (old
+        // files stay byte-identical), cleared on retry (the retried job
+        // publishes afresh — its old row must not open the old file).
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "a"))
+        store.update(
+            store.all().single().copy(state = State.DONE, publishedUri = "content://media/external/video/media/42")
+        )
+
+        val done = ExportStore(file).all().single()
+        assertEquals("content://media/external/video/media/42", done.publishedUri)
+
+        // Retry clears the stale publish: the job is QUEUED again with no
+        // row to open.
+        store.retry("a")
+        val requeued = ExportStore(file).all().single()
+        assertEquals(State.QUEUED, requeued.state)
+        assertNull(requeued.publishedUri)
+    }
+
+    @Test
+    fun old_export_row_without_published_uri_parses_null() {
+        // A project.json written before publishedUri existed (schema 1, no
+        // URI field): the row parses with a null URI and the open path falls
+        // back to the job's own internal output file.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.0},"target":"MP4","state":"DONE","detail":"clip-a-mp4.mp4"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val job = ExportStore(file).all().single()
+        assertEquals(State.DONE, job.state)
+        assertEquals("clip-a-mp4.mp4", job.detail)
+        assertNull(job.publishedUri)
+    }
+
+    @Test
     fun corrupt_store_falls_back_to_empty_queue() {
         val file = projectFile()
         file.parentFile?.mkdirs()

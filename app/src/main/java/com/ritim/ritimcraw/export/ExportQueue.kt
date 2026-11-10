@@ -213,7 +213,21 @@ class ExportQueue(
         // wedges the job, and the queue keeps moving either way.
         if (result.state == State.DONE) {
             try {
-                publisher.publish(result, io.outputFile(result, result.target))
+                val uri = publisher.publish(result, io.outputFile(result, result.target))
+                if (uri != null) {
+                    // DONE rows open on tap (owner request 2026-11-11 §1):
+                    // store the published row's URI on the job — but only if
+                    // the row is STILL a DONE row. Re-reading by id guards
+                    // the clear-while-publishing race: a cleared queue must
+                    // not resurrect the row (update() would re-add it), and
+                    // a row that moved on keeps its fresh state. The current
+                    // row is the base, so only the URI is stamped on.
+                    val current = store.all().firstOrNull { it.id == result.id }
+                    if (current != null && current.state == State.DONE) {
+                        store.update(current.copy(publishedUri = uri))
+                        publishRevision()
+                    }
+                }
             } catch (e: Throwable) {
                 // Never propagate: publishing is additive.
             }

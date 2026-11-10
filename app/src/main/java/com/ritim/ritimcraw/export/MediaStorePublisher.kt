@@ -31,8 +31,8 @@ internal class MediaStorePublisher(
 
     constructor(context: Context) : this(context.contentResolver)
 
-    override suspend fun publish(job: ExportJob, output: File): Boolean {
-        if (!output.exists()) return false
+    override suspend fun publish(job: ExportJob, output: File): String? {
+        if (!output.exists()) return null
         val placement = MediaPublish.placement(job.sourceId, job.target)
         val collection = when (placement.collection) {
             MediaPublish.Collection.VIDEO ->
@@ -48,7 +48,7 @@ internal class MediaStorePublisher(
             put(MediaStore.MediaColumns.MIME_TYPE, placement.mime)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val uri = resolver.insert(collection, pending) ?: return false
+        val uri = resolver.insert(collection, pending) ?: return null
 
         // 2. Stream the finished file in. Any failure deletes the row: no
         //    orphaned invisible entry is left behind.
@@ -65,19 +65,22 @@ internal class MediaStorePublisher(
         }
         if (!copied) {
             runCatching { resolver.delete(uri, null, null) }
-            return false
+            return null
         }
 
-        // 3. Publish atomically: IS_PENDING -> 0.
+        // 3. Publish atomically: IS_PENDING -> 0. The row's URI is the value
+        //    the queue stores on the job — a DONE row opens exactly this
+        //    media-store file (owner request 2026-11-11 §1), never a newer
+        //    export of the same clip.
         return try {
             val published = ContentValues().apply {
                 put(MediaStore.MediaColumns.IS_PENDING, 0)
             }
             resolver.update(uri, published, null, null)
-            true
+            uri.toString()
         } catch (e: Exception) {
             runCatching { resolver.delete(uri, null, null) }
-            false
+            null
         }
     }
 }

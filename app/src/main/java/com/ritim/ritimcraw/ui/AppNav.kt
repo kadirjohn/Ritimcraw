@@ -1,5 +1,7 @@
 package com.ritim.ritimcraw.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import androidx.compose.animation.Crossfade
@@ -24,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -51,8 +54,10 @@ import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
+import com.ritim.ritimcraw.export.ExportOpen
 import com.ritim.ritimcraw.export.ExportQueue
 import com.ritim.ritimcraw.export.ExportStore
+import com.ritim.ritimcraw.export.MediaPublish
 import com.ritim.ritimcraw.export.MediaStorePublisher
 import com.ritim.ritimcraw.export.Mp4Exporter
 import com.ritim.ritimcraw.export.State
@@ -63,6 +68,7 @@ import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
 import kotlinx.coroutines.launch
+import androidx.core.content.FileProvider
 import java.io.File
 
 /**
@@ -90,6 +96,9 @@ enum class Destination(
 
 /** editor/{sourceId} back stack entry. */
 data class EditorRoute(val sourceId: String)
+
+/** The FileProvider authority for opening finished exports (manifest). */
+private const val EXPORT_FILE_PROVIDER_AUTHORITY = "com.ritim.ritimcraw.fileprovider"
 
 /**
  * App shell wiring: owns the stores (files/project.json), the source list,
@@ -141,8 +150,16 @@ fun AppNav() {
                     }
                 }
 
-                override fun outputFile(job: ExportJob, target: Target): File =
-                    File(exportDir, ExportQueue.outputName(job.sourceId, target))
+                override fun outputFile(job: ExportJob, target: Target): File {
+                    // Per-job output directory (owner request 2026-11-11 §1:
+                    // match the output to the job id): an older DONE row can
+                    // never open a later job's file, because a later job of
+                    // the same clip writes its own directory. Retry keeps
+                    // the same id and overwrites only its own output.
+                    val dir = File(exportDir, job.id)
+                    dir.mkdirs()
+                    return File(dir, ExportQueue.outputName(job.sourceId, target))
+                }
             },
             // Finished exports are also published to the system media store
             // (Movies/ritiMCRAW for MP4, Pictures/ritiMCRAW for DNG): the
@@ -178,6 +195,100 @@ fun AppNav() {
     fun enqueueFeedback() {
         // SHORT (not LONG): confirmation, not an error the user must read.
         scope.launch { exportSnackbar.showSnackbar(exportQueuedText, duration = SnackbarDuration.Short) }
+    }
+
+    // DONE rows open on tap (owner request 2026-11-11 §1). The DECISION is
+    // ExportOpen (JVM-tested): the job's own media-store row first, the
+    // app's own copy through FileProvider when the publish failed, nothing
+    // when neither exists. This adapter only dispatches intents — the
+    // device-gated half, like MediaStorePublisher.
+    val openMissingText = stringResource(R.string.exports_open_missing_body)
+    val openDngNoViewerText = stringResource(R.string.exports_open_dng_body)
+    val openShareText = stringResource(R.string.exports_open_share)
+
+    fun shareExport(uri: Uri, mime: String) {
+        val send = Intent(Intent.ACTION_SEND)
+            .setType(mime)
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            context.startActivity(Intent.createChooser(send, openShareText))
+        } catch (e: Exception) {
+            scope.launch {
+                exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+            }
+        }
+    }
+
+    fun viewExport(uri: Uri, mime: String, job: ExportJob) {
+        // MP4 -> the system default player; DNG -> whatever reads raw DNGs.
+        val view = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            context.startActivity(view)
+        } catch (e: ActivityNotFoundException) {
+            if (job.target == Target.DNG) {
+                // No DNG viewer on the device (owner request §1): an
+                // understandable message plus a Share option.
+                scope.launch {
+                    if (exportSnackbar.showSnackbar(
+                            openDngNoViewerText,
+                            actionLabel = openShareText,
+                            duration = SnackbarDuration.Long,
+                        ) == SnackbarResult.ActionPerformed
+                    ) {
+                        shareExport(uri, mime)
+                    }
+                }
+            } else {
+                scope.launch {
+                    exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+                }
+            }
+        } catch (e: Exception) {
+            scope.launch {
+                exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+            }
+        }
+    }
+
+    fun openExport(job: ExportJob) {
+        val name = ExportQueue.outputName(job.sourceId, job.target)
+        val open = ExportOpen.open(
+            job,
+            listOf(
+                // The per-job directory (current layout), then the legacy
+                // flat layout for rows written before it.
+                File(File(exportDir, job.id), name),
+                File(exportDir, name),
+            ),
+        )
+        val mime = MediaPublish.placement(job.sourceId, job.target).mime
+        when (open) {
+            is ExportOpen.Open.Store -> viewExport(Uri.parse(open.uri), mime, job)
+            is ExportOpen.Open.Internal -> {
+                // Temporary content:// window on the app's own copy
+                // (FLAG_GRANT_READ_URI_PERMISSION on the intent): the file
+                // never leaves files/exports.
+                val shared = try {
+                    FileProvider.getUriForFile(context, EXPORT_FILE_PROVIDER_AUTHORITY, open.file)
+                } catch (e: IllegalArgumentException) {
+                    null // outside the declared roots: treat as unopenable
+                }
+                if (shared != null) {
+                    viewExport(shared, mime, job)
+                } else {
+                    scope.launch {
+                        exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+                    }
+                }
+            }
+            ExportOpen.Open.None ->
+                scope.launch {
+                    exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+                }
+        }
     }
 
     // Process-start recovery (owner finding 2026-11-10): a crash can leave
@@ -436,6 +547,7 @@ fun AppNav() {
                                 stores.exports.clear()
                                 exportJobs = stores.exports.all()
                             },
+                            onOpen = ::openExport,
                         )
                         Destination.SETTINGS -> SettingsScreen(
                             onMeasure = if (BuildConfig.DEBUG) {

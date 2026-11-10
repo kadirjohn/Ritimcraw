@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.exports
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -33,6 +34,11 @@ import com.ritim.ritimcraw.util.Format
  * and CANCELLED stamps, and a failed card naming the stage and cause with
  * "Nothing was written" and a Retry action. Jobs stay until cleared.
  *
+ * DONE rows open on tap (owner request 2026-11-11 §1): the whole row and
+ * its Open button both fire [onOpen] with the job — the shell decides what
+ * that opens (the job's media-store row, the app's own copy through
+ * FileProvider, or an understandable message; see ExportOpen).
+ *
  * The engine wires in the device pass; this build renders whatever jobs the
  * [ExportStore][com.ritim.ritimcraw.export.ExportStore] holds.
  */
@@ -41,6 +47,7 @@ fun ExportsScreen(
     jobs: List<ExportJob> = emptyList(),
     onRetry: (ExportJob) -> Unit = {},
     onClear: () -> Unit = {},
+    onOpen: (ExportJob) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -79,7 +86,7 @@ fun ExportsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(jobs, key = { it.id }) { job ->
-                    ExportJobRow(job, onRetry)
+                    ExportJobRow(job, onRetry, onOpen)
                 }
             }
             TextButton(
@@ -98,6 +105,7 @@ fun ExportsScreen(
 private fun ExportJobRow(
     job: ExportJob,
     onRetry: (ExportJob) -> Unit,
+    onOpen: (ExportJob) -> Unit,
 ) {
     if (job.state == State.FAILED) {
         FailedJobCard(job, onRetry)
@@ -122,7 +130,7 @@ private fun ExportJobRow(
                         State.QUEUED ->
                             Text(stringResource(R.string.exports_job_queued))
                         State.RUNNING -> RunningJobProgress(job)
-                        State.DONE ->
+                        State.DONE -> {
                             // DONE stamp with the output name (detail on a DONE
                             // job is the output file name).
                             Text(
@@ -131,11 +139,25 @@ private fun ExportJobRow(
                                     job.detail ?: "",
                                 )
                             )
+                            // The whole row opens the finished file (owner
+                            // request §1); the button is the visible affordance
+                            // for the same action.
+                            TextButton(onClick = { onOpen(job) }) {
+                                Text(stringResource(R.string.exports_job_open))
+                            }
+                        }
                         State.CANCELLED ->
                             Text(stringResource(R.string.exports_job_cancelled))
                         State.FAILED -> Unit // handled by FailedJobCard
                     }
                 }
+            },
+            // 48dp targets (DESIGN.md): the row itself is the tap target in
+            // addition to the Open button.
+            modifier = if (job.state == State.DONE) {
+                Modifier.clickable { onOpen(job) }
+            } else {
+                Modifier
             },
         )
     }

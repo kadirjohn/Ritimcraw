@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider roots for finished exports (owner request 2026-11-11 §1:
+     a DONE row whose media-store publish failed opens the app's own copy
+     through a temporary content:// read grant). files-path maps the app's
+     internal files/ tree; outputs live under files/exports. -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path
+        name="exports"
+        path="exports/" />
+</paths>

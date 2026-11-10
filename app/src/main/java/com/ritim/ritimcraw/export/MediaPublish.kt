@@ -64,20 +64,25 @@ object MediaPublish {
  * Contract: publish is ADDITIVE and best-effort. The internal copy under
  * files/exports is the source of truth; a publish that fails (or throws)
  * must never fail the export job — the queue catches everything around it.
+ *
+ * The return (owner request 2026-11-11 §1: DONE rows open on tap) is the
+ * published row's content:// URI, or null when nothing was published —
+ * the queue stores it on the job so a DONE row opens ITS OWN media-store
+ * file, and the open path falls back to the internal copy when it is null.
  */
 interface ExportPublisher {
 
     /**
-     * Publishes the finished [output] of [job] to the media store. True when
-     * it landed (visible to other apps); false when it was skipped or
+     * Publishes the finished [output] of [job] to the media store. Returns
+     * the published row's content:// URI, or null when it was skipped or
      * failed. Never changes the job's own outcome.
      */
-    suspend fun publish(job: ExportJob, output: File): Boolean
+    suspend fun publish(job: ExportJob, output: File): String?
 
     companion object {
         /** The default no-op (paths without a resolver; tests inject fakes). */
         val None: ExportPublisher = object : ExportPublisher {
-            override suspend fun publish(job: ExportJob, output: File): Boolean = false
+            override suspend fun publish(job: ExportJob, output: File): String? = null
         }
     }
 }
