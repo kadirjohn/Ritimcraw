@@ -396,21 +396,36 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     }
 
     // ---- Stage 8: highlights (grade.highlights in [-100, 100]). ----
-    // Negative = recovery: a soft shoulder compresses the over-knee region
-    // toward the knee (filmic rolloff, detail comes back). Positive = a
-    // gentle lift of the same region. Neutrals stay neutral (uniform gain per
-    // pixel), mid-tones below the knee are untouched.
+    // Negative = recovery: a monotone shoulder compresses the over-knee
+    // region toward the knee (filmic rolloff, detail comes back). Positive =
+    // a gentle lift of the same region. Neutrals stay neutral (uniform gain
+    // per pixel), mid-tones below the knee are untouched.
+    //
+    // The old quadratic factor (1 - 0.65*s*t) was NOT monotone in t: for
+    // recovery (s > 0) it crossed zero at t = 1/(0.65*s) and went negative
+    // beyond, so a bright pixel above the crossing came out DARKER than a
+    // dimmer one (order reversal) and a very bright one went negative, which
+    // the Rec.709 clamp turned into black (owner finding 2026-11-10:
+    // sky turning black at Highlights -55 with Exposure +2.1 EV). The new
+    // shoulder is monotone for every strength and never goes below the
+    // knee: shoulder(t) = knee + (1-knee)*t/(1+t), blending between the
+    // original value and the shoulder by the recovery strength s, so at
+    // s = 0 (highlights = 0) nothing changes and at full recovery the
+    // over-knee region maps to a bounded, order-preserving rolloff.
     if (grade.highlights != 0.0f) {
         const float knee = 0.75f;
+        const float span = 1.0f - knee;
         const float s = -grade.highlights / 100.0f; // recovery -> +1, lift -> -1
         for (size_t i = 0; i < img.rgb.size(); i += 3) {
             const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
             if (mx <= knee)
                 continue;
             const float over = mx - knee;
-            const float t = over / (1.0f - knee);       // 0..1 above the knee
-            const float factor = 1.0f - 0.65f * s * t;   // <1 compress, >1 lift
-            const float newMx = knee + over * factor;
+            const float t = over / span;               // 0..1+ above the knee
+            // Monotone shoulder: bounded, order-preserving for all t.
+            const float shoulder = knee + span * (t / (1.0f + t));
+            // Blend original -> shoulder by strength (s in [-1, 1]).
+            const float newMx = mx + s * (shoulder - mx);
             const float gain = mx > 0.0f ? newMx / mx : 1.0f;
             img.rgb[i + 0] *= gain;
             img.rgb[i + 1] *= gain;

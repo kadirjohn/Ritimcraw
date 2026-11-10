@@ -282,6 +282,42 @@ TEST_CASE("highlights_slider_changes_bright_region_only") {
     CHECK(std::abs(centerMean(m1, 1) - centerMean(m0, 1)) < 0.001f); // mid untouched
 }
 
+TEST_CASE("highlights_recovery_never_turns_bright_sky_black") {
+    // Owner finding 2026-11-10: Exposure +2.1 EV then Highlights -55 turned
+    // a bright sky BLACK. Root cause: the old quadratic factor crossed zero
+    // and went negative for large t, and the Rec.709 clamp turned negative
+    // output into black. The monotone shoulder keeps every over-knee pixel
+    // above the knee and preserves brightness order.
+    Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.95f, 0.95f, 0.95f);
+    Grade g; g.exposureEv = 2.1f; g.highlights = -55.0f;
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
+    const float m = centerMean(img, 1);
+    // The sky is still bright, never black: recovery pulls it toward the
+    // knee region, not to zero.
+    CHECK(m > 0.5f);
+    // And at the extreme (-100) it still must not go black.
+    Grade extreme; extreme.exposureEv = 2.1f; extreme.highlights = -100.0f;
+    auto img2 = developCpu(s.cfa.data(), s.info, s.meta, extreme);
+    const float m2 = centerMean(img2, 1);
+    CHECK(m2 > 0.4f);
+}
+
+TEST_CASE("highlights_recovery_preserves_brightness_order") {
+    // Two over-knee patches, one brighter than the other: after ANY recovery
+    // strength the brighter one must stay at least as bright (the shoulder
+    // is monotone in input). The old quadratic reversed order past the
+    // zero-crossing.
+    Synthetic dim = syntheticFlat(CfaPattern::RGGB, 0.80f, 0.80f, 0.80f);
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.98f, 0.98f, 0.98f);
+    Grade g; g.highlights = -100.0f;
+    auto d = developCpu(dim.cfa.data(), dim.info, dim.meta, g);
+    auto b = developCpu(bright.cfa.data(), bright.info, bright.meta, g);
+    // Both patches are above the knee after recovery; order preserved.
+    CHECK(centerMean(b, 1) >= centerMean(d, 1) - 0.001f);
+    CHECK(centerMean(b, 1) > 0.75f);   // still bright, not crushed
+    CHECK(centerMean(d, 1) > 0.75f);
+}
+
 TEST_CASE("temperature_slider_moves_red_and_blue_opposite") {
     auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
     Grade warm; warm.tempK = 32000.0f;   // >> 5600: warm
