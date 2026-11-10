@@ -272,11 +272,19 @@ interface EncodedDeveloper {
     /**
      * Develops one packed frame: developEncoded (limited-range YUV -> RGB ->
      * Mi-Log decode -> WB/temp/tint/exposure -> sharpness/detail/tonemap, the
-     * shared COL-15/COL-16 stages) -> Rec.709 -> ARGB, rotated upright by
-     * [orientationDeg]. Returns [width, height, then w*h ARGB_8888 ints]
-     * (the preview contract) or null on failure.
+     * shared COL-15/COL-16 stages, then the optional stage-20 LUT, COL-07)
+     * -> Rec.709 -> ARGB, rotated upright by [orientationDeg]. [lutPath] is
+     * the selected .cube's path (null = no LUT, the old look). Returns
+     * [width, height, then w*h ARGB_8888 ints] (the preview contract) or
+     * null on failure.
      */
-    fun develop(frame: YuvFrameK, isBt709: Boolean, orientationDeg: Int, grade: GradeK): IntArray?
+    fun develop(
+        frame: YuvFrameK,
+        isBt709: Boolean,
+        orientationDeg: Int,
+        grade: GradeK,
+        lutPath: String? = null,
+    ): IntArray?
 
     /** rawedit::ErrorCode of the last failed develop (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
     fun code(): Int
@@ -340,6 +348,7 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
         isBt709: Boolean,
         orientationDeg: Int,
         grade: GradeK,
+        lutPath: String?,
     ): IntArray? {
         if (!NativeSource.nativeAvailable) {
             // No NDK build: fail cleanly with the unavailable message instead
@@ -355,6 +364,9 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             grade.shadows, grade.midtones, grade.contrast,
             grade.asShot, grade.highlightReconstruction, grade.keepVignetting,
             grade.sharpness, grade.detail, grade.tonemap,
+            // COL-07: percent 0..100 -> rawedit's 0..1 blend, same mapping
+            // as GradeMapping.toNative (every JNI call site passes 0..1).
+            lutPath, grade.lutStrength / 100f,
         )
     }
 
@@ -507,15 +519,16 @@ class EncodedSource(
     /**
      * Decodes frame [frameIndex] and develops it with [grade] into the
      * preview ARGB contract ([width, height, then w*h ARGB_8888 ints],
-     * rotated upright). Throws IllegalStateException with a complete message
-     * on any failure. Sequential requests never re-seek; a jump seeks to the
-     * keyframe at-or-before the target.
+     * rotated upright). [lutPath] is the selected .cube's path (null = no
+     * LUT, the old look; COL-07). Throws IllegalStateException with a
+     * complete message on any failure. Sequential requests never re-seek;
+     * a jump seeks to the keyframe at-or-before the target.
      */
-    fun renderFrame(frameIndex: Int, grade: GradeK): IntArray {
+    fun renderFrame(frameIndex: Int, grade: GradeK, lutPath: String? = null): IntArray {
         val fmt = requireOpen()
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
         val frame = decode(frameIndex)
-        val argb = developer.develop(frame, fmt.isBt709, fmt.orientationDeg, grade)
+        val argb = developer.develop(frame, fmt.isBt709, fmt.orientationDeg, grade, lutPath)
             ?: throw IllegalStateException(
                 EncodedErrors.message(developer.code(), developer.stage(), developer.detail())
             )

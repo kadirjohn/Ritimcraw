@@ -31,6 +31,16 @@ import java.nio.charset.StandardCharsets
  * native stage records the selected transform's version, working space and
  * target display; see Grade in core/include/rawedit/Develop.h).
  *
+ * The LUT fields (owner request 2026-11-10 section 3, COL-07) are saved
+ * SEPARATELY, per the request: lutId is the selected .cube's id in the
+ * project-wide LutStore ("luts" section of this same file, the library of
+ * imported cubes), lutStrength is the per-clip Strength percent. lutId null
+ * = no LUT selected = native stage 20 bypassed = bit-identical to the
+ * pre-LUT look; old schema-1 files that predate the fields parse lutId as
+ * null and lutStrength as 100, keeping their exact old look. lutStrength is
+ * a UI percent 0..100 (100 = the pure table); GradeMapping.toNative maps it
+ * to rawedit::Grade's 0..1 blend.
+ *
  * A grade set on clip A must never appear on clip B, including after closing
  * and reopening the app (QA-05) — GradeStoreTest.grades_do_not_leak_between_clips.
  */
@@ -52,6 +62,10 @@ data class GradeK(
     val sharpness: Float = 0f,
     val detail: Float = 0f,
     val tonemap: Int = 0,
+    /** Selected .cube id in the LutStore, or null = no LUT (stage 20 off). */
+    val lutId: String? = null,
+    /** Strength percent 0..100; 100 = the pure table. Irrelevant while lutId is null. */
+    val lutStrength: Float = 100f,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -178,7 +192,14 @@ class GradeStore(private val file: File) {
                     .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
                     .append("\"sharpness\":").append(num(g.sharpness)).append(',')
                     .append("\"detail\":").append(num(g.detail)).append(',')
-                    .append("\"tonemap\":").append(g.tonemap)
+                    .append("\"tonemap\":").append(g.tonemap).append(',')
+                    // COL-07: the LUT choice and Strength are saved
+                    // separately, both per clip. lutId null renders as JSON
+                    // null (no LUT); lutStrength always renders (100 while
+                    // no LUT is selected — the neutral default).
+                    .append("\"lutId\":").append(if (g.lutId == null) "null" else quote(g.lutId))
+                    .append(',')
+                    .append("\"lutStrength\":").append(num(g.lutStrength))
                     .append('}')
             }
             sb.append('}')
@@ -288,6 +309,12 @@ class GradeStore(private val file: File) {
                     sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
                     detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
                     tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
+                    // LUT fields (COL-07) postdate older schema-1 files:
+                    // absent or JSON-null lutId parses as null (no LUT =
+                    // stage 20 bypassed) and absent lutStrength as 100 —
+                    // the old look is preserved exactly.
+                    lutId = m["lutId"] as? String,
+                    lutStrength = (m["lutStrength"] as? Double)?.toFloat() ?: 100f,
                 )
             }
             return out

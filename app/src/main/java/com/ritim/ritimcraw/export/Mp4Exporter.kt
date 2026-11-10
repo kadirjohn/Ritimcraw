@@ -107,10 +107,13 @@ interface Mp4Session {
     /**
      * Develops frame [frameIndex] at FULL resolution with [grade]:
      * developCpu -> linearToRec709 -> clamp -> 8-bit RGB888 (row-major,
-     * NOT rotated — orientation travels as the muxer hint). Null on
-     * failure (read the error accessors from the same thread).
+     * NOT rotated — orientation travels as the muxer hint). [lutPath] is
+     * the job snapshot's selected .cube path (null = no LUT, the old
+     * look; COL-07) — the SAME stage-20 apply as the preview, so the
+     * owner's preview-vs-export acceptance check compares like with like.
+     * Null on failure (read the error accessors from the same thread).
      */
-    fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK): ByteArray?
+    fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String? = null): ByteArray?
 
     /** ptsUs of frame [frameIndex] (-1 on a bad handle). */
     fun framePts(handle: Long, frameIndex: Int): Long
@@ -159,7 +162,12 @@ internal object NativeMp4Session : Mp4Session {
         )
     }
 
-    override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK): ByteArray? {
+    override fun renderFrame(
+        handle: Long,
+        frameIndex: Int,
+        grade: GradeK,
+        lutPath: String?,
+    ): ByteArray? {
         requireNative()
         return NativeSource.jniExportFrame(
             handle, frameIndex,
@@ -168,6 +176,9 @@ internal object NativeMp4Session : Mp4Session {
             grade.shadows, grade.midtones, grade.contrast,
             grade.asShot, grade.highlightReconstruction, grade.keepVignetting,
             grade.sharpness, grade.detail, grade.tonemap,
+            // COL-07: percent 0..100 -> rawedit's 0..1 blend, same mapping
+            // as GradeMapping.toNative (every JNI call site passes 0..1).
+            lutPath, grade.lutStrength / 100f,
         )
     }
 
@@ -249,8 +260,11 @@ class ExportPipeline(
 
     /**
      * Runs the whole encode for the clip at [sourceFd] with [grade] into
-     * [outPath] (the caller's staging path). Throws IllegalStateException
-     * with a complete message on any failure.
+     * [outPath] (the caller's staging path). [lutPath] is the job
+     * snapshot's selected .cube path (null = no LUT, the old look;
+     * COL-07) — resolved ONCE by the exporter and applied to every frame,
+     * so the whole export is one consistent look. Throws
+     * IllegalStateException with a complete message on any failure.
      *
      * [onProgress] hears (videoFramesDone, totalVideoFrames) — reported
      * once with 0/total right after open, then after every encoded VIDEO
@@ -261,6 +275,7 @@ class ExportPipeline(
         sourceFd: Int,
         grade: GradeK,
         outPath: String,
+        lutPath: String? = null,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
     ) {
         val info = session.open(sourceFd)
@@ -268,7 +283,7 @@ class ExportPipeline(
                 Mp4ExportErrors.message(session.code(), session.stage(), session.detail())
             )
         try {
-            encode(info, grade, outPath, onProgress)
+            encode(info, grade, outPath, lutPath, onProgress)
         } finally {
             session.close(info.handle)
         }
@@ -278,6 +293,7 @@ class ExportPipeline(
         info: Mp4SessionInfo,
         grade: GradeK,
         outPath: String,
+        lutPath: String?,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
     ) {
         // 1. Timeline: video pts from the source, normalized to 0.
@@ -332,7 +348,7 @@ class ExportPipeline(
             for (s in PtsTimeline.interleave(videoPts, audioPts)) {
                 when (s.track) {
                     PtsTimeline.Sample.Track.VIDEO -> {
-                        val rgb = session.renderFrame(info.handle, s.frameIndex, grade)
+                        val rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath)
                             ?: throw IllegalStateException(
                                 Mp4ExportErrors.message(
                                     session.code(), session.stage(), session.detail()
@@ -397,14 +413,18 @@ class Mp4Exporter(
     private val session: Mp4Session = NativeMp4Session,
     private val writerFactory: () -> Mp4MediaWriter = { MediaCodecMp4Writer() },
     private val engine: ExecutorService = ExportEngine.thread,
+    private val lutPathFor: (String?) -> String? = { null },
 ) {
 
     /**
      * Exports the clip at [sourceFd] as an MP4 at [out], applying the
-     * job's grade snapshot. Returns the updated job: DONE on success
-     * (detail = output file name), FAILED with a stage + cause + recovery
-     * detail on failure. Never throws; a failure leaves neither [out] nor
-     * its partial behind.
+     * job's grade snapshot — including its LUT selection (COL-07):
+     * [lutPathFor] turns the snapshot's lutId into the copied cube's path
+     * (null = no LUT), resolved ONCE here so every frame of the export
+     * runs the same stage-20 apply as the preview. Returns the updated
+     * job: DONE on success (detail = output file name), FAILED with a
+     * stage + cause + recovery detail on failure. Never throws; a
+     * failure leaves neither [out] nor its partial behind.
      *
      * [onProgress] hears (videoFramesDone, totalVideoFrames) per frame; the
      * queue owns the throttled persistence (see ExportQueue.ProgressWriter).
@@ -415,13 +435,14 @@ class Mp4Exporter(
         out: File,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
     ): ExportJob {
+        val lutPath = lutPathFor(job.snapshot.lutId)
         val partial = ExportStaging.partial(out)
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val res = try {
                         ExportPipeline(session, writerFactory()).run(
-                            sourceFd, job.snapshot, partial.absolutePath, onProgress
+                            sourceFd, job.snapshot, partial.absolutePath, lutPath, onProgress
                         )
                         if (ExportStaging.finalize(partial, out)) {
                             Result.success(Unit)

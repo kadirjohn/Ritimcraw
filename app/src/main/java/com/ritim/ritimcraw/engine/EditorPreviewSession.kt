@@ -30,17 +30,30 @@ interface EditorPreviewSession : AutoCloseable {
 
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
-     * [maxDim]. Suspends until done; resumes with the frame or a failure
-     * carrying stage + cause + recovery.
+     * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
+     * stage 20 bypassed, the old look; COL-07). Suspends until done;
+     * resumes with the frame or a failure carrying stage + cause +
+     * recovery.
      */
-    suspend fun render(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame>
+    suspend fun render(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String? = null,
+    ): Result<PreviewFrame>
 
     /**
      * Interactive slider render: the MCRAW session reuses its cached CFA
      * when the frame is unchanged (a grade-only change skips the decode);
      * the encoded path has no such stage and decodes like [render].
+     * [lutPath] as in [render] (COL-07).
      */
-    suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame>
+    suspend fun renderCached(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String? = null,
+    ): Result<PreviewFrame>
 
     /** ptsUs of frame [index] for the transport's timeline; -1 when unavailable. */
     suspend fun framePtsUs(index: Int): Long
@@ -172,8 +185,12 @@ class EncodedPreviewSession private constructor(
 
     private val closed = AtomicBoolean(false)
 
-    override suspend fun render(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> =
-        renderOnEngine(frameIndex, grade, maxDim)
+    override suspend fun render(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String?,
+    ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
 
     /**
      * The encoded engine has no cached re-develop stage: its decode
@@ -182,13 +199,18 @@ class EncodedPreviewSession private constructor(
      * interactive drag path therefore maps 1:1 onto [render]; no caching is
      * invented for an engine that lacks it.
      */
-    override suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> =
-        renderOnEngine(frameIndex, grade, maxDim)
+    override suspend fun renderCached(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String?,
+    ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
 
     private suspend fun renderOnEngine(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
+        lutPath: String? = null,
     ): Result<PreviewFrame> {
         if (closed.get()) {
             return Result.failure(sessionClosed())
@@ -208,7 +230,7 @@ class EncodedPreviewSession private constructor(
                             // Closed while queued: never touch the dead source.
                             Result.failure(sessionClosed())
                         } else {
-                            frameOf(source.renderFrame(frameIndex, grade), maxDim)
+                            frameOf(source.renderFrame(frameIndex, grade, lutPath), maxDim)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)

@@ -26,6 +26,7 @@ class PreviewRendererTest {
             shadows = -35f, midtones = 12f, contrast = 55f,
             asShot = false, highlightReconstruction = true, keepVignetting = false,
             sharpness = 25f, detail = -10f, tonemap = 1,
+            lutStrength = 75f,
         )
         val args = GradeMapping.toNative(grade)
         assertEquals(1.2f, args.exposureEv, 0f)
@@ -44,6 +45,22 @@ class PreviewRendererTest {
         assertEquals(25f, args.sharpness, 0f)
         assertEquals(-10f, args.detail, 0f)
         assertEquals(1, args.tonemap)
+        // COL-07: the UI percent maps to rawedit's 0..1 blend here.
+        assertEquals(0.75f, args.lutStrength, 0f)
+    }
+
+    @Test
+    fun lut_strength_percent_maps_to_native_blend() {
+        // COL-07: GradeK stores a UI percent 0..100; the JNI boundary passes
+        // rawedit's 0..1 blend (lutStrength = lut(rgb)*s + rgb*(1-s)). The
+        // mapping happens HERE (GradeMapping.toNative for the preview, the
+        // same /100 inline at the two export-path call sites), so every JNI
+        // call site passes 0..1.
+        assertEquals(0.5f, GradeMapping.toNative(GradeK(lutStrength = 50f)).lutStrength, 0f)
+        assertEquals(0f, GradeMapping.toNative(GradeK(lutStrength = 0f)).lutStrength, 0f)
+        assertEquals(1f, GradeMapping.toNative(GradeK(lutStrength = 100f)).lutStrength, 0f)
+        // The GradeK default (100 = full LUT) maps to the full blend.
+        assertEquals(1f, GradeMapping.toNative(GradeK()).lutStrength, 0f)
     }
 
     @Test
@@ -85,6 +102,7 @@ class PreviewRendererTest {
             shadows = 90f, midtones = -33f, contrast = 100f,
             asShot = false, highlightReconstruction = false, keepVignetting = true,
             sharpness = -45f, detail = 67f, tonemap = 2,
+            lutStrength = 80f,
         )
         val args = GradeMapping.toNative(grade)
         val back = GradeK(
@@ -104,6 +122,7 @@ class PreviewRendererTest {
             sharpness = args.sharpness,
             detail = args.detail,
             tonemap = args.tonemap,
+            lutStrength = args.lutStrength * 100f,
         )
         assertEquals(grade.exposureEv, back.exposureEv, 0f)
         assertEquals(grade.highlights, back.highlights, 0f)
@@ -121,6 +140,9 @@ class PreviewRendererTest {
         assertEquals(grade.sharpness, back.sharpness, 0f)
         assertEquals(grade.detail, back.detail, 0f)
         assertEquals(grade.tonemap, back.tonemap)
+        // The percent travels through the mapping and back (the UI-side
+        // value; the /100 blend is the native side of the same boundary).
+        assertEquals(grade.lutStrength, back.lutStrength, 0f)
     }
 
     // ---- debounce window ----

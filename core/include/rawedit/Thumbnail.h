@@ -45,8 +45,15 @@ namespace rawedit {
 // from the header math above. The returned ImageF is (2*ceil(width/2/N))
 // x (2*ceil(height/2/N)) in the linear working space, or empty on invalid
 // input.
+//
+// lut: optional stage-20 .cube 3D LUT (COL-07), forwarded to the inner
+// developCpu so the preview and the export run the SAME pipeline — the
+// owner's acceptance check compares them on-device. nullptr = no LUT
+// (the pre-LUT look, bit-identical); defaulted so every existing call
+// site is unchanged.
 ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
-                        const RawMeta& meta, const Grade& grade, int strideEvery);
+                        const RawMeta& meta, const Grade& grade, int strideEvery,
+                        const Lut* lut = nullptr);
 
 // Output dimensions for the given frame size and stride, per the header
 // math: (2*ceil(width/2/N)) x (2*ceil(height/2/N)). Returns 0x0 for an

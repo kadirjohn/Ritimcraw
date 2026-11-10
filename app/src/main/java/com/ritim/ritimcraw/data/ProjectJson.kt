@@ -1,19 +1,21 @@
 package com.ritim.ritimcraw.data
 
 /**
- * Shared merge logic for `files/project.json` (schema 1). Three stores
+ * Shared merge logic for `files/project.json` (schema 1). Four stores
  * persist into the same file, each in its own section:
  *
  *   { "version": 1,
  *     "grades":  { "<sourceId>": { ... } },   // GradeStore
  *     "sources": [ ... ],                      // SourceRepository
- *     "exports": [ ... ] }                      // ExportStore
+ *     "exports": [ ... ],                      // ExportStore
+ *     "luts":    [ ... ] }                     // LutStore
  *
  * Every store write re-renders only its own section and preserves the other
- * two untouched (parsed and re-rendered raw, never interpreted), so the
+ * three untouched (parsed and re-rendered raw, never interpreted), so the
  * stores can share project.json without clobbering each other. Section order
- * in the rendered file is fixed (grades, sources, exports, then any unknown
- * section in encounter order) so output is deterministic and testable.
+ * in the rendered file is fixed (grades, sources, exports, luts, then any
+ * unknown section in encounter order) so output is deterministic and
+ * testable.
  *
  * JSON is written with the hand-rolled reader/writer because the offline
  * Gradle cache has kotlinx-serialization-core but not -json.
@@ -21,7 +23,7 @@ package com.ritim.ritimcraw.data
 internal object ProjectJson {
 
     /** Canonical section order in the rendered file. */
-    private val SECTION_ORDER = listOf("grades", "sources", "exports")
+    private val SECTION_ORDER = listOf("grades", "sources", "exports", "luts")
 
     /**
      * Renders the whole project.json with [section] set to [renderedSection],

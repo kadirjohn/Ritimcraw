@@ -54,6 +54,12 @@
     <string name="editor_tonemap_off">Off</string>
     <string name="editor_tonemap_aces">ACES</string>
     <string name="editor_tonemap_agx">AgX</string>
+    <string name="editor_lut">LUT</string>
+    <string name="editor_lut_import">Import LUT</string>
+    <string name="editor_lut_import_failed">The LUT file could not be imported. Recovery: pick a valid .cube file.</string>
+    <string name="editor_lut_strength">Strength</string>
+    <string name="editor_lut_remove">Remove</string>
+    <string name="editor_lut_none">None</string>
     <string name="editor_render_preview">Render preview</string>
     <string name="editor_play">Play</string>
     <string name="editor_pause">Pause</string>

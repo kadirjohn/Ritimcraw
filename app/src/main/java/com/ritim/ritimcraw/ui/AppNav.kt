@@ -43,9 +43,11 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
+import com.ritim.ritimcraw.data.LutStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
@@ -104,6 +106,14 @@ fun AppNav() {
             sources = SourceRepository(AndroidUriResolver(context), project),
             grades = GradeStore(project),
             exports = ExportStore(project),
+            // The cube copies live app-private (files/luts): the import copies
+            // the SAF bytes in, so no persistable URI grant is needed and the
+            // library survives restarts (COL-07).
+            luts = LutStore(
+                AndroidUriResolver(context),
+                project,
+                File(context.filesDir, "luts").apply { mkdirs() },
+            ),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -113,7 +123,11 @@ fun AppNav() {
         ExportQueue(
             store = stores.exports,
             dng = DngExporter(),
-            mp4 = Mp4Exporter(),
+            // COL-07: the exporter resolves the job snapshot's lutId to the
+            // copied cube's path ONCE per export (null = no LUT — the old
+            // look), so every frame runs the same stage-20 apply as the
+            // preview the owner compares it against.
+            mp4 = Mp4Exporter(lutPathFor = { id -> stores.luts.pathFor(id) }),
             io = object : ExportIo {
                 override fun sourceFd(job: ExportJob): Int {
                     // The editor's open read-only fd is per-screen; the queue
@@ -155,6 +169,9 @@ fun AppNav() {
     var queueKick by remember { mutableStateOf(0) }
     var sources by remember { mutableStateOf(stores.sources.all()) }
     var exportJobs by remember { mutableStateOf(stores.exports.all()) }
+    // The cube library list (COL-07): plain state refreshed after every
+    // import/remove so the editor's LUT rows stay current.
+    var lutEntries by remember { mutableStateOf(stores.luts.all()) }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     // EditorRoute is a data class — rememberSaveable cannot put it in a
     // Bundle (owner finding 2026-11-10: backgrounding the app with the
@@ -380,6 +397,53 @@ fun AppNav() {
                         sourceHeight = sourceDims.second,
                         sourceKind = sourceKind,
                         sourceMime = sourceMime,
+                        // ---- LUT wiring (COL-07) ----
+                        lutEntries = lutEntries,
+                        // Import = copy + native probe + TITLE rename. A
+                        // probe failure (bad .cube, or no native lib) removes
+                        // the entry again so the library never holds an
+                        // unapplicable cube; the message reaches the
+                        // editor's local error line.
+                        onImportLut = { uri, fallbackName ->
+                            try {
+                                val imported = stores.luts.import(uri, fallbackName)
+                                val path = stores.luts.pathFor(imported.id)
+                                if (path == null) {
+                                    stores.luts.remove(imported.id)
+                                    lutEntries = stores.luts.all()
+                                    Result.failure(
+                                        IllegalStateException(
+                                            context.getString(R.string.editor_lut_import_failed)
+                                        )
+                                    )
+                                } else {
+                                    try {
+                                        val title = NativeSource.jniLutProbe(path)
+                                        if (title.isNullOrBlank()) {
+                                            stores.luts.setTitle(imported.id, imported.name)
+                                        } else {
+                                            stores.luts.setTitle(imported.id, title)
+                                        }
+                                        lutEntries = stores.luts.all()
+                                        Result.success(imported)
+                                    } catch (e: Exception) {
+                                        // The cube does not parse: drop it —
+                                        // an unapplicable LUT must not stay
+                                        // selectable.
+                                        stores.luts.remove(imported.id)
+                                        lutEntries = stores.luts.all()
+                                        Result.failure(e)
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Result.failure(e)
+                            }
+                        },
+                        onRemoveLut = { lut ->
+                            stores.luts.remove(lut.id)
+                            lutEntries = stores.luts.all()
+                        },
+                        lutPathFor = { id -> stores.luts.pathFor(id) },
                     )
                 }
             } else {
@@ -440,4 +504,5 @@ private class Stores(
     val sources: SourceRepository,
     val grades: GradeStore,
     val exports: ExportStore,
+    val luts: LutStore,
 )

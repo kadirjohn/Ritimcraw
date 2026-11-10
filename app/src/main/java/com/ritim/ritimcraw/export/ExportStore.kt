@@ -145,6 +145,10 @@ class ExportStore(private val file: File) {
                 .append(",\"sharpness\":").append(num(g.sharpness))
                 .append(",\"detail\":").append(num(g.detail))
                 .append(",\"tonemap\":").append(g.tonemap)
+                // COL-07: the export snapshot carries the LUT choice and
+                // Strength too, so a queued job exports what the user saw.
+                .append(",\"lutId\":").append(if (g.lutId == null) "null" else ProjectJson.quote(g.lutId))
+                .append(",\"lutStrength\":").append(num(g.lutStrength))
                 .append('}')
             return sb.toString()
         }
@@ -207,6 +211,12 @@ class ExportStore(private val file: File) {
                 sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
                 detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
                 tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
+                // LUT fields (COL-07) postdate older snapshots: absent or
+                // JSON-null lutId parses as null (no LUT = stage 20
+                // bypassed), absent lutStrength as 100 — the old look is
+                // preserved exactly.
+                lutId = m["lutId"] as? String,
+                lutStrength = (m["lutStrength"] as? Double)?.toFloat() ?: 100f,
             )
         }
 
