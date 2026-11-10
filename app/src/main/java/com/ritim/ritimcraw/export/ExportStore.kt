@@ -139,6 +139,9 @@ class ExportStore(private val file: File) {
                 .append(",\"shadows\":").append(num(g.shadows))
                 .append(",\"midtones\":").append(num(g.midtones))
                 .append(",\"contrast\":").append(num(g.contrast))
+                .append(",\"asShot\":").append(g.asShot)
+                .append(",\"highlightReconstruction\":").append(g.highlightReconstruction)
+                .append(",\"keepVignetting\":").append(g.keepVignetting)
                 .append('}')
             return sb.toString()
         }
@@ -171,20 +174,30 @@ class ExportStore(private val file: File) {
 
         private fun parseSnapshot(v: Any?): GradeK {
             val m = v as? Map<*, *> ?: return GradeK()
+            // Snapshots written before the tone controls lack the six float
+            // fields; the neutral fallbacks keep the old look. Snapshots
+            // written before the RAW toggles lack the three booleans: the two
+            // stage toggles fall back to true (pre-toggle behavior), and
+            // asShot is DERIVED from temp/tint neutrality so a manually
+            // white-balanced old snapshot keeps its exact old look.
+            val parsedTempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f
+            val parsedTint = (m["tint"] as? Double)?.toFloat() ?: 0f
             return GradeK(
                 version = (m["version"] as? Double)?.toInt() ?: GradeK.SCHEMA_VERSION,
                 exposureEv = (m["exposureEv"] as? Double)?.toFloat() ?: 0f,
                 highlights = (m["highlights"] as? Double)?.toFloat() ?: 0f,
-                tempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f,
-                tint = (m["tint"] as? Double)?.toFloat() ?: 0f,
-                // Snapshots written before the tone controls lack the six
-                // fields below; the neutral fallbacks keep the old look.
+                tempK = parsedTempK,
+                tint = parsedTint,
                 saturation = (m["saturation"] as? Double)?.toFloat() ?: 0f,
                 blackPoint = (m["blackPoint"] as? Double)?.toFloat() ?: 0f,
                 whitePoint = (m["whitePoint"] as? Double)?.toFloat() ?: 0f,
                 shadows = (m["shadows"] as? Double)?.toFloat() ?: 0f,
                 midtones = (m["midtones"] as? Double)?.toFloat() ?: 0f,
                 contrast = (m["contrast"] as? Double)?.toFloat() ?: 0f,
+                asShot = (m["asShot"] as? Boolean)
+                    ?: (parsedTempK == 5600f && parsedTint == 0f),
+                highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
+                keepVignetting = m["keepVignetting"] as? Boolean ?: true,
             )
         }
 

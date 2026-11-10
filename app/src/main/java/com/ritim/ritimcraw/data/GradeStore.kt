@@ -13,6 +13,17 @@ import java.nio.charset.StandardCharsets
  * by the C++ golden test) — and old schema-1 files that predate the fields
  * parse them as neutral (parseGrades falls back per field).
  *
+ * The three RAW metadata toggles (RAW-07/COL-09/RAW-04/RAW-06) all default
+ * to true, which is exactly the pre-toggle pipeline. asShot selects the WB
+ * source: true = the camera's recorded as-shot WB (the native pipeline
+ * skips its manual temperature/tint stages), false = manual WB from
+ * tempK/tint (which stay stored either way, so toggling back never loses
+ * them). highlightReconstruction toggles the native highlight-rebuild
+ * stage; keepVignetting toggles the embedded lens-shading correction. Old
+ * files that predate the booleans parse them true, with asShot DERIVED from
+ * temp/tint neutrality (neutral -> true, manual -> false) so old grades keep
+ * their exact old look.
+ *
  * A grade set on clip A must never appear on clip B, including after closing
  * and reopening the app (QA-05) — GradeStoreTest.grades_do_not_leak_between_clips.
  */
@@ -28,6 +39,9 @@ data class GradeK(
     val shadows: Float = 0f,
     val midtones: Float = 0f,
     val contrast: Float = 0f,
+    val asShot: Boolean = true,
+    val highlightReconstruction: Boolean = true,
+    val keepVignetting: Boolean = true,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -44,7 +58,10 @@ data class GradeK(
  *                                 "tempK": 5600.0, "tint": 0.0,
  *                                 "saturation": 0.0, "blackPoint": 0.0,
  *                                 "whitePoint": 0.0, "shadows": 0.0,
- *                                 "midtones": 0.0, "contrast": 0.0 } },
+ *                                 "midtones": 0.0, "contrast": 0.0,
+ *                                 "asShot": true,
+ *                                 "highlightReconstruction": true,
+ *                                 "keepVignetting": true } },
  *     "sources": [ ... ] }
  *
  * Writes merge with the other section instead of clobbering it: a grade save
@@ -145,7 +162,10 @@ class GradeStore(private val file: File) {
                     .append("\"whitePoint\":").append(num(g.whitePoint)).append(',')
                     .append("\"shadows\":").append(num(g.shadows)).append(',')
                     .append("\"midtones\":").append(num(g.midtones)).append(',')
-                    .append("\"contrast\":").append(num(g.contrast))
+                    .append("\"contrast\":").append(num(g.contrast)).append(',')
+                    .append("\"asShot\":").append(g.asShot).append(',')
+                    .append("\"highlightReconstruction\":").append(g.highlightReconstruction).append(',')
+                    .append("\"keepVignetting\":").append(g.keepVignetting)
                     .append('}')
             }
             sb.append('}')
@@ -223,22 +243,31 @@ class GradeStore(private val file: File) {
             for ((k, v) in grades) {
                 val id = k as? String ?: continue
                 val m = v as? Map<*, *> ?: continue
+                // Old schema-1 files written before the tone controls carry
+                // none of the six float fields: each falls back to its GradeK
+                // default (neutral), which the C++ pipeline treats as a no-op.
+                // Old files also predate the RAW toggles: the two stage
+                // toggles fall back to true (the pre-toggle behavior), and
+                // asShot is DERIVED from temp/tint neutrality so a manually
+                // white-balanced old grade keeps its exact old look.
+                val parsedTempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f
+                val parsedTint = (m["tint"] as? Double)?.toFloat() ?: 0f
                 out[id] = GradeK(
                     version = (m["version"] as? Double)?.toInt() ?: GradeK.SCHEMA_VERSION,
                     exposureEv = (m["exposureEv"] as? Double)?.toFloat() ?: 0f,
                     highlights = (m["highlights"] as? Double)?.toFloat() ?: 0f,
-                    tempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f,
-                    tint = (m["tint"] as? Double)?.toFloat() ?: 0f,
-                    // Schema-1 files written before the tone controls carry
-                    // none of the six fields below: each falls back to its
-                    // GradeK default (neutral), which the C++ pipeline treats
-                    // as a no-op — old projects keep their exact old look.
+                    tempK = parsedTempK,
+                    tint = parsedTint,
                     saturation = (m["saturation"] as? Double)?.toFloat() ?: 0f,
                     blackPoint = (m["blackPoint"] as? Double)?.toFloat() ?: 0f,
                     whitePoint = (m["whitePoint"] as? Double)?.toFloat() ?: 0f,
                     shadows = (m["shadows"] as? Double)?.toFloat() ?: 0f,
                     midtones = (m["midtones"] as? Double)?.toFloat() ?: 0f,
                     contrast = (m["contrast"] as? Double)?.toFloat() ?: 0f,
+                    asShot = (m["asShot"] as? Boolean)
+                        ?: (parsedTempK == 5600f && parsedTint == 0f),
+                    highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
+                    keepVignetting = m["keepVignetting"] as? Boolean ?: true,
                 )
             }
             return out

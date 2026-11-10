@@ -151,15 +151,19 @@ int strideFor(const rawedit::FrameInfo& info, int maxDim) {
 }
 
 // GradeK -> rawedit::Grade: identity field mapping, floats as-is. The ten
-// grade fields travel as flat jfloat parameters (same style as the original
+// grade floats travel as flat jfloat parameters (same style as the original
 // four): the calls are per-frame and the JVM passes floats in registers, so a
 // jfloatArray would only add a GetFloatArrayElements copy per render with no
-// safety gain. Parameter order = GradeK field order (Develop.h Grade order):
+// safety gain. The three RAW booleans (asShot, highlightReconstruction,
+// keepVignetting) follow the same flat-register style as jbooleans.
+// Parameter order = GradeK field order (Develop.h Grade order):
 // exposureEv, highlights, tempK, tint, saturation, blackPoint, whitePoint,
-// shadows, midtones, contrast.
+// shadows, midtones, contrast, asShot, highlightReconstruction,
+// keepVignetting.
 rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, float tint,
                                float saturation, float blackPoint, float whitePoint,
-                               float shadows, float midtones, float contrast) {
+                               float shadows, float midtones, float contrast,
+                               bool asShot, bool highlightReconstruction, bool keepVignetting) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
@@ -171,6 +175,9 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.shadows = shadows;
     g.midtones = midtones;
     g.contrast = contrast;
+    g.asShot = asShot;
+    g.highlightReconstruction = highlightReconstruction;
+    g.keepVignetting = keepVignetting;
     return g;
 }
 
@@ -437,6 +444,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
+        jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -462,7 +470,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         return developToArgb(env, *frame.value, info, meta,
                              gradeFromKotlin(exposureEv, highlights, tempK, tint,
                                              saturation, blackPoint, whitePoint,
-                                             shadows, midtones, contrast),
+                                             shadows, midtones, contrast,
+                                             asShot, highlightReconstruction,
+                                             keepVignetting),
                              maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -490,6 +500,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
+        jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -525,7 +536,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         return developToArgb(env, e.cachedCfa, e.cachedInfo, meta,
                              gradeFromKotlin(exposureEv, highlights, tempK, tint,
                                              saturation, blackPoint, whitePoint,
-                                             shadows, midtones, contrast),
+                                             shadows, midtones, contrast,
+                                             asShot, highlightReconstruction,
+                                             keepVignetting),
                              maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -567,7 +580,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         JNIEnv* env, jclass, jlong handle, jint frameIndex,
         jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
-        jfloat shadows, jfloat midtones, jfloat contrast) {
+        jfloat shadows, jfloat midtones, jfloat contrast,
+        jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     rawedit::Source* s = sourceFor(handle);
@@ -594,7 +608,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
             frame.value->data(), info, meta,
             gradeFromKotlin(exposureEv, highlights, tempK, tint,
                             saturation, blackPoint, whitePoint,
-                            shadows, midtones, contrast));
+                            shadows, midtones, contrast,
+                            asShot, highlightReconstruction, keepVignetting));
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "

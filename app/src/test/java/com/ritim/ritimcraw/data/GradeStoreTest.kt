@@ -154,5 +154,65 @@ class GradeStoreTest {
         assertEquals(grade, reloaded)
     }
 
+    @Test
+    fun raw_toggle_values_survive_persist_and_reload() {
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            asShot = false,
+            highlightReconstruction = false,
+            keepVignetting = false,
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(grade, reloaded)
+    }
+
+    @Test
+    fun old_format_file_defaults_raw_toggles_to_true() {
+        // A project.json written by the pre-RAW-toggles build. The two stage
+        // toggles are absent and must parse as true (pre-toggle behavior), so
+        // an old project keeps its exact look — the binding requirement of
+        // RAW-04/RAW-06. Here temp/tint are neutral, so asShot derives true.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"neutral-clip":{"version":1,"exposureEv":0.8,"highlights":-25.0,"tempK":5600.0,"tint":0.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("neutral-clip")
+        assertTrue(g.asShot) // neutral manual WB means as-shot WB
+        assertTrue(g.highlightReconstruction)
+        assertTrue(g.keepVignetting)
+    }
+
+    @Test
+    fun old_format_file_derives_asshot_false_from_manual_wb() {
+        // The pre-RAW-toggles build had no asShot field, but it DID have
+        // manual temp/tint sliders that always ran. A grade saved with
+        // manual WB must keep its exact old look, so the missing asShot
+        // derives false (stages 14-15 keep running) rather than defaulting
+        // to true and silently discarding the user's WB.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"manual-clip":{"version":1,"exposureEv":0.8,"highlights":-25.0,"tempK":4600.0,"tint":3.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("manual-clip")
+        assertTrue(!g.asShot) // manual WB means manual WB wins
+        assertTrue(g.highlightReconstruction)
+        assertTrue(g.keepVignetting)
+        assertEquals(4600f, g.tempK, 0f)
+        assertEquals(3f, g.tint, 0f)
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }

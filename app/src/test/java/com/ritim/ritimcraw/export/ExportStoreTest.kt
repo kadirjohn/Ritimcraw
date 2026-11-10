@@ -235,6 +235,70 @@ class ExportStoreTest {
     }
 
     @Test
+    fun raw_toggle_snapshot_fields_survive_reload() {
+        // The export snapshot carries the three RAW metadata booleans end to
+        // end: a queued job exports with the WB source and stage toggles the
+        // user actually set, not the defaults.
+        val file = projectFile()
+        val snapshot = GradeK(
+            exposureEv = 0.75f,
+            tempK = 4300f,
+            tint = -6f,
+            asShot = false,
+            highlightReconstruction = false,
+            keepVignetting = false,
+        )
+        ExportStore(file).add(
+            ExportJob(
+                id = "a",
+                sourceId = "clip-a",
+                snapshot = snapshot,
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        val reloaded = ExportStore(file).all().single().snapshot
+        assertEquals(snapshot, reloaded)
+        assertEquals(false, reloaded.asShot)
+        assertEquals(false, reloaded.highlightReconstruction)
+        assertEquals(false, reloaded.keepVignetting)
+    }
+
+    @Test
+    fun old_snapshot_without_toggles_defaults_stages_true_and_derives_asshot() {
+        // A queue written by the pre-RAW-toggles build. The snapshot JSON
+        // has no booleans: the stage toggles default true (pre-toggle
+        // behavior), and asShot DERIVES from temp/tint neutrality so the
+        // queued job re-renders with its exact old look. RAW-07/RAW-04/
+        // RAW-06 binding requirement.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"neutral-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.5,"tempK":5600.0,"tint":0.0},"target":"MP4","state":"QUEUED"},
+              {"id":"manual-job","sourceId":"clip-b","snapshot":{"version":1,"exposureEv":0.5,"tempK":4600.0,"tint":3.0},"target":"DNG","state":"QUEUED"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val jobs = ExportStore(file).all()
+        assertEquals(2, jobs.size)
+        val neutral = jobs.first { it.id == "neutral-job" }.snapshot
+        assertTrue(neutral.asShot) // neutral manual WB -> as-shot WB
+        assertTrue(neutral.highlightReconstruction)
+        assertTrue(neutral.keepVignetting)
+        val manual = jobs.first { it.id == "manual-job" }.snapshot
+        assertTrue(!manual.asShot) // manual WB saved -> manual WB wins
+        assertTrue(manual.highlightReconstruction)
+        assertTrue(manual.keepVignetting)
+        assertEquals(4600f, manual.tempK, 0f)
+        assertEquals(3f, manual.tint, 0f)
+    }
+
+    @Test
     fun clear_empties_queue() {
         val file = projectFile()
         val store = ExportStore(file)

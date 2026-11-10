@@ -45,6 +45,9 @@
     <string name="editor_slider_temperature">Sıcaklık</string>
     <string name="editor_slider_tint">Ton</string>
     <string name="editor_slider_saturation">Doygunluk</string>
+    <string name="editor_as_shot">Çekim WB\'si</string>
+    <string name="editor_highlight_reconstruction">Işık kurtarma</string>
+    <string name="editor_keep_vignetting">Vinyet koru</string>
     <string name="editor_render_preview">Önizlemeyi oluştur</string>
     <string name="editor_play">Oynat</string>
     <string name="editor_pause">Duraklat</string>
