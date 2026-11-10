@@ -83,6 +83,33 @@ float centerMean(const ImageF& img, int c) {
     return sum / n;
 }
 
+// FNV-1a over the raw bytes of the whole rgb buffer. Locks the FULL output,
+// not just the sampled pixels. Same machine runs the test, so byte order is
+// irrelevant.
+uint64_t fnv1a(const ImageF& img) {
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(img.rgb.data());
+    const size_t n = img.rgb.size() * sizeof(float);
+    for (size_t i = 0; i < n; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+// A Grade with every new tone/color field EXPLICITLY neutral (the old
+// four-field shape would leave them at these defaults anyway).
+Grade neutralToneGrade() {
+    Grade g;
+    g.saturation = 0.0f;
+    g.blackPoint = 0.0f;
+    g.whitePoint = 0.0f;
+    g.shadows = 0.0f;
+    g.midtones = 0.0f;
+    g.contrast = 0.0f;
+    return g;
+}
+
 } // namespace
 
 TEST_CASE("neutral_patch_has_no_cast_for_every_cfa") {
@@ -345,4 +372,178 @@ TEST_CASE("tint_slider_moves_green_only") {
     // R and B stay put.
     CHECK(std::abs(centerMean(mg, 0) - centerMean(base, 0)) < 0.001f);
     CHECK(std::abs(centerMean(gr, 2) - centerMean(base, 2)) < 0.001f);
+}
+
+// ---- Tone/color controls (owner request 2026-11-10 section 2) ----
+
+// Pixel value of channel c at the buffer center.
+float centerPx(const ImageF& img, int c) {
+    return img.rgb[(static_cast<size_t>(img.h / 2) * img.w + img.w / 2) * 3 + c];
+}
+
+TEST_CASE("neutral_tone_grade_is_bit_identical_to_old_pipeline") {
+    // Hard requirement: a grade with all new fields neutral must produce
+    // BIT-IDENTICAL output to the pre-tone-control pipeline. Locks three
+    // things together: (a) FNV-1a hashes + hexfloat centers captured from
+    // the pipeline BEFORE the tone stages existed (tree at 84b9df2), (b) a
+    // Grade with the new fields explicitly neutral, (c) a default-
+    // constructed Grade. All must agree exactly, byte for byte.
+    {
+        // Fixture A: default grade on a 0.18 flat patch.
+        auto s = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+        auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+        auto imgExplicit = developCpu(s.cfa.data(), s.info, s.meta, neutralToneGrade());
+        CHECK(fnv1a(img) == fnv1a(imgExplicit));
+        CHECK(fnv1a(img) == 0x88593750a9564183ULL);
+        CHECK(centerPx(img, 0) == 0x1.6f50e2p-3f);
+        CHECK(centerMean(img, 1) == 0x1.6f50e2p-3f);
+    }
+    {
+        // Fixture B: the four ORIGINAL controls all active on a colored
+        // patch; the new fields stay at their neutral defaults.
+        auto s = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f);
+        Grade g;
+        g.exposureEv = 0.7f;
+        g.highlights = -35.0f;
+        g.tempK = 7200.0f;
+        g.tint = 12.0f;
+        auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
+        CHECK(fnv1a(img) == 0x38150540c239af83ULL);
+        CHECK(centerPx(img, 0) == 0x1.e8f262p-1f);
+        CHECK(centerPx(img, 1) == 0x1.f835dcp-2f);
+        CHECK(centerPx(img, 2) == 0x1.65f01cp-3f);
+    }
+    {
+        // Fixture C: exposure + heavy highlights recovery on a bright patch.
+        auto s = syntheticFlat(CfaPattern::RGGB, 0.95f, 0.95f, 0.95f);
+        Grade g;
+        g.exposureEv = 2.1f;
+        g.highlights = -55.0f;
+        auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
+        CHECK(fnv1a(img) == 0x1cea742e0c17bf03ULL);
+        CHECK(centerPx(img, 0) == 0x1.2fbecap+1f);
+    }
+}
+
+TEST_CASE("shadows_slider_lifts_only_dark_region") {
+    // +100 shadows must lift a dark patch and leave mid/bright patches
+    // untouched (the weight is 0 at and above midgray 0.18).
+    Synthetic dark = syntheticFlat(CfaPattern::RGGB, 0.05f, 0.05f, 0.05f);
+    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.40f, 0.40f, 0.40f);
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.85f, 0.85f, 0.85f);
+    Grade g; g.shadows = 100.0f;
+    auto d0 = developCpu(dark.cfa.data(), dark.info, dark.meta, Grade{});
+    auto d1 = developCpu(dark.cfa.data(), dark.info, dark.meta, g);
+    auto m0 = developCpu(mid.cfa.data(), mid.info, mid.meta, Grade{});
+    auto m1 = developCpu(mid.cfa.data(), mid.info, mid.meta, g);
+    auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
+    auto b1 = developCpu(bright.cfa.data(), bright.info, bright.meta, g);
+    CHECK(centerMean(d1, 1) > centerMean(d0, 1) + 0.02f);         // dark lifted
+    CHECK(std::abs(centerMean(m1, 1) - centerMean(m0, 1)) < 0.001f); // mid untouched
+    CHECK(std::abs(centerMean(b1, 1) - centerMean(b0, 1)) < 0.001f); // bright untouched
+}
+
+TEST_CASE("midtones_slider_moves_only_mids") {
+    // +100 midtones must brighten a midgray patch (the tent weight peaks at
+    // 0.18) and leave dark and bright patches untouched.
+    Synthetic dark = syntheticFlat(CfaPattern::RGGB, 0.02f, 0.02f, 0.02f);
+    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.85f, 0.85f, 0.85f);
+    Grade g; g.midtones = 100.0f;
+    auto d0 = developCpu(dark.cfa.data(), dark.info, dark.meta, Grade{});
+    auto d1 = developCpu(dark.cfa.data(), dark.info, dark.meta, g);
+    auto m0 = developCpu(mid.cfa.data(), mid.info, mid.meta, Grade{});
+    auto m1 = developCpu(mid.cfa.data(), mid.info, mid.meta, g);
+    auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
+    auto b1 = developCpu(bright.cfa.data(), bright.info, bright.meta, g);
+    CHECK(centerMean(m1, 1) > centerMean(m0, 1) + 0.02f);          // mid brightened
+    CHECK(std::abs(centerMean(d1, 1) - centerMean(d0, 1)) < 0.001f); // dark untouched
+    CHECK(std::abs(centerMean(b1, 1) - centerMean(b0, 1)) < 0.001f); // bright untouched
+}
+
+TEST_CASE("contrast_pivots_around_midgray_both_directions") {
+    // A midgray patch sits exactly at the pivot (0.18): both +100 and -100
+    // leave it put. A darker patch sinks with +100 (slope 2 doubles its
+    // distance below the pivot); a brighter patch rises with +100 and sinks
+    // toward the pivot with -100 (slope 0 collapses it onto the pivot).
+    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    Synthetic darker = syntheticFlat(CfaPattern::RGGB, 0.09f, 0.09f, 0.09f);
+    Synthetic brighter = syntheticFlat(CfaPattern::RGGB, 0.36f, 0.36f, 0.36f);
+    Grade up; up.contrast = 100.0f;
+    Grade down; down.contrast = -100.0f;
+    auto base = developCpu(mid.cfa.data(), mid.info, mid.meta, Grade{});
+    auto cUp = developCpu(mid.cfa.data(), mid.info, mid.meta, up);
+    auto cDown = developCpu(mid.cfa.data(), mid.info, mid.meta, down);
+    CHECK(std::abs(centerMean(cUp, 1) - centerMean(base, 1)) < 0.001f);
+    CHECK(std::abs(centerMean(cDown, 1) - centerMean(base, 1)) < 0.001f);
+
+    auto k0 = developCpu(darker.cfa.data(), darker.info, darker.meta, Grade{});
+    auto kUp = developCpu(darker.cfa.data(), darker.info, darker.meta, up);
+    auto kDown = developCpu(darker.cfa.data(), darker.info, darker.meta, down);
+    CHECK(centerMean(kUp, 1) < centerMean(k0, 1) - 0.005f);  // sinks (further below pivot)
+    CHECK(std::abs(centerMean(kDown, 1) - 0.18f) < 0.001f);  // collapses onto the pivot
+
+    auto j0 = developCpu(brighter.cfa.data(), brighter.info, brighter.meta, Grade{});
+    auto jUp = developCpu(brighter.cfa.data(), brighter.info, brighter.meta, up);
+    auto jDown = developCpu(brighter.cfa.data(), brighter.info, brighter.meta, down);
+    CHECK(centerMean(jUp, 1) > centerMean(j0, 1) + 0.005f);  // rises (further above pivot)
+    CHECK(std::abs(centerMean(jDown, 1) - 0.18f) < 0.001f);  // collapses onto the pivot
+}
+
+TEST_CASE("black_point_crushes_the_toe") {
+    // Positive black point darkens the toe; white stays pinned at 1
+    // (x' = lift + (1 - lift) * x maps 1 to 1). Negative lifts the floor:
+    // at -100 the input floor 0 maps to 0.25 (faded blacks).
+    Synthetic nearBlack = syntheticFlat(CfaPattern::RGGB, 0.04f, 0.04f, 0.04f);
+    Synthetic white = syntheticFlat(CfaPattern::RGGB, 1.0f, 1.0f, 1.0f);
+    Synthetic black = syntheticFlat(CfaPattern::RGGB, 0.0f, 0.0f, 0.0f);
+    Grade crush; crush.blackPoint = 100.0f;
+    Grade fade; fade.blackPoint = -100.0f;
+    auto n0 = developCpu(nearBlack.cfa.data(), nearBlack.info, nearBlack.meta, Grade{});
+    auto n1 = developCpu(nearBlack.cfa.data(), nearBlack.info, nearBlack.meta, crush);
+    auto w0 = developCpu(white.cfa.data(), white.info, white.meta, Grade{});
+    auto w1 = developCpu(white.cfa.data(), white.info, white.meta, crush);
+    auto bf = developCpu(black.cfa.data(), black.info, black.meta, fade);
+    CHECK(centerMean(n1, 1) < centerMean(n0, 1) - 0.02f);          // toe darkened
+    CHECK(std::abs(centerMean(w1, 1) - centerMean(w0, 1)) < 0.001f); // white pinned
+    CHECK(std::abs(centerMean(bf, 1) - 0.25f) < 0.01f);            // floor lifted
+}
+
+TEST_CASE("white_point_remaps_the_shoulder") {
+    // Positive white point raises the shoulder (scale 4/3 at +100),
+    // negative pulls it down (scale 3/4 at -100); black stays pinned at 0.
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.85f, 0.85f, 0.85f);
+    Synthetic black = syntheticFlat(CfaPattern::RGGB, 0.0f, 0.0f, 0.0f);
+    Grade up; up.whitePoint = 100.0f;
+    Grade down; down.whitePoint = -100.0f;
+    auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
+    auto bUp = developCpu(bright.cfa.data(), bright.info, bright.meta, up);
+    auto bDown = developCpu(bright.cfa.data(), bright.info, bright.meta, down);
+    auto k0 = developCpu(black.cfa.data(), black.info, black.meta, Grade{});
+    auto kUp = developCpu(black.cfa.data(), black.info, black.meta, up);
+    CHECK(centerMean(bUp, 1) > centerMean(b0, 1) + 0.02f);         // shoulder raised
+    CHECK(centerMean(bDown, 1) < centerMean(b0, 1) - 0.02f);       // shoulder pulled
+    CHECK(std::abs(centerMean(kUp, 1) - centerMean(k0, 1)) < 0.001f); // black pinned
+}
+
+TEST_CASE("saturation_scales_chroma_neutrals_untouched") {
+    // +100 saturation grows the channel spread of a colored patch; a
+    // neutral patch is bit-identical (its chroma is 0); -100 shrinks the
+    // spread but never to exactly 0 (hue preserved, no full desaturation).
+    Synthetic color = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f);
+    Synthetic neutral = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    Grade sat; sat.saturation = 100.0f;
+    Grade desat; desat.saturation = -100.0f;
+    auto c0 = developCpu(color.cfa.data(), color.info, color.meta, Grade{});
+    auto c1 = developCpu(color.cfa.data(), color.info, color.meta, sat);
+    auto c2 = developCpu(color.cfa.data(), color.info, color.meta, desat);
+    auto n0 = developCpu(neutral.cfa.data(), neutral.info, neutral.meta, Grade{});
+    auto n1 = developCpu(neutral.cfa.data(), neutral.info, neutral.meta, sat);
+    const float spread0 = centerMean(c0, 0) - centerMean(c0, 2);
+    const float spread1 = centerMean(c1, 0) - centerMean(c1, 2);
+    const float spread2 = centerMean(c2, 0) - centerMean(c2, 2);
+    CHECK(spread1 > spread0 + 0.02f);  // chroma grew
+    CHECK(spread2 < spread0 - 0.02f);  // chroma shrank
+    CHECK(spread2 > 0.0f);             // but never fully desaturated
+    CHECK(fnv1a(n0) == fnv1a(n1));     // neutral patch bit-identical
 }
