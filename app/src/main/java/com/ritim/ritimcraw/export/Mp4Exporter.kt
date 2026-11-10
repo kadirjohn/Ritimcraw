@@ -164,6 +164,8 @@ internal object NativeMp4Session : Mp4Session {
         return NativeSource.jniExportFrame(
             handle, frameIndex,
             grade.exposureEv, grade.highlights, grade.tempK, grade.tint,
+            grade.saturation, grade.blackPoint, grade.whitePoint,
+            grade.shadows, grade.midtones, grade.contrast,
         )
     }
 

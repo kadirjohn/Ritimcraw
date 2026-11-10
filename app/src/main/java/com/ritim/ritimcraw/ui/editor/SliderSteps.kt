@@ -5,9 +5,9 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
- * Slider step semantics and double-tap reset for the Light tab (DESIGN.md
- * Inputs: "M3 Slider with label and tabular value; double tap resets").
- * Pure functions so the mapping is JVM-testable without Compose.
+ * Slider step semantics and double-tap reset for the Light and Color tabs
+ * (DESIGN.md Inputs: "M3 Slider with label and tabular value; double tap
+ * resets"). Pure functions so the mapping is JVM-testable without Compose.
  */
 object SliderSteps {
 
@@ -17,7 +17,7 @@ object SliderSteps {
     /** Temperature steps 50 K. */
     const val TEMP_STEP_K = 50f
 
-    /** Highlights / Tint are integer steps. */
+    /** Highlights / Tint and the six tone controls are integer steps. */
     const val UNIT_STEP = 1f
 
     /** Snaps a single axis to its step grid (slider change events). */
@@ -25,18 +25,30 @@ object SliderSteps {
     fun snapHighlights(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapTemperature(value: Float): Float = quantize(value, TEMP_STEP_K)
     fun snapTint(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapSaturation(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapBlackPoint(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapWhitePoint(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapShadows(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapMidtones(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapContrast(value: Float): Float = quantize(value, UNIT_STEP)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
-     * to 50 K, Highlights and Tint to whole numbers. Clamping to the slider
+     * to 50 K, every other axis to whole numbers. Clamping to the slider
      * range is the Compose Slider's job; this only quantizes.
      */
-    fun snap(exposureEv: Float, highlights: Float, tempK: Float, tint: Float): GradeK {
-        return GradeK(
-            exposureEv = snapExposure(exposureEv),
-            highlights = snapHighlights(highlights),
-            tempK = snapTemperature(tempK),
-            tint = snapTint(tint),
+    fun snap(grade: GradeK): GradeK {
+        return grade.copy(
+            exposureEv = snapExposure(grade.exposureEv),
+            highlights = snapHighlights(grade.highlights),
+            tempK = snapTemperature(grade.tempK),
+            tint = snapTint(grade.tint),
+            saturation = snapSaturation(grade.saturation),
+            blackPoint = snapBlackPoint(grade.blackPoint),
+            whitePoint = snapWhitePoint(grade.whitePoint),
+            shadows = snapShadows(grade.shadows),
+            midtones = snapMidtones(grade.midtones),
+            contrast = snapContrast(grade.contrast),
         )
     }
 
@@ -45,13 +57,22 @@ object SliderSteps {
      * only — every other axis keeps its current value (DESIGN.md "double tap
      * resets" the one control, not the whole grade).
      */
-    enum class Axis { EXPOSURE, HIGHLIGHTS, TEMPERATURE, TINT }
+    enum class Axis {
+        EXPOSURE, HIGHLIGHTS, TEMPERATURE, TINT,
+        SATURATION, BLACK_POINT, WHITE_POINT, SHADOWS, MIDTONES, CONTRAST,
+    }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
         Axis.EXPOSURE -> current.copy(exposureEv = GradeK().exposureEv)
         Axis.HIGHLIGHTS -> current.copy(highlights = GradeK().highlights)
         Axis.TEMPERATURE -> current.copy(tempK = GradeK().tempK)
         Axis.TINT -> current.copy(tint = GradeK().tint)
+        Axis.SATURATION -> current.copy(saturation = GradeK().saturation)
+        Axis.BLACK_POINT -> current.copy(blackPoint = GradeK().blackPoint)
+        Axis.WHITE_POINT -> current.copy(whitePoint = GradeK().whitePoint)
+        Axis.SHADOWS -> current.copy(shadows = GradeK().shadows)
+        Axis.MIDTONES -> current.copy(midtones = GradeK().midtones)
+        Axis.CONTRAST -> current.copy(contrast = GradeK().contrast)
     }
 
     /**

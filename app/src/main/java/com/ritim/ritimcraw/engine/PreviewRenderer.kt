@@ -35,6 +35,12 @@ object GradeMapping {
         val highlights: Float,
         val tempK: Float,
         val tint: Float,
+        val saturation: Float,
+        val blackPoint: Float,
+        val whitePoint: Float,
+        val shadows: Float,
+        val midtones: Float,
+        val contrast: Float,
     )
 
     fun toNative(grade: GradeK): NativeArgs = NativeArgs(
@@ -42,6 +48,12 @@ object GradeMapping {
         highlights = grade.highlights,
         tempK = grade.tempK,
         tint = grade.tint,
+        saturation = grade.saturation,
+        blackPoint = grade.blackPoint,
+        whitePoint = grade.whitePoint,
+        shadows = grade.shadows,
+        midtones = grade.midtones,
+        contrast = grade.contrast,
     )
 }
 
@@ -116,6 +128,8 @@ class PreviewRenderer private constructor(
         val out = NativeSource.jniPreviewRender(
             handle, frameIndex,
             args.exposureEv, args.highlights, args.tempK, args.tint,
+            args.saturation, args.blackPoint, args.whitePoint,
+            args.shadows, args.midtones, args.contrast,
             maxDim,
         )
         if (out == null || out.size < 2) {

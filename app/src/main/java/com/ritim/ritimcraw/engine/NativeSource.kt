@@ -190,6 +190,12 @@ class NativeSource private constructor(
             highlights: Float,
             tempK: Float,
             tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -207,6 +213,12 @@ class NativeSource private constructor(
             highlights: Float,
             tempK: Float,
             tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -248,6 +260,12 @@ class NativeSource private constructor(
             highlights: Float,
             tempK: Float,
             tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -274,8 +292,19 @@ class NativeSource private constructor(
             highlights: Float,
             tempK: Float,
             tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
             maxDim: Int,
-        ): IntArray? = nativePreviewRender(handle, frameIndex, exposureEv, highlights, tempK, tint, maxDim)
+        ): IntArray? = nativePreviewRender(
+            handle, frameIndex,
+            exposureEv, highlights, tempK, tint,
+            saturation, blackPoint, whitePoint, shadows, midtones, contrast,
+            maxDim,
+        )
 
         /** JNI bridge: cached interactive render; see nativePreviewSessionRenderCached. */
         internal fun jniPreviewSessionRenderCached(
@@ -285,8 +314,19 @@ class NativeSource private constructor(
             highlights: Float,
             tempK: Float,
             tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
             maxDim: Int,
-        ): IntArray? = nativePreviewSessionRenderCached(handle, frameIndex, exposureEv, highlights, tempK, tint, maxDim)
+        ): IntArray? = nativePreviewSessionRenderCached(
+            handle, frameIndex,
+            exposureEv, highlights, tempK, tint,
+            saturation, blackPoint, whitePoint, shadows, midtones, contrast,
+            maxDim,
+        )
 
         /** JNI bridge: rawedit::ErrorCode of the last failed preview call. */
         internal fun jniPreviewErrorCode(): Int = nativePreviewErrorCode()
@@ -306,7 +346,17 @@ class NativeSource private constructor(
             highlights: Float,
             tempK: Float,
             tint: Float,
-        ): ByteArray? = nativeExportFrame(handle, frameIndex, exposureEv, highlights, tempK, tint)
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+        ): ByteArray? = nativeExportFrame(
+            handle, frameIndex,
+            exposureEv, highlights, tempK, tint,
+            saturation, blackPoint, whitePoint, shadows, midtones, contrast,
+        )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
         internal fun jniFramePtsUs(handle: Long, index: Int): Long = nativeFramePtsUs(handle, index)

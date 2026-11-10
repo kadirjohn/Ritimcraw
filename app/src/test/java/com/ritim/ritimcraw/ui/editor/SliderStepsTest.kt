@@ -14,42 +14,81 @@ class SliderStepsTest {
 
     @Test
     fun exposure_snaps_to_tenth_ev() {
-        val g = SliderSteps.snap(exposureEv = 1.234f, highlights = 0f, tempK = 5600f, tint = 0f)
+        val g = SliderSteps.snap(GradeK(exposureEv = 1.234f))
         assertEquals(1.2f, g.exposureEv, 1e-4f)
     }
 
     @Test
     fun exposure_snaps_negative_values() {
-        val g = SliderSteps.snap(exposureEv = -0.76f, highlights = 0f, tempK = 5600f, tint = 0f)
+        val g = SliderSteps.snap(GradeK(exposureEv = -0.76f))
         assertEquals(-0.8f, g.exposureEv, 1e-4f)
     }
 
     @Test
     fun temperature_snaps_to_50k() {
-        val g = SliderSteps.snap(exposureEv = 0f, highlights = 0f, tempK = 5623f, tint = 0f)
+        val g = SliderSteps.snap(GradeK(tempK = 5623f))
         assertEquals(5600f, g.tempK, 1e-3f)
     }
 
     @Test
     fun temperature_snaps_half_way_up() {
-        val g = SliderSteps.snap(exposureEv = 0f, highlights = 0f, tempK = 5625.4f, tint = 0f)
+        val g = SliderSteps.snap(GradeK(tempK = 5625.4f))
         assertEquals(5650f, g.tempK, 1e-3f)
     }
 
     @Test
     fun highlights_and_tint_snap_to_whole_numbers() {
-        val g = SliderSteps.snap(exposureEv = 0f, highlights = 12.7f, tempK = 5600f, tint = -3.2f)
+        val g = SliderSteps.snap(GradeK(highlights = 12.7f, tint = -3.2f))
         assertEquals(13f, g.highlights, 1e-4f)
         assertEquals(-3f, g.tint, 1e-4f)
     }
 
     @Test
+    fun tone_controls_snap_to_whole_numbers() {
+        val g = SliderSteps.snap(
+            GradeK(
+                saturation = 33.6f,
+                blackPoint = -12.4f,
+                whitePoint = 87.5f,
+                shadows = -50.7f,
+                midtones = 21.2f,
+                contrast = -8.6f,
+            )
+        )
+        assertEquals(34f, g.saturation, 1e-4f)
+        assertEquals(-12f, g.blackPoint, 1e-4f)
+        assertEquals(88f, g.whitePoint, 1e-4f)
+        assertEquals(-51f, g.shadows, 1e-4f)
+        assertEquals(21f, g.midtones, 1e-4f)
+        assertEquals(-9f, g.contrast, 1e-4f)
+    }
+
+    @Test
     fun already_snapped_values_stay_put() {
-        val g = SliderSteps.snap(exposureEv = 0.5f, highlights = -20f, tempK = 3200f, tint = 7f)
+        val g = SliderSteps.snap(
+            GradeK(
+                exposureEv = 0.5f,
+                highlights = -20f,
+                tempK = 3200f,
+                tint = 7f,
+                saturation = 40f,
+                blackPoint = -10f,
+                whitePoint = 15f,
+                shadows = -25f,
+                midtones = 5f,
+                contrast = 60f,
+            )
+        )
         assertEquals(0.5f, g.exposureEv, 1e-4f)
         assertEquals(-20f, g.highlights, 1e-4f)
         assertEquals(3200f, g.tempK, 1e-3f)
         assertEquals(7f, g.tint, 1e-4f)
+        assertEquals(40f, g.saturation, 1e-4f)
+        assertEquals(-10f, g.blackPoint, 1e-4f)
+        assertEquals(15f, g.whitePoint, 1e-4f)
+        assertEquals(-25f, g.shadows, 1e-4f)
+        assertEquals(5f, g.midtones, 1e-4f)
+        assertEquals(60f, g.contrast, 1e-4f)
     }
 
     // ---- double-tap reset ----
@@ -102,6 +141,44 @@ class SliderStepsTest {
             GradeK(exposureEv = 3f, highlights = 99f, tempK = 9000f, tint = -99f),
         )
         assertEquals(defaults.exposureEv, reset.exposureEv, 0f)
+    }
+
+    @Test
+    fun double_tap_resets_each_tone_control_only() {
+        // One shared fixture, one axis per assertion: the reset must touch
+        // ONLY the tapped control (every other axis keeps its value).
+        val current = GradeK(
+            exposureEv = -1f, highlights = 30f, tempK = 4300f, tint = 5f,
+            saturation = 66f, blackPoint = -40f, whitePoint = 25f,
+            shadows = -15f, midtones = 10f, contrast = 80f,
+        )
+
+        val sat = SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, current)
+        assertEquals(0f, sat.saturation, 0f)
+        assertEquals(-1f, sat.exposureEv, 0f)
+        assertEquals(-40f, sat.blackPoint, 0f)
+
+        val black = SliderSteps.resetToDefault(SliderSteps.Axis.BLACK_POINT, current)
+        assertEquals(0f, black.blackPoint, 0f)
+        assertEquals(66f, black.saturation, 0f)
+        assertEquals(25f, black.whitePoint, 0f)
+
+        val white = SliderSteps.resetToDefault(SliderSteps.Axis.WHITE_POINT, current)
+        assertEquals(0f, white.whitePoint, 0f)
+        assertEquals(-15f, white.shadows, 0f)
+        assertEquals(80f, white.contrast, 0f)
+
+        val shadows = SliderSteps.resetToDefault(SliderSteps.Axis.SHADOWS, current)
+        assertEquals(0f, shadows.shadows, 0f)
+        assertEquals(10f, shadows.midtones, 0f)
+
+        val mid = SliderSteps.resetToDefault(SliderSteps.Axis.MIDTONES, current)
+        assertEquals(0f, mid.midtones, 0f)
+        assertEquals(80f, mid.contrast, 0f)
+
+        val contrast = SliderSteps.resetToDefault(SliderSteps.Axis.CONTRAST, current)
+        assertEquals(0f, contrast.contrast, 0f)
+        assertEquals(-15f, contrast.shadows, 0f)
     }
 
     // ---- Compose steps argument ----

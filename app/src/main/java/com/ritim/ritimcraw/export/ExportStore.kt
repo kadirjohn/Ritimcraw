@@ -129,6 +129,12 @@ class ExportStore(private val file: File) {
                 .append(",\"highlights\":").append(num(g.highlights))
                 .append(",\"tempK\":").append(num(g.tempK))
                 .append(",\"tint\":").append(num(g.tint))
+                .append(",\"saturation\":").append(num(g.saturation))
+                .append(",\"blackPoint\":").append(num(g.blackPoint))
+                .append(",\"whitePoint\":").append(num(g.whitePoint))
+                .append(",\"shadows\":").append(num(g.shadows))
+                .append(",\"midtones\":").append(num(g.midtones))
+                .append(",\"contrast\":").append(num(g.contrast))
                 .append('}')
             return sb.toString()
         }
@@ -165,6 +171,14 @@ class ExportStore(private val file: File) {
                 highlights = (m["highlights"] as? Double)?.toFloat() ?: 0f,
                 tempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f,
                 tint = (m["tint"] as? Double)?.toFloat() ?: 0f,
+                // Snapshots written before the tone controls lack the six
+                // fields below; the neutral fallbacks keep the old look.
+                saturation = (m["saturation"] as? Double)?.toFloat() ?: 0f,
+                blackPoint = (m["blackPoint"] as? Double)?.toFloat() ?: 0f,
+                whitePoint = (m["whitePoint"] as? Double)?.toFloat() ?: 0f,
+                shadows = (m["shadows"] as? Double)?.toFloat() ?: 0f,
+                midtones = (m["midtones"] as? Double)?.toFloat() ?: 0f,
+                contrast = (m["contrast"] as? Double)?.toFloat() ?: 0f,
             )
         }
 

@@ -6,6 +6,13 @@ import java.nio.charset.StandardCharsets
 /**
  * Per-clip grade (sprint plan Task 4). Schema version 1.
  *
+ * Field order mirrors rawedit::Grade (core/include/rawedit/Develop.h). The
+ * six tone/color fields added with the second control package (COL-11/12/13)
+ * default to neutral (0), so a default-constructed GradeK is a no-op against
+ * the ungraded pipeline — bit-identical to the pre-tone-controls look (locked
+ * by the C++ golden test) — and old schema-1 files that predate the fields
+ * parse them as neutral (parseGrades falls back per field).
+ *
  * A grade set on clip A must never appear on clip B, including after closing
  * and reopening the app (QA-05) — GradeStoreTest.grades_do_not_leak_between_clips.
  */
@@ -15,6 +22,12 @@ data class GradeK(
     val highlights: Float = 0f,
     val tempK: Float = 5600f,
     val tint: Float = 0f,
+    val saturation: Float = 0f,
+    val blackPoint: Float = 0f,
+    val whitePoint: Float = 0f,
+    val shadows: Float = 0f,
+    val midtones: Float = 0f,
+    val contrast: Float = 0f,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -28,7 +41,10 @@ data class GradeK(
  * Shape (shared with [SourceRepository], same file, distinct sections):
  *   { "version": 1,
  *     "grades": { "<sourceId>": { "exposureEv": 0.0, "highlights": 0.0,
- *                                 "tempK": 5600.0, "tint": 0.0 } },
+ *                                 "tempK": 5600.0, "tint": 0.0,
+ *                                 "saturation": 0.0, "blackPoint": 0.0,
+ *                                 "whitePoint": 0.0, "shadows": 0.0,
+ *                                 "midtones": 0.0, "contrast": 0.0 } },
  *     "sources": [ ... ] }
  *
  * Writes merge with the other section instead of clobbering it: a grade save
@@ -123,7 +139,13 @@ class GradeStore(private val file: File) {
                     .append("\"exposureEv\":").append(num(g.exposureEv)).append(',')
                     .append("\"highlights\":").append(num(g.highlights)).append(',')
                     .append("\"tempK\":").append(num(g.tempK)).append(',')
-                    .append("\"tint\":").append(num(g.tint))
+                    .append("\"tint\":").append(num(g.tint)).append(',')
+                    .append("\"saturation\":").append(num(g.saturation)).append(',')
+                    .append("\"blackPoint\":").append(num(g.blackPoint)).append(',')
+                    .append("\"whitePoint\":").append(num(g.whitePoint)).append(',')
+                    .append("\"shadows\":").append(num(g.shadows)).append(',')
+                    .append("\"midtones\":").append(num(g.midtones)).append(',')
+                    .append("\"contrast\":").append(num(g.contrast))
                     .append('}')
             }
             sb.append('}')
@@ -207,6 +229,16 @@ class GradeStore(private val file: File) {
                     highlights = (m["highlights"] as? Double)?.toFloat() ?: 0f,
                     tempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f,
                     tint = (m["tint"] as? Double)?.toFloat() ?: 0f,
+                    // Schema-1 files written before the tone controls carry
+                    // none of the six fields below: each falls back to its
+                    // GradeK default (neutral), which the C++ pipeline treats
+                    // as a no-op — old projects keep their exact old look.
+                    saturation = (m["saturation"] as? Double)?.toFloat() ?: 0f,
+                    blackPoint = (m["blackPoint"] as? Double)?.toFloat() ?: 0f,
+                    whitePoint = (m["whitePoint"] as? Double)?.toFloat() ?: 0f,
+                    shadows = (m["shadows"] as? Double)?.toFloat() ?: 0f,
+                    midtones = (m["midtones"] as? Double)?.toFloat() ?: 0f,
+                    contrast = (m["contrast"] as? Double)?.toFloat() ?: 0f,
                 )
             }
             return out

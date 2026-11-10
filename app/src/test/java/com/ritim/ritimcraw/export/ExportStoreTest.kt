@@ -183,6 +183,34 @@ class ExportStoreTest {
     }
 
     @Test
+    fun tone_control_snapshot_fields_survive_reload() {
+        // The export snapshot carries the six tone/color fields end to end:
+        // what the user graded is exactly what the queued job reloads with.
+        val file = projectFile()
+        val snapshot = GradeK(
+            exposureEv = 0.75f,
+            saturation = 50f,
+            blackPoint = -30f,
+            whitePoint = 70f,
+            shadows = -20f,
+            midtones = 15f,
+            contrast = 85f,
+        )
+        ExportStore(file).add(
+            ExportJob(
+                id = "a",
+                sourceId = "clip-a",
+                snapshot = snapshot,
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        val reloaded = ExportStore(file).all().single().snapshot
+        assertEquals(snapshot, reloaded)
+    }
+
+    @Test
     fun clear_empties_queue() {
         val file = projectFile()
         val store = ExportStore(file)

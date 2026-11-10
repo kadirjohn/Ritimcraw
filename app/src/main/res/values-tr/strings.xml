@@ -37,8 +37,14 @@
     <string name="editor_tab_detail">Detay</string>
     <string name="editor_slider_exposure">Pozlama</string>
     <string name="editor_slider_highlights">Işıklar</string>
+    <string name="editor_slider_black_point">Siyah nokta</string>
+    <string name="editor_slider_white_point">Beyaz nokta</string>
+    <string name="editor_slider_shadows">Gölgeler</string>
+    <string name="editor_slider_midtones">Orta tonlar</string>
+    <string name="editor_slider_contrast">Kontrast</string>
     <string name="editor_slider_temperature">Sıcaklık</string>
     <string name="editor_slider_tint">Ton</string>
+    <string name="editor_slider_saturation">Doygunluk</string>
     <string name="editor_render_preview">Önizlemeyi oluştur</string>
     <string name="editor_play">Oynat</string>
     <string name="editor_pause">Duraklat</string>

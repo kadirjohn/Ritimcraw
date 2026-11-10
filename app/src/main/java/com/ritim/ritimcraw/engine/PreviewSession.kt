@@ -111,6 +111,8 @@ class PreviewSession private constructor(
             NativeSource.jniPreviewRender(
                 handle, frameIndex,
                 args.exposureEv, args.highlights, args.tempK, args.tint,
+                args.saturation, args.blackPoint, args.whitePoint,
+                args.shadows, args.midtones, args.contrast,
                 maxDim,
             )
         )
@@ -155,6 +157,8 @@ class PreviewSession private constructor(
                                 NativeSource.jniPreviewSessionRenderCached(
                                     handle, frameIndex,
                                     args.exposureEv, args.highlights, args.tempK, args.tint,
+                                    args.saturation, args.blackPoint, args.whitePoint,
+                                    args.shadows, args.midtones, args.contrast,
                                     maxDim,
                                 )
                             )

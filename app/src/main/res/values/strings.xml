@@ -37,8 +37,14 @@
     <string name="editor_tab_detail">Detail</string>
     <string name="editor_slider_exposure">Exposure</string>
     <string name="editor_slider_highlights">Highlights</string>
+    <string name="editor_slider_black_point">Black Point</string>
+    <string name="editor_slider_white_point">White Point</string>
+    <string name="editor_slider_shadows">Shadows</string>
+    <string name="editor_slider_midtones">Midtones</string>
+    <string name="editor_slider_contrast">Contrast</string>
     <string name="editor_slider_temperature">Temperature</string>
     <string name="editor_slider_tint">Tint</string>
+    <string name="editor_slider_saturation">Saturation</string>
     <string name="editor_render_preview">Render preview</string>
     <string name="editor_play">Play</string>
     <string name="editor_pause">Pause</string>

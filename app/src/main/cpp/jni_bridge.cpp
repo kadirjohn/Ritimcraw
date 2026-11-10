@@ -150,13 +150,27 @@ int strideFor(const rawedit::FrameInfo& info, int maxDim) {
     return n;
 }
 
-// GradeK -> rawedit::Grade: identity field mapping, floats as-is.
-rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, float tint) {
+// GradeK -> rawedit::Grade: identity field mapping, floats as-is. The ten
+// grade fields travel as flat jfloat parameters (same style as the original
+// four): the calls are per-frame and the JVM passes floats in registers, so a
+// jfloatArray would only add a GetFloatArrayElements copy per render with no
+// safety gain. Parameter order = GradeK field order (Develop.h Grade order):
+// exposureEv, highlights, tempK, tint, saturation, blackPoint, whitePoint,
+// shadows, midtones, contrast.
+rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, float tint,
+                               float saturation, float blackPoint, float whitePoint,
+                               float shadows, float midtones, float contrast) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
     g.tempK = tempK;
     g.tint = tint;
+    g.saturation = saturation;
+    g.blackPoint = blackPoint;
+    g.whitePoint = whitePoint;
+    g.shadows = shadows;
+    g.midtones = midtones;
+    g.contrast = contrast;
     return g;
 }
 
@@ -421,6 +435,8 @@ JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         JNIEnv* env, jclass, jlong handle, jint frameIndex,
         jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
+        jfloat saturation, jfloat blackPoint, jfloat whitePoint,
+        jfloat shadows, jfloat midtones, jfloat contrast,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -444,7 +460,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
 
         // 2-3. Develop with CFA decimation + ARGB (shared preview tail).
         return developToArgb(env, *frame.value, info, meta,
-                             gradeFromKotlin(exposureEv, highlights, tempK, tint),
+                             gradeFromKotlin(exposureEv, highlights, tempK, tint,
+                                             saturation, blackPoint, whitePoint,
+                                             shadows, midtones, contrast),
                              maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -470,6 +488,8 @@ JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         JNIEnv* env, jclass, jlong handle, jint frameIndex,
         jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
+        jfloat saturation, jfloat blackPoint, jfloat whitePoint,
+        jfloat shadows, jfloat midtones, jfloat contrast,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -503,7 +523,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
 
         // 2-3. Develop the (possibly cached) CFA + ARGB (shared preview tail).
         return developToArgb(env, e.cachedCfa, e.cachedInfo, meta,
-                             gradeFromKotlin(exposureEv, highlights, tempK, tint),
+                             gradeFromKotlin(exposureEv, highlights, tempK, tint,
+                                             saturation, blackPoint, whitePoint,
+                                             shadows, midtones, contrast),
                              maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -543,7 +565,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewErrorStage(JNIEnv*, jc
 JNIEXPORT jbyteArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         JNIEnv* env, jclass, jlong handle, jint frameIndex,
-        jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint) {
+        jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
+        jfloat saturation, jfloat blackPoint, jfloat whitePoint,
+        jfloat shadows, jfloat midtones, jfloat contrast) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     rawedit::Source* s = sourceFor(handle);
@@ -568,7 +592,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         gLastErrorStage = kStageDevelop;
         rawedit::ImageF img = rawedit::developCpu(
             frame.value->data(), info, meta,
-            gradeFromKotlin(exposureEv, highlights, tempK, tint));
+            gradeFromKotlin(exposureEv, highlights, tempK, tint,
+                            saturation, blackPoint, whitePoint,
+                            shadows, midtones, contrast));
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "

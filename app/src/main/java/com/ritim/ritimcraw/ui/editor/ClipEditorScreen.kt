@@ -103,7 +103,9 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
 /**
  * Clip editor (DESIGN.md Editor): preview frame on
  * surface-container-lowest with a subtle outline border, Light/Color/Detail
- * tabs, Light tab with Exposure / Highlights / Temperature / Tint sliders.
+ * tabs, Light tab with Exposure / Highlights / Black Point / White Point /
+ * Shadows / Midtones / Contrast, Color tab with Temperature / Tint /
+ * Saturation (tone stages COL-11/12/13, end to end).
  *
  * Preview: the screen renders the CURRENT transport position through the
  * native preview pipeline — the first frame once on open, then after the
@@ -562,7 +564,7 @@ fun ClipEditorScreen(
                     text = { Text(stringResource(R.string.editor_tab_detail)) },
                 )
             }
-            // Panel with sliders (Light tab complete; Color/Detail deferred).
+            // Panel with sliders (Light and Color tabs complete; Detail deferred).
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 modifier = Modifier.fillMaxWidth(),
@@ -589,8 +591,26 @@ fun ClipEditorScreen(
                             )
                         },
                     )
+                    1 -> ColorPanel(
+                        grade = grade,
+                        onChange = { g ->
+                            grade = g
+                            onGradeChange(g)
+                            // Same tier wiring as LightPanel: the machine is
+                            // shared, so which tab the drag started on does
+                            // not matter.
+                            if (dragActive) {
+                                applyTierEvent(SliderTiers.Event.GradeEdited)
+                            }
+                        },
+                        onDragActiveChange = { active ->
+                            applyTierEvent(
+                                if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
+                            )
+                        },
+                    )
                     else -> Text(
-                        // Color/Detail panels land with their controls (sprint 2).
+                        // Detail panel lands with its controls (sprint 2).
                         stringResource(R.string.editor_preview_placeholder),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -680,7 +700,7 @@ private fun TransportRow(
     }
 }
 
-/** Light tab: Exposure / Highlights / Temperature / Tint (DESIGN.md Editor). */
+/** Light tab: Exposure / Highlights / tone controls (DESIGN.md Editor). */
 @Composable
 private fun LightPanel(
     grade: GradeK,
@@ -718,6 +738,86 @@ private fun LightPanel(
             onDragActiveChange = onDragActiveChange,
         )
         GradeSlider(
+            label = stringResource(R.string.editor_slider_black_point),
+            value = grade.blackPoint,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.blackPoint.toInt()),
+            onChange = { v -> onChange(grade.copy(blackPoint = SliderSteps.snapBlackPoint(v))) },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.BLACK_POINT, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_white_point),
+            value = grade.whitePoint,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.whitePoint.toInt()),
+            onChange = { v -> onChange(grade.copy(whitePoint = SliderSteps.snapWhitePoint(v))) },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.WHITE_POINT, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_shadows),
+            value = grade.shadows,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.shadows.toInt()),
+            onChange = { v -> onChange(grade.copy(shadows = SliderSteps.snapShadows(v))) },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.SHADOWS, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_midtones),
+            value = grade.midtones,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.midtones.toInt()),
+            onChange = { v -> onChange(grade.copy(midtones = SliderSteps.snapMidtones(v))) },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.MIDTONES, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_contrast),
+            value = grade.contrast,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.contrast.toInt()),
+            onChange = { v -> onChange(grade.copy(contrast = SliderSteps.snapContrast(v))) },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.CONTRAST, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+    }
+}
+
+/**
+ * Color tab: Temperature / Tint / Saturation. Temperature and Tint moved
+ * here from the Light tab when Saturation landed (spec COL-12: white
+ * balance and saturation are the color controls; the Light tab is tone).
+ */
+@Composable
+private fun ColorPanel(
+    grade: GradeK,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        GradeSlider(
             label = stringResource(R.string.editor_slider_temperature),
             value = grade.tempK,
             valueRange = 2000f..50000f,
@@ -738,6 +838,18 @@ private fun LightPanel(
             onChange = { v -> onChange(grade.copy(tint = SliderSteps.snapTint(v))) },
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TINT, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_saturation),
+            value = grade.saturation,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.saturation.toInt()),
+            onChange = { v -> onChange(grade.copy(saturation = SliderSteps.snapSaturation(v))) },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )

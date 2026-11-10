@@ -106,5 +106,53 @@ class GradeStoreTest {
         assertEquals(0f, GradeStore(file).get("c1").exposureEv, 0f)
     }
 
+    @Test
+    fun old_format_file_loads_tone_controls_as_neutral() {
+        // A project.json written by the pre-tone-controls build (schema 1,
+        // only the four original fields). The six new fields are absent and
+        // must parse as their neutral defaults — the old look is preserved
+        // exactly, which is the owner's binding requirement for this package.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"legacy-clip":{"version":1,"exposureEv":0.8,"highlights":-25.0,"tempK":4600.0,"tint":3.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("legacy-clip")
+        // The four original fields keep their saved values...
+        assertEquals(0.8f, g.exposureEv, 0f)
+        assertEquals(-25f, g.highlights, 0f)
+        assertEquals(4600f, g.tempK, 0f)
+        assertEquals(3f, g.tint, 0f)
+        // ...and the six tone/color fields are neutral.
+        assertEquals(0f, g.saturation, 0f)
+        assertEquals(0f, g.blackPoint, 0f)
+        assertEquals(0f, g.whitePoint, 0f)
+        assertEquals(0f, g.shadows, 0f)
+        assertEquals(0f, g.midtones, 0f)
+        assertEquals(0f, g.contrast, 0f)
+    }
+
+    @Test
+    fun tone_control_values_survive_persist_and_reload() {
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            saturation = 42f,
+            blackPoint = -18f,
+            whitePoint = 63f,
+            shadows = -7f,
+            midtones = 29f,
+            contrast = -96f,
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(grade, reloaded)
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }
