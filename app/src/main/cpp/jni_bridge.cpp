@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -57,8 +58,11 @@ void setError(int code, int stage, const std::string& message) {
 }
 
 // Handle registry: a small fixed table keeps the bridge simple and avoids
-// passing raw pointers over JNI. The Kotlin engine thread is single, so a
-// plain array with generation counters is enough.
+// passing raw pointers over JNI. Each session confines ITS calls to one
+// engine thread (one motioncam decoder is not concurrency-safe), but the
+// preview engine thread and the export engine thread share THIS table —
+// insert/close from both must not race on slot bookkeeping (the owner's
+// "too many open clips" class of failure), so the table itself is guarded.
 constexpr int kMaxSources = 8;
 
 struct Entry {
@@ -67,8 +71,10 @@ struct Entry {
 };
 
 Entry gEntries[kMaxSources];
+std::mutex gRegistryMutex;
 
 int64_t insertSource(std::unique_ptr<rawedit::Source> src) {
+    std::lock_guard<std::mutex> lock(gRegistryMutex);
     for (int i = 0; i < kMaxSources; ++i) {
         if (!gEntries[i].inUse) {
             gEntries[i].source = std::move(src);
@@ -86,6 +92,10 @@ rawedit::Source* sourceFor(int64_t handle) {
         setError("invalid clip handle (recovery: reopen the clip)");
         return nullptr;
     }
+    // Only the bookkeeping read is guarded: the returned Source* stays valid
+    // because a handle is closed solely from the session's own engine thread
+    // (drained after that session's renders), never from another thread.
+    std::lock_guard<std::mutex> lock(gRegistryMutex);
     Entry& e = gEntries[handle - 1];
     if (!e.inUse || !e.source) {
         setError("clip is closed (recovery: reopen the clip)");
@@ -167,6 +177,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeOpenSource(JNIEnv*, jclass, j
 JNIEXPORT void JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeCloseSource(JNIEnv*, jclass, jlong handle) {
     if (handle > 0 && handle <= kMaxSources) {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
         Entry& e = gEntries[handle - 1];
         e.source.reset();
         e.inUse = false;

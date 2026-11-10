@@ -153,11 +153,13 @@ class PreviewRenderer private constructor(
         class PreviewRenderException(message: String) : Exception(message)
 
         /**
-         * The single preview engine thread. Daemon: it must not keep the
-         * process alive, and it is shared (not per-render) so at most one
-         * frame decode is in flight at a time.
+         * The single preview engine thread, shared by the persistent
+         * PreviewSession path and the per-render fallback so all preview
+         * native calls stay confined to one thread (submission order there
+         * is execution order, which the session's drained close relies on).
+         * Daemon: it must not keep the process alive.
          */
-        private val previewEngine: ExecutorService by lazy {
+        internal val previewEngine: ExecutorService by lazy {
             Executors.newSingleThreadExecutor { r ->
                 Thread(r, "rawedit-preview").apply { isDaemon = true }
             }
@@ -268,7 +270,7 @@ class PreviewRenderer private constructor(
         }
 
         /** Closes a raw fd without throwing (adopts then closes it). */
-        private fun closeFdQuietly(fd: Int) {
+        internal fun closeFdQuietly(fd: Int) {
             if (fd >= 0) {
                 try {
                     android.os.ParcelFileDescriptor.adoptFd(fd).close()

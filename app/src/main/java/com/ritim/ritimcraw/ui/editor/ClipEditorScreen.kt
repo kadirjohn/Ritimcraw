@@ -26,6 +26,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +47,7 @@ import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
+import com.ritim.ritimcraw.engine.PreviewSession
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
@@ -122,18 +124,62 @@ fun ClipEditorScreen(
 
         // Preview bookkeeping. renderSeq is the request counter: bumping it
         // triggers the render effect; results whose seq went stale are
-        // dropped so an old frame can never overwrite a newer one.
+        // dropped so an old frame can never overwrite a newer one — and a
+        // render that finishes after a clip switch (sourceId change) never
+        // publishes, because the whole bookkeeping block is keyed to the
+        // clip.
         var frame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
         var renderSeq by remember(sourceId) { mutableStateOf(0L) }
         var renderInFlight by remember(sourceId) { mutableStateOf(false) }
         var lastRenderFailed by remember(sourceId) { mutableStateOf(false) }
         var errorText by remember(sourceId) { mutableStateOf<String?>(null) }
+        // The persistent preview session: opened once when the editor opens
+        // with a usable fd, closed exactly once on dispose (all native calls
+        // funnel through the single preview engine thread, so the dispose
+        // close runs after every render submitted before it — a drained
+        // close). Null while opening / when the session path failed (the
+        // per-render fallback below covers that).
+        var session by remember(sourceId) { mutableStateOf<PreviewSession?>(null) }
         val nativeAvailable = NativeSource.nativeAvailable
         val canRender = EditorPreviewLogic.canRender(sourceFd, nativeAvailable)
 
-        // First render: once, when the editor opens with a usable fd.
+        // Session open: once, when the editor opens with a usable fd. The
+        // session path keeps the decoder open for the whole editor lifetime
+        // (no per-render open); when it fails, sessionRender stays false and
+        // the per-render fallback path (fresh fd per render) takes over.
+        var sessionRender by remember(sourceId) { mutableStateOf(false) }
         LaunchedEffect(sourceFd, nativeAvailable) {
-            if (canRender) renderSeq += 1
+            if (!canRender) return@LaunchedEffect
+            val fdForSession = sourceFdProvider()
+            if (fdForSession < 0) {
+                errorText = "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
+                lastRenderFailed = true
+                return@LaunchedEffect
+            }
+            PreviewSession.open(fdForSession, PreviewRenderer.previewEngine).fold(
+                onSuccess = { s ->
+                    // The session dup'd the fd; close the caller's copy —
+                    // the native side owns its own descriptor from here.
+                    PreviewRenderer.closeFdQuietly(fdForSession)
+                    session = s
+                    sessionRender = true
+                    renderSeq += 1
+                },
+                onFailure = { e ->
+                    PreviewRenderer.closeFdQuietly(fdForSession)
+                    errorText = e.message
+                    lastRenderFailed = true
+                },
+            )
+        }
+
+        // Session close: exactly once, when the editor leaves composition
+        // (route change / dispose). Drained: the close is submitted to the
+        // same single engine thread, so it runs after all pending renders.
+        DisposableEffect(sourceId) {
+            onDispose {
+                session?.close()
+            }
         }
 
         // Slider edits re-render after the trailing debounce window.
@@ -143,36 +189,41 @@ fun ClipEditorScreen(
             renderSeq += 1
         }
 
-        // The render itself: one open -> render -> close per request on the
-        // shared preview engine thread. The fd is NOT reused across renders:
-        // dup() shares the file offset, so a stale fd sits mid-file after
-        // the first open and the next render reads a header from the middle
-        // of the clip. Each render opens a fresh read-only descriptor via
-        // [sourceFdProvider] and PreviewRenderer.render closes it in a
-        // finally.
+        // The render itself. Session path: render through the PERSISTENT
+        // native session (no per-render open — the decoder stays open for
+        // the whole editor lifetime, owner request 2026-11-10 §1). Fallback
+        // path (session open failed): one open -> render -> close per
+        // request, with a FRESH fd per render (dup() shares the file offset,
+        // so reusing one fd leaves it mid-file and the next open reads a
+        // header from the middle of the clip).
         LaunchedEffect(renderSeq) {
             if (renderSeq == 0L || !canRender) return@LaunchedEffect
             val seq = renderSeq
             renderInFlight = true
-            // Fresh read-only descriptor for THIS render; the editor's own
-            // fd (sourceFd) stays untouched (dup shares the file offset, so
-            // reusing it would break the next open).
-            val fdForRender = sourceFdProvider()
-            val result = if (fdForRender < 0) {
-                Result.failure(IllegalStateException(
-                    "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
-                ))
+            val s = session
+            val result = if (sessionRender && s != null) {
+                s.render(frameIndex, grade, maxDim = 1280)
             } else {
-                PreviewRenderer.render(
-                    sourceFd = fdForRender,
-                    frameIndex = frameIndex,
-                    grade = grade,
-                    maxDim = 1280,
-                )
+                // Fresh read-only descriptor for THIS render; the editor's
+                // own fd (sourceFd) stays untouched.
+                val fdForRender = sourceFdProvider()
+                if (fdForRender < 0) {
+                    Result.failure(IllegalStateException(
+                        "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
+                    ))
+                } else {
+                    PreviewRenderer.render(
+                        sourceFd = fdForRender,
+                        frameIndex = frameIndex,
+                        grade = grade,
+                        maxDim = 1280,
+                    )
+                }
             }
             if (!RenderDebounce.isFresh(seq, renderSeq)) {
                 // A newer request superseded this one mid-flight; its own
                 // effect run will publish the fresh result.
+                renderInFlight = false
                 return@LaunchedEffect
             }
             result.fold(
