@@ -44,6 +44,7 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.LutInfo
 import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.export.Target
@@ -196,6 +197,11 @@ fun ClipEditorScreen(
         // SAME interface, so the pump/transport below never branch on kind.
         var session by remember(sourceId) { mutableStateOf<EditorPreviewSession?>(null) }
         var sessionRender by remember(sourceId) { mutableStateOf(false) }
+        // Editor audio (owner request 2026-11-11 section 4): one controller per
+        // clip, released at dispose. Audio follows the transport: play starts
+        // it at the current position, pause/seek stop it, the clip end ends
+        // it; a clip without audio plays silent (openAudio returns null).
+        val audio = remember(sourceId) { EditorAudioPlayback() }
 
         // Transport state: play/pause, the current frame shown by the
         // transport (slider position + playback cursor), and the clip's real
@@ -309,6 +315,7 @@ fun ClipEditorScreen(
         DisposableEffect(sourceId) {
             onDispose {
                 session?.close()
+                audio.release()
             }
         }
 
@@ -436,12 +443,34 @@ fun ClipEditorScreen(
                 if (idx >= pts.size - 1) {
                     // Clip end: stop, keep the last frame on screen, reset
                     // the play state (a new Play resumes from the start).
+                    // The audio ends with the clip (owner request section 4):
+                    // stop drops the still-queued tail after the last frame.
+                    audio.stop()
                     isPlaying = false
                     positionFrame = pts.size - 1
                     break
                 }
                 val nextDelay = PtsTimeline.delayUntilNextUs(pts, idx, elapsed)
                 if (nextDelay > 0) delay(nextDelay / 1000) else delay(1)
+            }
+        }
+
+        // AUDIO TRANSPORT (owner request 2026-11-11 section 4): audio follows
+        // the play state — started in parallel with the playback loop (never
+        // blocking the video path), paused whenever playback stops (pause
+        // button, seek, clip end), re-primed at the current position on every
+        // start (AUD-08's first form: old queued samples are dropped). The
+        // position provider runs on the audio thread at start handling, so a
+        // slow first open (the MCRAW whole-clip PCM read) still begins in
+        // sync.
+        LaunchedEffect(isPlaying) {
+            if (isPlaying) {
+                audio.start(session, sourceFdProvider) {
+                    val p = ptsUs ?: return@start 0L
+                    PtsTimeline.positionUs(p, positionFrame)
+                }
+            } else {
+                audio.pause()
             }
         }
 
