@@ -30,6 +30,118 @@ inline int cellSlot(int cellY, int cellX) { return cellY * 2 + cellX; }
 // wbGains index for a site color: 0 = R, 1 = G, 2 = B.
 inline int wbIndex(int siteColor) { return siteColor; }
 
+// ---- 3x3 row-major matrix helpers for the DNG color pipeline. ----
+struct Mat3 {
+    float m[9];
+};
+
+Mat3 mul3(const Mat3& a, const Mat3& b) {
+    Mat3 r{};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            float s = 0.0f;
+            for (int k = 0; k < 3; ++k)
+                s += a.m[i * 3 + k] * b.m[k * 3 + j];
+            r.m[i * 3 + j] = s;
+        }
+    return r;
+}
+
+// Invert a 3x3 (cofactor expansion). Returns identity when singular.
+Mat3 inv3(const Mat3& a) {
+    const float* m = a.m;
+    const float det =
+        m[0] * (m[4] * m[8] - m[5] * m[7]) -
+        m[1] * (m[3] * m[8] - m[5] * m[6]) +
+        m[2] * (m[3] * m[7] - m[4] * m[6]);
+    if (std::abs(det) < 1e-12f)
+        return Mat3{{1,0,0, 0,1,0, 0,0,1}};
+    const float inv = 1.0f / det;
+    Mat3 r{};
+    r.m[0] =  (m[4] * m[8] - m[5] * m[7]) * inv;
+    r.m[1] = -(m[1] * m[8] - m[2] * m[7]) * inv;
+    r.m[2] =  (m[1] * m[5] - m[2] * m[4]) * inv;
+    r.m[3] = -(m[3] * m[8] - m[5] * m[6]) * inv;
+    r.m[4] =  (m[0] * m[8] - m[2] * m[6]) * inv;
+    r.m[5] = -(m[0] * m[5] - m[2] * m[3]) * inv;
+    r.m[6] =  (m[3] * m[7] - m[4] * m[6]) * inv;
+    r.m[7] = -(m[0] * m[7] - m[1] * m[6]) * inv;
+    r.m[8] =  (m[0] * m[4] - m[1] * m[3]) * inv;
+    return r;
+}
+
+// XYZ (D50) -> linear Rec.709 (D65) via Bradford chromatic adaptation.
+// Fixed matrices: Bradford cone response, D50/D65 white points, and the
+// sRGB/Rec.709 XYZ(D65)->RGB matrix (IEC 61966-2-1).
+Mat3 xyzD50ToRec709() {
+    static const float bradford[9] = {
+        0.8951f,  0.2664f, -0.1614f,
+       -0.7502f,  1.7135f,  0.0367f,
+        0.0389f, -0.0685f,  1.0296f,
+    };
+    const float wpD50[3] = {0.9642f, 1.0f, 0.8249f};
+    const float wpD65[3] = {0.9505f, 1.0f, 1.0890f};
+
+    float srcCone[3], dstCone[3], adapt[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i = 0; i < 3; ++i) {
+        srcCone[i] = bradford[i*3+0]*wpD50[0] + bradford[i*3+1]*wpD50[1] + bradford[i*3+2]*wpD50[2];
+        dstCone[i] = bradford[i*3+0]*wpD65[0] + bradford[i*3+1]*wpD65[1] + bradford[i*3+2]*wpD65[2];
+    }
+    // D = diag(dstCone/srcCone) folded into Bradford: M = B^-1 * D * B
+    Mat3 B{}; for (int i = 0; i < 9; ++i) B.m[i] = bradford[i];
+    Mat3 D{}; D.m[0]=dstCone[0]/srcCone[0]; D.m[4]=dstCone[1]/srcCone[1]; D.m[8]=dstCone[2]/srcCone[2];
+    const Mat3 adaptM = mul3(inv3(B), mul3(D, B));
+
+    static const float xyz2rgb[9] = {
+        3.2406f, -1.5372f, -0.4986f,
+       -0.9689f,  1.8758f,  0.0415f,
+        0.0557f, -0.2040f,  1.0570f,
+    };
+    Mat3 RGB{}; for (int i = 0; i < 9; ++i) RGB.m[i] = xyz2rgb[i];
+    return mul3(RGB, adaptM);
+}
+
+bool isIdentity3(const float* m) {
+    return m[0] == 1 && m[4] == 1 && m[8] == 1
+        && m[1] == 0 && m[2] == 0 && m[3] == 0
+        && m[5] == 0 && m[6] == 0 && m[7] == 0;
+}
+
+// Camera-normalized RGB (already divided by asShotNeutral) -> linear Rec.709.
+// DNG 1.6 §6 ForwardMatrix path: XYZ_D50 = FM * CAL * cameraNorm.
+// Documented ColorMatrix fallback: XYZ = (CAL * CM)^-1 * cameraNorm (CM is
+// XYZ -> camera, so its inverse maps camera -> XYZ; CAL * CM is the full
+// camera -> XYZ per the spec's cameraRGB equation read backwards).
+// When BOTH matrices are identity (synthetic fixtures / metadata-less
+// sources), the stage is a passthrough — an identity camera profile needs
+// no colorimetric interpretation, and applying the D50->D65 Rec.709 matrix
+// alone would tint neutrals.
+bool buildCameraToRec709(const RawMeta& meta, float out[9]) {
+    const bool hasForward = !isIdentity3(meta.forwardMatrix);
+    const bool hasColor = !isIdentity3(meta.colorMatrix);
+    if (!hasForward && !hasColor) {
+        for (int i = 0; i < 9; ++i)
+            out[i] = (i == 0 || i == 4 || i == 8) ? 1.0f : 0.0f;
+        return false; // passthrough: identity profile
+    }
+    Mat3 cam2xyz{};
+    Mat3 FM{}, CAL{}, CM{};
+    for (int i = 0; i < 9; ++i) {
+        FM.m[i] = meta.forwardMatrix[i];
+        CAL.m[i] = meta.calibration[i];
+        CM.m[i] = meta.colorMatrix[i];
+    }
+    if (hasForward) {
+        cam2xyz = mul3(FM, CAL);
+    } else {
+        cam2xyz = inv3(mul3(CAL, CM));
+    }
+    const Mat3 total = mul3(xyzD50ToRec709(), cam2xyz);
+    for (int i = 0; i < 9; ++i)
+        out[i] = total.m[i];
+    return true;
+}
+
 } // namespace
 
 float sampleShading(const RawMeta& meta, float u, float v, int plane) {
@@ -235,30 +347,44 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // ---- Stage 4: bilinear demosaic. ----
     img = demosaicBilinear(norm, w, h, info.cfa);
 
-    // ---- Stage 5: white balance gains. ----
-    for (size_t i = 0; i < img.rgb.size(); i += 3) {
-        img.rgb[i + 0] *= meta.wbGains[0];
-        img.rgb[i + 1] *= meta.wbGains[1];
-        img.rgb[i + 2] *= meta.wbGains[2];
-    }
-
-    // ---- Stage 6: color matrix (3x3 row-major). ----
+    // ---- Stage 5+6: white balance + camera color transform (DNG 1.6 §6). ----
+    // The container's ColorMatrix1 maps XYZ -> native camera RGB: multiplying
+    // it onto camera RGB (the old code) inverts the wrong direction and puts
+    // a green cast on neutrals. The correct path, when ForwardMatrix1 is
+    // present (it is in MCRAW containers), is:
+    //   1. normalize camera RGB by asShotNeutral (the WB itself — applying
+    //      wbGains first and then dividing by asShotNeutral would double it),
+    //   2. XYZ_D50 = ForwardMatrix * Calibration * cameraNorm,
+    //   3. adapt D50 -> D65 (Bradford) and map XYZ -> linear Rec.709.
+    // With no ForwardMatrix, fall back to the documented ColorMatrix path:
+    // XYZ = (CAL * CM)^-1 * cameraNorm (then the same D50/D65 handling; CM is
+    // calibrated for the D65-ish illuminant here, which is the best
+    // documented approximation).
     {
-        const bool identity =
-            meta.colorMatrix[0] == 1 && meta.colorMatrix[4] == 1 && meta.colorMatrix[8] == 1
-            && meta.colorMatrix[1] == 0 && meta.colorMatrix[2] == 0
-            && meta.colorMatrix[3] == 0 && meta.colorMatrix[5] == 0
-            && meta.colorMatrix[6] == 0 && meta.colorMatrix[7] == 0;
-        if (!identity) {
-            const float* m = meta.colorMatrix;
-            for (size_t i = 0; i < img.rgb.size(); i += 3) {
-                const float r = img.rgb[i + 0];
-                const float g = img.rgb[i + 1];
-                const float b = img.rgb[i + 2];
-                img.rgb[i + 0] = m[0] * r + m[1] * g + m[2] * b;
-                img.rgb[i + 1] = m[3] * r + m[4] * g + m[5] * b;
-                img.rgb[i + 2] = m[6] * r + m[7] * g + m[8] * b;
+        // Combined camera-normalized -> linear Rec.709 (D65) matrix.
+        float cam2rgb[9];
+        const bool hasProfile = buildCameraToRec709(meta, cam2rgb);
+
+        const float invNeutral[3] = {
+            meta.asShotNeutral[0] > 0.0f ? 1.0f / meta.asShotNeutral[0] : 1.0f,
+            meta.asShotNeutral[1] > 0.0f ? 1.0f / meta.asShotNeutral[1] : 1.0f,
+            meta.asShotNeutral[2] > 0.0f ? 1.0f / meta.asShotNeutral[2] : 1.0f,
+        };
+
+        for (size_t i = 0; i < img.rgb.size(); i += 3) {
+            // WB == division by asShotNeutral (reciprocal of wbGains).
+            float r = img.rgb[i + 0] * invNeutral[0];
+            float g = img.rgb[i + 1] * invNeutral[1];
+            float b = img.rgb[i + 2] * invNeutral[2];
+            if (hasProfile) {
+                const float rr = cam2rgb[0] * r + cam2rgb[1] * g + cam2rgb[2] * b;
+                const float gg = cam2rgb[3] * r + cam2rgb[4] * g + cam2rgb[5] * b;
+                const float bb = cam2rgb[6] * r + cam2rgb[7] * g + cam2rgb[8] * b;
+                r = rr; g = gg; b = bb;
             }
+            img.rgb[i + 0] = r;
+            img.rgb[i + 1] = g;
+            img.rgb[i + 2] = b;
         }
     }
 

@@ -74,11 +74,27 @@ bool initMeta(SourceImpl& impl) {
     getJson(cm, "whiteLevel", white);
     impl.meta.white = static_cast<uint16_t>(white);
 
-    // Color matrix (3x3 row-major).
+    // Color matrix (3x3 row-major, DNG direction XYZ -> camera RGB).
     std::vector<double> m1;
     getJson(cm, "colorMatrix1", m1);
     for (int i = 0; i < 9 && i < static_cast<int>(m1.size()); ++i)
         impl.meta.colorMatrix[i] = static_cast<float>(m1[i]);
+
+    // Forward matrix (3x3 row-major, DNG direction camera RGB normalized by
+    // asShotNeutral -> XYZ D50). Preferred by the DNG spec over the
+    // ColorMatrix path when present; the develop stage needs it to build
+    // the camera -> display transform correctly.
+    std::vector<double> fm1;
+    getJson(cm, "forwardMatrix1", fm1);
+    for (int i = 0; i < 9 && i < static_cast<int>(fm1.size()); ++i)
+        impl.meta.forwardMatrix[i] = static_cast<float>(fm1[i]);
+
+    // Calibration matrix (3x3 row-major, DNG CalibrationMatrix1; usually
+    // near-diagonal per-illuminant calibration).
+    std::vector<double> cal1;
+    getJson(cm, "calibrationMatrix1", cal1);
+    for (int i = 0; i < 9 && i < static_cast<int>(cal1.size()); ++i)
+        impl.meta.calibration[i] = static_cast<float>(cal1[i]);
 
     // Sensor orientation (container level; per-frame orientation overrides
     // it in frameInfo()).

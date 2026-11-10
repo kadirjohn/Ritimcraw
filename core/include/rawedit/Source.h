@@ -56,7 +56,11 @@ struct AudioInfo {
 // Per-clip RAW metadata surfaced for the develop stage (Task 2) and the DNG
 // writer (Task 5). blackLevel is per-CFA-channel [4] in the 2x2 order
 // (r, g, g, b) matching the sensor arrangement; whiteLevel is a single value.
-// colorMatrix is 3x3 row-major, XYZ space. asShotNeutral is [r, g, b];
+// colorMatrix is 3x3 row-major, DNG direction XYZ -> native camera RGB (DNG
+// ColorMatrix1 semantics; do NOT multiply it onto camera RGB). forwardMatrix
+// is 3x3 row-major, DNG direction native camera RGB (normalized by
+// asShotNeutral) -> XYZ D50. calibration is 3x3 row-major (DNG
+// CalibrationMatrix1, usually near-diagonal). asShotNeutral is [r, g, b];
 // wbGains is its reciprocal (DNG semantics). lensShading holds 4 planes of
 // (shadingH x shadingW) gains, row-major, plane-major (plane*shadingH*shadingW).
 struct RawMeta {
@@ -64,6 +68,8 @@ struct RawMeta {
     uint16_t white = 0;
     float wbGains[3] = {1.0f, 1.0f, 1.0f};
     float colorMatrix[9] = {1,0,0, 0,1,0, 0,0,1};
+    float forwardMatrix[9] = {1,0,0, 0,1,0, 0,0,1};
+    float calibration[9] = {1,0,0, 0,1,0, 0,0,1};
     float asShotNeutral[3] = {1.0f, 1.0f, 1.0f};
     std::vector<float> lensShading;
     uint32_t shadingW = 0;

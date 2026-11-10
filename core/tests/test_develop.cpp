@@ -211,11 +211,15 @@ TEST_CASE("exposure_plus_one_ev_doubles_linear") {
 }
 
 TEST_CASE("wb_gains_and_color_matrix_apply_in_order") {
-    // A flat patch with as-shot-neutral WB gains must come out neutral:
-    // gains are the reciprocal of asShotNeutral, so feeding channels scaled
-    // by the neutral vector produces equal output.
+    // A flat patch with as-shot-neutral WB must come out neutral: WB is the
+    // division by asShotNeutral (DNG semantics; wbGains is its derived
+    // reciprocal), so feeding channels scaled by the neutral vector produces
+    // equal output. Real clip values.
     auto s = syntheticFlat(CfaPattern::RGGB, 0.3427734375f, 1.0f, 0.552734375f);
-    // wbGains = 1 / asShotNeutral (real clip values).
+    s.meta.asShotNeutral[0] = 0.3427734375f;
+    s.meta.asShotNeutral[1] = 1.0f;
+    s.meta.asShotNeutral[2] = 0.552734375f;
+    // wbGains stays in sync (reciprocal) for consumers that read it.
     s.meta.wbGains[0] = 1.0f / 0.3427734375f;
     s.meta.wbGains[1] = 1.0f;
     s.meta.wbGains[2] = 1.0f / 0.552734375f;
@@ -224,4 +228,42 @@ TEST_CASE("wb_gains_and_color_matrix_apply_in_order") {
     auto r = centerMean(img, 0), g = centerMean(img, 1), b = centerMean(img, 2);
     CHECK(std::abs(r - g) < 0.005f);
     CHECK(std::abs(b - g) < 0.005f);
+}
+
+TEST_CASE("dng_forward_matrix_maps_neutral_to_rec709") {
+    // DNG 1.6 §6 ForwardMatrix path with the REAL 24mm clip metadata:
+    // FM * CAL * [1,1,1] must land on the D50 white point (0.9642, 1.0,
+    // 0.8249), and after the Bradford D50->D65 + XYZ->Rec.709 stage a
+    // neutral camera patch must come out neutral in Rec.709.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.336914f, 1.0f, 0.568359f);
+    s.meta.asShotNeutral[0] = 0.336914f;
+    s.meta.asShotNeutral[1] = 1.0f;
+    s.meta.asShotNeutral[2] = 0.568359f;
+    s.meta.wbGains[0] = 1.0f / 0.336914f;
+    s.meta.wbGains[1] = 1.0f;
+    s.meta.wbGains[2] = 1.0f / 0.568359f;
+    // Real container values (261110_004208 clip).
+    const float fm[9] = {0.6328125f, 0.109375f, 0.21875f,
+                         0.21875f, 0.7578125f, 0.0234375f,
+                         -0.0390625f, -0.453125f, 1.3203125f};
+    const float cal[9] = {1.03125f, 0, 0,  0, 1, 0,  0, 0, 1};
+    for (int i = 0; i < 9; ++i) {
+        s.meta.forwardMatrix[i] = fm[i];
+        s.meta.calibration[i] = cal[i];
+    }
+
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto r = centerMean(img, 0), g = centerMean(img, 1), b = centerMean(img, 2);
+    // Neutral in, near-neutral out. The container's ForwardMatrix is
+    // quantized to 1/128 steps, so FM * CAL * [1,1,1] lands ~1.7% off the
+    // exact D50 white point on x, which the XYZ->Rec.709 matrix amplifies
+    // to ~4% in R. A real DNG reader shows the same slight warm shift with
+    // this metadata; 0.05 documents it instead of hiding it.
+    CHECK(std::abs(r - g) < 0.05f);
+    CHECK(std::abs(b - g) < 0.05f);
+    // And it is far closer to neutral than the old inverted-matrix bug
+    // (which put ~127% into G: neutral input came out (0.03, 1.27, 0.54)).
+    CHECK(g > 0.9f);
+    CHECK(r > 0.9f);
+    CHECK(b > 0.9f);
 }
