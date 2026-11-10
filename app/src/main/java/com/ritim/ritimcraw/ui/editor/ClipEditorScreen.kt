@@ -5,13 +5,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
@@ -22,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -38,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -100,7 +105,9 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * surface-container-lowest with a subtle outline border, Light/Color/Detail
  * tabs, Light tab with Exposure / Highlights / Black Point / White Point /
  * Shadows / Midtones / Contrast, Color tab with Temperature / Tint /
- * Saturation (tone stages COL-11/12/13, end to end).
+ * Saturation (tone stages COL-11/12/13, end to end) plus the RAW metadata
+ * controls (RAW-07/COL-09/RAW-04/RAW-06): As Shot WB reset, Highlight
+ * Reconstruction switch, Keep Vignetting switch.
  *
  * Preview: the screen renders the CURRENT transport position through the
  * native preview pipeline — the first frame once on open, then after the
@@ -551,6 +558,15 @@ fun ClipEditorScreen(
                                 if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
                             )
                         },
+                        // RAW toggles (As Shot, the reconstruction/vignetting
+                        // switches) are not drags: they settle IMMEDIATELY at
+                        // the full tier (SliderTiers.GradeEdited with no drag
+                        // active), not through the debounce.
+                        onToggleChange = { g ->
+                            grade = g
+                            onGradeChange(g)
+                            applyTierEvent(SliderTiers.Event.GradeEdited)
+                        },
                     )
                     else -> Text(
                         // Detail panel lands with its controls (sprint 2).
@@ -740,15 +756,27 @@ private fun LightPanel(
 }
 
 /**
- * Color tab: Temperature / Tint / Saturation. Temperature and Tint moved
- * here from the Light tab when Saturation landed (spec COL-12: white
- * balance and saturation are the color controls; the Light tab is tone).
+ * Color tab: white balance (As Shot reset + Temperature / Tint), the RAW
+ * stage toggles, then Saturation. Temperature and Tint moved here from the
+ * Light tab when Saturation landed (spec COL-12: white balance and
+ * saturation are the color controls; the Light tab is tone).
+ *
+ * RAW-07/COL-09/RAW-04/RAW-06 semantics:
+ * - As Shot (reset action): tempK -> 5600, tint -> 0, asShot -> true. The
+ *   manual values stay stored in tempK/tint whenever asShot is toggled off
+ *   again, so nothing is ever lost.
+ * - Temperature/Tint slider edits set asShot = false: touching a manual WB
+ *   control means manual WB is what the user wants to see.
+ * - Highlight Reconstruction and Keep Vignetting are M3 Switch rows (48dp
+ *   touch targets, DESIGN.md Inputs): they toggle native develop stages, not
+ *   tone — the Highlights TONE slider stays independent (stage 13 vs stage 3).
  */
 @Composable
 private fun ColorPanel(
     grade: GradeK,
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
+    onToggleChange: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -756,13 +784,45 @@ private fun ColorPanel(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // No header text: the Temperature GradeSlider directly below
+            // already carries the "Temperature" label.
+            FilledTonalButton(
+                onClick = {
+                    // As Shot: back to the camera's recorded WB. The manual
+                    // sliders go neutral and the WB source flips to as-shot;
+                    // the recorded WB travels in the metadata (the native
+                    // pipeline divides by asShotNeutral), so neutral manual
+                    // values + asShot = true IS the camera's white balance.
+                    onToggleChange(
+                        grade.copy(tempK = GradeK().tempK, tint = GradeK().tint, asShot = true)
+                    )
+                },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.heightIn(min = 36.dp),
+            ) {
+                Text(stringResource(R.string.editor_as_shot))
+            }
+        }
         GradeSlider(
             label = stringResource(R.string.editor_slider_temperature),
             value = grade.tempK,
             valueRange = 2000f..50000f,
             step = SliderSteps.TEMP_STEP_K,
             valueLabel = Format.formatKelvin(grade.tempK.toInt()),
-            onChange = { v -> onChange(grade.copy(tempK = SliderSteps.snapTemperature(v))) },
+            onChange = { v ->
+                // Manual temperature edit: manual WB wins (RAW-07).
+                onChange(
+                    grade.copy(
+                        tempK = SliderSteps.snapTemperature(v),
+                        asShot = false,
+                    )
+                )
+            },
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPERATURE, grade))
             },
@@ -774,11 +834,33 @@ private fun ColorPanel(
             valueRange = -100f..100f,
             step = SliderSteps.UNIT_STEP,
             valueLabel = Format.formatSigned(grade.tint.toInt()),
-            onChange = { v -> onChange(grade.copy(tint = SliderSteps.snapTint(v))) },
+            onChange = { v ->
+                // Manual tint edit: manual WB wins (RAW-07).
+                onChange(
+                    grade.copy(
+                        tint = SliderSteps.snapTint(v),
+                        asShot = false,
+                    )
+                )
+            },
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TINT, grade))
             },
             onDragActiveChange = onDragActiveChange,
+        )
+        RawToggleRow(
+            label = stringResource(R.string.editor_highlight_reconstruction),
+            checked = grade.highlightReconstruction,
+            onCheckedChange = { checked ->
+                onToggleChange(grade.copy(highlightReconstruction = checked))
+            },
+        )
+        RawToggleRow(
+            label = stringResource(R.string.editor_keep_vignetting),
+            checked = grade.keepVignetting,
+            onCheckedChange = { checked ->
+                onToggleChange(grade.copy(keepVignetting = checked))
+            },
         )
         GradeSlider(
             label = stringResource(R.string.editor_slider_saturation),
@@ -792,6 +874,38 @@ private fun ColorPanel(
             },
             onDragActiveChange = onDragActiveChange,
         )
+    }
+}
+
+/**
+ * One RAW stage toggle: label left, M3 Switch right, whole row tappable at
+ * the 48dp minimum (DESIGN.md Inputs; `toggleable` merges the switch's
+ * semantics onto the row so TalkBack reads it as one switch).
+ */
+@Composable
+private fun RawToggleRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            ),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(end = 16.dp),
+        )
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 

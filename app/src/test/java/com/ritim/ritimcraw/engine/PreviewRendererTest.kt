@@ -24,6 +24,7 @@ class PreviewRendererTest {
             exposureEv = 1.2f, highlights = -30f, tempK = 4300f, tint = 7f,
             saturation = 40f, blackPoint = -25f, whitePoint = 60f,
             shadows = -35f, midtones = 12f, contrast = 55f,
+            asShot = false, highlightReconstruction = true, keepVignetting = false,
         )
         val args = GradeMapping.toNative(grade)
         assertEquals(1.2f, args.exposureEv, 0f)
@@ -36,6 +37,9 @@ class PreviewRendererTest {
         assertEquals(-35f, args.shadows, 0f)
         assertEquals(12f, args.midtones, 0f)
         assertEquals(55f, args.contrast, 0f)
+        assertEquals(false, args.asShot)
+        assertEquals(true, args.highlightReconstruction)
+        assertEquals(false, args.keepVignetting)
     }
 
     @Test
@@ -54,6 +58,12 @@ class PreviewRendererTest {
         assertEquals(0f, args.shadows, 0f)
         assertEquals(0f, args.midtones, 0f)
         assertEquals(0f, args.contrast, 0f)
+        // The three RAW metadata toggles default to true — exactly the
+        // pre-toggle pipeline, so the default look is unchanged (RAW-07/
+        // COL-09/RAW-04/RAW-06 binding requirement).
+        assertEquals(true, args.asShot)
+        assertEquals(true, args.highlightReconstruction)
+        assertEquals(true, args.keepVignetting)
     }
 
     @Test
@@ -62,6 +72,7 @@ class PreviewRendererTest {
             exposureEv = -2.5f, highlights = 99f, tempK = 9000f, tint = -12f,
             saturation = -80f, blackPoint = 45f, whitePoint = -70f,
             shadows = 90f, midtones = -33f, contrast = 100f,
+            asShot = false, highlightReconstruction = false, keepVignetting = true,
         )
         val args = GradeMapping.toNative(grade)
         val back = GradeK(
@@ -75,6 +86,9 @@ class PreviewRendererTest {
             shadows = args.shadows,
             midtones = args.midtones,
             contrast = args.contrast,
+            asShot = args.asShot,
+            highlightReconstruction = args.highlightReconstruction,
+            keepVignetting = args.keepVignetting,
         )
         assertEquals(grade.exposureEv, back.exposureEv, 0f)
         assertEquals(grade.highlights, back.highlights, 0f)
@@ -86,6 +100,9 @@ class PreviewRendererTest {
         assertEquals(grade.shadows, back.shadows, 0f)
         assertEquals(grade.midtones, back.midtones, 0f)
         assertEquals(grade.contrast, back.contrast, 0f)
+        assertEquals(grade.asShot, back.asShot)
+        assertEquals(grade.highlightReconstruction, back.highlightReconstruction)
+        assertEquals(grade.keepVignetting, back.keepVignetting)
     }
 
     // ---- debounce window ----

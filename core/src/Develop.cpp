@@ -262,8 +262,10 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     }
 
     // Stage 2: lens shading gain (bilinear on the shading map in sensor
-    // coordinates; identity when the map is empty).
-    if (!meta.lensShading.empty() && meta.shadingW > 0 && meta.shadingH > 0) {
+    // coordinates; identity when the map is empty). Skipped when the grade
+    // asks to KEEP the optical vignette (grade.keepVignetting false) — the
+    // frame then keeps the vignette the sensor actually recorded.
+    if (grade.keepVignetting && !meta.lensShading.empty() && meta.shadingW > 0 && meta.shadingH > 0) {
         const float du = w > 1 ? 1.0f / static_cast<float>(w - 1) : 0.0f;
         const float dv = h > 1 ? 1.0f / static_cast<float>(h - 1) : 0.0f;
         for (uint32_t y = 0; y < h; ++y) {
@@ -285,7 +287,10 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // (when every color is clipped, among all colors — a uniform fully
     // clipped patch then stays at 1.0). Every site at or above white is then
     // clipped to the pre-WB value that maps to L (L / gain).
-    {
+    // Toggleable (RAW-04): grade.highlightReconstruction false skips this
+    // stage entirely, so clipped sites keep their raw clipped level and can
+    // read magenta — the sensor-channel artifact the owner wants optional.
+    if (grade.highlightReconstruction) {
         const float gain[3] = {
             meta.wbGains[0] > 0.0f ? meta.wbGains[0] : 1.0f,
             meta.wbGains[1] > 0.0f ? meta.wbGains[1] : 1.0f,
@@ -538,7 +543,12 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // Warm/cool adjustment in linear space around the as-shot state: a
     // smooth red/blue push proportional to log2(tempK/5600), applied as a
     // diagonal gain so neutrals stay neutral (no cast on gray).
-    {
+    // Skipped when the grade requests the camera's as-shot WB
+    // (grade.asShot true): asShotNeutral (stage 5) already carries the
+    // recorded WB, and an as-shot grade is equivalent to tempK 5600 /
+    // tint 0 — both stages would be no-ops anyway. Manual values stay
+    // stored in tempK/tint and come back the moment asShot is false.
+    if (!grade.asShot) {
         const float tempShift =
             grade.tempK > 0.0f ? std::log2(grade.tempK / 5600.0f) : 0.0f;
         if (std::abs(tempShift) > 1e-4f) {
@@ -556,7 +566,8 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // ---- Stage 15: tint (grade.tint in [-100, 100], 0 = neutral). ----
     // Green/magenta push on the green channel only: negative -> magenta
     // (green down), positive -> green up. Smooth, bounded, neutral-safe.
-    if (grade.tint != 0.0f) {
+    // Skipped together with stage 14 when the WB source is as-shot.
+    if (!grade.asShot && grade.tint != 0.0f) {
         const float greenGain = std::pow(2.0f, 0.4f * (grade.tint / 100.0f));
         for (size_t i = 0; i < img.rgb.size(); i += 3)
             img.rgb[i + 1] *= greenGain;

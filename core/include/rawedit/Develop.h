@@ -34,6 +34,11 @@
 // fields neutral executes none of them and is bit-identical to the
 // pre-grade pipeline (locked by test_develop.cpp golden values).
 //
+// RAW metadata stages 2, 3, 14 and 15 are additionally toggleable by the
+// Grade booleans below (keepVignetting, highlightReconstruction, asShot);
+// each defaults to the pre-toggle behavior, so the defaults preserve the
+// current look exactly.
+//
 // All math is float. ImageF is the common linear working space.
 
 #pragma once
@@ -61,6 +66,34 @@ namespace rawedit {
 // The tone controls (7-11) are defined on scene-referred linear values before
 // exposure; see the stage-order comment above for why. All neutral defaults
 // mean a default-constructed Grade is a no-op against the ungraded pipeline.
+//
+// RAW metadata toggles (spec RAW-07, COL-09, RAW-04, RAW-06). All three
+// default to TRUE, which is exactly the pre-toggle pipeline, so a
+// default-constructed Grade stays bit-identical to the old output:
+//   asShot                : WB source selector. true = the camera's recorded
+//                           as-shot WB (stage 5 divides by meta.asShotNeutral
+//                           and stages 14-15 are SKIPPED — asShot true is
+//                           equivalent to tempK 5600 / tint 0, which the old
+//                           neutral grade already ran as no-ops). false =
+//                           manual WB: stages 14-15 run and tempK/tint carry
+//                           the user's values. The manual values stay stored
+//                           in tempK/tint either way, so toggling back on
+//                           never loses them.
+//   highlightReconstruction: stage 3 toggle. true = clipped channels are
+//                           capped at the lowest clipped channel's level so
+//                           clipped areas go neutral (the old behavior).
+//                           false = stage 3 is skipped and clipped sites keep
+//                           their raw clipped level, which can read magenta —
+//                           that sensor-channel artifact is exactly what the
+//                           owner wants to be able to keep or drop.
+//   keepVignetting        : stage 2 toggle. true = the embedded lens shading
+//                           map is applied (vignette corrected, the old
+//                           behavior). false = stage 2 is skipped and the
+//                           frame keeps the optical vignette the sensor
+//                           actually recorded.
+// The Highlights TONE slider (stage 13) is independent of
+// highlightReconstruction: it remaps near-clipped tones after the fact and
+// never decides whether the sensor channels are reconstructed.
 struct Grade {
     float exposureEv = 0.0f;
     float highlights  = 0.0f;
@@ -72,6 +105,9 @@ struct Grade {
     float shadows = 0.0f;
     float midtones = 0.0f;
     float contrast = 0.0f;
+    bool asShot = true;
+    bool highlightReconstruction = true;
+    bool keepVignetting = true;
 };
 
 // Linear RGB float image, row-major, 3 floats per pixel (r, g, b).

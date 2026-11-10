@@ -97,8 +97,9 @@ uint64_t fnv1a(const ImageF& img) {
     return h;
 }
 
-// A Grade with every new tone/color field EXPLICITLY neutral (the old
-// four-field shape would leave them at these defaults anyway).
+// A Grade with every new tone/color field EXPLICITLY neutral and every RAW
+// toggle EXPLICITLY on (the old shapes would leave them at these defaults
+// anyway; writing them out proves the defaults are the old behavior).
 Grade neutralToneGrade() {
     Grade g;
     g.saturation = 0.0f;
@@ -107,6 +108,9 @@ Grade neutralToneGrade() {
     g.shadows = 0.0f;
     g.midtones = 0.0f;
     g.contrast = 0.0f;
+    g.asShot = true;
+    g.highlightReconstruction = true;
+    g.keepVignetting = true;
     return g;
 }
 
@@ -347,8 +351,10 @@ TEST_CASE("highlights_recovery_preserves_brightness_order") {
 
 TEST_CASE("temperature_slider_moves_red_and_blue_opposite") {
     auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
-    Grade warm; warm.tempK = 32000.0f;   // >> 5600: warm
-    Grade cool; cool.tempK = 3000.0f;   // << 5600: cool
+    // Manual WB: the sliders only act when asShot is false (the as-shot
+    // grade skips stages 14-15 entirely).
+    Grade warm; warm.asShot = false; warm.tempK = 32000.0f;   // >> 5600: warm
+    Grade cool; cool.asShot = false; cool.tempK = 3000.0f;   // << 5600: cool
     auto base = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
     auto w = developCpu(s.cfa.data(), s.info, s.meta, warm);
     auto c = developCpu(s.cfa.data(), s.info, s.meta, cool);
@@ -361,8 +367,9 @@ TEST_CASE("temperature_slider_moves_red_and_blue_opposite") {
 
 TEST_CASE("tint_slider_moves_green_only") {
     auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
-    Grade magenta; magenta.tint = -100.0f;
-    Grade green; green.tint = 100.0f;
+    // Manual WB: the tint slider only acts when asShot is false.
+    Grade magenta; magenta.asShot = false; magenta.tint = -100.0f;
+    Grade green; green.asShot = false; green.tint = 100.0f;
     auto base = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
     auto mg = developCpu(s.cfa.data(), s.info, s.meta, magenta);
     auto gr = developCpu(s.cfa.data(), s.info, s.meta, green);
@@ -400,13 +407,18 @@ TEST_CASE("neutral_tone_grade_is_bit_identical_to_old_pipeline") {
     }
     {
         // Fixture B: the four ORIGINAL controls all active on a colored
-        // patch; the new fields stay at their neutral defaults.
+        // patch; the new fields stay at their neutral defaults. The manual
+        // temp/tint values require asShot = false — under the new default
+        // (asShot = true) stages 14-15 would be skipped; setting it false
+        // runs them, which is what the captured hashes record. This locks
+        // the manual-WB path to the old output byte for byte.
         auto s = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f);
         Grade g;
         g.exposureEv = 0.7f;
         g.highlights = -35.0f;
         g.tempK = 7200.0f;
         g.tint = 12.0f;
+        g.asShot = false;
         auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
         CHECK(fnv1a(img) == 0x38150540c239af83ULL);
         CHECK(centerPx(img, 0) == 0x1.e8f262p-1f);
@@ -546,4 +558,137 @@ TEST_CASE("saturation_scales_chroma_neutrals_untouched") {
     CHECK(spread2 < spread0 - 0.02f);  // chroma shrank
     CHECK(spread2 > 0.0f);             // but never fully desaturated
     CHECK(fnv1a(n0) == fnv1a(n1));     // neutral patch bit-identical
+}
+
+// ---- RAW metadata toggles (owner request 2026-11-10, spec RAW-07,
+// COL-09, RAW-04, RAW-06) ----
+
+TEST_CASE("as_shot_skips_temperature_and_tint_stages") {
+    // asShot = true must skip stages 14-15 entirely, whatever tempK/tint
+    // hold: the output is bit-identical to a neutral-WB grade. asShot =
+    // false runs them (the manual path, locked by golden fixture B).
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
+    Grade asShot;
+    asShot.asShot = true;
+    asShot.tempK = 32000.0f;   // would be strongly warm if it ran
+    asShot.tint = 80.0f;       // would be strongly green if it ran
+    auto neutral = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto skipped = developCpu(s.cfa.data(), s.info, s.meta, asShot);
+    CHECK(fnv1a(skipped) == fnv1a(neutral));   // bit-identical to as-shot WB
+
+    Grade manual;
+    manual.asShot = false;
+    manual.tempK = 32000.0f;
+    manual.tint = 80.0f;
+    auto applied = developCpu(s.cfa.data(), s.info, s.meta, manual);
+    CHECK(fnv1a(applied) != fnv1a(neutral));  // manual WB really applies
+    CHECK(centerMean(applied, 0) > centerMean(neutral, 0) + 0.05f);  // warm
+    CHECK(centerMean(applied, 1) > centerMean(neutral, 1) + 0.05f);  // green
+}
+
+TEST_CASE("as_shot_with_neutral_manual_values_is_bit_identical") {
+    // The load path for OLD persisted grades: a manual grade whose temp/tint
+    // happen to be neutral, with asShot explicitly false, must still be
+    // bit-identical to the as-shot default — the skipped stages were no-ops
+    // anyway. This is what makes "missing field -> default true" safe.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.3f, 0.3f, 0.3f);
+    Grade manualNeutral;
+    manualNeutral.asShot = false;   // tempK 5600 / tint 0: both stages no-op
+    auto a = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto b = developCpu(s.cfa.data(), s.info, s.meta, manualNeutral);
+    CHECK(fnv1a(a) == fnv1a(b));
+}
+
+TEST_CASE("reconstruction_off_keeps_the_magenta_clip") {
+    // Inverse of clipped_highlights_stay_neutral: with
+    // highlightReconstruction = false the clipped red sites keep their raw
+    // clipped level and the patch reads magenta (red above green) — the
+    // sensor-channel artifact the owner wants to be able to keep.
+    const uint32_t w = 8, h = 8;
+    Synthetic s;
+    s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
+    s.info.cfa = CfaPattern::RGGB;
+    s.info.activeArea = Rect{0, 0, int(w), int(h)};
+    s.meta.black[0] = s.meta.black[1] = s.meta.black[2] = s.meta.black[3] = 0;
+    s.meta.white = 1000;
+    s.meta.wbGains[0] = 1.0f; s.meta.wbGains[1] = 1.0f; s.meta.wbGains[2] = 1.0f;
+    s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
+
+    s.cfa.assign(size_t(w) * h, 0);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const bool rSite = (y % 2 == 0) && (x % 2 == 0);
+            s.cfa[size_t(y) * w + x] = rSite ? 1000 : 600;
+        }
+
+    Grade off;
+    off.highlightReconstruction = false;
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, off);
+    auto r = centerMean(img, 0), g = centerMean(img, 1), b = centerMean(img, 2);
+    // Magenta-ish: red clearly above green (1.0 raw level vs 0.6).
+    CHECK(r > g + 0.05f);
+    // And the default still reconstructs (the paired guarantee).
+    auto on = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    CHECK(centerMean(on, 0) <= centerMean(on, 1) + 0.01f);
+}
+
+TEST_CASE("vignetting_off_darkens_the_corners") {
+    // Inverse of lens_shading_flattens_vignetted_flat_field: with
+    // keepVignetting = false the shading gain is skipped and the corner
+    // keeps the recorded vignette (dark), while the center is unchanged.
+    const uint32_t w = 16, h = 16;
+    Synthetic s;
+    s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
+    s.info.cfa = CfaPattern::RGGB;
+    s.info.activeArea = Rect{0, 0, int(w), int(h)};
+    s.meta.black[0] = s.meta.black[1] = s.meta.black[2] = s.meta.black[3] = 0;
+    s.meta.white = 1000;
+    s.meta.wbGains[0] = s.meta.wbGains[1] = s.meta.wbGains[2] = 1.0f;
+    s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
+
+    auto vignette = [&](float u, float v) {
+        const float dx = u - 0.5f, dy = v - 0.5f;
+        const float rr = dx * dx + dy * dy;
+        return 1.0f - 0.4f * rr / 0.5f;     // 1.0 center, 0.6 corner
+    };
+
+    const uint32_t sw = 17, sh = 13;
+    s.meta.shadingW = sw; s.meta.shadingH = sh;
+    s.meta.lensShading.assign(4 * sw * sh, 0.0f);
+    for (uint32_t y = 0; y < sh; ++y)
+        for (uint32_t x = 0; x < sw; ++x) {
+            const float u = sw > 1 ? float(x) / float(sw - 1) : 0.5f;
+            const float v = sh > 1 ? float(y) / float(sh - 1) : 0.5f;
+            const float g = 1.0f / vignette(u, v);
+            for (int plane = 0; plane < 4; ++plane)
+                s.meta.lensShading[plane * sw * sh + y * sw + x] = g;
+        }
+
+    const float flat = 0.5f;
+    s.cfa.assign(size_t(w) * h, 0);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const float u = float(x) / float(w - 1);
+            const float v = float(y) / float(h - 1);
+            const float val = flat * vignette(u, v) * s.meta.white;
+            s.cfa[size_t(y) * w + x] = uint16_t(val + 0.5f);
+        }
+
+    Grade off;
+    off.keepVignetting = false;
+    auto raw = developCpu(s.cfa.data(), s.info, s.meta, off);
+    auto corrected = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+
+    const float rawCenter = raw.rgb[(size_t(h / 2) * w + w / 2) * 3 + 1];
+    const float rawCorner = raw.rgb[(size_t(1) * w + 1) * 3 + 1];
+    const float fixedCorner = corrected.rgb[(size_t(1) * w + 1) * 3 + 1];
+    // The toggle only removes the gain, so with a flat 0.5 center it must
+    // sit near 0.5 (the recorded level), and the corner keeps the recorded
+    // vignette: visibly darker than the corrected corner. The bilinear
+    // demosaic mixes neighboring sites, so the corner pixel reads ~0.70
+    // of center rather than the raw 0.60; the corrected corner reads ~1.0.
+    CHECK(std::abs(rawCenter - 0.5f) < 0.01f);
+    CHECK(rawCorner < rawCenter * 0.75f);
+    CHECK(fixedCorner > rawCenter * 0.95f);
+    CHECK(rawCorner < fixedCorner - 0.05f);
 }

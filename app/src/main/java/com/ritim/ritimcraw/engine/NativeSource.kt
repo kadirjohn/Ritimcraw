@@ -196,6 +196,9 @@ class NativeSource private constructor(
             shadows: Float,
             midtones: Float,
             contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
             maxDim: Int,
         ): IntArray?
 
@@ -219,6 +222,9 @@ class NativeSource private constructor(
             shadows: Float,
             midtones: Float,
             contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
             maxDim: Int,
         ): IntArray?
 
@@ -266,6 +272,9 @@ class NativeSource private constructor(
             shadows: Float,
             midtones: Float,
             contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -298,11 +307,15 @@ class NativeSource private constructor(
             shadows: Float,
             midtones: Float,
             contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
             maxDim: Int,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
+            asShot, highlightReconstruction, keepVignetting,
             maxDim,
         )
 
@@ -320,11 +333,15 @@ class NativeSource private constructor(
             shadows: Float,
             midtones: Float,
             contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
             maxDim: Int,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
+            asShot, highlightReconstruction, keepVignetting,
             maxDim,
         )
 
@@ -352,10 +369,14 @@ class NativeSource private constructor(
             shadows: Float,
             midtones: Float,
             contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
         ): ByteArray? = nativeExportFrame(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
+            asShot, highlightReconstruction, keepVignetting,
         )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
