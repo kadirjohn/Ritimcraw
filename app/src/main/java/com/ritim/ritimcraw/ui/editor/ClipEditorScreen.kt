@@ -1,8 +1,5 @@
 package com.ritim.ritimcraw.ui.editor
 
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.DragInteraction
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,11 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
@@ -41,12 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.material3.Slider
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
@@ -66,7 +53,6 @@ import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.ui.theme.RitimTheme
-import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -652,77 +638,6 @@ fun ClipEditorScreen(
 }
 
 
-/**
- * Compact transport row under the preview (owner request 2026-11-10 §1):
- * Play/Pause icon button (48dp touch target), draggable seek slider, and
- * elapsed / total timecode in tabular figures so the strip never reflows
- * while playing. The Pause glyph is a vendored vector (material-icons-core
- * 1.7.3 has no Pause); Play uses the core PlayArrow.
- */
-@Composable
-private fun TransportRow(
-    isPlaying: Boolean,
-    enabled: Boolean,
-    elapsedUs: Long,
-    totalUs: Long,
-    fraction: Float,
-    onPlayPause: () -> Unit,
-    onSeekFraction: (Float) -> Unit,
-    onSeekStarted: () -> Unit = {},
-    onSeekFinished: () -> Unit = {},
-) {
-    val seekDescription = stringResource(R.string.editor_seek)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        IconButton(onClick = onPlayPause, enabled = enabled) {
-            if (isPlaying) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_pause),
-                    contentDescription = stringResource(R.string.editor_pause),
-                )
-            } else {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = stringResource(R.string.editor_play),
-                )
-            }
-        }
-        // M3's Slider has no onValueChangeStarted; finger-down/up come from
-        // the interaction stream. A tap is a zero-length drag: Start + Stop
-        // still fire, so a tap seeks and settles through the same path.
-        val seekInteraction = remember { MutableInteractionSource() }
-        LaunchedEffect(seekInteraction) {
-            seekInteraction.interactions.collect { interaction ->
-                when (interaction) {
-                    is DragInteraction.Start -> onSeekStarted()
-                    is DragInteraction.Stop, is DragInteraction.Cancel -> onSeekFinished()
-                }
-            }
-        }
-        Slider(
-            value = fraction,
-            onValueChange = onSeekFraction,
-            onValueChangeFinished = onSeekFinished,
-            valueRange = 0f..1f,
-            enabled = enabled,
-            interactionSource = seekInteraction,
-            modifier = Modifier
-                .weight(1f)
-                .semantics { contentDescription = seekDescription },
-        )
-        Text(
-            text = Format.formatTimecodePair(elapsedUs, totalUs),
-            style = MaterialTheme.typography.labelMedium.merge(Tnum),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
 /** Light tab: Exposure / Highlights / tone controls (DESIGN.md Editor). */
 @Composable
 private fun LightPanel(
@@ -899,6 +814,7 @@ private fun ColorPanel(
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPERATURE, grade))
             },
             onDragActiveChange = onDragActiveChange,
+            trackGradient = CompactSliderDefaults.TEMPERATURE_GRADIENT,
         )
         GradeSlider(
             label = stringResource(R.string.editor_slider_tint),
@@ -919,6 +835,7 @@ private fun ColorPanel(
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TINT, grade))
             },
             onDragActiveChange = onDragActiveChange,
+            trackGradient = CompactSliderDefaults.TINT_GRADIENT,
         )
         // CFA-stage toggles: MCRAW only (encoded clips decode YUV — there is
         // no CFA stage to reconstruct or vignette; the decision is pure and
@@ -950,6 +867,7 @@ private fun ColorPanel(
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
             },
             onDragActiveChange = onDragActiveChange,
+            trackGradient = CompactSliderDefaults.SATURATION_GRADIENT,
         )
     }
 }
@@ -1068,62 +986,5 @@ private fun RawToggleRow(
             modifier = Modifier.padding(end = 16.dp),
         )
         Switch(checked = checked, onCheckedChange = null)
-    }
-}
-
-@Composable
-private fun GradeSlider(
-    label: String,
-    value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    step: Float,
-    valueLabel: String,
-    onChange: (Float) -> Unit,
-    onDoubleTapReset: () -> Unit,
-    onDragActiveChange: (Boolean) -> Unit = {},
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            // Double tap anywhere on the slider row resets this control to
-            // its GradeK default (DESIGN.md Inputs: "double tap resets").
-            .pointerInput(label) {
-                detectTapGestures(onDoubleTap = { onDoubleTapReset() })
-            },
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(label, style = MaterialTheme.typography.labelLarge)
-            // tnum for EV / Kelvin / signed values (DESIGN.md Tabular numbers).
-            Text(
-                valueLabel,
-                style = MaterialTheme.typography.labelLarge.merge(Tnum),
-            )
-        }
-        // Finger down/up on a GRADE slider drives the same tier machine as
-        // the transport: while the finger is down, re-renders run at the low
-        // drag tier through the session's CACHED path — the frame is
-        // unchanged, only the grade moved, so the decode is skipped entirely
-        // (the whole point of the interactive path). A tap is a zero-length
-        // drag: Start + Stop both fire, so a tap settles to full quality too.
-        val gradeInteraction = remember { MutableInteractionSource() }
-        LaunchedEffect(gradeInteraction) {
-            gradeInteraction.interactions.collect { interaction ->
-                when (interaction) {
-                    is DragInteraction.Start -> onDragActiveChange(true)
-                    is DragInteraction.Stop, is DragInteraction.Cancel -> onDragActiveChange(false)
-                }
-            }
-        }
-        Slider(
-            value = value,
-            onValueChange = onChange,
-            valueRange = valueRange,
-            steps = SliderSteps.composeSteps(valueRange, step),
-            interactionSource = gradeInteraction,
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
