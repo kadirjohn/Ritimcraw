@@ -44,6 +44,9 @@ object GradeMapping {
         val asShot: Boolean,
         val highlightReconstruction: Boolean,
         val keepVignetting: Boolean,
+        val sharpness: Float,
+        val detail: Float,
+        val tonemap: Int,
     )
 
     fun toNative(grade: GradeK): NativeArgs = NativeArgs(
@@ -60,6 +63,9 @@ object GradeMapping {
         asShot = grade.asShot,
         highlightReconstruction = grade.highlightReconstruction,
         keepVignetting = grade.keepVignetting,
+        sharpness = grade.sharpness,
+        detail = grade.detail,
+        tonemap = grade.tonemap,
     )
 }
 
@@ -137,6 +143,7 @@ class PreviewRenderer private constructor(
             args.saturation, args.blackPoint, args.whitePoint,
             args.shadows, args.midtones, args.contrast,
             args.asShot, args.highlightReconstruction, args.keepVignetting,
+            args.sharpness, args.detail, args.tonemap,
             maxDim,
         )
         if (out == null || out.size < 2) {

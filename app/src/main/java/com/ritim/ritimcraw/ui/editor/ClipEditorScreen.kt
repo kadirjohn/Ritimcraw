@@ -23,6 +23,9 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -45,7 +48,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
@@ -122,7 +124,9 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * Shadows / Midtones / Contrast, Color tab with Temperature / Tint /
  * Saturation (tone stages COL-11/12/13, end to end) plus the RAW metadata
  * controls (RAW-07/COL-09/RAW-04/RAW-06): As Shot WB reset, Highlight
- * Reconstruction switch, Keep Vignetting switch.
+ * Reconstruction switch, Keep Vignetting switch, Detail tab with Sharpness /
+ * Detail sliders (COL-15) and the Tonemapping choice Off / ACES / AgX
+ * (COL-16) as M3 segmented buttons.
  *
  * Preview: the screen renders the CURRENT transport position through the
  * native preview pipeline — the first frame once on open, then after the
@@ -612,15 +616,31 @@ fun ClipEditorScreen(
                             applyTierEvent(SliderTiers.Event.GradeEdited)
                         },
                     )
-                    else -> Text(
-                        // Detail panel lands with its controls (sprint 2).
-                        stringResource(R.string.editor_preview_placeholder),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
+                    else -> DetailPanel(
+                        grade = grade,
+                        onChange = { g ->
+                            grade = g
+                            onGradeChange(g)
+                            // Same tier wiring as the other tabs: mid-drag
+                            // grade steps render immediately at the low tier
+                            // through the cached path.
+                            if (dragActive) {
+                                applyTierEvent(SliderTiers.Event.GradeEdited)
+                            }
+                        },
+                        onDragActiveChange = { active ->
+                            applyTierEvent(
+                                if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
+                            )
+                        },
+                        // The tonemapping choice is not a drag: it settles
+                        // IMMEDIATELY at the full tier (GradeEdited with no
+                        // drag active), like the RAW toggles.
+                        onTonemapChange = { g ->
+                            grade = g
+                            onGradeChange(g)
+                            applyTierEvent(SliderTiers.Event.GradeEdited)
+                        },
                     )
                 }
             }
@@ -929,6 +949,91 @@ private fun ColorPanel(
         )
     }
 }
+
+/**
+ * Detail tab (COL-15/COL-16): Sharpness (edge sharpness, unsharp radius 1.5)
+ * and Detail (fine-texture contrast, unsharp radius 0.75) sliders, then the
+ * Tonemapping choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md
+ * Inputs: "segmented buttons for codec and scope choice" — the same single
+ * choice pattern). All three controls run on BOTH clip kinds: the native
+ * develop pipeline and developEncoded share the same stages, so encoded
+ * (Mi-Log MP4) clips get the same Detail tab with nothing hidden.
+ *
+ * Tonemap values (rawedit::Grade): 0 = off, 1 = ACES (Narkowicz 2015 fit),
+ * 2 = AgX (2022 Filmic AgX essential fit). The grade stores the choice, so
+ * the used transform version travels with the saved grade (COL-16's
+ * versioning requirement at this package's scope).
+ */
+@Composable
+private fun DetailPanel(
+    grade: GradeK,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onTonemapChange: (GradeK) -> Unit = {},
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_sharpness),
+            value = grade.sharpness,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.sharpness.toInt()),
+            onChange = { v -> onChange(grade.copy(sharpness = SliderSteps.snapSharpness(v))) },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.SHARPNESS, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_detail),
+            value = grade.detail,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.detail.toInt()),
+            onChange = { v -> onChange(grade.copy(detail = SliderSteps.snapDetail(v))) },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.DETAIL, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        // Tonemapping: one row, one choice (Off / ACES / AgX). The label
+        // row mirrors the slider rows so the three tabs read as one panel.
+        Text(
+            stringResource(R.string.editor_tonemapping),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            val options = listOf(
+                TonemapOption(R.string.editor_tonemap_off, 0),
+                TonemapOption(R.string.editor_tonemap_aces, 1),
+                TonemapOption(R.string.editor_tonemap_agx, 2),
+            )
+            options.forEachIndexed { index, option ->
+                SegmentedButton(
+                    selected = grade.tonemap == option.value,
+                    onClick = { onTonemapChange(grade.copy(tonemap = option.value)) },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = options.size,
+                    ),
+                ) {
+                    Text(stringResource(option.labelRes))
+                }
+            }
+        }
+    }
+}
+
+/** One tonemapping segmented-button entry: label + rawedit::Grade value. */
+private data class TonemapOption(
+    val labelRes: Int,
+    val value: Int,
+)
 
 /**
  * One RAW stage toggle: label left, M3 Switch right, whole row tappable at

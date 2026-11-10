@@ -142,6 +142,9 @@ class ExportStore(private val file: File) {
                 .append(",\"asShot\":").append(g.asShot)
                 .append(",\"highlightReconstruction\":").append(g.highlightReconstruction)
                 .append(",\"keepVignetting\":").append(g.keepVignetting)
+                .append(",\"sharpness\":").append(num(g.sharpness))
+                .append(",\"detail\":").append(num(g.detail))
+                .append(",\"tonemap\":").append(g.tonemap)
                 .append('}')
             return sb.toString()
         }
@@ -198,6 +201,12 @@ class ExportStore(private val file: File) {
                     ?: (parsedTempK == 5600f && parsedTint == 0f),
                 highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
                 keepVignetting = m["keepVignetting"] as? Boolean ?: true,
+                // Detail/tonemap (COL-15/COL-16) postdate older snapshots:
+                // fall back to neutral (0), which the native pipeline
+                // treats as a no-op — the old look is preserved exactly.
+                sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
+                detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
+                tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
             )
         }
 

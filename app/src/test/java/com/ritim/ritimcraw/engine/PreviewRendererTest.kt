@@ -25,6 +25,7 @@ class PreviewRendererTest {
             saturation = 40f, blackPoint = -25f, whitePoint = 60f,
             shadows = -35f, midtones = 12f, contrast = 55f,
             asShot = false, highlightReconstruction = true, keepVignetting = false,
+            sharpness = 25f, detail = -10f, tonemap = 1,
         )
         val args = GradeMapping.toNative(grade)
         assertEquals(1.2f, args.exposureEv, 0f)
@@ -40,6 +41,9 @@ class PreviewRendererTest {
         assertEquals(false, args.asShot)
         assertEquals(true, args.highlightReconstruction)
         assertEquals(false, args.keepVignetting)
+        assertEquals(25f, args.sharpness, 0f)
+        assertEquals(-10f, args.detail, 0f)
+        assertEquals(1, args.tonemap)
     }
 
     @Test
@@ -64,6 +68,13 @@ class PreviewRendererTest {
         assertEquals(true, args.asShot)
         assertEquals(true, args.highlightReconstruction)
         assertEquals(true, args.keepVignetting)
+        // The detail/tonemap fields default to neutral — sharpness 0,
+        // detail 0, tonemap 0 = off. All three are pipeline no-ops, so a
+        // default grade keeps the exact pre-COL-15/16 look (locked at the
+        // C++ level by the golden bit-identity test).
+        assertEquals(0f, args.sharpness, 0f)
+        assertEquals(0f, args.detail, 0f)
+        assertEquals(0, args.tonemap)
     }
 
     @Test
@@ -73,6 +84,7 @@ class PreviewRendererTest {
             saturation = -80f, blackPoint = 45f, whitePoint = -70f,
             shadows = 90f, midtones = -33f, contrast = 100f,
             asShot = false, highlightReconstruction = false, keepVignetting = true,
+            sharpness = -45f, detail = 67f, tonemap = 2,
         )
         val args = GradeMapping.toNative(grade)
         val back = GradeK(
@@ -89,6 +101,9 @@ class PreviewRendererTest {
             asShot = args.asShot,
             highlightReconstruction = args.highlightReconstruction,
             keepVignetting = args.keepVignetting,
+            sharpness = args.sharpness,
+            detail = args.detail,
+            tonemap = args.tonemap,
         )
         assertEquals(grade.exposureEv, back.exposureEv, 0f)
         assertEquals(grade.highlights, back.highlights, 0f)
@@ -103,6 +118,9 @@ class PreviewRendererTest {
         assertEquals(grade.asShot, back.asShot)
         assertEquals(grade.highlightReconstruction, back.highlightReconstruction)
         assertEquals(grade.keepVignetting, back.keepVignetting)
+        assertEquals(grade.sharpness, back.sharpness, 0f)
+        assertEquals(grade.detail, back.detail, 0f)
+        assertEquals(grade.tonemap, back.tonemap)
     }
 
     // ---- debounce window ----

@@ -214,5 +214,68 @@ class GradeStoreTest {
         assertEquals(3f, g.tint, 0f)
     }
 
+    @Test
+    fun old_format_file_loads_detail_and_tonemap_as_neutral() {
+        // A project.json written by the pre-detail/tonemap build (COL-15/
+        // COL-16). The three new fields are absent and must parse as their
+        // neutral defaults (sharpness 0, detail 0, tonemap 0 = off) — the
+        // native pipeline treats all three as no-ops, so the old look is
+        // preserved exactly (the binding requirement of this package).
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-detail-clip":{"version":1,"exposureEv":0.8,"highlights":-25.0,"tempK":4600.0,"tint":3.0,"saturation":10.0,"blackPoint":-5.0,"whitePoint":4.0,"shadows":-2.0,"midtones":1.0,"contrast":8.0,"asShot":false,"highlightReconstruction":true,"keepVignetting":true}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-detail-clip")
+        // The pre-existing fields keep their saved values...
+        assertEquals(0.8f, g.exposureEv, 0f)
+        assertEquals(-25f, g.highlights, 0f)
+        assertEquals(4600f, g.tempK, 0f)
+        assertEquals(3f, g.tint, 0f)
+        assertEquals(10f, g.saturation, 0f)
+        assertEquals(8f, g.contrast, 0f)
+        // ...and the three detail/tonemap fields are neutral.
+        assertEquals(0f, g.sharpness, 0f)
+        assertEquals(0f, g.detail, 0f)
+        assertEquals(0, g.tonemap)
+    }
+
+    @Test
+    fun detail_and_tonemap_survive_persist_and_reload() {
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            sharpness = 35f,
+            detail = -12f,
+            tonemap = 2, // AgX
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(grade, reloaded)
+        assertEquals(35f, reloaded.sharpness, 0f)
+        assertEquals(-12f, reloaded.detail, 0f)
+        assertEquals(2, reloaded.tonemap)
+    }
+
+    @Test
+    fun tonemap_int_values_round_trip_through_json() {
+        // tonemap is an Int in the grade but travels through JSON: all three
+        // choices (0 off, 1 ACES, 2 AgX) must survive a persist + reload
+        // without float drift or silent clamping.
+        val file = projectFile()
+        GradeStore(file).put("off", GradeK(tonemap = 0))
+        GradeStore(file).put("aces", GradeK(tonemap = 1))
+        GradeStore(file).put("agx", GradeK(tonemap = 2))
+
+        assertEquals(0, GradeStore(file).get("off").tonemap)
+        assertEquals(1, GradeStore(file).get("aces").tonemap)
+        assertEquals(2, GradeStore(file).get("agx").tonemap)
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }
