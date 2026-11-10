@@ -34,11 +34,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
@@ -142,6 +145,10 @@ fun AppNav() {
     var exportJobs by remember { mutableStateOf(stores.exports.all()) }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     var editorRoute by rememberSaveable { mutableStateOf<EditorRoute?>(null) }
+    // Debug-only measurement harness state (PreviewMetrics): one run at a
+    // time, kicked from Settings' Measure action.
+    var measuring by remember { mutableStateOf(false) }
+    var measureKick by remember { mutableStateOf(0) }
 
     // The runner: drains every QUEUED job serially, then refreshes the UI
     // list. Runs whenever something was enqueued or retried.
@@ -149,6 +156,30 @@ fun AppNav() {
         if (queueKick > 0) {
             queue.runAll()
             exportJobs = stores.exports.all()
+        }
+    }
+
+    // The measurement harness run: opens the FIRST imported clip read-only
+    // and hands the fd to PreviewMetrics (which closes it). The summary
+    // block lands in logcat under "ritim-pm"; the run is serial (the
+    // button disables itself while measuring).
+    LaunchedEffect(measureKick) {
+        if (measureKick == 0) return@LaunchedEffect
+        val first = sources.firstOrNull { it.access == Access.OK }
+        if (first == null) {
+            measuring = false
+            return@LaunchedEffect
+        }
+        try {
+            val fd = context.contentResolver
+                .openFileDescriptor(Uri.parse(first.uri), "r")
+                ?.detachFd() ?: -1
+            if (fd >= 0) PreviewMetrics.measure(fd)
+        } catch (e: Exception) {
+            // The harness logs its own failures; a lost grant degrades to
+            // "no run", never a crash.
+        } finally {
+            measuring = false
         }
     }
 
@@ -307,7 +338,19 @@ fun AppNav() {
                                 exportJobs = stores.exports.all()
                             },
                         )
-                        Destination.SETTINGS -> SettingsScreen()
+                        Destination.SETTINGS -> SettingsScreen(
+                            onMeasure = if (BuildConfig.DEBUG) {
+                                {
+                                    if (!measuring) {
+                                        measuring = true
+                                        measureKick += 1
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                            measuring = measuring,
+                        )
                     }
                 }
             }

@@ -55,6 +55,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // PreviewMetrics (the debug-only latency/fps harness) reads
+        // BuildConfig.DEBUG to gate its logcat output.
+        buildConfig = true
     }
 }
 
