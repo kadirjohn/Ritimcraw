@@ -97,8 +97,8 @@ uint64_t fnv1a(const ImageF& img) {
     return h;
 }
 
-// A Grade with every new tone/color field EXPLICITLY neutral and every RAW
-// toggle EXPLICITLY on (the old shapes would leave them at these defaults
+// A Grade with every new tone/color/detail field EXPLICITLY neutral and every
+// RAW toggle EXPLICITLY on (the old shapes would leave them at these defaults
 // anyway; writing them out proves the defaults are the old behavior).
 Grade neutralToneGrade() {
     Grade g;
@@ -111,6 +111,9 @@ Grade neutralToneGrade() {
     g.asShot = true;
     g.highlightReconstruction = true;
     g.keepVignetting = true;
+    g.sharpness = 0.0f;
+    g.detail = 0.0f;
+    g.tonemap = 0;
     return g;
 }
 
@@ -691,4 +694,288 @@ TEST_CASE("vignetting_off_darkens_the_corners") {
     CHECK(rawCorner < rawCenter * 0.75f);
     CHECK(fixedCorner > rawCenter * 0.95f);
     CHECK(rawCorner < fixedCorner - 0.05f);
+}
+
+// ---- Detail controls + tonemapping (owner request 2026-11-10 section 3) ----
+
+// A hand-built CFA whose developed image has a sharp vertical EDGE at the
+// center column and flat regions on both sides: the left half is 0.30 gray,
+// the right half 0.60. After bilinear demosaic the boundary between the
+// halves is a one-pixel ramp — exactly the local contrast a sharpening
+// stage should amplify, while the flat interiors have none.
+Synthetic syntheticEdgeFixture() {
+    const uint32_t w = 16, h = 16;
+    Synthetic s;
+    s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
+    s.info.cfa = CfaPattern::RGGB;
+    s.info.activeArea = Rect{0, 0, int(w), int(h)};
+    s.meta.black[0] = s.meta.black[1] = s.meta.black[2] = s.meta.black[3] = 0;
+    s.meta.white = 1000;
+    s.meta.wbGains[0] = s.meta.wbGains[1] = s.meta.wbGains[2] = 1.0f;
+    s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
+
+    const float left = 0.30f, right = 0.60f;
+    s.cfa.assign(size_t(w) * h, 0);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            // The edge sits between columns 7 and 8 (x < 8 left, else right).
+            const float v = (x < 8) ? left : right;
+            s.cfa[size_t(y) * w + x] = uint16_t(v * s.meta.white + 0.5f);
+        }
+    return s;
+}
+
+TEST_CASE("sharpness_increases_local_contrast_at_the_edge") {
+    // COL-15: +100 sharpness must increase the local contrast across the
+    // edge (bright side of the boundary brightens, dark side darkens) and
+    // leave the FLAT interiors untouched (a flat region's blur equals its
+    // value, so the high-pass delta is exactly 0).
+    auto s = syntheticEdgeFixture();
+    const uint32_t w = s.info.width, h = s.info.height;
+
+    Grade g; g.sharpness = 100.0f;
+    auto plain = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto sharp = developCpu(s.cfa.data(), s.info, s.meta, g);
+
+    // Local contrast across the edge: max minus min of the center row.
+    auto rowExtrema = [&](const ImageF& img, uint32_t y, float& lo, float& hi) {
+        lo = hi = img.rgb[(size_t(y) * w) * 3 + 1];
+        for (uint32_t x = 0; x < w; ++x) {
+            const float v = img.rgb[(size_t(y) * w + x) * 3 + 1];
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+    };
+    float lo0, hi0, lo1, hi1;
+    rowExtrema(plain, h / 2, lo0, hi0);
+    rowExtrema(sharp, h / 2, lo1, hi1);
+    CHECK(hi1 - lo1 > (hi0 - lo0) + 0.01f);   // edge contrast grew
+    // The overshoot directions: bright side brighter, dark side darker.
+    CHECK(hi1 > hi0 + 0.005f);
+    CHECK(lo1 < lo0 - 0.005f);
+
+    // Flat interiors untouched: columns 0-4 (left) and 11-15 (right) are far
+    // from the edge; their pixels must be exactly equal.
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x <= 4; ++x) {
+            const size_t i = (size_t(y) * w + x) * 3;
+            CHECK(sharp.rgb[i + 0] == plain.rgb[i + 0]);
+            CHECK(sharp.rgb[i + 1] == plain.rgb[i + 1]);
+            CHECK(sharp.rgb[i + 2] == plain.rgb[i + 2]);
+        }
+        for (uint32_t x = 11; x < w; ++x) {
+            const size_t i = (size_t(y) * w + x) * 3;
+            CHECK(sharp.rgb[i + 0] == plain.rgb[i + 0]);
+            CHECK(sharp.rgb[i + 1] == plain.rgb[i + 1]);
+            CHECK(sharp.rgb[i + 2] == plain.rgb[i + 2]);
+        }
+    }
+
+    // Negative sharpness softens: the edge ramp flattens toward its local
+    // mean. The row-extrema range cannot shrink (the flat interiors pin
+    // it), so the right metric is the local delta ACROSS the ramp: the
+    // bright-side ramp pixel minus the dark-side ramp pixel.
+    Grade soft; soft.sharpness = -100.0f;
+    auto softImg = developCpu(s.cfa.data(), s.info, s.meta, soft);
+    const uint32_t row = h / 2;
+    auto rampDelta = [&](const ImageF& img) {
+        // The demosaic ramp: column 7 blends left/right (dark side of the
+        // boundary), column 8 blends right/left (bright side).
+        return img.rgb[(size_t(row) * w + 8) * 3 + 1]
+             - img.rgb[(size_t(row) * w + 7) * 3 + 1];
+    };
+    CHECK(rampDelta(softImg) < rampDelta(plain) - 0.005f);
+}
+
+TEST_CASE("sharpness_shifts_luma_only_no_chroma_shift") {
+    // The unsharp mask adds the SAME delta to r, g and b, so channel
+    // DIFFERENCES are preserved exactly (no chroma halos, hue preserved).
+    auto s = syntheticEdgeFixture();
+
+    Grade g; g.sharpness = 80.0f;
+    auto plain = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto sharp = developCpu(s.cfa.data(), s.info, s.meta, g);
+    for (size_t i = 0; i < plain.rgb.size(); i += 3) {
+        const float d0 = plain.rgb[i + 0] - plain.rgb[i + 1];
+        const float d1 = sharp.rgb[i + 0] - sharp.rgb[i + 1];
+        CHECK(std::abs(d0 - d1) < 1e-6f);
+        const float e0 = plain.rgb[i + 2] - plain.rgb[i + 1];
+        const float e1 = sharp.rgb[i + 2] - sharp.rgb[i + 1];
+        CHECK(std::abs(e0 - e1) < 1e-6f);
+    }
+}
+
+TEST_CASE("detail_moves_fine_texture_at_a_smaller_scale") {
+    // COL-15: Detail is a SECOND unsharp pass at a smaller radius (0.75 px
+    // vs sharpness's 1.5 px) — its own control, not a duplicate. The scale
+    // separation shows up in the HALO EXTENT around an edge, not in the
+    // total delta: for Gaussian high-pass kernels a wider radius always
+    // responds at least as strongly at every frequency, so "detail moves
+    // the texture more" is not the right signature. What separates the
+    // scales is how FAR from the edge the effect reaches. The kernels'
+    // second-neighbor taps expose it: at radius 1.5 the c1 tap weight is
+    // exp(-2/1.5^2) = 0.411, at radius 0.75 it is exp(-2/0.75^2) = 0.029 —
+    // so sharpness bleeds visibly into the 2-px neighborhood while detail
+    // is confined to the immediate 1-px ramp.
+    auto s = syntheticEdgeFixture();
+    const uint32_t w = s.info.width, h = s.info.height;
+
+    auto plain = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    Grade gd; gd.detail = 100.0f;
+    auto detailed = developCpu(s.cfa.data(), s.info, s.meta, gd);
+    Grade gs; gs.sharpness = 100.0f;
+    auto sharpened = developCpu(s.cfa.data(), s.info, s.meta, gs);
+
+    // Per-pixel absolute delta from the neutral render, green channel of
+    // the center row.
+    const uint32_t row = h / 2;
+    auto rowDelta = [&](const ImageF& b) {
+        double sum = 0;
+        for (uint32_t x = 0; x < w; ++x) {
+            const size_t i = (size_t(row) * w + x) * 3 + 1;
+            sum += std::abs(double(plain.rgb[i]) - double(b.rgb[i]));
+        }
+        return sum;
+    };
+    const double dDetail = rowDelta(detailed);
+    const double dSharp = rowDelta(sharpened);
+    CHECK(dDetail > 0.0);                       // detail really applies
+    CHECK(dSharp > 0.0);                       // sharpness really applies
+
+    // The scale separation: the halo's REACH. The demosaic ramp is ~2 px
+    // wide (green at column 8, red/blue ramping at column 7), so the
+    // immediate neighborhood responds to both kernels. One step further
+    // out — columns 5 and 10 — only the wide kernel's second-neighbor tap
+    // (weight 0.411 at radius 1.5 vs 0.029 at radius 0.75) still reaches:
+    // sharpness's halo there is ~8x detail's.
+    const size_t i5 = (size_t(row) * w + 5) * 3 + 1;
+    const size_t i10 = (size_t(row) * w + 10) * 3 + 1;
+    const double haloSharp = std::abs(double(plain.rgb[i5]) - double(sharpened.rgb[i5]))
+                           + std::abs(double(plain.rgb[i10]) - double(sharpened.rgb[i10]));
+    const double haloDetail = std::abs(double(plain.rgb[i5]) - double(detailed.rgb[i5]))
+                            + std::abs(double(plain.rgb[i10]) - double(detailed.rgb[i10]));
+    CHECK(haloSharp > 0.003);                   // the wide kernel reaches out
+    CHECK(haloDetail < haloSharp * 0.25);       // the fine kernel does not
+
+    // And the two controls are INDEPENDENT: detail alone (sharpness 0)
+    // moves the edge neighborhood, proving it is its own stage.
+    CHECK(dDetail > 0.01);
+}
+
+TEST_CASE("tonemap_off_is_bit_identical_passthrough") {
+    // tonemap = 0 (the default) must be an exact passthrough: same FNV-1a
+    // hash as the pre-tonemapping pipeline on a graded fixture, and a
+    // default Grade must equal an explicitly neutral one.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f);
+    Grade g;
+    g.exposureEv = 0.7f;
+    g.highlights = -35.0f;
+    g.asShot = false;
+    g.tempK = 7200.0f;
+    g.tint = 12.0f;
+    g.tonemap = 0;
+    auto a = developCpu(s.cfa.data(), s.info, s.meta, g);
+    auto b = developCpu(s.cfa.data(), s.info, s.meta, neutralToneGrade());
+    // Same graded fixture as golden test B but tonemap explicitly 0: the
+    // hash must equal the captured pre-tonemapping value.
+    CHECK(fnv1a(a) == 0x38150540c239af83ULL);
+    // Default Grade vs explicitly-neutral Grade: bit identical.
+    auto c = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto d = developCpu(s.cfa.data(), s.info, s.meta, neutralToneGrade());
+    CHECK(fnv1a(c) == fnv1a(d));
+}
+
+TEST_CASE("aces_tonemap_maps_known_inputs_to_known_outputs") {
+    // ACES (tonemap 1): the Narkowicz 2015 fit. Fixture values computed in
+    // float32 from y = x(2.51x + 0.03) / (x(2.43x + 0.59) + 0.14), clamped
+    // to [0,1]:
+    //   0.18 -> 0.26689893   (midgray anchor)
+    //   1.00 -> 0.80379748   (1.0 anchor)
+    //   4.00 -> 0.97341710   (4.0 anchor, deep highlight compression)
+    // A flat patch developed with tonemap = 1 lands on the anchor (the
+    // develop pipeline is the identity for a linear flat patch: normalize
+    // -> identity matrix -> no grade).
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    Grade g; g.tonemap = 1;
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
+    // The fixture quantizes: 0.18 * 959 + 0.5 rounds to code 172, which
+    // develops to 172/959 = 0.17935349 (not exactly 0.18), so the anchor is
+    // the fit evaluated at the ACTUAL developed value.
+    CHECK(std::abs(centerMean(img, 1) - 0.26581848f) < 1e-4f);
+
+    Synthetic s1 = syntheticFlat(CfaPattern::RGGB, 1.0f, 1.0f, 1.0f);
+    Grade g1; g1.tonemap = 1;
+    auto img1 = developCpu(s1.cfa.data(), s1.info, s1.meta, g1);
+    CHECK(std::abs(centerMean(img1, 1) - 0.80379747f) < 1e-4f);
+
+    Synthetic s4 = syntheticFlat(CfaPattern::RGGB, 0.25f, 0.25f, 0.25f);
+    Grade g4; g4.tonemap = 1; g4.exposureEv = 4.0f;  // 0.25 * 16 = 4.0
+    auto img4 = developCpu(s4.cfa.data(), s4.info, s4.meta, g4);
+    // Quantized fixture: 239/959 * 16 = 3.98748697 (not exactly 4.0).
+    CHECK(std::abs(centerMean(img4, 1) - 0.97323133f) < 1e-4f);
+}
+
+TEST_CASE("agx_tonemap_maps_known_inputs_to_known_outputs") {
+    // AgX (tonemap 2): 2022 Filmic AgX essential fit (Sobotka), minimal
+    // implementation constants, Punchy look. Fixture values computed in
+    // float64 through the full minimal pipeline (inset matrix, log2 encode
+    // clamped to [-12.47393, 4.026069] EV around 0.18, 6th-order contrast
+    // polynomial clamped to [0,1], Punchy power 1.35 / sat 1.4, outset
+    // matrix, gamma 2.2), evaluated at the ACTUAL developed values (the
+    // fixtures quantize: 0.18 -> 172/959, 0.25*16 -> 239/959*16):
+    //   0.18 -> 0.45270696   (midgray anchor)
+    //   1.00 -> 0.85659844   (1.0 anchor)
+    //   4.00 -> 0.99535261   (4.0 anchor; AgX compresses highlights harder
+    //                          than ACES at the top of the range)
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    Grade g; g.tonemap = 2;
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
+    CHECK(std::abs(centerMean(img, 1) - 0.45270696f) < 1e-4f);
+
+    Synthetic s1 = syntheticFlat(CfaPattern::RGGB, 1.0f, 1.0f, 1.0f);
+    Grade g1; g1.tonemap = 2;
+    auto img1 = developCpu(s1.cfa.data(), s1.info, s1.meta, g1);
+    CHECK(std::abs(centerMean(img1, 1) - 0.85659844f) < 1e-4f);
+
+    Synthetic s4 = syntheticFlat(CfaPattern::RGGB, 0.25f, 0.25f, 0.25f);
+    Grade g4; g4.tonemap = 2; g4.exposureEv = 4.0f;  // 0.25 * 16 = 4.0
+    auto img4 = developCpu(s4.cfa.data(), s4.info, s4.meta, g4);
+    CHECK(std::abs(centerMean(img4, 1) - 0.99535261f) < 1e-4f);
+}
+
+TEST_CASE("tonemap_curves_are_monotone_over_scene_range") {
+    // Both fits must be monotone over the useful scene range: a brighter
+    // input never maps darker. Sampled through the develop path with
+    // exposure pushes on a flat patch (0.05 * 2^k, k = 0..8 -> 0.05..12.8).
+    Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.05f, 0.05f, 0.05f);
+    float prevA = -1.0f, prevX = -1.0f;
+    for (int k = 0; k <= 8; ++k) {
+        const float ev = float(k);
+        Grade ga; ga.tonemap = 1; ga.exposureEv = ev;
+        Grade gx; gx.tonemap = 2; gx.exposureEv = ev;
+        auto a = developCpu(s.cfa.data(), s.info, s.meta, ga);
+        auto x = developCpu(s.cfa.data(), s.info, s.meta, gx);
+        const float va = centerMean(a, 1);
+        const float vx = centerMean(x, 1);
+        if (k > 0) {
+            CHECK(va >= prevA - 1e-6f);      // ACES monotone
+            CHECK(vx >= prevX - 1e-6f);      // AgX monotone
+        }
+        prevA = va;
+        prevX = vx;
+    }
+    // Both compress: the top of the range (0.05 * 2^8 = 12.8 linear) maps
+    // at or below 1.0 — ACES saturates to exactly 1.0 there (the fit clamps
+    // to the display box; y(12.8) > 1), AgX stays below. Both must stay
+    // within the box.
+    CHECK(prevA <= 1.0f);
+    CHECK(prevX < 1.0f);
+    // And both brighten midtones relative to the off state (the point of a
+    // display curve): 0.05*2^1 = 0.1 linear maps above 0.1.
+    Grade g1; g1.tonemap = 1; g1.exposureEv = 1.0f;
+    Grade g2; g2.tonemap = 2; g2.exposureEv = 1.0f;
+    auto a1 = developCpu(s.cfa.data(), s.info, s.meta, g1);
+    auto x1 = developCpu(s.cfa.data(), s.info, s.meta, g2);
+    CHECK(centerMean(a1, 1) > 0.1f);
+    CHECK(centerMean(x1, 1) > 0.1f);
 }

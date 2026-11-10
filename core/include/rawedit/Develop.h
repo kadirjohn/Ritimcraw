@@ -20,6 +20,9 @@
 //  14. temperature (warm/cool diagonal gain)
 //  15. tint (green/magenta gain)
 //  16. saturation (chroma scaling around luma; neutrals stay neutral)
+//  17. sharpness (luminance unsharp mask at edge scale; chroma untouched)
+//  18. detail (luminance unsharp mask at fine-texture scale; chroma untouched)
+//  19. tonemapping (optional display tone compression; LAST, after grade)
 //
 // Stages 7-11 (the tone controls) run after the camera->Rec.709 transform
 // and before exposure: their weights and pivots are defined in scene-referred
@@ -67,6 +70,51 @@ namespace rawedit {
 // exposure; see the stage-order comment above for why. All neutral defaults
 // mean a default-constructed Grade is a no-op against the ungraded pipeline.
 //
+// Detail controls (owner request 2026-11-10 section 3, COL-15):
+//   sharpness  : [-100,100] edge sharpening. Luminance-only unsharp mask at
+//                radius 1.5 px (COL-15's "kenar keskinligi" — edge scale).
+//                0 neutral (17).
+//   detail     : [-100,100] fine-texture contrast. Second luminance-only
+//                unsharp mask at radius 0.75 px (COL-15's "ince doku
+//                kontrastini ayri olceklerde isle" — the two scales stay
+//                separate, Detail is its own control). 0 neutral (18).
+// Amount mapping for both: the unsharp weight is 0.5 * (v/100) on the
+// [-100,100] slider, clamped to [-0.5, 0.5] — +100 adds half the local
+// high-pass delta (crisp), -100 subtracts half of it (soft/blur). Both work
+// on the luma plane only and add the SAME delta to r, g and b, so chroma and
+// hue are preserved (no chroma halos). When both are 0 the stage allocates
+// no blur and is an exact passthrough.
+//
+// Tonemapping (owner request 2026-11-10 section 3, COL-16). Applied AFTER
+// all grade stages (17-18 included), BEFORE the Rec.709 OETF that lives in
+// the JNI bridge tail — so the stage input/output is linear RGB in the
+// working space (linear Rec.709 primaries), and the OETF still happens
+// outside, unchanged. Per COL-16 the selected transform's version, working
+// space and target display are recorded here:
+//   tonemap    : 0 = off (default — exact passthrough, old look preserved),
+//                1 = ACES, 2 = AgX (19).
+//   ACES (tonemap 1): "ACES Filmic Tone Mapping Curve", Krzysztof
+//   Narkowicz, 2015 (the widely used RRT+ODT fit; aces_fit x = (x(2.51x +
+//   0.03)) / (x(2.43x + 0.59) + 0.14), clamped to [0,1]). Working space:
+//   treated as ACEScg-domain linear (the Rec.709-primaries working image is
+//   fed to the fit directly, the standard approximation used by the fit).
+//   Version: 2015 single-stage fit, no per-channel look. Target display:
+//   Rec.709 / sRGB-class, ~1.0 nits-anchored output (the fit maps 1.0 to
+//   ~0.804 and 0.18 to ~0.267).
+//   AgX (tonemap 2): 2022 Filmic AgX (Troy Sobotka, github.com/sobotka/AgX),
+//   essential/minimal fit after Benjamin Wrensch's MIT-licensed minimal
+//   implementation (iolite-engine.com/blog_posts/minimal_agx_implementation,
+//   which derives its constants from Sobotka's config): inset to AgX space,
+//   log2 encode clamped to [-12.47393, 4.026069] EV around 0.18, 6th-order
+//   contrast polynomial (agxDefaultContrastApprox_6th: 15.5x^6 - 40.14x^5 +
+//   31.96x^4 - 6.868x^3 + 0.4298x^2 + 0.1191x - 0.00232 — monotone on
+//   [0,1], unlike the 7th-order variant), Punchy look (power 1.35, sat 1.4,
+//   the AgX "punchy" tuning Sobotka ships), outset back, Rec.709 gamma 2.2.
+//   Working space: linear Rec.709 in (the inset matrix maps it to AgX's
+//   space). Version: 2022 essential fit with the Punchy look. Target
+//   display: Rec.709 / sRGB-class with a 2.2 EOTF (the minimal fit's
+//   documented display assumption).
+//
 // RAW metadata toggles (spec RAW-07, COL-09, RAW-04, RAW-06). All three
 // default to TRUE, which is exactly the pre-toggle pipeline, so a
 // default-constructed Grade stays bit-identical to the old output:
@@ -108,6 +156,9 @@ struct Grade {
     bool asShot = true;
     bool highlightReconstruction = true;
     bool keepVignetting = true;
+    float sharpness = 0.0f;
+    float detail = 0.0f;
+    int tonemap = 0; // 0 off, 1 ACES, 2 AgX — see the comment block above
 };
 
 // Linear RGB float image, row-major, 3 floats per pixel (r, g, b).
@@ -116,6 +167,14 @@ struct ImageF {
     uint32_t h = 0;
     std::vector<float> rgb;
 };
+
+// Internal stage helpers shared by developCpu and developEncoded: the
+// encoded (Mi-Log) path runs the SAME detail stages (17-18) and tonemapping
+// stage (19) on its decoded RGB, so both pipelines stay in lockstep
+// (COL-15/COL-16). Not part of the stable surface — declared here only so
+// the two develop implementations share one definition.
+void unsharpLuma(ImageF& img, float radius, float amount);
+void tonemapFrame(ImageF& img, int mode);
 
 // Develops one CFA frame into linear RGB.
 //   cfa: width*height uint16 samples, row-major, 2x2 repeating pattern

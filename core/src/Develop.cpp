@@ -115,6 +115,160 @@ inline float smoothstepf(float e0, float e1, float x) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+// ---- Detail controls (COL-15): luminance-only unsharp mask. ----
+// Both Sharpness (stage 17) and Detail (stage 18) run the same operator at
+// different scales: compute the Rec.709 luma plane, blur it with a separable
+// Gaussian of the given radius (px), then add `amount * (luma - blur)` to
+// EVERY channel equally — chroma and hue are preserved (no chroma halos).
+// Sharpness uses radius 1.5 px (edge scale), Detail radius 0.75 px (fine
+// texture), per COL-15's "edge sharpness and fine-texture contrast on
+// separate scales". Amount = 0.5 * (v/100) from the [-100,100] slider,
+// clamped to [-0.5, 0.5]: +100 adds half the local high-pass delta (crisp),
+// -100 subtracts half of it (soft). The kernel is a 4-tap discrete Gaussian
+// (sigma = radius) with clamped edges; taps sum to 1 so a flat region is
+// bit-identical (its blur equals its value, the delta is exactly 0).
+void unsharpLumaImpl(ImageF& img, float radius, float amount) {
+    const uint32_t w = img.w, h = img.h;
+    if (w < 2 || h < 2)
+        return; // a 1-px image has no local contrast to sharpen
+
+    // Luma plane (Rec.709 weights, same as stage 16).
+    const size_t n = static_cast<size_t>(w) * h;
+    std::vector<float> luma(n);
+    for (size_t i = 0; i < n; ++i) {
+        const float r = img.rgb[i * 3 + 0];
+        const float g = img.rgb[i * 3 + 1];
+        const float b = img.rgb[i * 3 + 2];
+        luma[i] = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    }
+
+    // Separable blur: horizontal then vertical, clamped edges. 4 taps at
+    // floor(radius) spacing approximate a Gaussian of sigma = radius.
+    const int step = static_cast<int>(radius < 1.0f ? 1.0f : std::floor(radius));
+    const float c0 = std::exp(-0.5f * (1.0f * 1.0f) / (radius * radius));
+    const float c1 = std::exp(-0.5f * (2.0f * 2.0f) / (radius * radius));
+    const float norm = 1.0f + 2.0f * (c0 + c1);
+
+    std::vector<float> tmp(n);
+    for (uint32_t y = 0; y < h; ++y) {
+        const float* row = &luma[static_cast<size_t>(y) * w];
+        for (uint32_t x = 0; x < w; ++x) {
+            const int xm = std::max<int>(static_cast<int>(x) - step, 0);
+            const int xp = std::min(static_cast<int>(x) + step, static_cast<int>(w) - 1);
+            const int xm2 = std::max<int>(static_cast<int>(x) - 2 * step, 0);
+            const int xp2 = std::min(static_cast<int>(x) + 2 * step, static_cast<int>(w) - 1);
+            const float s = row[x] + (row[xm] + row[xp]) * c0 + (row[xm2] + row[xp2]) * c1;
+            tmp[static_cast<size_t>(y) * w + x] = s / norm;
+        }
+    }
+    std::vector<float> blur(n);
+    for (uint32_t y = 0; y < h; ++y) {
+        const int ym = std::max<int>(static_cast<int>(y) - step, 0);
+        const int yp = std::min(static_cast<int>(y) + step, static_cast<int>(h) - 1);
+        const int ym2 = std::max<int>(static_cast<int>(y) - 2 * step, 0);
+        const int yp2 = std::min(static_cast<int>(y) + 2 * step, static_cast<int>(h) - 1);
+        for (uint32_t x = 0; x < w; ++x) {
+            const float v = tmp[static_cast<size_t>(y) * w + x];
+            const float s = v + (tmp[static_cast<size_t>(ym) * w + x]
+                              + tmp[static_cast<size_t>(yp) * w + x]) * c0
+                       + (tmp[static_cast<size_t>(ym2) * w + x]
+                              + tmp[static_cast<size_t>(yp2) * w + x]) * c1;
+            blur[static_cast<size_t>(y) * w + x] = s / norm;
+        }
+    }
+
+    // Add the scaled high-pass delta to every channel equally.
+    for (size_t i = 0; i < n; ++i) {
+        const float d = amount * (luma[i] - blur[i]);
+        img.rgb[i * 3 + 0] += d;
+        img.rgb[i * 3 + 1] += d;
+        img.rgb[i * 3 + 2] += d;
+    }
+}
+
+// ---- Tonemapping (COL-16). ----
+// ACES: the Narkowicz 2015 fit (see Develop.h for the version/working-space/
+// target-display record). Monotone, clamped to [0,1].
+inline float acesFit(float x) {
+    const float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
+    const float num = x * (a * x + b);
+    const float den = x * (c * x + d) + e;
+    const float y = den > 0.0f ? num / den : 0.0f;
+    return std::min(std::max(y, 0.0f), 1.0f);
+}
+
+// AgX: 2022 Filmic AgX essential fit (Troy Sobotka), minimal implementation
+// after Benjamin Wrensch (iolite) — constants verbatim from that MIT-licensed
+// minimal fit; see Develop.h for the full COL-16 record. The 6th-order
+// contrast polynomial is used (it is monotone on [0,1]; the 7th-order variant
+// is not). Punchy look: power 1.35, sat 1.4. Output is Rec.709-gamma-2.2
+// encoded, which the bridge's Rec.709 OETF then treats as display linear.
+inline float agxContrastApprox(float x) {
+    const float x2 = x * x;
+    const float x4 = x2 * x2;
+    return 15.5f * x4 * x2 - 40.14f * x4 * x + 31.96f * x4
+         - 6.868f * x2 * x + 0.4298f * x2 + 0.1191f * x - 0.00232f;
+}
+
+// One AgX channel: inset (done by the caller), log2 encode, contrast.
+// The contrast fit is clamped to [0,1] — the sigmoid's intended range: the
+// 6th-order polynomial dips to -0.00232 at t=0 (an artifact of the fit, not
+// a designed toe), and the Punchy look's pow() must never see a negative
+// base (NaN guard; GLSL pow of a negative base is undefined for the same
+// reason).
+inline float agxEncode(float v, float minEv, float maxEv) {
+    if (v <= 0.0f)
+        return 0.0f;
+    float t = std::log2(v / 0.18f);
+    t = std::min(std::max(t, minEv), maxEv);
+    t = (t - minEv) / (maxEv - minEv);
+    return std::min(std::max(agxContrastApprox(t), 0.0f), 1.0f);
+}
+
+void tonemapFrameImpl(ImageF& img, int mode) {
+    if (mode == 1) {
+        // ACES: per-channel fit on the linear working values.
+        for (auto& v : img.rgb)
+            v = acesFit(v);
+        return;
+    }
+    if (mode != 2)
+        return;
+
+    // AgX: inset -> log2 encode clamped to [-12.47393, 4.026069] EV around
+    // 0.18 -> 6th-order contrast approx -> Punchy look -> outset -> gamma 2.2.
+    static const float inset[9] = {
+        0.856627153315983f, 0.0951212405381588f, 0.0482516061458583f,
+        0.137318972929847f, 0.761241990602591f, 0.101439036467562f,
+        0.11189821299995f,  0.0767994186031903f, 0.811302368396859f,
+    };
+    static const float outset[9] = {
+        1.1271005818144366432f, -0.1106066430966032116f, -0.016493938717834568157f,
+        -0.14132976349843826565f, 1.1578237022162717623f, -0.01649393871783425265f,
+        -0.14132976349843824772f, -0.11060664309660291788f, 1.2519364065950402828f,
+    };
+    static const float minEv = -12.47393f, maxEv = 4.026069f;
+
+    for (size_t i = 0; i < img.rgb.size(); i += 3) {
+        float v[3];
+        for (int c = 0; c < 3; ++c) {
+            const float r = img.rgb[i + 0], g = img.rgb[i + 1], b = img.rgb[i + 2];
+            v[c] = inset[c * 3 + 0] * r + inset[c * 3 + 1] * g + inset[c * 3 + 2] * b;
+            v[c] = agxEncode(v[c], minEv, maxEv);
+        }
+        // Punchy look: power 1.35, sat 1.4 (ASC-CDL-style around luma).
+        const float luma = 0.2126f * v[0] + 0.7152f * v[1] + 0.0722f * v[2];
+        for (int c = 0; c < 3; ++c)
+            v[c] = luma + 1.4f * (std::pow(v[c], 1.35f) - luma);
+        // Outset, clamp to the display box, Rec.709 gamma 2.2.
+        for (int c = 0; c < 3; ++c) {
+            float o = outset[c * 3 + 0] * v[0] + outset[c * 3 + 1] * v[1] + outset[c * 3 + 2] * v[2];
+            o = std::min(std::max(o, 0.0f), 1.0f);
+            img.rgb[i + c] = std::pow(o, 2.2f);
+        }
+    }
+}
+
 // Camera-normalized RGB (already divided by asShotNeutral) -> linear Rec.709.
 // DNG 1.6 §6 ForwardMatrix path: XYZ_D50 = FM * CAL * cameraNorm.
 // Documented ColorMatrix fallback: XYZ = (CAL * CM)^-1 * cameraNorm (CM is
@@ -151,6 +305,18 @@ bool buildCameraToRec709(const RawMeta& meta, float out[9]) {
 }
 
 } // namespace
+
+// External stage entry points (declared in Develop.h). Thin wrappers over
+// the internal implementations above so developCpu and developEncoded
+// (Transfer.cpp) run the SAME detail and tonemapping stages while the math
+// helpers stay internal to this TU.
+void unsharpLuma(ImageF& img, float radius, float amount) {
+    unsharpLumaImpl(img, radius, amount);
+}
+
+void tonemapFrame(ImageF& img, int mode) {
+    tonemapFrameImpl(img, mode);
+}
 
 float sampleShading(const RawMeta& meta, float u, float v, int plane) {
     if (meta.lensShading.empty() || meta.shadingW == 0 || meta.shadingH == 0)
@@ -592,6 +758,37 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
             img.rgb[i + 2] = luma + (img.rgb[i + 2] - luma) * f;
         }
     }
+
+    // ---- Stage 17: sharpness (grade.sharpness in [-100, 100], 0 = neutral). ----
+    // ---- Stage 18: detail    (grade.detail    in [-100, 100], 0 = neutral). ----
+    // COL-15: edge sharpness and fine-texture contrast on separate scales.
+    // Both are luminance-only unsharp masks (see unsharpLuma): Sharpness at
+    // radius 1.5 px (edge scale), Detail at radius 0.75 px (fine texture).
+    // Amount = 0.5 * (v/100), clamped to [-0.5, 0.5]. When BOTH are neutral
+    // the fast path below allocates no blur and touches nothing — bit
+    // identical to the pre-detail pipeline (locked by the golden tests).
+    if (grade.sharpness != 0.0f || grade.detail != 0.0f) {
+        if (grade.sharpness != 0.0f) {
+            const float amount =
+                std::min(std::max(0.5f * (grade.sharpness / 100.0f), -0.5f), 0.5f);
+            unsharpLuma(img, 1.5f, amount);
+        }
+        if (grade.detail != 0.0f) {
+            const float amount =
+                std::min(std::max(0.5f * (grade.detail / 100.0f), -0.5f), 0.5f);
+            unsharpLuma(img, 0.75f, amount);
+        }
+    }
+
+    // ---- Stage 19: tonemapping (grade.tonemap, 0 = off, 1 = ACES, 2 = AgX). ----
+    // COL-16: optional display tone compression, LAST, after all grade
+    // stages. Input/output is the linear working space (linear Rec.709
+    // primaries); the Rec.709 OETF stays in the JNI bridge tail. The ACES and
+    // AgX fits, their versions, working spaces and target displays are
+    // recorded in the Grade comment block in Develop.h. 0 = exact
+    // passthrough (the old look).
+    if (grade.tonemap != 0)
+        tonemapFrame(img, grade.tonemap);
 
     return img;
 }
