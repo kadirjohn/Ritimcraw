@@ -112,6 +112,7 @@ fun ClipEditorScreen(
     onGradeChange: (GradeK) -> Unit = {},
     onExport: (Target) -> Unit = {},
     sourceFd: Int = -1,
+    sourceFdProvider: () -> Int = { -1 },
     frameIndex: Int = 0,
     accessLost: Boolean = false,
 ) {
@@ -143,17 +144,32 @@ fun ClipEditorScreen(
         }
 
         // The render itself: one open -> render -> close per request on the
-        // shared preview engine thread.
+        // shared preview engine thread. The fd is NOT reused across renders:
+        // dup() shares the file offset, so a stale fd sits mid-file after
+        // the first open and the next render reads a header from the middle
+        // of the clip. Each render opens a fresh read-only descriptor via
+        // [sourceFdProvider] and PreviewRenderer.render closes it in a
+        // finally.
         LaunchedEffect(renderSeq) {
             if (renderSeq == 0L || !canRender) return@LaunchedEffect
             val seq = renderSeq
             renderInFlight = true
-            val result = PreviewRenderer.render(
-                sourceFd = sourceFd,
-                frameIndex = frameIndex,
-                grade = grade,
-                maxDim = 1280,
-            )
+            // Fresh read-only descriptor for THIS render; the editor's own
+            // fd (sourceFd) stays untouched (dup shares the file offset, so
+            // reusing it would break the next open).
+            val fdForRender = sourceFdProvider()
+            val result = if (fdForRender < 0) {
+                Result.failure(IllegalStateException(
+                    "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
+                ))
+            } else {
+                PreviewRenderer.render(
+                    sourceFd = fdForRender,
+                    frameIndex = frameIndex,
+                    grade = grade,
+                    maxDim = 1280,
+                )
+            }
             if (!RenderDebounce.isFresh(seq, renderSeq)) {
                 // A newer request superseded this one mid-flight; its own
                 // effect run will publish the fresh result.

@@ -219,10 +219,14 @@ class PreviewRenderer private constructor(
          * the shared preview engine thread and the continuation resumes from
          * there — the caller never blocks its own dispatcher.
          *
-         * One clip open per call keeps the fd lifecycle trivial; the open is
-         * header/index-only (no frame decode). Fails cleanly (never throws)
-         * with the unavailable message when the native lib is absent — the
-         * editor shows the placeholder.
+         * [sourceFd] must be a FRESH descriptor opened for this render and
+         * is closed here (always, success or failure). Sharing one fd
+         * across renders is broken by design: the C++ side dup()s it, but a
+         * dup SHARES the file offset, so the first open's reads leave the
+         * caller's descriptor mid-file and the next render reads a header
+         * from the middle of the clip ("Invalid container version"). The
+         * editor therefore opens a new read-only descriptor per render and
+         * hands it here; nothing else may touch it afterwards.
          */
         suspend fun render(
             sourceFd: Int,
@@ -234,6 +238,7 @@ class PreviewRenderer private constructor(
                 previewEngine.execute {
                     val outcome = try {
                         if (!NativeSource.nativeAvailable) {
+                            closeFdQuietly(sourceFd)
                             Result.failure<PreviewFrame>(
                                 PreviewRenderException(NativeSource.nativeUnavailableMessage)
                             )
@@ -251,11 +256,25 @@ class PreviewRenderer private constructor(
                         }
                     } catch (e: Throwable) {
                         Result.failure<PreviewFrame>(e)
+                    } finally {
+                        closeFdQuietly(sourceFd)
                     }
                     cont.resume(outcome)
                 }
             } catch (e: RejectedExecutionException) {
+                closeFdQuietly(sourceFd)
                 cont.resume(Result.failure(PreviewRenderException("preview engine unavailable")))
+            }
+        }
+
+        /** Closes a raw fd without throwing (adopts then closes it). */
+        private fun closeFdQuietly(fd: Int) {
+            if (fd >= 0) {
+                try {
+                    android.os.ParcelFileDescriptor.adoptFd(fd).close()
+                } catch (ignored: Throwable) {
+                    // best effort; the kernel reclaims it on process exit
+                }
             }
         }
     }

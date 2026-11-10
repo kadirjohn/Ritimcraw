@@ -189,16 +189,41 @@ fun AppNav() {
                     // Open the clip read-only for the preview pipeline:
                     // ContentResolver.openFileDescriptor(uri, "r"). The
                     // source file is NEVER written (non-negotiable). The
-                    // ParcelFileDescriptor stays open for the editor's
-                    // lifetime (the native side dups the fd per open) and
-                    // closes on dispose. A revoked grant or a moved file
-                    // yields accessLost — the editor degrades to its
-                    // access-lost state (existing pattern), never a crash.
+                    // long-lived pfd is only the editor's availability
+                    // signal (canRender); every RENDER opens its own fresh
+                    // descriptor via sourceFdProvider, because dup() shares
+                    // the file offset — reusing one fd across renders
+                    // leaves it mid-file and the next open reads a header
+                    // from the middle of the clip ("Invalid container
+                    // version"). A revoked grant or a moved file yields
+                    // accessLost — the editor degrades to its access-lost
+                    // state (existing pattern), never a crash.
                     var pfd by remember(r.sourceId) {
                         mutableStateOf<ParcelFileDescriptor?>(null)
                     }
                     var sourceFd by remember(r.sourceId) { mutableStateOf(-1) }
                     var accessLost by remember(r.sourceId) { mutableStateOf(false) }
+                    val sourceUri by remember(r.sourceId) {
+                        mutableStateOf(stores.sources.get(r.sourceId)?.uri)
+                    }
+                    // Fresh read-only descriptor per render; PreviewRenderer
+                    // closes it in a finally. -1 (open failed) degrades to
+                    // the placeholder error, never a crash.
+                    val sourceFdProvider: () -> Int = remember(r.sourceId) {
+                        {
+                            if (sourceUri == null) {
+                                -1
+                            } else {
+                                try {
+                                    context.contentResolver
+                                        .openFileDescriptor(Uri.parse(sourceUri), "r")
+                                        ?.detachFd() ?: -1
+                                } catch (e: Exception) {
+                                    -1
+                                }
+                            }
+                        }
+                    }
                     LaunchedEffect(r.sourceId) {
                         val source = stores.sources.get(r.sourceId)
                         if (source == null) {
@@ -245,6 +270,7 @@ fun AppNav() {
                             queueKick += 1
                         },
                         sourceFd = sourceFd,
+                        sourceFdProvider = sourceFdProvider,
                         accessLost = accessLost,
                     )
                 }
