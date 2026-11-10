@@ -7,6 +7,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -101,6 +103,7 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * exposure, 50 K temperature) and a double tap on a slider row resets that
  * one control to its GradeK default (DESIGN.md Inputs).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ClipEditorScreen(
     sourceId: String,
@@ -253,15 +256,23 @@ fun ClipEditorScreen(
                         )
                     }
                     if (state == PreviewState.FAILED && errorText != null) {
-                        Text(
-                            errorText!!,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(16.dp),
-                        )
+                        // Error replaces the centered placeholder text (they
+                        // overlapped unreadably when both showed); the image
+                        // path keeps whatever frame is on screen.
+                        Column(
+                            Modifier
+                                .align(Alignment.Center)
+                                .padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                errorText!!,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
                     }
                 }
             }
@@ -272,12 +283,15 @@ fun ClipEditorScreen(
             // CURRENT grade, so a queue-time snapshot of the user's edit is
             // what gets exported; the queue runs it when the engine is
             // available. Disabled without a fd (nothing to export).
-            Row(
+            // FlowRow: three buttons do not fit one narrow row without
+            // wrapping text vertically (seen on a 1080p phone) — let them
+            // flow onto a second line instead.
+            FlowRow(
                 Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 FilledTonalButton(
                     onClick = { renderSeq += 1 },

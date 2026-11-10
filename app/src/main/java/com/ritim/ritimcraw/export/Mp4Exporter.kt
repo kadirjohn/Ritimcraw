@@ -148,7 +148,7 @@ internal object NativeMp4Session : Mp4Session {
 
     override fun open(fd: Int): Mp4SessionInfo? {
         requireNative()
-        val r = NativeSource.nativePreviewOpen(fd) ?: return null
+        val r = NativeSource.jniPreviewOpen(fd) ?: return null
         return Mp4SessionInfo(
             handle = r[0].toLong(),
             frameCount = r[1],
@@ -161,26 +161,26 @@ internal object NativeMp4Session : Mp4Session {
 
     override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK): ByteArray? {
         requireNative()
-        return NativeSource.nativeExportFrame(
+        return NativeSource.jniExportFrame(
             handle, frameIndex,
             grade.exposureEv, grade.highlights, grade.tempK, grade.tint,
         )
     }
 
     override fun framePts(handle: Long, frameIndex: Int): Long =
-        NativeSource.nativeFramePtsUs(handle, frameIndex)
+        NativeSource.jniFramePtsUs(handle, frameIndex)
 
-    override fun audioInfo(handle: Long): IntArray? = NativeSource.nativeAudioInfo(handle)
+    override fun audioInfo(handle: Long): IntArray? = NativeSource.jniAudioInfo(handle)
 
-    override fun readAudio(handle: Long): ShortArray? = NativeSource.nativeReadAudio(handle)
+    override fun readAudio(handle: Long): ShortArray? = NativeSource.jniReadAudio(handle)
 
     override fun close(handle: Long) {
-        NativeSource.nativeCloseSource(handle)
+        NativeSource.jniCloseSource(handle)
     }
 
-    override fun code(): Int = NativeSource.nativePreviewErrorCode()
+    override fun code(): Int = NativeSource.jniPreviewErrorCode()
 
-    override fun stage(): Int = NativeSource.nativePreviewErrorStage()
+    override fun stage(): Int = NativeSource.jniPreviewErrorStage()
 
     override fun detail(): String? = NativeSource.previewLastError()
 }

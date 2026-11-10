@@ -105,12 +105,12 @@ internal object NativeDngRender : DngRender {
             // exporter's catch-all turns this into a FAILED job.
             throw IllegalStateException(NativeSource.nativeUnavailableMessage)
         }
-        return NativeSource.nativeDngExport(fd, frameIndex, outPath)
+        return NativeSource.jniDngExport(fd, frameIndex, outPath)
     }
 
-    override fun code(): Int = NativeSource.nativePreviewErrorCode()
+    override fun code(): Int = NativeSource.jniPreviewErrorCode()
 
-    override fun stage(): Int = NativeSource.nativePreviewErrorStage()
+    override fun stage(): Int = NativeSource.jniPreviewErrorStage()
 
     override fun detail(): String? = NativeSource.previewLastError()
 }

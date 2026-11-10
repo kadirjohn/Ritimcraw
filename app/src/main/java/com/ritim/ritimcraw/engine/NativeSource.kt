@@ -150,19 +150,25 @@ class NativeSource private constructor(
         }
 
         // ---- JNI (implemented in app/src/main/cpp/jni_bridge.cpp) ----
+        // All external functions are `private`: Kotlin does not append the
+        // $app_debug friend-module suffix to private declarations, so the
+        // JVM-mangled names match the plain JNI symbols in jni_bridge.cpp
+        // in every build type. (internal/ public would mangle to
+        // nativeXxx$app_debug in debug builds and UnsatisfiedLinkError.)
+        // Cross-module callers go through the wrappers below, not the
+        // external declarations themselves.
 
         @JvmStatic private external fun nativeOpenSource(fd: Int): Long
         @JvmStatic private external fun nativeFrameCount(handle: Long): Int
         @JvmStatic private external fun nativeFrameInfo(handle: Long, i: Int): FrameInfoK?
         @JvmStatic private external fun nativeReadFrame(handle: Long, i: Int): ShortArray?
-        @JvmStatic internal external fun nativeReadAudio(handle: Long): ShortArray?
-        @JvmStatic internal external fun nativeCloseSource(handle: Long): Long
+        @JvmStatic private external fun nativeReadAudio(handle: Long): ShortArray?
+        @JvmStatic private external fun nativeCloseSource(handle: Long): Long
         @JvmStatic private external fun nativeLastError(): String?
 
         // ---- Preview JNI (decoder -> developThumbnail -> Rec709 -> ARGB) ----
-        // internal so engine/PreviewRenderer can call them; every call must
-        // run on the renderer's single engine thread (thread-local error
-        // state + one motioncam decoder per Source).
+        // Every call must run on the renderer's single engine thread
+        // (thread-local error state + one motioncam decoder per Source).
 
         /**
          * Opens a preview source from fd. Returns
@@ -170,14 +176,14 @@ class NativeSource private constructor(
          * firstOrientation] or null (then [previewLastError] /
          * [previewErrorCode] / [previewErrorStage] say why).
          */
-        @JvmStatic internal external fun nativePreviewOpen(fd: Int): IntArray?
+        @JvmStatic private external fun nativePreviewOpen(fd: Int): IntArray?
 
         /**
          * Decodes frameIndex through the preview pipeline. Returns
          * [width, height, then w*h ARGB_8888 ints] or null on failure
          * (read the error accessors from the same thread).
          */
-        @JvmStatic internal external fun nativePreviewRender(
+        @JvmStatic private external fun nativePreviewRender(
             handle: Long,
             frameIndex: Int,
             exposureEv: Float,
@@ -188,10 +194,10 @@ class NativeSource private constructor(
         ): IntArray?
 
         /** rawedit::ErrorCode of the last failed preview call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
-        @JvmStatic internal external fun nativePreviewErrorCode(): Int
+        @JvmStatic private external fun nativePreviewErrorCode(): Int
 
         /** Pipeline stage of the last failed preview call (0 open, 1 frame read, 2 develop). */
-        @JvmStatic internal external fun nativePreviewErrorStage(): Int
+        @JvmStatic private external fun nativePreviewErrorStage(): Int
 
         // ---- DNG export JNI (decode frame -> writeCfaDng to a staging path) ----
 
@@ -202,7 +208,7 @@ class NativeSource private constructor(
          * [previewErrorCode] / [previewErrorStage] / [previewLastError] from
          * the same thread. Stages: 0 open, 1 frame read, 3 dng write.
          */
-        @JvmStatic internal external fun nativeDngExport(
+        @JvmStatic private external fun nativeDngExport(
             fd: Int,
             frameIndex: Int,
             outPath: String,
@@ -218,7 +224,7 @@ class NativeSource private constructor(
          * travels as the muxer's orientation hint). Returns w*h*3 bytes or
          * null on failure (read the error accessors from the same thread).
          */
-        @JvmStatic internal external fun nativeExportFrame(
+        @JvmStatic private external fun nativeExportFrame(
             handle: Long,
             frameIndex: Int,
             exposureEv: Float,
@@ -228,14 +234,63 @@ class NativeSource private constructor(
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
-        @JvmStatic internal external fun nativeFramePtsUs(handle: Long, index: Int): Long
+        @JvmStatic private external fun nativeFramePtsUs(handle: Long, index: Int): Long
 
         /**
          * [sampleRate, channels] of the clip's audio, or null when the clip
          * has no audio / on failure (read the error accessors). 0/0 means no
          * audio track should be written.
          */
-        @JvmStatic internal external fun nativeAudioInfo(handle: Long): IntArray?
+        @JvmStatic private external fun nativeAudioInfo(handle: Long): IntArray?
+
+        // ---- Cross-module wrappers (external decls stay private; see the
+        // mangling note at the top of the JNI section) ----
+
+        /** JNI bridge: see nativePreviewOpen. */
+        internal fun jniPreviewOpen(fd: Int): IntArray? = nativePreviewOpen(fd)
+
+        /** JNI bridge: see nativePreviewRender. */
+        internal fun jniPreviewRender(
+            handle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+            maxDim: Int,
+        ): IntArray? = nativePreviewRender(handle, frameIndex, exposureEv, highlights, tempK, tint, maxDim)
+
+        /** JNI bridge: rawedit::ErrorCode of the last failed preview call. */
+        internal fun jniPreviewErrorCode(): Int = nativePreviewErrorCode()
+
+        /** JNI bridge: pipeline stage of the last failed preview call. */
+        internal fun jniPreviewErrorStage(): Int = nativePreviewErrorStage()
+
+        /** JNI bridge: see nativeDngExport. */
+        internal fun jniDngExport(fd: Int, frameIndex: Int, outPath: String): Boolean =
+            nativeDngExport(fd, frameIndex, outPath)
+
+        /** JNI bridge: see nativeExportFrame. */
+        internal fun jniExportFrame(
+            handle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+        ): ByteArray? = nativeExportFrame(handle, frameIndex, exposureEv, highlights, tempK, tint)
+
+        /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
+        internal fun jniFramePtsUs(handle: Long, index: Int): Long = nativeFramePtsUs(handle, index)
+
+        /** JNI bridge: [sampleRate, channels] or null. */
+        internal fun jniAudioInfo(handle: Long): IntArray? = nativeAudioInfo(handle)
+
+        /** JNI bridge: readAudio for export sessions. */
+        internal fun jniReadAudio(handle: Long): ShortArray? = nativeReadAudio(handle)
+
+        /** JNI bridge: closeSource for export sessions. */
+        internal fun jniCloseSource(handle: Long): Long = nativeCloseSource(handle)
 
         /** Last-error detail from the engine thread (thread-local in the bridge). */
         internal fun previewLastError(): String? = nativeLastError()

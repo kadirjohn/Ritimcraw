@@ -109,14 +109,14 @@ class PreviewRenderer private constructor(
             )
         }
         val args = GradeMapping.toNative(grade)
-        val out = NativeSource.nativePreviewRender(
+        val out = NativeSource.jniPreviewRender(
             handle, frameIndex,
             args.exposureEv, args.highlights, args.tempK, args.tint,
             maxDim,
         )
         if (out == null || out.size < 2) {
-            val code = NativeSource.nativePreviewErrorCode()
-            val stage = NativeSource.nativePreviewErrorStage()
+            val code = NativeSource.jniPreviewErrorCode()
+            val stage = NativeSource.jniPreviewErrorStage()
             val detail = NativeSource.previewLastError()
             return Result.failure(PreviewRenderException(PreviewErrors.message(code, stage, detail)))
         }
@@ -137,7 +137,7 @@ class PreviewRenderer private constructor(
         if (!closed) {
             closed = true
             try {
-                engine.execute { NativeSource.nativeCloseSource(handle) }
+                engine.execute { NativeSource.jniCloseSource(handle) }
             } catch (e: RejectedExecutionException) {
                 // Engine already down; the bridge slot frees on process exit.
             }
@@ -172,8 +172,8 @@ class PreviewRenderer private constructor(
          */
         private fun openResult(info: IntArray?, engine: ExecutorService): Result<PreviewRenderer> {
             if (info == null || info.size < 6 || info[0] == 0) {
-                val code = NativeSource.nativePreviewErrorCode()
-                val stage = NativeSource.nativePreviewErrorStage()
+                val code = NativeSource.jniPreviewErrorCode()
+                val stage = NativeSource.jniPreviewErrorStage()
                 val detail = NativeSource.previewLastError()
                 return Result.failure(
                     PreviewRenderException(PreviewErrors.message(code, stage, detail))
@@ -198,7 +198,7 @@ class PreviewRenderer private constructor(
             }
             return try {
                 val opened: java.util.concurrent.Future<IntArray?> =
-                    engine.submit<IntArray?> { NativeSource.nativePreviewOpen(fd) }
+                    engine.submit<IntArray?> { NativeSource.jniPreviewOpen(fd) }
                 openResult(opened.get(), engine)
             } catch (e: RejectedExecutionException) {
                 Result.failure(PreviewRenderException("preview engine unavailable"))
@@ -240,7 +240,7 @@ class PreviewRenderer private constructor(
                         } else {
                             // Direct call (not open()): we are ON the engine
                             // thread, so submitting to it would deadlock.
-                            openResult(NativeSource.nativePreviewOpen(sourceFd), previewEngine).fold(
+                            openResult(NativeSource.jniPreviewOpen(sourceFd), previewEngine).fold(
                                 onSuccess = { r ->
                                     val res = r.renderBlocking(frameIndex, grade, maxDim)
                                     r.close()
