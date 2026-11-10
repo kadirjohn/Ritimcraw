@@ -247,20 +247,35 @@ class ExportPipeline(
      * Runs the whole encode for the clip at [sourceFd] with [grade] into
      * [outPath] (the caller's staging path). Throws IllegalStateException
      * with a complete message on any failure.
+     *
+     * [onProgress] hears (videoFramesDone, totalVideoFrames) — reported
+     * once with 0/total right after open, then after every encoded VIDEO
+     * frame (audio blocks do not move the counter; the user thinks in
+     * frames). The queue throttles what reaches the store.
      */
-    fun run(sourceFd: Int, grade: GradeK, outPath: String) {
+    fun run(
+        sourceFd: Int,
+        grade: GradeK,
+        outPath: String,
+        onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
+    ) {
         val info = session.open(sourceFd)
             ?: throw IllegalStateException(
                 Mp4ExportErrors.message(session.code(), session.stage(), session.detail())
             )
         try {
-            encode(info, grade, outPath)
+            encode(info, grade, outPath, onProgress)
         } finally {
             session.close(info.handle)
         }
     }
 
-    private fun encode(info: Mp4SessionInfo, grade: GradeK, outPath: String) {
+    private fun encode(
+        info: Mp4SessionInfo,
+        grade: GradeK,
+        outPath: String,
+        onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
+    ) {
         // 1. Timeline: video pts from the source, normalized to 0.
         val rawPts = ArrayList<Long>(info.frameCount)
         for (i in 0 until info.frameCount) {
@@ -305,6 +320,11 @@ class ExportPipeline(
         }
         try {
             // 4. Encode loop, in presentation order across both tracks.
+            // Progress counts VIDEO frames only (the frame counter the user
+            // sees); it starts once the encoders are actually configured —
+            // a rejected configure would otherwise show 0/N "progress".
+            onProgress?.invoke(0, videoPts.size)
+            var done = 0
             for (s in PtsTimeline.interleave(videoPts, audioPts)) {
                 when (s.track) {
                     PtsTimeline.Sample.Track.VIDEO -> {
@@ -318,6 +338,8 @@ class ExportPipeline(
                             s.ptsUs,
                             YuvConverter.toI420(rgb, info.width, info.height),
                         )
+                        done++
+                        onProgress?.invoke(done, videoPts.size)
                     }
                     PtsTimeline.Sample.Track.AUDIO ->
                         writer.writeAudioBlock(s.ptsUs, blocks[s.frameIndex])
@@ -379,15 +401,23 @@ class Mp4Exporter(
      * (detail = output file name), FAILED with a stage + cause + recovery
      * detail on failure. Never throws; a failure leaves neither [out] nor
      * its partial behind.
+     *
+     * [onProgress] hears (videoFramesDone, totalVideoFrames) per frame; the
+     * queue owns the throttled persistence (see ExportQueue.ProgressWriter).
      */
-    suspend fun export(job: ExportJob, sourceFd: Int, out: File): ExportJob {
+    suspend fun export(
+        job: ExportJob,
+        sourceFd: Int,
+        out: File,
+        onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
+    ): ExportJob {
         val partial = ExportStaging.partial(out)
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val res = try {
                         ExportPipeline(session, writerFactory()).run(
-                            sourceFd, job.snapshot, partial.absolutePath
+                            sourceFd, job.snapshot, partial.absolutePath, onProgress
                         )
                         if (ExportStaging.finalize(partial, out)) {
                             Result.success(Unit)

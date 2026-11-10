@@ -35,6 +35,7 @@ class ExportQueue(
     private val dng: DngExporter,
     private val mp4: Mp4Exporter,
     private val io: ExportIo,
+    private val progressClock: () -> Long = System::currentTimeMillis,
 ) {
 
     /** The next job to run, or null when no job is QUEUED. */
@@ -57,6 +58,8 @@ class ExportQueue(
                 stale.copy(
                     state = State.FAILED,
                     detail = ExportQueue.INTERRUPTED_DETAIL,
+                    framesDone = null,
+                    framesTotal = null,
                 )
             )
             recovered++
@@ -84,8 +87,17 @@ class ExportQueue(
 
     /** Runs one job end to end and writes the outcome back to the store. */
     internal suspend fun runOne(job: ExportJob) {
-        // RUNNING first: the UI shows "Exporting…" while this runs.
-        store.update(job.copy(state = State.RUNNING, detail = null))
+        // RUNNING first: the UI shows "Exporting…" while this runs. Progress
+        // counts reset per run (a retry restarts from frame 0).
+        store.update(
+            job.copy(state = State.RUNNING, detail = null, framesDone = null, framesTotal = null)
+        )
+
+        // Progress callback the queue owns: the exporter reports frame
+        // counts; writes are THROTTLED (project.json is rewritten on every
+        // store write, so a per-frame write would hammer it — see
+        // [ProgressWriter]) and the terminal write below always lands.
+        val progress = ProgressWriter(store, job, progressClock)
 
         // The runner owns the source fd's lifetime: acquire once, close in
         // finally (the native side dups it per open, so closing after the
@@ -94,21 +106,31 @@ class ExportQueue(
         val result = try {
             when (job.target) {
                 Target.DNG ->
-                    dng.export(job, fd, io.outputFile(job, Target.DNG))
+                    dng.export(job, fd, io.outputFile(job, Target.DNG)) { done, total ->
+                        progress.report(done, total)
+                    }
                 Target.MP4 ->
-                    mp4.export(job, fd, io.outputFile(job, Target.MP4))
+                    mp4.export(job, fd, io.outputFile(job, Target.MP4)) { done, total ->
+                        progress.report(done, total)
+                    }
             }
         } catch (e: Throwable) {
             // An exporter must never throw, but the queue must survive one
             // that does: FAILED with the cause, keep the queue moving.
-            job.copy(state = State.FAILED, detail = e.message ?: "unknown failure")
+            job.copy(
+                state = State.FAILED,
+                detail = e.message ?: "unknown failure",
+                framesDone = null,
+                framesTotal = null,
+            )
         } finally {
             io.closeFd(fd)
         }
 
         // The job may have been retried/cleared while it ran: write by id
-        // so the store keeps the freshest state for this id.
-        store.update(result)
+        // so the store keeps the freshest state for this id. The terminal
+        // job carries null counts (progress only shows while RUNNING).
+        store.update(result.copy(framesDone = null, framesTotal = null))
     }
 
     companion object {
@@ -122,6 +144,15 @@ class ExportQueue(
                 "recovery: Retry re-queues the same grade snapshot"
 
         /**
+         * Minimum milliseconds between two progress writes of one job (see
+         * [ProgressWriter]): every store write rewrites project.json, so
+         * per-frame writes would hammer it. The final progress write of a
+         * job bypasses the throttle (and the terminal state write always
+         * lands), so the persisted count never stalls mid-throttle.
+         */
+        const val PROGRESS_WRITE_MIN_INTERVAL_MS = 500L
+
+        /**
          * Pure output-name decision (JVM-testable): the export lands in the
          * app's export directory as `<sourceId>-<target>.<ext>` — lowercase,
          * stable across retries (the same job retried overwrites its own
@@ -132,6 +163,44 @@ class ExportQueue(
                 Target.DNG -> "dng"
                 Target.MP4 -> "mp4"
             }
+    }
+}
+
+/**
+ * Throttled progress persistence for one running job (JVM-testable via an
+ * injected clock). Exporters report every frame; this class decides which
+ * reports become store writes:
+ *  - the FIRST report always writes (the RUNNING row gains its frame counts
+ *    immediately, so the UI can show "0/310 frames" rather than a bare
+ *    "Exporting…"),
+ *  - later reports write only after [ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS]
+ *    since the last WRITE (not the last report),
+ *  - the job's terminal write (done by the queue) always lands and clears
+ *    the counts.
+ *
+ * The filter is write-side only — the exporter still hears every frame; the
+ * persisted value may lag the real count by up to one throttle window.
+ */
+internal class ProgressWriter(
+    private val store: ExportStore,
+    private val job: ExportJob,
+    private val clock: () -> Long,
+) {
+    private var lastWriteMs = -1L
+
+    /** True when the report became a store write (tests assert on this). */
+    fun report(framesDone: Int, framesTotal: Int): Boolean {
+        val now = clock()
+        if (lastWriteMs >= 0 &&
+            now - lastWriteMs < ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS
+        ) {
+            return false
+        }
+        lastWriteMs = now
+        store.update(
+            job.copy(state = State.RUNNING, framesDone = framesDone, framesTotal = framesTotal)
+        )
+        return true
     }
 }
 

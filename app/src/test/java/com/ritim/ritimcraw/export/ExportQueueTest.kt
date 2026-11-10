@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.export
 import com.ritim.ritimcraw.data.GradeK
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -321,6 +322,94 @@ class ExportQueueTest {
         queue.runAll()
         assertEquals(State.DONE, store.all().single().state)
         assertEquals(snapshot, store.all().single().snapshot)
+    }
+
+    @Test
+    fun progress_first_report_writes_and_later_reports_throttle() = runBlocking {
+        // A fake clock the test advances by hand: no real sleeping, and the
+        // throttle boundary is deterministic.
+        var now = 0L
+        val store = store()
+        store.add(job("j1", "clip1", Target.MP4))
+        val log = mutableListOf<String>()
+        val session = object : Mp4Session {
+            override fun open(fd: Int) =
+                Mp4SessionInfo(1L, 3, 4, 4, 0, 0)
+
+            override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK) =
+                ByteArray(4 * 4 * 3)
+
+            override fun framePts(handle: Long, frameIndex: Int): Long = 0
+            override fun audioInfo(handle: Long): IntArray? = null
+            override fun readAudio(handle: Long): ShortArray? = null
+            override fun close(handle: Long) {}
+            override fun code(): Int = 0
+            override fun stage(): Int = 0
+            override fun detail(): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(session, { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            progressClock = { now },
+        )
+        queue.runAll()
+
+        // While the job ran, the store held RUNNING + frame counts, and the
+        // FIRST report (0/3, right after configure) wrote immediately. The
+        // final persisted row is terminal: DONE with counts cleared.
+        val final = store.all().single()
+        assertEquals(State.DONE, final.state)
+        assertNull(final.framesDone)
+        assertNull(final.framesTotal)
+    }
+
+    @Test
+    fun progress_writer_throttles_by_wall_interval() {
+        // ProgressWriter directly: the first report always writes, later
+        // ones only after PROGRESS_WRITE_MIN_INTERVAL_MS of clock time.
+        var now = 1000L
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val w = ProgressWriter(store, store.all().single(), { now })
+
+        assertTrue(w.report(0, 310)) // first write always lands
+        assertFalse(w.report(1, 310)) // 0 ms later: throttled
+        assertFalse(w.report(2, 310)) // still throttled
+        now += ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS
+        assertTrue(w.report(142, 310)) // exactly one interval: writes
+        assertFalse(w.report(143, 310))
+        now += ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS - 1
+        assertFalse(w.report(200, 310)) // 1 ms short: throttled
+        now += 1
+        assertTrue(w.report(310, 310))
+
+        // What reached the store is the LAST written pair, state RUNNING.
+        val persisted = store.all().single()
+        assertEquals(State.RUNNING, persisted.state)
+        assertEquals(310, persisted.framesDone)
+        assertEquals(310, persisted.framesTotal)
+    }
+
+    @Test
+    fun failed_job_reports_no_stale_progress_and_does_not_wedge() = runBlocking {
+        val store = store()
+        store.add(job("j1", "clip1")) // fails (failOn)
+        store.add(job("j2", "clip2")) // succeeds
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log, failOn = "clip1-dng"), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        val ran = queue.runAll()
+        assertEquals(2, ran)
+        val jobs = store.all()
+        assertEquals(State.FAILED, jobs[0].state)
+        assertNull(jobs[0].framesDone) // no stale progress on the dead row
+        assertNull(jobs[0].framesTotal)
+        assertEquals(State.DONE, jobs[1].state)
+        assertNull(jobs[1].framesDone)
     }
 
     @Test

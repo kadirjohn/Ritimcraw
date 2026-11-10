@@ -170,15 +170,27 @@ class DngExporter(
      * [out]. Returns the updated job: DONE on success (detail = output file
      * name), FAILED with a stage + cause + recovery detail on failure. Never
      * throws; a failure leaves neither [out] nor its partial behind.
+     *
+     * [onProgress] hears the frame counts (always out of 1 — a DNG export is
+     * one frame: 0/1 before the render, 1/1 after finalize). The queue owns
+     * the throttled persistence.
      */
-    suspend fun export(job: ExportJob, sourceFd: Int, out: File, frameIndex: Int = 0): ExportJob {
+    suspend fun export(
+        job: ExportJob,
+        sourceFd: Int,
+        out: File,
+        frameIndex: Int = 0,
+        onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
+    ): ExportJob {
         val partial = ExportStaging.partial(out)
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val res = try {
+                        onProgress?.invoke(0, 1)
                         if (render.render(sourceFd, frameIndex, partial.absolutePath)) {
                             if (ExportStaging.finalize(partial, out)) {
+                                onProgress?.invoke(1, 1)
                                 Result.success(Unit)
                             } else {
                                 ExportStaging.discard(partial)

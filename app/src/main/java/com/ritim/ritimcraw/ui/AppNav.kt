@@ -21,6 +21,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -28,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -55,6 +59,7 @@ import com.ritim.ritimcraw.ui.exports.ExportsScreen
 import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -155,6 +160,18 @@ fun AppNav() {
     var measuring by remember { mutableStateOf(false) }
     var measureKick by remember { mutableStateOf(0) }
 
+    // Enqueue feedback (owner finding 2026-11-10: Export MP4 gave NO
+    // visible response — the job silently appeared only in the Exports
+    // tab). The snackbar host lives on THIS Scaffold; the shell shows it
+    // over whatever screen is composed, editor included.
+    val exportSnackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val exportQueuedText = stringResource(R.string.export_queued_snackbar)
+    fun enqueueFeedback() {
+        // SHORT (not LONG): confirmation, not an error the user must read.
+        scope.launch { exportSnackbar.showSnackbar(exportQueuedText, duration = SnackbarDuration.Short) }
+    }
+
     // Process-start recovery (owner finding 2026-11-10): a crash can leave
     // jobs persisted as RUNNING — a dead process's export. Mark them FAILED
     // with the interrupted cause BEFORE the UI shows "Exporting…" forever;
@@ -200,6 +217,12 @@ fun AppNav() {
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        // The editor has no snackbar host of its own (its chrome is another
+        // worker's file), so the app shell hoists one: the enqueue feedback
+        // ("Export queued — see Exports") shows over the editor too. The
+        // editor's own Scaffold sits inside; only one host is visible at a
+        // time (the inner host renders when its screen is composed).
+        snackbarHost = { SnackbarHost(exportSnackbar) },
         bottomBar = {
             // Editors are full screen without nav (DESIGN.md Layout).
             if (editorRoute == null) {
@@ -314,6 +337,7 @@ fun AppNav() {
                             )
                             exportJobs = stores.exports.all()
                             queueKick += 1
+                            enqueueFeedback()
                         },
                         sourceFd = sourceFd,
                         sourceFdProvider = sourceFdProvider,
@@ -347,6 +371,7 @@ fun AppNav() {
                                 stores.exports.retry(job.id)
                                 exportJobs = stores.exports.all()
                                 queueKick += 1
+                                enqueueFeedback()
                             },
                             onClear = {
                                 stores.exports.clear()

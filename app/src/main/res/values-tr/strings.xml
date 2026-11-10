@@ -45,6 +45,7 @@
     <string name="editor_seek">Zaman çubuğu</string>
     <string name="editor_export_dng">DNG aktar</string>
     <string name="editor_export_mp4">MP4 aktar</string>
+    <string name="export_queued_snackbar">Dışa aktarım sıraya alındı — Dışa aktarımlar sekmesine bakın</string>
     <string name="editor_not_loaded_title">Klip açılamadı</string>
     <string name="editor_not_loaded_body">Klip bu derlemede yerel motorla açılamadı. Çözüm: motor derlemesi etkinleştirildikten sonra klibi kitaplıktan yeniden açın.</string>
 
@@ -56,6 +57,7 @@
     <string name="exports_format_mp4">H.264 MP4</string>
     <string name="exports_job_queued">Sırada</string>
     <string name="exports_job_running">Dışa aktarılıyor…</string>
+    <string name="exports_job_running_frames">Dışa aktarılıyor… %1$d/%2$d kare</string>
     <string name="exports_job_done_named">Tamamlandı — %1$s</string>
     <string name="exports_job_cancelled">İptal edildi</string>
     <string name="exports_job_failed_stage">Dışa aktarım başarısız oldu: %1$s</string>
