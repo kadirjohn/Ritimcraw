@@ -41,14 +41,18 @@ object SessionRules {
  * - The bridge's nativeCloseSource is slot-safe (range-checked registry),
  *   so closing this session can never affect another session's handle
  *   (owner request: preview/export collision must not cross-close).
+ *
+ * Implements [EditorPreviewSession] — the seam the editor talks to for BOTH
+ * clip kinds — with zero behavior change: the members are the same members
+ * the editor already called, now carrying `override`.
  */
 class PreviewSession private constructor(
     private val handle: Long,
     val frameCount: Int,
     private val engine: ExecutorService,
-) : AutoCloseable {
+) : EditorPreviewSession {
 
-    val frames: Int get() = frameCount
+    override val frames: Int get() = frameCount
 
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
@@ -56,7 +60,7 @@ class PreviewSession private constructor(
      * carrying stage + cause + recovery. A closed session fails cleanly
      * instead of touching the dead handle.
      */
-    suspend fun render(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    override suspend fun render(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
                 PreviewRenderer.Companion.PreviewRenderException(
@@ -126,7 +130,7 @@ class PreviewSession private constructor(
      * 2026-11-10 section 1). Meant for the low-latency drag tier; the
      * full-quality settle render can keep using [render].
      */
-    suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    override suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
                 PreviewRenderer.Companion.PreviewRenderException(
@@ -212,7 +216,7 @@ class PreviewSession private constructor(
      * ptsUs of frame [index] (for the transport's timeline). Runs on the
      * engine thread; -1 on a bad handle (frameInfo is throw-free).
      */
-    suspend fun framePtsUs(index: Int): Long = suspendCoroutine { cont ->
+    override suspend fun framePtsUs(index: Int): Long = suspendCoroutine { cont ->
         try {
             engine.execute {
                 cont.resume(NativeSource.jniFramePtsUs(handle, index))

@@ -44,6 +44,7 @@ import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.MediaSource
+import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.export.DngExporter
@@ -287,6 +288,25 @@ fun AppNav() {
                     val sourceUri by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.uri)
                     }
+                    // Which engine opens the clip: the stored kind is
+                    // authoritative; the container mime (ContentResolver) is
+                    // the rescue for clips imported before detection landed.
+                    // A null mime (resolver failed / non-content URI) falls
+                    // back to the stored kind — SourcePathDecision handles it.
+                    val sourceKind by remember(r.sourceId) {
+                        mutableStateOf(stores.sources.get(r.sourceId)?.kind ?: SourceKind.MCRAW)
+                    }
+                    val sourceMime: String? by remember(r.sourceId) {
+                        mutableStateOf(
+                            sourceUri?.let { uri ->
+                                try {
+                                    context.contentResolver.getType(Uri.parse(uri))
+                                } catch (e: Exception) {
+                                    null
+                                }
+                            }
+                        )
+                    }
                     // Fresh read-only descriptor per render; PreviewRenderer
                     // closes it in a finally. -1 (open failed) degrades to
                     // the placeholder error, never a crash.
@@ -358,6 +378,8 @@ fun AppNav() {
                         accessLost = accessLost,
                         sourceWidth = sourceDims.first,
                         sourceHeight = sourceDims.second,
+                        sourceKind = sourceKind,
+                        sourceMime = sourceMime,
                     )
                 }
             } else {
