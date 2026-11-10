@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -38,7 +39,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
@@ -48,10 +52,15 @@ import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
 import com.ritim.ritimcraw.engine.PreviewSession
+import com.ritim.ritimcraw.engine.PreviewTiers
+import com.ritim.ritimcraw.engine.PtsTimeline
+import com.ritim.ritimcraw.engine.RenderGate
+import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 
 /**
@@ -93,12 +102,13 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * surface-container-lowest with a subtle outline border, Light/Color/Detail
  * tabs, Light tab with Exposure / Highlights / Temperature / Tint sliders.
  *
- * Preview: the screen renders frame [frameIndex] through the native preview
- * pipeline (PreviewRenderer) — once on open, then after the 300 ms trailing
- * debounce on every slider edit (RenderDebounce.WINDOW_MS). Degrades
- * gracefully: with no fd ([sourceFd] < 0), no native engine, or a failed
- * render, the SAME placeholder shows as before this path existed — grading
- * still works, never a crash.
+ * Preview: the screen renders the CURRENT transport position through the
+ * native preview pipeline — the first frame once on open, then after the
+ * trailing debounce on every slider edit (RenderDebounce.WINDOW_MS), and
+ * continuously during playback through the render gate (one running + one
+ * pending render). Degrades gracefully: with no fd ([sourceFd] < 0), no
+ * native engine, or a failed render, the SAME placeholder shows as before
+ * this path existed — grading still works, never a crash.
  *
  * The chrome uses the fixed neutral scheme (RitimTheme(editor = true)) so it
  * never biases color judgment. Sliders snap to their step grid (0.1 EV
@@ -115,24 +125,23 @@ fun ClipEditorScreen(
     onExport: (Target) -> Unit = {},
     sourceFd: Int = -1,
     sourceFdProvider: () -> Int = { -1 },
-    frameIndex: Int = 0,
     accessLost: Boolean = false,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
         var grade by remember(sourceId) { mutableStateOf(initialGrade) }
 
-        // Preview bookkeeping. renderSeq is the request counter: bumping it
-        // triggers the render effect; results whose seq went stale are
-        // dropped so an old frame can never overwrite a newer one — and a
-        // render that finishes after a clip switch (sourceId change) never
-        // publishes, because the whole bookkeeping block is keyed to the
-        // clip.
+        // ---- Preview + transport bookkeeping (all keyed to the clip) ----
         var frame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
-        var renderSeq by remember(sourceId) { mutableStateOf(0L) }
-        var renderInFlight by remember(sourceId) { mutableStateOf(false) }
         var lastRenderFailed by remember(sourceId) { mutableStateOf(false) }
         var errorText by remember(sourceId) { mutableStateOf<String?>(null) }
+        var renderInFlight by remember(sourceId) { mutableStateOf(false) }
+        // renderSeq is the request counter: every offered render bumps it and
+        // carries its value as its sequence. The pump publishes results
+        // monotonically (see below), so an old frame can never overwrite a
+        // newer one — and a render that finishes after a clip switch never
+        // publishes, because the whole bookkeeping block is keyed to the clip.
+        var renderSeq by remember(sourceId) { mutableStateOf(0L) }
         // The persistent preview session: opened once when the editor opens
         // with a usable fd, closed exactly once on dispose (all native calls
         // funnel through the single preview engine thread, so the dispose
@@ -140,14 +149,39 @@ fun ClipEditorScreen(
         // close). Null while opening / when the session path failed (the
         // per-render fallback below covers that).
         var session by remember(sourceId) { mutableStateOf<PreviewSession?>(null) }
+        var sessionRender by remember(sourceId) { mutableStateOf(false) }
+
+        // Transport state: play/pause, the current frame shown by the
+        // transport (slider position + playback cursor), and the clip's real
+        // MCRAW timestamps fetched once after the session opens.
+        var isPlaying by remember(sourceId) { mutableStateOf(false) }
+        var positionFrame by remember(sourceId) { mutableStateOf(0) }
+        var ptsUs by remember(sourceId) { mutableStateOf<LongArray?>(null) }
+
+        // The render pipeline's pending slot (owner request §1: at most one
+        // running and one pending render; a new request replaces the pending
+        // one). The running slot is the render pump effect below.
+        val gate = remember(sourceId) { RenderGate() }
+        // The pump's wake signal. CONFLATED: kicks arriving while the pump
+        // is busy coalesce into one — the pump drains the gate anyway, and a
+        // kick never cancels a render in flight (that would leave its native
+        // task running on the engine thread with no consumer = backlog).
+        val pumpKick = remember(sourceId) { Channel<Unit>(Channel.CONFLATED) }
+
         val nativeAvailable = NativeSource.nativeAvailable
         val canRender = EditorPreviewLogic.canRender(sourceFd, nativeAvailable)
+
+        /** Offers a render to the pipeline (replaces any pending one). */
+        fun requestRender(frameIndex: Int, g: GradeK, maxDim: Int) {
+            renderSeq += 1
+            gate.offer(RenderRequest(frameIndex, g, maxDim, renderSeq))
+            pumpKick.trySend(Unit)
+        }
 
         // Session open: once, when the editor opens with a usable fd. The
         // session path keeps the decoder open for the whole editor lifetime
         // (no per-render open); when it fails, sessionRender stays false and
         // the per-render fallback path (fresh fd per render) takes over.
-        var sessionRender by remember(sourceId) { mutableStateOf(false) }
         LaunchedEffect(sourceFd, nativeAvailable) {
             if (!canRender) return@LaunchedEffect
             val fdForSession = sourceFdProvider()
@@ -156,21 +190,25 @@ fun ClipEditorScreen(
                 lastRenderFailed = true
                 return@LaunchedEffect
             }
-            PreviewSession.open(fdForSession, PreviewRenderer.previewEngine).fold(
-                onSuccess = { s ->
-                    // The session dup'd the fd; close the caller's copy —
-                    // the native side owns its own descriptor from here.
-                    PreviewRenderer.closeFdQuietly(fdForSession)
-                    session = s
-                    sessionRender = true
-                    renderSeq += 1
-                },
-                onFailure = { e ->
-                    PreviewRenderer.closeFdQuietly(fdForSession)
-                    errorText = e.message
-                    lastRenderFailed = true
-                },
-            )
+            val opened = PreviewSession.open(fdForSession, PreviewRenderer.previewEngine)
+            val s = opened.getOrNull()
+            if (s != null) {
+                // The session dup'd the fd; close the caller's copy —
+                // the native side owns its own descriptor from here.
+                PreviewRenderer.closeFdQuietly(fdForSession)
+                session = s
+                sessionRender = true
+                // Real MCRAW timestamps for the transport (fetched once
+                // on the engine thread; ptsUs[i] is frame i's pts).
+                ptsUs = LongArray(s.frames) { i -> s.framePtsUs(i.toInt()) }
+                // First frame auto-visible (owner request §1).
+                requestRender(0, grade, PreviewTiers.PAUSED_MAX_DIM)
+                positionFrame = 0
+            } else {
+                PreviewRenderer.closeFdQuietly(fdForSession)
+                errorText = opened.exceptionOrNull()?.message
+                lastRenderFailed = true
+            }
         }
 
         // Session close: exactly once, when the editor leaves composition
@@ -182,63 +220,109 @@ fun ClipEditorScreen(
             }
         }
 
-        // Slider edits re-render after the trailing debounce window.
+        // Slider edits re-render after the trailing debounce window (the
+        // grade is applied to the CURRENT transport position).
         LaunchedEffect(grade, sourceFd) {
-            if (renderSeq == 0L || !canRender) return@LaunchedEffect
+            if (!canRender || renderSeq == 0L) return@LaunchedEffect
             delay(RenderDebounce.WINDOW_MS)
-            renderSeq += 1
+            requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
         }
 
-        // The render itself. Session path: render through the PERSISTENT
-        // native session (no per-render open — the decoder stays open for
-        // the whole editor lifetime, owner request 2026-11-10 §1). Fallback
-        // path (session open failed): one open -> render -> close per
-        // request, with a FRESH fd per render (dup() shares the file offset,
-        // so reusing one fd leaves it mid-file and the next open reads a
-        // header from the middle of the clip).
-        LaunchedEffect(renderSeq) {
-            if (renderSeq == 0L || !canRender) return@LaunchedEffect
-            val seq = renderSeq
-            renderInFlight = true
-            val s = session
-            val result = if (sessionRender && s != null) {
-                s.render(frameIndex, grade, maxDim = 1280)
-            } else {
-                // Fresh read-only descriptor for THIS render; the editor's
-                // own fd (sourceFd) stays untouched.
-                val fdForRender = sourceFdProvider()
-                if (fdForRender < 0) {
-                    Result.failure(IllegalStateException(
-                        "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
-                    ))
-                } else {
-                    PreviewRenderer.render(
-                        sourceFd = fdForRender,
-                        frameIndex = frameIndex,
-                        grade = grade,
-                        maxDim = 1280,
-                    )
+        // THE RENDER PUMP: the single running slot, alive for the whole clip.
+        // One loop: await a kick, drain the pending slot ONE render at a
+        // time, publish, repeat. The pump is never restarted (a kick while it
+        // is busy coalesces), so a render in flight is never cancelled — at
+        // most one native render runs on the engine and one waits pending,
+        // exactly the owner-request §1 pipeline shape. A new request offered
+        // while a render runs replaces the pending one; the running one's
+        // result is stale-dropped when it lands.
+        LaunchedEffect(sourceId) {
+            // Monotonic publication: the pump is serial and the gate is
+            // newest-wins, so polled requests arrive in strictly increasing
+            // sequence order — publish anything newer than the last one that
+            // published. (Dropping anything not-the-newest, as the old
+            // parallel-effect design required, would freeze playback: offers
+            // legitimately outpace renders there, and each completed frame
+            // must show while the newer one is already pending.)
+            var lastPublished = 0L
+            for (kick in pumpKick) {
+                while (true) {
+                    val req = gate.poll() ?: break
+                    renderInFlight = true
+                    val s = session
+                    val result = if (sessionRender && s != null) {
+                        s.render(req.frameIndex, req.grade, req.maxDim)
+                    } else {
+                        val fdForRender = sourceFdProvider()
+                        if (fdForRender < 0) {
+                            Result.failure(IllegalStateException(
+                                "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
+                            ))
+                        } else {
+                            PreviewRenderer.render(
+                                sourceFd = fdForRender,
+                                frameIndex = req.frameIndex,
+                                grade = req.grade,
+                                maxDim = req.maxDim,
+                            )
+                        }
+                    }
+                    if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
+                        result.fold(
+                            onSuccess = { f ->
+                                frame = f
+                                lastRenderFailed = false
+                                errorText = null
+                            },
+                            onFailure = { e ->
+                                lastRenderFailed = true
+                                errorText = e.message
+                            },
+                        )
+                        lastPublished = req.sequence
+                    }
+                    renderInFlight = false
                 }
             }
-            if (!RenderDebounce.isFresh(seq, renderSeq)) {
-                // A newer request superseded this one mid-flight; its own
-                // effect run will publish the fresh result.
-                renderInFlight = false
-                return@LaunchedEffect
-            }
-            result.fold(
-                onSuccess = { f ->
-                    frame = f
-                    lastRenderFailed = false
-                    errorText = null
-                },
-                onFailure = { e ->
-                    lastRenderFailed = true
-                    errorText = e.message
-                },
-            )
-            renderInFlight = false
         }
+
+        // PLAYBACK LOOP: paced by the clip's REAL MCRAW timestamps. Each
+        // tick picks the frame whose pts is closest to the wall-clock
+        // elapsed time (drop-late: never a backlog — the wall clock decides
+        // which frame is current). Renders go through the same render gate
+        // (one running + one pending), at the coarser playback tier. Stops
+        // at the last frame and resets the play state (owner request §1).
+        LaunchedEffect(isPlaying, ptsUs) {
+            val pts = ptsUs ?: return@LaunchedEffect
+            if (!isPlaying || pts.isEmpty()) return@LaunchedEffect
+            val startFrame = positionFrame
+            val startUs = System.nanoTime() / 1000
+            var lastRendered = -1
+            while (isPlaying) {
+                val elapsed = PtsTimeline.elapsedAt(pts, startFrame, System.nanoTime() / 1000 - startUs)
+                val idx = PtsTimeline.frameAt(pts, elapsed)
+                if (idx >= 0 && idx != lastRendered) {
+                    positionFrame = idx
+                    requestRender(idx, grade, PreviewTiers.PLAYBACK_MAX_DIM)
+                    lastRendered = idx
+                }
+                if (idx >= pts.size - 1) {
+                    // Clip end: stop, keep the last frame on screen, reset
+                    // the play state (a new Play resumes from the start).
+                    isPlaying = false
+                    positionFrame = pts.size - 1
+                    break
+                }
+                val nextDelay = PtsTimeline.delayUntilNextUs(pts, idx, elapsed)
+                if (nextDelay > 0) delay(nextDelay / 1000) else delay(1)
+            }
+        }
+
+        // ---- Transport helpers (pure logic lives in PtsTimeline) ----
+        val pts = ptsUs
+        val totalUs = pts?.let { PtsTimeline.totalDurationUs(it) } ?: 0L
+        val elapsedUs = pts?.let { PtsTimeline.positionUs(it, positionFrame) } ?: 0L
+        val seekFraction = pts?.let { PtsTimeline.fractionForFrame(it, positionFrame) } ?: 0f
 
         Column(Modifier.fillMaxSize()) {
             // Top bar: back + clip id.
@@ -343,6 +427,42 @@ fun ClipEditorScreen(
                     }
                 }
             }
+            // Transport row (owner request 2026-11-10 §1, MotionCam Pro
+            // reference): compact Play/Pause + draggable time bar + elapsed /
+            // total timecode directly under the preview. Loading and error
+            // states stay readable in the preview area above; the transport
+            // is disabled until the session opens (no timestamps yet).
+            TransportRow(
+                isPlaying = isPlaying,
+                enabled = pts != null && pts.size > 1,
+                elapsedUs = elapsedUs,
+                totalUs = totalUs,
+                fraction = seekFraction,
+                onPlayPause = {
+                    if (isPlaying) {
+                        // Pause keeps the position (owner request §1).
+                        isPlaying = false
+                    } else {
+                        // Resume from the selected position; at the very end,
+                        // a fresh play restarts from the first frame.
+                        if (pts != null && positionFrame >= pts.size - 1) {
+                            positionFrame = 0
+                        }
+                        isPlaying = true
+                    }
+                },
+                onSeekFraction = { fraction ->
+                    val p = pts ?: return@TransportRow
+                    // Dragging shows the selected frame immediately and
+                    // playback resumes from there (owner request §1).
+                    val idx = PtsTimeline.frameForFraction(p, fraction)
+                    if (idx >= 0) {
+                        positionFrame = idx
+                        isPlaying = false
+                        requestRender(idx, grade, PreviewTiers.PAUSED_MAX_DIM)
+                    }
+                },
+            )
             // Render affordance (DESIGN.md: tonal button for a secondary
             // action) + the Export actions (filled button for the one
             // primary action DNG, tonal for the secondary MP4). Export is
@@ -361,7 +481,11 @@ fun ClipEditorScreen(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 FilledTonalButton(
-                    onClick = { renderSeq += 1 },
+                    onClick = {
+                        // Manual re-render of the current transport position
+                        // at the full paused tier.
+                        requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
+                    },
                     enabled = canRender,
                 ) {
                     Text(stringResource(R.string.editor_render_preview))
@@ -430,6 +554,61 @@ fun ClipEditorScreen(
 /** PreviewFrame -> Compose ImageBitmap via Android Bitmap (UI layer only). */
 private fun PreviewFrame.toImageBitmap(): androidx.compose.ui.graphics.ImageBitmap =
     Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888).asImageBitmap()
+
+/**
+ * Compact transport row under the preview (owner request 2026-11-10 §1):
+ * Play/Pause icon button (48dp touch target), draggable seek slider, and
+ * elapsed / total timecode in tabular figures so the strip never reflows
+ * while playing. The Pause glyph is a vendored vector (material-icons-core
+ * 1.7.3 has no Pause); Play uses the core PlayArrow.
+ */
+@Composable
+private fun TransportRow(
+    isPlaying: Boolean,
+    enabled: Boolean,
+    elapsedUs: Long,
+    totalUs: Long,
+    fraction: Float,
+    onPlayPause: () -> Unit,
+    onSeekFraction: (Float) -> Unit,
+) {
+    val seekDescription = stringResource(R.string.editor_seek)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        IconButton(onClick = onPlayPause, enabled = enabled) {
+            if (isPlaying) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_pause),
+                    contentDescription = stringResource(R.string.editor_pause),
+                )
+            } else {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = stringResource(R.string.editor_play),
+                )
+            }
+        }
+        Slider(
+            value = fraction,
+            onValueChange = onSeekFraction,
+            valueRange = 0f..1f,
+            enabled = enabled,
+            modifier = Modifier
+                .weight(1f)
+                .semantics { contentDescription = seekDescription },
+        )
+        Text(
+            text = Format.formatTimecodePair(elapsedUs, totalUs),
+            style = MaterialTheme.typography.labelMedium.merge(Tnum),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
 
 /** Light tab: Exposure / Highlights / Temperature / Tint (DESIGN.md Editor). */
 @Composable

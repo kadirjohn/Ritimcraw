@@ -40,6 +40,9 @@
     <string name="editor_slider_temperature">Sıcaklık</string>
     <string name="editor_slider_tint">Ton</string>
     <string name="editor_render_preview">Önizlemeyi oluştur</string>
+    <string name="editor_play">Oynat</string>
+    <string name="editor_pause">Duraklat</string>
+    <string name="editor_seek">Zaman çubuğu</string>
     <string name="editor_export_dng">DNG aktar</string>
     <string name="editor_export_mp4">MP4 aktar</string>
     <string name="editor_not_loaded_title">Klip açılamadı</string>

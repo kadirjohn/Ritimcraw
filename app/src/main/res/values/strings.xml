@@ -40,6 +40,9 @@
     <string name="editor_slider_temperature">Temperature</string>
     <string name="editor_slider_tint">Tint</string>
     <string name="editor_render_preview">Render preview</string>
+    <string name="editor_play">Play</string>
+    <string name="editor_pause">Pause</string>
+    <string name="editor_seek">Seek</string>
     <string name="editor_export_dng">Export DNG</string>
     <string name="editor_export_mp4">Export MP4</string>
     <string name="editor_not_loaded_title">Clip not open</string>
