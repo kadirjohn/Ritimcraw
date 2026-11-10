@@ -287,6 +287,45 @@ class NativeSource private constructor(
          */
         @JvmStatic private external fun nativeAudioInfo(handle: Long): IntArray?
 
+        // ---- Encoded (Mi-Log MP4) develop JNI (developEncoded -> Rec709 -> ARGB) ----
+
+        /**
+         * Develops one decoded encoded-frame (NV12 when [semiPlanar] is
+         * true: [yPlane] + interleaved UV in [uPlane]; I420 otherwise) with
+         * the grade: developEncoded (limited-range YUV -> RGB -> Mi-Log
+         * decode -> WB/temp/tint/exposure) -> linearToRec709 -> clamp ->
+         * 8-bit ARGB, rotated upright by [orientationDeg]. Returns
+         * [width, height, then w*h ARGB_8888 ints] (the preview contract) or
+         * null on failure (read the error accessors from the same thread).
+         * Uses only tempK/tint/exposureEv of the grade (developEncoded's
+         * contract). No handle: the frame is stateless input.
+         */
+        @JvmStatic private external fun nativeEncodedDevelop(
+            yPlane: ByteArray,
+            uPlane: ByteArray,
+            vPlane: ByteArray,
+            width: Int,
+            height: Int,
+            stride: Int,
+            uvStride: Int,
+            semiPlanar: Boolean,
+            isBt709: Boolean,
+            orientationDeg: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+        ): IntArray?
+
         // ---- Cross-module wrappers (external decls stay private; see the
         // mangling note at the top of the JNI section) ----
 
@@ -384,6 +423,40 @@ class NativeSource private constructor(
 
         /** JNI bridge: [sampleRate, channels] or null. */
         internal fun jniAudioInfo(handle: Long): IntArray? = nativeAudioInfo(handle)
+
+        /** JNI bridge: see nativeEncodedDevelop. */
+        internal fun jniEncodedDevelop(
+            yPlane: ByteArray,
+            uPlane: ByteArray,
+            vPlane: ByteArray,
+            width: Int,
+            height: Int,
+            stride: Int,
+            uvStride: Int,
+            semiPlanar: Boolean,
+            isBt709: Boolean,
+            orientationDeg: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+        ): IntArray? = nativeEncodedDevelop(
+            yPlane, uPlane, vPlane,
+            width, height, stride, uvStride,
+            semiPlanar, isBt709, orientationDeg,
+            exposureEv, highlights, tempK, tint,
+            saturation, blackPoint, whitePoint, shadows, midtones, contrast,
+            asShot, highlightReconstruction, keepVignetting,
+        )
 
         /** JNI bridge: readAudio for export sessions. */
         internal fun jniReadAudio(handle: Long): ShortArray? = nativeReadAudio(handle)
