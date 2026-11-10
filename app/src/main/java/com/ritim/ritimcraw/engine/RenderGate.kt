@@ -44,4 +44,10 @@ data class RenderRequest(
     val maxDim: Int,
     /** Monotonic sequence for the stale-drop once the result lands. */
     val sequence: Long,
+    /**
+     * True for interactive slider renders: run through the session's
+     * CACHED path (the bridge reuses the last decoded CFA when the frame
+     * is unchanged, so a grade-only tweak skips the decode).
+     */
+    val cached: Boolean = false,
 )

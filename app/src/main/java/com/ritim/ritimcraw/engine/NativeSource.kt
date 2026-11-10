@@ -193,6 +193,23 @@ class NativeSource private constructor(
             maxDim: Int,
         ): IntArray?
 
+        /**
+         * Interactive slider render over the persistent session: same output
+         * contract as nativePreviewRender, but the bridge caches the handle's
+         * last decoded CFA — a render of the SAME frameIndex skips the decode
+         * and only re-develops (grade-only change). A frameIndex change
+         * decodes and replaces the cache; a reopened handle starts uncached.
+         */
+        @JvmStatic private external fun nativePreviewSessionRenderCached(
+            handle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+            maxDim: Int,
+        ): IntArray?
+
         /** rawedit::ErrorCode of the last failed preview call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
         @JvmStatic private external fun nativePreviewErrorCode(): Int
 
@@ -259,6 +276,17 @@ class NativeSource private constructor(
             tint: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewRender(handle, frameIndex, exposureEv, highlights, tempK, tint, maxDim)
+
+        /** JNI bridge: cached interactive render; see nativePreviewSessionRenderCached. */
+        internal fun jniPreviewSessionRenderCached(
+            handle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+            maxDim: Int,
+        ): IntArray? = nativePreviewSessionRenderCached(handle, frameIndex, exposureEv, highlights, tempK, tint, maxDim)
 
         /** JNI bridge: rawedit::ErrorCode of the last failed preview call. */
         internal fun jniPreviewErrorCode(): Int = nativePreviewErrorCode()

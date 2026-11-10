@@ -64,20 +64,23 @@ class PreviewRendererTest {
     @Test
     fun request_inside_window_waits() {
         assertFalse(
-            RenderDebounce.shouldRender(lastRequestMs = 10_000, nowMs = 10_200),
+            RenderDebounce.shouldRender(lastRequestMs = 10_000, nowMs = 10_100),
         )
     }
 
     @Test
     fun request_at_window_edge_renders() {
         assertTrue(
-            RenderDebounce.shouldRender(lastRequestMs = 10_000, nowMs = 10_300),
+            RenderDebounce.shouldRender(lastRequestMs = 10_000, nowMs = 10_120),
         )
     }
 
     @Test
-    fun window_is_300ms() {
-        assertEquals(300L, RenderDebounce.WINDOW_MS)
+    fun window_is_120ms() {
+        // 300 -> 120 (owner request 2026-11-10 section 1): the interactive
+        // slider path renders low-latency during drags, so the debounced
+        // settle can afford a shorter window.
+        assertEquals(120L, RenderDebounce.WINDOW_MS)
     }
 
     // ---- stale-result drop ----

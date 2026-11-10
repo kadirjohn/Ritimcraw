@@ -107,11 +107,78 @@ class PreviewSession private constructor(
     /** Blocking render; MUST run on the engine thread (thread-local error state). */
     private fun renderBlocking(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
         val args = GradeMapping.toNative(grade)
-        val out = NativeSource.jniPreviewRender(
-            handle, frameIndex,
-            args.exposureEv, args.highlights, args.tempK, args.tint,
-            maxDim,
+        return renderArray(
+            NativeSource.jniPreviewRender(
+                handle, frameIndex,
+                args.exposureEv, args.highlights, args.tempK, args.tint,
+                maxDim,
+            )
         )
+    }
+
+    /**
+     * Interactive slider render: same contract as [render], but the bridge
+     * reuses the session's cached CFA when [frameIndex] is the frame already
+     * decoded — a grade-only change skips the decode entirely (owner request
+     * 2026-11-10 section 1). Meant for the low-latency drag tier; the
+     * full-quality settle render can keep using [render].
+     */
+    suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+        if (!SessionRules.isActive(opened = true, closed = closed.get())) {
+            return Result.failure(
+                PreviewRenderer.Companion.PreviewRenderException(
+                    "Preview failed (stage: open): session closed — recovery: reopen the clip"
+                )
+            )
+        }
+        if (frameIndex < 0 || (frameCount > 0 && frameIndex >= frameCount)) {
+            return Result.failure(
+                IllegalArgumentException(
+                    "frameIndex $frameIndex out of range (frameCount=$frameCount)"
+                )
+            )
+        }
+        return suspendCoroutine { cont ->
+            try {
+                engine.execute {
+                    val outcome: Result<PreviewFrame> = try {
+                        if (closed.get()) {
+                            Result.failure(
+                                PreviewRenderer.Companion.PreviewRenderException(
+                                    "Preview failed (stage: open): session closed — " +
+                                        "recovery: reopen the clip"
+                                )
+                            )
+                        } else {
+                            val args = GradeMapping.toNative(grade)
+                            renderArray(
+                                NativeSource.jniPreviewSessionRenderCached(
+                                    handle, frameIndex,
+                                    args.exposureEv, args.highlights, args.tempK, args.tint,
+                                    maxDim,
+                                )
+                            )
+                        }
+                    } catch (t: Throwable) {
+                        Result.failure(t)
+                    }
+                    cont.resume(outcome)
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(
+                    Result.failure(
+                        PreviewRenderer.Companion.PreviewRenderException(
+                            "Preview failed (stage: open): preview engine unavailable — " +
+                                "recovery: reopen the clip"
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    /** Blocking cached render; MUST run on the engine thread. */
+    private fun renderArray(out: IntArray?): Result<PreviewFrame> {
         if (out == null || out.size < 2) {
             val code = NativeSource.jniPreviewErrorCode()
             val stage = NativeSource.jniPreviewErrorStage()

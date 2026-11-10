@@ -53,8 +53,12 @@ object GradeMapping {
  */
 object RenderDebounce {
 
-    /** Slider-settle window before a re-render (DESIGN.md preview re-render). */
-    const val WINDOW_MS = 300L
+    /**
+     * Slider-settle window before a re-render (owner request 2026-11-10
+     * section 1: 300 ms felt sluggish; interactive drags now render at the
+     * low tier directly, so the debounced full render follows quickly).
+     */
+    const val WINDOW_MS = 120L
 
     /**
      * True when a render whose previous request came at [lastRequestMs]

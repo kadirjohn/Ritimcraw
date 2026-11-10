@@ -68,6 +68,14 @@ constexpr int kMaxSources = 8;
 struct Entry {
     std::unique_ptr<rawedit::Source> source;
     bool inUse = false;
+    // Interactive slider cache (owner request 2026-11-10 section 1): the
+    // last decoded CFA for THIS handle, so a grade-only re-render skips the
+    // decode. Frame-keyed; a new handle (reopen) starts with an empty cache.
+    // All access is confined to the owner session's engine thread except
+    // slot bookkeeping, which the registry mutex already guards.
+    std::vector<uint16_t> cachedCfa;
+    rawedit::FrameInfo cachedInfo{};
+    int cachedFrameIndex = -1;
 };
 
 Entry gEntries[kMaxSources];
@@ -79,6 +87,11 @@ int64_t insertSource(std::unique_ptr<rawedit::Source> src) {
         if (!gEntries[i].inUse) {
             gEntries[i].source = std::move(src);
             gEntries[i].inUse = true;
+            // A reopened slot starts with an empty interactive cache.
+            gEntries[i].cachedCfa.clear();
+            gEntries[i].cachedCfa.shrink_to_fit();
+            gEntries[i].cachedInfo = rawedit::FrameInfo{};
+            gEntries[i].cachedFrameIndex = -1;
             // Handle packs slot index; slots are tiny so this is exact.
             return static_cast<int64_t>(i) + 1;
         }
@@ -157,6 +170,70 @@ inline uint8_t toByte(float rec709) {
     return static_cast<uint8_t>(v * 255.0f + 0.5f);
 }
 
+// Develop a decoded CFA into the preview's ARGB_8888 jint array
+// ([width, height, pixels...], rotated upright per FrameInfo.orientationDeg).
+// Shared by the plain preview render and the cached interactive render so the
+// two paths stay pixel-identical. Returns nullptr (error state set) on a
+// develop failure; a NewIntArray failure propagates as nullptr with a
+// pending JNI exception, which the Kotlin wrapper already maps to a render
+// failure.
+jintArray developToArgb(JNIEnv* env,
+                         const std::vector<uint16_t>& cfa,
+                         const rawedit::FrameInfo& info,
+                         const rawedit::RawMeta& meta,
+                         const rawedit::Grade& grade,
+                         int maxDim) {
+    const int strideEvery = strideFor(info, maxDim);
+    rawedit::ImageF img = rawedit::developThumbnail(
+        cfa.data(), info, meta, grade, strideEvery);
+    if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: unsupported — the frame is too small to develop "
+                 "(recovery: re-import the clip)");
+        return nullptr;
+    }
+
+    const jsize w = static_cast<jsize>(img.w);
+    const jsize h = static_cast<jsize>(img.h);
+    const int orient = ((info.orientationDeg % 360) + 360) % 360;
+    jsize outW = w;
+    jsize outH = h;
+    if (orient == 90 || orient == 270) {
+        outW = h;
+        outH = w;
+    }
+    const jsize n = outW * outH;
+    // [width, height, then n ARGB pixels].
+    std::vector<jint> out(static_cast<size_t>(n) + 2);
+    out[0] = outW;
+    out[1] = outH;
+    jint* px = out.data() + 2;
+    for (jsize y = 0; y < outH; ++y) {
+        for (jsize x = 0; x < outW; ++x) {
+            // Source pixel under destination (x, y) after the rotation.
+            jsize si;
+            switch (orient) {
+                case 90:  si = static_cast<jsize>(h - 1 - x) * w + y; break;
+                case 180: si = static_cast<jsize>(h - 1 - y) * w + (w - 1 - x); break;
+                case 270: si = x * w + (w - 1 - y); break;
+                default:  si = y * w + x; break;
+            }
+            const float r = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 0]);
+            const float g = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 1]);
+            const float b = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 2]);
+            px[static_cast<size_t>(y) * outW + x] =
+                0xFF000000 |
+                (static_cast<jint>(toByte(r)) << 16) |
+                (static_cast<jint>(toByte(g)) << 8) |
+                static_cast<jint>(toByte(b));
+        }
+    }
+    jintArray arr = env->NewIntArray(n + 2);
+    if (arr == nullptr) return nullptr;
+    env->SetIntArrayRegion(arr, 0, n + 2, out.data());
+    return arr;
+}
+
 } // namespace
 
 extern "C" {
@@ -181,6 +258,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeCloseSource(JNIEnv*, jclass, 
         Entry& e = gEntries[handle - 1];
         e.source.reset();
         e.inUse = false;
+        // Drop the interactive cache with the Source it belongs to (a
+        // reopened handle starts fresh).
+        e.cachedCfa.clear();
+        e.cachedCfa.shrink_to_fit();
+        e.cachedInfo = rawedit::FrameInfo{};
+        e.cachedFrameIndex = -1;
     }
 }
 
@@ -359,61 +442,69 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
 
-        // 2. Develop with CFA decimation for preview speed (core/Thumbnail.h).
-        const int strideEvery = strideFor(info, maxDim);
-        rawedit::ImageF img = rawedit::developThumbnail(
-            frame.value->data(), info, meta,
-            gradeFromKotlin(exposureEv, highlights, tempK, tint), strideEvery);
-        if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
-            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
-                     "develop: unsupported — the frame is too small to develop "
-                     "(recovery: re-import the clip)");
-            return nullptr;
-        }
+        // 2-3. Develop with CFA decimation + ARGB (shared preview tail).
+        return developToArgb(env, *frame.value, info, meta,
+                             gradeFromKotlin(exposureEv, highlights, tempK, tint),
+                             maxDim);
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "develop: out of memory decoding the frame "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("develop: ") + e.what() + " (recovery: reopen the clip)");
+        return nullptr;
+    }
+}
 
-        // 3. linearToRec709 + clamp + 8-bit ARGB_8888, rotated upright per
-        //    FrameInfo.orientationDeg (degrees CW to upright — the same
-        //    convention the DNG writer encodes as the TIFF orientation tag,
-        //    so the preview matches what a DNG reader shows).
-        const jsize w = static_cast<jsize>(img.w);
-        const jsize h = static_cast<jsize>(img.h);
-        const int orient = ((info.orientationDeg % 360) + 360) % 360;
-        jsize outW = w;
-        jsize outH = h;
-        if (orient == 90 || orient == 270) {
-            outW = h;
-            outH = w;
-        }
-        const jsize n = outW * outH;
-        // [width, height, then n ARGB pixels].
-        std::vector<jint> out(static_cast<size_t>(n) + 2);
-        out[0] = outW;
-        out[1] = outH;
-        jint* px = out.data() + 2;
-        for (jsize y = 0; y < outH; ++y) {
-            for (jsize x = 0; x < outW; ++x) {
-                // Source pixel under destination (x, y) after the rotation.
-                jsize si;
-                switch (orient) {
-                    case 90:  si = static_cast<jsize>(h - 1 - x) * w + y; break;
-                    case 180: si = static_cast<jsize>(h - 1 - y) * w + (w - 1 - x); break;
-                    case 270: si = x * w + (w - 1 - y); break;
-                    default:  si = y * w + x; break;
-                }
-                const float r = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 0]);
-                const float g = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 1]);
-                const float b = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 2]);
-                px[static_cast<size_t>(y) * outW + x] =
-                    0xFF000000 |
-                    (static_cast<jint>(toByte(r)) << 16) |
-                    (static_cast<jint>(toByte(g)) << 8) |
-                    static_cast<jint>(toByte(b));
+// Interactive slider render (owner request 2026-11-10 section 1): same output
+// contract as nativePreviewRender, but the handle's Entry caches the last
+// decoded CFA. When frameIndex matches the cache the DECODE is skipped and
+// only the develop+ARGB tail runs — a grade-only re-render during a slider
+// drag. A frameIndex change (or a reopened handle, whose cache starts empty)
+// decodes and replaces the cache. Same thread as the session's other calls
+// (the single preview engine thread), so the cache needs no extra locking
+// beyond the registry's slot bookkeeping.
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
+        JNIEnv* env, jclass, jlong handle, jint frameIndex,
+        jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
+        jint maxDim) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (handle <= 0 || handle > kMaxSources) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "invalid clip handle (recovery: reopen the clip)");
+        return nullptr;
+    }
+    Entry& e = gEntries[handle - 1];
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 gLastError);
+        return nullptr;
+    }
+    try {
+        // 1. Decode only when the requested frame is not the cached one.
+        if (frameIndex != e.cachedFrameIndex) {
+            auto frame = s->readFrame(static_cast<size_t>(frameIndex));
+            if (!frame.isOk()) {
+                setError(static_cast<int>(frame.code), kStageFrameRead,
+                         std::string("frame read: ") + rawedit::errorName(frame.code) +
+                             " — " + frame.detail);
+                return nullptr;
             }
+            e.cachedCfa = std::move(*frame.value);
+            e.cachedInfo = s->frameInfo(static_cast<size_t>(frameIndex));
+            e.cachedFrameIndex = frameIndex;
         }
-        jintArray arr = env->NewIntArray(n + 2);
-        if (arr == nullptr) return nullptr;
-        env->SetIntArrayRegion(arr, 0, n + 2, out.data());
-        return arr;
+        const rawedit::RawMeta& meta = s->rawMeta();
+
+        // 2-3. Develop the (possibly cached) CFA + ARGB (shared preview tail).
+        return developToArgb(env, e.cachedCfa, e.cachedInfo, meta,
+                             gradeFromKotlin(exposureEv, highlights, tempK, tint),
+                             maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "

@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -56,6 +58,7 @@ import com.ritim.ritimcraw.engine.PreviewTiers
 import com.ritim.ritimcraw.engine.PtsTimeline
 import com.ritim.ritimcraw.engine.RenderGate
 import com.ritim.ritimcraw.engine.RenderRequest
+import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
@@ -157,6 +160,10 @@ fun ClipEditorScreen(
         var isPlaying by remember(sourceId) { mutableStateOf(false) }
         var positionFrame by remember(sourceId) { mutableStateOf(0) }
         var ptsUs by remember(sourceId) { mutableStateOf<LongArray?>(null) }
+        // Slider-drag tier state (SliderTiers machine): while the finger is
+        // down, renders use the low drag tier through the session's CACHED
+        // path; the drag end emits exactly one full-quality settle render.
+        var dragActive by remember(sourceId) { mutableStateOf(false) }
 
         // The render pipeline's pending slot (owner request §1: at most one
         // running and one pending render; a new request replaces the pending
@@ -172,10 +179,23 @@ fun ClipEditorScreen(
         val canRender = EditorPreviewLogic.canRender(sourceFd, nativeAvailable)
 
         /** Offers a render to the pipeline (replaces any pending one). */
-        fun requestRender(frameIndex: Int, g: GradeK, maxDim: Int) {
+        fun requestRender(frameIndex: Int, g: GradeK, maxDim: Int, cached: Boolean = false) {
             renderSeq += 1
-            gate.offer(RenderRequest(frameIndex, g, maxDim, renderSeq))
+            gate.offer(RenderRequest(frameIndex, g, maxDim, renderSeq, cached))
             pumpKick.trySend(Unit)
+        }
+
+        /** Applies one SliderTiers transition and renders per its decision. */
+        fun applyTierEvent(event: SliderTiers.Event) {
+            val t = SliderTiers.onEvent(event, dragActive)
+            dragActive = t.dragActive
+            when (val d = t.decision) {
+                is SliderTiers.Decision.RenderAtDragTier ->
+                    requestRender(positionFrame, grade, d.maxDim, cached = true)
+                is SliderTiers.Decision.RenderAtSettleTier ->
+                    requestRender(positionFrame, grade, d.maxDim)
+                SliderTiers.Decision.NoRender -> Unit
+            }
         }
 
         // Session open: once, when the editor opens with a usable fd. The
@@ -221,11 +241,21 @@ fun ClipEditorScreen(
         }
 
         // Slider edits re-render after the trailing debounce window (the
-        // grade is applied to the CURRENT transport position).
+        // grade is applied to the CURRENT transport position). The tier
+        // follows the drag state: mid-drag pauses re-render at the low drag
+        // tier through the cached path (the frame is unchanged, only the
+        // grade moved); settled edits use the full tier. Continuous drags
+        // are fed by the immediate GradeEdited path below — this effect
+        // restarts on every grade step, so its trailing edge only fires
+        // when the finger pauses.
         LaunchedEffect(grade, sourceFd) {
             if (!canRender || renderSeq == 0L) return@LaunchedEffect
             delay(RenderDebounce.WINDOW_MS)
-            requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
+            requestRender(
+                positionFrame, grade,
+                SliderTiers.tierFor(dragActive),
+                cached = dragActive,
+            )
         }
 
         // THE RENDER PUMP: the single running slot, alive for the whole clip.
@@ -251,7 +281,13 @@ fun ClipEditorScreen(
                     renderInFlight = true
                     val s = session
                     val result = if (sessionRender && s != null) {
-                        s.render(req.frameIndex, req.grade, req.maxDim)
+                        if (req.cached) {
+                            // Interactive drag render: the bridge reuses the
+                            // cached CFA when the frame is unchanged.
+                            s.renderCached(req.frameIndex, req.grade, req.maxDim)
+                        } else {
+                            s.render(req.frameIndex, req.grade, req.maxDim)
+                        }
                     } else {
                         val fdForRender = sourceFdProvider()
                         if (fdForRender < 0) {
@@ -449,19 +485,23 @@ fun ClipEditorScreen(
                             positionFrame = 0
                         }
                         isPlaying = true
+                        applyTierEvent(SliderTiers.Event.PlaybackStarted)
                     }
                 },
                 onSeekFraction = { fraction ->
                     val p = pts ?: return@TransportRow
-                    // Dragging shows the selected frame immediately and
-                    // playback resumes from there (owner request §1).
+                    // Dragging shows the selected frame immediately (low
+                    // drag tier via the cached path) and playback resumes
+                    // from there (owner request §1).
                     val idx = PtsTimeline.frameForFraction(p, fraction)
                     if (idx >= 0) {
                         positionFrame = idx
                         isPlaying = false
-                        requestRender(idx, grade, PreviewTiers.PAUSED_MAX_DIM)
+                        requestRender(idx, grade, SliderTiers.tierFor(dragActive), cached = true)
                     }
                 },
+                onSeekStarted = { applyTierEvent(SliderTiers.Event.DragStarted) },
+                onSeekFinished = { applyTierEvent(SliderTiers.Event.DragEnded) },
             )
             // Render affordance (DESIGN.md: tonal button for a secondary
             // action) + the Export actions (filled button for the one
@@ -533,6 +573,20 @@ fun ClipEditorScreen(
                         onChange = { g ->
                             grade = g
                             onGradeChange(g)
+                            // Mid-drag grade steps render IMMEDIATELY at the
+                            // low tier through the cached path (the debounce
+                            // effect restarts on every step, so its trailing
+                            // edge only covers a finger PAUSE mid-drag; a
+                            // settled edit — double-tap reset, tap on the
+                            // track — settles through the debounce alone).
+                            if (dragActive) {
+                                applyTierEvent(SliderTiers.Event.GradeEdited)
+                            }
+                        },
+                        onDragActiveChange = { active ->
+                            applyTierEvent(
+                                if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
+                            )
                         },
                     )
                     else -> Text(
@@ -571,6 +625,8 @@ private fun TransportRow(
     fraction: Float,
     onPlayPause: () -> Unit,
     onSeekFraction: (Float) -> Unit,
+    onSeekStarted: () -> Unit = {},
+    onSeekFinished: () -> Unit = {},
 ) {
     val seekDescription = stringResource(R.string.editor_seek)
     Row(
@@ -593,11 +649,25 @@ private fun TransportRow(
                 )
             }
         }
+        // M3's Slider has no onValueChangeStarted; finger-down/up come from
+        // the interaction stream. A tap is a zero-length drag: Start + Stop
+        // still fire, so a tap seeks and settles through the same path.
+        val seekInteraction = remember { MutableInteractionSource() }
+        LaunchedEffect(seekInteraction) {
+            seekInteraction.interactions.collect { interaction ->
+                when (interaction) {
+                    is DragInteraction.Start -> onSeekStarted()
+                    is DragInteraction.Stop, is DragInteraction.Cancel -> onSeekFinished()
+                }
+            }
+        }
         Slider(
             value = fraction,
             onValueChange = onSeekFraction,
+            onValueChangeFinished = onSeekFinished,
             valueRange = 0f..1f,
             enabled = enabled,
+            interactionSource = seekInteraction,
             modifier = Modifier
                 .weight(1f)
                 .semantics { contentDescription = seekDescription },
@@ -615,6 +685,7 @@ private fun TransportRow(
 private fun LightPanel(
     grade: GradeK,
     onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -632,6 +703,7 @@ private fun LightPanel(
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.EXPOSURE, grade))
             },
+            onDragActiveChange = onDragActiveChange,
         )
         GradeSlider(
             label = stringResource(R.string.editor_slider_highlights),
@@ -643,6 +715,7 @@ private fun LightPanel(
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.HIGHLIGHTS, grade))
             },
+            onDragActiveChange = onDragActiveChange,
         )
         GradeSlider(
             label = stringResource(R.string.editor_slider_temperature),
@@ -654,6 +727,7 @@ private fun LightPanel(
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPERATURE, grade))
             },
+            onDragActiveChange = onDragActiveChange,
         )
         GradeSlider(
             label = stringResource(R.string.editor_slider_tint),
@@ -665,6 +739,7 @@ private fun LightPanel(
             onDoubleTapReset = {
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TINT, grade))
             },
+            onDragActiveChange = onDragActiveChange,
         )
     }
 }
@@ -678,6 +753,7 @@ private fun GradeSlider(
     valueLabel: String,
     onChange: (Float) -> Unit,
     onDoubleTapReset: () -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -699,11 +775,27 @@ private fun GradeSlider(
                 style = MaterialTheme.typography.labelLarge.merge(Tnum),
             )
         }
+        // Finger down/up on a GRADE slider drives the same tier machine as
+        // the transport: while the finger is down, re-renders run at the low
+        // drag tier through the session's CACHED path — the frame is
+        // unchanged, only the grade moved, so the decode is skipped entirely
+        // (the whole point of the interactive path). A tap is a zero-length
+        // drag: Start + Stop both fire, so a tap settles to full quality too.
+        val gradeInteraction = remember { MutableInteractionSource() }
+        LaunchedEffect(gradeInteraction) {
+            gradeInteraction.interactions.collect { interaction ->
+                when (interaction) {
+                    is DragInteraction.Start -> onDragActiveChange(true)
+                    is DragInteraction.Stop, is DragInteraction.Cancel -> onDragActiveChange(false)
+                }
+            }
+        }
         Slider(
             value = value,
             onValueChange = onChange,
             valueRange = valueRange,
             steps = SliderSteps.composeSteps(valueRange, step),
+            interactionSource = gradeInteraction,
             modifier = Modifier.fillMaxWidth(),
         )
     }
