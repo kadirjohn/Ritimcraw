@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.export
 import com.ritim.ritimcraw.data.GradeK
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -262,6 +263,236 @@ class ExportQueueTest {
         val done = store.all()[0]
         assertEquals(State.DONE, done.state)
         assertEquals(snapshot, done.snapshot)
+    }
+
+    @Test
+    fun stale_running_job_is_recovered_to_failed_on_drain() = runBlocking {
+        // Owner finding 2026-11-10: a crash killed the process with jobs
+        // RUNNING; the restarted runner skips non-QUEUED rows, so they
+        // displayed "Exporting…" forever. The drain must first mark them
+        // FAILED with the interrupted cause + recovery.
+        val store = store()
+        val snapshot = GradeK(exposureEv = 0.75f)
+        store.add(
+            job("j1", "clip1", snapshot = snapshot)
+                .copy(state = State.RUNNING)
+        )
+        store.add(job("j2", "clip2")) // a live QUEUED job still runs
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        val ran = queue.runAll()
+        val jobs = store.all()
+        // The stale row was recovered (not run), the queued one ran.
+        assertEquals(1, ran)
+        assertEquals(State.FAILED, jobs[0].state)
+        assertEquals(ExportQueue.INTERRUPTED_DETAIL, jobs[0].detail)
+        assertEquals(snapshot, jobs[0].snapshot) // snapshot untouched
+        assertEquals(State.DONE, jobs[1].state)
+        // Only clip2 reached an exporter.
+        assertEquals(1, log.size)
+        assertTrue(log[0].contains("clip2"))
+    }
+
+    @Test
+    fun recover_interrupted_is_idempotent_and_retry_still_requeues() = runBlocking {
+        val store = store()
+        val snapshot = GradeK(tempK = 5000f)
+        store.add(job("j1", "clip1", snapshot = snapshot).copy(state = State.RUNNING))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        assertEquals(1, queue.recoverInterrupted())
+        // Second pass: nothing left RUNNING — no double failure, no wedge.
+        assertEquals(0, queue.recoverInterrupted())
+        assertEquals(State.FAILED, store.all().single().state)
+
+        // Retry after recovery still re-queues the same snapshot and runs.
+        store.retry("j1")
+        val requeued = store.all().single()
+        assertEquals(State.QUEUED, requeued.state)
+        assertNull(requeued.detail)
+        assertEquals(snapshot, requeued.snapshot)
+        queue.runAll()
+        assertEquals(State.DONE, store.all().single().state)
+        assertEquals(snapshot, store.all().single().snapshot)
+    }
+
+    @Test
+    fun progress_first_report_writes_and_later_reports_throttle() = runBlocking {
+        // A fake clock the test advances by hand: no real sleeping, and the
+        // throttle boundary is deterministic.
+        var now = 0L
+        val store = store()
+        store.add(job("j1", "clip1", Target.MP4))
+        val log = mutableListOf<String>()
+        val session = object : Mp4Session {
+            override fun open(fd: Int) =
+                Mp4SessionInfo(1L, 3, 4, 4, 0, 0)
+
+            override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK) =
+                ByteArray(4 * 4 * 3)
+
+            override fun framePts(handle: Long, frameIndex: Int): Long = 0
+            override fun audioInfo(handle: Long): IntArray? = null
+            override fun readAudio(handle: Long): ShortArray? = null
+            override fun close(handle: Long) {}
+            override fun code(): Int = 0
+            override fun stage(): Int = 0
+            override fun detail(): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(session, { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            progressClock = { now },
+        )
+        queue.runAll()
+
+        // While the job ran, the store held RUNNING + frame counts, and the
+        // FIRST report (0/3, right after configure) wrote immediately. The
+        // final persisted row is terminal: DONE with counts cleared.
+        val final = store.all().single()
+        assertEquals(State.DONE, final.state)
+        assertNull(final.framesDone)
+        assertNull(final.framesTotal)
+    }
+
+    @Test
+    fun progress_writer_throttles_by_wall_interval() {
+        // ProgressWriter directly: the first report always writes, later
+        // ones only after PROGRESS_WRITE_MIN_INTERVAL_MS of clock time.
+        var now = 1000L
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val w = ProgressWriter(store, store.all().single(), { now })
+
+        assertTrue(w.report(0, 310)) // first write always lands
+        assertFalse(w.report(1, 310)) // 0 ms later: throttled
+        assertFalse(w.report(2, 310)) // still throttled
+        now += ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS
+        assertTrue(w.report(142, 310)) // exactly one interval: writes
+        assertFalse(w.report(143, 310))
+        now += ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS - 1
+        assertFalse(w.report(200, 310)) // 1 ms short: throttled
+        now += 1
+        assertTrue(w.report(310, 310))
+
+        // What reached the store is the LAST written pair, state RUNNING.
+        val persisted = store.all().single()
+        assertEquals(State.RUNNING, persisted.state)
+        assertEquals(310, persisted.framesDone)
+        assertEquals(310, persisted.framesTotal)
+    }
+
+    @Test
+    fun failed_job_reports_no_stale_progress_and_does_not_wedge() = runBlocking {
+        val store = store()
+        store.add(job("j1", "clip1")) // fails (failOn)
+        store.add(job("j2", "clip2")) // succeeds
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log, failOn = "clip1-dng"), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        val ran = queue.runAll()
+        assertEquals(2, ran)
+        val jobs = store.all()
+        assertEquals(State.FAILED, jobs[0].state)
+        assertNull(jobs[0].framesDone) // no stale progress on the dead row
+        assertNull(jobs[0].framesTotal)
+        assertEquals(State.DONE, jobs[1].state)
+        assertNull(jobs[1].framesDone)
+    }
+
+    @Test
+    fun mediastore_placement_maps_each_target_to_collection_folder_mime() {
+        // The publish destination per target (owner finding 2026-11-10:
+        // finished exports were invisible outside the app). MP4 -> the
+        // video collection under Movies/ritiMCRAW; DNG -> the images
+        // collection under Pictures/ritiMCRAW with the DNG mime (some
+        // viewers will not render a CFA DNG — the raw mosaic is intact).
+        val mp4 = MediaPublish.placement("clip1", Target.MP4)
+        assertEquals(MediaPublish.Collection.VIDEO, mp4.collection)
+        assertEquals("Movies/ritiMCRAW", mp4.relativePath)
+        assertEquals("video/mp4", mp4.mime)
+        assertEquals("clip1-mp4.mp4", mp4.name)
+
+        val dng = MediaPublish.placement("clip1", Target.DNG)
+        assertEquals(MediaPublish.Collection.IMAGES, dng.collection)
+        assertEquals("Pictures/ritiMCRAW", dng.relativePath)
+        assertEquals("image/x-adobe-dng", dng.mime)
+        assertEquals("clip1-dng.dng", dng.name)
+    }
+
+    @Test
+    fun done_job_publishes_output_and_publish_failure_never_fails_job() = runBlocking {
+        // The queue asks the publisher for every DONE job, with the job's
+        // own output file — and a THROWING publisher must not fail the job
+        // or wedge the queue (the next job still runs).
+        val store = store()
+        store.add(job("j1", "clip1"))
+        store.add(job("j2", "clip2"))
+        val log = mutableListOf<String>()
+        val published = mutableListOf<Pair<String, String>>()
+        var failFirst = true
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): Boolean {
+                if (failFirst) {
+                    failFirst = false
+                    throw IllegalStateException("resolver exploded")
+                }
+                published.add(job.id to output.name)
+                return true
+            }
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        val ran = queue.runAll()
+        assertEquals(2, ran)
+        val jobs = store.all()
+        // j1: the publisher threw — the job is still DONE and the queue
+        // moved on to j2, which published normally.
+        assertEquals(State.DONE, jobs[0].state)
+        assertEquals(State.DONE, jobs[1].state)
+        assertEquals(listOf("j2" to "clip2-dng.dng"), published)
+        // The published file is the job's own internal output (the source
+        // of truth stays files/exports; the MediaStore copy is additive).
+        assertTrue(File(tmp.root, "clip1-dng.dng").exists())
+        assertTrue(File(tmp.root, "clip2-dng.dng").exists())
+    }
+
+    @Test
+    fun failed_job_is_not_published() = runBlocking {
+        // Only DONE jobs publish: a FAILED export (nothing was written)
+        // must not put a half-file into the media store.
+        val store = store()
+        store.add(job("j1", "clip1")) // fails (failOn)
+        val log = mutableListOf<String>()
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): Boolean {
+                throw AssertionError("a failed job must not be published")
+            }
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log, failOn = "clip1-dng"), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        queue.runAll()
+        assertEquals(State.FAILED, store.all().single().state)
     }
 
     @Test

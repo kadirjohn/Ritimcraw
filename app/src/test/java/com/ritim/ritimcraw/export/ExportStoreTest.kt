@@ -142,6 +142,30 @@ class ExportStoreTest {
     }
 
     @Test
+    fun running_progress_counts_persist_across_reload() {
+        // The throttled progress write must survive a reload (crash mid-
+        // export) so a restarted UI can show the last known count — and a
+        // recovery pass then clears it with the rest of the row.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "a", state = State.RUNNING))
+        store.update(
+            store.all().single().copy(framesDone = 142, framesTotal = 310)
+        )
+
+        val job = ExportStore(file).all().single()
+        assertEquals(State.RUNNING, job.state)
+        assertEquals(142, job.framesDone)
+        assertEquals(310, job.framesTotal)
+
+        // Jobs without counts (the old rows, and terminal rows) still parse
+        // with null counts — the fields are optional in the JSON.
+        store.update(store.all().single().copy(framesDone = null, framesTotal = null))
+        assertNull(ExportStore(file).all().single().framesDone)
+        assertNull(ExportStore(file).all().single().framesTotal)
+    }
+
+    @Test
     fun merge_aware_write_preserves_grades_and_sources_sections() {
         val file = projectFile()
         val sources = SourceRepository(FakeResolver("clip".toByteArray()), file)

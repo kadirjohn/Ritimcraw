@@ -115,6 +115,10 @@ class ExportStore(private val file: File) {
                 if (j.detail != null) {
                     sb.append(",\"detail\":").append(ProjectJson.quote(j.detail))
                 }
+                if (j.framesDone != null && j.framesTotal != null) {
+                    sb.append(",\"framesDone\":").append(j.framesDone)
+                    sb.append(",\"framesTotal\":").append(j.framesTotal)
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -159,6 +163,8 @@ class ExportStore(private val file: File) {
                     target = enumOrNullOr(idx, m["target"], Target.DNG),
                     state = enumOrNullOr(idx, m["state"], State.QUEUED),
                     detail = m["detail"] as? String,
+                    framesDone = (m["framesDone"] as? Double)?.toInt(),
+                    framesTotal = (m["framesTotal"] as? Double)?.toInt(),
                 )
             }
         }

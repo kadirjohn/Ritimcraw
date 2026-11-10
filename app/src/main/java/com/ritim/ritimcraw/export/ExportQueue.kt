@@ -28,24 +28,57 @@ import java.util.concurrent.atomic.AtomicReference
  * opens the SAF fd read-only and hands over the raw fd; the runner owns
  * its lifetime from there and closes it after the job (the native side
  * dups the fd per open, so closing the original is safe). The runner never
- * touches content resolvers itself.
+ * touches content resolvers itself. Finished exports are ALSO published to
+ * the system media store through the injected [ExportPublisher] —
+ * best-effort, after the terminal write, never failing the job.
  */
 class ExportQueue(
     private val store: ExportStore,
     private val dng: DngExporter,
     private val mp4: Mp4Exporter,
     private val io: ExportIo,
+    private val publisher: ExportPublisher = ExportPublisher.None,
+    private val progressClock: () -> Long = System::currentTimeMillis,
 ) {
 
     /** The next job to run, or null when no job is QUEUED. */
     fun nextJob(): ExportJob? = store.all().firstOrNull { it.state == State.QUEUED }
 
     /**
+     * Marks every persisted RUNNING job FAILED (owner finding 2026-11-10:
+     * a crash killed the process with MP4 jobs RUNNING; on restart the
+     * runner skips non-QUEUED jobs, so those rows displayed "Exporting…"
+     * forever). A RUNNING row on drain can only be a dead process's — this
+     * runner writes RUNNING and the terminal state inside one [runOne]
+     * call, so a live job is never left RUNNING between drains. Idempotent;
+     * returns how many rows were recovered.
+     */
+    fun recoverInterrupted(): Int {
+        var recovered = 0
+        while (true) {
+            val stale = store.all().firstOrNull { it.state == State.RUNNING } ?: break
+            store.update(
+                stale.copy(
+                    state = State.FAILED,
+                    detail = ExportQueue.INTERRUPTED_DETAIL,
+                    framesDone = null,
+                    framesTotal = null,
+                )
+            )
+            recovered++
+        }
+        return recovered
+    }
+
+    /**
      * Runs every currently-QUEUED job, one at a time, until the queue holds
      * no QUEUED job. Returns the number of jobs run (any outcome). A failed
-     * job does not stop the loop — the next queued job still runs.
+     * job does not stop the loop — the next queued job still runs. Stale
+     * RUNNING rows (a previous process died mid-export) are recovered to
+     * FAILED first.
      */
     suspend fun runAll(): Int {
+        recoverInterrupted()
         var ran = 0
         while (true) {
             val job = nextJob() ?: break
@@ -57,8 +90,17 @@ class ExportQueue(
 
     /** Runs one job end to end and writes the outcome back to the store. */
     internal suspend fun runOne(job: ExportJob) {
-        // RUNNING first: the UI shows "Exporting…" while this runs.
-        store.update(job.copy(state = State.RUNNING, detail = null))
+        // RUNNING first: the UI shows "Exporting…" while this runs. Progress
+        // counts reset per run (a retry restarts from frame 0).
+        store.update(
+            job.copy(state = State.RUNNING, detail = null, framesDone = null, framesTotal = null)
+        )
+
+        // Progress callback the queue owns: the exporter reports frame
+        // counts; writes are THROTTLED (project.json is rewritten on every
+        // store write, so a per-frame write would hammer it — see
+        // [ProgressWriter]) and the terminal write below always lands.
+        val progress = ProgressWriter(store, job, progressClock)
 
         // The runner owns the source fd's lifetime: acquire once, close in
         // finally (the native side dups it per open, so closing after the
@@ -67,24 +109,64 @@ class ExportQueue(
         val result = try {
             when (job.target) {
                 Target.DNG ->
-                    dng.export(job, fd, io.outputFile(job, Target.DNG))
+                    dng.export(job, fd, io.outputFile(job, Target.DNG)) { done, total ->
+                        progress.report(done, total)
+                    }
                 Target.MP4 ->
-                    mp4.export(job, fd, io.outputFile(job, Target.MP4))
+                    mp4.export(job, fd, io.outputFile(job, Target.MP4)) { done, total ->
+                        progress.report(done, total)
+                    }
             }
         } catch (e: Throwable) {
             // An exporter must never throw, but the queue must survive one
             // that does: FAILED with the cause, keep the queue moving.
-            job.copy(state = State.FAILED, detail = e.message ?: "unknown failure")
+            job.copy(
+                state = State.FAILED,
+                detail = e.message ?: "unknown failure",
+                framesDone = null,
+                framesTotal = null,
+            )
         } finally {
             io.closeFd(fd)
         }
 
         // The job may have been retried/cleared while it ran: write by id
-        // so the store keeps the freshest state for this id.
-        store.update(result)
+        // so the store keeps the freshest state for this id. The terminal
+        // job carries null counts (progress only shows while RUNNING).
+        store.update(result.copy(framesDone = null, framesTotal = null))
+
+        // A finished export is ALSO published to the system media store
+        // (owner finding 2026-11-10: exports were invisible outside the
+        // app). Best-effort and AFTER the terminal write: the internal
+        // copy is the source of truth, a publish failure never fails or
+        // wedges the job, and the queue keeps moving either way.
+        if (result.state == State.DONE) {
+            try {
+                publisher.publish(result, io.outputFile(result, result.target))
+            } catch (e: Throwable) {
+                // Never propagate: publishing is additive.
+            }
+        }
     }
 
     companion object {
+
+        /**
+         * Failure detail for a stale RUNNING row (a dead process's export):
+         * cause + recovery, per DESIGN.md error wording.
+         */
+        const val INTERRUPTED_DETAIL =
+            "interrupted — the app closed during this export — " +
+                "recovery: Retry re-queues the same grade snapshot"
+
+        /**
+         * Minimum milliseconds between two progress writes of one job (see
+         * [ProgressWriter]): every store write rewrites project.json, so
+         * per-frame writes would hammer it. The final progress write of a
+         * job bypasses the throttle (and the terminal state write always
+         * lands), so the persisted count never stalls mid-throttle.
+         */
+        const val PROGRESS_WRITE_MIN_INTERVAL_MS = 500L
 
         /**
          * Pure output-name decision (JVM-testable): the export lands in the
@@ -97,6 +179,44 @@ class ExportQueue(
                 Target.DNG -> "dng"
                 Target.MP4 -> "mp4"
             }
+    }
+}
+
+/**
+ * Throttled progress persistence for one running job (JVM-testable via an
+ * injected clock). Exporters report every frame; this class decides which
+ * reports become store writes:
+ *  - the FIRST report always writes (the RUNNING row gains its frame counts
+ *    immediately, so the UI can show "0/310 frames" rather than a bare
+ *    "Exporting…"),
+ *  - later reports write only after [ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS]
+ *    since the last WRITE (not the last report),
+ *  - the job's terminal write (done by the queue) always lands and clears
+ *    the counts.
+ *
+ * The filter is write-side only — the exporter still hears every frame; the
+ * persisted value may lag the real count by up to one throttle window.
+ */
+internal class ProgressWriter(
+    private val store: ExportStore,
+    private val job: ExportJob,
+    private val clock: () -> Long,
+) {
+    private var lastWriteMs = -1L
+
+    /** True when the report became a store write (tests assert on this). */
+    fun report(framesDone: Int, framesTotal: Int): Boolean {
+        val now = clock()
+        if (lastWriteMs >= 0 &&
+            now - lastWriteMs < ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS
+        ) {
+            return false
+        }
+        lastWriteMs = now
+        store.update(
+            job.copy(state = State.RUNNING, framesDone = framesDone, framesTotal = framesTotal)
+        )
+        return true
     }
 }
 

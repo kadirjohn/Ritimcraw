@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.State
+import com.ritim.ritimcraw.ui.theme.Tnum
 
 /**
  * Exports screen (DESIGN.md Export job): job rows with the format line, DONE
@@ -118,8 +119,27 @@ private fun ExportJobRow(
                     when (job.state) {
                         State.QUEUED ->
                             Text(stringResource(R.string.exports_job_queued))
-                        State.RUNNING ->
-                            Text(stringResource(R.string.exports_job_running))
+                        State.RUNNING -> {
+                            // Frame counts when the exporter has reported
+                            // (tabular numerals per DESIGN.md), else the
+                            // existing indeterminate line — the count can be
+                            // absent briefly between RUNNING and the first
+                            // throttled progress write.
+                            val frames = job.framesDone
+                            val total = job.framesTotal
+                            if (frames != null && total != null && total > 0) {
+                                Text(
+                                    stringResource(
+                                        R.string.exports_job_running_frames, frames, total
+                                    ),
+                                    // Frame counts are numbers: tnum keeps the
+                                    // digits from jittering as they tick up.
+                                    style = MaterialTheme.typography.bodyMedium.merge(Tnum),
+                                )
+                            } else {
+                                Text(stringResource(R.string.exports_job_running))
+                            }
+                        }
                         State.DONE ->
                             // DONE stamp with the output name (detail on a DONE
                             // job is the output file name).
