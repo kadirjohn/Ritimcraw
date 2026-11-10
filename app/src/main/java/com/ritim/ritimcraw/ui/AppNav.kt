@@ -144,7 +144,12 @@ fun AppNav() {
     var sources by remember { mutableStateOf(stores.sources.all()) }
     var exportJobs by remember { mutableStateOf(stores.exports.all()) }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
-    var editorRoute by rememberSaveable { mutableStateOf<EditorRoute?>(null) }
+    // EditorRoute is a data class — rememberSaveable cannot put it in a
+    // Bundle (owner finding 2026-11-10: backgrounding the app with the
+    // editor open crashed saving state). Only the sourceId string is saved;
+    // the route object is derived from it.
+    var editorSourceId by rememberSaveable { mutableStateOf<String?>(null) }
+    val editorRoute: EditorRoute? = editorSourceId?.let { EditorRoute(it) }
     // Debug-only measurement harness state (PreviewMetrics): one run at a
     // time, kicked from Settings' Measure action.
     var measuring by remember { mutableStateOf(false) }
@@ -281,7 +286,7 @@ fun AppNav() {
                     }
                     ClipEditorScreen(
                         sourceId = r.sourceId,
-                        onBack = { editorRoute = null },
+                        onBack = { editorSourceId = null },
                         initialGrade = stores.grades.get(r.sourceId),
                         onGradeChange = { g -> stores.grades.put(r.sourceId, g) },
                         onExport = { target ->
@@ -310,7 +315,7 @@ fun AppNav() {
                     when (d) {
                         Destination.LIBRARY -> LibraryScreen(
                             sources = sources,
-                            onOpenClip = { sourceId -> editorRoute = EditorRoute(sourceId) },
+                            onOpenClip = { sourceId -> editorSourceId = sourceId },
                             onImport = { uri ->
                                 // SAF pick landed: import through the repository
                                 // (fingerprint dedupe keeps ids and grades stable).
