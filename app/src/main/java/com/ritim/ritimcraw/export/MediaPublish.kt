@@ -37,6 +37,18 @@ object MediaPublish {
 
     /** The placement of one finished [target] export of [sourceId]. */
     fun placement(sourceId: String, target: Target): Placement =
+        placement(sourceId, target, null)
+
+    /**
+     * The placement of one finished export (owner request 2026-11-11 §2b):
+     * the row's DISPLAY_NAME is the JOB'S OWN output name — the display
+     * name captured at enqueue when there is one, the legacy
+     * `<sourceId>-<target>` name otherwise (rows queued before §2b). A
+     * MediaStore DISPLAY_NAME collision is auto-uniquified by the platform
+     * with a suffix; the DONE row opens via the job's own publishedUri, so
+     * the suffixed name never misroutes an open.
+     */
+    fun placement(sourceId: String, target: Target, outputName: String?): Placement =
         Placement(
             collection = when (target) {
                 Target.MP4 -> Collection.VIDEO
@@ -50,7 +62,7 @@ object MediaPublish {
                 Target.MP4 -> "video/mp4"
                 Target.DNG -> "image/x-adobe-dng"
             },
-            name = ExportQueue.outputName(sourceId, target),
+            name = outputName ?: ExportQueue.outputName(sourceId, target),
         )
 }
 

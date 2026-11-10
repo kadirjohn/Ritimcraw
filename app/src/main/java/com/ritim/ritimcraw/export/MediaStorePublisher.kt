@@ -33,7 +33,12 @@ internal class MediaStorePublisher(
 
     override suspend fun publish(job: ExportJob, output: File): String? {
         if (!output.exists()) return null
-        val placement = MediaPublish.placement(job.sourceId, job.target)
+        // DISPLAY_NAME = the job's own output name (owner request §2b):
+        // display-derived when the job captured one, the legacy
+        // <sourceId>-<target> name otherwise. A collision in MediaStore is
+        // auto-uniquified by the platform; the open path goes through the
+        // row's own URI, so a suffix never misroutes it.
+        val placement = MediaPublish.placement(job.sourceId, job.target, job.outputName)
         val collection = when (placement.collection) {
             MediaPublish.Collection.VIDEO ->
                 MediaStore.Video.Media.EXTERNAL_CONTENT_URI

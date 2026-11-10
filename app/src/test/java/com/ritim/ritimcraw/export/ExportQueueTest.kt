@@ -99,7 +99,10 @@ class ExportQueueTest {
         }
 
         override fun outputFile(job: ExportJob, target: Target): File =
-            File(tmp.root, ExportQueue.outputName(job.sourceId, target))
+            // Faithful to the real ExportIo (AppNav): the job's own file
+            // name — the display-derived one when captured (§2b), the legacy
+            // <sourceId>-<target> name otherwise.
+            File(tmp.root, job.fileName)
     }
 
     private fun freshEngine(): ExecutorService =
@@ -120,6 +123,152 @@ class ExportQueueTest {
     fun output_name_is_stable_and_lowercase() {
         assertEquals("clip1-dng.dng", ExportQueue.outputName("clip1", Target.DNG))
         assertEquals("clip1-mp4.mp4", ExportQueue.outputName("clip1", Target.MP4))
+    }
+
+    // ---- DISPLAY-DERIVED OUTPUT NAMES (owner request 2026-11-11 §2b) ----
+
+    @Test
+    fun display_output_name_swaps_the_extension_per_target() {
+        // "Sunset Trip.raw" -> base "Sunset Trip", then the target's own
+        // extension — the clip's extension is never the output's.
+        assertEquals("Sunset Trip.dng", ExportQueue.displayOutputName("Sunset Trip.raw", Target.DNG))
+        assertEquals("Sunset Trip.mp4", ExportQueue.displayOutputName("Sunset Trip.raw", Target.MP4))
+        // A name with no extension is used as-is.
+        assertEquals("Sunset Trip.dng", ExportQueue.displayOutputName("Sunset Trip", Target.DNG))
+    }
+
+    @Test
+    fun display_output_name_strips_hostile_characters_and_control_chars() {
+        // Path separators, reserved Windows chars, and control characters
+        // are REMOVED (never replaced with a placeholder).
+        assertEquals(
+            "NightMarketraw.dng",
+            ExportQueue.displayOutputName("Night/Market:\\raw?.dng", Target.DNG),
+        )
+        assertEquals(
+            "clip.dng",
+            ExportQueue.displayOutputName("clip\u0007\u001b.dng", Target.DNG),
+        )
+        // Leading/trailing spaces and dots (Windows dot-trimming hazards)
+        // are stripped.
+        assertEquals(
+            "clip.dng",
+            ExportQueue.displayOutputName("  ..clip..  .dng", Target.DNG),
+        )
+    }
+
+    @Test
+    fun display_output_name_returns_null_when_nothing_is_left() {
+        // All-hostile input: the caller keeps the legacy name instead.
+        assertNull(ExportQueue.displayOutputName("///???.raw", Target.DNG))
+        assertNull(ExportQueue.displayOutputName("   ", Target.MP4))
+        assertNull(ExportQueue.displayOutputName("", Target.DNG))
+    }
+
+    @Test
+    fun display_output_name_caps_the_base_at_200_utf8_bytes() {
+        // 201 two-byte characters: 200 bytes of base + the target's own
+        // extension. The cap is on the BASE, not the whole name.
+        val long = "ğ".repeat(201)
+        val capped = ExportQueue.displayOutputName(long, Target.DNG)
+        assertEquals(200, capped!!.dropLast(4).toByteArray(Charsets.UTF_8).size)
+        assertEquals("ğ".repeat(100), capped.dropLast(4))
+        // A 4-byte character never gets cut in half: the cap backs off to
+        // the previous whole character (no lone surrogate is written).
+        val emoji = "😀".repeat(51) // 204 bytes
+        val cappedEmoji = ExportQueue.displayOutputName(emoji, Target.MP4)
+        val emojiBase = cappedEmoji!!.removeSuffix(".mp4")
+        assertEquals(200, emojiBase.toByteArray(Charsets.UTF_8).size)
+        // 50 whole emoji (200 bytes): the 51st would overflow, and the
+        // surrogate pair is never split.
+        assertEquals(50, emojiBase.codePointCount(0, emojiBase.length))
+        assertTrue(emojiBase == "😀".repeat(50))
+    }
+
+    @Test
+    fun job_file_name_is_the_display_name_with_legacy_fallback() {
+        // A job that captured a display-derived name at enqueue uses it for
+        // EVERY path that touches its file; a pre-§2b row (null name) falls
+        // back to the legacy <sourceId>-<target> name.
+        val named = job("j1", "clip1").copy(outputName = "Sunset Trip.dng")
+        assertEquals("Sunset Trip.dng", named.fileName)
+        assertEquals("clip1-dng.dng", job("j1", "clip1").fileName)
+    }
+
+    @Test
+    fun queue_writes_the_display_derived_file_name() = runBlocking {
+        // End to end: a job with a captured outputName produces THAT file —
+        // the staged .partial, the final rename, the DONE detail, and the
+        // file on disk all carry the display-derived name.
+        val store = store()
+        store.add(job("j1", "clip1").copy(outputName = "Sunset Trip.dng"))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        val done = store.all().single()
+        assertEquals(State.DONE, done.state)
+        assertEquals("Sunset Trip.dng", done.detail)
+        assertEquals("Sunset Trip.dng", done.fileName)
+        // The staged partial and the final file both used the name.
+        assertEquals("dng:7:Sunset Trip.dng.partial", log[0])
+        assertTrue(File(tmp.root, "Sunset Trip.dng").exists())
+        assertTrue(!File(tmp.root, "clip1-dng.dng").exists())
+    }
+
+    @Test
+    fun retry_keeps_the_display_derived_name() = runBlocking {
+        // Retry re-runs the SAME job: it must overwrite its own output, so
+        // the captured name survives the requeue (requeued() does not clear
+        // it) and the second run writes the same file.
+        val store = store()
+        store.add(job("j1", "clip1").copy(outputName = "Sunset Trip.dng"))
+        val log = mutableListOf<String>()
+        val failOnce = FakeDngRender(log, failOn = "Sunset Trip")
+        val queue = ExportQueue(
+            store, DngExporter(failOnce, freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        assertEquals(State.FAILED, store.all().single().state)
+
+        val okRender = FakeDngRender(log)
+        val queue2 = ExportQueue(
+            store, DngExporter(okRender, freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        store.retry("j1")
+        val requeued = store.all().single()
+        assertEquals("Sunset Trip.dng", requeued.outputName) // kept
+        assertEquals("Sunset Trip.dng", requeued.fileName)
+        queue2.runAll()
+        val done = store.all().single()
+        assertEquals(State.DONE, done.state)
+        assertEquals("Sunset Trip.dng", done.detail)
+        assertTrue(File(tmp.root, "Sunset Trip.dng").exists())
+    }
+
+    @Test
+    fun mediastore_placement_uses_the_job_name_with_legacy_fallback() {
+        // The MediaStore DISPLAY_NAME is the job's own output name (§2b);
+        // a same-name collision is uniquified by the platform, and DONE rows
+        // open via the job's publishedUri — so a suffixed rename never
+        // misroutes an open.
+        val named = MediaPublish.placement("clip1", Target.DNG, "Sunset Trip.dng")
+        assertEquals("Sunset Trip.dng", named.name)
+        assertEquals(MediaPublish.Collection.IMAGES, named.collection)
+        assertEquals("Pictures/ritiMCRAW", named.relativePath)
+        assertEquals("image/x-adobe-dng", named.mime)
+
+        // Null name (pre-§2b row / unresolvable display): the legacy name.
+        val legacy = MediaPublish.placement("clip1", Target.DNG, null)
+        assertEquals("clip1-dng.dng", legacy.name)
+        assertEquals("Pictures/ritiMCRAW", legacy.relativePath)
     }
 
     @Test

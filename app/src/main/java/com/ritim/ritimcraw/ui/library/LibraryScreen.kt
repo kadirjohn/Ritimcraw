@@ -196,7 +196,9 @@ private fun LibraryRow(
     val accessLost = source.access == Access.LOST
     val framesLabel = stringResource(R.string.library_frames)
     ListItem(
-        headlineContent = { Text(source.id) },
+        // The clip's real file name (owner request §2b); the id when the
+        // resolver could not name it — displayOrId is never blank.
+        headlineContent = { Text(source.displayOrId) },
         supportingContent = {
             Column {
                 // Format line (body-small per DESIGN.md Typography): dimensions,

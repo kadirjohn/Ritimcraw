@@ -155,10 +155,13 @@ fun AppNav() {
                     // match the output to the job id): an older DONE row can
                     // never open a later job's file, because a later job of
                     // the same clip writes its own directory. Retry keeps
-                    // the same id and overwrites only its own output.
+                    // the same id and overwrites only its own output. The
+                    // file name is the job's own (§2b: display-derived when
+                    // captured at enqueue, legacy otherwise) — job.fileName
+                    // is the single source for every path that touches it.
                     val dir = File(exportDir, job.id)
                     dir.mkdirs()
-                    return File(dir, ExportQueue.outputName(job.sourceId, target))
+                    return File(dir, job.fileName)
                 }
             },
             // Finished exports are also published to the system media store
@@ -254,17 +257,19 @@ fun AppNav() {
     }
 
     fun openExport(job: ExportJob) {
-        val name = ExportQueue.outputName(job.sourceId, job.target)
+        val name = job.fileName
         val open = ExportOpen.open(
             job,
             listOf(
                 // The per-job directory (current layout), then the legacy
-                // flat layout for rows written before it.
+                // flat layout for rows written before it. Both candidates
+                // use the job's own name (§2b: display-derived when the job
+                // captured one, the legacy <sourceId>-<target> otherwise).
                 File(File(exportDir, job.id), name),
                 File(exportDir, name),
             ),
         )
-        val mime = MediaPublish.placement(job.sourceId, job.target).mime
+        val mime = MediaPublish.placement(job.sourceId, job.target, job.outputName).mime
         when (open) {
             is ExportOpen.Open.Store -> viewExport(Uri.parse(open.uri), mime, job)
             is ExportOpen.Open.Internal -> {
@@ -411,6 +416,12 @@ fun AppNav() {
                     }
                     var sourceFd by remember(r.sourceId) { mutableStateOf(-1) }
                     var accessLost by remember(r.sourceId) { mutableStateOf(false) }
+                    // The clip's display name for the top bar (owner request
+                    // §2b): the real file name when known, the id otherwise.
+                    // Keyed to the clip and refreshed by the backfill below.
+                    var sourceName by remember(r.sourceId) {
+                        mutableStateOf(stores.sources.get(r.sourceId)?.displayOrId ?: r.sourceId)
+                    }
                     // Persisted import stats shape the preview placeholder
                     // before the first rendered frame (PreviewSurface's ratio
                     // fallback chain); 0/0 when the engine pass never probed.
@@ -465,6 +476,15 @@ fun AppNav() {
                             sourceDims = 0 to 0
                         } else {
                             sourceDims = source.width to source.height
+                            // First-open backfill (owner request §2b): a
+                            // record imported before display names existed
+                            // shows the id until the resolver can name it —
+                            // fill it in now and refresh the top bar.
+                            val filled = stores.sources.backfillDisplayName(r.sourceId)
+                            if (filled != null && filled.displayName.isNotBlank()) {
+                                sourceName = filled.displayOrId
+                                sources = stores.sources.all()
+                            }
                             try {
                                 val p = context.contentResolver
                                     .openFileDescriptor(Uri.parse(source.uri), "r")
@@ -492,6 +512,12 @@ fun AppNav() {
                             // Snapshot the CURRENT grade at queue time (the
                             // spec: a later edit must not change an in-flight
                             // export) and enqueue; the runner picks it up.
+                            // The output name is captured from the clip's
+                            // display name (owner request §2b: real file
+                            // name, cleaned; null when the resolver could
+                            // not name it — the job then uses the legacy
+                            // <sourceId>-<target> name).
+                            val display = stores.sources.get(r.sourceId)?.displayName
                             stores.exports.add(
                                 ExportJob(
                                     id = "job-" + System.nanoTime(),
@@ -499,6 +525,12 @@ fun AppNav() {
                                     snapshot = stores.grades.get(r.sourceId),
                                     target = target,
                                     state = State.QUEUED,
+                                    // The RAW display name, not displayOrId: an
+                                    // unnamed clip must fall to the legacy
+                                    // <sourceId>-<target> name, not capture
+                                    // "<id>.dng".
+                                    outputName = display?.takeIf { it.isNotBlank() }
+                                        ?.let { ExportQueue.displayOutputName(it, target) },
                                 )
                             )
                             exportJobs = stores.exports.all()
@@ -512,6 +544,9 @@ fun AppNav() {
                         sourceHeight = sourceDims.second,
                         sourceKind = sourceKind,
                         sourceMime = sourceMime,
+                        // The top bar's clip name (§2b): display name with
+                        // the id as fallback — displayOrId never blank.
+                        sourceName = sourceName,
                     )
                 }
             } else {
@@ -536,6 +571,10 @@ fun AppNav() {
                         Destination.PROJECTS -> ProjectsScreen()
                         Destination.EXPORTS -> ExportsScreen(
                             jobs = exportJobs,
+                            // Rows show the clip's display name (§2b); the
+                            // id is the fallback for sources whose name the
+                            // resolver could not read.
+                            sourceNames = sources.associate { it.id to it.displayOrId },
                             onRetry = { job ->
                                 // Retry re-queues with the same snapshot.
                                 stores.exports.retry(job.id)

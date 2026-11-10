@@ -257,13 +257,91 @@ class ExportQueue(
          * Pure output-name decision (JVM-testable): the export lands in the
          * app's export directory as `<sourceId>-<target>.<ext>` — lowercase,
          * stable across retries (the same job retried overwrites its own
-         * partial-free output).
+         * partial-free output). Since §2b this is the FALLBACK name, used by
+         * rows queued before display names existed and by clips the resolver
+         * could not name — see [displayOutputName].
          */
         fun outputName(sourceId: String, target: Target): String =
             sourceId + "-" + target.name.lowercase() + "." + when (target) {
                 Target.DNG -> "dng"
                 Target.MP4 -> "mp4"
             }
+
+        /**
+         * Characters that never belong in a file name (owner request §2b:
+         * invalid characters are cleaned from the display name): path
+         * separators and the characters MediaStore/file systems on the
+         * device treat as hostile. Control characters are cleaned by the
+         * code range check, not this string.
+         */
+        private const val INVALID_NAME_CHARS = "\\/:*?\"<>|"
+
+        /**
+         * Byte budget for the display-derived base name: the base plus the
+         * target extension must stay under the 255-byte file-name limit even
+         * for multi-byte UTF-8 names.
+         */
+        private const val MAX_NAME_BASE_BYTES = 200
+
+        /**
+         * Pure display-derived output-name decision (owner request
+         * 2026-11-11 §2b: the export's file name comes from the clip's real
+         * file name, not the fingerprint id). The display name is cleaned —
+         * its OWN extension is swapped for the target's ("Sunset.raw" ->
+         * "Sunset.dng"), invalid filename characters are removed, and the
+         * result is trimmed — and returned, or NULL when nothing usable
+         * remains (blank/whitespace-only display name): the caller then
+         * leaves [ExportJob.outputName] unset and the job falls back to the
+         * legacy [outputName].
+         *
+         * Same-named jobs are disambiguated by JOB IDENTITY, not by the
+         * name: the internal copy lives in the per-job directory
+         * files/exports/&lt;jobId&gt;/, and a MediaStore DISPLAY_NAME collision
+         * is auto-uniquified by the platform with a suffix — the DONE row
+         * opens via the job's own [ExportJob.publishedUri], so a suffixed
+         * rename never misroutes an open.
+         */
+        fun displayOutputName(display: String, target: Target): String? {
+            // Swap the source's extension for the target's: the output wears
+            // the format it is written in, not the format it came from.
+            val base = display.substringBeforeLast('.', display)
+            val sb = StringBuilder(base.length)
+            for (c in base) {
+                when {
+                    c.code < 0x20 -> {} // control characters: removed
+                    INVALID_NAME_CHARS.indexOf(c) >= 0 -> {} // hostile: removed
+                    else -> sb.append(c)
+                }
+            }
+            var cleaned = sb.toString().trim(' ', '.')
+            // Keep the base inside a sane byte budget (multi-byte UTF-8
+            // names): the base + extension must fit a file-system name.
+            // Code-point-wise, never char-wise: a 4-byte character is a
+            // surrogate PAIR of chars, and cutting between the two halves
+            // would write a broken name.
+            val capped = StringBuilder()
+            var bytes = 0
+            var i = 0
+            while (i < cleaned.length) {
+                val cp = cleaned.codePointAt(i)
+                val n = when (cp) {
+                    in 0..0x7F -> 1
+                    in 0x80..0x7FF -> 2
+                    in 0x800..0xFFFF -> 3
+                    else -> 4
+                }
+                if (bytes + n > MAX_NAME_BASE_BYTES) break
+                bytes += n
+                capped.appendCodePoint(cp)
+                i += Character.charCount(cp)
+            }
+            cleaned = capped.toString()
+            if (cleaned.isBlank()) return null
+            return cleaned + "." + when (target) {
+                Target.DNG -> "dng"
+                Target.MP4 -> "mp4"
+            }
+        }
     }
 }
 

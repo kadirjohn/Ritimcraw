@@ -163,6 +163,10 @@ fun ClipEditorScreen(
     // keep every existing MCRAW caller byte-identical.
     sourceKind: SourceKind = SourceKind.MCRAW,
     sourceMime: String? = null,
+    // The top bar's clip name (owner request 2026-11-11 §2b): the clip's
+    // real file name, id fallback resolved by the caller (never blank).
+    // Defaults to the id so every existing caller is unchanged.
+    sourceName: String? = null,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -427,7 +431,9 @@ fun ClipEditorScreen(
                     )
                 }
                 Text(
-                    text = sourceId,
+                    // The clip's display name (§2b), id fallback — the caller
+                    // resolves it; here it is only ever a label.
+                    text = sourceName ?: sourceId,
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(start = 4.dp),
                 )

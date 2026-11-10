@@ -35,6 +35,28 @@ class AndroidUriResolver(
         return -1L
     }
 
+    override fun displayName(uri: String): String? {
+        // The clip's real file name (owner request 2026-11-11 §2b). The
+        // query can throw (revoked permission, gone provider): the caller
+        // treats that as "unknown" and keeps the id fallback.
+        return try {
+            resolver.query(
+                Uri.parse(uri),
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null, null, null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && !cursor.isNull(idx)) cursor.getString(idx) else null
+                } else {
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     companion object {
         fun of(context: Context): AndroidUriResolver = AndroidUriResolver(context.contentResolver)
 

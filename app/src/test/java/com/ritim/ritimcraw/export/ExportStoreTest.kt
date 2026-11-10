@@ -407,6 +407,76 @@ class ExportStoreTest {
         assertNull(job.publishedUri)
     }
 
+    // ---- DISPLAY-DERIVED OUTPUT NAMES (owner request 2026-11-11 §2b) ----
+
+    @Test
+    fun output_name_persists_across_reload_and_survives_retry() {
+        // outputName is captured at ENQUEUE and stays for the job's whole
+        // life: persisted across reloads, kept on retry (the retried job
+        // overwrites its own output — one clip, one file name).
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "a").copy(outputName = "Sunset Trip.dng"))
+
+        val loaded = ExportStore(file).all().single()
+        assertEquals("Sunset Trip.dng", loaded.outputName)
+        assertEquals("Sunset Trip.dng", loaded.fileName)
+
+        // Retry keeps the name (requeued() does not clear it).
+        store.update(loaded.copy(state = State.FAILED, detail = "boom"))
+        store.retry("a")
+        val requeued = ExportStore(file).all().single()
+        assertEquals(State.QUEUED, requeued.state)
+        assertEquals("Sunset Trip.dng", requeued.outputName)
+        assertEquals("Sunset Trip.dng", requeued.fileName)
+    }
+
+    @Test
+    fun output_name_is_omitted_when_null_so_old_files_stay_byte_identical() {
+        // omit-when-null: a job without a display-derived name renders
+        // exactly as the pre-§2b build wrote it (schema-1 files stay
+        // byte-identical), and the row parses back with the legacy name.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "a"))
+        val before = file.readText()
+
+        // A null outputName write must not add the key.
+        store.update(store.all().single().copy(state = State.RUNNING))
+        val after = file.readText()
+        assertTrue(!after.contains("outputName"))
+        assertEquals(
+            before,
+            // Same JSON minus the state value: RUNNING replaced QUEUED.
+            after.replace("\"state\":\"RUNNING\"", "\"state\":\"QUEUED\""),
+        )
+
+        // The row's file name falls back to the legacy form.
+        assertEquals("clip-a-mp4.mp4", ExportStore(file).all().single().fileName)
+    }
+
+    @Test
+    fun old_export_row_without_output_name_parses_null() {
+        // A project.json written before §2b (schema 1, no outputName field):
+        // the row parses with a null name and fileName falls back to the
+        // legacy <sourceId>-<target> name — old DONE rows still open.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.0},"target":"MP4","state":"DONE","detail":"clip-a-mp4.mp4"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val job = ExportStore(file).all().single()
+        assertEquals(State.DONE, job.state)
+        assertNull(job.outputName)
+        assertEquals("clip-a-mp4.mp4", job.fileName)
+    }
+
     @Test
     fun corrupt_store_falls_back_to_empty_queue() {
         val file = projectFile()

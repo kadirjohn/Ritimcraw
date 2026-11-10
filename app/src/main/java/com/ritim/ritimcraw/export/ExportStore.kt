@@ -133,6 +133,14 @@ class ExportStore(private val file: File) {
                 if (j.publishedUri != null) {
                     sb.append(",\"publishedUri\":").append(ProjectJson.quote(j.publishedUri))
                 }
+                // outputName (display-derived export names, owner request
+                // 2026-11-11 §2b): omit-when-null — files written before the
+                // field stay byte-identical, and old rows parse with a null
+                // name (the job then falls back to the legacy
+                // <sourceId>-<target> name in ExportJob.fileName).
+                if (j.outputName != null) {
+                    sb.append(",\"outputName\":").append(ProjectJson.quote(j.outputName))
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -187,6 +195,9 @@ class ExportStore(private val file: File) {
                     framesTotal = (m["framesTotal"] as? Double)?.toInt(),
                     startedAtMs = (m["startedAtMs"] as? Double)?.toLong(),
                     publishedUri = m["publishedUri"] as? String,
+                    // Absent in rows queued before §2b: a null name falls
+                    // back to the legacy <sourceId>-<target> file name.
+                    outputName = m["outputName"] as? String,
                 )
             }
         }

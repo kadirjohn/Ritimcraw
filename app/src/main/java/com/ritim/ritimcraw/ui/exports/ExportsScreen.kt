@@ -48,6 +48,9 @@ fun ExportsScreen(
     onRetry: (ExportJob) -> Unit = {},
     onClear: () -> Unit = {},
     onOpen: (ExportJob) -> Unit = {},
+    // sourceId -> display name (owner request §2b): rows show the clip's
+    // real file name; the id is the fallback for unknown/missing sources.
+    sourceNames: Map<String, String> = emptyMap(),
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -86,7 +89,7 @@ fun ExportsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(jobs, key = { it.id }) { job ->
-                    ExportJobRow(job, onRetry, onOpen)
+                    ExportJobRow(job, sourceNames[job.sourceId] ?: job.sourceId, onRetry, onOpen)
                 }
             }
             TextButton(
@@ -104,14 +107,16 @@ fun ExportsScreen(
 @Composable
 private fun ExportJobRow(
     job: ExportJob,
+    // The clip's display name (§2b), id fallback resolved by the caller.
+    sourceName: String,
     onRetry: (ExportJob) -> Unit,
     onOpen: (ExportJob) -> Unit,
 ) {
     if (job.state == State.FAILED) {
-        FailedJobCard(job, onRetry)
+        FailedJobCard(job, sourceName, onRetry)
     } else {
         ListItem(
-            headlineContent = { Text(job.sourceId) },
+            headlineContent = { Text(sourceName) },
             supportingContent = {
                 Column {
                     // Format line on every non-failed row (DESIGN.md Export job).
@@ -234,6 +239,8 @@ private fun RunningJobProgress(job: ExportJob) {
 @Composable
 private fun FailedJobCard(
     job: ExportJob,
+    // The clip's display name (§2b), id fallback resolved by the caller.
+    sourceName: String,
     onRetry: (ExportJob) -> Unit,
 ) {
     Card(
@@ -245,7 +252,7 @@ private fun FailedJobCard(
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                stringResource(R.string.exports_job_failed_stage, job.sourceId),
+                stringResource(R.string.exports_job_failed_stage, sourceName),
                 style = MaterialTheme.typography.titleMedium,
             )
             if (job.detail != null) {

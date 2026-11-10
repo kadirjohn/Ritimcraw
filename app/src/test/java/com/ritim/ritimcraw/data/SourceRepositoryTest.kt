@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -152,6 +153,102 @@ class SourceRepositoryTest {
         // stats keys — schema-1 files stay byte-identical.
         SourceRepository(FakeResolver("clip".toByteArray()), file).import("content://clip/1")
         assertEquals(before, file.readText())
+    }
+
+    // ---- display names (owner request 2026-11-11 §2b) ----
+
+    @Test
+    fun import_captures_the_display_name() {
+        val file = projectFile()
+        val resolver = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/1" to "Sunset Trip.raw"),
+        )
+        val imported = SourceRepository(resolver, file).import("content://clip/1")
+
+        assertEquals("Sunset Trip.raw", imported.displayName)
+        assertEquals("Sunset Trip.raw", imported.displayOrId)
+        // The display name persists in project.json across a reload.
+        assertEquals("Sunset Trip.raw", SourceRepository(FakeResolver(), file).all().single().displayName)
+    }
+
+    @Test
+    fun unresolvable_name_falls_back_to_the_id() {
+        val file = projectFile()
+        // No names in the resolver: DISPLAY_NAME unknown (null).
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+
+        assertEquals("", imported.displayName)
+        assertEquals(imported.id, imported.displayOrId) // never a blank
+    }
+
+    @Test
+    fun reimport_backfills_the_display_name_and_keeps_the_id() {
+        val file = projectFile()
+        // A record imported before §2b: no display name.
+        val old = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/first")
+        assertEquals("", old.displayName)
+
+        // Re-import of the same file, now with a name available: the name
+        // backfills, the id (and its grade) stays — the fingerprint is
+        // untouched.
+        val named = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/second" to "Night Market.raw"),
+        )
+        val reimported = SourceRepository(named, file).import("content://clip/second")
+
+        assertEquals(old.id, reimported.id)
+        assertEquals("Night Market.raw", reimported.displayName)
+        assertEquals("Night Market.raw", reimported.displayOrId)
+        assertEquals(1, SourceRepository(FakeResolver(), file).all().size)
+    }
+
+    @Test
+    fun backfill_display_name_fills_a_pre_s2b_record_on_first_open() {
+        val file = projectFile()
+        SourceRepository(FakeResolver("clip".toByteArray()), file).import("content://clip/1")
+        val id = SourceRepository(FakeResolver(), file).all().single().id
+
+        // First open with a resolver that can now name the document.
+        val named = FakeResolver("clip".toByteArray(), names = mapOf("content://clip/1" to "Harbor.raw"))
+        val filled = SourceRepository(named, file).backfillDisplayName(id)
+
+        assertEquals("Harbor.raw", filled?.displayName)
+        assertEquals("Harbor.raw", filled?.displayOrId)
+        // Persisted: a fresh repository sees the name.
+        assertEquals("Harbor.raw", SourceRepository(FakeResolver(), file).all().single().displayName)
+    }
+
+    @Test
+    fun backfill_display_name_is_a_noop_when_already_named_missing_or_unresolvable() {
+        // Already named: the record keeps its name (no rewrite, same value).
+        val file = projectFile()
+        val named = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/1" to "One.raw"),
+        )
+        val repo = SourceRepository(named, file)
+        val imported = repo.import("content://clip/1")
+        assertEquals(
+            imported,
+            SourceRepository(named, file).backfillDisplayName(imported.id),
+        )
+
+        // Missing record: null, nothing written.
+        assertNull(SourceRepository(named, file).backfillDisplayName("no-such-id"))
+
+        // Unresolvable name: the record is returned unchanged (still blank),
+        // never a crash — the id stays the display fallback.
+        val file2 = File(tmp.root, "project2.json")
+        val blank = SourceRepository(FakeResolver("clip".toByteArray()), file2)
+            .import("content://clip/1")
+        val stillBlank = SourceRepository(FakeResolver("clip".toByteArray()), file2)
+            .backfillDisplayName(blank.id)
+        assertEquals("", stillBlank?.displayName)
+        assertEquals(blank.id, stillBlank?.displayOrId)
     }
 
     private fun projectFile(): File = File(tmp.root, "project.json")

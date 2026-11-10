@@ -39,6 +39,15 @@ enum class State { QUEUED, RUNNING, DONE, CANCELLED, FAILED }
  * via FileProvider, see [ExportOpen]), and on every non-DONE row. Stored as
  * a raw string so the value round-trips through project.json without any
  * Android types here.
+ *
+ * [outputName] (owner request 2026-11-11 §2b: export names derive from the
+ * clip's display name) is the file name captured at ENQUEUE time from the
+ * clip's display name (cleaned of invalid filename characters — see
+ * [ExportQueue.outputName]). Captured, not derived on the fly, because the
+ * name must stay stable for the job's whole life: the DONE row opens the
+ * file the job actually wrote, and Retry overwrites only its own output.
+ * Null on rows queued before §2b — [fileName] then derives the legacy
+ * `<sourceId>-<target>` name so old rows still open.
  */
 data class ExportJob(
     val id: String,
@@ -51,7 +60,19 @@ data class ExportJob(
     val framesTotal: Int? = null,
     val startedAtMs: Long? = null,
     val publishedUri: String? = null,
+    val outputName: String? = null,
 ) {
+
+    /**
+     * The file name this job's output has: the display-derived name captured
+     * at enqueue (owner request §2b), or the legacy `<sourceId>-<target>`
+     * name for rows queued before that. Every path that touches the job's
+     * file — the output location, the MediaStore DISPLAY_NAME, the open
+     * candidates — goes through THIS, so the name can never drift between
+     * them.
+     */
+    val fileName: String
+        get() = outputName ?: ExportQueue.outputName(sourceId, target)
     /**
      * Retry source: the same job re-queued with the same snapshot. The id and
      * queued state stay; the old failure detail, the progress and the old
