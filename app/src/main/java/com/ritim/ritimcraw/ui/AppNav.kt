@@ -239,6 +239,12 @@ fun AppNav() {
                     }
                     var sourceFd by remember(r.sourceId) { mutableStateOf(-1) }
                     var accessLost by remember(r.sourceId) { mutableStateOf(false) }
+                    // Persisted import stats shape the preview placeholder
+                    // before the first rendered frame (PreviewSurface's ratio
+                    // fallback chain); 0/0 when the engine pass never probed.
+                    var sourceDims by remember(r.sourceId) {
+                        mutableStateOf(stores.sources.get(r.sourceId)?.let { it.width to it.height } ?: (0 to 0))
+                    }
                     val sourceUri by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.uri)
                     }
@@ -265,7 +271,9 @@ fun AppNav() {
                         if (source == null) {
                             sourceFd = -1
                             accessLost = false
+                            sourceDims = 0 to 0
                         } else {
+                            sourceDims = source.width to source.height
                             try {
                                 val p = context.contentResolver
                                     .openFileDescriptor(Uri.parse(source.uri), "r")
@@ -308,6 +316,8 @@ fun AppNav() {
                         sourceFd = sourceFd,
                         sourceFdProvider = sourceFdProvider,
                         accessLost = accessLost,
+                        sourceWidth = sourceDims.first,
+                        sourceHeight = sourceDims.second,
                     )
                 }
             } else {

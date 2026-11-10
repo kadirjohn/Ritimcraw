@@ -1,8 +1,5 @@
 package com.ritim.ritimcraw.ui.editor
 
-import android.graphics.Bitmap
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,9 +35,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -129,6 +124,11 @@ fun ClipEditorScreen(
     sourceFd: Int = -1,
     sourceFdProvider: () -> Int = { -1 },
     accessLost: Boolean = false,
+    // Persisted import stats (engine pass at import time); 0 when unknown.
+    // Only the preview surface's placeholder shape reads them — the ratio
+    // fallback chain lives in PreviewSurface.kt.
+    sourceWidth: Int = 0,
+    sourceHeight: Int = 0,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -380,88 +380,31 @@ fun ClipEditorScreen(
                     modifier = Modifier.padding(start = 4.dp),
                 )
             }
-            // Preview frame: rendered image, or the placeholder this area has
-            // always shown (no fd / no native engine / render failure all
-            // degrade to the same string — never a crash, never a blank hole).
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerLowest,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier
+            // Preview frame: shaped like the clip itself (PreviewSurface;
+            // owner finding 2026-11-10 — fixed box out, clip aspect ratio
+            // in). The weighted Box leaves the leftover vertical space when
+            // the surface bounds by height (very tall clips); the surface
+            // centers inside it.
+            Box(
+                Modifier
                     .fillMaxWidth()
                     .weight(1f),
+                contentAlignment = Alignment.Center,
             ) {
-                Box(
-                    Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    // The tested decision matrix drives the overlay: FAILED
-                    // (requested, no frame, not in flight) shows the error;
-                    // RENDERING with a stale frame keeps the image up.
-                    val state = EditorPreviewLogic.stateOf(
+                PreviewSurface(
+                    frame = frame,
+                    state = EditorPreviewLogic.stateOf(
                         renderRequested = renderSeq > 0L,
                         renderInFlight = renderInFlight,
                         hasFrame = frame != null,
                         lastRenderFailed = lastRenderFailed,
-                    )
-                    val f = frame
-                    if (f != null) {
-                        Image(
-                            bitmap = remember(f) { f.toImageBitmap() },
-                            contentDescription = null,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    } else if (accessLost) {
-                        // The SAF grant was revoked or the clip moved: the
-                        // existing access-lost pattern (library rows) — the
-                        // preview cannot run without the source.
-                        Column(
-                            Modifier.padding(32.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                stringResource(R.string.editor_not_loaded_title),
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                textAlign = TextAlign.Center,
-                            )
-                            Text(
-                                stringResource(R.string.library_row_access_lost),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
-                    } else {
-                        Text(
-                            stringResource(R.string.editor_preview_device_pending),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(32.dp),
-                        )
-                    }
-                    if (state == PreviewState.FAILED && errorText != null) {
-                        // Error replaces the centered placeholder text (they
-                        // overlapped unreadably when both showed); the image
-                        // path keeps whatever frame is on screen.
-                        Column(
-                            Modifier
-                                .align(Alignment.Center)
-                                .padding(32.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                errorText!!,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
-                    }
-                }
+                    ),
+                    errorText = errorText,
+                    accessLost = accessLost,
+                    sourceWidth = sourceWidth,
+                    sourceHeight = sourceHeight,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
             // Transport row (owner request 2026-11-10 §1, MotionCam Pro
             // reference): compact Play/Pause + draggable time bar + elapsed /
@@ -604,10 +547,6 @@ fun ClipEditorScreen(
         }
     }
 }
-
-/** PreviewFrame -> Compose ImageBitmap via Android Bitmap (UI layer only). */
-private fun PreviewFrame.toImageBitmap(): androidx.compose.ui.graphics.ImageBitmap =
-    Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888).asImageBitmap()
 
 /**
  * Compact transport row under the preview (owner request 2026-11-10 §1):
