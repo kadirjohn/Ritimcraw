@@ -1,5 +1,7 @@
 package com.ritim.ritimcraw.ui
 
+import android.net.Uri
+import android.os.ParcelFileDescriptor
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,8 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -124,11 +128,50 @@ fun AppNav() {
             if (route != null) {
                 // Fade between browse and editor (DESIGN.md Motion).
                 Crossfade(targetState = route, animationSpec = tween(220), label = "editor") { r ->
+                    // Open the clip read-only for the preview pipeline:
+                    // ContentResolver.openFileDescriptor(uri, "r"). The
+                    // source file is NEVER written (non-negotiable). The
+                    // ParcelFileDescriptor stays open for the editor's
+                    // lifetime (the native side dups the fd per open) and
+                    // closes on dispose. A revoked grant or a moved file
+                    // yields accessLost — the editor degrades to its
+                    // access-lost state (existing pattern), never a crash.
+                    var pfd by remember(r.sourceId) {
+                        mutableStateOf<ParcelFileDescriptor?>(null)
+                    }
+                    var sourceFd by remember(r.sourceId) { mutableStateOf(-1) }
+                    var accessLost by remember(r.sourceId) { mutableStateOf(false) }
+                    LaunchedEffect(r.sourceId) {
+                        val source = stores.sources.get(r.sourceId)
+                        if (source == null) {
+                            sourceFd = -1
+                            accessLost = false
+                        } else {
+                            try {
+                                val p = context.contentResolver
+                                    .openFileDescriptor(Uri.parse(source.uri), "r")
+                                if (p == null) {
+                                    accessLost = true
+                                } else {
+                                    pfd = p
+                                    sourceFd = p.fd
+                                    accessLost = false
+                                }
+                            } catch (e: Exception) {
+                                accessLost = true
+                            }
+                        }
+                    }
+                    DisposableEffect(r.sourceId) {
+                        onDispose { runCatching { pfd?.close() } }
+                    }
                     ClipEditorScreen(
                         sourceId = r.sourceId,
                         onBack = { editorRoute = null },
                         initialGrade = stores.grades.get(r.sourceId),
                         onGradeChange = { g -> stores.grades.put(r.sourceId, g) },
+                        sourceFd = sourceFd,
+                        accessLost = accessLost,
                     )
                 }
             } else {

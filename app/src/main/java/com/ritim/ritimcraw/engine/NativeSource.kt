@@ -156,7 +156,44 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeFrameInfo(handle: Long, i: Int): FrameInfoK?
         @JvmStatic private external fun nativeReadFrame(handle: Long, i: Int): ShortArray?
         @JvmStatic private external fun nativeReadAudio(handle: Long): ShortArray?
-        @JvmStatic private external fun nativeCloseSource(handle: Long): Long
+        @JvmStatic internal external fun nativeCloseSource(handle: Long): Long
         @JvmStatic private external fun nativeLastError(): String?
+
+        // ---- Preview JNI (decoder -> developThumbnail -> Rec709 -> ARGB) ----
+        // internal so engine/PreviewRenderer can call them; every call must
+        // run on the renderer's single engine thread (thread-local error
+        // state + one motioncam decoder per Source).
+
+        /**
+         * Opens a preview source from fd. Returns
+         * [handle, frameCount, firstWidth, firstHeight, firstCfa,
+         * firstOrientation] or null (then [previewLastError] /
+         * [previewErrorCode] / [previewErrorStage] say why).
+         */
+        @JvmStatic internal external fun nativePreviewOpen(fd: Int): IntArray?
+
+        /**
+         * Decodes frameIndex through the preview pipeline. Returns
+         * [width, height, then w*h ARGB_8888 ints] or null on failure
+         * (read the error accessors from the same thread).
+         */
+        @JvmStatic internal external fun nativePreviewRender(
+            handle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+            maxDim: Int,
+        ): IntArray?
+
+        /** rawedit::ErrorCode of the last failed preview call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
+        @JvmStatic internal external fun nativePreviewErrorCode(): Int
+
+        /** Pipeline stage of the last failed preview call (0 open, 1 frame read, 2 develop). */
+        @JvmStatic internal external fun nativePreviewErrorStage(): Int
+
+        /** Last-error detail from the engine thread (thread-local in the bridge). */
+        internal fun previewLastError(): String? = nativeLastError()
     }
 }

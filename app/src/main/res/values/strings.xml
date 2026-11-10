@@ -39,6 +39,7 @@
     <string name="editor_slider_highlights">Highlights</string>
     <string name="editor_slider_temperature">Temperature</string>
     <string name="editor_slider_tint">Tint</string>
+    <string name="editor_render_preview">Render preview</string>
     <string name="editor_not_loaded_title">Clip not open</string>
     <string name="editor_not_loaded_body">The clip could not be opened by the native engine in this build. Recovery: reopen the clip from the library once the engine build is enabled.</string>
 

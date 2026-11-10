@@ -12,6 +12,8 @@
 
 #include <jni.h>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <new>
 #include <string>
@@ -19,13 +21,36 @@
 
 #include <rawedit/Result.h>
 #include <rawedit/Source.h>
+#include <rawedit/Thumbnail.h>
+#include <rawedit/Transfer.h>
 
 namespace {
 
 // Last error detail for the most recent failed call on this thread.
 thread_local std::string gLastError;
 
+// Numeric rawedit::ErrorCode of the most recent failed call on this thread
+// (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported), plus the
+// pipeline stage token, so the Kotlin PreviewErrors mapper can name the
+// stage + cause + recovery per ErrorCode without re-parsing detail strings.
+// All three are thread-local: read them from the same engine thread that
+// failed. Updated by the preview setError only on failure paths.
+thread_local int gLastErrorCode = 0;
+
+// Stage tokens (shared contract with PreviewRenderer.kt).
+constexpr int kStageOpen = 0;
+constexpr int kStageFrameRead = 1;
+constexpr int kStageDevelop = 2;
+
+thread_local int gLastErrorStage = kStageOpen;
+
 void setError(const std::string& message) {
+    gLastError = message;
+}
+
+void setError(int code, int stage, const std::string& message) {
+    gLastErrorCode = code;
+    gLastErrorStage = stage;
     gLastError = message;
 }
 
@@ -69,6 +94,55 @@ rawedit::Source* sourceFor(int64_t handle) {
 
 jstring toJavaString(JNIEnv* env, const std::string& s) {
     return env->NewStringUTF(s.c_str());
+}
+
+// Preview pipeline helpers -----------------------------------------------------
+//
+// Decode -> developThumbnail (CFA decimation + the unchanged developCpu
+// reference pipeline, core/Thumbnail.h) -> linearToRec709 -> clamp [0,1]
+// -> 8-bit ARGB. Stage tokens + ErrorCode travel through thread-locals so
+// the Kotlin layer can map stage + cause + recovery (spec SYS-02).
+
+// Smallest strideEvery N (>= 1) whose thumbnail fits inside maxDim on the
+// long edge, per the thumbnail math (outW = 2*ceil(width/2/N)). N = 1 is the
+// identity full-res develop.
+int strideFor(const rawedit::FrameInfo& info, int maxDim) {
+    const long long w = info.width;
+    const long long h = info.height;
+    const long long longEdge = std::max(w, h);
+    if (maxDim <= 0 || longEdge <= maxDim) return 1;
+    // N cells of the source map to 1 cell of the thumbnail, so the long edge
+    // shrinks by ~N; start from the exact ratio and walk up until it fits.
+    int n = static_cast<int>((longEdge + maxDim - 1) / maxDim);
+    if (n < 1) n = 1;
+    while (n < 64) {
+        const uint32_t outW = rawedit::thumbnailWidth(info.width, n);
+        const uint32_t outH = rawedit::thumbnailHeight(info.height, n);
+        if (outW == 0 || outH == 0) break;
+        if (static_cast<long long>(std::max(outW, outH)) <= maxDim) return n;
+        ++n;
+    }
+    return n;
+}
+
+// GradeK -> rawedit::Grade: identity field mapping, floats as-is.
+rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, float tint) {
+    rawedit::Grade g;
+    g.exposureEv = exposureEv;
+    g.highlights = highlights;
+    g.tempK = tempK;
+    g.tint = tint;
+    return g;
+}
+
+// linearToRec709 output is unclamped; clamp then quantize to 0..255.
+inline uint8_t toByte(float rec709) {
+    float v = rec709;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    // Round-to-nearest with ties resolved up, matching the DNG path's
+    // integer quantization style.
+    return static_cast<uint8_t>(v * 255.0f + 0.5f);
 }
 
 } // namespace
@@ -201,6 +275,152 @@ JNIEXPORT jstring JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeLastError(JNIEnv* env, jclass) {
     if (gLastError.empty()) return nullptr;
     return toJavaString(env, gLastError);
+}
+
+// Preview pipeline -------------------------------------------------------------
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewOpen(
+        JNIEnv* env, jclass, jint fd) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    auto result = rawedit::Source::open(static_cast<int>(fd));
+    if (!result.isOk()) {
+        setError(static_cast<int>(result.code), kStageOpen,
+                 std::string("open: ") + rawedit::errorName(result.code) +
+                     " — " + result.detail);
+        return nullptr;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*result.value);
+    const size_t frames = src->frameCount();
+    if (frames == 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "open: unsupported — the clip holds no video frames "
+                 "(recovery: re-import the clip)");
+        return nullptr;
+    }
+    const rawedit::FrameInfo first = src->frameInfo(0);
+    const int64_t handle = insertSource(std::move(src));
+    if (handle == 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 gLastError);
+        return nullptr;
+    }
+    // [handle, frameCount, firstWidth, firstHeight, firstCfa, firstOrientation]
+    jint out[6] = {
+        static_cast<jint>(handle),
+        static_cast<jint>(frames),
+        static_cast<jint>(first.width),
+        static_cast<jint>(first.height),
+        static_cast<jint>(static_cast<int>(first.cfa)),
+        static_cast<jint>(first.orientationDeg),
+    };
+    jintArray arr = env->NewIntArray(6);
+    if (arr == nullptr) return nullptr;
+    env->SetIntArrayRegion(arr, 0, 6, out);
+    return arr;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
+        JNIEnv* env, jclass, jlong handle, jint frameIndex,
+        jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
+        jint maxDim) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 gLastError);
+        return nullptr;
+    }
+    try {
+        // 1. Frame read.
+        auto frame = s->readFrame(static_cast<size_t>(frameIndex));
+        if (!frame.isOk()) {
+            setError(static_cast<int>(frame.code), kStageFrameRead,
+                     std::string("frame read: ") + rawedit::errorName(frame.code) +
+                         " — " + frame.detail);
+            return nullptr;
+        }
+        const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
+        const rawedit::RawMeta& meta = s->rawMeta();
+
+        // 2. Develop with CFA decimation for preview speed (core/Thumbnail.h).
+        const int strideEvery = strideFor(info, maxDim);
+        rawedit::ImageF img = rawedit::developThumbnail(
+            frame.value->data(), info, meta,
+            gradeFromKotlin(exposureEv, highlights, tempK, tint), strideEvery);
+        if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop: unsupported — the frame is too small to develop "
+                     "(recovery: re-import the clip)");
+            return nullptr;
+        }
+
+        // 3. linearToRec709 + clamp + 8-bit ARGB_8888, rotated upright per
+        //    FrameInfo.orientationDeg (degrees CW to upright — the same
+        //    convention the DNG writer encodes as the TIFF orientation tag,
+        //    so the preview matches what a DNG reader shows).
+        const jsize w = static_cast<jsize>(img.w);
+        const jsize h = static_cast<jsize>(img.h);
+        const int orient = ((info.orientationDeg % 360) + 360) % 360;
+        jsize outW = w;
+        jsize outH = h;
+        if (orient == 90 || orient == 270) {
+            outW = h;
+            outH = w;
+        }
+        const jsize n = outW * outH;
+        // [width, height, then n ARGB pixels].
+        std::vector<jint> out(static_cast<size_t>(n) + 2);
+        out[0] = outW;
+        out[1] = outH;
+        jint* px = out.data() + 2;
+        for (jsize y = 0; y < outH; ++y) {
+            for (jsize x = 0; x < outW; ++x) {
+                // Source pixel under destination (x, y) after the rotation.
+                jsize si;
+                switch (orient) {
+                    case 90:  si = static_cast<jsize>(h - 1 - x) * w + y; break;
+                    case 180: si = static_cast<jsize>(h - 1 - y) * w + (w - 1 - x); break;
+                    case 270: si = x * w + (w - 1 - y); break;
+                    default:  si = y * w + x; break;
+                }
+                const float r = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 0]);
+                const float g = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 1]);
+                const float b = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 2]);
+                px[static_cast<size_t>(y) * outW + x] =
+                    0xFF000000 |
+                    (static_cast<jint>(toByte(r)) << 16) |
+                    (static_cast<jint>(toByte(g)) << 8) |
+                    static_cast<jint>(toByte(b));
+            }
+        }
+        jintArray arr = env->NewIntArray(n + 2);
+        if (arr == nullptr) return nullptr;
+        env->SetIntArrayRegion(arr, 0, n + 2, out.data());
+        return arr;
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "develop: out of memory decoding the frame "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("develop: ") + e.what() + " (recovery: reopen the clip)");
+        return nullptr;
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewErrorCode(JNIEnv*, jclass) {
+    return gLastErrorCode;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewErrorStage(JNIEnv*, jclass) {
+    return gLastErrorStage;
 }
 
 } // extern "C"
