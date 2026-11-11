@@ -491,24 +491,31 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewOpen(
         return nullptr;
     }
     const rawedit::FrameInfo first = src->frameInfo(0);
+    // Read before insertSource takes ownership (owner request 2026-11-11
+    // section 2/3): the container RAW white level feeds the clip info sheet
+    // ("RAW white level: 1023"). It is the fallback calibration — the
+    // per-frame dynamic levels ride FrameInfo into the render/DNG calls.
+    const uint16_t containerWhite = src->rawMeta().white;
     const int64_t handle = insertSource(std::move(src));
     if (handle == 0) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  gLastError);
         return nullptr;
     }
-    // [handle, frameCount, firstWidth, firstHeight, firstCfa, firstOrientation]
-    jint out[6] = {
+    // [handle, frameCount, firstWidth, firstHeight, firstCfa,
+    //  firstOrientation, containerWhiteLevel]
+    jint out[7] = {
         static_cast<jint>(handle),
         static_cast<jint>(frames),
         static_cast<jint>(first.width),
         static_cast<jint>(first.height),
         static_cast<jint>(static_cast<int>(first.cfa)),
         static_cast<jint>(first.orientationDeg),
+        static_cast<jint>(containerWhite),
     };
-    jintArray arr = env->NewIntArray(6);
+    jintArray arr = env->NewIntArray(7);
     if (arr == nullptr) return nullptr;
-    env->SetIntArrayRegion(arr, 0, 6, out);
+    env->SetIntArrayRegion(arr, 0, 7, out);
     return arr;
 }
 

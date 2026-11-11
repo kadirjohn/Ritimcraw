@@ -144,7 +144,16 @@ private fun ExportSheet(
         )
         ListItem(
             headlineContent = { Text(stringResource(R.string.editor_export_choice_dng)) },
-            supportingContent = { Text(stringResource(R.string.exports_format_dng)) },
+            supportingContent = {
+                // The DNG write format, separate from the RAW source info
+                // (owner request 2026-11-11 section 2): the export always
+                // writes 16-bit uncompressed CFA — that is the writer's
+                // contract, not the sensor's bit depth.
+                Text(
+                    stringResource(R.string.exports_format_dng) + " · " +
+                        stringResource(R.string.exports_format_dng_detail)
+                )
+            },
             modifier = Modifier.clickable { onExport(Target.DNG) },
         )
         Spacer(Modifier.height(16.dp))
@@ -216,6 +225,23 @@ private fun ClipInfoSheet(
                 unknown
             },
         )
+        // RAW source rows (owner request 2026-11-11 section 2): what the
+        // source actually is — the sample format and the RAW white level —
+        // kept SEPARATE from the DNG write format (16-bit CFA, the export
+        // sheet's line). MCRAW-only; encoded clips have no RAW stage, so
+        // the rows are absent there rather than showing "Unknown".
+        if (info.rawSampleFormat != null) {
+            ClipInfoRow(
+                label = stringResource(R.string.editor_clip_info_raw_format),
+                value = info.rawSampleFormat,
+            )
+        }
+        if (info.rawWhiteLevel > 0) {
+            ClipInfoRow(
+                label = stringResource(R.string.editor_clip_info_raw_white_level),
+                value = info.rawWhiteLevel.toString(),
+            )
+        }
         Spacer(Modifier.height(16.dp))
     }
 }
@@ -228,6 +254,18 @@ data class ClipInfo(
     val totalUs: Long,
     val frameCount: Int,
     val fps: Float,
+    /**
+     * The RAW sample format straight from the source when the clip is
+     * MCRAW (e.g. "raw16"); null on encoded clips (no RAW stage — the row
+     * hides) and when the source did not report one.
+     */
+    val rawSampleFormat: String? = null,
+    /**
+     * The RAW white level the source reports (e.g. 1023); 0 = unknown
+     * (the row hides). The DNG write format is NOT this: the export sheet
+     * says "16-bit CFA" separately.
+     */
+    val rawWhiteLevel: Int = 0,
 )
 
 /**

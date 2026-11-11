@@ -981,3 +981,67 @@ TEST_CASE("tonemap_curves_are_monotone_over_scene_range") {
     CHECK(centerMean(a1, 1) > 0.1f);
     CHECK(centerMean(x1, 1) > 0.1f);
 }
+
+TEST_CASE("frame_dynamic_levels_win_over_container") {
+    // Owner request 2026-11-11 section 3: a frame that carries dynamic
+    // black/white levels must be developed with THOSE levels, not the
+    // container's. Build a flat patch encoded against the FRAME's levels
+    // (black 100, white 2000) while the container meta stays at the
+    // fixture defaults (64/1023): only the frame-preferred path can
+    // decode it back to the intended linear value.
+    Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.25f, 0.25f, 0.25f);
+    const int32_t frameBlack = 100;
+    const int32_t frameWhite = 2000;
+    for (size_t i = 0; i < s.cfa.size(); ++i)
+        s.cfa[i] = static_cast<uint16_t>(
+            frameBlack + 0.25f * (frameWhite - frameBlack) + 0.5f);
+    s.info.dynamicBlack[0] = s.info.dynamicBlack[1] = frameBlack;
+    s.info.dynamicBlack[2] = s.info.dynamicBlack[3] = frameBlack;
+    s.info.dynamicWhite = frameWhite;
+
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto r = centerMean(img, 0);
+    CHECK(std::abs(r - 0.25f) < 1e-3f);
+}
+
+TEST_CASE("frame_levels_fall_back_to_container_when_missing") {
+    // The FrameInfo sentinel (-1) means "this frame did not carry a
+    // level": the container RawMeta values must be used. A synthetic
+    // patch encoded against the container levels (64/1023) decodes
+    // correctly with the sentinels in place.
+    Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.25f, 0.25f, 0.25f);
+    // Sentinels are already the FrameInfo default; state them for the test.
+    for (int i = 0; i < 4; ++i)
+        REQUIRE(s.info.dynamicBlack[i] == -1);
+    REQUIRE(s.info.dynamicWhite == -1);
+
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto r = centerMean(img, 0);
+    CHECK(std::abs(r - 0.25f) < 1e-3f);
+
+    // And the same patch against the frame-preferred path with the
+    // FRAME's levels would read the wrong value — proving the fallback
+    // test above exercises the container path, not a coincidence.
+    s.info.dynamicBlack[0] = s.info.dynamicBlack[1] = 100;
+    s.info.dynamicBlack[2] = s.info.dynamicBlack[3] = 100;
+    s.info.dynamicWhite = 2000;
+    auto wrong = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    CHECK(std::abs(centerMean(wrong, 0) - 0.25f) > 1e-3f);
+}
+
+TEST_CASE("frame_levels_reject_white_at_or_below_black") {
+    // Source::frameInfo drops a dynamic white at or below the frame's
+    // black back to the sentinel; developCpu must therefore fall back to
+    // the container white for such a frame. Simulate that guarded frame
+    // directly: black valid, white sentinel.
+    Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.25f, 0.25f, 0.25f);
+    s.info.dynamicBlack[0] = s.info.dynamicBlack[1] = 64;
+    s.info.dynamicBlack[2] = s.info.dynamicBlack[3] = 64;
+    s.info.dynamicWhite = -1; // dropped by the validity gate
+
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto r = centerMean(img, 0);
+    // Container white 1023 with frame black 64 (equal here) still decodes
+    // the patch correctly.
+    CHECK(std::abs(r - 0.25f) < 1e-3f);
+}

@@ -46,6 +46,14 @@ struct FrameInfo {
     CfaPattern cfa = CfaPattern::RGGB;
     Rect activeArea;         // full frame today; see Source.cpp (QA-02 pending)
     int orientationDeg = 0;  // sensor orientation, degrees CW to upright
+    // Per-frame RAW levels (owner request 2026-11-11 section 3): Android
+    // Camera2 defines dynamic black/white levels as per-frame RAW
+    // calibration. -1 = "this frame did not carry a level" — the develop
+    // stage and the DNG writer fall back to the container RawMeta values.
+    // Stored as int32 because the JSON keys hold plain integers and the
+    // sentinel is out of every uint16 range.
+    int32_t dynamicBlack[4] = {-1, -1, -1, -1};
+    int32_t dynamicWhite = -1;
 };
 
 struct AudioInfo {

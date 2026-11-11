@@ -14,4 +14,14 @@ object PreviewTiers {
 
     /** Long-edge cap while playing (coarser; keeps the CPU develop realtime). */
     const val PLAYBACK_MAX_DIM = 720
+
+    /**
+     * No cap: the RECORDED source resolution (owner request 2026-11-11
+     * section 2). Both engines already treat a non-positive maxDim as
+     * pass-through — the native strideFor skips scaling and the encoded
+     * [ArgbScale.fit] returns the frame unscaled — so 0 means "render the
+     * frame at its own size". Used for the single paused/clip-end render,
+     * never for playback or slider drags.
+     */
+    const val SOURCE_MAX_DIM = 0
 }

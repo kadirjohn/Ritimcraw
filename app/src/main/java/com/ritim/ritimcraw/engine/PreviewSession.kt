@@ -49,7 +49,10 @@ object SessionRules {
 class PreviewSession private constructor(
     private val handle: Long,
     val frameCount: Int,
+    override val width: Int,
+    override val height: Int,
     private val engine: ExecutorService,
+    override val rawWhiteLevel: Int,
 ) : EditorPreviewSession {
 
     override val frames: Int get() = frameCount
@@ -356,7 +359,7 @@ class PreviewSession private constructor(
          */
         private fun openBlocking(fd: Int, engine: ExecutorService): Result<PreviewSession> {
             val info = NativeSource.jniPreviewOpen(fd)
-            if (info == null || info.size < 6 || info[0] == 0) {
+            if (info == null || info.size < 7 || info[0] == 0) {
                 val code = NativeSource.jniPreviewErrorCode()
                 val stage = NativeSource.jniPreviewErrorStage()
                 val detail = NativeSource.previewLastError()
@@ -367,7 +370,22 @@ class PreviewSession private constructor(
                 )
             }
             // frameCount == 0 is rejected by the bridge, so info[1] > 0.
-            return Result.success(PreviewSession(info[0].toLong(), info[1], engine))
+            // info[2]/info[3] are the first frame's RECORDED dimensions (the
+            // clip's source resolution, owner request 2026-11-11 section 2) —
+            // kept here instead of dropped at the open boundary. info[6] is
+            // the container RAW white level (section 3: the clip info sheet's
+            // "RAW white level" row; the per-frame dynamic levels ride
+            // FrameInfo into the render/DNG calls instead).
+            return Result.success(
+                PreviewSession(
+                    info[0].toLong(),
+                    info[1],
+                    info[2],
+                    info[3],
+                    engine,
+                    info[6],
+                )
+            )
         }
     }
 }

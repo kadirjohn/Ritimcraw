@@ -35,7 +35,7 @@
     <string name="editor_tab_light">Light</string>
     <string name="editor_tab_color">Color</string>
     <string name="editor_tab_detail">Detail</string>
-    <string name="editor_slider_exposure">Exposure</string>
+    <string name="editor_slider_exposure">Gain (EV)</string>
     <string name="editor_slider_highlights">Highlights</string>
     <string name="editor_slider_black_point">Black Point</string>
     <string name="editor_slider_white_point">White Point</string>
@@ -84,7 +84,11 @@
     <string name="editor_clip_info_duration">Duration</string>
     <string name="editor_clip_info_frames">Frame count</string>
     <string name="editor_clip_info_fps">Frame rate</string>
+    <string name="editor_clip_info_raw_format">RAW sample format</string>
+    <string name="editor_clip_info_raw_white_level">RAW white level</string>
     <string name="editor_clip_info_unknown">Unknown</string>
+    <string name="editor_fullscreen">Fullscreen</string>
+    <string name="editor_fullscreen_exit">Exit fullscreen</string>
     <string name="export_queued_snackbar">Export queued — see Exports</string>
     <string name="editor_not_loaded_title">Clip not open</string>
     <string name="editor_not_loaded_body">The clip could not be opened by the native engine in this build. Recovery: reopen the clip from the library once the engine build is enabled.</string>
@@ -94,6 +98,7 @@
     <string name="exports_empty_title">Nothing exported yet</string>
     <string name="exports_empty_body">Exported clips appear here with their progress and results.</string>
     <string name="exports_format_dng">CFA DNG</string>
+    <string name="exports_format_dng_detail">Writes 16-bit CFA</string>
     <string name="exports_format_mp4">H.264 MP4</string>
     <string name="exports_job_queued">Queued</string>
     <string name="exports_job_running">Exporting…</string>

@@ -621,14 +621,29 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // ---- Stages 1-3 operate on the CFA, per site. ----
     std::vector<float> norm(n);
 
-    // Stage 1: black/white normalization per CFA channel.
+    // Stage 1: black/white normalization per CFA channel. The frame's
+    // dynamic RAW levels win when it carried them (owner request
+    // 2026-11-11 section 3: Android Camera2 defines dynamic black/white
+    // levels as per-frame RAW calibration); the FrameInfo sentinel -1
+    // means "this frame did not report a level", and the container
+    // RawMeta values are the fallback. Hoisted out of the loop: the
+    // chosen levels are constant for the whole frame.
+    const bool useFrameBlack = info.dynamicBlack[0] >= 0;
+    const float white = info.dynamicWhite > 0
+        ? static_cast<float>(info.dynamicWhite)
+        : static_cast<float>(meta.white);
+    float black[4];
+    for (int slot = 0; slot < 4; ++slot)
+        black[slot] = useFrameBlack
+            ? static_cast<float>(info.dynamicBlack[slot])
+            : static_cast<float>(meta.black[slot]);
+    float range[4];
+    for (int slot = 0; slot < 4; ++slot)
+        range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
     for (uint32_t y = 0; y < h; ++y) {
         for (uint32_t x = 0; x < w; ++x) {
             const int slot = cellSlot(y & 1, x & 1);
-            const float black = static_cast<float>(meta.black[slot]);
-            const float white = static_cast<float>(meta.white);
-            const float range = white > black ? white - black : 1.0f;
-            float v = (static_cast<float>(cfa[y * static_cast<size_t>(w) + x]) - black) / range;
+            float v = (static_cast<float>(cfa[y * static_cast<size_t>(w) + x]) - black[slot]) / range[slot];
             norm[y * static_cast<size_t>(w) + x] = std::min(std::max(v, 0.0f), 1.0f);
         }
     }

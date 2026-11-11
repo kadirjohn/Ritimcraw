@@ -234,6 +234,26 @@ class PreviewRendererTest {
         assertTrue(RenderDebounce.isFresh(sequence = 6, latestSequence = 5))
     }
 
+    @Test
+    fun full_res_pause_render_publishes_then_a_later_seek_wins() {
+        // Owner request 2026-11-11 section 2: pausing issues ONE full-res
+        // render (SOURCE_MAX_DIM); a seek AFTER the pause issues its own
+        // request at a LATER sequence. The pump publishes in sequence
+        // order, so the pause frame lands first and the seek frame lands
+        // last — the seek wins, structurally, the same way any newer
+        // request beats an older one. This locks the ordering in.
+        val pauseSequence = 7L
+        val seekSequence = 8L
+        // The pause render is fresh when it lands (nothing newer yet)...
+        assertTrue(RenderDebounce.isFresh(pauseSequence, latestSequence = pauseSequence))
+        // ...and the later seek is fresh against the pause's published
+        // sequence, so it publishes AFTER the pause frame — seek wins.
+        assertTrue(RenderDebounce.isFresh(seekSequence, latestSequence = pauseSequence))
+        // The reverse never holds: the pause's result is stale once the
+        // seek has published.
+        assertFalse(RenderDebounce.isFresh(pauseSequence, latestSequence = seekSequence))
+    }
+
     // ---- unavailable engine fallback ----
 
     @Test

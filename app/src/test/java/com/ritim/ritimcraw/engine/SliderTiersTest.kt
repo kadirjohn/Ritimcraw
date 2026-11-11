@@ -88,4 +88,20 @@ class SliderTiersTest {
         assertFalse(t.dragActive)
         assertTrue(t.decision is SliderTiers.Decision.NoRender)
     }
+
+    // ---- full-res source tier (owner request 2026-11-11 section 2) ----
+
+    @Test
+    fun source_max_dim_is_the_no_cap_sentinel() {
+        // 0 = "no cap": the native strideFor and the encoded ArgbScale.fit
+        // both pass a frame through untouched at a non-positive maxDim, so
+        // the pause/clip-end full-res render needs no new scaling path —
+        // only a tier constant that means "recorded resolution". The drag
+        // and settle tiers stay capped (playback and sliders never pay
+        // the full-res cost).
+        assertEquals(0, PreviewTiers.SOURCE_MAX_DIM)
+        assertTrue(SliderTiers.DRAG_MAX_DIM > 0)
+        assertTrue(SliderTiers.SETTLE_MAX_DIM > 0)
+        assertTrue(PreviewTiers.PLAYBACK_MAX_DIM > 0)
+    }
 }

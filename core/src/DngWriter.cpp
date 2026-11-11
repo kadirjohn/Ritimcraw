@@ -190,7 +190,21 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
     };
 
     place(blackLevel);
-    for (int i = 0; i < 4; ++i) put16(payload, meta.black[i]);
+    // Frame-preferred levels (owner request 2026-11-11 section 3): the
+    // frame's dynamic black/white levels win when it carried them; the
+    // container RawMeta values are the fallback. The CFA pixels are
+    // written verbatim — never gain-multiplied — so the levels written
+    // here are exactly the calibration that matches the stored samples.
+    {
+        const int32_t fb[4] = {
+            frame.dynamicBlack[0], frame.dynamicBlack[1],
+            frame.dynamicBlack[2], frame.dynamicBlack[3],
+        };
+        const bool useFrameBlack = fb[0] >= 0;
+        for (int i = 0; i < 4; ++i)
+            put16(payload, static_cast<uint16_t>(
+                useFrameBlack ? fb[i] : meta.black[i]));
+    }
 
     place(colorMatrix);
     for (int i = 0; i < 9; ++i)
@@ -288,7 +302,12 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
 
     e = Entry{};
     e.tag = kTagWhiteLevel; e.type = kTypeLong; e.count = 1;
-    setInlineLong(e, meta.white); entries.push_back(e);
+    // Frame-preferred white level, same rule as the BlackLevel payload
+    // above (owner request 2026-11-11 section 3).
+    setInlineLong(e, frame.dynamicWhite > 0
+        ? static_cast<uint32_t>(frame.dynamicWhite)
+        : static_cast<uint32_t>(meta.white));
+    entries.push_back(e);
 
     entries.push_back(colorMatrix);
     entries.push_back(asShotNeutral);
