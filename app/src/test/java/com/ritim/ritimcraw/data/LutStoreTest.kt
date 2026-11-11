@@ -24,6 +24,10 @@ private class UriKeyedResolver(
         ByteArrayInputStream(blobs[uri] ?: ByteArray(0))
 
     override fun size(uri: String): Long = (blobs[uri] ?: ByteArray(0)).size.toLong()
+
+    // LUT imports get their title from the picker-side fallback name, so
+    // the resolver never needs to resolve a document name here.
+    override fun displayName(uri: String): String? = null
 }
 
 /**

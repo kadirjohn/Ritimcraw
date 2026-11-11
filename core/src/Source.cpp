@@ -271,6 +271,40 @@ FrameInfo Source::frameInfo(size_t i) const {
     getJson(meta, "orientation", orientation);
     info.orientationDeg = orientation;
 
+    // Per-frame RAW levels (owner request 2026-11-11 section 3): Android
+    // Camera2 defines dynamic black/white levels as per-frame RAW
+    // calibration. The frame JSON carries them as plain integers; the
+    // sentinel -1 (FrameInfo's default) means "this frame did not report a
+    // level" and the consumers (develop stage, DNG writer) fall back to the
+    // container RawMeta values. Invalid values (negative, or a white at or
+    // below black) also leave the sentinel in place — a bogus level never
+    // reaches the develop stage.
+    std::vector<double> dynBlack;
+    getJson(meta, "dynamicBlackLevel", dynBlack);
+    if (dynBlack.size() == 4) {
+        bool valid = true;
+        for (double v : dynBlack) {
+            if (v < 0.0 || v > 65535.0) {
+                valid = false;
+                break;
+            }
+        }
+        if (valid)
+            for (int k = 0; k < 4; ++k)
+                info.dynamicBlack[k] = static_cast<int32_t>(dynBlack[k]);
+    }
+    double dynWhite = -1.0;
+    getJson(meta, "dynamicWhiteLevel", dynWhite);
+    if (dynWhite > 0.0 && dynWhite <= 65535.0)
+        info.dynamicWhite = static_cast<int32_t>(dynWhite);
+    // A white at or below the (frame or container) black is invalid RAW
+    // calibration, not a level to trust: drop it back to the sentinel.
+    const int32_t blackFloor = info.dynamicBlack[0] >= 0
+        ? info.dynamicBlack[0]
+        : static_cast<int32_t>(mImpl->meta.black[0]);
+    if (info.dynamicWhite >= 0 && info.dynamicWhite <= blackFloor)
+        info.dynamicWhite = -1;
+
     return info;
 }
 

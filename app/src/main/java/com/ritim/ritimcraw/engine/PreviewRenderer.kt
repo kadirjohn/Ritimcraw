@@ -128,6 +128,8 @@ object RenderDebounce {
 class PreviewRenderer private constructor(
     private val handle: Long,
     private val frameCount: Int,
+    val width: Int,
+    val height: Int,
     private val engine: ExecutorService,
 ) : AutoCloseable {
 
@@ -218,13 +220,15 @@ class PreviewRenderer private constructor(
 
         /**
          * Maps a nativePreviewOpen result ([handle, frameCount, w, h, cfa,
-         * orient] or null) to a renderer or a failure with the bridge's
-         * thread-local code + stage + detail. MUST be called on the engine
-         * thread that made the native call (thread-local error state), and
-         * never re-submits to it (that would deadlock a single thread).
+         * orient, containerWhite] or null) to a renderer or a failure with
+         * the bridge's thread-local code + stage + detail. MUST be called on
+         * the engine thread that made the native call (thread-local error
+         * state), and never re-submits to it (that would deadlock a single
+         * thread). The renderer is per-render fallback only — the white
+         * level (element 7) belongs to the session and is not read here.
          */
         private fun openResult(info: IntArray?, engine: ExecutorService): Result<PreviewRenderer> {
-            if (info == null || info.size < 6 || info[0] == 0) {
+            if (info == null || info.size < 7 || info[0] == 0) {
                 val code = NativeSource.jniPreviewErrorCode()
                 val stage = NativeSource.jniPreviewErrorStage()
                 val detail = NativeSource.previewLastError()
@@ -233,7 +237,18 @@ class PreviewRenderer private constructor(
                 )
             }
             // frameCount == 0 is rejected by the bridge, so info[1] > 0.
-            return Result.success(PreviewRenderer(info[0].toLong(), info[1], engine))
+            // info[2]/info[3] are the first frame's RECORDED dimensions (the
+            // clip's source resolution, owner request 2026-11-11 section 2) —
+            // kept here instead of dropped at the open boundary.
+            return Result.success(
+                PreviewRenderer(
+                    info[0].toLong(),
+                    info[1],
+                    info[2],
+                    info[3],
+                    engine,
+                )
+            )
         }
 
         /**

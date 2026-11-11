@@ -219,6 +219,19 @@ TEST_CASE("open_reports_truncated_for_cut_container") {
     std::remove(path.c_str());
 }
 
+TEST_CASE("frameinfo_defaults_carry_the_missing_level_sentinels") {
+    // Owner request 2026-11-11 section 3: FrameInfo's dynamic level fields
+    // default to the sentinel -1 ("this frame did not carry a level") so
+    // the develop stage and the DNG writer fall back to the container
+    // RawMeta values. A fresh FrameInfo must carry exactly those
+    // sentinels — anything else would silently develop frames against
+    // fabricated calibration.
+    FrameInfo info;
+    for (int i = 0; i < 4; ++i)
+        CHECK(info.dynamicBlack[i] == -1);
+    CHECK(info.dynamicWhite == -1);
+}
+
 // ---------------------------------------------------------------------------
 // Real-clip tests — gated behind RAWEDIT_REALCLIP=1
 // ---------------------------------------------------------------------------

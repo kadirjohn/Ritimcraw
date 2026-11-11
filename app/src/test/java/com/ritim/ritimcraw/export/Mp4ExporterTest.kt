@@ -140,6 +140,158 @@ class Mp4ExporterTest {
         }
     }
 
+    // ---- imageInputSize: the queueInputBuffer size (owner request 2026-11-11 §1) ----
+
+    @Test
+    fun size_on_tight_planar_strides_is_width_height_three_halves() {
+        // CTS EncodeDecodeTest's algebra exactly: stride==width, planar
+        // chroma (pixelStride 1) -> the test's own frameData.length.
+        assertEquals(
+            3840 * 2160 * 3 / 2,
+            imageInputSize(
+                width = 3840, height = 2160,
+                yRowStride = 3840,
+                uRowStride = 1920, uPixelStride = 1,
+                vRowStride = 1920, vPixelStride = 1,
+            ),
+        )
+    }
+
+    @Test
+    fun size_on_tight_semiplanar_is_also_width_height_three_halves() {
+        // NV12 (pixelStride 2, one interleaved plane): the SAME total. This
+        // is why CTS can use one formula for every device — and why SUMMING
+        // per-plane extents would be wrong (it would double-count the
+        // shared chroma plane and report w*h*2).
+        assertEquals(
+            3840 * 2160 * 3 / 2,
+            imageInputSize(
+                width = 3840, height = 2160,
+                yRowStride = 3840,
+                uRowStride = 3840, uPixelStride = 2,
+                vRowStride = 3840, vPixelStride = 2,
+            ),
+        )
+    }
+
+    @Test
+    fun size_grows_with_padded_luma_stride() {
+        // Alignment-padded Y (rowStride > width): the luma block — and so
+        // the chroma base — grows by the padding under each row.
+        assertEquals(
+            3840 * 2160 * 3 / 2 + 2160 * 64,
+            imageInputSize(
+                width = 3840, height = 2160,
+                yRowStride = 3904,
+                uRowStride = 1920, uPixelStride = 1,
+                vRowStride = 1920, vPixelStride = 1,
+            ),
+        )
+    }
+
+    @Test
+    fun size_grows_with_padded_chroma_stride_planar() {
+        // Padded U/V rows (rowStride 1984 > cw 1920): V — which starts
+        // after U's whole block in a planar layout — ends at
+        //   chromaBase + ch*uRow + [1 + (ch-1)*vRow + (cw-1)]
+        //   = 2160*3840 + 1080*1984 + 1 + 1079*1984 + 1919 = 12579776.
+        assertEquals(
+            2160 * 3840 + 1080 * 1984 + 1 + 1079 * 1984 + 1919,
+            imageInputSize(
+                width = 3840, height = 2160,
+                yRowStride = 3840,
+                uRowStride = 1984, uPixelStride = 1,
+                vRowStride = 1984, vPixelStride = 1,
+            ),
+        )
+    }
+
+    @Test
+    fun size_grows_with_padded_semiplanar_stride() {
+        // NV12 with padding (rowStride 3904 covers the interleaved U+V
+        // pairs): V starts one byte into the shared plane, so it ends at
+        //   chromaBase + 1 + [1 + (ch-1)*vRow + (cw-1)*2]
+        //   = 2160*3840 + 2 + 1079*3904 + 1919*2 = 12510656 — SMALLER than
+        // the planar total above (no second chroma block), exactly the
+        // overlap the max-end computation handles.
+        assertEquals(
+            2160 * 3840 + 2 + 1079 * 3904 + 1919 * 2,
+            imageInputSize(
+                width = 3840, height = 2160,
+                yRowStride = 3840,
+                uRowStride = 3904, uPixelStride = 2,
+                vRowStride = 3904, vPixelStride = 2,
+            ),
+        )
+    }
+
+    @Test
+    fun size_on_odd_dimensions_rounds_chroma_up() {
+        // 3x3: cw=ch=2 (the same (w+1)/2 the copy fills). Tight planar:
+        // yEnd = 2*3+3 = 9, chromaBase = 9, uEnd = 9 + 1 + 2 + 1 = 13,
+        // vStart = 9 + 2*2 = 13, vEnd = 13 + 1 + 2 + 1 = 17 -> the last
+        // filled byte sits at offset 16 (0-based): 17 bytes total.
+        assertEquals(
+            17,
+            imageInputSize(
+                width = 3, height = 3,
+                yRowStride = 3,
+                uRowStride = 2, uPixelStride = 1,
+                vRowStride = 2, vPixelStride = 1,
+            ),
+        )
+    }
+
+    @Test
+    fun size_never_exceeds_the_planes_the_codec_handed_out() {
+        // The invariant the max-end computation exists for: on a padded
+        // NV12 layout the SUM of plane extents would exceed the buffer
+        // (double-counted chroma); the max end offset stays within it.
+        val w = 3840
+        val h = 2160
+        val cw = 1920
+        val ch = 1080
+        val yRow = 3904
+        val uRow = 3904
+        val sum = (h * yRow) + (1 + (ch - 1) * uRow + (cw - 1) * 2) * 2
+        val size = imageInputSize(
+            width = w, height = h,
+            yRowStride = yRow,
+            uRowStride = uRow, uPixelStride = 2,
+            vRowStride = uRow, vPixelStride = 2,
+        )
+        assertTrue(size < sum) // the sum double-counts the shared plane
+        assertTrue(size <= h * yRow + ch * uRow + 1) // within the buffer
+    }
+
+    @Test
+    fun size_rejects_non_positive_dimensions() {
+        try {
+            imageInputSize(0, 2160, 3840, 1920, 1, 1920, 1)
+            org.junit.Assert.fail("expected IllegalArgumentException")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("positive dimensions"))
+        }
+    }
+
+    @Test
+    fun size_rejects_row_stride_too_small_for_the_row() {
+        // A stride that cannot hold the row would make the copy overflow
+        // the plane long before the size mattered — fail fast instead.
+        try {
+            imageInputSize(3840, 2160, 3840, 1024, 1, 1920, 1)
+            org.junit.Assert.fail("expected IllegalArgumentException")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("u row stride"))
+        }
+        try {
+            imageInputSize(3840, 2160, 1024, 1920, 1, 1920, 1)
+            org.junit.Assert.fail("expected IllegalArgumentException")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("luma row stride"))
+        }
+    }
+
     // ---- PtsTimeline ----
 
     @Test

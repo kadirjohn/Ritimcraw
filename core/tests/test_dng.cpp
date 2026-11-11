@@ -260,3 +260,76 @@ TEST_CASE("dng_rejects_bad_input") {
     std::ifstream in("/tmp/should-not-exist.dng");
     CHECK(!in.good());
 }
+
+TEST_CASE("dng_writes_frame_preferred_levels") {
+    // Owner request 2026-11-11 section 3: a frame that carried dynamic
+    // black/white levels writes THOSE into the BlackLevel (50714) and
+    // WhiteLevel (50717) tags, while the container meta holds different
+    // values. The CFA pixels are written verbatim (never gain-multiplied),
+    // so the tags are the only place the frame calibration can land.
+    const char* path = "/tmp/rawedit-test-dng-frame-levels.dng";
+
+    FrameInfo frame;
+    frame.width = 64;
+    frame.height = 48;
+    frame.bitDepth = 16;
+    frame.cfa = CfaPattern::RGGB;
+    frame.activeArea = Rect{0, 0, 64, 48};
+    frame.dynamicBlack[0] = 100;
+    frame.dynamicBlack[1] = 100;
+    frame.dynamicBlack[2] = 100;
+    frame.dynamicBlack[3] = 100;
+    frame.dynamicWhite = 2000;
+
+    RawMeta meta;
+    meta.black[0] = 64; meta.black[1] = 64;
+    meta.black[2] = 64; meta.black[3] = 64;
+    meta.white = 1023;
+
+    std::vector<uint16_t> cfa(64 * 48, 100);
+    const Result<void> res = writeCfaDng(path, cfa.data(), frame, meta);
+    REQUIRE(res.isOk());
+
+    const auto tags = parseIfd(readFile(path));
+    const Tag black = get(tags, 50714);
+    REQUIRE(black.count == 4);
+    for (int i = 0; i < 4; ++i)
+        CHECK(rd16(black.value, static_cast<size_t>(i) * 2) == 100);
+    CHECK(tagLong(tags, 50717) == 2000);
+
+    std::remove(path);
+}
+
+TEST_CASE("dng_falls_back_to_container_levels") {
+    // The FrameInfo sentinel (-1) means "this frame did not carry a
+    // level": the container RawMeta values must land in the tags.
+    const char* path = "/tmp/rawedit-test-dng-container-levels.dng";
+
+    FrameInfo frame;
+    frame.width = 64;
+    frame.height = 48;
+    frame.bitDepth = 16;
+    frame.cfa = CfaPattern::RGGB;
+    frame.activeArea = Rect{0, 0, 64, 48};
+    for (int i = 0; i < 4; ++i)
+        REQUIRE(frame.dynamicBlack[i] == -1);
+    REQUIRE(frame.dynamicWhite == -1);
+
+    RawMeta meta;
+    meta.black[0] = 64; meta.black[1] = 64;
+    meta.black[2] = 64; meta.black[3] = 64;
+    meta.white = 1023;
+
+    std::vector<uint16_t> cfa(64 * 48, 64);
+    const Result<void> res = writeCfaDng(path, cfa.data(), frame, meta);
+    REQUIRE(res.isOk());
+
+    const auto tags = parseIfd(readFile(path));
+    const Tag black = get(tags, 50714);
+    REQUIRE(black.count == 4);
+    for (int i = 0; i < 4; ++i)
+        CHECK(rd16(black.value, static_cast<size_t>(i) * 2) == 64);
+    CHECK(tagLong(tags, 50717) == 1023);
+
+    std::remove(path);
+}

@@ -25,6 +25,29 @@ enum class State { QUEUED, RUNNING, DONE, CANCELLED, FAILED }
  * are written throttled — see ExportQueue — so project.json is not
  * hammered; the persisted value may lag the real count by up to the
  * throttle interval.
+ *
+ * [startedAtMs] (owner request 2026-11-11 §1: ETA after enough data) is the
+ * wall clock when the job's drain started it (RUNNING write); null until
+ * then and on terminal rows. The ETA is a UI-side linear estimate from the
+ * observed rate (see [ExportEta] in ExportsScreen); the queue persists
+ * only the raw start time so a restarted UI can still estimate.
+ *
+ * [publishedUri] (owner request 2026-11-11 §1: DONE rows open on tap) is the
+ * content:// URI of the job's row in the system media store, captured when
+ * the publish succeeded — null when the job has not (yet) published, when
+ * publishing failed (the row then falls back to the app's own output file
+ * via FileProvider, see [ExportOpen]), and on every non-DONE row. Stored as
+ * a raw string so the value round-trips through project.json without any
+ * Android types here.
+ *
+ * [outputName] (owner request 2026-11-11 §2b: export names derive from the
+ * clip's display name) is the file name captured at ENQUEUE time from the
+ * clip's display name (cleaned of invalid filename characters — see
+ * [ExportQueue.outputName]). Captured, not derived on the fly, because the
+ * name must stay stable for the job's whole life: the DONE row opens the
+ * file the job actually wrote, and Retry overwrites only its own output.
+ * Null on rows queued before §2b — [fileName] then derives the legacy
+ * `<sourceId>-<target>` name so old rows still open.
  */
 data class ExportJob(
     val id: String,
@@ -35,11 +58,33 @@ data class ExportJob(
     val detail: String? = null,
     val framesDone: Int? = null,
     val framesTotal: Int? = null,
+    val startedAtMs: Long? = null,
+    val publishedUri: String? = null,
+    val outputName: String? = null,
 ) {
+
+    /**
+     * The file name this job's output has: the display-derived name captured
+     * at enqueue (owner request §2b), or the legacy `<sourceId>-<target>`
+     * name for rows queued before that. Every path that touches the job's
+     * file — the output location, the MediaStore DISPLAY_NAME, the open
+     * candidates — goes through THIS, so the name can never drift between
+     * them.
+     */
+    val fileName: String
+        get() = outputName ?: ExportQueue.outputName(sourceId, target)
     /**
      * Retry source: the same job re-queued with the same snapshot. The id and
-     * queued state stay; the old failure detail and progress are cleared.
+     * queued state stay; the old failure detail, the progress and the old
+     * publish are cleared — the retried job publishes afresh when it lands.
      */
     fun requeued(): ExportJob =
-        copy(state = State.QUEUED, detail = null, framesDone = null, framesTotal = null)
+        copy(
+            state = State.QUEUED,
+            detail = null,
+            framesDone = null,
+            framesTotal = null,
+            startedAtMs = null,
+            publishedUri = null,
+        )
 }

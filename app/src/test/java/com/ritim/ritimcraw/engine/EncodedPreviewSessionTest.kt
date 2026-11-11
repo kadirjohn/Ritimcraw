@@ -49,6 +49,20 @@ class EncodedPreviewSessionTest {
     }
 
     @Test
+    fun open_success_exposes_the_recorded_frame_size() = runBlocking {
+        // Owner request 2026-11-11 section 2: the seam carries the clip's
+        // RECORDED resolution (the track format's dimensions) so the editor
+        // shows the real source size for encoded clips too.
+        val fake = fakeSource(pts = longArrayOf(0, 33_333))
+        val session = EncodedPreviewSession.open(fd = 7, engine, newSource = { fake })
+            .getOrThrow() as EditorPreviewSession
+
+        assertEquals(4, session.width)
+        assertEquals(4, session.height)
+        session.close()
+    }
+
+    @Test
     fun open_failure_resumes_with_the_state_machine_message() = runBlocking {
         // A reader that refuses the open: EncodedSource.open throws its
         // stage+cause+recovery IllegalStateException; the session must land

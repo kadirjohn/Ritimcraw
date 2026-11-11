@@ -1,5 +1,7 @@
 package com.ritim.ritimcraw.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import androidx.compose.animation.Crossfade
@@ -24,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -34,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -52,8 +56,10 @@ import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
+import com.ritim.ritimcraw.export.ExportOpen
 import com.ritim.ritimcraw.export.ExportQueue
 import com.ritim.ritimcraw.export.ExportStore
+import com.ritim.ritimcraw.export.MediaPublish
 import com.ritim.ritimcraw.export.MediaStorePublisher
 import com.ritim.ritimcraw.export.Mp4Exporter
 import com.ritim.ritimcraw.export.State
@@ -64,6 +70,7 @@ import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
 import kotlinx.coroutines.launch
+import androidx.core.content.FileProvider
 import java.io.File
 
 /**
@@ -91,6 +98,9 @@ enum class Destination(
 
 /** editor/{sourceId} back stack entry. */
 data class EditorRoute(val sourceId: String)
+
+/** The FileProvider authority for opening finished exports (manifest). */
+private const val EXPORT_FILE_PROVIDER_AUTHORITY = "com.ritim.ritimcraw.fileprovider"
 
 /**
  * App shell wiring: owns the stores (files/project.json), the source list,
@@ -154,8 +164,19 @@ fun AppNav() {
                     }
                 }
 
-                override fun outputFile(job: ExportJob, target: Target): File =
-                    File(exportDir, ExportQueue.outputName(job.sourceId, target))
+                override fun outputFile(job: ExportJob, target: Target): File {
+                    // Per-job output directory (owner request 2026-11-11 §1:
+                    // match the output to the job id): an older DONE row can
+                    // never open a later job's file, because a later job of
+                    // the same clip writes its own directory. Retry keeps
+                    // the same id and overwrites only its own output. The
+                    // file name is the job's own (§2b: display-derived when
+                    // captured at enqueue, legacy otherwise) — job.fileName
+                    // is the single source for every path that touches it.
+                    val dir = File(exportDir, job.id)
+                    dir.mkdirs()
+                    return File(dir, job.fileName)
+                }
             },
             // Finished exports are also published to the system media store
             // (Movies/ritiMCRAW for MP4, Pictures/ritiMCRAW for DNG): the
@@ -196,6 +217,102 @@ fun AppNav() {
         scope.launch { exportSnackbar.showSnackbar(exportQueuedText, duration = SnackbarDuration.Short) }
     }
 
+    // DONE rows open on tap (owner request 2026-11-11 §1). The DECISION is
+    // ExportOpen (JVM-tested): the job's own media-store row first, the
+    // app's own copy through FileProvider when the publish failed, nothing
+    // when neither exists. This adapter only dispatches intents — the
+    // device-gated half, like MediaStorePublisher.
+    val openMissingText = stringResource(R.string.exports_open_missing_body)
+    val openDngNoViewerText = stringResource(R.string.exports_open_dng_body)
+    val openShareText = stringResource(R.string.exports_open_share)
+
+    fun shareExport(uri: Uri, mime: String) {
+        val send = Intent(Intent.ACTION_SEND)
+            .setType(mime)
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            context.startActivity(Intent.createChooser(send, openShareText))
+        } catch (e: Exception) {
+            scope.launch {
+                exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+            }
+        }
+    }
+
+    fun viewExport(uri: Uri, mime: String, job: ExportJob) {
+        // MP4 -> the system default player; DNG -> whatever reads raw DNGs.
+        val view = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            context.startActivity(view)
+        } catch (e: ActivityNotFoundException) {
+            if (job.target == Target.DNG) {
+                // No DNG viewer on the device (owner request §1): an
+                // understandable message plus a Share option.
+                scope.launch {
+                    if (exportSnackbar.showSnackbar(
+                            openDngNoViewerText,
+                            actionLabel = openShareText,
+                            duration = SnackbarDuration.Long,
+                        ) == SnackbarResult.ActionPerformed
+                    ) {
+                        shareExport(uri, mime)
+                    }
+                }
+            } else {
+                scope.launch {
+                    exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+                }
+            }
+        } catch (e: Exception) {
+            scope.launch {
+                exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+            }
+        }
+    }
+
+    fun openExport(job: ExportJob) {
+        val name = job.fileName
+        val open = ExportOpen.open(
+            job,
+            listOf(
+                // The per-job directory (current layout), then the legacy
+                // flat layout for rows written before it. Both candidates
+                // use the job's own name (§2b: display-derived when the job
+                // captured one, the legacy <sourceId>-<target> otherwise).
+                File(File(exportDir, job.id), name),
+                File(exportDir, name),
+            ),
+        )
+        val mime = MediaPublish.placement(job.sourceId, job.target, job.outputName).mime
+        when (open) {
+            is ExportOpen.Open.Store -> viewExport(Uri.parse(open.uri), mime, job)
+            is ExportOpen.Open.Internal -> {
+                // Temporary content:// window on the app's own copy
+                // (FLAG_GRANT_READ_URI_PERMISSION on the intent): the file
+                // never leaves files/exports.
+                val shared = try {
+                    FileProvider.getUriForFile(context, EXPORT_FILE_PROVIDER_AUTHORITY, open.file)
+                } catch (e: IllegalArgumentException) {
+                    null // outside the declared roots: treat as unopenable
+                }
+                if (shared != null) {
+                    viewExport(shared, mime, job)
+                } else {
+                    scope.launch {
+                        exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+                    }
+                }
+            }
+            ExportOpen.Open.None ->
+                scope.launch {
+                    exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
+                }
+        }
+    }
+
     // Process-start recovery (owner finding 2026-11-10): a crash can leave
     // jobs persisted as RUNNING — a dead process's export. Mark them FAILED
     // with the interrupted cause BEFORE the UI shows "Exporting…" forever;
@@ -206,12 +323,32 @@ fun AppNav() {
         }
     }
 
-    // The runner: drains every QUEUED job serially, then refreshes the UI
-    // list. Runs whenever something was enqueued or retried.
-    LaunchedEffect(queueKick) {
-        if (queueKick > 0) {
-            queue.runAll()
-            exportJobs = stores.exports.all()
+    // LIVE STATUS (owner request 2026-11-11 §1): the queue bumps a revision
+    // counter on EVERY store write it makes (RUNNING start, each throttled
+    // progress write, the terminal write). Collecting it and re-reading the
+    // store refreshes the Exports list WHILE a job runs — "Queued" alone no
+    // longer has to mean "it started". The flow is a change signal only:
+    // the persisted store stays the single source of truth, so a conflated
+    // bump just means "re-read now" and the data itself is never stale.
+    LaunchedEffect(queue) {
+        queue.revisionFlow().collect { exportJobs = stores.exports.all() }
+    }
+
+    // The runner: drains every QUEUED job serially, one at a time. Kicks
+    // (enqueue/retry) arrive through snapshotFlow, so THIS EFFECT NEVER
+    // RESTARTS — a LaunchedEffect(queueKick) restart would cancel the
+    // in-flight drain mid-job (the exporter's engine work would be stranded
+    // between the RUNNING and terminal writes). Kicks are collected
+    // SEQUENTIALLY: a kick that arrives while a drain runs waits until the
+    // drain returns, and the drain's own loop (it runs until no job is
+    // QUEUED) has usually consumed the new job already; runAll's kick guard
+    // makes a concurrent call a no-op anyway. The initial value (0) is
+    // skipped.
+    LaunchedEffect(Unit) {
+        snapshotFlow { queueKick }.collect {
+            if (it > 0) {
+                queue.runAll()
+            }
         }
     }
 
@@ -296,6 +433,12 @@ fun AppNav() {
                     }
                     var sourceFd by remember(r.sourceId) { mutableStateOf(-1) }
                     var accessLost by remember(r.sourceId) { mutableStateOf(false) }
+                    // The clip's display name for the top bar (owner request
+                    // §2b): the real file name when known, the id otherwise.
+                    // Keyed to the clip and refreshed by the backfill below.
+                    var sourceName by remember(r.sourceId) {
+                        mutableStateOf(stores.sources.get(r.sourceId)?.displayOrId ?: r.sourceId)
+                    }
                     // Persisted import stats shape the preview placeholder
                     // before the first rendered frame (PreviewSurface's ratio
                     // fallback chain); 0/0 when the engine pass never probed.
@@ -350,6 +493,15 @@ fun AppNav() {
                             sourceDims = 0 to 0
                         } else {
                             sourceDims = source.width to source.height
+                            // First-open backfill (owner request §2b): a
+                            // record imported before display names existed
+                            // shows the id until the resolver can name it —
+                            // fill it in now and refresh the top bar.
+                            val filled = stores.sources.backfillDisplayName(r.sourceId)
+                            if (filled != null && filled.displayName.isNotBlank()) {
+                                sourceName = filled.displayOrId
+                                sources = stores.sources.all()
+                            }
                             try {
                                 val p = context.contentResolver
                                     .openFileDescriptor(Uri.parse(source.uri), "r")
@@ -377,6 +529,12 @@ fun AppNav() {
                             // Snapshot the CURRENT grade at queue time (the
                             // spec: a later edit must not change an in-flight
                             // export) and enqueue; the runner picks it up.
+                            // The output name is captured from the clip's
+                            // display name (owner request §2b: real file
+                            // name, cleaned; null when the resolver could
+                            // not name it — the job then uses the legacy
+                            // <sourceId>-<target> name).
+                            val display = stores.sources.get(r.sourceId)?.displayName
                             stores.exports.add(
                                 ExportJob(
                                     id = "job-" + System.nanoTime(),
@@ -384,6 +542,12 @@ fun AppNav() {
                                     snapshot = stores.grades.get(r.sourceId),
                                     target = target,
                                     state = State.QUEUED,
+                                    // The RAW display name, not displayOrId: an
+                                    // unnamed clip must fall to the legacy
+                                    // <sourceId>-<target> name, not capture
+                                    // "<id>.dng".
+                                    outputName = display?.takeIf { it.isNotBlank() }
+                                        ?.let { ExportQueue.displayOutputName(it, target) },
                                 )
                             )
                             exportJobs = stores.exports.all()
@@ -397,6 +561,9 @@ fun AppNav() {
                         sourceHeight = sourceDims.second,
                         sourceKind = sourceKind,
                         sourceMime = sourceMime,
+                        // The top bar's clip name (§2b): display name with
+                        // the id as fallback — displayOrId never blank.
+                        sourceName = sourceName,
                         // ---- LUT wiring (COL-07) ----
                         lutEntries = lutEntries,
                         // Import = copy + native probe + TITLE rename. A
@@ -468,6 +635,10 @@ fun AppNav() {
                         Destination.PROJECTS -> ProjectsScreen()
                         Destination.EXPORTS -> ExportsScreen(
                             jobs = exportJobs,
+                            // Rows show the clip's display name (§2b); the
+                            // id is the fallback for sources whose name the
+                            // resolver could not read.
+                            sourceNames = sources.associate { it.id to it.displayOrId },
                             onRetry = { job ->
                                 // Retry re-queues with the same snapshot.
                                 stores.exports.retry(job.id)
@@ -479,6 +650,7 @@ fun AppNav() {
                                 stores.exports.clear()
                                 exportJobs = stores.exports.all()
                             },
+                            onOpen = ::openExport,
                         )
                         Destination.SETTINGS -> SettingsScreen(
                             onMeasure = if (BuildConfig.DEBUG) {

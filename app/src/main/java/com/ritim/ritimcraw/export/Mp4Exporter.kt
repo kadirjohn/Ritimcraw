@@ -248,6 +248,98 @@ interface Mp4MediaWriter {
 internal const val AAC_BLOCK_FRAMES = 1024
 
 /**
+ * The byte count one queued video input buffer holds after an Image's planes
+ * are filled — the `size` argument of `MediaCodec.queueInputBuffer` on the
+ * Image input path (owner request 2026-11-11 §1, "the MP4 really decodes").
+ *
+ * THE BUG this replaces: the writer used to call
+ * `queueInputBuffer(index, 0, 0, ptsUs, 0)` — size 0 — believing the codec
+ * would "read the planes it handed out". It does not: `queueInputBuffer`'s
+ * `size` is "the number of bytes of valid input data" (MediaCodec javadoc)
+ * and travels to the codec's native layer with no Java-side validation. A
+ * size of 0 tells the encoder the buffer is EMPTY, so real devices drop or
+ * corrupt the frame — a DONE row with an MP4 that ffprobe cannot fully
+ * decode.
+ *
+ * THE CTS PATTERN this follows (Android's compatibility suite, which every
+ * shipped encoder must pass):
+ *  - EncodeDecodeTest (tests/tests/media/src/android/media/cts, Android 6.0
+ *    CTS): "the size of a frame of video data, in the formats we handle, is
+ *    stride*sliceHeight for Y, and (stride/2)*(sliceHeight/2) for each of
+ *    the Cb and Cr channels" — with tight strides that algebra is
+ *    `mWidth * mHeight * 3 / 2`, and the test queues exactly that:
+ *    `encoder.queueInputBuffer(inputBufIndex, 0, frameData.length, ptsUsec, 0)`.
+ *  - CodecEncoderTestBase (modern CTS, tests/media/common): the Image input
+ *    path fills the planes via `fillImage(img)` and then queues
+ *    `size = mBytesPerSample * mWidth * mHeight * 3 / 2` with offset 0.
+ * Both compute the FILLED byte count from the frame geometry — never 0.
+ * (The EOS buffer is the one exception: size 0 together with
+ * BUFFER_FLAG_END_OF_STREAM — which the writer's signalEos already does.)
+ *
+ * GEOMETRY: one plane's filled extent is the bytes up to its last sample,
+ *
+ *     1 + (rows - 1) * rowStride + (cols - 1) * pixelStride
+ *
+ * — exactly how the framework's own `MediaCodec.MediaImage` constructor
+ * limits each plane's buffer slice (SDK sources:
+ * `buffer.limit(buffer.position() + bytesPerSample + (rows/vert - 1) *
+ * rowInc + (cols/horiz - 1) * colInc)`), and what `Image.Plane.getBuffer`'s
+ * javadoc guarantees ("each plane is only guaranteed to contain data up to
+ * the last pixel in the last row").
+ *
+ * The buffer's valid byte count is the MAXIMUM end offset across the three
+ * planes, NOT the sum of their extents: in semiplanar layouts (NV12 — most
+ * hardware encoders) U and V share one interleaved plane, so summing
+ * double-counts the chroma and can report more bytes than the codec's
+ * buffer even holds. Plane placement follows the standard YUV 4:2:0 layout
+ * the codec's own buffer is built on: Y at offset 0, chroma after the luma
+ * block; in planar layouts V follows U's whole block, in semiplanar layouts
+ * V starts one sample into the shared plane. On tight strides the maximum
+ * collapses to CTS's `width * height * 3 / 2` for BOTH layouts; padded
+ * strides grow it to the true filled extent, which can never exceed the
+ * buffer because the codec sized that buffer for exactly these strides.
+ *
+ * Pure geometry — no Android imports, JVM-testable. The writer hands the
+ * live `Image`'s strides to this function right before queueing.
+ */
+fun imageInputSize(
+    width: Int,
+    height: Int,
+    yRowStride: Int,
+    uRowStride: Int,
+    uPixelStride: Int,
+    vRowStride: Int,
+    vPixelStride: Int,
+): Int {
+    require(width > 0 && height > 0) { "image must have positive dimensions, got ${width}x$height" }
+    // YUV 4:2:0: luma is full-size, chroma planes are half (rounded up on
+    // odd dimensions — the same cw/ch MediaCodecMp4Writer.copyI420ToImage
+    // fills and MediaImage's /2 subsampling crops to).
+    val cw = (width + 1) / 2
+    val ch = (height + 1) / 2
+    require(yRowStride >= width) { "luma row stride $yRowStride cannot hold a $width-wide row" }
+    require(uRowStride >= cw * uPixelStride) { "u row stride $uRowStride cannot hold $cw samples at pixel stride $uPixelStride" }
+    require(vRowStride >= cw * vPixelStride) { "v row stride $vRowStride cannot hold $cw samples at pixel stride $vPixelStride" }
+
+    // Filled extent of one chroma plane: bytes up to its last sample — the
+    // same arithmetic MediaImage uses to limit each plane's slice.
+    fun extent(rowStride: Int, pixelStride: Int) = 1 + (ch - 1) * rowStride + (cw - 1) * pixelStride
+
+    // Y sits at offset 0; the chroma planes follow the luma block (the
+    // standard layout the codec's buffer is built on).
+    val chromaBase = height * yRowStride
+    // Planar: V follows U's whole block. Semiplanar: V starts one byte into
+    // the plane U shares.
+    val vStart = if (uPixelStride == 1) chromaBase + ch * uRowStride else chromaBase + 1
+
+    return maxOf(
+        width + (height - 1) * yRowStride, // luma end
+        chromaBase + extent(uRowStride, uPixelStride),
+        vStart + extent(vRowStride, vPixelStride),
+    )
+}
+
+/**
  * The MP4 export pipeline state machine (JVM-testable over fake
  * [Mp4Session]/[Mp4MediaWriter]; no Android imports):
  *

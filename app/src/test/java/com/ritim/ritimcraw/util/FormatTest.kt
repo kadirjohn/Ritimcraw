@@ -196,4 +196,69 @@ class FormatTest {
             Format.formatTimecodePair(0L, 10_000_000L),
         )
     }
+
+    // ---- etaSeconds (owner request 2026-11-11 §1) ----
+
+    @Test
+    fun eta_is_null_before_the_warm_up_gate() {
+        // Fewer than MIN_ETA_FRAMES done: a one-frame sample extrapolates
+        // wildly (the first frame pays codec setup), so no ETA yet.
+        assertEquals(
+            null,
+            Format.etaSeconds(9, 310, startedAtMs = 0L, nowMs = 5_000L),
+        )
+    }
+
+    @Test
+    fun eta_is_null_when_nothing_measured_yet() {
+        // Zero elapsed time: nothing measured, no rate.
+        assertEquals(
+            null,
+            Format.etaSeconds(20, 310, startedAtMs = 1_000L, nowMs = 1_000L),
+        )
+    }
+
+    @Test
+    fun eta_is_null_at_or_past_the_total() {
+        // The frames-done == frames-total case is the FINALIZING state
+        // (the muxer is running), not an ETA of 0 — and past-total (a late
+        // report) returns null rather than a negative ETA.
+        assertEquals(
+            null,
+            Format.etaSeconds(310, 310, startedAtMs = 0L, nowMs = 60_000L),
+        )
+        assertEquals(
+            null,
+            Format.etaSeconds(320, 310, startedAtMs = 0L, nowMs = 60_000L),
+        )
+    }
+
+    @Test
+    fun eta_is_a_linear_estimate_from_the_observed_rate() {
+        // 100 frames in 10 s -> 10 frames/s; 210 remaining -> 21 s.
+        assertEquals(
+            21L,
+            Format.etaSeconds(100, 310, startedAtMs = 0L, nowMs = 10_000L),
+        )
+    }
+
+    @Test
+    fun eta_rounds_to_whole_seconds() {
+        // 100 frames in 10.5 s -> ~9.52 frames/s; 210 remaining -> 22.05 s
+        // -> 22 (whole seconds; a sub-second ETA would flicker 0↔1).
+        assertEquals(
+            22L,
+            Format.etaSeconds(100, 310, startedAtMs = 0L, nowMs = 10_500L),
+        )
+    }
+
+    @Test
+    fun eta_long_math_survives_a_long_clip() {
+        // 600 frames done of a 60,000-frame clip after 600 s: remaining
+        // 59,400 * 600,000 ms = 35.64e9 — overflows Int, fine in Long.
+        assertEquals(
+            59_400L,
+            Format.etaSeconds(600, 60_000, startedAtMs = 0L, nowMs = 600_000L),
+        )
+    }
 }

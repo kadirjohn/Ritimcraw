@@ -158,9 +158,20 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
             val image = codec.getInputImage(index)
                 ?: throw encodeFailure("$MIME_AVC gave no input Image for this frame")
             copyI420ToImage(i420, image, width, height)
-            // Image input: the codec reads the planes it handed out, so the
-            // buffer offset/size carry no payload bytes.
-            codec.queueInputBuffer(index, 0, 0, ptsUs, 0)
+            // The size must carry the frame's filled byte count computed from
+            // the same plane strides the copy just used — the codec does NOT
+            // infer it from the Image (CTS EncodeDecodeTest pattern; see
+            // imageInputSize). Size 0 tells the encoder the buffer is empty.
+            val size = imageInputSize(
+                width = width,
+                height = height,
+                yRowStride = image.planes[0].rowStride,
+                uRowStride = image.planes[1].rowStride,
+                uPixelStride = image.planes[1].pixelStride,
+                vRowStride = image.planes[2].rowStride,
+                vPixelStride = image.planes[2].pixelStride,
+            )
+            codec.queueInputBuffer(index, 0, size, ptsUs, 0)
         } catch (e: IllegalStateException) {
             throw e
         }

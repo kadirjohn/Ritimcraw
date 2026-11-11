@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -98,7 +99,10 @@ class ExportQueueTest {
         }
 
         override fun outputFile(job: ExportJob, target: Target): File =
-            File(tmp.root, ExportQueue.outputName(job.sourceId, target))
+            // Faithful to the real ExportIo (AppNav): the job's own file
+            // name — the display-derived one when captured (§2b), the legacy
+            // <sourceId>-<target> name otherwise.
+            File(tmp.root, job.fileName)
     }
 
     private fun freshEngine(): ExecutorService =
@@ -119,6 +123,152 @@ class ExportQueueTest {
     fun output_name_is_stable_and_lowercase() {
         assertEquals("clip1-dng.dng", ExportQueue.outputName("clip1", Target.DNG))
         assertEquals("clip1-mp4.mp4", ExportQueue.outputName("clip1", Target.MP4))
+    }
+
+    // ---- DISPLAY-DERIVED OUTPUT NAMES (owner request 2026-11-11 §2b) ----
+
+    @Test
+    fun display_output_name_swaps_the_extension_per_target() {
+        // "Sunset Trip.raw" -> base "Sunset Trip", then the target's own
+        // extension — the clip's extension is never the output's.
+        assertEquals("Sunset Trip.dng", ExportQueue.displayOutputName("Sunset Trip.raw", Target.DNG))
+        assertEquals("Sunset Trip.mp4", ExportQueue.displayOutputName("Sunset Trip.raw", Target.MP4))
+        // A name with no extension is used as-is.
+        assertEquals("Sunset Trip.dng", ExportQueue.displayOutputName("Sunset Trip", Target.DNG))
+    }
+
+    @Test
+    fun display_output_name_strips_hostile_characters_and_control_chars() {
+        // Path separators, reserved Windows chars, and control characters
+        // are REMOVED (never replaced with a placeholder).
+        assertEquals(
+            "NightMarketraw.dng",
+            ExportQueue.displayOutputName("Night/Market:\\raw?.dng", Target.DNG),
+        )
+        assertEquals(
+            "clip.dng",
+            ExportQueue.displayOutputName("clip\u0007\u001b.dng", Target.DNG),
+        )
+        // Leading/trailing spaces and dots (Windows dot-trimming hazards)
+        // are stripped.
+        assertEquals(
+            "clip.dng",
+            ExportQueue.displayOutputName("  ..clip..  .dng", Target.DNG),
+        )
+    }
+
+    @Test
+    fun display_output_name_returns_null_when_nothing_is_left() {
+        // All-hostile input: the caller keeps the legacy name instead.
+        assertNull(ExportQueue.displayOutputName("///???.raw", Target.DNG))
+        assertNull(ExportQueue.displayOutputName("   ", Target.MP4))
+        assertNull(ExportQueue.displayOutputName("", Target.DNG))
+    }
+
+    @Test
+    fun display_output_name_caps_the_base_at_200_utf8_bytes() {
+        // 201 two-byte characters: 200 bytes of base + the target's own
+        // extension. The cap is on the BASE, not the whole name.
+        val long = "ğ".repeat(201)
+        val capped = ExportQueue.displayOutputName(long, Target.DNG)
+        assertEquals(200, capped!!.dropLast(4).toByteArray(Charsets.UTF_8).size)
+        assertEquals("ğ".repeat(100), capped.dropLast(4))
+        // A 4-byte character never gets cut in half: the cap backs off to
+        // the previous whole character (no lone surrogate is written).
+        val emoji = "😀".repeat(51) // 204 bytes
+        val cappedEmoji = ExportQueue.displayOutputName(emoji, Target.MP4)
+        val emojiBase = cappedEmoji!!.removeSuffix(".mp4")
+        assertEquals(200, emojiBase.toByteArray(Charsets.UTF_8).size)
+        // 50 whole emoji (200 bytes): the 51st would overflow, and the
+        // surrogate pair is never split.
+        assertEquals(50, emojiBase.codePointCount(0, emojiBase.length))
+        assertTrue(emojiBase == "😀".repeat(50))
+    }
+
+    @Test
+    fun job_file_name_is_the_display_name_with_legacy_fallback() {
+        // A job that captured a display-derived name at enqueue uses it for
+        // EVERY path that touches its file; a pre-§2b row (null name) falls
+        // back to the legacy <sourceId>-<target> name.
+        val named = job("j1", "clip1").copy(outputName = "Sunset Trip.dng")
+        assertEquals("Sunset Trip.dng", named.fileName)
+        assertEquals("clip1-dng.dng", job("j1", "clip1").fileName)
+    }
+
+    @Test
+    fun queue_writes_the_display_derived_file_name() = runBlocking {
+        // End to end: a job with a captured outputName produces THAT file —
+        // the staged .partial, the final rename, the DONE detail, and the
+        // file on disk all carry the display-derived name.
+        val store = store()
+        store.add(job("j1", "clip1").copy(outputName = "Sunset Trip.dng"))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        val done = store.all().single()
+        assertEquals(State.DONE, done.state)
+        assertEquals("Sunset Trip.dng", done.detail)
+        assertEquals("Sunset Trip.dng", done.fileName)
+        // The staged partial and the final file both used the name.
+        assertEquals("dng:7:Sunset Trip.dng.partial", log[0])
+        assertTrue(File(tmp.root, "Sunset Trip.dng").exists())
+        assertTrue(!File(tmp.root, "clip1-dng.dng").exists())
+    }
+
+    @Test
+    fun retry_keeps_the_display_derived_name() = runBlocking {
+        // Retry re-runs the SAME job: it must overwrite its own output, so
+        // the captured name survives the requeue (requeued() does not clear
+        // it) and the second run writes the same file.
+        val store = store()
+        store.add(job("j1", "clip1").copy(outputName = "Sunset Trip.dng"))
+        val log = mutableListOf<String>()
+        val failOnce = FakeDngRender(log, failOn = "Sunset Trip")
+        val queue = ExportQueue(
+            store, DngExporter(failOnce, freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        assertEquals(State.FAILED, store.all().single().state)
+
+        val okRender = FakeDngRender(log)
+        val queue2 = ExportQueue(
+            store, DngExporter(okRender, freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        store.retry("j1")
+        val requeued = store.all().single()
+        assertEquals("Sunset Trip.dng", requeued.outputName) // kept
+        assertEquals("Sunset Trip.dng", requeued.fileName)
+        queue2.runAll()
+        val done = store.all().single()
+        assertEquals(State.DONE, done.state)
+        assertEquals("Sunset Trip.dng", done.detail)
+        assertTrue(File(tmp.root, "Sunset Trip.dng").exists())
+    }
+
+    @Test
+    fun mediastore_placement_uses_the_job_name_with_legacy_fallback() {
+        // The MediaStore DISPLAY_NAME is the job's own output name (§2b);
+        // a same-name collision is uniquified by the platform, and DONE rows
+        // open via the job's publishedUri — so a suffixed rename never
+        // misroutes an open.
+        val named = MediaPublish.placement("clip1", Target.DNG, "Sunset Trip.dng")
+        assertEquals("Sunset Trip.dng", named.name)
+        assertEquals(MediaPublish.Collection.IMAGES, named.collection)
+        assertEquals("Pictures/ritiMCRAW", named.relativePath)
+        assertEquals("image/x-adobe-dng", named.mime)
+
+        // Null name (pre-§2b row / unresolvable display): the legacy name.
+        val legacy = MediaPublish.placement("clip1", Target.DNG, null)
+        assertEquals("clip1-dng.dng", legacy.name)
+        assertEquals("Pictures/ritiMCRAW", legacy.relativePath)
     }
 
     @Test
@@ -444,13 +594,13 @@ class ExportQueueTest {
         val published = mutableListOf<Pair<String, String>>()
         var failFirst = true
         val publisher = object : ExportPublisher {
-            override suspend fun publish(job: ExportJob, output: File): Boolean {
+            override suspend fun publish(job: ExportJob, output: File): String? {
                 if (failFirst) {
                     failFirst = false
                     throw IllegalStateException("resolver exploded")
                 }
                 published.add(job.id to output.name)
-                return true
+                return "content://media/external/${job.id}"
             }
         }
         val queue = ExportQueue(
@@ -481,7 +631,7 @@ class ExportQueueTest {
         store.add(job("j1", "clip1")) // fails (failOn)
         val log = mutableListOf<String>()
         val publisher = object : ExportPublisher {
-            override suspend fun publish(job: ExportJob, output: File): Boolean {
+            override suspend fun publish(job: ExportJob, output: File): String? {
                 throw AssertionError("a failed job must not be published")
             }
         }
@@ -493,6 +643,91 @@ class ExportQueueTest {
         )
         queue.runAll()
         assertEquals(State.FAILED, store.all().single().state)
+    }
+
+    @Test
+    fun done_job_stores_the_published_uri_on_its_row() = runBlocking {
+        // DONE rows open on tap (owner request 2026-11-11 §1): the publish
+        // returns the media-store row's URI and the queue stamps it on the
+        // job's own terminal row — so the row opens ITS OWN file, never a
+        // newer export of the same clip.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        store.add(job("j2", "clip2"))
+        val log = mutableListOf<String>()
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): String? =
+                "content://media/external/${job.sourceId}/${output.name}"
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        queue.runAll()
+        val jobs = store.all()
+        assertEquals(State.DONE, jobs[0].state)
+        assertEquals(State.DONE, jobs[1].state)
+        assertEquals("content://media/external/clip1/clip1-dng.dng", jobs[0].publishedUri)
+        assertEquals("content://media/external/clip2/clip2-dng.dng", jobs[1].publishedUri)
+        // The URI survives a store reload (it lives in project.json).
+        assertEquals(
+            "content://media/external/clip1/clip1-dng.dng",
+            ExportStore(File(tmp.root, "project.json")).all()[0].publishedUri,
+        )
+    }
+
+    @Test
+    fun null_publish_leaves_the_done_row_without_a_uri() = runBlocking {
+        // A publish that returns null (skipped or failed) never fails the
+        // job; the DONE row simply has no URI and the open path falls back
+        // to the job's own internal output file.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val log = mutableListOf<String>()
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        queue.runAll()
+        val job = store.all().single()
+        assertEquals(State.DONE, job.state)
+        assertNull(job.publishedUri)
+        // The output file exists: the fallback path has something to open.
+        assertTrue(File(tmp.root, "clip1-dng.dng").exists())
+    }
+
+    @Test
+    fun cleared_queue_is_not_resurrected_by_a_late_publish() = runBlocking {
+        // The URI stamp re-reads the row BY ID and only stamps a row that is
+        // still DONE: a queue cleared while the publish ran must stay empty
+        // (update() would otherwise re-add the row), and a row that moved
+        // on (retry) keeps its fresh state.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val log = mutableListOf<String>()
+        val publisher = object : ExportPublisher {
+            override suspend fun publish(job: ExportJob, output: File): String? {
+                // The queue is cleared WHILE the publish runs (the terminal
+                // row has already been written; only the URI stamp is left).
+                store.clear()
+                return "content://media/external/late"
+            }
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            publisher,
+        )
+        queue.runAll()
+        assertTrue(store.all().isEmpty())
     }
 
     @Test
@@ -533,5 +768,115 @@ class ExportQueueTest {
         // on the failure path.
         assertEquals(io.opened, io.closed)
         assertEquals(2, io.opened.size)
+    }
+
+    // ---- LIVE STATUS (owner request 2026-11-11 §1) ----
+
+    @Test
+    fun progress_writes_preserve_the_eta_anchor() {
+        // The RUNNING row anchors the UI's ETA with startedAtMs, and every
+        // throttled progress write must PRESERVE the anchor — the writer is
+        // built from the RUNNING row, not the QUEUED input (which has a
+        // null anchor; building from it would null the anchor on the first
+        // progress write and the ETA would never appear).
+        var now = 1_000L
+        val store = store()
+        store.add(job("j1", "clip1"))
+        // runOne's RUNNING write, simulated: sets the anchor from the clock.
+        val running = store.all().single().copy(
+            state = State.RUNNING,
+            startedAtMs = now,
+        )
+        store.update(running)
+        val w = ProgressWriter(store, running, { now })
+        assertTrue(w.report(0, 310))
+        assertEquals(1_000L, store.all().single().startedAtMs)
+        now += ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS
+        assertTrue(w.report(150, 310))
+        val persisted = store.all().single()
+        assertEquals(150, persisted.framesDone)
+        assertEquals(310, persisted.framesTotal)
+        assertEquals(1_000L, persisted.startedAtMs)
+    }
+
+    @Test
+    fun revision_flow_bumps_on_every_queue_store_write() = runBlocking {
+        // The revision flow is the live-status signal: every store write the
+        // queue makes bumps it, so the UI collecting it re-reads the store
+        // while the job runs (the flow carries the write count, not data).
+        // The injected clock is CONSTANT, so the throttle is deterministic:
+        // RUNNING write + first progress write land, the DNG exporter's
+        // second report (1/1) is throttled out, then the terminal write.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+            progressClock = { 1_000L },
+        )
+        val before = queue.revisionFlow().value
+        queue.runAll()
+        val after = queue.revisionFlow().value
+        // RUNNING write + first progress write + terminal write = 3 bumps.
+        assertEquals(before + 3, after)
+    }
+
+    @Test
+    fun kick_during_active_drain_is_a_noop_and_never_marks_live_job_failed() = runBlocking {
+        // KICK SAFETY (owner request 2026-11-11 §1): a second runAll while a
+        // drain is active must NOT double-start the running job and must NOT
+        // recoverInterrupted (which would mark the LIVE RUNNING job FAILED).
+        // The active drain picks up the new job itself.
+        val store = store()
+        store.add(job("j1", "clip1", Target.MP4))
+        val log = mutableListOf<String>()
+        // A session whose open BLOCKS until the test releases it: the first
+        // drain is held mid-job so the second call overlaps it.
+        val opened = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val session = object : Mp4Session {
+            override fun open(fd: Int): Mp4SessionInfo? {
+                opened.countDown()
+                release.await()
+                return Mp4SessionInfo(1L, 1, 4, 4, 0, 0)
+            }
+
+            override fun renderFrame(
+                handle: Long,
+                frameIndex: Int,
+                grade: GradeK,
+                lutPath: String?,
+            ): ByteArray? = ByteArray(4 * 4 * 3)
+
+            override fun framePts(handle: Long, frameIndex: Int): Long = 0
+            override fun audioInfo(handle: Long): IntArray? = null
+            override fun readAudio(handle: Long): ShortArray? = null
+            override fun close(handle: Long) {}
+            override fun code(): Int = 0
+            override fun stage(): Int = 0
+            override fun detail(): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(session, { FakeWriter() }, freshEngine()),
+            RecordingIo(tmp),
+        )
+        // Start the first drain on a real dispatcher thread (NOT the
+        // runBlocking event loop — the latch waits below are JVM blocking
+        // calls that would starve a loop-queued coroutine); hold it mid-job.
+        val drain = async(kotlinx.coroutines.Dispatchers.Default) { queue.runAll() }
+        assertTrue(opened.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // The kick: a second runAll while the drain is active. It must
+        // return 0 WITHOUT touching the live RUNNING row.
+        assertEquals(0, queue.runAll())
+        // The live row is still RUNNING (not recovered to FAILED).
+        assertEquals(State.RUNNING, store.all().single().state)
+        release.countDown()
+        assertEquals(1, drain.await())
+        // The job ran EXACTLY once (no double-start) and finished DONE —
+        // never FAILED by a kick's recoverInterrupted.
+        assertEquals(State.DONE, store.all().single().state)
     }
 }

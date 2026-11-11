@@ -10,6 +10,8 @@ import java.io.InputStream
 class FakeResolver(
     var data: ByteArray = ByteArray(0),
     var revoked: Boolean = false,
+    /** Per-uri display names (owner request §2b); unlisted uris return null. */
+    var names: Map<String, String> = emptyMap(),
 ) : UriResolver {
 
     override fun open(uri: String): InputStream {
@@ -18,4 +20,6 @@ class FakeResolver(
     }
 
     override fun size(uri: String): Long = data.size.toLong()
+
+    override fun displayName(uri: String): String? = names[uri]
 }

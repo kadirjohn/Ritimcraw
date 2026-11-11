@@ -29,6 +29,28 @@ interface EditorPreviewSession : AutoCloseable {
     val frames: Int
 
     /**
+     * The clip's RECORDED frame size (owner request 2026-11-11 section 2):
+     * the first frame's dimensions straight from the source — what the
+     * editor shows as the clip's resolution. 0 means "unknown" (the
+     * default; a session that cannot know reports it rather than guessing).
+     */
+    val width: Int get() = 0
+
+    /** Recorded frame height; 0 when unknown (see [width]). */
+    val height: Int get() = 0
+
+    /**
+     * The container's RAW white level (owner request 2026-11-11 section 3):
+     * what the clip info sheet shows as "RAW white level". 0 means unknown
+     * (the default — the row hides; encoded sessions stay 0, the MCRAW
+     * session carries the container's level from the open). This is the
+     * FALLBACK calibration shown for identification; the per-frame dynamic
+     * levels ride FrameInfo into the develop/DNG calls and never appear
+     * here.
+     */
+    val rawWhiteLevel: Int get() = 0
+
+    /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
      * stage 20 bypassed, the old look; COL-07). Suspends until done;
@@ -192,6 +214,8 @@ object ArgbScale {
 class EncodedPreviewSession private constructor(
     private val source: EncodedSource,
     override val frames: Int,
+    override val width: Int,
+    override val height: Int,
     private val engine: ExecutorService,
     private val sampleRate: Int,
     private val channels: Int,
@@ -353,6 +377,8 @@ class EncodedPreviewSession private constructor(
                             EncodedPreviewSession(
                                 source,
                                 info.frameCount,
+                                info.width,
+                                info.height,
                                 engine,
                                 info.sampleRate,
                                 info.channels,

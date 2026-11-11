@@ -115,4 +115,28 @@ class EditorPreviewLogicTest {
         // (sliders, As Shot) stays — the full Grade still passes through.
         assertFalse(EditorPreviewLogic.showRawStageToggles(SourcePath.ENCODED))
     }
+
+    // ---- clip info resolution preference (owner request 2026-11-11 §2) ----
+
+    @Test
+    fun session_recorded_resolution_wins() {
+        // The session's RECORDED frame size (the first frame's real
+        // dimensions from the source) is the clip's resolution; the
+        // persisted import stat is only the fallback.
+        assertEquals(4096, EditorPreviewLogic.recordedWidth(4096, 3840))
+    }
+
+    @Test
+    fun persisted_stat_fills_the_gap_when_session_silent() {
+        // Session-less editor (no usable fd / failed open): the persisted
+        // import stat still shows something instead of 0.
+        assertEquals(3840, EditorPreviewLogic.recordedWidth(0, 3840))
+    }
+
+    @Test
+    fun zero_import_record_is_shown_not_rejected() {
+        // An old import that recorded 0x0 shows 0 — the spec forbids
+        // demanding a re-import for it; whatever is known is shown.
+        assertEquals(0, EditorPreviewLogic.recordedWidth(0, 0))
+    }
 }

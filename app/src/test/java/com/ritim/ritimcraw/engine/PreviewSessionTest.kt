@@ -85,12 +85,56 @@ class PreviewSessionTest {
         }
     }
 
+    // ---- recorded resolution is carried, not dropped ----
+
+    @Test
+    fun session_reports_the_recorded_frame_size() {
+        // Owner request 2026-11-11 section 2: the open boundary used to drop
+        // jniPreviewOpen's info[2]/info[3] (the first frame's RECORDED
+        // dimensions). The session now carries them so the editor can show
+        // the clip's real source resolution (e.g. 3840x2160).
+        val engine = Executors.newSingleThreadExecutor()
+        try {
+            val session = newSession(
+                handle = 1L, frames = 10, engine = engine,
+                width = 3840, height = 2160,
+            )
+            assertEquals(3840, session.width)
+            assertEquals(2160, session.height)
+        } finally {
+            engine.shutdown()
+        }
+    }
+
+    @Test
+    fun session_reports_the_container_raw_white_level() {
+        // Owner request 2026-11-11 section 3: the open boundary keeps
+        // jniPreviewOpen's info[6] (the container RAW white level) so the
+        // clip info sheet can show "RAW white level: 1023". The interface
+        // default is 0 (unknown — the row hides; encoded sessions stay 0).
+        val engine = Executors.newSingleThreadExecutor()
+        try {
+            val session = newSession(handle = 1L, frames = 10, engine = engine)
+            assertEquals(1023, session.rawWhiteLevel)
+        } finally {
+            engine.shutdown()
+        }
+    }
+
     /** Constructs a session via reflection (private ctor; no native lib in JVM tests). */
-    private fun newSession(handle: Long, frames: Int, engine: ExecutorService): PreviewSession {
+    private fun newSession(
+        handle: Long,
+        frames: Int,
+        engine: ExecutorService,
+        width: Int = 3840,
+        height: Int = 2160,
+        rawWhiteLevel: Int = 1023,
+    ): PreviewSession {
         val ctor = PreviewSession::class.java.getDeclaredConstructor(
-            Long::class.java, Int::class.java, ExecutorService::class.java,
+            Long::class.java, Int::class.java, Int::class.java, Int::class.java,
+            ExecutorService::class.java, Int::class.java,
         )
         ctor.isAccessible = true
-        return ctor.newInstance(handle, frames, engine)
+        return ctor.newInstance(handle, frames, width, height, engine, rawWhiteLevel)
     }
 }

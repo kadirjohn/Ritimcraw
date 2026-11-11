@@ -20,6 +20,15 @@ data class MediaSource(
     val kind: SourceKind,
     val access: Access,
     /**
+     * The clip's real file name (owner request 2026-11-11 §2b), from
+     * OpenableColumns.DISPLAY_NAME at import. Blank when the resolver could
+     * not name it (or the record predates the field) — display falls back to
+     * [displayOrId] then, and the first open backfills it (see
+     * [SourceRepository.backfillDisplayName]). The id stays
+     * fingerprint-derived either way.
+     */
+    val displayName: String = "",
+    /**
      * Clip stats for the format line (Format.formatClipLine). Zero/blank
      * until the engine pass probes the clip on device; the Library row
      * degrades to the kind line while they are unknown.
@@ -32,6 +41,13 @@ data class MediaSource(
     /** True when the engine pass has filled in the format-line stats. */
     val hasStats: Boolean
         get() = (width > 0 && height > 0) || frameCount > 0 || cfa.isNotBlank()
+
+    /**
+     * What the UI shows as the clip's name (owner request §2b): the real
+     * file name when it is known, the id when it is not — never a blank.
+     */
+    val displayOrId: String
+        get() = if (displayName.isBlank()) id else displayName
 }
 
 /**
@@ -44,6 +60,13 @@ interface UriResolver {
 
     /** File size in bytes, or -1 when unknown. */
     fun size(uri: String): Long
+
+    /**
+     * The document's real file name (owner request 2026-11-11 §2b), from
+     * OpenableColumns.DISPLAY_NAME. Null when unknown — the repository
+     * falls back to the id and backfills on the next import/open.
+     */
+    fun displayName(uri: String): String?
 }
 
 /**
@@ -66,12 +89,20 @@ class SourceRepository(
 
     fun import(uri: String, kind: SourceKind = SourceKind.MCRAW): MediaSource {
         val fingerprint = fingerprintOf(uri)
+        // The clip's real file name (owner request 2026-11-11 §2b): null when
+        // the resolver cannot name it — the id is the display fallback.
+        val name = resolver.displayName(uri)
         val sources = load().toMutableList()
         val existing = sources.find { it.fingerprint == fingerprint }
         if (existing != null) {
             // Same file: keep the id (and its grade); refresh the uri in case
             // the picker returned a different document id for the same bytes.
-            val updated = existing.copy(uri = uri, access = Access.OK)
+            // A fresh display name backfills records imported before §2b.
+            val updated = existing.copy(
+                uri = uri,
+                access = Access.OK,
+                displayName = name ?: existing.displayName,
+            )
             sources[sources.indexOf(existing)] = updated
             write(sources)
             return updated
@@ -82,6 +113,7 @@ class SourceRepository(
             fingerprint = fingerprint,
             kind = kind,
             access = Access.OK,
+            displayName = name ?: "",
         )
         sources.add(source)
         write(sources)
@@ -91,6 +123,30 @@ class SourceRepository(
     fun all(): List<MediaSource> = load()
 
     fun get(id: String): MediaSource? = load().find { it.id == id }
+
+    /**
+     * Backfills the display name of a record imported before §2b (owner
+     * request: old records show the id until the first open fills it in).
+     * Returns the updated source, or the unchanged one when the record is
+     * missing, already named, or the resolver still cannot name it.
+     */
+    fun backfillDisplayName(id: String): MediaSource? {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val current = sources[index]
+        if (current.displayName.isNotBlank()) return current
+        val name = try {
+            resolver.displayName(current.uri)
+        } catch (e: Exception) {
+            null
+        }
+        if (name.isNullOrBlank()) return current
+        val updated = current.copy(displayName = name)
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
 
     /**
      * Re-checks every source. A revoked permission or a moved file marks the
@@ -199,6 +255,12 @@ class SourceRepository(
                     .append(",\"fingerprint\":").append(jsonString(s.fingerprint))
                     .append(",\"kind\":\"").append(s.kind.name).append('"')
                     .append(",\"access\":\"").append(s.access.name).append('"')
+                if (s.displayName.isNotBlank()) {
+                    // The real file name (owner request §2b), omitted when
+                    // blank so schema-1 files written before the field stay
+                    // byte-identical (the id is the display fallback).
+                    sb.append(",\"displayName\":").append(jsonString(s.displayName))
+                }
                 if (s.hasStats) {
                     // Format-line stats (filled by the engine pass); omitted
                     // entirely while unknown so older project.json files
@@ -268,6 +330,9 @@ class SourceRepository(
                         .getOrDefault(SourceKind.MCRAW),
                     access = runCatching { Access.valueOf(m["access"] as? String ?: "") }
                         .getOrDefault(Access.OK),
+                    // Absent in records written before §2b: blank display
+                    // name, id shown until the first open backfills it.
+                    displayName = m["displayName"] as? String ?: "",
                     // Stats are absent in schema-1 files written before the
                     // engine pass; JsonParser2 yields Double for numbers.
                     width = (m["width"] as? Double)?.toInt() ?: 0,

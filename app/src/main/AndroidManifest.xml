@@ -22,6 +22,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Own exports through content:// (owner request 2026-11-11 §1): a
+             DONE row whose media-store publish failed still opens, through
+             FileProvider with a temporary read grant — the file never leaves
+             files/exports, only a read window on it is shared. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.ritim.ritimcraw.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:value="@xml/export_paths" />
+        </provider>
     </application>
 
 </manifest>

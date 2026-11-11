@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.editor
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +17,8 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
@@ -37,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -105,6 +109,16 @@ object EditorPreviewLogic {
      * stages can consume later).
      */
     fun showRawStageToggles(path: SourcePath): Boolean = path == SourcePath.MCRAW
+
+    /**
+     * The clip info sheet's resolution axis (owner request 2026-11-11
+     * section 2): the session-recorded value wins when the open carried it
+     * (the first frame's real dimensions); otherwise the persisted import
+     * stat — even a 0x0 import record is shown as-is, never a re-import
+     * demand. Pure so a JVM test can lock the preference order.
+     */
+    fun recordedWidth(sessionWidth: Int, persistedWidth: Int): Int =
+        if (sessionWidth > 0) sessionWidth else persistedWidth
 }
 
 enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
@@ -156,6 +170,10 @@ fun ClipEditorScreen(
     // keep every existing MCRAW caller byte-identical.
     sourceKind: SourceKind = SourceKind.MCRAW,
     sourceMime: String? = null,
+    // The top bar's clip name (owner request 2026-11-11 §2b): the clip's
+    // real file name, id fallback resolved by the caller (never blank).
+    // Defaults to the id so every existing caller is unchanged.
+    sourceName: String? = null,
     // ---- LUT wiring (COL-07) ----
     // The imported cube library (LutStore.all(): id + display name). The
     // screen owns no store; AppNav passes the list and refreshes it after
@@ -213,6 +231,14 @@ fun ClipEditorScreen(
         // down, renders use the low drag tier through the session's CACHED
         // path; the drag end emits exactly one full-quality settle render.
         var dragActive by remember(sourceId) { mutableStateOf(false) }
+        // Fullscreen preview (owner request 2026-11-11 section 2): the SAME
+        // editor session — only the layout changes (top bar / tabs / panel
+        // hidden, the preview takes the flex space, the transport stays).
+        // Saveable so it survives configuration changes like the tab does;
+        // the system back chain pops fullscreen FIRST, then the editor
+        // (BackHandler below) — never a double-back to leave the clip.
+        var fullscreen by rememberSaveable { mutableStateOf(false) }
+        BackHandler(enabled = fullscreen) { fullscreen = false }
 
         // ---- LUT import (COL-07) ----
         // The import error is LOCAL to the LUT section: errorText drives the
@@ -445,9 +471,14 @@ fun ClipEditorScreen(
                     // the play state (a new Play resumes from the start).
                     // The audio ends with the clip (owner request section 4):
                     // stop drops the still-queued tail after the last frame.
+                    // One full-resolution render of the final frame (owner
+                    // request section 2: pause and clip end both land on the
+                    // source resolution — the playback tier's coarse frame
+                    // is replaced, and a seek afterwards wins by sequence).
                     audio.stop()
                     isPlaying = false
                     positionFrame = pts.size - 1
+                    requestRender(pts.size - 1, grade, PreviewTiers.SOURCE_MAX_DIM)
                     break
                 }
                 val nextDelay = PtsTimeline.delayUntilNextUs(pts, idx, elapsed)
@@ -491,14 +522,30 @@ fun ClipEditorScreen(
 
         // Clip facts for the top bar's info sheet (review phase 1: name,
         // resolution, duration, frame count, FPS when derivable). FPS comes
-        // from the real timestamps: frames / duration.
+        // from the real timestamps: frames / duration. The name is the
+        // clip's display name (§2b), id fallback — never blank.
+        //
+        // Resolution prefers the session's RECORDED frame size (owner
+        // request 2026-11-11 section 2: the first frame's dimensions straight
+        // from the source, kept through the open boundary); the persisted
+        // import stats are the fallback for a session-less editor (no usable
+        // fd / failed open) and for old imports that recorded 0x0 — a 0x0
+        // record never demands a re-import, whatever is known is shown.
         val clipInfo = ClipInfo(
-            name = sourceId,
-            width = sourceWidth,
-            height = sourceHeight,
+            name = sourceName ?: sourceId,
+            width = EditorPreviewLogic.recordedWidth(session?.width ?: 0, sourceWidth),
+            height = EditorPreviewLogic.recordedWidth(session?.height ?: 0, sourceHeight),
             totalUs = totalUs,
             frameCount = pts?.size ?: 0,
             fps = if (pts != null && totalUs > 0L) (pts.size.toFloat() / (totalUs / 1_000_000f)) else 0f,
+            // RAW rows (owner request 2026-11-11 section 2/3): MCRAW-only.
+            // The sample format is the container's 16-bit sample storage
+            // (raw16) — never presented as a sensor bit-depth claim. The white
+            // level is the container fallback calibration the session carried
+            // from the open; 0 = unknown and the row hides (encoded clips
+            // stay 0 on both counts).
+            rawSampleFormat = if (sourcePath == SourcePath.MCRAW) "raw16" else null,
+            rawWhiteLevel = session?.rawWhiteLevel ?: 0,
         )
 
         // Neutral root surface (design review 2026-11-10, maroon bug): the
@@ -513,25 +560,33 @@ fun ClipEditorScreen(
         Column(Modifier.fillMaxSize()) {
             // Fixed top bar (design review "Onerilen ilk yerlesim"): back +
             // single-line name + one Export icon (opens the export sheet)
-            // + "..." (opens the clip-info sheet).
-            EditorTopBar(
-                sourceId = sourceId,
-                onBack = onBack,
-                onExport = onExport,
-                exportEnabled = sourceFd >= 0,
-                clipInfo = clipInfo,
-            )
+            // + "..." (opens the clip-info sheet). The name shown is the
+            // clip's display name (§2b), id fallback — resolved by the
+            // caller, never blank. Hidden in fullscreen (owner request
+            // section 2): the preview owns the screen; the system back
+            // chain (BackHandler) leaves fullscreen first.
+            if (!fullscreen) {
+                EditorTopBar(
+                    sourceId = sourceName ?: sourceId,
+                    onBack = onBack,
+                    onExport = onExport,
+                    exportEnabled = sourceFd >= 0,
+                    clipInfo = clipInfo,
+                )
+            }
             // Bounded preview region (design review: the frame never shifts
             // when the tab content changes): the preview is capped at
             // EditorLayout.PREVIEW_HEIGHT_FRACTION of the available height
             // instead of taking the flex space, so the frame's position is
             // deterministic across tabs. PreviewSurface still shapes itself
             // by the clip's ratio (ratio chain preserved) and centers
-            // inside the bounded Box.
+            // inside the bounded Box. In fullscreen the same Box takes the
+            // flex space instead (weight) with no cap — same session, same
+            // ratio chain, only the layout changes.
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = EditorLayout.previewMaxHeight()),
+                    .then(if (fullscreen) Modifier.weight(1f) else Modifier.heightIn(max = EditorLayout.previewMaxHeight())),
                 contentAlignment = Alignment.Center,
             ) {
                 PreviewSurface(
@@ -557,6 +612,27 @@ fun ClipEditorScreen(
                         .align(Alignment.BottomEnd)
                         .padding(8.dp),
                 )
+                // Fullscreen toggle (owner request 2026-11-11 section 2):
+                // the SAME editor session — the toggle only changes the
+                // layout, so the clip stays open, the transport keeps its
+                // position and playback continues unharmed. Vendored
+                // Material Symbols glyphs (material-icons-core 1.7.3 has
+                // no Fullscreen); the IconButton carries the 48dp target.
+                IconButton(
+                    onClick = { fullscreen = !fullscreen },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(
+                            if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
+                        ),
+                        contentDescription = stringResource(
+                            if (fullscreen) R.string.editor_fullscreen_exit else R.string.editor_fullscreen
+                        ),
+                    )
+                }
             }
             // Transport row (owner request 2026-11-10 §1, MotionCam Pro
             // reference): compact Play/Pause + draggable time bar + elapsed /
@@ -571,8 +647,13 @@ fun ClipEditorScreen(
                 fraction = seekFraction,
                 onPlayPause = {
                     if (isPlaying) {
-                        // Pause keeps the position (owner request §1).
+                        // Pause keeps the position (owner request §1) and
+                        // lands on ONE full-resolution render (section 2):
+                        // the coarse playback-tier frame is replaced with the
+                        // source-resolution frame at the paused position; a
+                        // later seek still wins by render sequence.
                         isPlaying = false
+                        requestRender(positionFrame, grade, PreviewTiers.SOURCE_MAX_DIM)
                     } else {
                         // Resume from the selected position; at the very end,
                         // a fresh play restarts from the first frame.
@@ -600,39 +681,45 @@ fun ClipEditorScreen(
             )
             // Tabs: Light / Color / Detail (independent of the panel —
             // design review: the tab row sits between transport and panel).
-            TabRow(selectedTabIndex = tab, modifier = Modifier.fillMaxWidth()) {
-                Tab(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
-                    text = { Text(stringResource(R.string.editor_tab_light)) },
-                )
-                Tab(
-                    selected = tab == 1,
-                    onClick = { tab = 1 },
-                    text = { Text(stringResource(R.string.editor_tab_color)) },
-                )
-                Tab(
-                    selected = tab == 2,
-                    onClick = { tab = 2 },
-                    text = { Text(stringResource(R.string.editor_tab_detail)) },
-                )
+            // Hidden in fullscreen (owner request section 2).
+            if (!fullscreen) {
+                TabRow(selectedTabIndex = tab, modifier = Modifier.fillMaxWidth()) {
+                    Tab(
+                        selected = tab == 0,
+                        onClick = { tab = 0 },
+                        text = { Text(stringResource(R.string.editor_tab_light)) },
+                    )
+                    Tab(
+                        selected = tab == 1,
+                        onClick = { tab = 1 },
+                        text = { Text(stringResource(R.string.editor_tab_color)) },
+                    )
+                    Tab(
+                        selected = tab == 2,
+                        onClick = { tab = 2 },
+                        text = { Text(stringResource(R.string.editor_tab_detail)) },
+                    )
+                }
             }
             // Settings panel — the ONLY region that scrolls (design review
             // "Onerilen ilk yerlesim": sabit ust bar + sinirlandirilmis
             // onizleme + kayan ayar paneli). The panel takes the flex
             // space left by the bounded preview and scrolls inside it, so
-            // short screens + 1.3x text never squeeze the preview.
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-            ) {
-                Column(
-                    Modifier
+            // short screens + 1.3x text never squeeze the preview. Hidden
+            // in fullscreen (owner request section 2): the preview takes
+            // the flex space instead.
+            if (!fullscreen) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
+                        .weight(1f),
                 ) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
                 when (tab) {
                     0 -> LightPanel(
                         grade = grade,
@@ -729,6 +816,7 @@ fun ClipEditorScreen(
                     )
                 }
                 }
+            }
             }
         }
     }

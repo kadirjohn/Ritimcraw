@@ -173,8 +173,10 @@ class NativeSource private constructor(
         /**
          * Opens a preview source from fd. Returns
          * [handle, frameCount, firstWidth, firstHeight, firstCfa,
-         * firstOrientation] or null (then [previewLastError] /
-         * [previewErrorCode] / [previewErrorStage] say why).
+         * firstOrientation, containerWhiteLevel] or null (then
+         * [previewLastError] / [previewErrorCode] / [previewErrorStage]
+         * say why). containerWhiteLevel is the container RAW white level
+         * (the clip info sheet's "RAW white level" row; 0 = unknown).
          */
         @JvmStatic private external fun nativePreviewOpen(fd: Int): IntArray?
 
