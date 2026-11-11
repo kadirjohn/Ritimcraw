@@ -21,20 +21,35 @@ target_include_directories(motioncam_decoder PUBLIC
     ${MOTIONCAM_DIR}/thirdparty)
 set_property(TARGET motioncam_decoder PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+# Vendored VQF orientation filter (MIT, commit 86ba56b), plain C++ version
+# (vqf/cpp/) verbatim; consumer is core/src/OrientationEstimate.cpp
+# (Phase 2 orientation estimation) and its tests. Registered as its own
+# static lib so the app can link it alongside rawedit when the gyro path
+# moves on-device.
+set(VQF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vqf)
+add_library(vqf STATIC ${VQF_DIR}/vqf.cpp)
+target_include_directories(vqf PUBLIC ${VQF_DIR})
+set_property(TARGET vqf PROPERTY POSITION_INDEPENDENT_CODE ON)
+
 # rawedit core library.
 # Thumbnail.cpp + Transfer.cpp are linked by the app's preview path
 # (jni_bridge.cpp: developThumbnail + linearToRec709); DngWriter.cpp is
 # linked by the app's DNG export path (jni_bridge.cpp: writeCfaDng).
-# Gyro.cpp stays desktop-only until the app calls it.
+# Gyro.cpp stays desktop-only until the app calls it; Orientation.cpp
+# (Phase 2 axis remap, header-only dep on Gyro.h) and
+# OrientationEstimate.cpp (Phase 2 estimation, links vqf) are registered
+# now so the lib compiles as the gyro pipeline grows.
 add_library(rawedit STATIC
     src/Source.cpp
     src/Develop.cpp
     src/Thumbnail.cpp
     src/Transfer.cpp
     src/Lut.cpp
-    src/DngWriter.cpp)
+    src/DngWriter.cpp
+    src/Orientation.cpp
+    src/OrientationEstimate.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(rawedit PUBLIC motioncam_decoder)
+target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 # Desktop tests + CLI, only when built standalone (not from the NDK tree).

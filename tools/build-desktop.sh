@@ -20,10 +20,17 @@ INCLUDES=(
   -I"$DECODER_SRC/lib/include"
   -I"$DECODER_SRC/thirdparty"
   -I"$ROOT/third_party/doctest-2.4.12"
+  -I"$ROOT/third_party/vqf"
 )
 FLAGS=(-std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden)
 
 mkdir -p "$BUILD"
+
+echo "== building vqf (vendored, MIT) =="
+# Orientation filter; linked into the binaries that need it
+# (OrientationEstimate.cpp consumers, see test_orientation_estimate below).
+"$CXX" "${FLAGS[@]}" -c "$ROOT/third_party/vqf/vqf.cpp" -o "$BUILD/third_vqf.o"
+VQF_OBJS=("$BUILD/third_vqf.o")
 
 echo "== building motioncam decoder =="
 DECODED_OBJS=()
@@ -35,11 +42,15 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Thumbnail.cpp Lut.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
 done
+# OrientationEstimate.cpp (in the core list) links against vqf, so every
+# core consumer needs it — mirrors core/CMakeLists.txt's
+# target_link_libraries(rawedit PUBLIC ... vqf).
+CORE_OBJS+=("${VQF_OBJS[@]}")
 
 echo "== building rawcli =="
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/cli/main.cpp" \
@@ -64,6 +75,13 @@ echo "== building tests =="
 # test_gyro runs from the repo root so it finds the STEPS/media/test fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gyro"
+# test_orientation: axis remap (Phase 2 deliverable 1); no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_orientation.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_orientation"
+# test_orientation_estimate: estimation (Phase 2 deliverables 2-5); runs
+# from the repo root so it finds the STEPS/media/test fixtures.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_orientation_estimate.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_orientation_estimate"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_thumbnail.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_thumbnail"
 
@@ -86,6 +104,10 @@ echo "== running test_lut =="
 (cd "$ROOT" && "$BUILD/test_lut")
 echo "== running test_gyro =="
 (cd "$ROOT" && "$BUILD/test_gyro")
+echo "== running test_orientation =="
+"$BUILD/test_orientation"
+echo "== running test_orientation_estimate =="
+(cd "$ROOT" && "$BUILD/test_orientation_estimate")
 echo "== running test_thumbnail =="
 (cd "$ROOT" && "$BUILD/test_thumbnail")
 
