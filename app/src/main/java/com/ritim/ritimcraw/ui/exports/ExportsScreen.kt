@@ -67,11 +67,13 @@ fun ExportsScreen(
     sourceNames: Map<String, String> = emptyMap(),
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-    ) {
+    // Canonical header call site (title consistency, owner finding
+    // 2026-11-12 — the contract lives in ScreenHeader's doc): the root
+    // Column pads NOTHING, so the title's left edge is ScreenHeader's
+    // own 16dp in all four browse screens. The 16dp screen gutter moved
+    // into the body container below — the job cards and the empty state
+    // keep their exact margins.
+    Column(modifier.fillMaxSize()) {
         // §5.2: Clear is a header/toolbar action now, not a list footer.
         // Same callback, same meaning — job history only.
         ScreenHeader(
@@ -88,7 +90,8 @@ fun ExportsScreen(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    .padding(horizontal = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
@@ -105,7 +108,12 @@ fun ExportsScreen(
             }
         } else {
             LazyColumn(
-                modifier = Modifier.weight(1f),
+                // The 16dp gutter that used to pad the root Column (see the
+                // header call-site note above): the cards keep their exact
+                // screen margins without shifting the title.
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 16.dp),
                 contentPadding = PaddingValues(vertical = 4.dp, horizontal = 0.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {

@@ -92,6 +92,11 @@ enum class LibraryFilter(val labelRes: Int) {
  * Scaffold, so the title's layout chain matches Projects/Exports/Settings
  * exactly — all four titles sit at the same height. The nested Scaffold
  * serves only the list + FAB + snackbar.
+ *
+ * This screen is the CANONICAL header call site (ScreenHeader's doc
+ * contract, owner finding 2026-11-12): the root Column pads NOTHING, the
+ * header composes directly under it, and the 16dp gutter belongs to the
+ * content below (chips, rows) — never to the header's parent.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

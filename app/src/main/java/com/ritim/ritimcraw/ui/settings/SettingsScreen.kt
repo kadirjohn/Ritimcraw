@@ -63,121 +63,133 @@ fun SettingsScreen(
     onPreviewQualityChange: (PreviewQuality) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-    ) {
+    // Canonical header call site (title consistency, owner finding
+    // 2026-11-12 — the contract lives in ScreenHeader's doc): the root
+    // Column pads NOTHING, so the title's left edge is ScreenHeader's
+    // own 16dp in all four browse screens. The 16dp screen gutter moved
+    // into the body container below — every row keeps its exact margins.
+    Column(modifier.fillMaxSize()) {
         // Shared header (owner request 2026-11-11d: consistent top area
         // across the main screens) — same title, same compact rhythm as
         // Library/Exports; no toolbar actions on this screen.
         ScreenHeader(title = stringResource(R.string.settings_title))
-        // Preview quality row (owner request 2026-11-11b section 3): the
-        // headline + supporting text state the tradeoff; the segmented row
-        // carries the choice. Owner finding 2026-11-11 E3: an M3
-        // SegmentedButton centers ALL of its content at the same spot
-        // (SegmentedButtonContent places every child identically), so a
-        // label Text plus a dims Text overlapped on the device. Each button
-        // now carries ONLY its label; the SELECTED level's dims render as
-        // one supporting line UNDER the row in tabular numerals (DESIGN.md
-        // Numbers) — the tradeoff stays visible, nothing overlaps. The
-        // picker changes ONLY playback + scrub — the supporting text says
-        // so (paused frames always settle to the clip's own resolution).
-        ListItem(
-            headlineContent = { Text(stringResource(R.string.settings_preview_quality)) },
-            supportingContent = {
-                Text(stringResource(R.string.settings_preview_quality_body))
-            },
-        )
-        val qualityOptions = listOf(
-            R.string.settings_preview_quality_low to PreviewQuality.LOW,
-            R.string.settings_preview_quality_balanced to PreviewQuality.BALANCED,
-            R.string.settings_preview_quality_high to PreviewQuality.HIGH,
-        )
-        SingleChoiceSegmentedButtonRow(
+        // The 16dp screen gutter (DESIGN.md Layout) that used to pad the
+        // root Column: moved here so it no longer shifts the title. The
+        // body fills the remaining height, so the LazyColumn's weight(1f)
+        // keeps working exactly as before.
+        Column(
             Modifier
                 .fillMaxWidth()
-                .padding(vertical = 4.dp),
+                .weight(1f)
+                .padding(horizontal = 16.dp)
         ) {
-            qualityOptions.forEachIndexed { index, (labelRes, level) ->
-                SegmentedButton(
-                    selected = previewQuality == level,
-                    onClick = { onPreviewQualityChange(level) },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = qualityOptions.size,
-                    ),
-                ) {
-                    Text(stringResource(labelRes))
-                }
-            }
-        }
-        // The selected level's dims, under the row (E3): playback / scrub
-        // caps in tabular numerals, changing with the selection.
-        Text(
-            stringResource(
-                R.string.settings_preview_quality_dims,
-                previewQuality.playbackMaxDim,
-                previewQuality.scrubMaxDim,
-            ),
-            style = MaterialTheme.typography.labelMedium.merge(Tnum),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 4.dp),
-        )
-        ListItem(
-            headlineContent = { Text(stringResource(R.string.settings_device_report)) },
-            supportingContent = {
-                Text(
-                    if (reports.isEmpty()) {
-                        stringResource(R.string.settings_device_report_body)
-                    } else {
-                        stringResource(R.string.settings_device_report_count, reports.size)
-                    }
-                )
-            },
-        )
-        // Debug-only measurement harness entry point (owner request
-        // 2026-11-10 section 1). In release builds onMeasure is null and
-        // the action does not exist at all.
-        if (BuildConfig.DEBUG && onMeasure != null) {
-            Button(
-                onClick = onMeasure,
-                enabled = !measuring,
-                modifier = Modifier
+            // Preview quality row (owner request 2026-11-11b section 3): the
+            // headline + supporting text state the tradeoff; the segmented row
+            // carries the choice. Owner finding 2026-11-11 E3: an M3
+            // SegmentedButton centers ALL of its content at the same spot
+            // (SegmentedButtonContent places every child identically), so a
+            // label Text plus a dims Text overlapped on the device. Each button
+            // now carries ONLY its label; the SELECTED level's dims render as
+            // one supporting line UNDER the row in tabular numerals (DESIGN.md
+            // Numbers) — the tradeoff stays visible, nothing overlaps. The
+            // picker changes ONLY playback + scrub — the supporting text says
+            // so (paused frames always settle to the clip's own resolution).
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_preview_quality)) },
+                supportingContent = {
+                    Text(stringResource(R.string.settings_preview_quality_body))
+                },
+            )
+            val qualityOptions = listOf(
+                R.string.settings_preview_quality_low to PreviewQuality.LOW,
+                R.string.settings_preview_quality_balanced to PreviewQuality.BALANCED,
+                R.string.settings_preview_quality_high to PreviewQuality.HIGH,
+            )
+            SingleChoiceSegmentedButtonRow(
+                Modifier
                     .fillMaxWidth()
                     .padding(vertical = 4.dp),
             ) {
-                Text(
-                    if (measuring) {
-                        stringResource(R.string.settings_measuring)
-                    } else {
-                        stringResource(R.string.settings_measure)
+                qualityOptions.forEachIndexed { index, (labelRes, level) ->
+                    SegmentedButton(
+                        selected = previewQuality == level,
+                        onClick = { onPreviewQualityChange(level) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = qualityOptions.size,
+                        ),
+                    ) {
+                        Text(stringResource(labelRes))
                     }
-                )
+                }
             }
-        }
-        if (reports.isNotEmpty()) {
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                items(reports, key = { it.name + it.mime }) { report ->
-                    ListItem(
-                        headlineContent = { Text(CodecProbe.formatReport(report)) },
+            // The selected level's dims, under the row (E3): playback / scrub
+            // caps in tabular numerals, changing with the selection.
+            Text(
+                stringResource(
+                    R.string.settings_preview_quality_dims,
+                    previewQuality.playbackMaxDim,
+                    previewQuality.scrubMaxDim,
+                ),
+                style = MaterialTheme.typography.labelMedium.merge(Tnum),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_device_report)) },
+                supportingContent = {
+                    Text(
+                        if (reports.isEmpty()) {
+                            stringResource(R.string.settings_device_report_body)
+                        } else {
+                            stringResource(R.string.settings_device_report_count, reports.size)
+                        }
+                    )
+                },
+            )
+            // Debug-only measurement harness entry point (owner request
+            // 2026-11-10 section 1). In release builds onMeasure is null and
+            // the action does not exist at all.
+            if (BuildConfig.DEBUG && onMeasure != null) {
+                Button(
+                    onClick = onMeasure,
+                    enabled = !measuring,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                ) {
+                    Text(
+                        if (measuring) {
+                            stringResource(R.string.settings_measuring)
+                        } else {
+                            stringResource(R.string.settings_measure)
+                        }
                     )
                 }
             }
-        } else {
-            Column(Modifier.weight(1f)) { }
+            if (reports.isNotEmpty()) {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(reports, key = { it.name + it.mime }) { report ->
+                        ListItem(
+                            headlineContent = { Text(CodecProbe.formatReport(report)) },
+                        )
+                    }
+                }
+            } else {
+                Column(Modifier.weight(1f)) { }
+            }
+            HorizontalDivider()
+            Text(
+                stringResource(R.string.settings_version, versionName),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
         }
-        HorizontalDivider()
-        Text(
-            stringResource(R.string.settings_version, versionName),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = 8.dp),
-        )
     }
 }
