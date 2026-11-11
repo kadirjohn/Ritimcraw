@@ -76,6 +76,19 @@ struct RawMeta {
     uint32_t shadingH = 0;
 };
 
+// Per-frame Camera2 SENSOR_NOISE_PROFILE as stored in the MCRAW frame
+// metadata: 8 floats = 4 CFA slots x (S, O) in the slot order of
+// RawMeta::black (r, g, g, b), normalized-signal domain:
+// variance_norm(signal_norm) = S*signal_norm + O. Read through
+// Source::noiseProfile(); valid=false when the clip carries no profile
+// (consumers then use a documented fallback). Per frame on purpose: the
+// profile can change across gain modes within one clip.
+struct NoiseProfile {
+    bool valid = false;
+    float s[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float o[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+};
+
 class Source {
 public:
     // Opens a MCRAW container from a POSIX file descriptor. The descriptor is
@@ -111,6 +124,14 @@ public:
     // Per-clip RAW metadata (black/white levels, CFA, color matrix,
     // as-shot neutral, lens shading map). Valid after a successful open.
     const RawMeta& rawMeta() const;
+
+    // Per-frame noise profile (Camera2 SENSOR_NOISE_PROFILE, "noiseProfile"
+    // in the frame metadata): variance = S*signal + O per CFA slot. Reads
+    // metadata only — no frame decode. valid=false when the clip carries
+    // no profile. An out-of-range frameIndex also returns valid=false
+    // (consistent with frameInfo's zeroed-info policy) — a missing profile
+    // degrades to the temporal stage's fallback sigma, never an error.
+    NoiseProfile noiseProfile(size_t i) const;
 
 private:
     Source() = default;

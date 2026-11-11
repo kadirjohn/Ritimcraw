@@ -31,7 +31,8 @@ add_library(rawedit STATIC
     src/Develop.cpp
     src/Thumbnail.cpp
     src/Transfer.cpp
-    src/DngWriter.cpp)
+    src/DngWriter.cpp
+    src/Temporal.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)
@@ -48,10 +49,15 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     target_include_directories(test_develop PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_develop PRIVATE rawedit)
 
+    add_executable(test_temporal tests/test_temporal.cpp)
+    target_include_directories(test_temporal PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_temporal PRIVATE rawedit)
+
     add_executable(rawcli ../cli/main.cpp)
     target_link_libraries(rawcli PRIVATE rawedit)
 
     enable_testing()
     add_test(NAME source COMMAND test_source)
     add_test(NAME develop COMMAND test_develop)
+    add_test(NAME temporal COMMAND test_temporal)
 endif()
