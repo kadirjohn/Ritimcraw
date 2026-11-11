@@ -116,4 +116,91 @@ class PreviewSurfaceRatioTest {
             0f,
         )
     }
+
+    // ---- claimedSize (owner finding 2026-11-11 E1: the portrait preview
+    // overflowed the capped wrapper and covered the top bar's ⋮ menu) ----
+
+    @Test
+    fun portrait_ratio_claims_the_capped_height_not_the_overflowing_full_width_height() {
+        // The E1 geometry on a portrait phone: a 16:9 clip quarter-rotated
+        // to 9:16 inside a 393x324dp capped region. The old aspectRatio
+        // fallback claimed 393x698 — 374dp of overflow painting over the
+        // top bar. The claim rule bounds it to the cap instead.
+        val (width, height) = PreviewSurfaceRatio.claimedSize(
+            regionWidth = 393,
+            regionHeight = 324,
+            ratio = 9f / 16f,
+        )
+        assertEquals(182, width)
+        assertEquals(324, height) // exactly the cap, never above it
+    }
+
+    @Test
+    fun fitting_ratio_fills_the_width() {
+        // A landscape 16:9 clip in the same portrait-phone region: the
+        // full-width height fits the cap, so the surface fills the width.
+        val (width, height) = PreviewSurfaceRatio.claimedSize(
+            regionWidth = 393,
+            regionHeight = 324,
+            ratio = 16f / 9f,
+        )
+        assertEquals(393, width)
+        assertEquals(221, height)
+    }
+
+    @Test
+    fun landscape_device_orientation_bounds_a_landscape_clip_the_same_way() {
+        // The latent twin: a landscape phone (852 wide) with the 38% cap
+        // (~149dp) and a landscape 16:9 clip — full-width height 479 would
+        // overflow; the claim rule bounds by the cap.
+        val (width, height) = PreviewSurfaceRatio.claimedSize(
+            regionWidth = 852,
+            regionHeight = 149,
+            ratio = 16f / 9f,
+        )
+        assertEquals(264, width)
+        assertEquals(149, height)
+    }
+
+    @Test
+    fun square_ratio_fills_the_region() {
+        val (width, height) = PreviewSurfaceRatio.claimedSize(
+            regionWidth = 400,
+            regionHeight = 400,
+            ratio = 1f,
+        )
+        assertEquals(400, width)
+        assertEquals(400, height)
+    }
+
+    @Test
+    fun exact_fit_takes_the_full_width() {
+        // Boundary: the full-width height equals the cap exactly — the
+        // first branch takes it (never a spurious bound).
+        val (width, height) = PreviewSurfaceRatio.claimedSize(
+            regionWidth = 200,
+            regionHeight = 100,
+            ratio = 2f,
+        )
+        assertEquals(200, width)
+        assertEquals(100, height)
+    }
+
+    @Test
+    fun rounding_keeps_the_claim_inside_the_cap() {
+        // 100/3 = 33.33: at cap 33 the full width fits by flooring; at
+        // cap 20 the claim bounds by height with the floor on the width.
+        val fits = PreviewSurfaceRatio.claimedSize(regionWidth = 100, regionHeight = 33, ratio = 3f)
+        assertEquals(100 to 33, fits)
+        val bounded = PreviewSurfaceRatio.claimedSize(regionWidth = 100, regionHeight = 20, ratio = 3f)
+        assertEquals(60 to 20, bounded)
+    }
+
+    @Test
+    fun degenerate_region_or_ratio_claims_nothing() {
+        assertEquals(0 to 0, PreviewSurfaceRatio.claimedSize(regionWidth = 0, regionHeight = 500, ratio = 1f))
+        assertEquals(0 to 0, PreviewSurfaceRatio.claimedSize(regionWidth = 500, regionHeight = 0, ratio = 1f))
+        assertEquals(0 to 0, PreviewSurfaceRatio.claimedSize(regionWidth = 500, regionHeight = 500, ratio = 0f))
+        assertEquals(0 to 0, PreviewSurfaceRatio.claimedSize(regionWidth = 500, regionHeight = 500, ratio = -1f))
+    }
 }
