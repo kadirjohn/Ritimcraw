@@ -139,4 +139,26 @@ class EditorPreviewLogicTest {
         // demanding a re-import for it; whatever is known is shown.
         assertEquals(0, EditorPreviewLogic.recordedWidth(0, 0))
     }
+
+    // ---- system back destination (owner finding 2026-11-11) ----
+
+    @Test
+    fun back_in_fullscreen_exits_fullscreen_first() {
+        assertEquals(
+            EditorBackDestination.EXIT_FULLSCREEN,
+            EditorPreviewLogic.onBack(fullscreen = true),
+        )
+    }
+
+    @Test
+    fun back_outside_fullscreen_leaves_the_editor() {
+        // The bug: the BackHandler was enabled only in fullscreen, so a
+        // press in the normal editor fell through to the system and
+        // exited the app. The handler is now always active; the press
+        // returns to the library via onBack.
+        assertEquals(
+            EditorBackDestination.LEAVE_EDITOR,
+            EditorPreviewLogic.onBack(fullscreen = false),
+        )
+    }
 }

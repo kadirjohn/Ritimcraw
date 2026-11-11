@@ -124,6 +124,15 @@ private fun DrawScope.drawLumaBars(
  * button's content description carries the toggle state for TalkBack
  * (the action it will perform, like the fullscreen toggle's "Exit
  * fullscreen"); the glyph itself stays decorative.
+ *
+ * Scrim behind the glyph (owner finding 2026-11-11): over overexposed
+ * near-white footage the white icon glyphs of ALL preview corner
+ * controls vanished into the frame. The toggle carries the same
+ * translucent surfaceContainerLowest scrim (roles, never hex —
+ * DESIGN.md; this file's own overlay backdrop is the precedent) at the
+ * theme's small shape as the fullscreen and refresh controls. The
+ * Surface wraps, not replaces, the IconButton — the 48dp touch target
+ * and the click path are unchanged.
  */
 @Composable
 fun HistogramToggleButton(
@@ -134,13 +143,19 @@ fun HistogramToggleButton(
     val description = stringResource(
         if (visible) R.string.editor_histogram_hide else R.string.editor_histogram
     )
-    IconButton(
-        onClick = onToggle,
-        modifier = modifier.semantics { contentDescription = description },
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
+        shape = MaterialTheme.shapes.small,
+        modifier = modifier,
     ) {
-        Icon(
-            painter = painterResource(R.drawable.ic_histogram),
-            contentDescription = null,
-        )
+        IconButton(
+            onClick = onToggle,
+            modifier = Modifier.semantics { contentDescription = description },
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_histogram),
+                contentDescription = null,
+            )
+        }
     }
 }

@@ -130,9 +130,29 @@ object EditorPreviewLogic {
      */
     fun recordedWidth(sessionWidth: Int, persistedWidth: Int): Int =
         if (sessionWidth > 0) sessionWidth else persistedWidth
+
+    /**
+     * Where ONE system back press lands while the editor is open (owner
+     * finding 2026-11-11: back exited the app from the normal editor —
+     * the BackHandler was enabled only in fullscreen). Fullscreen pops
+     * first; outside fullscreen the press leaves the editor (the
+     * screen's onBack returns to the library). Pure so a JVM test can
+     * lock the chain; the screen's BackHandler is always active and
+     * branches on this decision.
+     */
+    fun onBack(fullscreen: Boolean): EditorBackDestination =
+        if (fullscreen) EditorBackDestination.EXIT_FULLSCREEN
+        else EditorBackDestination.LEAVE_EDITOR
 }
 
 enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
+
+/**
+ * Where one system back press lands while the editor is open: the pure
+ * result of [EditorPreviewLogic.onBack], branched on by the screen's
+ * always-active BackHandler.
+ */
+enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
 
 /**
  * Clip editor (DESIGN.md Editor): preview frame on
@@ -262,10 +282,24 @@ fun ClipEditorScreen(
         // editor session — only the layout changes (top bar / tabs / panel
         // hidden, the preview takes the flex space, the transport stays).
         // Saveable so it survives configuration changes like the tab does;
-        // the system back chain pops fullscreen FIRST, then the editor
-        // (BackHandler below) — never a double-back to leave the clip.
+        // the system back chain pops fullscreen FIRST, then the editor —
+        // never a double-back to leave the clip.
         var fullscreen by rememberSaveable { mutableStateOf(false) }
-        BackHandler(enabled = fullscreen) { fullscreen = false }
+        // The system back chain (owner finding 2026-11-11: back exited the
+        // app from the normal editor): the editor's BackHandler is ALWAYS
+        // active while the editor is open — enabled-only-in-fullscreen let
+        // the press fall through to the system and kill the app. One press
+        // pops fullscreen first (the pure decision in
+        // EditorPreviewLogic.onBack); outside fullscreen it leaves the
+        // editor (onBack returns to the library). The ModalBottomSheets
+        // compose after this handler, so an open sheet still wins the
+        // press and dismisses first.
+        BackHandler {
+            when (EditorPreviewLogic.onBack(fullscreen)) {
+                EditorBackDestination.EXIT_FULLSCREEN -> fullscreen = false
+                EditorBackDestination.LEAVE_EDITOR -> onBack()
+            }
+        }
         // Frame Picker sheet (RAW-11): opened from the clip-info sheet's
         // "Develop frame" row. Saveable like the tab/fullscreen flags so a
         // configuration change (rotation) does not drop a half-made choice.
@@ -276,9 +310,14 @@ fun ClipEditorScreen(
         // release re-renders with the actual grade. Both renders go through
         // the render gate and the pump below, exactly like every other
         // request. heldRenderIssued tracks whether THIS hold actually issued
-        // a render (an already-neutral grade skips both renders); the
-        // startHold helper is defined next to requestRender below.
+        // a render (an already-neutral grade skips both renders);
+        // holdPausedPlayback tracks whether THIS hold paused playback
+        // (owner request 2026-11-11: a hold while playing pauses the wall
+        // clock and the release resumes from the held position — the
+        // pure transitions live in BeforeAfter.onHoldStart/onHoldRelease).
+        // The startHold helper is defined next to requestRender below.
         var heldRenderIssued by remember(sourceId) { mutableStateOf(false) }
+        var holdPausedPlayback by remember(sourceId) { mutableStateOf(false) }
 
         // Histogram overlay (owner feature list W5): toggleable 256-bin
         // luma histogram + clipping badge over the preview. histogramVisible
@@ -367,29 +406,66 @@ fun ClipEditorScreen(
          * pending slot + monotonic publication mean a newer request (a
          * seek, a slider settle, playback started mid-hold) supersedes the
          * hold render by sequence and the release render restores the grade
-         * — the drag-tier/settle pipeline cannot be corrupted. Paused-only
-         * (BeforeAfter.canHold): during playback the loop's continuous
-         * graded offers would supersede a neutral render within one frame,
-         * so the hold is ignored there rather than fighting the loop.
-         * An already-neutral grade skips both renders (the picture would
-         * not change), tracked by heldRenderIssued so a release never
-         * issues a render its press never issued.
+         * — the drag-tier/settle pipeline cannot be corrupted.
+         *
+         * During playback too (owner request 2026-11-11): a hold while
+         * playing PAUSES the wall clock first (isPlaying = false — the
+         * playback loop and the audio transport both key on it, so video
+         * and sound stop cleanly at the current position; the loop is not
+         * fought frame-by-frame), then renders the neutral frame at the
+         * paused tier. Release (or a drag-cancel: a moving finger is a
+         * seek, not a compare) re-renders the graded frame and RESUMES
+         * playback from the held position — the same play-from-position
+         * logic as the transport's play button, minus the restart-at-end
+         * branch (the hold never advances the position, so it cannot be
+         * at the clip's end when it started from a playing frame). An
+         * already-neutral grade skips both renders AND the pause (holding
+         * would show the exact frame the loop is already showing).
+         * The transitions are pure (BeforeAfter.onHoldStart/onHoldRelease,
+         * JVM-tested); this helper only writes the states they decide.
          */
         fun startHold(pressed: Boolean) {
             if (pressed) {
-                if (!BeforeAfter.canHold(isPlaying, frame != null, canRender)) return
-                if (!BeforeAfter.holdChangesPicture(grade)) return
+                when (BeforeAfter.onHoldStart(isPlaying, frame != null, canRender, grade)) {
+                    BeforeAfter.HoldStart.NoHold -> return
+                    BeforeAfter.HoldStart.PauseAndShowBefore -> {
+                        holdPausedPlayback = true
+                        isPlaying = false
+                    }
+                    BeforeAfter.HoldStart.ShowBefore -> holdPausedPlayback = false
+                }
                 heldRenderIssued = true
                 requestRender(
                     positionFrame, BeforeAfter.holdGrade(),
                     PreviewTiers.PAUSED_MAX_DIM, cached = true,
                 )
-            } else if (heldRenderIssued) {
-                heldRenderIssued = false
-                requestRender(
-                    positionFrame, grade,
-                    PreviewTiers.PAUSED_MAX_DIM, cached = true,
-                )
+            } else {
+                when (
+                    BeforeAfter.onHoldRelease(holdPausedPlayback, heldRenderIssued)
+                ) {
+                    BeforeAfter.HoldRelease.Nothing -> return
+                    BeforeAfter.HoldRelease.ShowAfterAndResume -> {
+                        heldRenderIssued = false
+                        holdPausedPlayback = false
+                        requestRender(
+                            positionFrame, grade,
+                            PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                        )
+                        // Resume from the held position (the existing
+                        // play-from-position logic; PlaybackStarted also
+                        // stands the drag tier down, like the play button).
+                        isPlaying = true
+                        applyTierEvent(SliderTiers.Event.PlaybackStarted)
+                    }
+                    BeforeAfter.HoldRelease.ShowAfter -> {
+                        heldRenderIssued = false
+                        holdPausedPlayback = false
+                        requestRender(
+                            positionFrame, grade,
+                            PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                        )
+                    }
+                }
             }
         }
 
@@ -753,15 +829,22 @@ fun ClipEditorScreen(
                                 if (endedEarly != null) return@awaitEachGesture
                                 // Long press confirmed: show the original.
                                 startHold(true)
-                                // The hold ends when the finger lifts or the
-                                // stream is consumed; either way the release
-                                // render restores the current grade.
+                                // The hold ends when the finger lifts, the
+                                // stream is consumed, or the finger MOVES
+                                // past the touch slop (owner request
+                                // 2026-11-11: a drag starting during a hold
+                                // cancels it — a moving finger is a seek
+                                // gesture, not a compare; the release path
+                                // is shared, so the cancel restores the
+                                // grade and resumes playback exactly like
+                                // a lift).
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     val change =
                                         event.changes.firstOrNull { it.id == down.id }
                                     if (change == null || !change.pressed ||
-                                        event.changes.any { it.isConsumed }
+                                        event.changes.any { it.isConsumed } ||
+                                        (change.position - down.position).getDistance() > slop
                                     ) {
                                         break
                                     }
@@ -815,12 +898,25 @@ fun ClipEditorScreen(
                 // position and playback continues unharmed. Vendored
                 // Material Symbols glyphs (material-icons-core 1.7.3 has
                 // no Fullscreen); the IconButton carries the 48dp target.
-                IconButton(
-                    onClick = { fullscreen = !fullscreen },
+                // Scrim behind the glyph (owner finding 2026-11-11): over
+                // overexposed near-white footage the white icon vanished
+                // into the frame. Every preview corner control carries the
+                // same translucent surfaceContainerLowest scrim (roles,
+                // never hex — DESIGN.md; the histogram overlay's backdrop
+                // is the precedent) at the theme's small shape, so the
+                // glyph reads over any frame. The Surface wraps, not
+                // replaces, the IconButton — the 48dp touch target and
+                // the click path are unchanged.
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
+                    shape = MaterialTheme.shapes.small,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(8.dp),
                 ) {
+                    IconButton(
+                        onClick = { fullscreen = !fullscreen },
+                    ) {
                     Icon(
                         painter = painterResource(
                             if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
@@ -829,6 +925,7 @@ fun ClipEditorScreen(
                             if (fullscreen) R.string.editor_fullscreen_exit else R.string.editor_fullscreen
                         ),
                     )
+                    }
                 }
             }
             // Transport row (owner request 2026-11-10 §1, MotionCam Pro
