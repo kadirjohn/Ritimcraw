@@ -337,10 +337,23 @@ fun ClipEditorScreen(
         // the clip's whole editor lifetime).
         val sourcePath = SourcePathDecision.decide(sourceKind, sourceMime)
 
-        /** Offers a render to the pipeline (replaces any pending one). */
-        fun requestRender(frameIndex: Int, g: GradeK, maxDim: Int, cached: Boolean = false) {
+        /**
+         * Offers a render to the pipeline (replaces any pending one).
+         * [followUpMaxDim] (progressive pause settle, owner request
+         * 2026-11-11 section 2): after THIS render publishes, the pump
+         * offers one more render of the same frame/grade at that tier —
+         * only when the pending slot is empty, so anything the user did
+         * in between still wins.
+         */
+        fun requestRender(
+            frameIndex: Int,
+            g: GradeK,
+            maxDim: Int,
+            cached: Boolean = false,
+            followUpMaxDim: Int? = null,
+        ) {
             renderSeq += 1
-            gate.offer(RenderRequest(frameIndex, g, maxDim, renderSeq, cached))
+            gate.offer(RenderRequest(frameIndex, g, maxDim, renderSeq, cached, followUpMaxDim))
             pumpKick.trySend(Unit)
         }
 
@@ -459,7 +472,10 @@ fun ClipEditorScreen(
         // most one native render runs on the engine and one waits pending,
         // exactly the owner-request §1 pipeline shape. A new request offered
         // while a render runs replaces the pending one; the running one's
-        // result is stale-dropped when it lands.
+        // result is stale-dropped when it lands. A request with a
+        // followUpMaxDim (progressive pause settle) queues its full-res
+        // follow-up AFTER publishing — through offerIfEmpty, so a request
+        // that arrived meanwhile stays pending and wins.
         LaunchedEffect(sourceId) {
             // Monotonic publication: the pump is serial and the gate is
             // newest-wins, so polled requests arrive in strictly increasing
@@ -541,6 +557,29 @@ fun ClipEditorScreen(
                         )
                         lastPublished = req.sequence
                     }
+                    // Progressive pause settle (owner request 2026-11-11
+                    // section 2): the pause/clip-end render published its
+                    // fast intermediate tier — now queue the full-res
+                    // follow-up. offerIfEmpty: a request that arrived while
+                    // the intermediate rendered (seek, slider settle, a new
+                    // pause) stays pending and wins; the follow-up is
+                    // dropped, superseded by that newer sequence. The
+                    // follow-up bumps its OWN sequence, so it publishes
+                    // after the intermediate by monotonic publication, and a
+                    // render offered while IT runs replaces it in the slot
+                    // exactly like any other request.
+                    if (req.followUpMaxDim != null) {
+                        renderSeq += 1
+                        if (gate.offerIfEmpty(
+                                RenderRequest(
+                                    req.frameIndex, req.grade, req.followUpMaxDim,
+                                    renderSeq, cached = true,
+                                )
+                            )
+                        ) {
+                            pumpKick.trySend(Unit)
+                        }
+                    }
                     renderInFlight = false
                 }
             }
@@ -578,7 +617,11 @@ fun ClipEditorScreen(
                     audio.stop()
                     isPlaying = false
                     positionFrame = pts.size - 1
-                    requestRender(pts.size - 1, grade, PreviewTiers.SOURCE_MAX_DIM)
+                    requestRender(
+                        pts.size - 1, grade,
+                        PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                        followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                    )
                     break
                 }
                 val nextDelay = PtsTimeline.delayUntilNextUs(pts, idx, elapsed)
@@ -845,12 +888,18 @@ fun ClipEditorScreen(
                 onPlayPause = {
                     if (isPlaying) {
                         // Pause keeps the position (owner request §1) and
-                        // lands on ONE full-resolution render (section 2):
-                        // the coarse playback-tier frame is replaced with the
-                        // source-resolution frame at the paused position; a
-                        // later seek still wins by render sequence.
+                        // lands on the source resolution (section 2) —
+                        // progressively: the fast 1280px tier sharpens the
+                        // coarse playback frame first (~9x cheaper than the
+                        // full-res develop), then the full-res follow-up
+                        // replaces it. A later seek still wins by render
+                        // sequence (offerIfEmpty never displaces it).
                         isPlaying = false
-                        requestRender(positionFrame, grade, PreviewTiers.SOURCE_MAX_DIM)
+                        requestRender(
+                            positionFrame, grade,
+                            PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                            followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                        )
                     } else {
                         // Resume from the selected position; at the very end,
                         // a fresh play restarts from the first frame.

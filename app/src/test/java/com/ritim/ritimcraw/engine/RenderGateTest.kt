@@ -66,4 +66,37 @@ class RenderGateTest {
         assertFalse(gate.hasPending)
         assertNull(gate.poll())
     }
+
+    // ---- progressive pause settle (offerIfEmpty) ----
+
+    @Test
+    fun offer_if_empty_pends_into_the_empty_slot() {
+        // The full-res follow-up after a published intermediate: the slot is
+        // empty, so it lands and the pump renders it next.
+        val gate = RenderGate()
+        val followUp = request(8, maxDim = 0)
+        assertTrue(gate.offerIfEmpty(followUp))
+        assertEquals(followUp, gate.poll())
+    }
+
+    @Test
+    fun offer_if_empty_never_displaces_a_pending_request() {
+        // A seek/slider settle arrived while the intermediate rendered: the
+        // newer request stays pending and the follow-up is dropped — the
+        // user's action wins, the progressive path is superseded.
+        val gate = RenderGate()
+        val newer = request(9, frameIndex = 30)
+        gate.offer(newer)
+        assertFalse(gate.offerIfEmpty(request(10, maxDim = 0)))
+        assertEquals(newer, gate.poll())
+        assertNull(gate.poll())
+    }
+
+    @Test
+    fun follow_up_max_dim_rides_the_request_data_class() {
+        // The pump reads followUpMaxDim off the published request; null means
+        // a plain single render (every pre-settle request shape).
+        assertEquals(null, RenderRequest(0, GradeK(), 1280, 1).followUpMaxDim)
+        assertEquals(0, RenderRequest(0, GradeK(), 1280, 1, false, 0).followUpMaxDim)
+    }
 }
