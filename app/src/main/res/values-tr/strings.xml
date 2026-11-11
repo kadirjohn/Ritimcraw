@@ -87,6 +87,17 @@
     <string name="editor_clip_info_raw_format">RAW örnek biçimi</string>
     <string name="editor_clip_info_raw_white_level">RAW beyaz seviyesi</string>
     <string name="editor_clip_info_unknown">Bilinmiyor</string>
+    <string name="editor_copy_settings">Ayarları kopyala</string>
+    <string name="editor_paste_settings">Ayarları yapıştır</string>
+    <string name="editor_paste_settings_detail">Kopyalanan grade\'i bu klibe uygular</string>
+    <string name="editor_presets_title">Hazır ayarlar</string>
+    <string name="editor_presets_empty">Henüz kayıtlı hazır ayar yok</string>
+    <string name="editor_preset_save">Hazır ayar olarak kaydet</string>
+    <string name="editor_preset_save_detail">Bu klibin geçerli grade\'ini adıyla kaydeder</string>
+    <string name="editor_preset_name_label">Hazır ayar adı</string>
+    <string name="editor_preset_save_action">Kaydet</string>
+    <string name="editor_preset_cancel">Vazgeç</string>
+    <string name="editor_preset_delete">Hazır ayarı sil</string>
     <string name="editor_frame_picker_title">Kare geliştir</string>
     <string name="editor_frame_picker_frame">Kare %1$d · %2$s</string>
     <string name="editor_frame_picker_photo_clip">Fotoğraf: klip grade\'ini kullan</string>

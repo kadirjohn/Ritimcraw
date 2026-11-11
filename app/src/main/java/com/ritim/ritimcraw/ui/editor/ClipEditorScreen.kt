@@ -55,6 +55,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.GradePreset
 import com.ritim.ritimcraw.data.LutInfo
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
@@ -216,6 +217,16 @@ fun ClipEditorScreen(
     // develop (the clip's own grade is untouched). Default no-op keeps
     // every existing caller working.
     onDevelopPhoto: (frameIndex: Int, separate: Boolean) -> Unit = { _, _ -> },
+    // ---- Presets (owner request 2026-11-11 §4) ----
+    // The saved named grades (AppNav: PresetStore.all(), refreshed after
+    // every save/delete). The screen owns no store; the clip-info sheet
+    // shows the rows. Defaults keep every existing caller working.
+    presets: List<GradePreset> = emptyList(),
+    // Saves the clip's CURRENT grade under a name (AppNav:
+    // PresetStore.put + refresh).
+    onSavePreset: (name: String) -> Unit = {},
+    // Removes a preset by id (AppNav: PresetStore.remove + refresh).
+    onRemovePreset: (id: String) -> Unit = {},
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -676,6 +687,24 @@ fun ClipEditorScreen(
                     // screen's own picker sheet (RAW-11): the transport
                     // position lives here, not in the top bar.
                     onDevelopFrame = { framePickerOpen = true },
+                    // ---- Copy/Paste settings + Presets (§4) ----
+                    // The sheet reads the CURRENT grade (what Copy copies
+                    // and Save-as-preset snapshots) and applies grades
+                    // through the screen's own grade-write path — the
+                    // same onGradeChange a slider move uses, so the
+                    // sliders, preview and persistence all behave
+                    // identically. The clipboard itself is GradeClipboard
+                    // (app-wide, in-memory); canPaste gates the row.
+                    grade = grade,
+                    canPaste = GradeClipboard.hasContent(),
+                    onCopySettings = { GradeClipboard.copy(grade) },
+                    onApplyGrade = { g ->
+                        grade = g
+                        onGradeChange(g)
+                    },
+                    presets = presets,
+                    onSavePreset = onSavePreset,
+                    onRemovePreset = onRemovePreset,
                 )
             }
             // Bounded preview region (design review: the frame never shifts

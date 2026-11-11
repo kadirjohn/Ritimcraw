@@ -185,40 +185,53 @@ class GradeStore(private val file: File) {
             for ((id, g) in grades) {
                 if (!first) sb.append(',')
                 first = false
-                sb.append(quote(id)).append(":{")
-                    .append("\"version\":").append(g.version).append(',')
-                    .append("\"exposureEv\":").append(num(g.exposureEv)).append(',')
-                    .append("\"highlights\":").append(num(g.highlights)).append(',')
-                    .append("\"tempK\":").append(num(g.tempK)).append(',')
-                    .append("\"tint\":").append(num(g.tint)).append(',')
-                    .append("\"saturation\":").append(num(g.saturation)).append(',')
-                    .append("\"blackPoint\":").append(num(g.blackPoint)).append(',')
-                    .append("\"whitePoint\":").append(num(g.whitePoint)).append(',')
-                    .append("\"shadows\":").append(num(g.shadows)).append(',')
-                    .append("\"midtones\":").append(num(g.midtones)).append(',')
-                    .append("\"contrast\":").append(num(g.contrast)).append(',')
-                    .append("\"asShot\":").append(g.asShot).append(',')
-                    .append("\"highlightReconstruction\":").append(g.highlightReconstruction).append(',')
-                    .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
-                    .append("\"sharpness\":").append(num(g.sharpness)).append(',')
-                    .append("\"detail\":").append(num(g.detail)).append(',')
-                    .append("\"tonemap\":").append(g.tonemap).append(',')
-                    // COL-07: the LUT choice and Strength are saved
-                    // separately, both per clip. lutId null renders as JSON
-                    // null (no LUT); lutStrength always renders (100 while
-                    // no LUT is selected — the neutral default).
-                    .append("\"lutId\":").append(if (g.lutId == null) "null" else quote(g.lutId))
-                    .append(',')
-                    .append("\"lutStrength\":").append(num(g.lutStrength))
-                    .append(',')
-                    // DN-01..08: the two denoise percents, both per clip.
-                    // 0 renders too (the neutral default = stages skipped).
-                    .append("\"noiseReduction\":").append(num(g.noiseReduction))
-                    .append(',')
-                    .append("\"chromaDenoise\":").append(num(g.chromaDenoise))
-                    .append('}')
+                sb.append(quote(id)).append(':').append(renderGrade(g))
             }
             sb.append('}')
+            return sb.toString()
+        }
+
+        /**
+         * One grade object — the value side of a grades entry. The single
+         * wire-format definition: per-clip grades render through here, and
+         * PresetStore renders a preset's grade through the same function so
+         * both round-trip through parseGrades identically (one schema, one
+         * parse path, no drift).
+         */
+        internal fun renderGrade(g: GradeK): String {
+            val sb = StringBuilder()
+            sb.append('{')
+                .append("\"version\":").append(g.version).append(',')
+                .append("\"exposureEv\":").append(num(g.exposureEv)).append(',')
+                .append("\"highlights\":").append(num(g.highlights)).append(',')
+                .append("\"tempK\":").append(num(g.tempK)).append(',')
+                .append("\"tint\":").append(num(g.tint)).append(',')
+                .append("\"saturation\":").append(num(g.saturation)).append(',')
+                .append("\"blackPoint\":").append(num(g.blackPoint)).append(',')
+                .append("\"whitePoint\":").append(num(g.whitePoint)).append(',')
+                .append("\"shadows\":").append(num(g.shadows)).append(',')
+                .append("\"midtones\":").append(num(g.midtones)).append(',')
+                .append("\"contrast\":").append(num(g.contrast)).append(',')
+                .append("\"asShot\":").append(g.asShot).append(',')
+                .append("\"highlightReconstruction\":").append(g.highlightReconstruction).append(',')
+                .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
+                .append("\"sharpness\":").append(num(g.sharpness)).append(',')
+                .append("\"detail\":").append(num(g.detail)).append(',')
+                .append("\"tonemap\":").append(g.tonemap).append(',')
+                // COL-07: the LUT choice and Strength are saved
+                // separately, both per clip. lutId null renders as JSON
+                // null (no LUT); lutStrength always renders (100 while
+                // no LUT is selected — the neutral default).
+                .append("\"lutId\":").append(if (g.lutId == null) "null" else quote(g.lutId))
+                .append(',')
+                .append("\"lutStrength\":").append(num(g.lutStrength))
+                .append(',')
+                // DN-01..08: the two denoise percents, both per clip.
+                // 0 renders too (the neutral default = stages skipped).
+                .append("\"noiseReduction\":").append(num(g.noiseReduction))
+                .append(',')
+                .append("\"chromaDenoise\":").append(num(g.chromaDenoise))
+                .append('}')
             return sb.toString()
         }
 
