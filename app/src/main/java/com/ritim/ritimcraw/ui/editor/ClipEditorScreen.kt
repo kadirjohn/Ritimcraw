@@ -152,6 +152,12 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * never biases color judgment. Sliders snap to their step grid (0.1 EV
  * exposure, 50 K temperature) and a double tap on a slider row resets that
  * one control to its GradeK default (DESIGN.md Inputs).
+ *
+ * Over the preview (owner feature list W5): a toggleable 256-bin luma
+ * histogram with a clipping badge — recomputed on every frame publish
+ * from the same frame the preview shows — and the before/after
+ * press-hold: hold the frame area to swap to the neutral grade,
+ * release to return.
  */
 @Composable
 fun ClipEditorScreen(
@@ -252,6 +258,19 @@ fun ClipEditorScreen(
         // a render (an already-neutral grade skips both renders); the
         // startHold helper is defined next to requestRender below.
         var heldRenderIssued by remember(sourceId) { mutableStateOf(false) }
+
+        // Histogram overlay (owner feature list W5): toggleable 256-bin
+        // luma histogram + clipping badge over the preview. histogramVisible
+        // is saveable so it survives configuration changes like the tab and
+        // fullscreen do; the histogram itself is recomputed inside the
+        // render pump's publish — the one place the on-screen frame is
+        // swapped — so the overlay always shows the frame the preview
+        // currently shows, and toggling on is instant (the result is
+        // already current). Keyed to the clip: a clip switch starts empty.
+        var histogramVisible by rememberSaveable { mutableStateOf(false) }
+        var histogram by remember(sourceId) {
+            mutableStateOf(FrameHistogram.of(null))
+        }
 
         // ---- LUT import (COL-07) ----
         // The import error is LOCAL to the LUT section: errorText drives the
@@ -480,6 +499,17 @@ fun ClipEditorScreen(
                         result.fold(
                             onSuccess = { f ->
                                 frame = f
+                                // Histogram recompute (owner feature list W5):
+                                // publish is the ONE place the on-screen frame
+                                // is swapped, so the pass runs here — the
+                                // overlay can never show a histogram for a
+                                // frame the preview is not showing. Strided
+                                // to at most FrameHistogram.MAX_SAMPLES pixels
+                                // (sub-millisecond even at source resolution),
+                                // on the pump coroutine like the publish
+                                // itself; a hidden overlay still recomputes
+                                // (cheap) so toggling on is instant.
+                                histogram = FrameHistogram.of(f.argb)
                                 lastRenderFailed = false
                                 errorText = null
                             },
@@ -729,6 +759,31 @@ fun ClipEditorScreen(
                         .align(Alignment.BottomEnd)
                         .padding(8.dp),
                 )
+                // Histogram toggle (owner feature list W5): the mirror of
+                // the fullscreen TopEnd toggle — the preview's corner icon
+                // buttons read as one group, and the bar_chart glyph says
+                // what it does. Same 48dp IconButton target, vendored
+                // Material Symbols glyph (material-icons-core 1.7.3 has
+                // no BarChart).
+                HistogramToggleButton(
+                    visible = histogramVisible,
+                    onToggle = { histogramVisible = !histogramVisible },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp),
+                )
+                // The overlay itself (BottomStart, mirroring the refresh
+                // chip's BottomEnd): visible only when toggled on, drawn
+                // from the recompute above — the same frame the preview
+                // shows, so the histogram and the picture never disagree.
+                if (histogramVisible) {
+                    HistogramOverlay(
+                        result = histogram,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp),
+                    )
+                }
                 // Fullscreen toggle (owner request 2026-11-11 section 2):
                 // the SAME editor session — the toggle only changes the
                 // layout, so the clip stays open, the transport keeps its
