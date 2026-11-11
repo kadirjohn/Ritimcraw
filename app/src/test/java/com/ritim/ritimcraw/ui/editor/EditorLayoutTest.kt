@@ -1,37 +1,17 @@
 package com.ritim.ritimcraw.ui.editor
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Editor fixed-region layout math tests (design review 2026-11-10
- * "Onerilen ilk yerlesim"): the preview cap keeps the frame deterministic
- * across tabs, and the compact slider's bipolar fill-from-zero track
+ * Editor layout math tests (design review 2026-11-10 "Onerilen ilk
+ * yerlesim"): the compact slider's bipolar fill-from-zero track
  * computes its fractions purely (the composable half only draws them).
+ * The preview height cap tests were REMOVED with the cap itself (owner
+ * request 2026-11-11d §11.7: the preview flexes with the draggable
+ * panel; the panel's anchor math is covered by PanelSheetTest).
  */
 class EditorLayoutTest {
-
-    // ---- preview height cap ----
-
-    @Test
-    fun preview_height_is_the_38_percent_draft_cap() {
-        assertEquals(380, EditorLayout.previewHeightPx(1000))
-    }
-
-    @Test
-    fun preview_height_never_exceeds_the_available_height() {
-        // Short screen: the cap is a fraction of a SMALLER pool, so it can
-        // never exceed the pool itself — but the rule is coerced anyway.
-        assertEquals(0, EditorLayout.previewHeightPx(0))
-        assertEquals(0, EditorLayout.previewHeightPx(1))
-    }
-
-    @Test
-    fun preview_height_rejects_negative_available_height() {
-        val error = runCatching { EditorLayout.previewHeightPx(-10) }.exceptionOrNull()
-        assertTrue(error is IllegalArgumentException)
-    }
 
     // ---- fractionOf ----
 

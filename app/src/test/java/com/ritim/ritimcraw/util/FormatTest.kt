@@ -171,6 +171,24 @@ class FormatTest {
         assertEquals("-200 K", Format.formatKelvin(-200))
     }
 
+    // ---- formatPercent ----
+
+    @Test
+    fun percent_hundred_has_no_space() {
+        // Owner request 2026-11-11d section 12.3: the readout is "100%".
+        assertEquals("100%", Format.formatPercent(100))
+    }
+
+    @Test
+    fun percent_zero_is_plain_zero() {
+        assertEquals("0%", Format.formatPercent(0))
+    }
+
+    @Test
+    fun percent_midpoint_has_no_sign() {
+        assertEquals("55%", Format.formatPercent(55))
+    }
+
     // ---- formatClipLine ----
 
     @Test

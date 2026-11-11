@@ -1,0 +1,21 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Editor bottom navigation (Light), Material Symbols light_mode style
+         glyph: a sun disc with eight rays. Vendored because
+         material-icons-core 1.7.3 has no LightMode glyph; the pathData was
+         constructed coordinate-by-coordinate offline (rays at 45-degree
+         steps between radius 5.4 and 8.6 around the center, disc radius
+         4). Compose tints it via LocalContentColor, so NavigationBar
+         keeps the neutral scheme's selected/unselected colors. -->
+    <path
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M12,6.6 L12,3.4 M12,20.6 L12,17.4 M6.6,12 L3.4,12 M20.6,12 L17.4,12 M15.8,8.2 L18.1,5.9 M18.1,18.1 L15.8,15.8 M8.2,8.2 L5.9,5.9 M5.9,18.1 L8.2,15.8" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M8,12 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 z" />
+</vector>

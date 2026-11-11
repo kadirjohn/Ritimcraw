@@ -59,6 +59,15 @@ object Format {
         String.format(Locale.ROOT, "%d K", kelvin)
 
     /**
+     * "100%" — unsigned percent for the 0..100 amount sliders (Noise
+     * Reduction, Chroma Denoise, LUT Strength; owner request 2026-11-11d
+     * section 12.3 shows "100%" with no space). No sign: the range starts
+     * at 0, so a "+" would only add noise.
+     */
+    fun formatPercent(value: Int): String =
+        String.format(Locale.ROOT, "%d%%", value)
+
+    /**
      * Library/clip format line: "3840×2160 • 310 frames • RGGB". Segments
      * with non-positive values are omitted so a half-probed clip degrades
      * gracefully instead of showing "0×0"; an empty clip shows "".

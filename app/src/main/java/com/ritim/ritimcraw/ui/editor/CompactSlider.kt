@@ -159,11 +159,17 @@ fun GradeSlider(
  * traceable to the platform defaults they thin down from.
  */
 object CompactSliderDefaults {
-    /** Thin track line (M3 default TrackHeight is 16dp). */
+    /** Thin track line (M3 default TrackHeight is 16dp; owner request 2026-11-11d section 12.1 band is 3-4dp). */
     val TRACK_HEIGHT = 4.dp
 
-    /** Small round thumb (M3 default HandleWidth/Height are 4/44dp). */
-    val THUMB_SIZE = DpSize(12.dp, 12.dp)
+    /**
+     * Round thumb (M3 default HandleWidth/Height are 4/44dp). 16dp is the
+     * low end of owner request 2026-11-11d section 12.1's 16-20dp visible
+     * band; the M3 Slider's minimumInteractiveComponentSize keeps the
+     * TOUCH target at 48dp (section 12.1: "the actual touch target must
+     * be larger than the visible slider thumb").
+     */
+    val THUMB_SIZE = DpSize(16.dp, 16.dp)
 
     /** Zero tick: 2dp wide, taller than the track line so it reads. */
     val ZERO_TICK_WIDTH = 2.dp
@@ -172,16 +178,24 @@ object CompactSliderDefaults {
     /**
      * Temperature axis sweep: cool blue at low K to warm yellow at high K —
      * the Lightroom/ACR white-balance convention (the slider's EFFECT on
-     * the image, not the blackbody's own color). Draft hues pending the
+     * the image, not the blackbody's own color). Muted pastels (owner
+     * request 2026-11-11d section 14.1: "subtle, readable, and not
+     * visually overwhelming") on the 4dp track line; hues pending the
      * device pass, like PREVIEW_HEIGHT_FRACTION.
      */
-    val TEMPERATURE_GRADIENT = listOf(Color(0xFF64B5F6), Color(0xFFFFEE58))
+    val TEMPERATURE_GRADIENT = listOf(Color(0xFF7EA6C4), Color(0xFFC9B458))
 
-    /** Tint axis sweep: green (negative) to magenta (positive), the ACR tint convention. Draft hues pending the device pass. */
-    val TINT_GRADIENT = listOf(Color(0xFF81C784), Color(0xFFE040FB))
+    /**
+     * Tint axis sweep: green (negative) to magenta (positive), the ACR tint
+     * convention — muted pastels per section 14.1 (see TEMPERATURE_GRADIENT).
+     */
+    val TINT_GRADIENT = listOf(Color(0xFF7FA37E), Color(0xFFB087A8))
 
-    /** Saturation axis sweep: desaturated gray (negative) to a vivid hue (positive). Draft hues pending the device pass. */
-    val SATURATION_GRADIENT = listOf(Color(0xFF9E9E9E), Color(0xFFFF6D00))
+    /**
+     * Saturation axis sweep: desaturated gray (negative) to a soft warm hue
+     * (positive) — muted per section 14.1 (see TEMPERATURE_GRADIENT).
+     */
+    val SATURATION_GRADIENT = listOf(Color(0xFF949494), Color(0xFFC48A5A))
 }
 
 /**
