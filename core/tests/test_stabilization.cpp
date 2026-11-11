@@ -17,9 +17,25 @@
 //     (0, -|g.xy|, g.z) for every roll (the lock undoes exactly the
 //     roll atan2(g.x, -g.y)); refusal (identity + false) whenever
 //     |g.xy| < 0.1 — never a fabricated lock.
+//   - frameTransform: identity q_rel -> the BIT-EXACT identity H for
+//     binary-exact intrinsics; q_rel = Rz(+θ) -> the hand-derived pure
+//     2D block [[c, s], [-s, c]] about the principal point with row 3
+//     EXACTLY (0, 0, 1); q_rel = Rx(-θ) (pitch down) -> center pixel
+//     at (cx, cy + f·tanθ) BELOW center, h[6] exactly 0, h[7] < 0;
+//     q_rel = Ry(-ψ) (pan right) -> center at (cx + f·tanψ, cy),
+//     h[7] exactly 0, h[6] < 0; the width/height overload is
+//     bit-identical to the centered call; f = 0 -> identity fallback.
+//   - focalLengthPxFromEquivalent: width·mm/36 bit-exact; non-positive
+//     inputs -> 0 (unknown, never a guess).
+//   - staticCropZoom: empty/identity/degenerate -> exactly 1.0; the
+//     numeric bisection reproduces the roll closed form
+//     Z(θ) = max((w|sinθ|+h|cosθ|)/h, (w|cosθ|+h|sinθ|)/w) at
+//     5/10/20/45 deg and takes the max over frames; at 8 deg pitch
+//     costs strictly more zoom than roll (perspective stretch on top
+//     of the f·tanθ shift).
 //
-// Later tiers (separate commits) pin the frame homography + static crop
-// and the clip-level API + real-fixture evidence.
+// Tier 3 (next commit) appends the clip-level API + real-fixture
+// evidence.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -80,6 +96,21 @@ OrientationSeries seriesFromAngles(const std::vector<double>& anglesDeg,
             s.quats.push_back(q[k]);
     }
     return s;
+}
+
+// Applies a 3x3 row-major homography to a pixel (perspective divide).
+void applyH(const double h[9], double x, double y, double& ox, double& oy) {
+    const double u = h[0] * x + h[1] * y + h[2];
+    const double v = h[3] * x + h[4] * y + h[5];
+    const double w = h[6] * x + h[7] * y + h[8];
+    REQUIRE(std::fabs(w) > 1e-12);
+    ox = u / w;
+    oy = v / w;
+}
+
+// The 4-component quaternion as the flat vector the crop API takes.
+std::vector<double> quatVec(const double q[4]) {
+    return {q[0], q[1], q[2], q[3]};
 }
 
 } // namespace
@@ -332,4 +363,183 @@ TEST_CASE("horizonLockRotation: refuses degenerate gravity, identity out") {
     quatRotate(qLockC, up, v);
     CHECK(std::fabs(v[0]) < 1e-12);
     CHECK(std::fabs(v[1] + 1.0) < 1e-12);
+}
+
+// ---------------------------------------------------------------------------
+// Frame transform / homography (deliverable 3) — tier 2
+// ---------------------------------------------------------------------------
+
+TEST_CASE("frameTransform: identity q_rel gives the bit-exact identity H") {
+    // Binary-exact intrinsics (f = 1024, cx = 800, cy = 600): every
+    // product in K·D·I·D·K⁻¹ is exact in double, so the identity must
+    // come out BIT-EXACT (the adjugate inverse of K is exact too).
+    double ident[4] = {1.0, 0.0, 0.0, 0.0};
+    double h[9];
+    frameTransform(ident, 1024.0, 800.0, 600.0, h);
+    const double expect[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    for (int i = 0; i < 9; ++i)
+        CHECK(h[i] == expect[i]);
+}
+
+TEST_CASE("frameTransform: pure roll is a 2D rotation about the principal point") {
+    // q_rel = Rz(+5 deg): D commutes with Rz, so H is the pure 2D
+    // rotation about (cx, cy) with the OPPOSITE sign in v (a CCW
+    // camera roll appears CW on screen). Hand-derived:
+    //   [[cos, +sin], [-sin, cos]] block, h[2] = cx(1-cos) - cy·sin,
+    //   h[5] = cx·sin + cy(1-cos), row 3 EXACTLY (0, 0, 1).
+    const double f = 2554.6877034505208;
+    const double cx = 1920.0, cy = 1080.0;
+    double qRel[4], h[9];
+    quatAxisDeg(2, 5.0, qRel);
+    frameTransform(qRel, f, cx, cy, h);
+    const double c = std::cos(deg2rad(5.0));
+    const double s = std::sin(deg2rad(5.0));
+    CHECK(h[0] == doctest::Approx(c).epsilon(1e-12));
+    CHECK(h[1] == doctest::Approx(s).epsilon(1e-12));
+    CHECK(h[3] == doctest::Approx(-s).epsilon(1e-12));
+    CHECK(h[4] == doctest::Approx(c).epsilon(1e-12));
+    CHECK(h[2] == doctest::Approx(cx * (1.0 - c) - cy * s).epsilon(1e-9));
+    CHECK(h[5] == doctest::Approx(cx * s + cy * (1.0 - c)).epsilon(1e-9));
+    CHECK(h[6] == 0.0);
+    CHECK(h[7] == 0.0);
+    CHECK(h[8] == 1.0);
+    // The principal point is FIXED by the roll warp.
+    double px, py;
+    applyH(h, cx, cy, px, py);
+    CHECK(px == doctest::Approx(cx).epsilon(1e-9));
+    CHECK(py == doctest::Approx(cy).epsilon(1e-9));
+}
+
+TEST_CASE("frameTransform: pitch down moves the center below, pan right moves it right") {
+    // q_rel = Rx(-10 deg) (camera pitched DOWN relative to target):
+    // the center pixel must land BELOW the output center (v grows
+    // down) — the flip D is load-bearing; the naive K·R·K⁻¹ inverts
+    // this. Exact form: (cx, cy + f·tan(10 deg)); h[6] == 0 exactly,
+    // h[7] < 0.
+    const double f = 2554.6877034505208;
+    const double cx = 1920.0, cy = 1080.0;
+    double qPitch[4], h[9];
+    quatAxisDeg(0, -10.0, qPitch);
+    frameTransform(qPitch, f, cx, cy, h);
+    CHECK(h[6] == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(h[7] < 0.0);
+    double px, py;
+    applyH(h, cx, cy, px, py);
+    CHECK(px == doctest::Approx(cx).epsilon(1e-9));
+    CHECK(py == doctest::Approx(cy + f * std::tan(deg2rad(10.0))).epsilon(1e-9));
+    CHECK(py > cy); // below center, v-down
+
+    // q_rel = Ry(-10 deg) (camera panned RIGHT): center lands RIGHT of
+    // the output center: (cx + f·tan(10 deg), cy); h[7] == 0, h[6] < 0.
+    double qPan[4];
+    quatAxisDeg(1, -10.0, qPan);
+    frameTransform(qPan, f, cx, cy, h);
+    CHECK(h[7] == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(h[6] < 0.0);
+    applyH(h, cx, cy, px, py);
+    CHECK(px == doctest::Approx(cx + f * std::tan(deg2rad(10.0))).epsilon(1e-9));
+    CHECK(py == doctest::Approx(cy).epsilon(1e-9));
+    CHECK(px > cx); // right of center
+
+    // Small-angle sanity: 1 deg pitch shifts the center by ~f·tan(1 deg).
+    double qSmall[4];
+    quatAxisDeg(0, -1.0, qSmall);
+    frameTransform(qSmall, f, cx, cy, h);
+    applyH(h, cx, cy, px, py);
+    CHECK(py - cy == doctest::Approx(f * std::tan(deg2rad(1.0))).epsilon(1e-9));
+}
+
+TEST_CASE("frameTransform: overload, fallback, and the equivalent-focal conversion") {
+    // The width/height overload is bit-identical to the centered call.
+    double qRel[4], h1[9], h2[9];
+    quatAxisDeg(2, 7.0, qRel);
+    frameTransform(qRel, 2554.0, 1920.0, 1080.0, h1);
+    frameTransform(qRel, 2554.0, 3840, 2160, h2);
+    for (int i = 0; i < 9; ++i)
+        CHECK(h1[i] == h2[i]);
+
+    // f = 0 (singular K): identity fallback — the math stays total.
+    double h0[9];
+    frameTransform(qRel, 0.0, 1920.0, 1080.0, h0);
+    const double ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    for (int i = 0; i < 9; ++i)
+        CHECK(h0[i] == ident[i]);
+
+    // The one documented fallback: 35mm-equivalent mm -> px under the
+    // STATED width-spans-36mm assumption. Bit-exact against the
+    // in-expression computation (the fixture's exact container value).
+    const double mm = 23.950197219848633;
+    CHECK(focalLengthPxFromEquivalent(mm, 3840)
+          == 3840.0 * mm / 36.0);
+    CHECK(focalLengthPxFromEquivalent(mm, 3840)
+          == doctest::Approx(2554.6877034505208).epsilon(1e-12));
+    // Non-positive inputs: 0 (unknown), never a guess.
+    CHECK(focalLengthPxFromEquivalent(0.0, 3840) == 0.0);
+    CHECK(focalLengthPxFromEquivalent(-12.0, 3840) == 0.0);
+    CHECK(focalLengthPxFromEquivalent(mm, 0) == 0.0);
+    CHECK(focalLengthPxFromEquivalent(mm, -3840) == 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Static crop (deliverable 4) — tier 2
+// ---------------------------------------------------------------------------
+
+TEST_CASE("staticCropZoom: empty, identity, and degenerate inputs") {
+    const double cx = 1920.0, cy = 1080.0;
+    // Empty list: nothing to crop for.
+    CHECK(staticCropZoom({}, 2554.0, cx, cy, 3840, 2160) == 1.0);
+    // Identity q_rel: no crop.
+    double ident[4] = {1.0, 0.0, 0.0, 0.0};
+    CHECK(staticCropZoom(quatVec(ident), 2554.0, cx, cy, 3840, 2160) == 1.0);
+    // Degenerate dims / focal: refuse with 1.0, never a guess.
+    double q[4];
+    quatAxisDeg(2, 10.0, q);
+    CHECK(staticCropZoom(quatVec(q), 0.0, cx, cy, 3840, 2160) == 1.0);
+    CHECK(staticCropZoom(quatVec(q), 2554.0, cx, cy, 0, 2160) == 1.0);
+    CHECK(staticCropZoom(quatVec(q), 2554.0, cx, cy, 3840, 0) == 1.0);
+}
+
+TEST_CASE("staticCropZoom: numeric path reproduces the roll closed form") {
+    // Roll-only closed form (Stabilization.h):
+    //   Z(θ) = max((w|sinθ| + h|cosθ|)/h, (w|cosθ| + h|sinθ|)/w).
+    // The numeric bisection must reproduce it to 1e-9 (the bisection's
+    // own stopping tolerance) at several angles.
+    const double w = 3840.0, h = 2160.0;
+    const double cx = w / 2.0, cy = h / 2.0;
+    for (double theta : {5.0, 10.0, 20.0, 45.0}) {
+        double q[4];
+        quatAxisDeg(2, theta, q);
+        const double s = std::fabs(std::sin(deg2rad(theta)));
+        const double cc = std::fabs(std::cos(deg2rad(theta)));
+        const double closed = std::fmax((w * s + h * cc) / h, (w * cc + h * s) / w);
+        const double numeric = staticCropZoom(quatVec(q),
+                                              2554.6877034505208, cx, cy,
+                                              3840, 2160);
+        CHECK(numeric == doctest::Approx(closed).epsilon(1e-9));
+    }
+}
+
+TEST_CASE("staticCropZoom: pitch costs more zoom than roll at 8 deg") {
+    // Independent of focal? No — pitch shifts corners by ~f·tanθ AND
+    // stretches via the perspective terms, so at f = 2554 px the 8 deg
+    // pitch crop is strictly LARGER than the 8 deg roll crop (the
+    // roll closed form is focal-independent). Numbers quoted by the
+    // run (MESSAGE); the pin is the ORDERING plus sane bounds.
+    const double f = 2554.6877034505208;
+    const double cx = 1920.0, cy = 1080.0;
+    double qRoll[4], qPitch[4];
+    quatAxisDeg(2, 8.0, qRoll);
+    quatAxisDeg(0, -8.0, qPitch);
+    const double zRoll = staticCropZoom(quatVec(qRoll), f, cx, cy, 3840, 2160);
+    const double zPitch = staticCropZoom(quatVec(qPitch), f, cx, cy, 3840, 2160);
+    MESSAGE("crop at 8 deg: roll=" << zRoll << " pitch=" << zPitch);
+    // Roll: the closed form at 8 deg (independent of f).
+    const double s8 = std::sin(deg2rad(8.0));
+    const double c8 = std::cos(deg2rad(8.0));
+    const double rollClosed = std::fmax((3840.0 * s8 + 2160.0 * c8) / 2160.0,
+                                       (3840.0 * c8 + 2160.0 * s8) / 3840.0);
+    CHECK(zRoll == doctest::Approx(rollClosed).epsilon(1e-9));
+    CHECK(zPitch > zRoll);            // perspective on top of the shift
+    CHECK(zPitch > 1.50);            // beyond the shift-only bound
+    CHECK(zPitch < 1.70);            // sane for a 4K frame at 8 deg
 }
