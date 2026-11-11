@@ -191,8 +191,10 @@ Result<ImuData> parseGcsv(std::istream& in) {
     // key,value header lines until the column header. tscale and gscale are
     // required; ascale is required only when the data rows turn out to carry
     // accelerometer columns (checked below, once the shape is known);
-    // version/id/orientation/fwversion/timestamp/vendor are carried along
-    // or ignored. A key without a value is malformed.
+    // orientation and timestamp are carried along (the sync anchors:
+    // the axis remap and ImuData.logStartWallMs); version/id/fwversion/
+    // vendor and unknown keys are ignored. A key without a value is
+    // malformed.
     double tscale = 0.0;
     double gscale = 0.0;
     double ascale = 0.0;
@@ -228,8 +230,17 @@ Result<ImuData> parseGcsv(std::istream& in) {
                     "gcsv: line " + std::to_string(lineNo) + " has a bad ascale: \"" + kv[1] + "\"");
         } else if (kv[0] == "orientation") {
             data.orientation = kv[1];
+        } else if (kv[0] == "timestamp") {
+            // Optional sync anchor (stabilization Phase 3/5): epoch-ms
+            // wall time of the log start. Unparseable or non-positive
+            // keeps the -1 sentinel — absent is the honest state, sync
+            // degrades to ManualRequired downstream; a bad optional key
+            // does not fail the whole file.
+            long long ts = -1;
+            if (parseInt(kv[1], ts) && ts > 0)
+                data.logStartWallMs = ts;
         }
-        // version, id, fwversion, timestamp, vendor and any unknown key:
+        // version, id, fwversion, vendor and any unknown key:
         // shape-checked above, otherwise ignored.
     }
     if (!sawColumns)

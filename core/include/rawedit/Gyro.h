@@ -109,6 +109,15 @@ struct ImuData {
     int timestampSource = -1;
     int sensorOrientation = -1;
     int lensFacing = -1;
+    // GCSV header "timestamp" (stabilization Phase 3/5): the epoch-ms
+    // wall time of the log start — the gyro-side anchor the Sync.h
+    // estimate pairs with the container's frame-0 recvdTimestampMs
+    // (Source.h's FrameInfo.recvdMs). -1 = the key is absent or not a
+    // positive integer (absent is the honest state: sync degrades to
+    // ManualRequired, never fabricated). Optional by design — the
+    // key is not in the GCSV spec's required set, so a file without it
+    // still parses.
+    int64_t logStartWallMs = -1;
 
     bool hasAccel() const { return !accel.empty(); }
     // True when gyro and accel are index-locked with pairwise equal
@@ -132,6 +141,9 @@ struct ImuData {
 //   - tscale and gscale are required and must be > 0
 //   - ascale is required iff any data row carries accelerometer columns;
 //     a gyro-only log (t,gx,gy,gz,) needs no ascale
+//   - "timestamp" (epoch ms, optional) is carried into
+//     ImuData.logStartWallMs — the sync anchor; a non-positive or
+//     non-integer value keeps the -1 sentinel (never fabricated)
 //   - unknown header keys are ignored; a key without a value is malformed
 //   - the column header must be exactly "t,gx,gy,gz,ax,ay,az"
 //

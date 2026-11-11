@@ -255,6 +255,47 @@ TEST_CASE("synthetic_gcsv_parses_exact_values") {
     // Strictly increasing timestamps.
     CHECK(d.gyro[0].timestampNs < d.gyro[1].timestampNs);
     CHECK(d.gyro[1].timestampNs < d.gyro[2].timestampNs);
+
+    // The header "timestamp" sync anchor (stabilization Phase 5): the
+    // epoch-ms wall time of the log start, carried verbatim.
+    CHECK(d.logStartWallMs == 1794260510503);
+}
+
+TEST_CASE("gcsv_timestamp_anchor_is_optional_and_honest") {
+    // Absent key -> the -1 sentinel (sync degrades to ManualRequired,
+    // never fabricated); a malformed or non-positive value does too —
+    // and neither fails the file, which must keep parsing. Non-const:
+    // the malformed/non-positive SUBCASEs rewrite the timestamp value in
+    // place (doctest re-runs the whole body per SUBCASE, so each starts
+    // from the pristine kSyntheticGcsv copy).
+    std::string base(kSyntheticGcsv);
+    const std::string tsLine = "timestamp,1794260510503\n";
+
+    SUBCASE("absent keeps the sentinel") {
+        const std::string text = base.substr(0, base.find(tsLine))
+            + base.substr(base.find(tsLine) + tsLine.size());
+        const Result<ImuData> res = parseText(text.c_str());
+        REQUIRE(res.isOk());
+        CHECK((*res.value).logStartWallMs == -1);
+    }
+    SUBCASE("malformed keeps the sentinel") {
+        const Result<ImuData> res = parseText(
+            base.replace(base.find(tsLine) + strlen("timestamp,"),
+                         tsLine.size() - strlen("timestamp,\n"),
+                         "not-a-number")
+                        .c_str());
+        REQUIRE(res.isOk());
+        CHECK((*res.value).logStartWallMs == -1);
+    }
+    SUBCASE("non-positive keeps the sentinel") {
+        const Result<ImuData> res = parseText(
+            base.replace(base.find(tsLine) + strlen("timestamp,"),
+                         tsLine.size() - strlen("timestamp,\n"),
+                         "0")
+                        .c_str());
+        REQUIRE(res.isOk());
+        CHECK((*res.value).logStartWallMs == -1);
+    }
 }
 
 TEST_CASE("scale_chain_gyro_is_radians_per_second") {
