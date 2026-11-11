@@ -1,15 +1,20 @@
 package com.ritim.ritimcraw.ui.editor
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
@@ -20,7 +25,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +41,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.GradePreset
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.util.Format
 
@@ -69,6 +78,29 @@ fun EditorTopBar(
     // clip-info sheet's action row. Default no-op keeps call sites without
     // a picker working.
     onDevelopFrame: () -> Unit = {},
+    // ---- Copy/Paste settings + Presets (owner request 2026-11-11 §4) ----
+    // The clip's CURRENT grade — what "Copy settings" copies and "Save as
+    // preset" snapshots. The screen owns the grade state; the sheet only
+    // reads it.
+    grade: GradeK = GradeK(),
+    // True when the in-memory clipboard holds a copied grade (the paste
+    // row hides without one — see GradeClipboard's process-death note).
+    canPaste: Boolean = false,
+    // Copies the current grade into the clipboard (the screen wires
+    // GradeClipboard.copy).
+    onCopySettings: () -> Unit = {},
+    // Applies the clipboard's grade (or a preset's grade) through the
+    // screen's onGradeChange path — the exact same write a slider move
+    // makes, so persistence and the live preview behave identically.
+    onApplyGrade: (GradeK) -> Unit = {},
+    // The saved presets (AppNav: PresetStore.all(), refreshed after every
+    // save/delete so the rows stay current).
+    presets: List<GradePreset> = emptyList(),
+    // Saves the current grade under a name (AppNav: PresetStore.put +
+    // refresh). Returns the saved preset.
+    onSavePreset: (name: String) -> Unit = {},
+    // Removes a preset by id (AppNav: PresetStore.remove + refresh).
+    onRemovePreset: (id: String) -> Unit = {},
 ) {
     var exportSheetOpen by remember { mutableStateOf(false) }
     var infoSheetOpen by remember { mutableStateOf(false) }
@@ -122,6 +154,13 @@ fun EditorTopBar(
     if (infoSheetOpen) {
         ClipInfoSheet(
             info = clipInfo,
+            grade = grade,
+            canPaste = canPaste,
+            presets = presets,
+            onCopySettings = onCopySettings,
+            onApplyGrade = onApplyGrade,
+            onSavePreset = onSavePreset,
+            onRemovePreset = onRemovePreset,
             onDevelopFrame = {
                 infoSheetOpen = false
                 onDevelopFrame()
@@ -189,18 +228,31 @@ private fun ClipInfoRow(label: String, value: String) {
  * real timestamps when they exist (frames / duration); 0-count or
  * non-positive inputs show "Unknown" rather than fake numbers.
  *
- * The sheet's one ACTION (RAW-11 Frame Picker): "Develop frame" hands
- * control back to the screen, which opens its picker sheet over the
- * transport's current position — the frame number and timecode live in
- * the screen, so this row is only the entry point.
+ * The sheet's ACTIONS (owner request 2026-11-11 §4, plus the RAW-11
+ * Frame Picker entry): "Copy settings" fills the in-memory clipboard;
+ * "Paste settings" (present only when the clipboard holds a grade) and
+ * each preset row apply a grade through the screen's onGradeChange
+ * path — the same write a slider move makes. "Save as preset" opens a
+ * name dialog (M3 TextField inside this ModalBottomSheet) and snapshots
+ * the current grade into the PresetStore; each preset row carries a
+ * delete affordance. The "Develop frame" row hands control back to the
+ * screen, which opens its own picker sheet over the transport position.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ClipInfoSheet(
     info: ClipInfo,
+    grade: GradeK,
+    canPaste: Boolean,
+    presets: List<GradePreset>,
+    onCopySettings: () -> Unit,
+    onApplyGrade: (GradeK) -> Unit,
+    onSavePreset: (String) -> Unit,
+    onRemovePreset: (String) -> Unit,
     onDevelopFrame: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var saveDialogOpen by remember { mutableStateOf(false) }
     val unknown = stringResource(R.string.editor_clip_info_unknown)
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Text(
@@ -261,6 +313,98 @@ private fun ClipInfoSheet(
                 value = info.rawWhiteLevel.toString(),
             )
         }
+        // ---- Settings actions (owner request 2026-11-11 §4) ----
+        // Copy fills the clipboard; Paste applies it. Both are plain
+        // ListItems like the export sheet's rows — the sheet stays open
+        // so the user sees the grade land in the sliders.
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_copy_settings)) },
+            supportingContent = {
+                Text(stringResource(R.string.editor_preset_save_detail))
+            },
+            leadingContent = {
+                Icon(
+                    Icons.Filled.Check,
+                    contentDescription = null,
+                    modifier = Modifier.heightIn(max = 24.dp),
+                )
+            },
+            modifier = Modifier.clickable { onCopySettings() },
+        )
+        if (canPaste) {
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.editor_paste_settings)) },
+                supportingContent = {
+                    Text(stringResource(R.string.editor_paste_settings_detail))
+                },
+                leadingContent = {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        modifier = Modifier.heightIn(max = 24.dp),
+                    )
+                },
+                modifier = Modifier.clickable { onApplyGrade(GradeClipboard.paste() ?: grade) },
+            )
+        }
+        // ---- Presets (owner request 2026-11-11 §4) ----
+        // "Save as preset" opens the name dialog below; the saved rows
+        // apply with one tap and remove with the trailing delete button.
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_preset_save)) },
+            supportingContent = {
+                Text(stringResource(R.string.editor_preset_save_detail))
+            },
+            leadingContent = {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = null,
+                    modifier = Modifier.heightIn(max = 24.dp),
+                )
+            },
+            modifier = Modifier.clickable { saveDialogOpen = true },
+        )
+        if (presets.isEmpty()) {
+            Text(
+                stringResource(R.string.editor_presets_empty),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        } else {
+            Text(
+                stringResource(R.string.editor_presets_title),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            presets.forEach { preset ->
+                ListItem(
+                    headlineContent = { Text(preset.name) },
+                    // The preset's grade travels with its LUT selection:
+                    // applying onto a clip whose library lacks that cube
+                    // keeps the id (renders as no-LUT until re-imported —
+                    // see GradeClipboard/GradePreset docs), never crashes.
+                    modifier = Modifier.clickable { onApplyGrade(preset.grade) },
+                    trailingContent = {
+                        // Resolved OUTSIDE the semantics block: its lambda
+                        // is not composable (the refresh chip's pattern).
+                        val deleteDescription =
+                            stringResource(R.string.editor_preset_delete)
+                        IconButton(
+                            onClick = { onRemovePreset(preset.id) },
+                            modifier = Modifier.semantics {
+                                contentDescription = deleteDescription
+                            },
+                        ) {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = null,
+                            )
+                        }
+                    },
+                )
+            }
+        }
         // Frame Picker entry (RAW-11): the sheet's one action, visually
         // separated from the read-only rows above by the sheet's own
         // spacing — a clickable ListItem like the export sheet's rows.
@@ -271,6 +415,65 @@ private fun ClipInfoSheet(
             },
             modifier = Modifier.clickable { onDevelopFrame() },
         )
+        Spacer(Modifier.height(16.dp))
+    }
+    if (saveDialogOpen) {
+        PresetNameDialog(
+            onSave = { name ->
+                saveDialogOpen = false
+                onSavePreset(name)
+            },
+            onDismiss = { saveDialogOpen = false },
+        )
+    }
+}
+
+/**
+ * "Save as preset" naming (owner request 2026-11-11 §4): an M3
+ * OutlinedTextField inside a ModalBottomSheet (DESIGN.md: bottom sheets
+ * over dialogs), Save disabled until the name is non-blank. The name is
+ * the user's own text and is stored/displayed verbatim — never localized
+ * (the labels around it are).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PresetNameDialog(
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            stringResource(R.string.editor_preset_save),
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text(stringResource(R.string.editor_preset_name_label)) },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.editor_preset_cancel))
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(
+                onClick = { onSave(name.trim()) },
+                enabled = name.isNotBlank(),
+            ) {
+                Text(stringResource(R.string.editor_preset_save_action))
+            }
+        }
         Spacer(Modifier.height(16.dp))
     }
 }

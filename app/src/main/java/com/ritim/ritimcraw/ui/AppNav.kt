@@ -49,6 +49,7 @@ import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.LutStore
 import com.ritim.ritimcraw.data.MediaSource
+import com.ritim.ritimcraw.data.PresetStore
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
 import com.ritim.ritimcraw.engine.NativeSource
@@ -127,6 +128,7 @@ fun AppNav() {
                 project,
                 File(context.filesDir, "luts").apply { mkdirs() },
             ),
+            presets = PresetStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -206,6 +208,10 @@ fun AppNav() {
     // The cube library list (COL-07): plain state refreshed after every
     // import/remove so the editor's LUT rows stay current.
     var lutEntries by remember { mutableStateOf(stores.luts.all()) }
+    // The saved presets (owner request 2026-11-11 §4): plain state
+    // refreshed after every save/delete so the clip-info sheet's rows
+    // stay current — the same pattern as the LUT list.
+    var presetEntries by remember { mutableStateOf(stores.presets.all()) }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     // EditorRoute is a data class — rememberSaveable cannot put it in a
     // Bundle (owner finding 2026-11-10: backgrounding the app with the
@@ -654,6 +660,21 @@ fun AppNav() {
                             lutEntries = stores.luts.all()
                         },
                         lutPathFor = { id -> stores.luts.pathFor(id) },
+                        // ---- Presets (owner request 2026-11-11 §4) ----
+                        // The rows live in the clip-info sheet; AppNav owns
+                        // the store. Save snapshots the clip's CURRENT grade
+                        // (the same store-backed read the export snapshot
+                        // uses), delete removes by id; both refresh the
+                        // list state so the sheet stays current.
+                        presets = presetEntries,
+                        onSavePreset = { name ->
+                            stores.presets.put(name, stores.grades.get(r.sourceId))
+                            presetEntries = stores.presets.all()
+                        },
+                        onRemovePreset = { id ->
+                            stores.presets.remove(id)
+                            presetEntries = stores.presets.all()
+                        },
                     )
                 }
             } else {
@@ -720,4 +741,7 @@ private class Stores(
     val grades: GradeStore,
     val exports: ExportStore,
     val luts: LutStore,
+    // Named grade presets (owner request 2026-11-11 §4): same shared
+    // project.json, own "presets" section (PresetStore).
+    val presets: PresetStore,
 )

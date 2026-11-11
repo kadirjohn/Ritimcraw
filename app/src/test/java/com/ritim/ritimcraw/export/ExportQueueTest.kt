@@ -980,30 +980,24 @@ class ExportQueueTest {
     // ---- LIVE STATUS (owner request 2026-11-11 §1) ----
 
     @Test
-    fun progress_writes_preserve_the_eta_anchor() {
-        // The RUNNING row anchors the UI's ETA with startedAtMs, and every
-        // throttled progress write must PRESERVE the anchor — the writer is
-        // built from the RUNNING row, not the QUEUED input (which has a
-        // null anchor; building from it would null the anchor on the first
-        // progress write and the ETA would never appear).
+    fun progress_writes_replace_the_whole_row() {
+        // Every throttled progress write lands the full RUNNING row — the
+        // writer is built from the RUNNING row (not the QUEUED input) and
+        // carries the counts, so the UI reads a consistent row per write.
         var now = 1_000L
         val store = store()
         store.add(job("j1", "clip1"))
-        // runOne's RUNNING write, simulated: sets the anchor from the clock.
-        val running = store.all().single().copy(
-            state = State.RUNNING,
-            startedAtMs = now,
-        )
+        // runOne's RUNNING write, simulated.
+        val running = store.all().single().copy(state = State.RUNNING)
         store.update(running)
         val w = ProgressWriter(store, running, { now })
         assertTrue(w.report(0, 310))
-        assertEquals(1_000L, store.all().single().startedAtMs)
+        assertEquals(State.RUNNING, store.all().single().state)
         now += ExportQueue.PROGRESS_WRITE_MIN_INTERVAL_MS
         assertTrue(w.report(150, 310))
         val persisted = store.all().single()
         assertEquals(150, persisted.framesDone)
         assertEquals(310, persisted.framesTotal)
-        assertEquals(1_000L, persisted.startedAtMs)
     }
 
     @Test

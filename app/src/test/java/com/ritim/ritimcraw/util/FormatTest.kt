@@ -197,68 +197,34 @@ class FormatTest {
         )
     }
 
-    // ---- etaSeconds (owner request 2026-11-11 §1) ----
+    // ---- formatEtaLeft (owner request 2026-11-11 §1) ----
 
     @Test
-    fun eta_is_null_before_the_warm_up_gate() {
-        // Fewer than MIN_ETA_FRAMES done: a one-frame sample extrapolates
-        // wildly (the first frame pays codec setup), so no ETA yet.
-        assertEquals(
-            null,
-            Format.etaSeconds(9, 310, startedAtMs = 0L, nowMs = 5_000L),
-        )
+    fun eta_left_is_seconds_only_under_a_minute() {
+        assertEquals("0s", Format.formatEtaLeft(0L))
+        assertEquals("45s", Format.formatEtaLeft(45L))
+        assertEquals("59s", Format.formatEtaLeft(59L))
     }
 
     @Test
-    fun eta_is_null_when_nothing_measured_yet() {
-        // Zero elapsed time: nothing measured, no rate.
-        assertEquals(
-            null,
-            Format.etaSeconds(20, 310, startedAtMs = 1_000L, nowMs = 1_000L),
-        )
+    fun eta_left_is_minutes_and_seconds_under_an_hour() {
+        // A zero second unit drops: "1m"/"2m", not "1m 0s"/"2m 0s".
+        assertEquals("1m", Format.formatEtaLeft(60L))
+        assertEquals("2m 13s", Format.formatEtaLeft(133L))
+        assertEquals("2m", Format.formatEtaLeft(120L))
     }
 
     @Test
-    fun eta_is_null_at_or_past_the_total() {
-        // The frames-done == frames-total case is the FINALIZING state
-        // (the muxer is running), not an ETA of 0 — and past-total (a late
-        // report) returns null rather than a negative ETA.
-        assertEquals(
-            null,
-            Format.etaSeconds(310, 310, startedAtMs = 0L, nowMs = 60_000L),
-        )
-        assertEquals(
-            null,
-            Format.etaSeconds(320, 310, startedAtMs = 0L, nowMs = 60_000L),
-        )
+    fun eta_left_is_hours_and_minutes_past_an_hour() {
+        assertEquals("1h 2m", Format.formatEtaLeft(3_720L))
+        // A zero minute unit drops: "2h", not "2h 0m".
+        assertEquals("2h", Format.formatEtaLeft(7_200L))
+        // Seconds never show at this scale (noise).
+        assertEquals("59m 59s", Format.formatEtaLeft(3_599L))
     }
 
     @Test
-    fun eta_is_a_linear_estimate_from_the_observed_rate() {
-        // 100 frames in 10 s -> 10 frames/s; 210 remaining -> 21 s.
-        assertEquals(
-            21L,
-            Format.etaSeconds(100, 310, startedAtMs = 0L, nowMs = 10_000L),
-        )
-    }
-
-    @Test
-    fun eta_rounds_to_whole_seconds() {
-        // 100 frames in 10.5 s -> ~9.52 frames/s; 210 remaining -> 22.05 s
-        // -> 22 (whole seconds; a sub-second ETA would flicker 0↔1).
-        assertEquals(
-            22L,
-            Format.etaSeconds(100, 310, startedAtMs = 0L, nowMs = 10_500L),
-        )
-    }
-
-    @Test
-    fun eta_long_math_survives_a_long_clip() {
-        // 600 frames done of a 60,000-frame clip after 600 s: remaining
-        // 59,400 * 600,000 ms = 35.64e9 — overflows Int, fine in Long.
-        assertEquals(
-            59_400L,
-            Format.etaSeconds(600, 60_000, startedAtMs = 0L, nowMs = 600_000L),
-        )
+    fun eta_left_never_negative() {
+        assertEquals("0s", Format.formatEtaLeft(-5L))
     }
 }

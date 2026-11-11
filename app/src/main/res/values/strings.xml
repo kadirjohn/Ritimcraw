@@ -87,6 +87,17 @@
     <string name="editor_clip_info_raw_format">RAW sample format</string>
     <string name="editor_clip_info_raw_white_level">RAW white level</string>
     <string name="editor_clip_info_unknown">Unknown</string>
+    <string name="editor_copy_settings">Copy settings</string>
+    <string name="editor_paste_settings">Paste settings</string>
+    <string name="editor_paste_settings_detail">Applies the copied grade to this clip</string>
+    <string name="editor_presets_title">Presets</string>
+    <string name="editor_presets_empty">No presets saved yet</string>
+    <string name="editor_preset_save">Save as preset</string>
+    <string name="editor_preset_save_detail">Saves this clip\'s current grade under a name</string>
+    <string name="editor_preset_name_label">Preset name</string>
+    <string name="editor_preset_save_action">Save</string>
+    <string name="editor_preset_cancel">Cancel</string>
+    <string name="editor_preset_delete">Delete preset</string>
     <string name="editor_frame_picker_title">Develop frame</string>
     <string name="editor_frame_picker_frame">Frame %1$d · %2$s</string>
     <string name="editor_frame_picker_photo_clip">Photo: use clip grade</string>
@@ -114,7 +125,7 @@
     <string name="exports_job_running">Exporting…</string>
     <string name="exports_job_running_frames">Exporting… %1$d/%2$d frames</string>
     <string name="exports_job_finalizing">Finishing file…</string>
-    <string name="exports_job_eta">About %1$s left</string>
+    <string name="exports_job_eta">~%1$s left</string>
     <string name="exports_job_done_named">Done — %1$s</string>
     <string name="exports_job_open">Open</string>
     <string name="exports_open_missing_title">Export not available</string>

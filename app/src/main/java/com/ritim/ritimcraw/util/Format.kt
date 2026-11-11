@@ -101,37 +101,22 @@ object Format {
         "${formatTimecode(currentUs, fps)} / ${formatTimecode(totalUs, fps)}"
 
     /**
-     * Export ETA (owner request 2026-11-11 §1): a SIMPLE LINEAR estimate
-     * from the observed rate — remaining frames over (frames done ÷
-     * elapsed ms). Returns null when there is not enough data yet (the
-     * spec: ETA only after enough data):
-     *  - no total, no done frames, or a zero elapsed time (nothing
-     *    measured yet), or
-     *  - fewer than [MIN_ETA_FRAMES] frames done — a one-frame sample
-     *    extrapolates wildly (the first frame pays the decoder/codec
-     *    setup cost and is not representative of the steady rate).
-     *
-     * The estimate is intentionally crude: export rate is roughly constant
-     * per frame on one device, and the spec asks for "only after enough
-     * data", not a curve fit. Rounded to whole seconds (a sub-second ETA
-     * would flicker between 0 and 1 as counts tick).
+     * Export remaining-time text (owner request 2026-11-11 §1): "45s",
+     * "2m 13s", "59m 59s", "2h 1m". Whole seconds in, two-unit max —
+     * seconds only under a minute, minutes+seconds under an hour, hours+
+     * minutes past it (sub-minute seconds are noise at that scale). A zero
+     * second unit is dropped ("2m", not "2m 0s"). Locale.ROOT digits via
+     * plain interpolation (ASCII regardless of locale), tnum-friendly.
+     * Negative input clamps to zero (a remaining time is never negative).
      */
-    fun etaSeconds(
-        framesDone: Int,
-        framesTotal: Int,
-        startedAtMs: Long,
-        nowMs: Long,
-    ): Long? {
-        if (framesDone < MIN_ETA_FRAMES || framesTotal <= framesDone) return null
-        val elapsedMs = nowMs - startedAtMs
-        if (elapsedMs <= 0) return null
-        val remaining = framesTotal - framesDone
-        // Long math: (remaining * elapsed) can overflow Int for long clips;
-        // both operands are Long before the multiply.
-        val etaMs = remaining.toLong() * elapsedMs / framesDone.toLong()
-        return etaMs / 1000L
+    fun formatEtaLeft(seconds: Long): String {
+        val s = seconds.coerceAtLeast(0L)
+        if (s < 60) return "${s}s"
+        val m = s / 60
+        val rem = s % 60
+        if (m < 60) return if (rem == 0L) "${m}m" else "${m}m ${rem}s"
+        val h = m / 60
+        val mRem = m % 60
+        return if (mRem == 0L) "${h}h" else "${h}h ${mRem}m"
     }
-
-    /** Minimum observed frames before an ETA is shown (see [etaSeconds]). */
-    const val MIN_ETA_FRAMES = 10
 }

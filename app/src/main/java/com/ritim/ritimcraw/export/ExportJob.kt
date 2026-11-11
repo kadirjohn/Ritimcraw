@@ -29,12 +29,6 @@ enum class State { QUEUED, RUNNING, DONE, CANCELLED, FAILED }
  * hammered; the persisted value may lag the real count by up to the
  * throttle interval.
  *
- * [startedAtMs] (owner request 2026-11-11 §1: ETA after enough data) is the
- * wall clock when the job's drain started it (RUNNING write); null until
- * then and on terminal rows. The ETA is a UI-side linear estimate from the
- * observed rate (see [ExportEta] in ExportsScreen); the queue persists
- * only the raw start time so a restarted UI can still estimate.
- *
  * [publishedUri] (owner request 2026-11-11 §1: DONE rows open on tap) is the
  * content:// URI of the job's row in the system media store, captured when
  * the publish succeeded — null when the job has not (yet) published, when
@@ -61,7 +55,6 @@ data class ExportJob(
     val detail: String? = null,
     val framesDone: Int? = null,
     val framesTotal: Int? = null,
-    val startedAtMs: Long? = null,
     val publishedUri: String? = null,
     val outputName: String? = null,
     /**
@@ -96,7 +89,6 @@ data class ExportJob(
             detail = null,
             framesDone = null,
             framesTotal = null,
-            startedAtMs = null,
             publishedUri = null,
         )
 }
