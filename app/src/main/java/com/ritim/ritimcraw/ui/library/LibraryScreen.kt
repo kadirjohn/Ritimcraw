@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.library
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -125,6 +126,15 @@ fun LibraryScreen(
     val selecting = selection.isNotEmpty()
     var confirmDeleteOpen by remember { mutableStateOf(false) }
 
+    // E6 (owner finding 2026-11-11): the system back gesture/button while
+    // rows are selected must CLOSE SELECTION, not the app. Enabled
+    // exactly while selection mode is active (the pure
+    // [LibrarySelection.onBack] rule); with no selection the handler is
+    // disabled and back keeps its system default.
+    BackHandler(enabled = selecting) {
+        selectedIds = LibrarySelection.onBack(selectedIds)
+    }
+
     // SAF picker: ACTION_OPEN_DOCUMENT with a persistable read grant.
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -214,8 +224,10 @@ fun LibraryScreen(
                 count = LibraryFilter.entries.size,
                 selected = { index -> filter == LibraryFilter.entries[index] },
                 onSelect = { index -> filter = LibraryFilter.entries[index] },
+                // E5: the row emits the guarded single-line label Text
+                // itself; the caller passes the plain string.
                 label = { index ->
-                    Text(stringResource(LibraryFilter.entries[index].labelRes))
+                    stringResource(LibraryFilter.entries[index].labelRes)
                 },
             )
         }

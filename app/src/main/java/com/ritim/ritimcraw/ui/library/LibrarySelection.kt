@@ -31,4 +31,13 @@ object LibrarySelection {
      */
     fun prune(selected: Set<String>, liveIds: Set<String>): Set<String> =
         selected intersect liveIds
+
+    /**
+     * The system back decision (owner finding 2026-11-11 E6): back while
+     * rows are selected exits SELECTION mode (clears the set — the screen
+     * stays), never the app. The BackHandler is enabled exactly while the
+     * set is non-empty, so this rule only ever runs with an active
+     * selection; an empty input is still mapped to empty for totality.
+     */
+    fun onBack(selected: Set<String>): Set<String> = emptySet()
 }
