@@ -121,6 +121,11 @@ fun TransportRow(
     onPrecisionEngage: () -> Boolean = { false },
     onPrecisionDragDp: (Float) -> Unit = {},
     onPrecisionRelease: () -> Unit = {},
+    // The screen's measurement seam (owner request 2026-11-11d section
+    // 11): the editor Column reports this row's height via onSizeChanged
+    // for the panel anchor math. Last with a default so the one call site
+    // is the only change and the root Row keeps its own padding.
+    modifier: Modifier = Modifier,
 ) {
     val seekDescription = stringResource(R.string.editor_seek)
     // Steady readout, definitive split (owner round 3b): the style is
@@ -153,7 +158,7 @@ fun TransportRow(
         }
     }
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,

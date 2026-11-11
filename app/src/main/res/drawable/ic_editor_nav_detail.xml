@@ -1,0 +1,21 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Editor bottom navigation (Detail), Material Symbols tune style
+         glyph: three slider rows with offset knobs. Vendored because
+         material-icons-core 1.7.3 has no Tune glyph; the pathData was
+         constructed coordinate-by-coordinate offline (rows at y 6/12/18,
+         knob centers x 9/15/12, radius 2.5, stroke 2 with round caps).
+         Compose tints it via LocalContentColor, so NavigationBar keeps
+         the neutral scheme's selected/unselected colors. -->
+    <path
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M4,6 L6.5,6 M11.5,6 L20,6 M4,12 L12.5,12 M17.5,12 L20,12 M4,18 L9.5,18 M14.5,18 L20,18" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M6.5,6 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0 z M12.5,12 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0 z M9.5,18 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0 z" />
+</vector>

@@ -1,39 +1,22 @@
 package com.ritim.ritimcraw.ui.editor
 
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
-
 /**
- * Pure layout math for the editor's fixed regions (design review
- * 2026-11-10 "Onerilen ilk yerlesim"): the preview gets a bounded,
- * deterministic height so the frame never shifts when the tab content
- * below changes size, and only the settings panel scrolls.
- *
- * The preview cap is a DRAFT starting point from the review ("ekranin
- * %35-40'i taslakta bir baslangic noktasi olabilir"): portrait clips
- * and short screens decide the final value (device pass).
+ * Pure layout math for the editor (design review 2026-11-10 "Onerilen
+ * ilk yerlesim", superseded for the preview region by owner request
+ * 2026-11-11d §11.7: the preview now flexes with the draggable panel
+ * instead of carrying a height cap — see PanelSheet for the panel's
+ * anchor math). What remains here is the compact slider's track math.
  */
 object EditorLayout {
 
     /**
-     * Preview region height cap as a fraction of the available screen
-     * height, per the review's 35-40% draft band. 0.38 is the midpoint.
+     * The preview region's soft height fraction, kept for the histogram
+     * overlay's expanded-panel sizing (HistogramOverlay.kt): a soft
+     * aesthetic cap on the graph's height, not a layout constraint —
+     * the overlay is bottom-anchored INSIDE the flexing preview Box, so
+     * it can never leave the preview whatever the panel's state.
      */
     const val PREVIEW_HEIGHT_FRACTION = 0.38f
-
-    /**
-     * The bounded preview region height in px: the preview area is capped
-     * at [PREVIEW_HEIGHT_FRACTION] of the available height, but never
-     * exceeds the full height (short screens with 1.3x text keep the
-     * panel scrollable, never squeezed to zero).
-     */
-    fun previewHeightPx(availableHeightPx: Int): Int {
-        require(availableHeightPx >= 0) { "availableHeightPx must be >= 0" }
-        val capped = (availableHeightPx * PREVIEW_HEIGHT_FRACTION).toInt()
-        return capped.coerceIn(0, availableHeightPx)
-    }
 
     /**
      * Fraction (0..1) of [value] within [range], saturated at the
@@ -74,18 +57,5 @@ object EditorLayout {
         } else {
             zeroFraction..valueFraction
         }
-    }
-
-    /**
-     * The bounded preview region's max height as a Compose [Dp]: the
-     * screen-height cap for the preview Box in ClipEditorScreen
-     * (heightIn(max = ...)). Kept here so the 0.38 draft constant and its
-     * one consumer stay in one place; the px twin [previewHeightPx] is the
-     * JVM-testable half of the same rule.
-     */
-    @Composable
-    fun previewMaxHeight(): Dp {
-        val screenHeightDp = LocalConfiguration.current.screenHeightDp
-        return (screenHeightDp * PREVIEW_HEIGHT_FRACTION).dp
     }
 }

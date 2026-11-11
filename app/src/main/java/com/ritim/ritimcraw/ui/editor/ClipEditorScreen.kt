@@ -3,7 +3,11 @@ package com.ritim.ritimcraw.ui.editor
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.AnchoredDraggableState
+import androidx.compose.foundation.gestures.DraggableAnchors
+import androidx.compose.foundation.gestures.animateTo
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -17,9 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -34,8 +36,6 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,11 +44,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -80,6 +84,7 @@ import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -204,6 +209,7 @@ enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
  * the before/after press-hold: hold the frame area to swap to the
  * neutral grade, release to return.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ClipEditorScreen(
     sourceId: String,
@@ -282,6 +288,61 @@ fun ClipEditorScreen(
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
+        // ---- Draggable panel state (owner request 2026-11-11d §10-11) ----
+        // The panel's vertical state is saveable (§11.6: survives
+        // configuration changes like the tab does) and the drag state is
+        // remembered ONCE with the restored value as its initial anchor
+        // target — a rotation keeps the panel exactly where it was, and
+        // the offset is never recreated (§18: no reset, no reprocessing).
+        var panelState by rememberSaveable { mutableStateOf(PanelState.NORMAL) }
+        val panelDrag = rememberPanelDragState(panelState)
+        val density = LocalDensity.current
+        val scope = rememberCoroutineScope()
+        // The measured heights the anchor math needs (§11.3: "adapt to
+        // the measured device size"). NONE of these depends on the
+        // panel's own offset, so the anchors can never churn mid-drag
+        // (the preview Box takes the flex space between them — it
+        // flexes as the panel grows/shrinks, §11.7):
+        //   free region = column height - top bar (56dp constant) -
+        //                 transport height - nav height
+        // The top bar is a fixed 56dp Row (EditorTopBar), so its px value
+        // is a density conversion, not a measurement. Transport and nav
+        // are measured via onSizeChanged because their heights vary with
+        // font scale and precision-mode readout.
+        var editorColumnHeight by remember { mutableStateOf(0) }
+        var transportHeight by remember { mutableStateOf(0) }
+        var navHeight by remember { mutableStateOf(0) }
+        val topBarHeightPx = with(density) { EditorTopBarHeight.toPx() }
+        // The collapsed anchor: the handle strip's height (§11.3 state A).
+        val collapsedHeightPx = with(density) { PanelHandleHeight.roundToPx() }
+        // The free region for the panel + preview together (§11.3): the
+        // column minus the fixed rows above and below the flex area.
+        val freeRegionPx = (editorColumnHeight - topBarHeightPx.toInt() -
+            transportHeight - navHeight).coerceAtLeast(0)
+        // Anchors update whenever the measured region changes (first
+        // composition, rotation, font-scale change). updateAnchors snaps
+        // synchronously to the CURRENT target, so the offset lands on the
+        // restored state's height on the first frame and follows the
+        // region on re-measures — never a re-animation from zero.
+        LaunchedEffect(freeRegionPx, collapsedHeightPx) {
+            if (freeRegionPx > 0) {
+                panelDrag.updateAnchors(
+                    DraggableAnchors {
+                        PanelSheet.anchorHeights(freeRegionPx, collapsedHeightPx).forEach { (state, h) ->
+                            state.at(h)
+                        }
+                    },
+                    panelState,
+                )
+            }
+        }
+        // The saveable mirror: settledValue is the state the panel has
+        // settled on (drag end / animation end), so the saveable keeps
+        // exactly what the user last saw (§11.6).
+        LaunchedEffect(panelDrag) {
+            snapshotFlow { panelDrag.settledValue }
+                .collect { settled -> panelState = settled }
+        }
         var grade by remember(sourceId) { mutableStateOf(initialGrade) }
 
         // ---- Preview + transport bookkeeping (all keyed to the clip) ----
@@ -851,7 +912,16 @@ fun ClipEditorScreen(
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier.fillMaxSize(),
         ) {
-        Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                // The panel anchor math measures THIS column (the free
+                // region is what remains after the fixed rows; see the
+                // wiring block above). onSizeChanged — not a layout
+                // callback into composition — so the measurement can
+                // never feed back into the same frame's layout.
+                .onSizeChanged { editorColumnHeight = it.height },
+        ) {
             // Fixed top bar (design review "Onerilen ilk yerlesim"): back +
             // single-line name + one Export icon (opens the export sheet)
             // + "..." (opens the clip-info sheet). The name shown is the
@@ -892,19 +962,19 @@ fun ClipEditorScreen(
                     onRotate = onRotate,
                 )
             }
-            // Bounded preview region (design review: the frame never shifts
-            // when the tab content changes): the preview is capped at
-            // EditorLayout.PREVIEW_HEIGHT_FRACTION of the available height
-            // instead of taking the flex space, so the frame's position is
-            // deterministic across tabs. PreviewSurface still shapes itself
+            // Flexing preview region (owner request 2026-11-11d §11.7):
+            // the preview takes whatever the panel leaves — collapsed
+            // panel gives it the most space, expanded the least — and
+            // in fullscreen it takes the whole flex space (the panel and
+            // navigation are hidden). PreviewSurface still shapes itself
             // by the clip's ratio (ratio chain preserved) and centers
-            // inside the bounded Box. In fullscreen the same Box takes the
-            // flex space instead (weight) with no cap — same session, same
-            // ratio chain, only the layout changes.
+            // inside the flex Box. The frame's position is still
+            // deterministic while grading: the panel height only moves
+            // on a handle drag, never on a tab/category switch.
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .then(if (fullscreen) Modifier.weight(1f) else Modifier.heightIn(max = EditorLayout.previewMaxHeight())),
+                    .weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
                 PreviewSurface(
@@ -1081,7 +1151,12 @@ fun ClipEditorScreen(
             // total timecode directly under the preview. Loading and error
             // states stay readable in the preview area above; the transport
             // is disabled until the session opens (no timestamps yet).
+            // The modifier measures the row for the panel anchor math
+            // (§11.3) — its height varies with font scale and the
+            // precision-mode readout, so it is measured, not assumed.
             TransportRow(
+                modifier = Modifier
+                    .onSizeChanged { transportHeight = it.height },
                 isPlaying = isPlaying,
                 enabled = pts != null && pts.size > 1,
                 elapsedUs = elapsedUs,
@@ -1235,47 +1310,35 @@ fun ClipEditorScreen(
                     }
                 },
             )
-            // Tabs: Light / Color / Detail (independent of the panel —
-            // design review: the tab row sits between transport and panel).
-            // Hidden in fullscreen (owner request section 2).
+            // Draggable, collapsible adjustment panel (owner request
+            // 2026-11-11d §11): the bottom-anchored sheet whose height IS
+            // the drag offset, settling between the three PanelSheet
+            // anchors. The handle strip at its top is the ONLY node with
+            // the panel drag modifier (§11.5 gesture isolation: sliders,
+            // the scrolling list, the timeline and the navigation sit on
+            // other nodes). The category content is ALWAYS composed —
+            // clipped, not removed, while collapsed — so the active
+            // category, every adjustment value, the per-category scroll
+            // position, playback and the render session all survive
+            // collapse/expand by construction (§10.3, §11.6, §18).
+            // Hidden in fullscreen (owner request section 2): the preview
+            // takes the flex space instead.
             if (!fullscreen) {
-                TabRow(selectedTabIndex = tab, modifier = Modifier.fillMaxWidth()) {
-                    Tab(
-                        selected = tab == 0,
-                        onClick = { tab = 0 },
-                        text = { Text(stringResource(R.string.editor_tab_light)) },
-                    )
-                    Tab(
-                        selected = tab == 1,
-                        onClick = { tab = 1 },
-                        text = { Text(stringResource(R.string.editor_tab_color)) },
-                    )
-                    Tab(
-                        selected = tab == 2,
-                        onClick = { tab = 2 },
-                        text = { Text(stringResource(R.string.editor_tab_detail)) },
-                    )
-                }
-            }
-            // Settings panel — the ONLY region that scrolls (design review
-            // "Onerilen ilk yerlesim": sabit ust bar + sinirlandirilmis
-            // onizleme + kayan ayar paneli). The panel takes the flex
-            // space left by the bounded preview and scrolls inside it, so
-            // short screens + 1.3x text never squeeze the preview. Hidden
-            // in fullscreen (owner request section 2): the preview takes
-            // the flex space instead.
-            if (!fullscreen) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainer,
+                EditorPanelSheet(
+                    dragState = panelDrag,
+                    // NaN guard: the offset is uninitialized until the
+                    // first updateAnchors lands (getOffset returns NaN
+                    // before then), so the first frame composes the
+                    // sheet at the collapsed-strip height and the
+                    // anchors effect snaps it to the restored state
+                    // synchronously on the same first layout pass.
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
+                        .height(
+                            if (panelDrag.anchors.size == 0) PanelHandleHeight
+                            else with(density) { panelDrag.offset.toDp() },
+                        ),
                 ) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState()),
-                    ) {
                 when (tab) {
                     0 -> LightPanel(
                         grade = grade,
@@ -1386,6 +1449,37 @@ fun ClipEditorScreen(
                 }
                 }
             }
+            // Fixed Light/Color/Detail bottom navigation (owner request
+            // 2026-11-11d §10): OUTSIDE the draggable panel, always the
+            // editor's LAST row, so it stays visible and tappable in
+            // every panel state. The current category stays selected
+            // while collapsed (§10.3); a tap while collapsed opens the
+            // panel to its normal editing position (§10.3), a tap while
+            // open only switches the category — the panel height never
+            // moves on a category switch. The pure decisions live in
+            // PanelSheet (panelAfterCategoryTap) and EditorPreviewLogic
+            // nothing here re-derives. Hidden in fullscreen (owner
+            // request section 2).
+            if (!fullscreen) {
+                EditorBottomNav(
+                    selected = tab,
+                    onCategoryTap = { category ->
+                        tab = category
+                        // targetValue (not the saveable mirror): a tap
+                        // mid-settle reads the panel's live heading, so
+                        // a panel still animating toward COLLAPSED opens
+                        // instead of staying shut (§10.3 "if a user
+                        // selects a category while the panel is
+                        // collapsed, open the panel to its normal
+                        // editing position").
+                        val target = PanelSheet.panelAfterCategoryTap(panelDrag.targetValue)
+                        if (target != panelDrag.targetValue) {
+                            scope.launch { panelDrag.animateTo(target) }
+                        }
+                    },
+                    modifier = Modifier
+                        .onSizeChanged { navHeight = it.height },
+                )
             }
         }
     }
