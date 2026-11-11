@@ -38,7 +38,9 @@ set_property(TARGET vqf PROPERTY POSITION_INDEPENDENT_CODE ON)
 # Gyro.cpp stays desktop-only until the app calls it; Orientation.cpp
 # (Phase 2 axis remap, header-only dep on Gyro.h) and
 # OrientationEstimate.cpp (Phase 2 estimation, links vqf) are registered
-# now so the lib compiles as the gyro pipeline grows.
+# now so the lib compiles as the gyro pipeline grows. Sync.cpp (Phase 3
+# frame↔IMU clock bridge) is pure arithmetic — no decoder dependency —
+# but rides in the same lib so the Phase 4 JNI bridge reaches it.
 add_library(rawedit STATIC
     src/Source.cpp
     src/Develop.cpp
@@ -46,8 +48,10 @@ add_library(rawedit STATIC
     src/Transfer.cpp
     src/Lut.cpp
     src/DngWriter.cpp
+    src/Gyro.cpp
     src/Orientation.cpp
-    src/OrientationEstimate.cpp)
+    src/OrientationEstimate.cpp
+    src/Sync.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)
