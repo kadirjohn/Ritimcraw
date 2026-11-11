@@ -52,6 +52,43 @@ class ThumbnailStoreTest {
         assertFalse(store.has("cc"))
     }
 
+    // ---- store: remove (owner finding 2026-11-11 E2) ----
+
+    @Test
+    fun remove_deletes_the_persisted_png() {
+        val store = ThumbnailStore(File(tmp.root, "thumbs"))
+        store.ensureDir()
+        File(store.targetPath("gone")).writeText("png")
+        assertTrue(store.has("gone"))
+
+        store.remove("gone")
+
+        assertFalse(store.has("gone"))
+        assertNull(store.fileFor("gone"))
+    }
+
+    @Test
+    fun remove_is_a_noop_when_no_file_exists() {
+        // Deleting a clip that never got its thumbnail must not throw —
+        // and must not create anything either.
+        val store = ThumbnailStore(File(tmp.root, "thumbs"))
+        store.remove("never-existed")
+        assertFalse(store.has("never-existed"))
+    }
+
+    @Test
+    fun remove_never_touches_other_ids_files() {
+        val store = ThumbnailStore(File(tmp.root, "thumbs"))
+        store.ensureDir()
+        File(store.targetPath("aa")).writeText("a")
+        File(store.targetPath("bb")).writeText("b")
+
+        store.remove("aa")
+
+        assertFalse(store.has("aa"))
+        assertTrue(store.has("bb"))
+    }
+
     // ---- rules: needsThumbnail ----
 
     @Test

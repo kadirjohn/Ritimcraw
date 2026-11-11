@@ -835,6 +835,23 @@ fun AppNav() {
                                     }
                                 }
                             },
+                            // E2 delete: the ONE composition of the store
+                            // removes (ClipDeletion documents the scope) —
+                            // record + grade + thumbnail PNG, never the
+                            // user's original SAF file, never export
+                            // history. Refresh through the same state the
+                            // import path uses, so the list (and the
+                            // empty-library state after deleting
+                            // everything) updates in place.
+                            onDeleteClips = { ids ->
+                                com.ritim.ritimcraw.data.ClipDeletion.delete(
+                                    ids = ids,
+                                    sources = stores.sources,
+                                    grades = stores.grades,
+                                    thumbnails = thumbnailStore,
+                                )
+                                sources = stores.sources.all()
+                            },
                         )
                         Destination.PROJECTS -> ProjectsScreen()
                         Destination.EXPORTS -> ExportsScreen(

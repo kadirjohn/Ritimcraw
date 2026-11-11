@@ -27,6 +27,12 @@
     <string name="library_import_failed_storage">Import failed: the file could not be read from storage (%1$s). Recovery: check the clip still exists, then pick it again.</string>
     <string name="library_import_failed_unknown">Import failed: %1$s. Recovery: pick the clip again from its original location.</string>
     <string name="library_import_done">Imported</string>
+    <string name="library_selection_count">%1$d selected</string>
+    <string name="library_selection_close">Exit selection</string>
+    <string name="library_selection_delete">Delete clips</string>
+    <string name="library_delete_title">Remove clips?</string>
+    <string name="library_delete_confirm">Remove</string>
+    <string name="library_delete_cancel">Cancel</string>
 
     <!-- Clip editor -->
     <string name="editor_back">Back to library</string>
@@ -169,4 +175,10 @@
     <string name="settings_preview_quality_balanced">Balanced</string>
     <string name="settings_preview_quality_high">High</string>
     <string name="settings_preview_quality_dims">%1$d / %2$d px</string>
+
+    <!-- E2 Library delete: how many clips the confirm dialog removes. -->
+    <plurals name="library_delete_message">
+        <item quantity="one">1 clip will be removed from the library. The original file stays on your device.</item>
+        <item quantity="other">%1$d clips will be removed from the library. The original files stay on your device.</item>
+    </plurals>
 </resources>
