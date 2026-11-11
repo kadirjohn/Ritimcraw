@@ -3,6 +3,8 @@ package com.ritim.ritimcraw.ui.editor
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,6 +42,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -67,6 +70,7 @@ import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Pure preview-area decision logic (JVM-testable without Compose): which
@@ -240,6 +244,15 @@ fun ClipEditorScreen(
         var fullscreen by rememberSaveable { mutableStateOf(false) }
         BackHandler(enabled = fullscreen) { fullscreen = false }
 
+        // Before/after press-hold (owner feature list W5): while held, the
+        // preview renders the CURRENT frame with the neutral/original grade;
+        // release re-renders with the actual grade. Both renders go through
+        // the render gate and the pump below, exactly like every other
+        // request. heldRenderIssued tracks whether THIS hold actually issued
+        // a render (an already-neutral grade skips both renders); the
+        // startHold helper is defined next to requestRender below.
+        var heldRenderIssued by remember(sourceId) { mutableStateOf(false) }
+
         // ---- LUT import (COL-07) ----
         // The import error is LOCAL to the LUT section: errorText drives the
         // preview FAILED state (EditorPreviewLogic.stateOf), so a failed
@@ -301,6 +314,42 @@ fun ClipEditorScreen(
                 is SliderTiers.Decision.RenderAtSettleTier ->
                     requestRender(positionFrame, grade, d.maxDim)
                 SliderTiers.Decision.NoRender -> Unit
+            }
+        }
+
+        /**
+         * Before/after press-hold (owner feature list W5): press renders the
+         * current frame with the neutral/original grade (the CACHED path —
+         * the frame on screen was just rendered at the same index, so the
+         * decode is reused and the swap costs one develop, no new decode);
+         * release re-renders with the actual grade, also cached. Both go
+         * through the render gate like every other request: newest-wins
+         * pending slot + monotonic publication mean a newer request (a
+         * seek, a slider settle, playback started mid-hold) supersedes the
+         * hold render by sequence and the release render restores the grade
+         * — the drag-tier/settle pipeline cannot be corrupted. Paused-only
+         * (BeforeAfter.canHold): during playback the loop's continuous
+         * graded offers would supersede a neutral render within one frame,
+         * so the hold is ignored there rather than fighting the loop.
+         * An already-neutral grade skips both renders (the picture would
+         * not change), tracked by heldRenderIssued so a release never
+         * issues a render its press never issued.
+         */
+        fun startHold(pressed: Boolean) {
+            if (pressed) {
+                if (!BeforeAfter.canHold(isPlaying, frame != null, canRender)) return
+                if (!BeforeAfter.holdChangesPicture(grade)) return
+                heldRenderIssued = true
+                requestRender(
+                    positionFrame, BeforeAfter.holdGrade(),
+                    PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                )
+            } else if (heldRenderIssued) {
+                heldRenderIssued = false
+                requestRender(
+                    positionFrame, grade,
+                    PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                )
             }
         }
 
@@ -596,7 +645,75 @@ fun ClipEditorScreen(
                     accessLost = accessLost,
                     sourceWidth = sourceWidth,
                     sourceHeight = sourceHeight,
-                    modifier = Modifier.fillMaxWidth(),
+                    // The before/after press-hold gesture rides the surface's
+                    // modifier (owner feature list W5): press-and-hold on the
+                    // frame area swaps to the neutral grade, release returns
+                    // to the current grade. The press must SURVIVE the
+                    // platform long-press window to engage — a quick release,
+                    // a drag beyond the touch slop, or another handler
+                    // consuming the stream cancels — which is also what keeps
+                    // quick taps on the frame and on the corner controls
+                    // (refresh chip, fullscreen button — they overlap the
+                    // surface's bounds) from flashing the original. Manual
+                    // long-press detection instead of detectTapGestures:
+                    // its onPress block is CANCELLED when onLongPress fires,
+                    // so it cannot bridge engage-on-long-press to
+                    // release-on-lift; withTimeoutOrNull drives the window
+                    // without needing move events (a perfectly still finger
+                    // still engages), the same shape Compose's own
+                    // awaitLongPressOrCancellation uses. Attached here in
+                    // the editor, so PreviewSurface stays a pure display
+                    // component and both layouts (normal and fullscreen)
+                    // get the feature through this one call site.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pointerInput(Unit) {
+                            val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+                            val slop = viewConfiguration.touchSlop
+                            awaitEachGesture {
+                                val down = awaitFirstDown()
+                                // The long-press window: true when the press
+                                // ended early (lift, drag, or consumed),
+                                // null when the window elapsed with the
+                                // finger still down.
+                                val endedEarly = withTimeoutOrNull(longPressTimeout) {
+                                    var lifted = false
+                                    while (!lifted) {
+                                        val event = awaitPointerEvent()
+                                        val change =
+                                            event.changes.firstOrNull { it.id == down.id }
+                                        if (change == null || !change.pressed ||
+                                            event.changes.any { it.isConsumed } ||
+                                            (change.position - down.position).getDistance() > slop
+                                        ) {
+                                            lifted = true
+                                        }
+                                    }
+                                    true
+                                }
+                                // Null = the window elapsed with the finger
+                                // still down (long press confirmed); non-null
+                                // = the press ended early, so this gesture is
+                                // a tap/drag, not a hold.
+                                if (endedEarly != null) return@awaitEachGesture
+                                // Long press confirmed: show the original.
+                                startHold(true)
+                                // The hold ends when the finger lifts or the
+                                // stream is consumed; either way the release
+                                // render restores the current grade.
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change =
+                                        event.changes.firstOrNull { it.id == down.id }
+                                    if (change == null || !change.pressed ||
+                                        event.changes.any { it.isConsumed }
+                                    ) {
+                                        break
+                                    }
+                                }
+                                startHold(false)
+                            }
+                        },
                 )
                 // Small corner refresh control (design review: the manual
                 // render leaves the prime area): status from the existing
