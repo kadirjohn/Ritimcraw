@@ -34,14 +34,17 @@ set_property(TARGET vqf PROPERTY POSITION_INDEPENDENT_CODE ON)
 # Thumbnail.cpp + Transfer.cpp are linked by the app's preview path
 # (jni_bridge.cpp: developThumbnail + linearToRec709); DngWriter.cpp is
 # linked by the app's DNG export path (jni_bridge.cpp: writeCfaDng).
-# Gyro.cpp stays desktop-only until the app calls it.
+# Gyro.cpp stays desktop-only until the app calls it; Orientation.cpp
+# (Phase 2 axis remap, header-only dep on Gyro.h) is registered now so
+# the lib compiles as the gyro pipeline grows.
 add_library(rawedit STATIC
     src/Source.cpp
     src/Develop.cpp
     src/Thumbnail.cpp
     src/Transfer.cpp
     src/Lut.cpp
-    src/DngWriter.cpp)
+    src/DngWriter.cpp
+    src/Orientation.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)

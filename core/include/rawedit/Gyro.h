@@ -100,8 +100,15 @@ struct ImuData {
     //     1 = REALTIME (SystemClock.elapsedRealtimeNanos), comparable.
     //     The real fixtures record 1.
     //   sensorOrientation: degrees CW to upright (fixtures record 90).
+    //   lensFacing: Android LENS_FACING semantics (telemetry-parser
+    //     motioncam.rs @9350bc2 reads it alongside sensorOrientation):
+    //     0 = front, 1 = back; -1 = absent (treated as back, the common
+    //     case and tp's own default). The Phase 2 axis remap needs it to
+    //     pick the front-camera variant of the sensor-orientation
+    //     rotation.
     int timestampSource = -1;
     int sensorOrientation = -1;
+    int lensFacing = -1;
 
     bool hasAccel() const { return !accel.empty(); }
     // True when gyro and accel are index-locked with pairwise equal

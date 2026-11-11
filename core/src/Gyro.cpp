@@ -375,9 +375,11 @@ Result<ImuData> parseImuFromMcraw(const std::string& path) {
         // Raw container keys for the later phases (never interpreted here).
         data.timestampSource = -1;
         data.sensorOrientation = -1;
+        data.lensFacing = -1;
         const nlohmann::json& cm = decoder.getContainerMetadata();
         getJsonInt(cm, "timestampSource", data.timestampSource);
         getJsonInt(cm, "sensorOrientation", data.sensorOrientation);
+        getJsonInt(cm, "lensFacing", data.lensFacing);
 
         const bool hasGyro = decoder.hasGyroData();
         const bool hasAccel = decoder.hasAccelerometerData();

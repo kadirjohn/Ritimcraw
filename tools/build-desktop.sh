@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Thumbnail.cpp Lut.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp Thumbnail.cpp Lut.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -72,6 +72,9 @@ echo "== building tests =="
 # It links vqf (Phase 2 orientation estimation tests).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" "${VQF_OBJS[@]}" -o "$BUILD/test_gyro"
+# test_orientation: axis remap (Phase 2 deliverable 1); no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_orientation.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_orientation"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_thumbnail.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_thumbnail"
 
@@ -94,6 +97,8 @@ echo "== running test_lut =="
 (cd "$ROOT" && "$BUILD/test_lut")
 echo "== running test_gyro =="
 (cd "$ROOT" && "$BUILD/test_gyro")
+echo "== running test_orientation =="
+"$BUILD/test_orientation"
 echo "== running test_thumbnail =="
 (cd "$ROOT" && "$BUILD/test_thumbnail")
 
