@@ -155,6 +155,99 @@ class SourceRepositoryTest {
         assertEquals(before, file.readText())
     }
 
+    // ---- duration (owner request 2026-11-11 section 1) ----
+
+    @Test
+    fun duration_persists_across_reload_and_hides_when_zero() {
+        val file = projectFile()
+        SourceRepository(FakeResolver("clip".toByteArray()), file).import("content://clip/1")
+
+        // The generation pass probed a 12.5 s recorded timeline.
+        file.writeText(
+            file.readText().replace(
+                "\"access\":\"OK\"}",
+                "\"access\":\"OK\",\"durationUs\":12500000}",
+            ),
+        )
+        val reloaded = SourceRepository(FakeResolver(), file).all().single()
+
+        assertEquals(12_500_000L, reloaded.durationUs)
+        assertTrue(reloaded.hasStats) // duration alone shows a format line
+    }
+
+    @Test
+    fun duration_omitted_keeps_schema1_files_byte_identical() {
+        val file = projectFile()
+        SourceRepository(FakeResolver("clip".toByteArray()), file).import("content://clip/1")
+        val before = file.readText()
+
+        // A backfill with NO new values (all unknown) must not rewrite a
+        // duration key into the file — schema-1 files stay byte-identical.
+        SourceRepository(FakeResolver("clip".toByteArray()), file).backfillStats(
+            id = SourceRepository(FakeResolver(), file).all().single().id,
+            width = 0, height = 0, frameCount = 0, cfa = "", durationUs = 0L,
+        )
+        assertEquals(before, file.readText())
+    }
+
+    // ---- backfillStats (the generation pass's write path) ----
+
+    @Test
+    fun backfill_stats_fills_a_probed_record() {
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+
+        // The pass probed an open-gate clip: 4000x3000, 310 frames,
+        // 12.9 s of recorded timeline.
+        val filled = SourceRepository(FakeResolver("clip".toByteArray()), file).backfillStats(
+            id = imported.id,
+            width = 4000, height = 3000, frameCount = 310, cfa = "RGGB",
+            durationUs = 12_900_000L,
+        )
+
+        assertEquals(4000, filled?.width)
+        assertEquals(3000, filled?.height)
+        assertEquals(310, filled?.frameCount)
+        assertEquals("RGGB", filled?.cfa)
+        assertEquals(12_900_000L, filled?.durationUs)
+        // Persisted: a fresh repository sees the recorded stats.
+        val reloaded = SourceRepository(FakeResolver(), file).all().single()
+        assertEquals(4000, reloaded.width)
+        assertEquals(3000, reloaded.height)
+        assertEquals(12_900_000L, reloaded.durationUs)
+    }
+
+    @Test
+    fun backfill_stats_never_overwrites_filled_values_with_unknowns() {
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+        SourceRepository(FakeResolver("clip".toByteArray()), file).backfillStats(
+            imported.id, 4000, 3000, 310, "RGGB", 12_900_000L,
+        )
+
+        // A re-probe that failed to read some values (0/blank) must keep
+        // the record's filled stats — never clobber them with unknowns.
+        val kept = SourceRepository(FakeResolver("clip".toByteArray()), file).backfillStats(
+            imported.id, 0, 0, 0, "", 0L,
+        )
+        assertEquals(4000, kept?.width)
+        assertEquals(3000, kept?.height)
+        assertEquals(310, kept?.frameCount)
+        assertEquals("RGGB", kept?.cfa)
+        assertEquals(12_900_000L, kept?.durationUs)
+    }
+
+    @Test
+    fun backfill_stats_is_a_noop_for_a_missing_record() {
+        val file = projectFile()
+        assertNull(
+            SourceRepository(FakeResolver("clip".toByteArray()), file)
+                .backfillStats("no-such-id", 4000, 3000, 310, "RGGB", 12_900_000L),
+        )
+    }
+
     // ---- display names (owner request 2026-11-11 §2b) ----
 
     @Test

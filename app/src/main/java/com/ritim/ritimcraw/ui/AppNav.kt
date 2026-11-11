@@ -52,8 +52,12 @@ import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.PresetStore
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.data.ThumbnailRules
+import com.ritim.ritimcraw.data.ThumbnailStore
+import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.PreviewMetrics
+import com.ritim.ritimcraw.engine.SourcePathDecision
 import com.ritim.ritimcraw.export.BitmapPngWriter
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
@@ -223,6 +227,61 @@ fun AppNav() {
     // time, kicked from Settings' Measure action.
     var measuring by remember { mutableStateOf(false) }
     var measureKick by remember { mutableStateOf(0) }
+
+    // Library thumbnails + recorded stats (owner request 2026-11-11 §1):
+    // one small PNG per clip id under files/thumbnails/, developed ONCE
+    // from frame 0 with the neutral grade (the owner accepts the dark
+    // look), plus the recorded dims/duration backfilled into the record.
+    // The PNG writer is the same thin Android adapter the photo export
+    // uses (Bitmap.compress); the generation pass runs entirely on the
+    // shared preview engine thread through the editor's session seam.
+    val thumbnailDir = remember { File(context.filesDir, "thumbnails").apply { mkdirs() } }
+    val thumbnailStore = remember { ThumbnailStore(thumbnailDir) }
+    val thumbnails = remember {
+        ClipThumbnails(
+            store = thumbnailStore,
+            pngWriter = BitmapPngWriter(),
+        )
+    }
+    // How many missing thumbnails one Library open generates (bounded, so
+    // a huge library opens instantly and fills in while the user looks).
+    val thumbnailBatchLimit = 3
+
+    // Generates ONE clip's thumbnail + stats off the UI path and refreshes
+    // the list when the record changed (the stats backfill rewrites the
+    // persisted record, so the row's resolution/duration survive restarts).
+    suspend fun generateThumbnail(source: MediaSource) {
+        val uri = source.uri
+        val kind = source.kind
+        val mime = try {
+            context.contentResolver.getType(Uri.parse(uri))
+        } catch (e: Exception) {
+            null
+        }
+        thumbnails.generate(
+            ClipThumbnails.PendingClip(
+                media = source,
+                path = SourcePathDecision.decide(kind, mime),
+                fdProvider = {
+                    try {
+                        context.contentResolver
+                            .openFileDescriptor(Uri.parse(uri), "r")
+                            ?.detachFd() ?: -1
+                    } catch (e: Exception) {
+                        -1
+                    }
+                },
+                onStats = { w, h, frames, durationUs ->
+                    val updated = stores.sources.backfillStats(
+                        source.id, w, h, frames, "", durationUs,
+                    )
+                    if (updated != null && updated != source) {
+                        sources = stores.sources.all()
+                    }
+                },
+            )
+        )
+    }
 
     // Enqueue feedback (owner finding 2026-11-10: Export MP4 gave NO
     // visible response — the job silently appeared only in the Exports
@@ -685,16 +744,44 @@ fun AppNav() {
                             onOpenClip = { sourceId -> editorSourceId = sourceId },
                             onImport = { uri ->
                                 // SAF pick landed: import through the repository
-                                // (fingerprint dedupe keeps ids and grades stable).
+                                // (fingerprint dedupe keeps ids and grades stable),
+                                // then generate the thumbnail + recorded stats
+                                // asynchronously — the import never blocks on the
+                                // develop (owner request 2026-11-11 §1).
                                 try {
                                     val imported = stores.sources.import(uri)
                                     sources = stores.sources.all()
+                                    scope.launch { generateThumbnail(imported) }
                                     Result.success(imported)
                                 } catch (e: Exception) {
                                     Result.failure(e)
                                 }
                             },
+                            // Revoked-access rows retry their thumbnail after the
+                            // grant returns: the backfill below picks them up on
+                            // the next Library composition too.
                             onGrantAccess = { sources = stores.sources.refreshAccess() },
+                            thumbnailAt = { id ->
+                                // The persisted PNG's path, or null: the row
+                                // shows the placeholder while missing.
+                                thumbnailStore.fileFor(id)?.absolutePath
+                            },
+                            thumbnailBatchLimit = thumbnailBatchLimit,
+                            onGenerateThumbnails = { pending ->
+                                // Bounded, cancellable backfill for records
+                                // imported before this pass existed: the Library
+                                // screen hands over the pending ids in list
+                                // order, this runner generates them one by one
+                                // (each on the preview engine thread) and stops
+                                // when the composable leaves composition —
+                                // cancelling the coroutine cancels the pass.
+                                scope.launch {
+                                    for (id in pending) {
+                                        val source = stores.sources.get(id) ?: continue
+                                        generateThumbnail(source)
+                                    }
+                                }
+                            },
                         )
                         Destination.PROJECTS -> ProjectsScreen()
                         Destination.EXPORTS -> ExportsScreen(
