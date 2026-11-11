@@ -53,6 +53,7 @@ import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.PreviewMetrics
+import com.ritim.ritimcraw.export.BitmapPngWriter
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
@@ -62,6 +63,8 @@ import com.ritim.ritimcraw.export.ExportStore
 import com.ritim.ritimcraw.export.MediaPublish
 import com.ritim.ritimcraw.export.MediaStorePublisher
 import com.ritim.ritimcraw.export.Mp4Exporter
+import com.ritim.ritimcraw.export.PhotoDevelop
+import com.ritim.ritimcraw.export.PhotoExporter
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
@@ -138,6 +141,16 @@ fun AppNav() {
             // look), so every frame runs the same stage-20 apply as the
             // preview the owner compares it against.
             mp4 = Mp4Exporter(lutPathFor = { id -> stores.luts.pathFor(id) }),
+            // RAW-11 Frame Picker: the photo arm — a picked frame developed
+            // at full resolution into a PNG. Same LUT resolution as the MP4
+            // arm (the snapshot's lutId -> the copied cube's path, once per
+            // job), the same shared export engine thread, and the thin
+            // Android PNG adapter (Bitmap.compress, lossless — see
+            // PhotoExporter).
+            photo = PhotoExporter(
+                pngWriter = BitmapPngWriter(),
+                lutPathFor = { id -> stores.luts.pathFor(id) },
+            ),
             io = object : ExportIo {
                 override fun sourceFd(job: ExportJob): Int {
                     // The editor's open read-only fd is per-screen; the queue
@@ -548,6 +561,36 @@ fun AppNav() {
                                     // "<id>.dng".
                                     outputName = display?.takeIf { it.isNotBlank() }
                                         ?.let { ExportQueue.displayOutputName(it, target) },
+                                )
+                            )
+                            exportJobs = stores.exports.all()
+                            queueKick += 1
+                            enqueueFeedback()
+                        },
+                        // ---- Frame Picker (RAW-11) ----
+                        // Develops the transport's CURRENT frame as a photo
+                        // (PNG) through the SAME serial queue. The grade
+                        // snapshot is taken at queue time, exactly like
+                        // onExport: separate = false carries the clip's
+                        // CURRENT grade (the photo matches the preview),
+                        // separate = true carries a FRESH neutral grade
+                        // (the clip's own grade is untouched). The frame
+                        // index is the editor's 0-based transport position.
+                        onDevelopPhoto = { frameIndex, separate ->
+                            val display = stores.sources.get(r.sourceId)?.displayName
+                            stores.exports.add(
+                                ExportJob(
+                                    id = "job-" + System.nanoTime(),
+                                    sourceId = r.sourceId,
+                                    snapshot = PhotoDevelop.snapshotFor(
+                                        stores.grades.get(r.sourceId),
+                                        separate,
+                                    ),
+                                    target = Target.PHOTO,
+                                    state = State.QUEUED,
+                                    frameIndex = frameIndex,
+                                    outputName = display?.takeIf { it.isNotBlank() }
+                                        ?.let { ExportQueue.displayOutputName(it, Target.PHOTO) },
                                 )
                             )
                             exportJobs = stores.exports.all()

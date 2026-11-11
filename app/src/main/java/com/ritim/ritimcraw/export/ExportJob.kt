@@ -2,8 +2,11 @@ package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
 
-/** Export target format (sprint plan Task 5: CFA DNG or SDR H.264 MP4). */
-enum class Target { DNG, MP4 }
+/**
+ * Export target format (sprint plan Task 5: CFA DNG or SDR H.264 MP4;
+ * RAW-11 Frame Picker adds PHOTO — the developed frame as a PNG).
+ */
+enum class Target { DNG, MP4, PHOTO }
 
 /** Export job lifecycle (sprint plan Task 5). */
 enum class State { QUEUED, RUNNING, DONE, CANCELLED, FAILED }
@@ -61,6 +64,15 @@ data class ExportJob(
     val startedAtMs: Long? = null,
     val publishedUri: String? = null,
     val outputName: String? = null,
+    /**
+     * (RAW-11 Frame Picker) the frame this job develops, 0-based, in the
+     * clip's own frame numbering — the picker's current transport position.
+     * 0 for every job queued before the picker existed and for whole-clip
+     * targets where the frame is not a choice (a plain DNG frame export
+     * keeps exporting frame 0 exactly as before). Persisted only when
+     * non-zero so pre-picker project.json rows stay byte-identical.
+     */
+    val frameIndex: Int = 0,
 ) {
 
     /**

@@ -554,6 +554,58 @@ class ExportStoreTest {
     }
 
     @Test
+    fun frame_index_round_trips_and_omits_when_zero() {
+        // RAW-11 Frame Picker: the picked frame persists with the job (a
+        // crash between queue and drain still develops the right frame),
+        // and omit-when-zero keeps pre-picker files byte-identical — the
+        // same convention as outputName and startedAtMs.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(
+            job(id = "picked", target = Target.PHOTO).copy(frameIndex = 7)
+        )
+        store.add(job(id = "plain", target = Target.DNG)) // frame 0 = default
+
+        val jobs = ExportStore(file).all()
+        val picked = jobs.single { it.id == "picked" }
+        assertEquals(7, picked.frameIndex)
+        val plain = jobs.single { it.id == "plain" }
+        assertEquals(0, plain.frameIndex)
+
+        // Only the non-zero index is written: the plain row's JSON carries
+        // no frameIndex key (legacy rows stay byte-identical).
+        val text = file.readText()
+        assertTrue(text.contains("\"frameIndex\":7"))
+        val plainRow = text.substringAfter("\"id\":\"plain\"")
+        assertTrue(!plainRow.substringBefore("}").contains("frameIndex"))
+
+        // Retry keeps the picked frame: the retried photo develops the
+        // SAME frame, not frame 0 (requeued() preserves it via copy()).
+        store.retry("picked")
+        assertEquals(7, ExportStore(file).all().single { it.id == "picked" }.frameIndex)
+    }
+
+    @Test
+    fun old_export_row_without_frame_index_parses_zero() {
+        // A project.json written before the Frame Picker (schema 1, no
+        // frameIndex field): the row parses with frame 0 — the exact frame
+        // every pre-picker job always exported, so nothing changes.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.0},"target":"DNG","state":"DONE","detail":"clip-a-dng.dng"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val job = ExportStore(file).all().single()
+        assertEquals(0, job.frameIndex)
+    }
+
+    @Test
     fun corrupt_store_falls_back_to_empty_queue() {
         val file = projectFile()
         file.parentFile?.mkdirs()

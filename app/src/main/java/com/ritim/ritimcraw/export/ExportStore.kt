@@ -141,6 +141,14 @@ class ExportStore(private val file: File) {
                 if (j.outputName != null) {
                     sb.append(",\"outputName\":").append(ProjectJson.quote(j.outputName))
                 }
+                // frameIndex (RAW-11 Frame Picker): omit-when-default — a
+                // zero index is the pre-picker norm (every legacy job and a
+                // picker job on frame 0), so files written before the field
+                // stay byte-identical and old rows parse with 0 (frame 0,
+                // exactly what they always exported).
+                if (j.frameIndex != 0) {
+                    sb.append(",\"frameIndex\":").append(j.frameIndex)
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -206,6 +214,10 @@ class ExportStore(private val file: File) {
                     // Absent in rows queued before §2b: a null name falls
                     // back to the legacy <sourceId>-<target> file name.
                     outputName = m["outputName"] as? String,
+                    // frameIndex (RAW-11 Frame Picker): absent in rows
+                    // queued before the picker — 0 keeps the old behavior
+                    // (frame 0) for every legacy row.
+                    frameIndex = (m["frameIndex"] as? Double)?.toInt() ?: 0,
                 )
             }
         }
