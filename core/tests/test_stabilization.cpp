@@ -33,18 +33,41 @@
 //     5/10/20/45 deg and takes the max over frames; at 8 deg pitch
 //     costs strictly more zoom than roll (perspective stretch on top
 //     of the f·tanθ shift).
+//   - computeStabilization (clip API): mode Off = identity + zoom 1 +
+//     status Off for every frame, zero cost; the refusal ladder
+//     (empty series -> NoImu, unknown offset -> Unsynced, missing
+//     intrinsics -> NoImu, no frames -> empty); LowOverlap flags
+//     frames outside the gyro span (finite H still); Smooth at the
+//     default strength on the 30 fps frame grid is a near no-op;
+//     LockFirstFrame pins frame 0; HorizonLock levels a rolled
+//     camera and degrades to plain Smooth (flagged) without gravity;
+//     the zoom-limit clamp keeps requiredZoom honest.
+//   - Real-fixture evidence (both fixtures, from the FILES): anchored
+//     sync -> VQF orientation -> focal from the container ->
+//     computeStabilization at several modes/strengths; the numbers
+//     are QUOTED via MESSAGE and pinned within honest bounds.
 //
-// Tier 3 (next commit) appends the clip-level API + real-fixture
-// evidence.
+// Fixture evidence also cross-checks the smoothed-vs-raw residual:
+// smoothOrientationSeries on the actual-on-frames series must equal
+// the relativeAngleDeg the clip API reports (the API IS that
+// pipeline, so the two paths agree to 1e-9).
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
 #include <rawedit/Stabilization.h>
 #include <rawedit/OrientationEstimate.h>
+#include <rawedit/Orientation.h>
+#include <rawedit/Sync.h>
+#include <rawedit/Source.h>
+
+#include <motioncam/Decoder.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 using namespace rawedit;
@@ -542,4 +565,676 @@ TEST_CASE("staticCropZoom: pitch costs more zoom than roll at 8 deg") {
     CHECK(zPitch > zRoll);            // perspective on top of the shift
     CHECK(zPitch > 1.50);            // beyond the shift-only bound
     CHECK(zPitch < 1.70);            // sane for a 4K frame at 8 deg
+}
+
+// ---------------------------------------------------------------------------
+// Clip-level API (deliverable 5) — tier 3
+// ---------------------------------------------------------------------------
+
+TEST_CASE("computeStabilization: mode Off is identity, zoom 1, zero cost") {
+    // The series is non-empty and everything else would compute — Off
+    // must short-circuit BEFORE touching it (identity H, zoom 1.0,
+    // status Off per frame, no relative angles).
+    const OrientationSeries raw = seriesFromAngles({0, 5, 10, 15, 20}, 0, 33333333, 2);
+    std::vector<int64_t> frames = {0, 33333333, 66666666, 99999999};
+    SyncModel sync; // zero offset
+    StabilizationParams p;
+    p.mode = StabilizationMode::Off;
+    const StabilizationResult r = computeStabilization(raw, sync, frames,
+                                                       nullptr, true, false, p);
+    REQUIRE(r.frames.size() == 4);
+    const double ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    for (const auto& f : r.frames) {
+        for (int i = 0; i < 9; ++i)
+            CHECK(f.h[i] == ident[i]);
+        CHECK(f.zoom == 1.0);
+        CHECK(f.status == StabilizationStatus::Off);
+    }
+    CHECK(r.requiredZoom == 1.0);
+    CHECK(r.appliedZoom == 1.0);
+    for (double a : r.relativeAngleDeg)
+        CHECK(a == 0.0);
+}
+
+TEST_CASE("computeStabilization: refusal ladder and status names") {
+    const OrientationSeries raw = seriesFromAngles({0, 5, 10}, 0, 1000, 2);
+    std::vector<int64_t> frames = {0, 1000, 2000};
+    SyncModel sync;
+    StabilizationParams p; // Smooth, defaults
+
+    // Empty series -> NoImu (uniform identity, zoom 1).
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    StabilizationResult r = computeStabilization({}, sync, frames,
+                                                 nullptr, true, false, p);
+    REQUIRE(r.frames.size() == 3);
+    for (const auto& f : r.frames) {
+        CHECK(f.status == StabilizationStatus::NoImu);
+        CHECK(f.zoom == 1.0);
+        CHECK(f.h[0] == 1.0);
+    }
+
+    // Unknown offset -> Unsynced (refuses to guess the clock bridge).
+    r = computeStabilization(raw, sync, frames, nullptr, false, false, p);
+    REQUIRE(r.frames.size() == 3);
+    for (const auto& f : r.frames)
+        CHECK(f.status == StabilizationStatus::Unsynced);
+
+    // Missing intrinsics (focal 0 / width 0) -> NoImu-class refusal.
+    StabilizationParams noFocal = p;
+    noFocal.focalLengthPx = 0.0;
+    r = computeStabilization(raw, sync, frames, nullptr, true, false, noFocal);
+    for (const auto& f : r.frames)
+        CHECK(f.status == StabilizationStatus::NoImu);
+    StabilizationParams noDims = p;
+    noDims.width = 0;
+    r = computeStabilization(raw, sync, frames, nullptr, true, false, noDims);
+    for (const auto& f : r.frames)
+        CHECK(f.status == StabilizationStatus::NoImu);
+
+    // No frames -> empty result, flags clean.
+    r = computeStabilization(raw, sync, {}, nullptr, true, false, p);
+    CHECK(r.frames.empty());
+    CHECK(r.relativeAngleDeg.empty());
+    CHECK(r.requiredZoom == 1.0);
+    CHECK_FALSE(r.intrinsicsAssumed);
+
+    // The names (the UI-facing strings).
+    CHECK(std::string(stabilizationStatusName(StabilizationStatus::Ok)) == "ok");
+    CHECK(std::string(stabilizationStatusName(StabilizationStatus::Off)) == "off");
+    CHECK(std::string(stabilizationStatusName(StabilizationStatus::NoImu)) == "no-imu");
+    CHECK(std::string(stabilizationStatusName(StabilizationStatus::Unsynced)) == "unsynced");
+    CHECK(std::string(stabilizationStatusName(StabilizationStatus::LowOverlap)) == "low-overlap");
+    CHECK(std::string(stabilizationStatusName(StabilizationStatus::IntrinsicsAssumed))
+          == "intrinsics-assumed");
+}
+
+TEST_CASE("computeStabilization: LowOverlap flags frames outside the gyro span") {
+    // Gyro span [1000, 5000]; frames at 0 and 6000 (frame clock == IMU
+    // clock, zero offset) fall outside -> LowOverlap, but the warp is
+    // still computed from the CLAMPED orientation (finite H).
+    // LockFirstFrame makes the clamp direction OBSERVABLE: the anchor
+    // is the first INSIDE frame (ts 2000, 10 deg), so
+    //   frame 0 (clamped to the FIRST orientation, 0 deg)  -> 10 deg
+    //   frame 3 (clamped to the LAST orientation, 40 deg)   -> 30 deg
+    // (clamping frame 0 to the last instead would give 30 there).
+    const OrientationSeries raw = seriesFromAngles({0, 10, 20, 30, 40},
+                                                    1000, 1000, 2);
+    std::vector<int64_t> frames = {0, 2000, 4000, 6000};
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::LockFirstFrame;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    const StabilizationResult r = computeStabilization(raw, sync, frames,
+                                                       nullptr, true, false, p);
+    REQUIRE(r.frames.size() == 4);
+    CHECK(r.frames[0].status == StabilizationStatus::LowOverlap);
+    CHECK(r.frames[1].status == StabilizationStatus::Ok);
+    CHECK(r.frames[2].status == StabilizationStatus::Ok);
+    CHECK(r.frames[3].status == StabilizationStatus::LowOverlap);
+    for (const auto& f : r.frames)
+        for (int i = 0; i < 9; ++i)
+            CHECK(std::isfinite(f.h[i]));
+    CHECK(r.relativeAngleDeg[0] == doctest::Approx(10.0).epsilon(1e-9));
+    CHECK(r.relativeAngleDeg[1] == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(r.relativeAngleDeg[2] == doctest::Approx(20.0).epsilon(1e-9));
+    CHECK(r.relativeAngleDeg[3] == doctest::Approx(30.0).epsilon(1e-9));
+}
+
+TEST_CASE("computeStabilization: Smooth strength 0.5 is a near no-op on the frame grid") {
+    // tau(0.5) = 31.6 us; the frame grid is 33.3 ms — alpha = 1
+    // EXACTLY in double (exp(-3ms/31.6us)... rather exp(-33333333/31623)
+    // = exp(-1054) underflows), so the smoothed target IS the actual:
+    // angles ~0, no crop needed. This pins the honest default: the
+    // slider's midpoint does not over-smooth a 30 fps clip.
+    const int n = 90; // 3 s at 30 fps
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i)
+        angles[i] = 10.0 * std::sin(2.0 * kPi * 0.5 * double(i) / 30.0);
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p; // Smooth, strength default 0.5
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    const StabilizationResult r = computeStabilization(raw, sync,
+                                                       raw.timestampsNs,
+                                                       nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    double maxAngle = 0.0;
+    for (double a : r.relativeAngleDeg)
+        maxAngle = std::fmax(maxAngle, a);
+    MESSAGE("smooth-0.5 on frame grid: maxAngle=" << maxAngle
+            << " requiredZoom=" << r.requiredZoom);
+    CHECK(maxAngle < 1e-9);
+    CHECK(r.requiredZoom < 1.0001);
+    CHECK(r.appliedZoom == r.requiredZoom);
+    for (const auto& f : r.frames)
+        CHECK(f.status == StabilizationStatus::Ok);
+}
+
+TEST_CASE("computeStabilization: Smooth strength 0.95 stabilizes for real") {
+    // tau(0.95) = 0.355 s over a 3 s 0.5 Hz sweep: the target lags the
+    // actual motion, so q_rel is non-trivial and the crop engages.
+    const int n = 90;
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i)
+        angles[i] = 10.0 * std::sin(2.0 * kPi * 0.5 * double(i) / 30.0);
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p;
+    p.strength = 0.95;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    const StabilizationResult r = computeStabilization(raw, sync,
+                                                       raw.timestampsNs,
+                                                       nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    double maxAngle = 0.0;
+    for (double a : r.relativeAngleDeg)
+        maxAngle = std::fmax(maxAngle, a);
+    MESSAGE("smooth-0.95 on frame grid: maxAngle=" << maxAngle
+            << " requiredZoom=" << r.requiredZoom);
+    CHECK(maxAngle > 0.05);   // the target really moved relative to actual
+    CHECK(maxAngle < 10.0);   // ...but never diverges absurdly
+    CHECK(r.requiredZoom > 1.0);
+    CHECK(r.requiredZoom < 1.5);
+    CHECK(r.appliedZoom == r.requiredZoom);
+    // The zoom is clip-wide uniform.
+    for (const auto& f : r.frames)
+        CHECK(f.zoom == r.appliedZoom);
+}
+
+TEST_CASE("computeStabilization: LockFirstFrame pins the first frame") {
+    // A clip that pans 1 deg/frame: locking the first frame makes
+    // every later frame's q_rel the accumulated pan (0, 1, 2, ...).
+    const int n = 20;
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i)
+        angles[i] = double(i);
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::LockFirstFrame;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    const StabilizationResult r = computeStabilization(raw, sync,
+                                                       raw.timestampsNs,
+                                                       nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    CHECK(r.relativeAngleDeg[0] == doctest::Approx(0.0).epsilon(1e-12));
+    // Frame i's q_rel is R(-i deg) about Z: angle grows linearly.
+    for (int i = 1; i < n; ++i)
+        CHECK(r.relativeAngleDeg[i] == doctest::Approx(double(i)).epsilon(1e-9));
+    double maxAngle = 0.0;
+    for (double a : r.relativeAngleDeg)
+        maxAngle = std::fmax(maxAngle, a);
+    MESSAGE("lock-first: maxAngle=" << maxAngle
+            << " requiredZoom=" << r.requiredZoom);
+    CHECK(maxAngle > 5.0);
+    CHECK(r.requiredZoom > 1.01);
+    CHECK(r.requiredZoom < 1.8);
+}
+
+TEST_CASE("computeStabilization: HorizonLock levels a rolled camera") {
+    // Constant +20 deg roll on a level camera, gravity in the camera
+    // frame = R(conj(q))·(0,-1,0) = (-sin20, -cos20, 0). The lock must
+    // rotate the target so the horizon is level: every frame's q_rel
+    // is the pure -20 deg roll (the lock applied to a static target),
+    // the H is the pure roll block, and the crop is the roll closed
+    // form at 20 deg (~1.5477 at 3840x2160... actually the closed form
+    // below), all frames Ok, horizonLockDegraded false.
+    const int n = 30;
+    const double rollDeg = 20.0;
+    double qRoll[4];
+    quatAxisDeg(2, rollDeg, qRoll);
+    OrientationSeries raw;
+    raw.timestampsNs.reserve(n);
+    raw.quats.reserve(4 * n);
+    for (int i = 0; i < n; ++i) {
+        raw.timestampsNs.push_back(int64_t(i) * 33333333);
+        for (int k = 0; k < 4; ++k)
+            raw.quats.push_back(qRoll[k]);
+    }
+    // Gravity in the rolled camera frame.
+    double qRollC[4];
+    quatConj(qRoll, qRollC);
+    const double gWorld[3] = {0.0, -1.0, 0.0};
+    double gCam[3];
+    quatRotate(qRollC, gWorld, gCam);
+    // Independent check of the scenario: |g.xy| = 1, roll = +20 deg.
+    REQUIRE(std::sqrt(gCam[0] * gCam[0] + gCam[1] * gCam[1])
+            == doctest::Approx(1.0).epsilon(1e-12));
+
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::HorizonLock;
+    p.strength = 0.0; // static target: the lock is the only motion
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    const StabilizationResult r = computeStabilization(raw, sync,
+                                                       raw.timestampsNs,
+                                                       gCam, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    CHECK_FALSE(r.horizonLockDegraded);
+    for (int i = 0; i < n; ++i) {
+        // q_rel = conj(q_target')·q_actual with q_target' leveled:
+        // the lock undoes the roll, so q_rel is the -20 deg roll —
+        // angle exactly 20 deg.
+        CHECK(r.relativeAngleDeg[i] == doctest::Approx(rollDeg).epsilon(1e-9));
+        // H is the pure roll block (row 3 exactly (0,0,1)).
+        CHECK(r.frames[i].h[6] == doctest::Approx(0.0).epsilon(1e-12));
+        CHECK(r.frames[i].h[7] == doctest::Approx(0.0).epsilon(1e-12));
+        CHECK(r.frames[i].h[8] == doctest::Approx(1.0).epsilon(1e-12));
+        CHECK(r.frames[i].status == StabilizationStatus::Ok);
+    }
+    // The crop is the roll closed form at 20 deg.
+    const double s20 = std::sin(deg2rad(20.0));
+    const double c20 = std::cos(deg2rad(20.0));
+    const double rollClosed = std::fmax((3840.0 * s20 + 2160.0 * c20) / 2160.0,
+                                       (3840.0 * c20 + 2160.0 * s20) / 3840.0);
+    CHECK(r.requiredZoom == doctest::Approx(rollClosed).epsilon(1e-9));
+    MESSAGE("horizon-lock: requiredZoom=" << r.requiredZoom
+            << " (roll closed form " << rollClosed << ")");
+}
+
+TEST_CASE("computeStabilization: HorizonLock degrades without gravity") {
+    // No gravity pointer / zero gravity -> horizonLockDegraded true,
+    // and the result equals plain Smooth at the same strength.
+    const int n = 30;
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i)
+        angles[i] = 8.0 * std::sin(2.0 * kPi * 0.4 * double(i) / 30.0);
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::HorizonLock;
+    p.strength = 0.95;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    const StabilizationResult degraded = computeStabilization(raw, sync,
+                                                              raw.timestampsNs,
+                                                              nullptr, true, false, p);
+    CHECK(degraded.horizonLockDegraded);
+    const double zeroG[3] = {0.0, 0.0, 0.0};
+    const StabilizationResult zero = computeStabilization(raw, sync,
+                                                          raw.timestampsNs,
+                                                          zeroG, true, false, p);
+    CHECK(zero.horizonLockDegraded);
+    // Gravity along the view axis: roll unobservable -> degraded.
+    const double viewAxis[3] = {0.0, 0.0, -1.0};
+    const StabilizationResult view = computeStabilization(raw, sync,
+                                                          raw.timestampsNs,
+                                                          viewAxis, true, false, p);
+    CHECK(view.horizonLockDegraded);
+    // Degraded == plain Smooth (the flagged fallback is EXACTLY plain
+    // smoothing — the lock adds nothing when it cannot fire).
+    StabilizationParams plain = p;
+    plain.mode = StabilizationMode::Smooth;
+    const StabilizationResult smooth = computeStabilization(raw, sync,
+                                                            raw.timestampsNs,
+                                                            nullptr, true, false, plain);
+    REQUIRE(smooth.frames.size() == degraded.frames.size());
+    for (size_t i = 0; i < smooth.frames.size(); ++i) {
+        for (int k = 0; k < 9; ++k)
+            CHECK(std::fabs(degraded.frames[i].h[k] - smooth.frames[i].h[k]) < 1e-15);
+        CHECK(std::fabs(degraded.relativeAngleDeg[i] - smooth.relativeAngleDeg[i]) < 1e-15);
+    }
+}
+
+TEST_CASE("computeStabilization: zoom limit clamps applied, required stays honest") {
+    // A clip panning to exactly 8 deg (LockFirstFrame) needs the roll
+    // closed form at 8 deg (~1.238); with the user limit at 1.1:
+    // appliedZoom == 1.1, requiredZoom stays honest (~1.238) — the UI
+    // can show "stabilization cropped X%, limit reached".
+    const int n = 10;
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i)
+        angles[i] = 8.0 * double(i) / double(n - 1); // 0 -> 8 deg
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::LockFirstFrame;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    p.zoomLimit = 1.1;
+    StabilizationResult r = computeStabilization(raw, sync, raw.timestampsNs,
+                                                 nullptr, true, false, p);
+    const double rollClosed8 = [&] {
+        const double s8 = std::sin(deg2rad(8.0));
+        const double c8 = std::cos(deg2rad(8.0));
+        return std::fmax((3840.0 * s8 + 2160.0 * c8) / 2160.0,
+                         (3840.0 * c8 + 2160.0 * s8) / 3840.0);
+    }();
+    MESSAGE("zoom-limit: required=" << r.requiredZoom
+            << " applied=" << r.appliedZoom);
+    CHECK(r.requiredZoom == doctest::Approx(rollClosed8).epsilon(1e-9));
+    CHECK(r.appliedZoom == 1.1);
+    // required stays honest (unclamped).
+    CHECK(r.requiredZoom > r.appliedZoom);
+    for (const auto& f : r.frames)
+        CHECK(f.zoom == 1.1);
+    // A limit below 1 is treated as 1 (never zoom OUT).
+    StabilizationParams weird = p;
+    weird.zoomLimit = 0.5;
+    r = computeStabilization(raw, sync, raw.timestampsNs,
+                             nullptr, true, false, weird);
+    CHECK(r.appliedZoom == std::fmin(r.requiredZoom, 1.0));
+    CHECK(r.appliedZoom == 1.0);
+    // Assumed focal flags every frame IntrinsicsAssumed.
+    StabilizationParams assumed = p;
+    r = computeStabilization(raw, sync, raw.timestampsNs,
+                             nullptr, true, true, assumed);
+    CHECK(r.intrinsicsAssumed);
+    for (const auto& f : r.frames)
+        CHECK(f.status == StabilizationStatus::IntrinsicsAssumed);
+}
+
+// ---------------------------------------------------------------------------
+// Real-fixture evidence (deliverable 6) — tier 3
+//
+// Reads the gitignored STEPS/media/test pairs when present (skips
+// otherwise, like test_sync/test_orientation_estimate). The pipeline
+// is the real one Phase 5's renderer will drive: container clocks ->
+// anchored sync -> VQF orientation -> container focal -> the clip API.
+// The NUMBERS are the deliverable: quoted via MESSAGE, pinned within
+// honest bounds (never fabricated — the pins are re-derived from the
+// first real run).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// True when the real fixture exists (gitignored STEPS/ tree).
+bool stFixtureAvailable(const char* relpath) {
+    std::FILE* f = std::fopen(relpath, "rb");
+    if (!f)
+        return false;
+    std::fclose(f);
+    return true;
+}
+
+// The GCSV header "timestamp" (epoch ms) — the gyro log's wall start.
+long long stGcsvHeaderTimestampMs(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f)
+        return -1;
+    std::string text;
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
+        text.append(buf, n);
+    std::fclose(f);
+    const std::string key = "\ntimestamp,";
+    const size_t at = text.find(key);
+    if (at == std::string::npos)
+        return -1;
+    return std::atoll(text.c_str() + at + key.size());
+}
+
+// Exact per-frame capture ns + frame-0 recvdTimestampMs from the
+// container via the vendored decoder (the same read-only pattern as
+// Gyro.cpp / test_sync.cpp).
+struct StContainerClocks {
+    std::vector<int64_t> captureNs;
+    long long frame0RecvdMs = -1;
+};
+
+StContainerClocks stContainerClocks(const std::string& path) {
+    StContainerClocks cc;
+    try {
+        motioncam::Decoder decoder(path);
+        const auto& ts = decoder.getFrames();
+        cc.captureNs.assign(ts.begin(), ts.end());
+        if (!ts.empty()) {
+            nlohmann::json meta;
+            decoder.loadFrameMetadata(ts[0], meta);
+            if (meta.contains("recvdTimestampMs")) {
+                if (meta["recvdTimestampMs"].is_string())
+                    cc.frame0RecvdMs =
+                        std::stoll(meta["recvdTimestampMs"].get<std::string>());
+                else if (meta["recvdTimestampMs"].is_number())
+                    cc.frame0RecvdMs = meta["recvdTimestampMs"].get<long long>();
+            }
+        }
+    } catch (...) {
+    }
+    return cc;
+}
+
+// Fixture IMU: parse + remap into the canonical frame (both fixtures
+// declare "XYZ", composing to the quarter turn — test_orientation).
+struct StFixtureImu {
+    std::vector<ImuSample> gyro; // canonical
+    std::vector<ImuSample> accel;
+};
+
+StFixtureImu stLoadFixture(const char* relpath) {
+    StFixtureImu f;
+    auto res = parseGcsv(relpath);
+    REQUIRE(res.isOk());
+    const ImuData data = *res.value;
+    const AxisRemap remap = axisRemapForImu(data);
+    REQUIRE(remap.known);
+    f.gyro.reserve(data.gyro.size());
+    for (const ImuSample& s : data.gyro) {
+        float x = s.x, y = s.y, z = s.z;
+        remap.apply(x, y, z);
+        f.gyro.push_back(ImuSample{s.timestampNs, x, y, z});
+    }
+    f.accel.reserve(data.accel.size());
+    for (const ImuSample& s : data.accel) {
+        float x = s.x, y = s.y, z = s.z;
+        remap.apply(x, y, z);
+        f.accel.push_back(ImuSample{s.timestampNs, x, y, z});
+    }
+    return f;
+}
+
+// The whole real pipeline for one fixture, shared by the evidence
+// tests: clocks -> anchored sync -> VQF -> focal -> computeStabilization.
+struct StFixturePipeline {
+    SyncModel sync;
+    bool anchored = false;
+    OrientationSeries orientation;
+    double gravityCamera[3] = {0, 0, 0};
+    std::vector<int64_t> frameTs;
+    double focalMm = 0.0;
+    double focalPx = 0.0;
+    int width = 0, height = 0;
+};
+
+StFixturePipeline stRunPipeline(const char* gcsvPath, const char* mcrawPath) {
+    StFixturePipeline p;
+    const StContainerClocks cc = stContainerClocks(mcrawPath);
+    REQUIRE(!cc.captureNs.empty());
+    REQUIRE(cc.frame0RecvdMs > 0);
+    p.frameTs = cc.captureNs;
+    const long long hdrMs = stGcsvHeaderTimestampMs(gcsvPath);
+    REQUIRE(hdrMs > 0);
+    const SyncEstimate est = estimateOffsetFromAnchors(
+        cc.frame0RecvdMs, hdrMs, cc.captureNs.front());
+    REQUIRE(est.isAnchored());
+    p.sync = est.model;
+    p.anchored = true;
+    const StFixtureImu f = stLoadFixture(gcsvPath);
+    const VqfOrientation v = estimateOrientationVqf(f.gyro, f.accel);
+    REQUIRE(!v.series.empty());
+    p.orientation = v.series;
+    for (int k = 0; k < 3; ++k)
+        p.gravityCamera[k] = v.gravityCamera[k];
+    // The container's 35mm-equivalent focal via Source (the honest
+    // path the app will use), then the flagged px fallback.
+    auto src = Source::open(mcrawPath);
+    REQUIRE(src.isOk());
+    p.focalMm = (*src)->rawMeta().focalLengthMm;
+    REQUIRE(p.focalMm > 0.0);
+    const FrameInfo fi = (*src)->frameInfo(0);
+    p.width = static_cast<int>(fi.width);
+    p.height = static_cast<int>(fi.height);
+    REQUIRE(p.width > 0);
+    REQUIRE(p.height > 0);
+    p.focalPx = focalLengthPxFromEquivalent(p.focalMm, p.width);
+    REQUIRE(p.focalPx > 0.0);
+    return p;
+}
+
+double stMaxAngle(const StabilizationResult& r) {
+    double m = 0.0;
+    for (double a : r.relativeAngleDeg)
+        m = std::fmax(m, a);
+    return m;
+}
+
+} // namespace
+
+TEST_CASE("fixture evidence: 261110_004150 stabilization numbers") {
+    const char* gcsv = "STEPS/media/test/261110_004150_VIDEO_24mm.gcsv";
+    const char* mcraw = "STEPS/media/test/261110_004150_VIDEO_24mm.mcraw";
+    if (!stFixtureAvailable(gcsv) || !stFixtureAvailable(mcraw)) {
+        MESSAGE("SKIP: fixtures not present (gitignored)");
+        return;
+    }
+    const StFixturePipeline p = stRunPipeline(gcsv, mcraw);
+    MESSAGE("004150: frames=" << p.frameTs.size()
+            << " focalMm=" << p.focalMm << " focalPx=" << p.focalPx
+            << " (" << p.width << "x" << p.height << ")");
+    REQUIRE(p.frameTs.size() == 310);
+    REQUIRE(p.focalMm == doctest::Approx(23.950197219848633).epsilon(1e-12));
+    REQUIRE(p.width == 3840);
+    REQUIRE(p.height == 2160);
+
+    StabilizationParams par;
+    par.focalLengthPx = p.focalPx;
+    par.width = p.width;
+    par.height = p.height;
+
+    // Smooth 0.5 on the frame grid: alpha = 1 exactly -> near no-op.
+    par.mode = StabilizationMode::Smooth;
+    par.strength = 0.5;
+    StabilizationResult r = computeStabilization(p.orientation, p.sync,
+                                                 p.frameTs, p.gravityCamera,
+                                                 true, true, par);
+    MESSAGE("004150 smooth-0.5: maxAngle=" << stMaxAngle(r)
+            << " requiredZoom=" << r.requiredZoom);
+    CHECK(stMaxAngle(r) < 1e-6);
+    CHECK(r.requiredZoom < 1.0001);
+    CHECK(r.intrinsicsAssumed);
+    for (const auto& fr : r.frames)
+        CHECK(fr.status == StabilizationStatus::IntrinsicsAssumed);
+
+    // Smooth 0.95: real smoothing — the numbers the phase must quote.
+    par.strength = 0.95;
+    r = computeStabilization(p.orientation, p.sync, p.frameTs, p.gravityCamera,
+                             true, true, par);
+    MESSAGE("004150 smooth-0.95: maxAngle=" << stMaxAngle(r)
+            << " requiredZoom=" << r.requiredZoom
+            << " appliedZoom=" << r.appliedZoom);
+    CHECK(stMaxAngle(r) > 0.05);
+    CHECK(stMaxAngle(r) < 10.0);
+    CHECK(r.requiredZoom > 1.0);
+    CHECK(r.requiredZoom < 1.5);
+    CHECK(r.appliedZoom == std::fmin(r.requiredZoom, par.zoomLimit));
+
+    // LockFirstFrame: what it measures is the start-to-end DISPLACEMENT
+    // from the first frame's pose, NOT the clip's path length. The VQF
+    // path over the whole log is ~47.8 deg (Phase 2's number), but this
+    // clip is handheld wobble around a roughly fixed pose: the frames
+    // stay within ~1 deg of the first frame. Quoted: maxAngle=1.0167.
+    par.mode = StabilizationMode::LockFirstFrame;
+    r = computeStabilization(p.orientation, p.sync, p.frameTs, p.gravityCamera,
+                             true, true, par);
+    MESSAGE("004150 lock-first: maxAngle=" << stMaxAngle(r)
+            << " requiredZoom=" << r.requiredZoom);
+    CHECK(stMaxAngle(r) > 0.5);
+    CHECK(stMaxAngle(r) < 2.0);
+    CHECK(r.requiredZoom > 1.0);
+    CHECK(r.requiredZoom < 1.2);
+
+    // The smoothed-vs-raw residual cross-check: the API's angles ARE
+    // smoothOrientationSeries(actual-on-frames) vs actual — to 1e-9.
+    par.mode = StabilizationMode::Smooth;
+    par.strength = 0.95;
+    r = computeStabilization(p.orientation, p.sync, p.frameTs, p.gravityCamera,
+                             true, true, par);
+    OrientationSeries actualOnFrames;
+    actualOnFrames.timestampsNs = p.frameTs;
+    actualOnFrames.quats.resize(4 * p.frameTs.size());
+    for (size_t i = 0; i < p.frameTs.size(); ++i)
+        p.orientation.orientationAt(p.sync.toImu(p.frameTs[i]),
+                                     &actualOnFrames.quats[4 * i]);
+    const OrientationSeries smoothed =
+        smoothOrientationSeries(actualOnFrames, 0.95);
+    double worst = 0.0;
+    for (size_t i = 0; i < p.frameTs.size(); ++i) {
+        double qRel[4];
+        relativeRotation(&smoothed.quats[4 * i], &actualOnFrames.quats[4 * i], qRel);
+        worst = std::fmax(worst, std::fabs(relativeRotationAngleDeg(qRel)
+                                           - r.relativeAngleDeg[i]));
+    }
+    MESSAGE("004150 residual cross-check: worst=" << worst << " deg");
+    CHECK(worst < 1e-9);
+}
+
+TEST_CASE("fixture evidence: 261110_004208 stabilization numbers") {
+    const char* gcsv = "STEPS/media/test/261110_004208_VIDEO_24mm.gcsv";
+    const char* mcraw = "STEPS/media/test/261110_004208_VIDEO_24mm.mcraw";
+    if (!stFixtureAvailable(gcsv) || !stFixtureAvailable(mcraw)) {
+        MESSAGE("SKIP: fixtures not present (gitignored)");
+        return;
+    }
+    const StFixturePipeline p = stRunPipeline(gcsv, mcraw);
+    MESSAGE("004208: frames=" << p.frameTs.size()
+            << " focalMm=" << p.focalMm << " focalPx=" << p.focalPx
+            << " (" << p.width << "x" << p.height << ")");
+    REQUIRE(p.frameTs.size() == 310);
+    REQUIRE(p.focalMm == doctest::Approx(23.950197219848633).epsilon(1e-12));
+    REQUIRE(p.width == 3840);
+    REQUIRE(p.height == 2160);
+
+    StabilizationParams par;
+    par.focalLengthPx = p.focalPx;
+    par.width = p.width;
+    par.height = p.height;
+
+    par.mode = StabilizationMode::Smooth;
+    par.strength = 0.5;
+    StabilizationResult r = computeStabilization(p.orientation, p.sync,
+                                                 p.frameTs, p.gravityCamera,
+                                                 true, true, par);
+    MESSAGE("004208 smooth-0.5: maxAngle=" << stMaxAngle(r)
+            << " requiredZoom=" << r.requiredZoom);
+    CHECK(stMaxAngle(r) < 1e-6);
+    CHECK(r.requiredZoom < 1.0001);
+
+    par.strength = 0.95;
+    r = computeStabilization(p.orientation, p.sync, p.frameTs, p.gravityCamera,
+                             true, true, par);
+    MESSAGE("004208 smooth-0.95: maxAngle=" << stMaxAngle(r)
+            << " requiredZoom=" << r.requiredZoom
+            << " appliedZoom=" << r.appliedZoom);
+    CHECK(stMaxAngle(r) > 0.05);
+    CHECK(stMaxAngle(r) < 10.0);
+    CHECK(r.requiredZoom > 1.0);
+    CHECK(r.requiredZoom < 1.5);
+
+    // Same displacement-vs-path story as 004150: VQF path ~56.0 deg,
+    // start-to-end displacement ~1.5 deg (handheld wobble around a
+    // fixed pose). Quoted: maxAngle=1.47546.
+    par.mode = StabilizationMode::LockFirstFrame;
+    r = computeStabilization(p.orientation, p.sync, p.frameTs, p.gravityCamera,
+                             true, true, par);
+    MESSAGE("004208 lock-first: maxAngle=" << stMaxAngle(r)
+            << " requiredZoom=" << r.requiredZoom);
+    CHECK(stMaxAngle(r) > 1.0);
+    CHECK(stMaxAngle(r) < 2.0);
+    CHECK(r.requiredZoom > 1.0);
+    CHECK(r.requiredZoom < 1.2);
 }
