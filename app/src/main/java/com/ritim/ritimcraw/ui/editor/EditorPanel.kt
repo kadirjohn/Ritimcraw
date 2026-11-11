@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -184,6 +185,14 @@ fun EditorPanelHandle(
  * position, playback and the render session all survive
  * collapse/expand by construction (sections 10.3, 11.6 and 18).
  *
+ * [scrollStates] carries ONE ScrollState PER CATEGORY (the screen owns
+ * them rememberSaveable, section 11.6 "relevant scroll position"): the
+ * list restores its own category's offset on a switch instead of
+ * inheriting the previous category's, and each category keeps its
+ * position while the user is elsewhere. [category] is the same Int the
+ * navigation passes; a missing entry falls back to a throwaway local
+ * state so the sheet still composes.
+ *
  * The screen sizes this sheet by the drag offset (height modifier) and
  * subtracts the fixed rows around it for the anchor math; the sheet
  * itself never measures the panel back — no feedback loop.
@@ -191,6 +200,8 @@ fun EditorPanelHandle(
 @Composable
 fun EditorPanelSheet(
     dragState: AnchoredDraggableState<PanelState>,
+    category: Int,
+    scrollStates: Map<Int, ScrollState>,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
@@ -209,7 +220,7 @@ fun EditorPanelSheet(
                 Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(scrollStates[category] ?: rememberScrollState()),
             ) {
                 content()
             }

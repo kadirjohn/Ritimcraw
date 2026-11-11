@@ -178,16 +178,24 @@ object CompactSliderDefaults {
     /**
      * Temperature axis sweep: cool blue at low K to warm yellow at high K —
      * the Lightroom/ACR white-balance convention (the slider's EFFECT on
-     * the image, not the blackbody's own color). Draft hues pending the
+     * the image, not the blackbody's own color). Muted pastels (owner
+     * request 2026-11-11d section 14.1: "subtle, readable, and not
+     * visually overwhelming") on the 4dp track line; hues pending the
      * device pass, like PREVIEW_HEIGHT_FRACTION.
      */
-    val TEMPERATURE_GRADIENT = listOf(Color(0xFF64B5F6), Color(0xFFFFEE58))
+    val TEMPERATURE_GRADIENT = listOf(Color(0xFF7EA6C4), Color(0xFFC9B458))
 
-    /** Tint axis sweep: green (negative) to magenta (positive), the ACR tint convention. Draft hues pending the device pass. */
-    val TINT_GRADIENT = listOf(Color(0xFF81C784), Color(0xFFE040FB))
+    /**
+     * Tint axis sweep: green (negative) to magenta (positive), the ACR tint
+     * convention — muted pastels per section 14.1 (see TEMPERATURE_GRADIENT).
+     */
+    val TINT_GRADIENT = listOf(Color(0xFF7FA37E), Color(0xFFB087A8))
 
-    /** Saturation axis sweep: desaturated gray (negative) to a vivid hue (positive). Draft hues pending the device pass. */
-    val SATURATION_GRADIENT = listOf(Color(0xFF9E9E9E), Color(0xFFFF6D00))
+    /**
+     * Saturation axis sweep: desaturated gray (negative) to a soft warm hue
+     * (positive) — muted per section 14.1 (see TEMPERATURE_GRADIENT).
+     */
+    val SATURATION_GRADIENT = listOf(Color(0xFF949494), Color(0xFFC48A5A))
 }
 
 /**

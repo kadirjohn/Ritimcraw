@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.AnchoredDraggableState
 import androidx.compose.foundation.gestures.DraggableAnchors
@@ -296,6 +297,17 @@ fun ClipEditorScreen(
         // the offset is never recreated (§18: no reset, no reprocessing).
         var panelState by rememberSaveable { mutableStateOf(PanelState.NORMAL) }
         val panelDrag = rememberPanelDragState(panelState)
+        // Per-category scroll positions (§11.6 "relevant scroll position"):
+        // one ScrollState per category, remembered SAVEABLY (ScrollState's
+        // own Saver) so the offsets also survive process death and
+        // configuration change. The panel sheet picks its list's state by
+        // the active tab, so switching category restores that category's
+        // own offset instead of inheriting the previous one's, and each
+        // category keeps its position while the user edits another.
+        val lightScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val colorScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val detailScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val categoryScrollStates = mapOf(0 to lightScroll, 1 to colorScroll, 2 to detailScroll)
         val density = LocalDensity.current
         val scope = rememberCoroutineScope()
         // The measured heights the anchor math needs (§11.3: "adapt to
@@ -1326,6 +1338,8 @@ fun ClipEditorScreen(
             if (!fullscreen) {
                 EditorPanelSheet(
                     dragState = panelDrag,
+                    category = tab,
+                    scrollStates = categoryScrollStates,
                     // NaN guard: the offset is uninitialized until the
                     // first updateAnchors lands (getOffset returns NaN
                     // before then), so the first frame composes the
@@ -1877,7 +1891,7 @@ private fun DetailPanel(
             value = grade.noiseReduction,
             valueRange = 0f..100f,
             step = SliderSteps.UNIT_STEP,
-            valueLabel = "${grade.noiseReduction.toInt()} %",
+            valueLabel = Format.formatPercent(grade.noiseReduction.toInt()),
             onChange = { v ->
                 onChange(grade.copy(noiseReduction = SliderSteps.snapNoiseReduction(v)))
             },
@@ -1891,7 +1905,7 @@ private fun DetailPanel(
             value = grade.chromaDenoise,
             valueRange = 0f..100f,
             step = SliderSteps.UNIT_STEP,
-            valueLabel = "${grade.chromaDenoise.toInt()} %",
+            valueLabel = Format.formatPercent(grade.chromaDenoise.toInt()),
             onChange = { v ->
                 onChange(grade.copy(chromaDenoise = SliderSteps.snapChromaDenoise(v)))
             },
@@ -2009,7 +2023,7 @@ private fun DetailPanel(
                 value = grade.lutStrength,
                 valueRange = 0f..100f,
                 step = SliderSteps.UNIT_STEP,
-                valueLabel = "${grade.lutStrength.toInt()} %",
+                valueLabel = Format.formatPercent(grade.lutStrength.toInt()),
                 onChange = { v ->
                     onChange(grade.copy(lutStrength = SliderSteps.snapLutStrength(v)))
                 },
