@@ -39,6 +39,7 @@ import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.PreviewQualityStore
 import com.ritim.ritimcraw.data.LutStore
+import com.ritim.ritimcraw.data.GyroStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.PresetStore
 import com.ritim.ritimcraw.data.SourceKind
@@ -147,6 +148,15 @@ fun AppNav() {
             // section 3): same shared project.json, own top-level
             // "previewQuality" scalar, omit-when-default.
             previewQuality = PreviewQualityStore(project),
+            // The gyro log copies live app-private (files/gyros): the
+            // attach flow copies the SAF bytes in (gyro Phase 5), so no
+            // persistable URI grant is needed and the logs survive
+            // restarts — the same shape as the cube copies above.
+            gyros = GyroStore(
+                AndroidUriResolver(context),
+                project,
+                File(context.filesDir, "gyros").apply { mkdirs() },
+            ),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -559,6 +569,18 @@ fun AppNav() {
                     var manualRotation by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.manualRotationDeg ?: 0)
                     }
+                    // Gyro log attachment (gyro Phase 5): clip-keyed read of
+                    // the persisted MediaSource.gyroId, refreshed after each
+                    // attach/remove — the same shape as manualRotation. The
+                    // probe result is keyed to the SAME id (a re-attach
+                    // resets it); null = no log / failed probe, which the
+                    // group maps to the honest no-data status.
+                    var gyroId by remember(r.sourceId) {
+                        mutableStateOf(stores.sources.get(r.sourceId)?.gyroId ?: "")
+                    }
+                    var gyroSync by remember(r.sourceId, gyroId) {
+                        mutableStateOf<DoubleArray?>(null)
+                    }
                     val sourceUri by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.uri)
                     }
@@ -595,6 +617,46 @@ fun AppNav() {
                                         ?.detachFd() ?: -1
                                 } catch (e: Exception) {
                                     -1
+                                }
+                            }
+                        }
+                    }
+                    // Gyro sync probe (gyro Phase 5): runs once per (clip,
+                    // log) pair, off the composition — it opens a throwaway
+                    // Source on the clip's fd (the same sourceFdProvider the
+                    // preview uses) and reads the copied .gcsv's path. A
+                    // failure (bad .gcsv, no native lib) leaves gyroSync
+                    // null — the NO_DATA verdict, never a fabricated one.
+                    // The attach/remove flows below also write gyroSync
+                    // directly (they probe synchronously), so this effect
+                    // only needs to cover the clip-open re-probe.
+                    LaunchedEffect(r.sourceId, gyroId) {
+                        if (gyroId.isBlank()) {
+                            gyroSync = null
+                        } else {
+                            val path = stores.gyros.pathFor(gyroId)
+                            if (path == null) {
+                                gyroSync = null
+                            } else {
+                                val fd = sourceFdProvider()
+                                gyroSync = if (fd < 0) {
+                                    null
+                                } else {
+                                    try {
+                                        val probe = NativeSource.jniGyroSyncProbe(fd, path)
+                                        // The runner owns the fd's lifetime:
+                                        // close it here (the native side
+                                        // dup'ed it on open).
+                                        runCatching {
+                                            ParcelFileDescriptor.adoptFd(fd).close()
+                                        }
+                                        probe
+                                    } catch (e: Exception) {
+                                        runCatching {
+                                            ParcelFileDescriptor.adoptFd(fd).close()
+                                        }
+                                        null
+                                    }
                                 }
                             }
                         }
@@ -801,6 +863,92 @@ fun AppNav() {
                                 manualRotation = updated.manualRotationDeg
                             }
                         },
+                        // ---- Stabilization wiring (gyro Phase 5) ----
+                        // The persisted attachment drives the group's
+                        // status; the probe's numbers arrive through
+                        // gyroSync above. Attach = copy + probe + persist:
+                        // a probe failure removes the entry again so the
+                        // library never holds an unusable log (the same
+                        // rule as a bad .cube), and the message reaches
+                        // the group's local error line.
+                        gyroId = gyroId,
+                        gyroNameFor = { id ->
+                            if (id.isBlank()) null else stores.gyros.get(id)?.name
+                        },
+                        gyroSync = gyroSync,
+                        containerFocalMm = (gyroSync?.get(3) ?: 0.0).toFloat(),
+                        onAttachGyro = { uri, fallbackName ->
+                            try {
+                                val imported = stores.gyros.import(uri, fallbackName)
+                                val path = stores.gyros.pathFor(imported.id)
+                                if (path == null) {
+                                    stores.gyros.remove(imported.id)
+                                    Result.failure(
+                                        IllegalStateException(
+                                            context.getString(
+                                                R.string.editor_stabilization_gyro_import_failed
+                                            )
+                                        )
+                                    )
+                                } else {
+                                    val fd = sourceFdProvider()
+                                    if (fd < 0) {
+                                        stores.gyros.remove(imported.id)
+                                        Result.failure(
+                                            IllegalStateException(
+                                                context.getString(
+                                                    R.string.editor_stabilization_gyro_import_failed
+                                                )
+                                            )
+                                        )
+                                    } else {
+                                        try {
+                                            val probe = NativeSource.jniGyroSyncProbe(fd, path)
+                                            runCatching {
+                                                ParcelFileDescriptor.adoptFd(fd).close()
+                                            }
+                                            if (probe == null || probe.size < 5) {
+                                                // The log does not parse or
+                                                // the anchors are absent:
+                                                // drop it — an unusable log
+                                                // must not stay attached.
+                                                stores.gyros.remove(imported.id)
+                                                Result.failure(
+                                                    IllegalStateException(
+                                                        context.getString(
+                                                            R.string.editor_stabilization_gyro_import_failed
+                                                        )
+                                                    )
+                                                )
+                                            } else {
+                                                val updated =
+                                                    stores.sources.setGyro(r.sourceId, imported.id)
+                                                if (updated != null) {
+                                                    gyroId = updated.gyroId
+                                                    gyroSync = probe
+                                                }
+                                                Result.success(probe)
+                                            }
+                                        } catch (e: Exception) {
+                                            runCatching {
+                                                ParcelFileDescriptor.adoptFd(fd).close()
+                                            }
+                                            stores.gyros.remove(imported.id)
+                                            Result.failure(e)
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Result.failure(e)
+                            }
+                        },
+                        onRemoveGyro = {
+                            val updated = stores.sources.setGyro(r.sourceId, "")
+                            if (updated != null) {
+                                gyroId = updated.gyroId
+                                gyroSync = null
+                            }
+                        },
                     )
                 }
             } else {
@@ -926,4 +1074,9 @@ private class Stores(
     // App-level preview quality (owner request 2026-11-11b §3): same
     // shared project.json, own top-level "previewQuality" scalar.
     val previewQuality: PreviewQualityStore,
+    // Gyro log copies (gyro Phase 5): same shared project.json, own
+    // "gyros" section (GyroStore) — the attach flow copies the picked
+    // .gcsv's bytes app-private, so no persistable URI grant is needed
+    // and the log survives restarts, exactly like the cube copies.
+    val gyros: GyroStore,
 )

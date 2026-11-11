@@ -68,6 +68,30 @@ object Format {
         String.format(Locale.ROOT, "%d%%", value)
 
     /**
+     * "+120 ms" / "-30 ms" / "0 ms" — explicit sign for the stabilization
+     * sync trim (±500 ms range; 0 keeps its sign-free zero, one decimal
+     * never needed on the 10 ms step grid).
+     */
+    fun formatSignedMs(valueMs: Int): String =
+        if (valueMs == 0) "0 ms" else String.format(Locale.ROOT, "%+d ms", valueMs)
+
+    /**
+     * "1.10x" — two-decimal zoom readout for the stabilization zoom-limit
+     * slider (1.00..1.50 on the 0.05 step grid; the two decimals keep the
+     * readout width stable across the range, tnum-friendly).
+     */
+    fun formatZoom(zoom: Float): String =
+        String.format(Locale.ROOT, "%.2fx", zoom)
+
+    /**
+     * "23.5 mm" — one-decimal millimeter readout for the stabilization
+     * focal override (35mm-equivalent; the 0.5 mm step grid never shows a
+     * second decimal).
+     */
+    fun formatMm(mm: Float): String =
+        String.format(Locale.ROOT, "%.1f mm", mm)
+
+    /**
      * Library/clip format line: "3840×2160 • 310 frames • RGGB". Segments
      * with non-positive values are omitted so a half-probed clip degrades
      * gracefully instead of showing "0×0"; an empty clip shows "".

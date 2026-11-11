@@ -21,9 +21,11 @@
 #include <vector>
 
 #include <rawedit/DngWriter.h>
+#include <rawedit/Gyro.h>
 #include <rawedit/Lut.h>
 #include <rawedit/Result.h>
 #include <rawedit/Source.h>
+#include <rawedit/Sync.h>
 #include <rawedit/Temporal.h>
 #include <rawedit/Thumbnail.h>
 #include <rawedit/Transfer.h>
@@ -1002,6 +1004,90 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeLutProbe(
         return nullptr;
     }
     return toJavaString(env, parsed.value->title);
+}
+
+// Gyro sync probe (GYRO PHASE 5) ------------------------------------------------
+//
+// Stateless validation + status estimate for the .gcsv attach flow: opens a
+// THROWAWAY Source from the clip's fd (Source::open dup's the fd, so the
+// caller's handle is untouched), reads frame 0's sync anchors + the
+// container's 35mm-equivalent focal length, parses the .gcsv at gyroPath,
+// and runs estimateOffsetFromAnchors. Returns a double array:
+//
+//   [0] anchored flag (1.0 = Anchored, 0.0 = ManualRequired)
+//   [1] offsetMs    (the estimate; 0 when manual-required)
+//   [2] errorBoundMs (symmetric bound; 0 when unknown)
+//   [3] focalLengthMm (container 35mm-equiv; 0 = absent)
+//   [4] sampleCount (gyro samples; 0 when the parse yielded none)
+//
+// or nullptr on failure with the error state set (the Kotlin layer reads
+// nativeLastError()). No handle, no cache, no render-path state touched —
+// the screen probes on the attach click, so it is safe from any thread and
+// never poisons a render (the nativeLutProbe contract).
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeGyroSyncProbe(
+        JNIEnv* env, jclass, jint fd, jstring gyroPath) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    const char* chars = env->GetStringUTFChars(gyroPath, nullptr);
+    if (chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "gyro: out of memory reading the path (recovery: free memory and retry)");
+        return nullptr;
+    }
+    const std::string path(chars);
+    env->ReleaseStringUTFChars(gyroPath, chars);
+    if (path.empty()) {
+        setError(static_cast<int>(rawedit::ErrorCode::BadHeader), kStageOpen,
+                 "gyro: bad header — the path is empty "
+                 "(recovery: pick the clip's sidecar .gcsv)");
+        return nullptr;
+    }
+
+    // 1. Throwaway Source from the dup'd fd: frame 0's anchors + focal.
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("gyro: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail +
+                     " (recovery: reopen the clip and retry)");
+        return nullptr;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+    const rawedit::FrameInfo first = src->frameInfo(0);
+    const int64_t frame0WallMs = first.recvdMs;
+    const int64_t frame0CaptureNs = first.ptsUs * 1000;
+    const double focalMm = src->rawMeta().focalLengthMm;
+
+    // 2. Parse the sidecar log.
+    auto parsed = rawedit::parseGcsv(path);
+    if (!parsed.isOk()) {
+        setError(static_cast<int>(parsed.code), kStageOpen,
+                 std::string("gyro: ") + rawedit::errorName(parsed.code) +
+                     " — " + parsed.detail +
+                     " (recovery: pick the clip's sidecar .gcsv)");
+        return nullptr;
+    }
+    const rawedit::ImuData& imu = *parsed.value;
+    const int64_t gyroStartWallMs = imu.logStartWallMs;
+    const double samples = static_cast<double>(imu.sampleCount());
+
+    // 3. Anchored estimate (ManualRequired — never fabricated — when either
+    //    anchor is absent; the UI shows the manual path then).
+    const rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
+        frame0WallMs, gyroStartWallMs, frame0CaptureNs);
+    const double out[5] = {
+        est.isAnchored() ? 1.0 : 0.0,
+        est.model.offsetMs(),
+        est.errorBoundMs,
+        focalMm,
+        samples,
+    };
+    jdoubleArray result = env->NewDoubleArray(5);
+    if (result == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(result, 0, 5, out);
+    return result;
 }
 
 // MP4 export pipeline ----------------------------------------------------------

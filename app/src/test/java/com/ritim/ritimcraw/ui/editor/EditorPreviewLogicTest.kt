@@ -178,4 +178,144 @@ class EditorPreviewLogicTest {
         // the group is hidden rather than showing a dead control.
         assertFalse(EditorPreviewLogic.showTemporalNr(SourcePath.ENCODED))
     }
+
+    // ---- Stabilization group visibility (gyro Phase 5) ----
+
+    @Test
+    fun mcraw_shows_stabilization() {
+        // The warp consumes the gyro log against the clip's CFA frames —
+        // the group belongs on the Detail tab for RAW clips.
+        assertTrue(EditorPreviewLogic.showStabilization(SourcePath.MCRAW))
+    }
+
+    @Test
+    fun encoded_hides_stabilization() {
+        // The encoded (Mi-Log MP4) path has no CFA frames and no gyro
+        // anchor: the group is hidden rather than showing a dead control.
+        assertFalse(EditorPreviewLogic.showStabilization(SourcePath.ENCODED))
+    }
+
+    // ---- sync status verdict (gyro Phase 5: the status line's decision) ----
+
+    @Test
+    fun no_gyro_is_no_data_regardless_of_probe_shape() {
+        // No sidecar .gcsv attached: the honest no-data state, even if a
+        // stale probe result lingers — stabilization stays a no-op.
+        assertEquals(
+            GyroSyncStatus.NO_DATA,
+            EditorPreviewLogic.syncStatus(
+                gyroAttached = false, probeFailed = false, anchored = true,
+            ),
+        )
+    }
+
+    @Test
+    fun failed_probe_is_no_data_never_a_fabricated_verdict() {
+        // A probe that failed reads as NoData: the attach flow removes the
+        // failed entry, so this is the transient between failure and
+        // removal — never an invented Anchored/Manual claim.
+        assertEquals(
+            GyroSyncStatus.NO_DATA,
+            EditorPreviewLogic.syncStatus(
+                gyroAttached = true, probeFailed = true, anchored = false,
+            ),
+        )
+    }
+
+    @Test
+    fun attached_and_anchored_is_anchored() {
+        // Both wall-clock anchors present (clip recvd vs log header):
+        // Anchored, with the probe's error bound shown as the ± value.
+        assertEquals(
+            GyroSyncStatus.ANCHORED,
+            EditorPreviewLogic.syncStatus(
+                gyroAttached = true, probeFailed = false, anchored = true,
+            ),
+        )
+    }
+
+    @Test
+    fun attached_without_anchors_is_manual() {
+        // Anchors absent: the trim slider is the user's offset — Manual.
+        assertEquals(
+            GyroSyncStatus.MANUAL,
+            EditorPreviewLogic.syncStatus(
+                gyroAttached = true, probeFailed = false, anchored = false,
+            ),
+        )
+    }
+
+    // ---- effective focal (gyro Phase 5: override vs container) ----
+
+    @Test
+    fun focal_override_wins_over_container() {
+        // The grade's editable mm field is the user's explicit choice; the
+        // container value is only the default it was seeded from.
+        assertEquals(50f, EditorPreviewLogic.effectiveFocalMm(50f, 23.95f))
+    }
+
+    @Test
+    fun container_focal_fills_the_gap_when_no_override() {
+        // 0 = "use the container": the clip's own 35mm-equivalent value.
+        assertEquals(23.95f, EditorPreviewLogic.effectiveFocalMm(0f, 23.95f))
+    }
+
+    @Test
+    fun no_focal_anywhere_reads_zero() {
+        // Container absent too: 0 — the group shows the honest
+        // intrinsics-assumed state and the user must set a value.
+        assertEquals(0f, EditorPreviewLogic.effectiveFocalMm(0f, 0f))
+    }
+
+    // ---- focal px conversion (gyro Phase 5: the flagged intrinsics math) ----
+
+    @Test
+    fun focal_px_is_width_times_mm_over_36() {
+        // f_px = width · mm / 36 — the full-frame horizontal convention,
+        // mirroring the core's focalLengthPxFromEquivalent exactly.
+        assertEquals(1280f * 23.95f / 36f, EditorPreviewLogic.focalLengthPxFromEquivalent(23.95f, 1280))
+    }
+
+    @Test
+    fun non_positive_focal_refuses_rather_than_fabricates() {
+        // A missing mm (or width) yields 0: the caller refuses the warp
+        // instead of fabricating an intrinsics-free homography.
+        assertEquals(0f, EditorPreviewLogic.focalLengthPxFromEquivalent(0f, 1280))
+        assertEquals(0f, EditorPreviewLogic.focalLengthPxFromEquivalent(-5f, 1280))
+        assertEquals(0f, EditorPreviewLogic.focalLengthPxFromEquivalent(23.95f, 0))
+    }
+
+    // ---- stabilization readiness (gyro Phase 5: the warp's gate) ----
+
+    @Test
+    fun ready_needs_toggle_gyro_and_focal() {
+        // The honest gate: toggle on, a gyro log attached, and a usable
+        // pixel focal (container or override) — all three.
+        assertTrue(
+            EditorPreviewLogic.stabilizationReady(
+                stabilizationOn = true, gyroAttached = true, focalMm = 23.95f,
+            ),
+        )
+    }
+
+    @Test
+    fun missing_any_input_is_not_ready() {
+        // Any missing input reads as the no-op pass-through; the group
+        // still shows with the status line explaining why.
+        assertFalse(
+            EditorPreviewLogic.stabilizationReady(
+                stabilizationOn = false, gyroAttached = true, focalMm = 23.95f,
+            ),
+        )
+        assertFalse(
+            EditorPreviewLogic.stabilizationReady(
+                stabilizationOn = true, gyroAttached = false, focalMm = 23.95f,
+            ),
+        )
+        assertFalse(
+            EditorPreviewLogic.stabilizationReady(
+                stabilizationOn = true, gyroAttached = true, focalMm = 0f,
+            ),
+        )
+    }
 }
