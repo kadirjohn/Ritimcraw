@@ -29,6 +29,7 @@ import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.CodecReport
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.PreviewQuality
+import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.theme.Tnum
 
 /**
@@ -67,11 +68,10 @@ fun SettingsScreen(
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        Text(
-            stringResource(R.string.settings_title),
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(vertical = 8.dp),
-        )
+        // Shared header (owner request 2026-11-11d: consistent top area
+        // across the main screens) — same title, same compact rhythm as
+        // Library/Exports; no toolbar actions on this screen.
+        ScreenHeader(title = stringResource(R.string.settings_title))
         // Preview quality row (owner request 2026-11-11b section 3): the
         // headline + supporting text state the tradeoff; the segmented row
         // carries the choice. Each button's label line shows the dims in
