@@ -219,6 +219,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -229,7 +235,8 @@ class NativeSource private constructor(
          * and only re-develops (grade-only change). A frameIndex change
          * decodes and replaces the cache; a reopened handle starts uncached.
          * lutPath/lutStrength as in nativePreviewRender (COL-07);
-         * noiseReduction/chromaDenoise as in nativePreviewRender (DN-01..08).
+         * noiseReduction/chromaDenoise as in nativePreviewRender (DN-01..08);
+         * the stabilization package as in nativePreviewRender (gyro Phase 5).
          */
         @JvmStatic private external fun nativePreviewSessionRenderCached(
             handle: Long,
@@ -256,6 +263,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -327,6 +340,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -453,6 +472,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
@@ -463,6 +488,7 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
         )
 
@@ -492,6 +518,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
@@ -502,6 +534,7 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
         )
 
@@ -541,6 +574,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
         ): ByteArray? = nativeExportFrame(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -550,6 +589,7 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
         )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */

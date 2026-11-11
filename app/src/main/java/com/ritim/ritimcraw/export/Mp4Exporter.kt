@@ -113,10 +113,23 @@ interface Mp4Session {
      * look; COL-07) — the SAME stage-22 apply as the preview, so the
      * owner's preview-vs-export acceptance check compares like with like.
      * The snapshot's denoise percents (DN-01..08) apply with the same
-     * native 0..100 scale as the preview. Null on failure (read the
-     * error accessors from the same thread).
+     * native 0..100 scale as the preview. [gyroPath] is the attached gyro
+     * log's path (gyro Phase 5): when the snapshot has stabilization on
+     * AND a log is attached, the frame is WARPED at full resolution
+     * before the RGB888 pack — the same per-frame warp the paused
+     * preview shows, so the exported clip matches the preview. Export is
+     * NOT tier-gated (the temporal NR precedent): the export can afford
+     * the measured full-res warp cost offline. Null gyroPath (or
+     * stabilization off) = no warp. Null on failure (read the error
+     * accessors from the same thread).
      */
-    fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String? = null): ByteArray?
+    fun renderFrame(
+        handle: Long,
+        frameIndex: Int,
+        grade: GradeK,
+        lutPath: String? = null,
+        gyroPath: String? = null,
+    ): ByteArray?
 
     /** ptsUs of frame [frameIndex] (-1 on a bad handle). */
     fun framePts(handle: Long, frameIndex: Int): Long
@@ -170,8 +183,21 @@ internal object NativeMp4Session : Mp4Session {
         frameIndex: Int,
         grade: GradeK,
         lutPath: String?,
+        gyroPath: String?,
     ): ByteArray? {
         requireNative()
+        // Gyro Phase 5: export is NOT tier-gated (the temporal NR precedent
+        // — PreviewTiers gates the PREVIEW, never the export), so this is
+        // its own on+path gate rather than GradeMapping.stabilizationArgs
+        // (which applies PreviewTiers.stabilizationAppliesAt and would
+        // wrongly skip the full-res export warp). Strength maps 0..100 ->
+        // 0..1 exactly like lutStrength; mode/zoomLimit/focalMm/trimMs
+        // pass through raw (the C++ side owns their composition).
+        val stab = if (grade.stabilization && gyroPath != null) {
+            grade.stabilizationStrength / 100f
+        } else {
+            0f
+        }
         return NativeSource.jniExportFrame(
             handle, frameIndex,
             grade.exposureEv, grade.highlights, grade.tempK, grade.tint,
@@ -186,6 +212,15 @@ internal object NativeMp4Session : Mp4Session {
             // core clamps), same as GradeMapping.toNative.
             grade.noiseReduction, grade.chromaDenoise,
             grade.temporalNr, grade.temporalStrength,
+            // Gyro Phase 5: null gyroPath (or stabilization off) = the
+            // bridge's no-warp default (null path -> resolveStabilization
+            // returns the default StabInput -> applyStabilization no-ops).
+            if (grade.stabilization && gyroPath != null) gyroPath else null,
+            grade.stabilizationMode,
+            stab,
+            grade.stabilizationZoomLimit,
+            grade.stabilizationFocalMm,
+            grade.stabilizationTrimMs,
         )
     }
 
@@ -362,7 +397,12 @@ class ExportPipeline(
      * [outPath] (the caller's staging path). [lutPath] is the job
      * snapshot's selected .cube path (null = no LUT, the old look;
      * COL-07) — resolved ONCE by the exporter and applied to every frame,
-     * so the whole export is one consistent look. Throws
+     * so the whole export is one consistent look. [gyroPath] is the
+     * attached gyro log's path (gyro Phase 5) — resolved ONCE by the
+     * exporter and applied to every frame: when the snapshot has
+     * stabilization on AND a log is attached, every frame is warped at
+     * full resolution before the RGB888 pack (the same per-frame warp the
+     * paused preview shows; export is not tier-gated). Throws
      * IllegalStateException with a complete message on any failure.
      *
      * [onProgress] hears (videoFramesDone, totalVideoFrames) — reported
@@ -375,6 +415,7 @@ class ExportPipeline(
         grade: GradeK,
         outPath: String,
         lutPath: String? = null,
+        gyroPath: String? = null,
         manualRotationDeg: Int = 0,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
     ) {
@@ -383,7 +424,7 @@ class ExportPipeline(
                 Mp4ExportErrors.message(session.code(), session.stage(), session.detail())
             )
         try {
-            encode(info, grade, outPath, lutPath, manualRotationDeg, onProgress)
+            encode(info, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress)
         } finally {
             session.close(info.handle)
         }
@@ -394,6 +435,7 @@ class ExportPipeline(
         grade: GradeK,
         outPath: String,
         lutPath: String?,
+        gyroPath: String?,
         manualRotationDeg: Int,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
     ) {
@@ -458,7 +500,7 @@ class ExportPipeline(
             for (s in PtsTimeline.interleave(videoPts, audioPts)) {
                 when (s.track) {
                     PtsTimeline.Sample.Track.VIDEO -> {
-                        val rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath)
+                        val rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath)
                             ?: throw IllegalStateException(
                                 Mp4ExportErrors.message(
                                     session.code(), session.stage(), session.detail()
@@ -534,6 +576,7 @@ class Mp4Exporter(
     private val writerFactory: () -> Mp4MediaWriter = { MediaCodecMp4Writer() },
     private val engine: ExecutorService = ExportEngine.thread,
     private val lutPathFor: (String?) -> String? = { null },
+    private val gyroPathFor: (String) -> String? = { null },
 ) {
 
     /**
@@ -541,10 +584,17 @@ class Mp4Exporter(
      * job's grade snapshot — including its LUT selection (COL-07):
      * [lutPathFor] turns the snapshot's lutId into the copied cube's path
      * (null = no LUT), resolved ONCE here so every frame of the export
-     * runs the same stage-22 apply as the preview. Returns the updated
-     * job: DONE on success (detail = output file name), FAILED with a
-     * stage + cause + recovery detail on failure. Never throws; a
-     * failure leaves neither [out] nor its partial behind.
+     * runs the same stage-22 apply as the preview. Gyro Phase 5:
+     * [gyroPathFor] turns the job's sourceId into the attached gyro log's
+     * path (null = no warp), resolved ONCE here — when the snapshot has
+     * stabilization on AND a log is attached, every frame is warped at
+     * full resolution, the same per-frame warp the paused preview shows.
+     * DNG and photo exports never reach this seam (no gyro warp there —
+     * the documented skip; a gyro-stabilized DNG would be a raw
+     * resample, a different project). Returns the updated job: DONE on
+     * success (detail = output file name), FAILED with a stage + cause +
+     * recovery detail on failure. Never throws; a failure leaves neither
+     * [out] nor its partial behind.
      *
      * [onProgress] hears (videoFramesDone, totalVideoFrames) per frame; the
      * queue owns the throttled persistence (see ExportQueue.ProgressWriter).
@@ -556,13 +606,14 @@ class Mp4Exporter(
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
     ): ExportJob {
         val lutPath = lutPathFor(job.snapshot.lutId)
+        val gyroPath = gyroPathFor(job.sourceId)
         val partial = ExportStaging.partial(out)
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val res = try {
                         ExportPipeline(session, writerFactory()).run(
-                            sourceFd, job.snapshot, partial.absolutePath, lutPath,
+                            sourceFd, job.snapshot, partial.absolutePath, lutPath, gyroPath,
                             job.manualRotationDeg, onProgress
                         )
                         if (ExportStaging.finalize(partial, out)) {

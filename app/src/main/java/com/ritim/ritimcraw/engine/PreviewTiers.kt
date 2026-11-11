@@ -40,4 +40,23 @@ object PreviewTiers {
      * always applies temporal at full quality.
      */
     fun temporalNrAppliesAt(maxDim: Int): Boolean = maxDim >= PAUSED_MAX_DIM
+
+    /**
+     * Stabilization warp tier policy (gyro Phase 5): the CPU bilinear warp
+     * runs on the DEVELOPED thumbnail, so its cost scales with maxDim.
+     * Measured 2026-11-11 (commit b's warpFrame doctest, desktop -O2):
+     * 5.01187 ms/frame at 1280x720 — comfortably inside the paused tier's
+     * budget and the ~15 ms/frame playback budget, but the warp is only
+     * MEANINGFUL at the settle/paused tier: during playback and slider
+     * drags the editor shows the unstabilized frame and the effect lands
+     * on the settle render (the temporal NR precedent — one policy, one
+     * place). [SOURCE_MAX_DIM] (0) FAILS the gate, exactly like temporal
+     * NR: the single paused follow-up render at the recorded resolution
+     * skips the warp too. Export is NOT gated here (the temporal NR
+     * precedent): nativeExportFrame always applies the warp at full
+     * resolution when the grade has stabilization on and a gyro log is
+     * attached — that is where the full-quality stabilized frame comes
+     * from.
+     */
+    fun stabilizationAppliesAt(maxDim: Int): Boolean = maxDim >= PAUSED_MAX_DIM
 }

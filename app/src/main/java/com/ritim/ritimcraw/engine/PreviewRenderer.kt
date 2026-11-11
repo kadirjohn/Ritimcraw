@@ -82,6 +82,45 @@ object GradeMapping {
         temporalNr = grade.temporalNr,
         temporalStrength = grade.temporalStrength,
     )
+
+    /**
+     * The gyro stabilization arguments for one render (gyro Phase 5): the
+     * six flat JNI params the bridge appends after temporalStrength. This
+     * is the ONE testable gate: gyroPath is null — the no-warp default —
+     * when stabilization is off in the grade, when the tier skips the warp
+     * ([PreviewTiers.stabilizationAppliesAt], the temporal NR precedent),
+     * or when no gyro log is attached ([gyroPath] null). When it runs, the
+     * strength maps GradeK's 0..100 percent to rawedit's 0..1 here (the
+     * lutStrength precedent); the mode/zoomLimit/focalMm/trimMs pass
+     * through raw (the C++ side owns mode ints, the focal override 0 =
+     * use-container contract, and the trim composition).
+     */
+    data class StabilizationArgs(
+        val gyroPath: String?,
+        val mode: Int,
+        val strength: Float,
+        val zoomLimit: Float,
+        val focalMm: Float,
+        val trimMs: Float,
+    )
+
+    fun stabilizationArgs(
+        grade: GradeK,
+        maxDim: Int,
+        gyroPath: String?,
+    ): StabilizationArgs? {
+        if (!grade.stabilization) return null
+        if (gyroPath == null) return null
+        if (!PreviewTiers.stabilizationAppliesAt(maxDim)) return null
+        return StabilizationArgs(
+            gyroPath = gyroPath,
+            mode = grade.stabilizationMode,
+            strength = grade.stabilizationStrength / 100f,
+            zoomLimit = grade.stabilizationZoomLimit,
+            focalMm = grade.stabilizationFocalMm,
+            trimMs = grade.stabilizationTrimMs,
+        )
+    }
 }
 
 /**
@@ -142,15 +181,19 @@ class PreviewRenderer private constructor(
     /**
      * Renders frame [frameIndex] with [grade] scaled so the long edge fits
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
-     * stage 22 bypassed, the old look; COL-07). MUST run on the renderer's
-     * engine thread (the bridge's error state is thread-local) — the
-     * suspend [render] companion function does that for callers.
+     * stage 22 bypassed, the old look; COL-07). [gyroPath] is the attached
+     * gyro log's path (null = no warp — gyro Phase 5; the stabilization
+     * gate is [GradeMapping.stabilizationArgs], applied here at this
+     * render's tier). MUST run on the renderer's engine thread (the
+     * bridge's error state is thread-local) — the suspend [render]
+     * companion function does that for callers.
      */
     internal fun renderBlocking(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
         lutPath: String? = null,
+        gyroPath: String? = null,
     ): Result<PreviewFrame> {
         if (frameIndex < 0 || (frameCount > 0 && frameIndex >= frameCount)) {
             return Result.failure(
@@ -165,6 +208,9 @@ class PreviewRenderer private constructor(
         val temporal = args.copy(
             temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
         )
+        // Gyro Phase 5: the stabilization gate at this render's tier (null
+        // stab = no warp — off, tier skip, or no attached log).
+        val stab = GradeMapping.stabilizationArgs(grade, maxDim, gyroPath)
         val out = NativeSource.jniPreviewRender(
             handle, frameIndex,
             args.exposureEv, args.highlights, args.tempK, args.tint,
@@ -175,6 +221,8 @@ class PreviewRenderer private constructor(
             lutPath, args.lutStrength,
             args.noiseReduction, args.chromaDenoise,
             temporal.temporalNr, temporal.temporalStrength,
+            stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
+            stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
             maxDim,
         )
         if (out == null || out.size < 2) {
@@ -294,8 +342,9 @@ class PreviewRenderer private constructor(
         /**
          * Suspends until frame [frameIndex] is rendered with [grade] scaled
          * to [maxDim]. [lutPath] is the selected .cube's path (null = no
-         * LUT, the old look; COL-07). The whole open -> render -> close
-         * sequence runs on the shared preview engine thread and the
+         * LUT, the old look; COL-07). [gyroPath] is the attached gyro log's
+         * path (null = no warp — gyro Phase 5). The whole open -> render ->
+         * close sequence runs on the shared preview engine thread and the
          * continuation resumes from there — the caller never blocks its own
          * dispatcher.
          *
@@ -314,6 +363,7 @@ class PreviewRenderer private constructor(
             grade: GradeK,
             maxDim: Int,
             lutPath: String? = null,
+            gyroPath: String? = null,
         ): Result<PreviewFrame> = suspendCoroutine { cont ->
             try {
                 previewEngine.execute {
@@ -328,7 +378,7 @@ class PreviewRenderer private constructor(
                             // thread, so submitting to it would deadlock.
                             openResult(NativeSource.jniPreviewOpen(sourceFd), previewEngine).fold(
                                 onSuccess = { r ->
-                                    val res = r.renderBlocking(frameIndex, grade, maxDim, lutPath)
+                                    val res = r.renderBlocking(frameIndex, grade, maxDim, lutPath, gyroPath)
                                     r.close()
                                     res
                                 },

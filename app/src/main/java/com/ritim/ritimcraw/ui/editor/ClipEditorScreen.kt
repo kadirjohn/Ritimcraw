@@ -46,6 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -371,6 +372,14 @@ fun ClipEditorScreen(
     // no-op. The name line resolves the id through the store.
     gyroId: String = "",
     gyroNameFor: (String) -> String? = { null },
+    // The attached gyro log's id -> its copied .gcsv path (AppNav:
+    // GyroStore.pathFor). Null = no log: the render warp is a no-op. The
+    // pump resolves it PER REQUEST next to lutPathFor, so an attach or
+    // detach mid-session is picked up on the very next render without
+    // restarting the pump (the LaunchedEffect(sourceId) lives longer than
+    // a single attachment; the id is mirrored through rememberUpdatedState
+    // for exactly that reason — the lutPathFor precedent).
+    gyroPathFor: (String) -> String? = { null },
     // The sidecar .gcsv's probe result (AppNav: jniGyroSyncProbe on the
     // clip's fd + the copied log's path — [anchored, offsetMs, boundMs,
     // focalMm, samples]). Null = no log attached or the probe failed; the
@@ -810,6 +819,14 @@ fun ClipEditorScreen(
         // followUpMaxDim (progressive pause settle) queues its full-res
         // follow-up AFTER publishing — through offerIfEmpty, so a request
         // that arrived meanwhile stays pending and wins.
+        // Gyro Phase 5: the pump's LaunchedEffect(sourceId) captures its
+        // body ONCE at launch and outlives any single attachment, so the
+        // CURRENT gyro id + path resolver are mirrored per recomposition
+        // here (in the composable body) — an attach or detach mid-session
+        // is picked up on the next render without restarting the pump.
+        val currentGyroPathFor by rememberUpdatedState(gyroPathFor)
+        val currentGyroId by rememberUpdatedState(gyroId)
+
         LaunchedEffect(sourceId) {
             // Monotonic publication: the pump is serial and the gate is
             // newest-wins, so polled requests arrive in strictly increasing
@@ -829,13 +846,19 @@ fun ClipEditorScreen(
                     // LUT, the old look). Resolved per request so an import
                     // or remove mid-session is picked up on the next render.
                     val lutPath = lutPathFor(req.grade.lutId)
+                    // Gyro Phase 5: same per-request resolution for the
+                    // attached gyro log (null = no warp). The tier gate
+                    // itself lives at the seam (GradeMapping.stabilizationArgs
+                    // -> PreviewTiers.stabilizationAppliesAt), so the pump
+                    // stays policy-free and every arm just carries the path.
+                    val gyroPath = currentGyroId.takeIf { it.isNotBlank() }?.let(currentGyroPathFor)
                     val result = if (sessionRender && s != null) {
                         if (req.cached) {
                             // Interactive drag render: the bridge reuses the
                             // cached CFA when the frame is unchanged.
-                            s.renderCached(req.frameIndex, req.grade, req.maxDim, lutPath)
+                            s.renderCached(req.frameIndex, req.grade, req.maxDim, lutPath, gyroPath)
                         } else {
-                            s.render(req.frameIndex, req.grade, req.maxDim, lutPath)
+                            s.render(req.frameIndex, req.grade, req.maxDim, lutPath, gyroPath)
                         }
                     } else {
                         // No session. The per-render fallback is the MCRAW
@@ -862,6 +885,7 @@ fun ClipEditorScreen(
                                     grade = req.grade,
                                     maxDim = req.maxDim,
                                     lutPath = lutPath,
+                                    gyroPath = gyroPath,
                                 )
                             }
                         }

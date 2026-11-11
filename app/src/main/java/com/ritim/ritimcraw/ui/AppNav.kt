@@ -169,8 +169,16 @@ fun AppNav() {
             // COL-07: the exporter resolves the job snapshot's lutId to the
             // copied cube's path ONCE per export (null = no LUT — the old
             // look), so every frame runs the same stage-20 apply as the
-            // preview the owner compares it against.
-            mp4 = Mp4Exporter(lutPathFor = { id -> stores.luts.pathFor(id) }),
+            // preview the owner compares it against. Gyro Phase 5: the same
+            // one-shot resolution for the attached gyro log (the job's
+            // sourceId -> the source's gyroId -> the copied .gcsv's path,
+            // null = no warp) — the export warps every frame at full
+            // resolution when the snapshot has stabilization on and a log
+            // is attached, matching the paused preview.
+            mp4 = Mp4Exporter(
+                lutPathFor = { id -> stores.luts.pathFor(id) },
+                gyroPathFor = { sourceId -> stores.gyros.pathFor(stores.sources.get(sourceId)?.gyroId) },
+            ),
             // RAW-11 Frame Picker: the photo arm — a picked frame developed
             // at full resolution into a PNG. Same LUT resolution as the MP4
             // arm (the snapshot's lutId -> the copied cube's path, once per
@@ -874,6 +882,12 @@ fun AppNav() {
                         gyroId = gyroId,
                         gyroNameFor = { id ->
                             if (id.isBlank()) null else stores.gyros.get(id)?.name
+                        },
+                        // Gyro Phase 5: the pump resolves the attached log's
+                        // path per render request through this (null = no
+                        // warp) — the same keying as the export arm above.
+                        gyroPathFor = { id ->
+                            if (id.isBlank()) null else stores.gyros.pathFor(id)
                         },
                         gyroSync = gyroSync,
                         containerFocalMm = (gyroSync?.get(3) ?: 0.0).toFloat(),

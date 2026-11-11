@@ -53,28 +53,33 @@ interface EditorPreviewSession : AutoCloseable {
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
-     * stage 20 bypassed, the old look; COL-07). Suspends until done;
-     * resumes with the frame or a failure carrying stage + cause +
-     * recovery.
+     * stage 20 bypassed, the old look; COL-07). [gyroPath] is the attached
+     * gyro log's path (null = no warp — gyro Phase 5); the ENCODED path has
+     * no gyro data and ignores it (the documented skip — stabilization is
+     * MCRAW-only). Suspends until done; resumes with the frame or a failure
+     * carrying stage + cause + recovery.
      */
     suspend fun render(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
         lutPath: String? = null,
+        gyroPath: String? = null,
     ): Result<PreviewFrame>
 
     /**
      * Interactive slider render: the MCRAW session reuses its cached CFA
      * when the frame is unchanged (a grade-only change skips the decode);
      * the encoded path has no such stage and decodes like [render].
-     * [lutPath] as in [render] (COL-07).
+     * [lutPath] as in [render] (COL-07); [gyroPath] as in [render] (gyro
+     * Phase 5 — ignored by the encoded path).
      */
     suspend fun renderCached(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
         lutPath: String? = null,
+        gyroPath: String? = null,
     ): Result<PreviewFrame>
 
     /** ptsUs of frame [index] for the transport's timeline; -1 when unavailable. */
@@ -225,11 +230,15 @@ class EncodedPreviewSession private constructor(
 
     private val closed = AtomicBoolean(false)
 
+    // gyroPath is intentionally ignored (gyro Phase 5): an encoded clip has
+    // no gyro data — stabilization is MCRAW-only, and the editor never
+    // shows the group for an encoded clip anyway.
     override suspend fun render(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
         lutPath: String?,
+        gyroPath: String?,
     ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
 
     /**
@@ -244,6 +253,7 @@ class EncodedPreviewSession private constructor(
         grade: GradeK,
         maxDim: Int,
         lutPath: String?,
+        gyroPath: String?,
     ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
 
     private suspend fun renderOnEngine(

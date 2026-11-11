@@ -3,6 +3,8 @@ package com.ritim.ritimcraw.engine
 import com.ritim.ritimcraw.data.GradeK
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.Executors
@@ -199,6 +201,89 @@ class PreviewRendererTest {
         assertEquals(grade.temporalNr, back.temporalNr)
         assertEquals(grade.temporalStrength, back.temporalStrength, 0f)
     }
+
+    // ---- stabilizationArgs (gyro Phase 5: the ONE testable preview gate) ----
+
+    @Test
+    fun stab_gate_off_grade_is_null() {
+        // Stabilization off in the grade = no warp, whatever else is true
+        // (the group's no-data state and the off toggle both land here).
+        assertNull(
+            GradeMapping.stabilizationArgs(
+                GradeK(stabilization = false),
+                maxDim = PreviewTiers.PAUSED_MAX_DIM,
+                gyroPath = "/data/gyros/log.gcsv",
+            )
+        )
+    }
+
+    @Test
+    fun stab_gate_no_attached_log_is_null() {
+        // ON in the grade but no .gcsv attached: the honest no-warp
+        // default (never a fabricated warp from a missing file).
+        assertNull(
+            GradeMapping.stabilizationArgs(
+                GradeK(stabilization = true),
+                maxDim = PreviewTiers.PAUSED_MAX_DIM,
+                gyroPath = null,
+            )
+        )
+    }
+
+    @Test
+    fun stab_gate_tier_skip_is_null() {
+        // Playback (720), drag (480) and the SOURCE_MAX_DIM (0) follow-up
+        // all skip the warp — the temporal NR precedent. The settle/paused
+        // render is the one that warps.
+        val on = GradeK(stabilization = true)
+        assertNull(GradeMapping.stabilizationArgs(on, PreviewTiers.PLAYBACK_MAX_DIM, "/g.gcsv"))
+        assertNull(GradeMapping.stabilizationArgs(on, SliderTiers.DRAG_MAX_DIM, "/g.gcsv"))
+        assertNull(GradeMapping.stabilizationArgs(on, PreviewTiers.SOURCE_MAX_DIM, "/g.gcsv"))
+    }
+
+    @Test
+    fun stab_gate_on_with_log_maps_all_six_params() {
+        // ON + attached log + paused tier: the six flat JNI params, with
+        // the strength percent 0..100 -> rawedit's 0..1 (the lutStrength
+        // precedent) and mode/zoomLimit/focalMm/trimMs passing through raw
+        // (the C++ side owns their composition).
+        val args = GradeMapping.stabilizationArgs(
+            GradeK(
+                stabilization = true,
+                stabilizationMode = 2,
+                stabilizationStrength = 70f,
+                stabilizationZoomLimit = 1.2f,
+                stabilizationFocalMm = 24f,
+                stabilizationTrimMs = -120.5f,
+            ),
+            maxDim = PreviewTiers.PAUSED_MAX_DIM,
+            gyroPath = "/data/gyros/log.gcsv",
+        )
+        assertNotNull(args)
+        assertEquals("/data/gyros/log.gcsv", args!!.gyroPath)
+        assertEquals(2, args.mode)
+        assertEquals(0.7f, args.strength, 0f)
+        assertEquals(1.2f, args.zoomLimit, 0f)
+        assertEquals(24f, args.focalMm, 0f)
+        assertEquals(-120.5f, args.trimMs, 0f)
+    }
+
+    @Test
+    fun stab_gate_strength_percent_maps_to_unit_scale() {
+        // The full 0..100 percent range lands on 0..1 exactly (three
+        // points lock the linear map; the C++ side clamps the rest).
+        assertEquals(0f, stabStrengthOf(0f), 0f)
+        assertEquals(0.5f, stabStrengthOf(50f), 0f)
+        assertEquals(1f, stabStrengthOf(100f), 0f)
+    }
+
+    /** strength of [percent] through the gate at the paused tier. */
+    private fun stabStrengthOf(percent: Float): Float =
+        GradeMapping.stabilizationArgs(
+            GradeK(stabilization = true, stabilizationStrength = percent),
+            maxDim = PreviewTiers.PAUSED_MAX_DIM,
+            gyroPath = "/g.gcsv",
+        )!!.strength
 
     // ---- debounce window ----
 
