@@ -100,6 +100,7 @@
     <string name="editor_preset_delete">Hazır ayarı sil</string>
     <string name="editor_frame_picker_title">Kare geliştir</string>
     <string name="editor_frame_picker_frame">Kare %1$d · %2$s</string>
+    <string name="editor_precision_frame">Kare %1$d · %2$s</string>
     <string name="editor_frame_picker_photo_clip">Fotoğraf: klip grade\'ini kullan</string>
     <string name="editor_frame_picker_photo_clip_detail">Bu kareyi klibin geçerli grade\'i ile geliştirir</string>
     <string name="editor_frame_picker_photo_separate">Fotoğraf: ayrı geliştirme</string>

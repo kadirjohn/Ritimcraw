@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -55,6 +56,21 @@ import com.ritim.ritimcraw.util.Format
  * Pure visual extraction from ClipEditorScreen (2026-11-10): same name,
  * same parameters, same package — the screen's call site compiles
  * unchanged.
+ *
+ * Precision frame scrub (owner request 2026-11-11 section 2): a
+ * press-and-hold on the seek bar that survives the platform long-press
+ * window enters PRECISION FRAME MODE — the same physical drag then steps
+ * whole frames (~1 cm ≈ 30 frames) instead of seeking by time, and a
+ * readout with the exact frame number + timecode appears above the bar
+ * (the owner's words: "the player bar becomes more detailed"). The
+ * gesture steals the stream from the slider (see precisionScrubGesture);
+ * [onPrecisionEngage] returns whether precision mode was entered (the
+ * pure decision may decline — no timeline, single frame, no render
+ * path), [onPrecisionDragDp] receives the TOTAL drag in dp since the
+ * gesture started, [onPrecisionRelease] ends the mode (the frame is
+ * kept and settled). [precisionReadout] is the localized line to show
+ * while active (null = not active). Defaults keep every other call site
+ * unchanged.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,6 +84,10 @@ fun TransportRow(
     onSeekFraction: (Float) -> Unit,
     onSeekStarted: () -> Unit = {},
     onSeekFinished: () -> Unit = {},
+    precisionReadout: String? = null,
+    onPrecisionEngage: () -> Boolean = { false },
+    onPrecisionDragDp: (Float) -> Unit = {},
+    onPrecisionRelease: () -> Unit = {},
 ) {
     val seekDescription = stringResource(R.string.editor_seek)
     Row(
@@ -105,28 +125,42 @@ fun TransportRow(
             inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
         )
         val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
-        Slider(
-            value = fraction,
-            onValueChange = onSeekFraction,
-            onValueChangeFinished = onSeekFinished,
-            valueRange = 0f..1f,
-            enabled = enabled,
-            interactionSource = seekInteraction,
-            colors = colors,
-            modifier = Modifier
-                .weight(1f)
-                .semantics { contentDescription = seekDescription },
-            thumb = {
-                SliderDefaults.Thumb(
-                    interactionSource = seekInteraction,
-                    colors = colors,
-                    thumbSize = CompactSliderDefaults.THUMB_SIZE,
-                )
-            },
-            track = { state: SliderState ->
-                SeekTrack(state = state, colors = colors, isRtl = isRtl)
-            },
-        )
+        // The precision gesture rides the Slider's OWN modifier — outer to
+        // its internal press/drag chains, which is what lets it steal the
+        // stream after the long-press window (see precisionScrubGesture).
+        // The readout column keeps the bar itself at the same height as
+        // before when precision is off (no readout above it).
+        Column(Modifier.weight(1f)) {
+            precisionReadout?.let { PrecisionScrubReadout(it) }
+            Slider(
+                value = fraction,
+                onValueChange = onSeekFraction,
+                onValueChangeFinished = onSeekFinished,
+                valueRange = 0f..1f,
+                enabled = enabled,
+                interactionSource = seekInteraction,
+                colors = colors,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = seekDescription }
+                    .precisionScrubGesture(
+                        isRtl = isRtl,
+                        onEngage = onPrecisionEngage,
+                        onDragDp = onPrecisionDragDp,
+                        onRelease = onPrecisionRelease,
+                    ),
+                thumb = {
+                    SliderDefaults.Thumb(
+                        interactionSource = seekInteraction,
+                        colors = colors,
+                        thumbSize = CompactSliderDefaults.THUMB_SIZE,
+                    )
+                },
+                track = { state: SliderState ->
+                    SeekTrack(state = state, colors = colors, isRtl = isRtl)
+                },
+            )
+        }
         Text(
             text = Format.formatTimecodePair(elapsedUs, totalUs),
             style = MaterialTheme.typography.labelMedium.merge(Tnum),
