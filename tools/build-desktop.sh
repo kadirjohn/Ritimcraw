@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Sync.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -84,6 +84,10 @@ echo "== building tests =="
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_orientation_estimate"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_thumbnail.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_thumbnail"
+# test_sync: frame↔IMU sync (Phase 3); runs from the repo root so it finds
+# the STEPS/media/test fixtures.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_sync.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_sync"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -110,6 +114,8 @@ echo "== running test_orientation_estimate =="
 (cd "$ROOT" && "$BUILD/test_orientation_estimate")
 echo "== running test_thumbnail =="
 (cd "$ROOT" && "$BUILD/test_thumbnail")
+echo "== running test_sync =="
+(cd "$ROOT" && "$BUILD/test_sync")
 
 echo
 echo "ALL TESTS DONE. Binaries in $BUILD:"
