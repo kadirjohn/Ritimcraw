@@ -159,11 +159,17 @@ fun GradeSlider(
  * traceable to the platform defaults they thin down from.
  */
 object CompactSliderDefaults {
-    /** Thin track line (M3 default TrackHeight is 16dp). */
+    /** Thin track line (M3 default TrackHeight is 16dp; owner request 2026-11-11d section 12.1 band is 3-4dp). */
     val TRACK_HEIGHT = 4.dp
 
-    /** Small round thumb (M3 default HandleWidth/Height are 4/44dp). */
-    val THUMB_SIZE = DpSize(12.dp, 12.dp)
+    /**
+     * Round thumb (M3 default HandleWidth/Height are 4/44dp). 16dp is the
+     * low end of owner request 2026-11-11d section 12.1's 16-20dp visible
+     * band; the M3 Slider's minimumInteractiveComponentSize keeps the
+     * TOUCH target at 48dp (section 12.1: "the actual touch target must
+     * be larger than the visible slider thumb").
+     */
+    val THUMB_SIZE = DpSize(16.dp, 16.dp)
 
     /** Zero tick: 2dp wide, taller than the track line so it reads. */
     val ZERO_TICK_WIDTH = 2.dp

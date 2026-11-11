@@ -112,11 +112,17 @@ fun EditorTopBar(
 ) {
     var exportSheetOpen by remember { mutableStateOf(false) }
     var infoSheetOpen by remember { mutableStateOf(false) }
+    // Owner request 2026-11-11d section 7: a compact toolbar of
+    // approximately 52-56dp. The height is pinned (not heightIn) so the
+    // toolbar is deterministic — the preview region below never shifts
+    // when the filename wraps or the buttons change. The 48dp IconButtons
+    // center inside it; the filename keeps weight(1f) + ellipsis so a long
+    // name can never push Export or the overflow off-screen.
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .padding(horizontal = 4.dp, vertical = 4.dp),
+            .height(56.dp)
+            .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onBack) {
