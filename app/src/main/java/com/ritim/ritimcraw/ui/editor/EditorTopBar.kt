@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -323,9 +324,23 @@ fun PreviewRefreshControl(
     }
     // Resolved OUTSIDE the semantics block: its lambda is not composable.
     val statusDescription = stringResource(R.string.editor_refresh_preview_state, statusText)
+    // Scrim behind the chip (owner finding 2026-11-11): over overexposed
+    // near-white footage the white glyph/label of ALL preview corner
+    // controls vanished into the frame. The chip's default container is
+    // Transparent, so it gets the same translucent surfaceContainerLowest
+    // scrim (roles, never hex — DESIGN.md; the histogram overlay's
+    // backdrop is the precedent) as the fullscreen and histogram toggles,
+    // via containerColor so the scrim follows the chip's own shape — no
+    // wrapping Surface, corners match automatically. Also when disabled:
+    // a disabled chip still sits over the frame and must stay legible.
+    val scrim = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f)
     AssistChip(
         onClick = onRefresh,
         enabled = canRender,
+        colors = AssistChipDefaults.assistChipColors(
+            containerColor = scrim,
+            disabledContainerColor = scrim,
+        ),
         label = { Text(stringResource(R.string.editor_refresh_preview)) },
         leadingIcon = {
             Icon(

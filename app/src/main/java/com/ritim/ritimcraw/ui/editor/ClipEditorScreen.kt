@@ -849,12 +849,25 @@ fun ClipEditorScreen(
                 // position and playback continues unharmed. Vendored
                 // Material Symbols glyphs (material-icons-core 1.7.3 has
                 // no Fullscreen); the IconButton carries the 48dp target.
-                IconButton(
-                    onClick = { fullscreen = !fullscreen },
+                // Scrim behind the glyph (owner finding 2026-11-11): over
+                // overexposed near-white footage the white icon vanished
+                // into the frame. Every preview corner control carries the
+                // same translucent surfaceContainerLowest scrim (roles,
+                // never hex — DESIGN.md; the histogram overlay's backdrop
+                // is the precedent) at the theme's small shape, so the
+                // glyph reads over any frame. The Surface wraps, not
+                // replaces, the IconButton — the 48dp touch target and
+                // the click path are unchanged.
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
+                    shape = MaterialTheme.shapes.small,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(8.dp),
                 ) {
+                    IconButton(
+                        onClick = { fullscreen = !fullscreen },
+                    ) {
                     Icon(
                         painter = painterResource(
                             if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
@@ -863,6 +876,7 @@ fun ClipEditorScreen(
                             if (fullscreen) R.string.editor_fullscreen_exit else R.string.editor_fullscreen
                         ),
                     )
+                    }
                 }
             }
             // Transport row (owner request 2026-11-10 §1, MotionCam Pro
