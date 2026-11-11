@@ -310,9 +310,14 @@ fun ClipEditorScreen(
         // release re-renders with the actual grade. Both renders go through
         // the render gate and the pump below, exactly like every other
         // request. heldRenderIssued tracks whether THIS hold actually issued
-        // a render (an already-neutral grade skips both renders); the
-        // startHold helper is defined next to requestRender below.
+        // a render (an already-neutral grade skips both renders);
+        // holdPausedPlayback tracks whether THIS hold paused playback
+        // (owner request 2026-11-11: a hold while playing pauses the wall
+        // clock and the release resumes from the held position — the
+        // pure transitions live in BeforeAfter.onHoldStart/onHoldRelease).
+        // The startHold helper is defined next to requestRender below.
         var heldRenderIssued by remember(sourceId) { mutableStateOf(false) }
+        var holdPausedPlayback by remember(sourceId) { mutableStateOf(false) }
 
         // Histogram overlay (owner feature list W5): toggleable 256-bin
         // luma histogram + clipping badge over the preview. histogramVisible
@@ -401,29 +406,66 @@ fun ClipEditorScreen(
          * pending slot + monotonic publication mean a newer request (a
          * seek, a slider settle, playback started mid-hold) supersedes the
          * hold render by sequence and the release render restores the grade
-         * — the drag-tier/settle pipeline cannot be corrupted. Paused-only
-         * (BeforeAfter.canHold): during playback the loop's continuous
-         * graded offers would supersede a neutral render within one frame,
-         * so the hold is ignored there rather than fighting the loop.
-         * An already-neutral grade skips both renders (the picture would
-         * not change), tracked by heldRenderIssued so a release never
-         * issues a render its press never issued.
+         * — the drag-tier/settle pipeline cannot be corrupted.
+         *
+         * During playback too (owner request 2026-11-11): a hold while
+         * playing PAUSES the wall clock first (isPlaying = false — the
+         * playback loop and the audio transport both key on it, so video
+         * and sound stop cleanly at the current position; the loop is not
+         * fought frame-by-frame), then renders the neutral frame at the
+         * paused tier. Release (or a drag-cancel: a moving finger is a
+         * seek, not a compare) re-renders the graded frame and RESUMES
+         * playback from the held position — the same play-from-position
+         * logic as the transport's play button, minus the restart-at-end
+         * branch (the hold never advances the position, so it cannot be
+         * at the clip's end when it started from a playing frame). An
+         * already-neutral grade skips both renders AND the pause (holding
+         * would show the exact frame the loop is already showing).
+         * The transitions are pure (BeforeAfter.onHoldStart/onHoldRelease,
+         * JVM-tested); this helper only writes the states they decide.
          */
         fun startHold(pressed: Boolean) {
             if (pressed) {
-                if (!BeforeAfter.canHold(isPlaying, frame != null, canRender)) return
-                if (!BeforeAfter.holdChangesPicture(grade)) return
+                when (BeforeAfter.onHoldStart(isPlaying, frame != null, canRender, grade)) {
+                    BeforeAfter.HoldStart.NoHold -> return
+                    BeforeAfter.HoldStart.PauseAndShowBefore -> {
+                        holdPausedPlayback = true
+                        isPlaying = false
+                    }
+                    BeforeAfter.HoldStart.ShowBefore -> holdPausedPlayback = false
+                }
                 heldRenderIssued = true
                 requestRender(
                     positionFrame, BeforeAfter.holdGrade(),
                     PreviewTiers.PAUSED_MAX_DIM, cached = true,
                 )
-            } else if (heldRenderIssued) {
-                heldRenderIssued = false
-                requestRender(
-                    positionFrame, grade,
-                    PreviewTiers.PAUSED_MAX_DIM, cached = true,
-                )
+            } else {
+                when (
+                    BeforeAfter.onHoldRelease(holdPausedPlayback, heldRenderIssued)
+                ) {
+                    BeforeAfter.HoldRelease.Nothing -> return
+                    BeforeAfter.HoldRelease.ShowAfterAndResume -> {
+                        heldRenderIssued = false
+                        holdPausedPlayback = false
+                        requestRender(
+                            positionFrame, grade,
+                            PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                        )
+                        // Resume from the held position (the existing
+                        // play-from-position logic; PlaybackStarted also
+                        // stands the drag tier down, like the play button).
+                        isPlaying = true
+                        applyTierEvent(SliderTiers.Event.PlaybackStarted)
+                    }
+                    BeforeAfter.HoldRelease.ShowAfter -> {
+                        heldRenderIssued = false
+                        holdPausedPlayback = false
+                        requestRender(
+                            positionFrame, grade,
+                            PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                        )
+                    }
+                }
             }
         }
 
@@ -787,15 +829,22 @@ fun ClipEditorScreen(
                                 if (endedEarly != null) return@awaitEachGesture
                                 // Long press confirmed: show the original.
                                 startHold(true)
-                                // The hold ends when the finger lifts or the
-                                // stream is consumed; either way the release
-                                // render restores the current grade.
+                                // The hold ends when the finger lifts, the
+                                // stream is consumed, or the finger MOVES
+                                // past the touch slop (owner request
+                                // 2026-11-11: a drag starting during a hold
+                                // cancels it — a moving finger is a seek
+                                // gesture, not a compare; the release path
+                                // is shared, so the cancel restores the
+                                // grade and resumes playback exactly like
+                                // a lift).
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     val change =
                                         event.changes.firstOrNull { it.id == down.id }
                                     if (change == null || !change.pressed ||
-                                        event.changes.any { it.isConsumed }
+                                        event.changes.any { it.isConsumed } ||
+                                        (change.position - down.position).getDistance() > slop
                                     ) {
                                         break
                                     }
