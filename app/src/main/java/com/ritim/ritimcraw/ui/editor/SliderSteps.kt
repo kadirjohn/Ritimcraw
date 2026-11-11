@@ -20,6 +20,14 @@ object SliderSteps {
     /** Highlights / Tint and the six tone controls are integer steps. */
     const val UNIT_STEP = 1f
 
+    /**
+     * Strength the Temporal NR switch seeds on first enable (DN-05..DN-09):
+     * the native stage is a no-op at 0, so a toggle that visibly changes
+     * nothing would read as broken. Midpoint — conservative but effective
+     * (the owner's directive for this stage).
+     */
+    const val TEMPORAL_STRENGTH_DEFAULT = 50f
+
     /** Snaps a single axis to its step grid (slider change events). */
     fun snapExposure(value: Float): Float = quantize(value, EXPOSURE_STEP)
     fun snapHighlights(value: Float): Float = quantize(value, UNIT_STEP)
@@ -36,6 +44,7 @@ object SliderSteps {
     fun snapLutStrength(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapNoiseReduction(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapChromaDenoise(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapTemporalStrength(value: Float): Float = quantize(value, UNIT_STEP)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
@@ -59,6 +68,7 @@ object SliderSteps {
             lutStrength = snapLutStrength(grade.lutStrength),
             noiseReduction = snapNoiseReduction(grade.noiseReduction),
             chromaDenoise = snapChromaDenoise(grade.chromaDenoise),
+            temporalStrength = snapTemporalStrength(grade.temporalStrength),
         )
     }
 
@@ -72,6 +82,7 @@ object SliderSteps {
         SATURATION, BLACK_POINT, WHITE_POINT, SHADOWS, MIDTONES, CONTRAST,
         SHARPNESS, DETAIL, LUT_STRENGTH,
         NOISE_REDUCTION, CHROMA_DENOISE,
+        TEMPORAL_STRENGTH,
     }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
@@ -93,6 +104,7 @@ object SliderSteps {
         // stages skipped — the old look), the GradeK default.
         Axis.NOISE_REDUCTION -> current.copy(noiseReduction = GradeK().noiseReduction)
         Axis.CHROMA_DENOISE -> current.copy(chromaDenoise = GradeK().chromaDenoise)
+        Axis.TEMPORAL_STRENGTH -> current.copy(temporalStrength = GradeK().temporalStrength)
     }
 
     /**

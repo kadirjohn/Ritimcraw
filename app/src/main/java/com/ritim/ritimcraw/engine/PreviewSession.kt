@@ -126,6 +126,11 @@ class PreviewSession private constructor(
         lutPath: String? = null,
     ): Result<PreviewFrame> {
         val args = GradeMapping.toNative(grade)
+        // DN-08 tier policy: temporal NR only at the settle/paused tier —
+        // the drag (480) and playback (720) tiers skip the full-res merge.
+        val temporal = args.copy(
+            temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
+        )
         return renderArray(
             NativeSource.jniPreviewRender(
                 handle, frameIndex,
@@ -136,6 +141,7 @@ class PreviewSession private constructor(
                 args.sharpness, args.detail, args.tonemap,
                 lutPath, args.lutStrength,
                 args.noiseReduction, args.chromaDenoise,
+                temporal.temporalNr, temporal.temporalStrength,
                 maxDim,
             )
         )
@@ -182,6 +188,12 @@ class PreviewSession private constructor(
                             )
                         } else {
                             val args = GradeMapping.toNative(grade)
+                            // DN-08 tier policy: temporal NR only at the
+                            // settle/paused tier — the drag-tier cached path
+                            // (480) skips the full-res merge.
+                            val temporal = args.copy(
+                                temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
+                            )
                             renderArray(
                                 NativeSource.jniPreviewSessionRenderCached(
                                     handle, frameIndex,
@@ -192,6 +204,7 @@ class PreviewSession private constructor(
                                     args.sharpness, args.detail, args.tonemap,
                                     lutPath, args.lutStrength,
                                     args.noiseReduction, args.chromaDenoise,
+                                    temporal.temporalNr, temporal.temporalStrength,
                                     maxDim,
                                 )
                             )

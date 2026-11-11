@@ -28,6 +28,7 @@ class PreviewRendererTest {
             sharpness = 25f, detail = -10f, tonemap = 1,
             lutStrength = 75f,
             noiseReduction = 40f, chromaDenoise = 65f,
+            temporalNr = true, temporalStrength = 62.5f,
         )
         val args = GradeMapping.toNative(grade)
         assertEquals(1.2f, args.exposureEv, 0f)
@@ -87,6 +88,11 @@ class PreviewRendererTest {
         val defaults = GradeMapping.toNative(GradeK())
         assertEquals(0f, defaults.noiseReduction, 0f)
         assertEquals(0f, defaults.chromaDenoise, 0f)
+        // Temporal NR defaults to OFF/0 (DN-05..DN-09): a default grade never
+        // runs the temporal stage, so the default look is unchanged and old
+        // projects keep their exact old look.
+        assertEquals(false, defaults.temporalNr)
+        assertEquals(0f, defaults.temporalStrength, 0f)
     }
 
     @Test
@@ -123,6 +129,11 @@ class PreviewRendererTest {
         // C++ level by the golden bit-identity test).
         assertEquals(0f, args.noiseReduction, 0f)
         assertEquals(0f, args.chromaDenoise, 0f)
+        // Temporal NR defaults to OFF/0 (DN-05..DN-09): a default grade never
+        // runs the temporal stage, so the default look is unchanged and old
+        // projects keep their exact old look.
+        assertEquals(false, args.temporalNr)
+        assertEquals(0f, args.temporalStrength, 0f)
     }
 
     @Test
@@ -135,6 +146,7 @@ class PreviewRendererTest {
             sharpness = -45f, detail = 67f, tonemap = 2,
             lutStrength = 80f,
             noiseReduction = 33f, chromaDenoise = 71f,
+            temporalNr = true, temporalStrength = 100f,
         )
         val args = GradeMapping.toNative(grade)
         val back = GradeK(
@@ -159,6 +171,8 @@ class PreviewRendererTest {
             // — no *100 on the way back.
             noiseReduction = args.noiseReduction,
             chromaDenoise = args.chromaDenoise,
+            temporalNr = args.temporalNr,
+            temporalStrength = args.temporalStrength,
         )
         assertEquals(grade.exposureEv, back.exposureEv, 0f)
         assertEquals(grade.highlights, back.highlights, 0f)
@@ -182,6 +196,8 @@ class PreviewRendererTest {
         // DN: the percents pass through unchanged in both directions.
         assertEquals(grade.noiseReduction, back.noiseReduction, 0f)
         assertEquals(grade.chromaDenoise, back.chromaDenoise, 0f)
+        assertEquals(grade.temporalNr, back.temporalNr)
+        assertEquals(grade.temporalStrength, back.temporalStrength, 0f)
     }
 
     // ---- debounce window ----

@@ -50,6 +50,8 @@ object GradeMapping {
         val lutStrength: Float,
         val noiseReduction: Float,
         val chromaDenoise: Float,
+        val temporalNr: Boolean,
+        val temporalStrength: Float,
     )
 
     fun toNative(grade: GradeK): NativeArgs = NativeArgs(
@@ -77,6 +79,8 @@ object GradeMapping {
         // core clamps [0,100] itself.
         noiseReduction = grade.noiseReduction,
         chromaDenoise = grade.chromaDenoise,
+        temporalNr = grade.temporalNr,
+        temporalStrength = grade.temporalStrength,
     )
 }
 
@@ -156,6 +160,11 @@ class PreviewRenderer private constructor(
             )
         }
         val args = GradeMapping.toNative(grade)
+        // DN-08 tier policy: temporal NR only at the settle/paused tier —
+        // the drag (480) and playback (720) tiers skip the full-res merge.
+        val temporal = args.copy(
+            temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
+        )
         val out = NativeSource.jniPreviewRender(
             handle, frameIndex,
             args.exposureEv, args.highlights, args.tempK, args.tint,
@@ -165,6 +174,7 @@ class PreviewRenderer private constructor(
             args.sharpness, args.detail, args.tonemap,
             lutPath, args.lutStrength,
             args.noiseReduction, args.chromaDenoise,
+            temporal.temporalNr, temporal.temporalStrength,
             maxDim,
         )
         if (out == null || out.size < 2) {

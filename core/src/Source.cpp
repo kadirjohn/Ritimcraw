@@ -308,6 +308,39 @@ FrameInfo Source::frameInfo(size_t i) const {
     return info;
 }
 
+NoiseProfile Source::noiseProfile(size_t i) const {
+    NoiseProfile np{};
+
+    const auto& frames = mImpl->decoder->getFrames();
+    if (i >= frames.size())
+        return np; // valid=false: out-of-range degrades to the fallback sigma
+
+    nlohmann::json meta;
+    try {
+        mImpl->decoder->loadFrameMetadata(frames[i], meta);
+    } catch (...) {
+        // Same policy as frameInfo: a metadata-only failure reports the
+        // absence (valid=false) instead of throwing; the consumer's
+        // fallback sigma keeps the render alive.
+        return np;
+    }
+
+    // "noiseProfile": [S0,O0, S1,O1, S2,O2, S3,O3] — Camera2
+    // SENSOR_NOISE_PROFILE per CFA slot, normalized-signal domain, in the
+    // slot order of RawMeta::black (r, g, g, b). Requires all 8 numbers;
+    // anything short or malformed stays valid=false (fallback sigma).
+    std::vector<double> prof;
+    getJson(meta, "noiseProfile", prof);
+    if (prof.size() == 8) {
+        np.valid = true;
+        for (int k = 0; k < 4; ++k) {
+            np.s[k] = static_cast<float>(prof[2 * k]);
+            np.o[k] = static_cast<float>(prof[2 * k + 1]);
+        }
+    }
+    return np;
+}
+
 Result<std::vector<uint16_t>> Source::readFrame(size_t i) {
     const auto& frames = mImpl->decoder->getFrames();
     if (i >= frames.size())

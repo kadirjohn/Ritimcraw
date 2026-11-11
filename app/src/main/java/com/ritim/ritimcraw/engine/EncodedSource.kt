@@ -371,6 +371,10 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             // DN-01..08: native 0..100 scale already — pass through (the
             // core clamps), same as GradeMapping.toNative.
             grade.noiseReduction, grade.chromaDenoise,
+            // Signature parity with the CFA paths; the encoded (Mi-Log) path
+            // has no CFA and no neighbor frames, so the bridge ignores the
+            // temporal fields here (DN-05..DN-09 apply only to MCRAW clips).
+            grade.temporalNr, grade.temporalStrength,
         )
     }
 

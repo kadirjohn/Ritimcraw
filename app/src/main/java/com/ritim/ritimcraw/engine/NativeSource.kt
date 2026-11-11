@@ -217,6 +217,8 @@ class NativeSource private constructor(
             lutStrength: Float,
             noiseReduction: Float,
             chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -252,6 +254,8 @@ class NativeSource private constructor(
             lutStrength: Float,
             noiseReduction: Float,
             chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -321,6 +325,8 @@ class NativeSource private constructor(
             lutStrength: Float,
             noiseReduction: Float,
             chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -384,6 +390,8 @@ class NativeSource private constructor(
             lutStrength: Float,
             noiseReduction: Float,
             chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
         ): IntArray?
 
         /**
@@ -426,6 +434,8 @@ class NativeSource private constructor(
             lutStrength: Float,
             noiseReduction: Float,
             chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
@@ -435,6 +445,7 @@ class NativeSource private constructor(
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
+            temporalNr, temporalStrength,
             maxDim,
         )
 
@@ -462,6 +473,8 @@ class NativeSource private constructor(
             lutStrength: Float,
             noiseReduction: Float,
             chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
@@ -471,6 +484,7 @@ class NativeSource private constructor(
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
+            temporalNr, temporalStrength,
             maxDim,
         )
 
@@ -508,6 +522,8 @@ class NativeSource private constructor(
             lutStrength: Float,
             noiseReduction: Float,
             chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
         ): ByteArray? = nativeExportFrame(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -516,6 +532,7 @@ class NativeSource private constructor(
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
+            temporalNr, temporalStrength,
         )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
@@ -556,6 +573,8 @@ class NativeSource private constructor(
             lutStrength: Float,
             noiseReduction: Float,
             chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
         ): IntArray? = nativeEncodedDevelop(
             yPlane, uPlane, vPlane,
             width, height, stride, uvStride,
@@ -566,6 +585,7 @@ class NativeSource private constructor(
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
+            temporalNr, temporalStrength,
         )
 
         /** JNI bridge: readAudio for export sessions. */

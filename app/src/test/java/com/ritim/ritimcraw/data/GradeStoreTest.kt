@@ -322,6 +322,26 @@ class GradeStoreTest {
     }
 
     @Test
+    fun old_format_file_loads_temporal_nr_as_off() {
+        // A project.json written by the pre-temporal-NR build (DN-05..DN-09).
+        // The two new fields are absent and must parse as OFF/0 — temporal NR
+        // never turns itself on behind the user's back, and since the stage
+        // is a no-op when off, the old look is preserved exactly.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-temporal-clip":{"version":1,"exposureEv":0.8,"sharpness":10.0,"detail":-3.0,"tonemap":1,"tempK":4600.0,"tint":3.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-temporal-clip")
+        assertEquals(false, g.temporalNr)
+        assertEquals(0f, g.temporalStrength, 0f)
+    }
+
+    @Test
     fun json_null_lut_id_parses_as_no_selection() {
         // renderGrades writes explicit JSON null for lutId (not the field
         // being absent): both shapes must parse to null the same way.
@@ -380,6 +400,45 @@ class GradeStoreTest {
         // ...and the two denoise fields are neutral (0 = stage skipped).
         assertEquals(0f, g.noiseReduction, 0f)
         assertEquals(0f, g.chromaDenoise, 0f)
+    }
+
+    @Test
+    fun old_format_file_loads_temporal_as_neutral() {
+        // A project.json written by the pre-temporal build (DN-05..09): the
+        // two new fields are absent and must parse as off/0 — the old look
+        // is preserved exactly.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-temporal-clip":{"version":1,"exposureEv":0.8,"sharpness":10.0,"detail":-3.0,"tonemap":1,"tempK":4600.0,"tint":3.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-temporal-clip")
+        // Pre-existing fields keep their saved values...
+        assertEquals(0.8f, g.exposureEv, 0f)
+        assertEquals(1, g.tonemap)
+        // ...and temporal NR is off with neutral strength.
+        assertEquals(false, g.temporalNr)
+        assertEquals(0f, g.temporalStrength, 0f)
+    }
+
+    @Test
+    fun temporal_nr_values_survive_persist_and_reload() {
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            temporalNr = true,
+            temporalStrength = 72.5f,
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(grade, reloaded)
+        assertEquals(true, reloaded.temporalNr)
+        assertEquals(72.5f, reloaded.temporalStrength, 0f)
     }
 
     private fun projectFile(): File = File(tmp.root, "project.json")

@@ -135,6 +135,25 @@ class FormatTest {
         assertEquals("+0", Format.formatSigned(0))
     }
 
+    // ---- formatUnsigned ----
+
+    @Test
+    fun unsigned_zero_is_plain_zero() {
+        // The Temporal NR strength readout: 0..100 has no sign.
+        assertEquals("0", Format.formatUnsigned(0))
+    }
+
+    @Test
+    fun unsigned_midpoint_has_no_plus_sign() {
+        // Unlike Highlights/Tint, a 0..100 amount never prints "+".
+        assertEquals("55", Format.formatUnsigned(55))
+    }
+
+    @Test
+    fun unsigned_hundred_is_plain() {
+        assertEquals("100", Format.formatUnsigned(100))
+    }
+
     // ---- formatKelvin ----
 
     @Test

@@ -114,6 +114,15 @@ class SliderStepsTest {
         assertEquals(82f, g.chromaDenoise, 1e-4f)
     }
 
+    @Test
+    fun temporal_strength_snaps_to_whole_numbers() {
+        // DN-05..DN-09: the Temporal NR strength slider is an integer 0..100
+        // step like the other amount sliders.
+        val g = SliderSteps.snap(GradeK(temporalNr = true, temporalStrength = 61.4f))
+        assertEquals(61f, g.temporalStrength, 1e-4f)
+        assertEquals(true, g.temporalNr) // the toggle is not a slider axis
+    }
+
     // ---- double-tap reset ----
 
     @Test
@@ -244,6 +253,23 @@ class SliderStepsTest {
         assertEquals(0f, cd.chromaDenoise, 0f)
         assertEquals(70f, cd.noiseReduction, 0f)
         assertEquals(55f, cd.sharpness, 0f)
+    }
+
+    @Test
+    fun double_tap_resets_temporal_strength_only() {
+        // DN-05..DN-09: the strength slider resets to the GradeK default (0)
+        // — NOT to the switch-on seed; the toggle and every other axis stay.
+        val current = GradeK(
+            exposureEv = 1f, sharpness = 55f, detail = -30f, tonemap = 2,
+            temporalNr = true, temporalStrength = 80f,
+        )
+
+        val reset = SliderSteps.resetToDefault(SliderSteps.Axis.TEMPORAL_STRENGTH, current)
+        assertEquals(0f, reset.temporalStrength, 0f)
+        assertEquals(true, reset.temporalNr)
+        assertEquals(55f, reset.sharpness, 0f)
+        assertEquals(2, reset.tonemap)
+        assertEquals(1f, reset.exposureEv, 0f)
     }
 
     // ---- Compose steps argument ----

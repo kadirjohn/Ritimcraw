@@ -24,4 +24,20 @@ object PreviewTiers {
      * never for playback or slider drags.
      */
     const val SOURCE_MAX_DIM = 0
+
+    /**
+     * Temporal NR tier policy (DN-08 graceful degradation): the temporal
+     * merge runs on the FULL-RES CFA before the develop tail, so its cost
+     * does not shrink with maxDim. Measured 2026-11-11 on the 4K fixture
+     * (261110_004208_VIDEO_24mm.mcraw, desktop -O2, strength 100, both
+     * neighbors): proxy 0.8-2.2 ms + match 7.9-12.1 ms + merge 76.7-93.1 ms
+     * ≈ 85-107 ms per frame — far over the ~66 ms/frame playback budget
+     * and unusable as a per-step drag cost. Policy: the settle/paused tier
+     * and export apply temporal NR (a paused frame can afford ~100 ms);
+     * the drag (480) and playback (720) tiers skip it — a skipped render
+     * shows the pristine center, and the effect lands on the settle render.
+     * Export (nativeExportFrame, full-res developCpu) is not gated here and
+     * always applies temporal at full quality.
+     */
+    fun temporalNrAppliesAt(maxDim: Int): Boolean = maxDim >= PAUSED_MAX_DIM
 }

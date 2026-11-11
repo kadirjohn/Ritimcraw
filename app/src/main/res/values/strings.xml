@@ -62,6 +62,8 @@
     <string name="editor_lut_strength">Strength</string>
     <string name="editor_lut_remove">Remove</string>
     <string name="editor_lut_none">None</string>
+    <string name="editor_temporal_nr">Temporal NR</string>
+    <string name="editor_slider_temporal_strength">Strength</string>
     <string name="editor_render_preview">Render preview</string>
     <string name="editor_refresh_preview">Refresh preview</string>
     <string name="editor_refresh_preview_state">Preview: %1$s</string>

@@ -161,4 +161,21 @@ class EditorPreviewLogicTest {
             EditorPreviewLogic.onBack(fullscreen = false),
         )
     }
+
+    // ---- Temporal NR group visibility (MCRAW only; DN-05..DN-09) ----
+
+    @Test
+    fun mcraw_shows_temporal_nr() {
+        // Temporal denoise merges neighboring CFA frames — the group
+        // belongs on the Detail tab for RAW clips.
+        assertTrue(EditorPreviewLogic.showTemporalNr(SourcePath.MCRAW))
+    }
+
+    @Test
+    fun encoded_hides_temporal_nr() {
+        // The encoded (Mi-Log MP4) path takes the same Grade but the bridge
+        // ignores the temporal fields there: no CFA, no neighbor frames, so
+        // the group is hidden rather than showing a dead control.
+        assertFalse(EditorPreviewLogic.showTemporalNr(SourcePath.ENCODED))
+    }
 }

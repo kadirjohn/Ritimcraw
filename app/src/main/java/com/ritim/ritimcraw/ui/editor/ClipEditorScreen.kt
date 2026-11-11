@@ -147,6 +147,17 @@ object EditorPreviewLogic {
     fun onBack(fullscreen: Boolean): EditorBackDestination =
         if (fullscreen) EditorBackDestination.EXIT_FULLSCREEN
         else EditorBackDestination.LEAVE_EDITOR
+
+    /**
+     * True when the Temporal NR group (toggle + strength slider) belongs in
+     * the Detail tab. Temporal denoise merges neighboring CFA frames
+     * (DN-05..DN-09), so it needs the MCRAW clip kind; the encoded (Mi-Log
+     * MP4) path takes the same Grade but the bridge ignores the temporal
+     * fields there (no CFA, no neighbor frames). A separate named decision
+     * from [showRawStageToggles] so the two can diverge if one grows a
+     * second supported path.
+     */
+    fun showTemporalNr(path: SourcePath): Boolean = path == SourcePath.MCRAW
 }
 
 enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
@@ -170,6 +181,8 @@ enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
  * as M3 segmented buttons, and the LUT section (COL-07): the imported .cube
  * library as choice rows plus an Import button and the Strength slider
  * under the selected cube.
+ * as M3 segmented buttons, and — on MCRAW clips — the Temporal NR toggle
+ * with its Strength slider (DN-05..DN-09).
  *
  * Preview: the screen renders the CURRENT transport position through the
  * native preview pipeline — the first frame once on open, then after the
@@ -1319,6 +1332,11 @@ fun ClipEditorScreen(
                     )
                     else -> DetailPanel(
                         grade = grade,
+                        // Temporal NR merges neighboring CFA frames, so the
+                        // group shows only on MCRAW clips (pure decision in
+                        // EditorPreviewLogic.showTemporalNr; the encoded path
+                        // takes-and-ignores the temporal fields).
+                        showTemporalNr = EditorPreviewLogic.showTemporalNr(sourcePath),
                         onChange = { g ->
                             grade = g
                             onGradeChange(g)
@@ -1352,6 +1370,14 @@ fun ClipEditorScreen(
                         onImportLut = { lutPicker.launch(arrayOf("*/*")) },
                         onRemoveLut = onRemoveLut,
                         onLutSelect = { g ->
+                            grade = g
+                            onGradeChange(g)
+                            applyTierEvent(SliderTiers.Event.GradeEdited)
+                        },
+                        // The Temporal NR switch is not a drag either: it
+                        // settles IMMEDIATELY at the full tier, like the
+                        // RAW toggles and the tonemapping choice.
+                        onToggleChange = { g ->
                             grade = g
                             onGradeChange(g)
                             applyTierEvent(SliderTiers.Event.GradeEdited)
@@ -1720,10 +1746,18 @@ private fun ColorPanel(
  * Strength are grade edits (onLutSelect, the immediate settle path like
  * the tonemap choice); import/remove are library operations (the screen's
  * AppNav wiring owns the store).
+ * Temporal NR (DN-05..DN-09): an M3 Switch row plus a 0..100 Strength
+ * slider, shown only when [showTemporalNr] is true (MCRAW). The temporal
+ * stage merges the neighboring CFA frames into the center frame before
+ * develop, motion-compensated and confidence-weighted; the toggle settles
+ * at the full tier immediately (not a drag), the strength slider is a drag
+ * like every other slider. Encoded (Mi-Log MP4) clips never see the group —
+ * the bridge takes-and-ignores the temporal fields on that path.
  */
 @Composable
 private fun DetailPanel(
     grade: GradeK,
+    showTemporalNr: Boolean,
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
     onTonemapChange: (GradeK) -> Unit = {},
@@ -1732,6 +1766,7 @@ private fun DetailPanel(
     onImportLut: () -> Unit = {},
     onRemoveLut: (LutInfo) -> Unit = {},
     onLutSelect: (GradeK) -> Unit = {},
+    onToggleChange: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -1889,6 +1924,51 @@ private fun DetailPanel(
                 },
                 onDragActiveChange = onDragActiveChange,
             )
+        }
+        // Temporal NR: MCRAW only. The switch settles immediately at the
+        // full tier ([onToggleChange]); the strength slider below it is a
+        // drag like every other slider ([onChange] + [onDragActiveChange]).
+        if (showTemporalNr) {
+            RawToggleRow(
+                label = stringResource(R.string.editor_temporal_nr),
+                checked = grade.temporalNr,
+                onCheckedChange = { checked ->
+                    // First enable seeds the midpoint strength: the stage is
+                    // a no-op at 0, so a toggle that visibly changes nothing
+                    // would read as broken. A remembered strength (the user
+                    // dialed one earlier, then switched off) survives the
+                    // off/on cycle untouched.
+                    onToggleChange(
+                        grade.copy(
+                            temporalNr = checked,
+                            temporalStrength = if (checked && grade.temporalStrength <= 0f) {
+                                SliderSteps.TEMPORAL_STRENGTH_DEFAULT
+                            } else {
+                                grade.temporalStrength
+                            },
+                        )
+                    )
+                },
+            )
+            // The strength slider only makes sense while the stage is on;
+            // hiding it keeps the off state visually final (and the grade
+            // keeps its strength value for when the user re-enables).
+            if (grade.temporalNr) {
+                GradeSlider(
+                    label = stringResource(R.string.editor_slider_temporal_strength),
+                    value = grade.temporalStrength,
+                    valueRange = 0f..100f,
+                    step = SliderSteps.UNIT_STEP,
+                    valueLabel = Format.formatUnsigned(grade.temporalStrength.toInt()),
+                    onChange = { v ->
+                        onChange(grade.copy(temporalStrength = SliderSteps.snapTemporalStrength(v)))
+                    },
+                    onDoubleTapReset = {
+                        onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPORAL_STRENGTH, grade))
+                    },
+                    onDragActiveChange = onDragActiveChange,
+                )
+            }
         }
     }
 }

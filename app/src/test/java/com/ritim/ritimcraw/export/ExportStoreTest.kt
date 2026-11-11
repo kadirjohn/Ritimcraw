@@ -337,6 +337,34 @@ class ExportStoreTest {
     }
 
     @Test
+    fun temporal_nr_snapshot_fields_survive_reload() {
+        // The export snapshot carries the temporal NR fields (DN-05..DN-09)
+        // end to end: a queued job exports with the temporal stage the user
+        // actually set, and an old queue without the fields reloads with
+        // temporal NR off (never on behind the user's back).
+        val file = projectFile()
+        val snapshot = GradeK(
+            exposureEv = 0.75f,
+            temporalNr = true,
+            temporalStrength = 55f,
+        )
+        ExportStore(file).add(
+            ExportJob(
+                id = "a",
+                sourceId = "clip-a",
+                snapshot = snapshot,
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        val reloaded = ExportStore(file).all().single().snapshot
+        assertEquals(snapshot, reloaded)
+        assertEquals(true, reloaded.temporalNr)
+        assertEquals(55f, reloaded.temporalStrength, 0f)
+    }
+
+    @Test
     fun snapshot_round_trips_denoise_percents() {
         // DN-01..08: the job snapshot carries both denoise percents with the
         // grade, so the export runs the same stages 7/8 the user saw when
@@ -364,14 +392,35 @@ class ExportStoreTest {
         file.writeText(
             """
             {"version":1,"exports":[
-              {"id":"old-job","sourceId":"clip-b","snapshot":{"version":1,"exposureEv":0.5,"tempK":5600.0,"tint":0.0},"target":"MP4","state":"QUEUED"}
+              {"id":"old-dn-job","sourceId":"clip-b","snapshot":{"version":1,"exposureEv":0.5,"tempK":5600.0,"tint":0.0},"target":"MP4","state":"QUEUED"}
             ]}
             """.trimIndent(),
             Charsets.UTF_8,
         )
-        val old = ExportStore(file).all().single { it.id == "old-job" }
+        val old = ExportStore(file).all().single { it.id == "old-dn-job" }
         assertEquals(0f, old.snapshot.noiseReduction, 0f)
         assertEquals(0f, old.snapshot.chromaDenoise, 0f)
+    }
+
+    @Test
+    fun old_snapshot_without_temporal_fields_loads_them_off() {
+        // A queue written by the pre-temporal-NR build: the snapshot JSON has
+        // no temporal fields, so they parse as off/0 and the queued job keeps
+        // its exact old look (temporal stage is a no-op when off).
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.5,"tonemap":1},"target":"MP4","state":"QUEUED"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val snapshot = ExportStore(file).all().single().snapshot
+        assertEquals(false, snapshot.temporalNr)
+        assertEquals(0f, snapshot.temporalStrength, 0f)
     }
 
     @Test

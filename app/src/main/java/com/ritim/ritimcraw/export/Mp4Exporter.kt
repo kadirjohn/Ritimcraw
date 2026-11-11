@@ -185,6 +185,7 @@ internal object NativeMp4Session : Mp4Session {
             // DN-01..08: native 0..100 scale already — pass through (the
             // core clamps), same as GradeMapping.toNative.
             grade.noiseReduction, grade.chromaDenoise,
+            grade.temporalNr, grade.temporalStrength,
         )
     }
 

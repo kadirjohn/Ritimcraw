@@ -50,6 +50,10 @@ object Format {
     fun formatSigned(value: Int): String =
         String.format(Locale.ROOT, "%+d", value)
 
+    /** "55" — unsigned readout for 0..100 amount sliders (Temporal NR). */
+    fun formatUnsigned(value: Int): String =
+        String.format(Locale.ROOT, "%d", value)
+
     /** "5600 K" — integer Kelvin, no sign. */
     fun formatKelvin(kelvin: Int): String =
         String.format(Locale.ROOT, "%d K", kelvin)

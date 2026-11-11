@@ -62,6 +62,8 @@
     <string name="editor_lut_strength">Güç</string>
     <string name="editor_lut_remove">Kaldır</string>
     <string name="editor_lut_none">Yok</string>
+    <string name="editor_temporal_nr">Temporal NR</string>
+    <string name="editor_slider_temporal_strength">Güç</string>
     <string name="editor_render_preview">Önizlemeyi oluştur</string>
     <string name="editor_refresh_preview">Önizlemeyi yenile</string>
     <string name="editor_refresh_preview_state">Önizleme: %1$s</string>

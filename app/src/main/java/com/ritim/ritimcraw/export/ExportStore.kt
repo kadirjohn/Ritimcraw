@@ -185,6 +185,8 @@ class ExportStore(private val file: File) {
                 // for the same reason — the job exports what the user saw.
                 .append(",\"noiseReduction\":").append(num(g.noiseReduction))
                 .append(",\"chromaDenoise\":").append(num(g.chromaDenoise))
+                .append(",\"temporalNr\":").append(g.temporalNr)
+                .append(",\"temporalStrength\":").append(num(g.temporalStrength))
                 .append('}')
             return sb.toString()
         }
@@ -270,6 +272,11 @@ class ExportStore(private val file: File) {
                 // is preserved exactly.
                 noiseReduction = (m["noiseReduction"] as? Double)?.toFloat() ?: 0f,
                 chromaDenoise = (m["chromaDenoise"] as? Double)?.toFloat() ?: 0f,
+                // Temporal NR (DN-05..DN-09) postdates older snapshots: fall
+                // back to off/0 so a queued job never gains temporal NR
+                // behind the user's back; the old look is preserved exactly.
+                temporalNr = m["temporalNr"] as? Boolean ?: false,
+                temporalStrength = (m["temporalStrength"] as? Double)?.toFloat() ?: 0f,
             )
         }
 

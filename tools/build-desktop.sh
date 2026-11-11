@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Sync.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Sync.cpp Temporal.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -88,6 +88,10 @@ echo "== building tests =="
 # the STEPS/media/test fixtures.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_sync.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_sync"
+# test_temporal's real-clip case is gated behind RAWEDIT_REALCLIP=1 (4K
+# fixture); the synthetic suite always runs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_temporal.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_temporal"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -116,6 +120,8 @@ echo "== running test_thumbnail =="
 (cd "$ROOT" && "$BUILD/test_thumbnail")
 echo "== running test_sync =="
 (cd "$ROOT" && "$BUILD/test_sync")
+echo "== running test_temporal =="
+"$BUILD/test_temporal"
 
 echo
 echo "ALL TESTS DONE. Binaries in $BUILD:"
