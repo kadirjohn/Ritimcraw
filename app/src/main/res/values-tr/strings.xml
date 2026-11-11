@@ -156,4 +156,12 @@
     <string name="settings_measure">Önizleme performansını ölç</string>
     <string name="settings_measuring">Ölçülüyor…</string>
     <string name="settings_version">Sürüm %1$s</string>
+
+    <!-- Preview quality (owner request 2026-11-11b section 3) -->
+    <string name="settings_preview_quality">Önizleme kalitesi</string>
+    <string name="settings_preview_quality_body">Oynatma ve gezinme çözünürlüğü. Düşük daha akıcı oynatır; durdurulan kareler her zaman klibin kendi çözünürlüğüne keskinleşir.</string>
+    <string name="settings_preview_quality_low">Düşük</string>
+    <string name="settings_preview_quality_balanced">Dengeli</string>
+    <string name="settings_preview_quality_high">Yüksek</string>
+    <string name="settings_preview_quality_dims">%1$d / %2$d px</string>
 </resources>

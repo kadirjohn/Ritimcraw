@@ -65,6 +65,7 @@ import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
 import com.ritim.ritimcraw.engine.PreviewSessions
+import com.ritim.ritimcraw.engine.PreviewQuality
 import com.ritim.ritimcraw.engine.PreviewTiers
 import com.ritim.ritimcraw.engine.SourcePath
 import com.ritim.ritimcraw.engine.SourcePathDecision
@@ -250,6 +251,12 @@ fun ClipEditorScreen(
     onSavePreset: (name: String) -> Unit = {},
     // Removes a preset by id (AppNav: PresetStore.remove + refresh).
     onRemovePreset: (id: String) -> Unit = {},
+    // ---- Preview quality (owner request 2026-11-11b section 3) ----
+    // The user's playback/scrub resolution choice (app-level,
+    // PreviewQualityStore). The screen owns no store: AppNav reads the
+    // persisted level and hands it in; the DEFAULT keeps every caller
+    // that does not pass one bit-identical to the pre-picker tiers.
+    previewQuality: PreviewQuality = PreviewQuality.DEFAULT,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -423,9 +430,14 @@ fun ClipEditorScreen(
             pumpKick.trySend(Unit)
         }
 
-        /** Applies one SliderTiers transition and renders per its decision. */
+        /**
+         * Applies one SliderTiers transition and renders per its decision.
+         * The drag-tier cap is the user's scrub dim (preview-quality
+         * setting, owner request 2026-11-11b section 3); the settle tier
+         * stays the fixed full preview tier.
+         */
         fun applyTierEvent(event: SliderTiers.Event) {
-            val t = SliderTiers.onEvent(event, dragActive)
+            val t = SliderTiers.onEvent(event, dragActive, previewQuality.scrubMaxDim)
             dragActive = t.dragActive
             when (val d = t.decision) {
                 is SliderTiers.Decision.RenderAtDragTier ->
@@ -563,7 +575,7 @@ fun ClipEditorScreen(
             delay(RenderDebounce.WINDOW_MS)
             requestRender(
                 positionFrame, grade,
-                SliderTiers.tierFor(dragActive),
+                SliderTiers.tierFor(dragActive, previewQuality.scrubMaxDim),
                 cached = dragActive,
             )
         }
@@ -713,7 +725,10 @@ fun ClipEditorScreen(
                 val idx = PtsTimeline.frameAt(pts, elapsed)
                 if (idx >= 0 && idx != lastRendered) {
                     positionFrame = idx
-                    requestRender(idx, grade, PreviewTiers.PLAYBACK_MAX_DIM)
+                    // Playback tier = the user's preview-quality choice
+                    // (owner request 2026-11-11b section 3); the default
+                    // equals the old fixed PLAYBACK_MAX_DIM.
+                    requestRender(idx, grade, previewQuality.playbackMaxDim)
                     lastRendered = idx
                 }
                 if (idx >= pts.size - 1) {
@@ -1069,7 +1084,11 @@ fun ClipEditorScreen(
                     if (idx >= 0) {
                         positionFrame = idx
                         isPlaying = false
-                        requestRender(idx, grade, SliderTiers.tierFor(dragActive), cached = true)
+                        requestRender(
+                            idx, grade,
+                            SliderTiers.tierFor(dragActive, previewQuality.scrubMaxDim),
+                            cached = true,
+                        )
                     }
                 },
                 onSeekStarted = { applyTierEvent(SliderTiers.Event.DragStarted) },

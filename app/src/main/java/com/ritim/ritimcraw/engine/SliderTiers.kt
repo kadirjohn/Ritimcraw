@@ -62,21 +62,37 @@ object SliderTiers {
 
     /**
      * The tier for a render request given the drag state: drag tier while
-     * the finger is down, full tier otherwise.
+     * the finger is down, full tier otherwise. [scrubMaxDim] overrides the
+     * drag-tier cap (owner request 2026-11-11b section 3: the user picks
+     * the scrub resolution); the default is [DRAG_MAX_DIM], which keeps the
+     * no-preference behavior bit-identical to the pre-picker tiers.
      */
-    fun tierFor(dragActive: Boolean): Int =
-        if (dragActive) DRAG_MAX_DIM else SETTLE_MAX_DIM
+    fun tierFor(dragActive: Boolean, scrubMaxDim: Int = DRAG_MAX_DIM): Int =
+        if (dragActive) scrubMaxDim else SETTLE_MAX_DIM
 
     /**
      * Transition for one event given whether a drag is active. Pure: the
      * screen owns the boolean and feeds it back as the next call's state.
+     * [scrubMaxDim] overrides the drag-tier cap of any drag-tier decision
+     * (the user's preview-quality choice); the default keeps the
+     * no-preference behavior bit-identical.
      */
-    fun onEvent(event: Event, dragActive: Boolean): Transition = when (event) {
-        Event.DragStarted -> Transition(Decision.RenderAtDragTier(), dragActive = true)
+    fun onEvent(
+        event: Event,
+        dragActive: Boolean,
+        scrubMaxDim: Int = DRAG_MAX_DIM,
+    ): Transition = when (event) {
+        Event.DragStarted -> Transition(
+            Decision.RenderAtDragTier(scrubMaxDim), dragActive = true,
+        )
         Event.DragEnded -> Transition(Decision.RenderAtSettleTier(), dragActive = false)
         Event.PlaybackStarted -> Transition(Decision.NoRender, dragActive = false)
         Event.GradeEdited -> Transition(
-            if (dragActive) Decision.RenderAtDragTier() else Decision.RenderAtSettleTier(),
+            if (dragActive) {
+                Decision.RenderAtDragTier(scrubMaxDim)
+            } else {
+                Decision.RenderAtSettleTier()
+            },
             dragActive,
         )
     }

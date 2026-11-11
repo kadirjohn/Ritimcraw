@@ -47,6 +47,7 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
+import com.ritim.ritimcraw.data.PreviewQualityStore
 import com.ritim.ritimcraw.data.LutStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.PresetStore
@@ -133,6 +134,10 @@ fun AppNav() {
                 File(context.filesDir, "luts").apply { mkdirs() },
             ),
             presets = PresetStore(project),
+            // App-level preview quality (owner request 2026-11-11b
+            // section 3): same shared project.json, own top-level
+            // "previewQuality" scalar, omit-when-default.
+            previewQuality = PreviewQualityStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -216,6 +221,12 @@ fun AppNav() {
     // refreshed after every save/delete so the clip-info sheet's rows
     // stay current — the same pattern as the LUT list.
     var presetEntries by remember { mutableStateOf(stores.presets.all()) }
+    // The app-level preview-quality choice (owner request 2026-11-11b §3):
+    // plain state read once at composition and refreshed on every change,
+    // the same pattern as the preset list. The editor reads the CURRENT
+    // value on each render request, so a change in Settings applies to the
+    // next clip opened — and to the current one after recomposition.
+    var previewQuality by remember { mutableStateOf(stores.previewQuality.get()) }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     // EditorRoute is a data class — rememberSaveable cannot put it in a
     // Bundle (owner finding 2026-11-10: backgrounding the app with the
@@ -734,6 +745,12 @@ fun AppNav() {
                             stores.presets.remove(id)
                             presetEntries = stores.presets.all()
                         },
+                        // ---- Preview quality (owner request
+                        // 2026-11-11b §3) ----
+                        // The CURRENT app-level choice: playback + scrub
+                        // renders read it per request; pause/clip-end
+                        // settle semantics are unchanged inside the editor.
+                        previewQuality = previewQuality,
                     )
                 }
             } else {
@@ -815,6 +832,14 @@ fun AppNav() {
                                 null
                             },
                             measuring = measuring,
+                            // The quality row persists immediately; the
+                            // editor picks the new level up on its next
+                            // render request (owner request 2026-11-11b §3).
+                            previewQuality = previewQuality,
+                            onPreviewQualityChange = { level ->
+                                stores.previewQuality.put(level)
+                                previewQuality = level
+                            },
                         )
                     }
                 }
@@ -831,4 +856,7 @@ private class Stores(
     // Named grade presets (owner request 2026-11-11 §4): same shared
     // project.json, own "presets" section (PresetStore).
     val presets: PresetStore,
+    // App-level preview quality (owner request 2026-11-11b §3): same
+    // shared project.json, own top-level "previewQuality" scalar.
+    val previewQuality: PreviewQualityStore,
 )

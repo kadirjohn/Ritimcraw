@@ -104,4 +104,51 @@ class SliderTiersTest {
         assertTrue(SliderTiers.SETTLE_MAX_DIM > 0)
         assertTrue(PreviewTiers.PLAYBACK_MAX_DIM > 0)
     }
+
+    // ---- user-selected scrub dim (owner request 2026-11-11b section 3) ----
+
+    @Test
+    fun tier_for_default_keeps_the_fixed_drag_tier() {
+        // No preference passed: bit-identical to the pre-picker behavior.
+        assertEquals(SliderTiers.DRAG_MAX_DIM, SliderTiers.tierFor(dragActive = true))
+        assertEquals(SliderTiers.SETTLE_MAX_DIM, SliderTiers.tierFor(dragActive = false))
+    }
+
+    @Test
+    fun tier_for_override_only_changes_the_drag_branch() {
+        // The user's scrub dim replaces the drag-tier cap; the settle tier
+        // (the full preview quality after release) is NOT overridable —
+        // a released drag always settles at 1280 whatever the level.
+        assertEquals(720, SliderTiers.tierFor(dragActive = true, scrubMaxDim = 720))
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            SliderTiers.tierFor(dragActive = false, scrubMaxDim = 720),
+        )
+    }
+
+    @Test
+    fun on_event_override_marks_drag_tier_renders_with_the_scrub_dim() {
+        val started = SliderTiers.onEvent(
+            SliderTiers.Event.DragStarted, dragActive = false, scrubMaxDim = 480,
+        )
+        assertEquals(
+            480,
+            (started.decision as SliderTiers.Decision.RenderAtDragTier).maxDim,
+        )
+        val edited = SliderTiers.onEvent(
+            SliderTiers.Event.GradeEdited, dragActive = true, scrubMaxDim = 480,
+        )
+        assertEquals(
+            480,
+            (edited.decision as SliderTiers.Decision.RenderAtDragTier).maxDim,
+        )
+        // The settle decision after a drag end keeps the FIXED settle tier.
+        val ended = SliderTiers.onEvent(
+            SliderTiers.Event.DragEnded, dragActive = true, scrubMaxDim = 480,
+        )
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            (ended.decision as SliderTiers.Decision.RenderAtSettleTier).maxDim,
+        )
+    }
 }
