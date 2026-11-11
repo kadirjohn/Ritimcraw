@@ -120,12 +120,15 @@ private fun ExportJobRow(
             supportingContent = {
                 Column {
                     // Format line on every non-failed row (DESIGN.md Export job).
+                    // RAW-11 Frame Picker: a PHOTO row (a developed frame)
+                    // reads "PNG photo" — its own format line, not the MP4
+                    // fallback.
                     Text(
                         stringResource(
-                            if (job.target == com.ritim.ritimcraw.export.Target.DNG) {
-                                R.string.exports_format_dng
-                            } else {
-                                R.string.exports_format_mp4
+                            when (job.target) {
+                                com.ritim.ritimcraw.export.Target.DNG -> R.string.exports_format_dng
+                                com.ritim.ritimcraw.export.Target.PHOTO -> R.string.exports_format_photo
+                                com.ritim.ritimcraw.export.Target.MP4 -> R.string.exports_format_mp4
                             }
                         ),
                         style = MaterialTheme.typography.bodySmall,

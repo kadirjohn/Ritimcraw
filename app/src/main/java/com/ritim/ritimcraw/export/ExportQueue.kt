@@ -54,6 +54,7 @@ class ExportQueue(
     private val store: ExportStore,
     private val dng: DngExporter,
     private val mp4: Mp4Exporter,
+    private val photo: PhotoExporter,
     private val io: ExportIo,
     private val publisher: ExportPublisher = ExportPublisher.None,
     private val progressClock: () -> Long = System::currentTimeMillis,
@@ -175,12 +176,23 @@ class ExportQueue(
         val fd = io.sourceFd(job)
         val result = try {
             when (job.target) {
+                // The DNG arm now passes the job's frame index (RAW-11): a
+                // picker-queued DNG develops the picked frame, and every
+                // pre-picker job carries 0 — the exact frame it always
+                // exported, so nothing changes for old rows.
                 Target.DNG ->
-                    dng.export(job, fd, io.outputFile(job, Target.DNG)) { done, total ->
+                    dng.export(job, fd, io.outputFile(job, Target.DNG), job.frameIndex) { done, total ->
                         progress.report(done, total)
                     }
                 Target.MP4 ->
                     mp4.export(job, fd, io.outputFile(job, Target.MP4)) { done, total ->
+                        progress.report(done, total)
+                    }
+                // RAW-11 Frame Picker: the photo arm develops the job's
+                // frame with the job's snapshot (clip grade or the separate
+                // neutral develop) at full resolution, as a PNG.
+                Target.PHOTO ->
+                    photo.export(job, fd, io.outputFile(job, Target.PHOTO)) { done, total ->
                         progress.report(done, total)
                     }
             }
@@ -265,6 +277,7 @@ class ExportQueue(
             sourceId + "-" + target.name.lowercase() + "." + when (target) {
                 Target.DNG -> "dng"
                 Target.MP4 -> "mp4"
+                Target.PHOTO -> "png"
             }
 
         /**
@@ -340,6 +353,7 @@ class ExportQueue(
             return cleaned + "." + when (target) {
                 Target.DNG -> "dng"
                 Target.MP4 -> "mp4"
+                Target.PHOTO -> "png"
             }
         }
     }

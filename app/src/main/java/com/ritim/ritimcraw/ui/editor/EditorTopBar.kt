@@ -51,7 +51,11 @@ import com.ritim.ritimcraw.util.Format
  *
  * The "..." overflow opens the clip-info sheet (phase 1 scope: file
  * name, resolution, duration, frame count; FPS shows when derivable
- * from the timestamps, else "Unknown").
+ * from the timestamps, else "Unknown"). The sheet also carries the
+ * Frame Picker entry (RAW-11): a "Develop frame" action row that hands
+ * control to the screen — the transport position (frame number +
+ * timecode) lives in the screen, not here, so the screen opens its own
+ * picker sheet.
  */
 @Composable
 fun EditorTopBar(
@@ -60,6 +64,10 @@ fun EditorTopBar(
     onExport: (Target) -> Unit,
     exportEnabled: Boolean,
     clipInfo: ClipInfo,
+    // RAW-11 Frame Picker: opens the screen's frame picker sheet from the
+    // clip-info sheet's action row. Default no-op keeps call sites without
+    // a picker working.
+    onDevelopFrame: () -> Unit = {},
 ) {
     var exportSheetOpen by remember { mutableStateOf(false) }
     var infoSheetOpen by remember { mutableStateOf(false) }
@@ -113,6 +121,10 @@ fun EditorTopBar(
     if (infoSheetOpen) {
         ClipInfoSheet(
             info = clipInfo,
+            onDevelopFrame = {
+                infoSheetOpen = false
+                onDevelopFrame()
+            },
             onDismiss = { infoSheetOpen = false },
         )
     }
@@ -175,11 +187,17 @@ private fun ClipInfoRow(label: String, value: String) {
  * and the transport-derived duration/frame count. FPS derives from the
  * real timestamps when they exist (frames / duration); 0-count or
  * non-positive inputs show "Unknown" rather than fake numbers.
+ *
+ * The sheet's one ACTION (RAW-11 Frame Picker): "Develop frame" hands
+ * control back to the screen, which opens its picker sheet over the
+ * transport's current position — the frame number and timecode live in
+ * the screen, so this row is only the entry point.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ClipInfoSheet(
     info: ClipInfo,
+    onDevelopFrame: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val unknown = stringResource(R.string.editor_clip_info_unknown)
@@ -242,6 +260,16 @@ private fun ClipInfoSheet(
                 value = info.rawWhiteLevel.toString(),
             )
         }
+        // Frame Picker entry (RAW-11): the sheet's one action, visually
+        // separated from the read-only rows above by the sheet's own
+        // spacing — a clickable ListItem like the export sheet's rows.
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_frame_picker_title)) },
+            supportingContent = {
+                Text(stringResource(R.string.editor_frame_picker_photo_clip))
+            },
+            modifier = Modifier.clickable { onDevelopFrame() },
+        )
         Spacer(Modifier.height(16.dp))
     }
 }

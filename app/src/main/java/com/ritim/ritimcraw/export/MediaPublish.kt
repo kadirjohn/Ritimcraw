@@ -12,6 +12,9 @@ import java.io.File
  *  - DNG -> the images collection, Pictures/ritiMCRAW, image/x-adobe-dng.
  *    Some gallery viewers will not RENDER a CFA DNG (they expect a processed
  *    image); the raw mosaic is intact — desktop DNG readers open it fine.
+ *  - PHOTO (RAW-11 Frame Picker) -> the images collection,
+ *    Pictures/ritiMCRAW, image/png: a developed frame is a finished photo
+ *    every gallery renders, unlike the raw-mosaic DNG.
  *
  * The internal files/exports copy stays the source of truth (Retry dedupes
  * by the unchanged output name); the MediaStore row is an additive
@@ -53,14 +56,17 @@ object MediaPublish {
             collection = when (target) {
                 Target.MP4 -> Collection.VIDEO
                 Target.DNG -> Collection.IMAGES
+                Target.PHOTO -> Collection.IMAGES
             },
             relativePath = when (target) {
                 Target.MP4 -> "Movies/ritiMCRAW"
                 Target.DNG -> "Pictures/ritiMCRAW"
+                Target.PHOTO -> "Pictures/ritiMCRAW"
             },
             mime = when (target) {
                 Target.MP4 -> "video/mp4"
                 Target.DNG -> "image/x-adobe-dng"
+                Target.PHOTO -> "image/png"
             },
             name = outputName ?: ExportQueue.outputName(sourceId, target),
         )

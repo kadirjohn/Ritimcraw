@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.ui.editor
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -10,18 +11,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -67,6 +73,7 @@ import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.ui.theme.RitimTheme
+import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -199,6 +206,16 @@ fun ClipEditorScreen(
     // The grade's lutId -> the copied cube's path (AppNav: LutStore.pathFor).
     // Null = no LUT: stage 20 is bypassed and the old look is preserved.
     lutPathFor: (String?) -> String? = { null },
+    // ---- Frame Picker (RAW-11) ----
+    // Develops the transport's CURRENT frame as a photo. The screen owns
+    // the transport position, so the picker sheet lives here (opened from
+    // the clip-info sheet's "Develop frame" row); the two actions hand the
+    // 0-BASED frame index and the grade mode to the caller, which enqueues
+    // the photo job: separate = false develops the frame with the clip's
+    // CURRENT grade snapshot, separate = true starts a FRESH neutral
+    // develop (the clip's own grade is untouched). Default no-op keeps
+    // every existing caller working.
+    onDevelopPhoto: (frameIndex: Int, separate: Boolean) -> Unit = { _, _ -> },
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -249,6 +266,10 @@ fun ClipEditorScreen(
         // (BackHandler below) — never a double-back to leave the clip.
         var fullscreen by rememberSaveable { mutableStateOf(false) }
         BackHandler(enabled = fullscreen) { fullscreen = false }
+        // Frame Picker sheet (RAW-11): opened from the clip-info sheet's
+        // "Develop frame" row. Saveable like the tab/fullscreen flags so a
+        // configuration change (rotation) does not drop a half-made choice.
+        var framePickerOpen by rememberSaveable { mutableStateOf(false) }
 
         // Before/after press-hold (owner feature list W5): while held, the
         // preview renders the CURRENT frame with the neutral/original grade;
@@ -651,6 +672,10 @@ fun ClipEditorScreen(
                     onExport = onExport,
                     exportEnabled = sourceFd >= 0,
                     clipInfo = clipInfo,
+                    // The info sheet's "Develop frame" row opens the
+                    // screen's own picker sheet (RAW-11): the transport
+                    // position lives here, not in the top bar.
+                    onDevelopFrame = { framePickerOpen = true },
                 )
             }
             // Bounded preview region (design review: the frame never shifts
@@ -992,6 +1017,92 @@ fun ClipEditorScreen(
             }
         }
     }
+
+    // ---- Frame Picker sheet (RAW-11) ----
+    // Opened from the clip-info sheet's "Develop frame" row, composed at
+    // the screen root so it overlays the whole editor (the same placement
+    // as the top bar's own export/info sheets). The sheet shows the
+    // transport's CURRENT frame — a 1-BASED display number (frame 1 is the
+    // first frame; the job itself carries the 0-based index, which is what
+    // the native renderFrame takes) — plus its timecode, and offers the
+    // two develop modes: the clip's current grade, or a fresh neutral
+    // develop that leaves the clip's grade untouched. Each tap dismisses
+    // the sheet first, then hands the choice to the caller's enqueue.
+    if (framePickerOpen) {
+        FramePickerSheet(
+            frameIndex = positionFrame,
+            elapsedUs = elapsedUs,
+            fps = clipInfo.fps,
+            onDevelopPhoto = { frameIndex, separate ->
+                framePickerOpen = false
+                onDevelopPhoto(frameIndex, separate)
+            },
+            onDismiss = { framePickerOpen = false },
+        )
+    }
+    }
+}
+
+/**
+ * The Frame Picker sheet (RAW-11): "Develop frame" over the transport's
+ * current position. ExportSheet style — a ModalBottomSheet with a
+ * titleSmall title, the frame + timecode readout (tnum so the digits stay
+ * tabular, same as the transport strip), and one clickable ListItem per
+ * develop mode. The two modes:
+ *
+ *  - "Photo: use clip grade" — develops this frame with the clip's CURRENT
+ *    grade snapshot (exactly what the preview shows).
+ *  - "Photo: separate develop" — starts a FRESH neutral grade for this
+ *    frame; the clip's own grade is untouched (the job carries its own
+ *    snapshot, so later clip edits never change the photo's develop).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FramePickerSheet(
+    frameIndex: Int,
+    elapsedUs: Long,
+    fps: Float,
+    onDevelopPhoto: (frameIndex: Int, separate: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            stringResource(R.string.editor_frame_picker_title),
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        // Frame number + timecode: the display number is 1-BASED (frame 1
+        // is the first frame — the count a photographer reads off a
+        // clip), while the callback hands the 0-BASED index the render
+        // pipeline takes. The timecode matches the transport strip
+        // (same elapsed microseconds; fps derives from the real
+        // timestamps, and formatTimecode falls back to 24 for an
+        // underivable rate — a 0-fps clip still shows a sane clock).
+        Text(
+            text = stringResource(
+                R.string.editor_frame_picker_frame,
+                frameIndex + 1,
+                Format.formatTimecode(elapsedUs, fps.toInt()),
+            ),
+            style = MaterialTheme.typography.labelMedium.merge(Tnum),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_frame_picker_photo_clip)) },
+            supportingContent = {
+                Text(stringResource(R.string.editor_frame_picker_photo_clip_detail))
+            },
+            modifier = Modifier.clickable { onDevelopPhoto(frameIndex, false) },
+        )
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_frame_picker_photo_separate)) },
+            supportingContent = {
+                Text(stringResource(R.string.editor_frame_picker_photo_separate_detail))
+            },
+            modifier = Modifier.clickable { onDevelopPhoto(frameIndex, true) },
+        )
+        Spacer(Modifier.height(16.dp))
     }
 }
 

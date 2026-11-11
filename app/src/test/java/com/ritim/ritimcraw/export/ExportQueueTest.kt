@@ -82,6 +82,27 @@ class ExportQueueTest {
         override fun release() {}
     }
 
+    /**
+     * The fake PNG boundary (RAW-11 Frame Picker): records the handed-over
+     * dimensions and writes a real file so the staged rename runs for real.
+     * Scriptable failure via [failOn] (matched against the output path's
+     * name), mirroring [FakeDngRender].
+     */
+    private class FakePngWriter(
+        val log: MutableList<String>,
+        val failOn: String? = null,
+    ) : PngWriter {
+        val sizes = mutableListOf<Triple<Int, Int, Int>>() // argb count, width, height
+
+        override fun write(argb: IntArray, width: Int, height: Int, outPath: String): Boolean {
+            sizes.add(Triple(argb.size, width, height))
+            log.add("png:${File(outPath).name}")
+            if (failOn != null && File(outPath).name.startsWith(failOn)) return false
+            File(outPath).writeBytes(ByteArray(16))
+            return true
+        }
+    }
+
     /** Records fd hand-off: which fds were handed out and which got closed. */
     private class RecordingIo(private val tmp: TemporaryFolder) : ExportIo {
         val opened = mutableListOf<Int>()
@@ -123,6 +144,8 @@ class ExportQueueTest {
     fun output_name_is_stable_and_lowercase() {
         assertEquals("clip1-dng.dng", ExportQueue.outputName("clip1", Target.DNG))
         assertEquals("clip1-mp4.mp4", ExportQueue.outputName("clip1", Target.MP4))
+        // RAW-11 Frame Picker: a developed frame lands as a PNG.
+        assertEquals("clip1-photo.png", ExportQueue.outputName("clip1", Target.PHOTO))
     }
 
     // ---- DISPLAY-DERIVED OUTPUT NAMES (owner request 2026-11-11 §2b) ----
@@ -135,6 +158,8 @@ class ExportQueueTest {
         assertEquals("Sunset Trip.mp4", ExportQueue.displayOutputName("Sunset Trip.raw", Target.MP4))
         // A name with no extension is used as-is.
         assertEquals("Sunset Trip.dng", ExportQueue.displayOutputName("Sunset Trip", Target.DNG))
+        // RAW-11: a photo job swaps in the PNG extension.
+        assertEquals("Sunset Trip.png", ExportQueue.displayOutputName("Sunset Trip.raw", Target.PHOTO))
     }
 
     @Test
@@ -206,6 +231,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         queue.runAll()
@@ -231,6 +257,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(failOnce, freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         queue.runAll()
@@ -240,6 +267,7 @@ class ExportQueueTest {
         val queue2 = ExportQueue(
             store, DngExporter(okRender, freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         store.retry("j1")
@@ -279,6 +307,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         val ran = queue.runAll()
@@ -303,6 +332,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         val ran = queue.runAll()
@@ -328,6 +358,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log, failOn = "clip1-dng"), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         val ran = queue.runAll()
@@ -352,6 +383,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         queue.runAll()
@@ -372,6 +404,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log, openFail = false), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         queue.runAll()
@@ -379,6 +412,158 @@ class ExportQueueTest {
         assertEquals(State.DONE, jobs[0].state)
         assertEquals("clip1-mp4.mp4", jobs[0].detail)
         assertTrue(File(tmp.root, "clip1-mp4.mp4").exists())
+    }
+
+    // ---- PHOTO arm (RAW-11 Frame Picker) ----
+
+    @Test
+    fun queue_dispatches_photo_to_the_photo_exporter() = runBlocking {
+        // Same shape as queue_dispatches_mp4_to_the_mp4_exporter: a PHOTO
+        // job must reach the PHOTO arm — the fake session's open fails, so
+        // the job is FAILED via the photo path's mapped native message.
+        val store = store()
+        store.add(job("j1", "clip1", Target.PHOTO))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        // The photo path went to the photo exporter: the session was
+        // opened (through the photo arm), and the DNG/MP4 exporters were
+        // never touched.
+        assertEquals(1, log.size)
+        assertTrue(log[0].startsWith("mp4:"))
+        val jobs = store.all()
+        assertEquals(State.FAILED, jobs[0].state)
+        // The photo path reuses the native message mapper (the same open
+        // seam the MP4 path uses), so the detail names the shared native
+        // stage — the recovery wording is what tells the user what to do.
+        assertTrue(jobs[0].detail!!.contains("stage: open"))
+        assertTrue(jobs[0].detail!!.contains("recovery:"))
+    }
+
+    @Test
+    fun photo_success_reaches_done() = runBlocking {
+        // The full photo pipeline: the fake session opens (openFail = false
+        // — the default fake fails open), the developed frame reaches the
+        // PNG writer as packed pixels, and the staged partial is renamed
+        // into the final PNG with the DONE detail naming it.
+        val store = store()
+        store.add(job("j1", "clip1", Target.PHOTO).copy(frameIndex = 2))
+        val log = mutableListOf<String>()
+        val png = FakePngWriter(log)
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log, openFail = false), png, freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        val jobs = store.all()
+        assertEquals(State.DONE, jobs[0].state)
+        assertEquals("clip1-photo.png", jobs[0].detail)
+        // The file really exists and no partial is left behind.
+        assertTrue(File(tmp.root, "clip1-photo.png").exists())
+        assertTrue(!File(tmp.root, "clip1-photo.png.partial").exists())
+        // The writer saw the 4x4 frame (48 RGB bytes -> 16 packed pixels)
+        // written to the STAGED path, not the final name.
+        assertEquals(listOf(Triple(16, 4, 4)), png.sizes)
+        assertEquals("png:clip1-photo.png.partial", log.last())
+    }
+
+    @Test
+    fun photo_png_write_failure_fails_the_job_and_cleans_up() = runBlocking {
+        // The PNG writer failing to write the staged file is a Kotlin-stage
+        // failure: the job is FAILED with the photo message (stage: png
+        // encode, cause, recovery), the partial is discarded, and no file
+        // is left behind.
+        val store = store()
+        store.add(job("j1", "clip1", Target.PHOTO))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log, openFail = false), FakePngWriter(log, failOn = "clip1-photo"), freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        val jobs = store.all()
+        assertEquals(State.FAILED, jobs[0].state)
+        assertTrue(jobs[0].detail!!.contains("Photo export failed (stage: png encode)"))
+        assertTrue(jobs[0].detail!!.contains("recovery:"))
+        // Neither the final file nor the partial exists.
+        assertTrue(!File(tmp.root, "clip1-photo.png").exists())
+        assertTrue(!File(tmp.root, "clip1-photo.png.partial").exists())
+    }
+
+    @Test
+    fun photo_job_carries_the_picked_frame_to_the_native_seam() = runBlocking {
+        // The picker's whole contract: the job's frameIndex — the transport
+        // position at queue time — is the frame the native develop renders.
+        // The fake session records every renderFrame's frameIndex; the
+        // job's index must be among them, exactly as handed over.
+        val store = store()
+        store.add(job("j1", "clip1", Target.PHOTO).copy(frameIndex = 7))
+        val log = mutableListOf<String>()
+        val session = object : Mp4Session {
+            val renderedFrames = mutableListOf<Int>()
+
+            override fun open(fd: Int) =
+                Mp4SessionInfo(1L, 10, 4, 4, 0, 0)
+
+            override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?): ByteArray? {
+                renderedFrames.add(frameIndex)
+                return ByteArray(4 * 4 * 3)
+            }
+
+            override fun framePts(handle: Long, frameIndex: Int): Long = 0
+            override fun audioInfo(handle: Long): IntArray? = null
+            override fun readAudio(handle: Long): ShortArray? = null
+            override fun close(handle: Long) {}
+            override fun code(): Int = 0
+            override fun stage(): Int = 0
+            override fun detail(): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(session, FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        assertEquals(State.DONE, store.all().single().state)
+        assertEquals(listOf(7), session.renderedFrames)
+    }
+
+    @Test
+    fun photo_job_runs_serially_with_the_other_targets() = runBlocking {
+        // Queue integration: a DNG and a PHOTO job in one drain, one at a
+        // time, in queue order — both reach their own exporter and both
+        // land DONE.
+        val store = store()
+        store.add(job("j1", "clip1")) // DNG
+        store.add(job("j2", "clip1", Target.PHOTO))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log, openFail = false), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        val ran = queue.runAll()
+        assertEquals(2, ran)
+        // Queue order: the DNG render ran first, then the photo's session
+        // open + PNG write.
+        assertEquals("dng:7:clip1-dng.dng.partial", log[0])
+        assertEquals("mp4:8", log[1])
+        assertEquals("png:clip1-photo.png.partial", log[2])
+        val jobs = store.all()
+        assertTrue(jobs.all { it.state == State.DONE })
+        assertTrue(File(tmp.root, "clip1-dng.dng").exists())
+        assertTrue(File(tmp.root, "clip1-photo.png").exists())
     }
 
     @Test
@@ -391,6 +576,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(failOnce, freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         queue.runAll()
@@ -402,6 +588,7 @@ class ExportQueueTest {
         val queue2 = ExportQueue(
             store, DngExporter(okRender, freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         store.retry("j1")
@@ -432,6 +619,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         val ran = queue.runAll()
@@ -456,6 +644,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         assertEquals(1, queue.recoverInterrupted())
@@ -500,6 +689,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(session, { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
             progressClock = { now },
         )
@@ -550,6 +740,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log, failOn = "clip1-dng"), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         val ran = queue.runAll()
@@ -580,6 +771,15 @@ class ExportQueueTest {
         assertEquals("Pictures/ritiMCRAW", dng.relativePath)
         assertEquals("image/x-adobe-dng", dng.mime)
         assertEquals("clip1-dng.dng", dng.name)
+
+        // RAW-11: a developed frame is a finished photo — the images
+        // collection as a PNG every gallery renders (the raw-mosaic DNG is
+        // not).
+        val photo = MediaPublish.placement("clip1", Target.PHOTO)
+        assertEquals(MediaPublish.Collection.IMAGES, photo.collection)
+        assertEquals("Pictures/ritiMCRAW", photo.relativePath)
+        assertEquals("image/png", photo.mime)
+        assertEquals("clip1-photo.png", photo.name)
     }
 
     @Test
@@ -606,6 +806,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
             publisher,
         )
@@ -638,6 +839,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log, failOn = "clip1-dng"), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
             publisher,
         )
@@ -662,6 +864,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
             publisher,
         )
@@ -692,6 +895,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
             publisher,
         )
@@ -723,6 +927,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
             publisher,
         )
@@ -740,6 +945,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         val ran = queue.runAll()
@@ -760,6 +966,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             io,
         )
         queue.runAll()
@@ -813,6 +1020,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
             progressClock = { 1_000L },
         )
@@ -861,6 +1069,7 @@ class ExportQueueTest {
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(session, { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
         )
         // Start the first drain on a real dispatcher thread (NOT the

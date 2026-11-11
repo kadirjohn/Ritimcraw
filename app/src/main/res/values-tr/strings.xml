@@ -87,6 +87,12 @@
     <string name="editor_clip_info_raw_format">RAW örnek biçimi</string>
     <string name="editor_clip_info_raw_white_level">RAW beyaz seviyesi</string>
     <string name="editor_clip_info_unknown">Bilinmiyor</string>
+    <string name="editor_frame_picker_title">Kare geliştir</string>
+    <string name="editor_frame_picker_frame">Kare %1$d · %2$s</string>
+    <string name="editor_frame_picker_photo_clip">Fotoğraf: klip grade\'ini kullan</string>
+    <string name="editor_frame_picker_photo_clip_detail">Bu kareyi klibin geçerli grade\'i ile geliştirir</string>
+    <string name="editor_frame_picker_photo_separate">Fotoğraf: ayrı geliştirme</string>
+    <string name="editor_frame_picker_photo_separate_detail">Bu kare için yeni bir grade başlatır; klibin grade\'i değişmez</string>
     <string name="editor_fullscreen">Tam ekran</string>
     <string name="editor_fullscreen_exit">Tam ekrandan çık</string>
     <string name="editor_histogram">Histogram</string>
@@ -103,6 +109,7 @@
     <string name="exports_format_dng">CFA DNG</string>
     <string name="exports_format_dng_detail">16 bit CFA yazılır</string>
     <string name="exports_format_mp4">H.264 MP4</string>
+    <string name="exports_format_photo">PNG fotoğraf</string>
     <string name="exports_job_queued">Sırada</string>
     <string name="exports_job_running">Dışa aktarılıyor…</string>
     <string name="exports_job_running_frames">Dışa aktarılıyor… %1$d/%2$d kare</string>
