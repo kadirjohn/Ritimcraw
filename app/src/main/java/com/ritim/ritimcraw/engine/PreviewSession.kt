@@ -111,15 +111,20 @@ class PreviewSession private constructor(
     /** Blocking render; MUST run on the engine thread (thread-local error state). */
     private fun renderBlocking(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
         val args = GradeMapping.toNative(grade)
+        // DN-08 tier policy: temporal NR only at the settle/paused tier —
+        // the drag (480) and playback (720) tiers skip the full-res merge.
+        val temporal = args.copy(
+            temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
+        )
         return renderArray(
             NativeSource.jniPreviewRender(
                 handle, frameIndex,
-                args.exposureEv, args.highlights, args.tempK, args.tint,
-                args.saturation, args.blackPoint, args.whitePoint,
-                args.shadows, args.midtones, args.contrast,
-                args.asShot, args.highlightReconstruction, args.keepVignetting,
-                args.sharpness, args.detail, args.tonemap,
-                args.temporalNr, args.temporalStrength,
+                temporal.exposureEv, temporal.highlights, temporal.tempK, temporal.tint,
+                temporal.saturation, temporal.blackPoint, temporal.whitePoint,
+                temporal.shadows, temporal.midtones, temporal.contrast,
+                temporal.asShot, temporal.highlightReconstruction, temporal.keepVignetting,
+                temporal.sharpness, temporal.detail, temporal.tonemap,
+                temporal.temporalNr, temporal.temporalStrength,
                 maxDim,
             )
         )
@@ -160,15 +165,21 @@ class PreviewSession private constructor(
                             )
                         } else {
                             val args = GradeMapping.toNative(grade)
+                            // DN-08 tier policy: temporal NR only at the
+                            // settle/paused tier — the drag-tier cached path
+                            // (480) skips the full-res merge.
+                            val temporal = args.copy(
+                                temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
+                            )
                             renderArray(
                                 NativeSource.jniPreviewSessionRenderCached(
                                     handle, frameIndex,
-                                    args.exposureEv, args.highlights, args.tempK, args.tint,
-                                    args.saturation, args.blackPoint, args.whitePoint,
-                                    args.shadows, args.midtones, args.contrast,
-                                    args.asShot, args.highlightReconstruction, args.keepVignetting,
-                                    args.sharpness, args.detail, args.tonemap,
-                                    args.temporalNr, args.temporalStrength,
+                                    temporal.exposureEv, temporal.highlights, temporal.tempK, temporal.tint,
+                                    temporal.saturation, temporal.blackPoint, temporal.whitePoint,
+                                    temporal.shadows, temporal.midtones, temporal.contrast,
+                                    temporal.asShot, temporal.highlightReconstruction, temporal.keepVignetting,
+                                    temporal.sharpness, temporal.detail, temporal.tonemap,
+                                    temporal.temporalNr, temporal.temporalStrength,
                                     maxDim,
                                 )
                             )
