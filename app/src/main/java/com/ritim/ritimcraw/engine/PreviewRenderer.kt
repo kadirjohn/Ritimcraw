@@ -47,6 +47,9 @@ object GradeMapping {
         val sharpness: Float,
         val detail: Float,
         val tonemap: Int,
+        val lutStrength: Float,
+        val noiseReduction: Float,
+        val chromaDenoise: Float,
     )
 
     fun toNative(grade: GradeK): NativeArgs = NativeArgs(
@@ -66,6 +69,14 @@ object GradeMapping {
         sharpness = grade.sharpness,
         detail = grade.detail,
         tonemap = grade.tonemap,
+        // COL-07: the UI percent 0..100 becomes rawedit's 0..1 blend here,
+        // at the Kotlin boundary — every JNI call site passes native scale.
+        lutStrength = grade.lutStrength / 100f,
+        // DN-01..08: both denoise controls are ALREADY at rawedit's native
+        // 0..100 scale in GradeK (unlike lutStrength) — pass through; the
+        // core clamps [0,100] itself.
+        noiseReduction = grade.noiseReduction,
+        chromaDenoise = grade.chromaDenoise,
     )
 }
 
@@ -124,11 +135,17 @@ class PreviewRenderer private constructor(
 
     /**
      * Renders frame [frameIndex] with [grade] scaled so the long edge fits
-     * [maxDim]. MUST run on the renderer's engine thread (the bridge's
-     * error state is thread-local) — the suspend [render] companion
-     * function does that for callers.
+     * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
+     * stage 22 bypassed, the old look; COL-07). MUST run on the renderer's
+     * engine thread (the bridge's error state is thread-local) — the
+     * suspend [render] companion function does that for callers.
      */
-    internal fun renderBlocking(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    internal fun renderBlocking(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String? = null,
+    ): Result<PreviewFrame> {
         if (frameIndex < 0 || (frameCount > 0 && frameIndex >= frameCount)) {
             return Result.failure(
                 IllegalArgumentException(
@@ -144,6 +161,8 @@ class PreviewRenderer private constructor(
             args.shadows, args.midtones, args.contrast,
             args.asShot, args.highlightReconstruction, args.keepVignetting,
             args.sharpness, args.detail, args.tonemap,
+            lutPath, args.lutStrength,
+            args.noiseReduction, args.chromaDenoise,
             maxDim,
         )
         if (out == null || out.size < 2) {
@@ -249,9 +268,11 @@ class PreviewRenderer private constructor(
 
         /**
          * Suspends until frame [frameIndex] is rendered with [grade] scaled
-         * to [maxDim]. The whole open -> render -> close sequence runs on
-         * the shared preview engine thread and the continuation resumes from
-         * there — the caller never blocks its own dispatcher.
+         * to [maxDim]. [lutPath] is the selected .cube's path (null = no
+         * LUT, the old look; COL-07). The whole open -> render -> close
+         * sequence runs on the shared preview engine thread and the
+         * continuation resumes from there — the caller never blocks its own
+         * dispatcher.
          *
          * [sourceFd] must be a FRESH descriptor opened for this render and
          * is closed here (always, success or failure). Sharing one fd
@@ -267,6 +288,7 @@ class PreviewRenderer private constructor(
             frameIndex: Int,
             grade: GradeK,
             maxDim: Int,
+            lutPath: String? = null,
         ): Result<PreviewFrame> = suspendCoroutine { cont ->
             try {
                 previewEngine.execute {
@@ -281,7 +303,7 @@ class PreviewRenderer private constructor(
                             // thread, so submitting to it would deadlock.
                             openResult(NativeSource.jniPreviewOpen(sourceFd), previewEngine).fold(
                                 onSuccess = { r ->
-                                    val res = r.renderBlocking(frameIndex, grade, maxDim)
+                                    val res = r.renderBlocking(frameIndex, grade, maxDim, lutPath)
                                     r.close()
                                     res
                                 },

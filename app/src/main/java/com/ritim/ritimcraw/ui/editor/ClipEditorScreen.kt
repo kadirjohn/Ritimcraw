@@ -1,37 +1,32 @@
 package com.ritim.ritimcraw.ui.editor
 
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.interaction.DragInteraction
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -42,16 +37,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.LutInfo
 import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.export.Target
@@ -67,7 +60,6 @@ import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.ui.theme.RitimTheme
-import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -125,8 +117,10 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * Saturation (tone stages COL-11/12/13, end to end) plus the RAW metadata
  * controls (RAW-07/COL-09/RAW-04/RAW-06): As Shot WB reset, Highlight
  * Reconstruction switch, Keep Vignetting switch, Detail tab with Sharpness /
- * Detail sliders (COL-15) and the Tonemapping choice Off / ACES / AgX
- * (COL-16) as M3 segmented buttons.
+ * Detail sliders (COL-15), the Tonemapping choice Off / ACES / AgX (COL-16)
+ * as M3 segmented buttons, and the LUT section (COL-07): the imported .cube
+ * library as choice rows plus an Import button and the Strength slider
+ * under the selected cube.
  *
  * Preview: the screen renders the CURRENT transport position through the
  * native preview pipeline — the first frame once on open, then after the
@@ -141,7 +135,6 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * exposure, 50 K temperature) and a double tap on a slider row resets that
  * one control to its GradeK default (DESIGN.md Inputs).
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ClipEditorScreen(
     sourceId: String,
@@ -167,6 +160,21 @@ fun ClipEditorScreen(
     // real file name, id fallback resolved by the caller (never blank).
     // Defaults to the id so every existing caller is unchanged.
     sourceName: String? = null,
+    // ---- LUT wiring (COL-07) ----
+    // The imported cube library (LutStore.all(): id + display name). The
+    // screen owns no store; AppNav passes the list and refreshes it after
+    // every import/remove so the rows stay current.
+    lutEntries: List<LutInfo> = emptyList(),
+    // Imports the picked SAF document (AppNav: LutStore.import + the native
+    // probe + the TITLE rename). Returns the entry on success or the failure
+    // for the local error line; never throws.
+    onImportLut: (uri: String, fallbackName: String) -> Result<LutInfo> =
+        { _, _ -> Result.failure(IllegalStateException()) },
+    // Removes a cube from the library (AppNav: LutStore.remove + refresh).
+    onRemoveLut: (LutInfo) -> Unit = {},
+    // The grade's lutId -> the copied cube's path (AppNav: LutStore.pathFor).
+    // Null = no LUT: stage 20 is bypassed and the old look is preserved.
+    lutPathFor: (String?) -> String? = { null },
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -193,6 +201,11 @@ fun ClipEditorScreen(
         // SAME interface, so the pump/transport below never branch on kind.
         var session by remember(sourceId) { mutableStateOf<EditorPreviewSession?>(null) }
         var sessionRender by remember(sourceId) { mutableStateOf(false) }
+        // Editor audio (owner request 2026-11-11 section 4): one controller per
+        // clip, released at dispose. Audio follows the transport: play starts
+        // it at the current position, pause/seek stop it, the clip end ends
+        // it; a clip without audio plays silent (openAudio returns null).
+        val audio = remember(sourceId) { EditorAudioPlayback() }
 
         // Transport state: play/pause, the current frame shown by the
         // transport (slider position + playback cursor), and the clip's real
@@ -204,6 +217,32 @@ fun ClipEditorScreen(
         // down, renders use the low drag tier through the session's CACHED
         // path; the drag end emits exactly one full-quality settle render.
         var dragActive by remember(sourceId) { mutableStateOf(false) }
+
+        // ---- LUT import (COL-07) ----
+        // The import error is LOCAL to the LUT section: errorText drives the
+        // preview FAILED state (EditorPreviewLogic.stateOf), so a failed
+        // import must not yank the preview placeholder.
+        var lutImportError by remember(sourceId) { mutableStateOf<String?>(null) }
+        // SAF picker: any mime — the native probe validates the .cube, and a
+        // non-cube pick fails the probe with a clear message instead of being
+        // blocked at the picker (the same permissive shape as the clip
+        // import).
+        val lutPicker = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            val fallbackName = uri.lastPathSegment
+                ?.substringAfterLast('/')
+                ?.substringBeforeLast('.')
+                ?: uri.lastPathSegment
+                ?: ""
+            // AppNav does LutStore.import + the native probe + the TITLE
+            // rename; the failure message lands in the local error line.
+            onImportLut(uri.toString(), fallbackName).fold(
+                onSuccess = { lutImportError = null },
+                onFailure = { e -> lutImportError = e.message ?: "LUT import failed" },
+            )
+        }
 
         // The render pipeline's pending slot (owner request §1: at most one
         // running and one pending render; a new request replaces the pending
@@ -280,6 +319,7 @@ fun ClipEditorScreen(
         DisposableEffect(sourceId) {
             onDispose {
                 session?.close()
+                audio.release()
             }
         }
 
@@ -323,13 +363,18 @@ fun ClipEditorScreen(
                     val req = gate.poll() ?: break
                     renderInFlight = true
                     val s = session
+                    // COL-07: the request's grade carries the selected LUT id;
+                    // the resolved path travels with the render (null = no
+                    // LUT, the old look). Resolved per request so an import
+                    // or remove mid-session is picked up on the next render.
+                    val lutPath = lutPathFor(req.grade.lutId)
                     val result = if (sessionRender && s != null) {
                         if (req.cached) {
                             // Interactive drag render: the bridge reuses the
                             // cached CFA when the frame is unchanged.
-                            s.renderCached(req.frameIndex, req.grade, req.maxDim)
+                            s.renderCached(req.frameIndex, req.grade, req.maxDim, lutPath)
                         } else {
-                            s.render(req.frameIndex, req.grade, req.maxDim)
+                            s.render(req.frameIndex, req.grade, req.maxDim, lutPath)
                         }
                     } else {
                         // No session. The per-render fallback is the MCRAW
@@ -355,6 +400,7 @@ fun ClipEditorScreen(
                                     frameIndex = req.frameIndex,
                                     grade = req.grade,
                                     maxDim = req.maxDim,
+                                    lutPath = lutPath,
                                 )
                             }
                         }
@@ -401,6 +447,9 @@ fun ClipEditorScreen(
                 if (idx >= pts.size - 1) {
                     // Clip end: stop, keep the last frame on screen, reset
                     // the play state (a new Play resumes from the start).
+                    // The audio ends with the clip (owner request section 4):
+                    // stop drops the still-queued tail after the last frame.
+                    audio.stop()
                     isPlaying = false
                     positionFrame = pts.size - 1
                     break
@@ -410,58 +459,110 @@ fun ClipEditorScreen(
             }
         }
 
+        // AUDIO TRANSPORT (owner request 2026-11-11 section 4): audio follows
+        // the play state — started in parallel with the playback loop (never
+        // blocking the video path), paused whenever playback stops (pause
+        // button, seek, clip end), re-primed at the current position on every
+        // start (AUD-08's first form: old queued samples are dropped). The
+        // position provider runs on the audio thread at start handling, so a
+        // slow first open (the MCRAW whole-clip PCM read) still begins in
+        // sync.
+        LaunchedEffect(isPlaying) {
+            if (isPlaying) {
+                audio.start(session, sourceFdProvider) {
+                    val p = ptsUs ?: return@start 0L
+                    PtsTimeline.positionUs(p, positionFrame)
+                }
+            } else {
+                audio.pause()
+            }
+        }
+
         // ---- Transport helpers (pure logic lives in PtsTimeline) ----
         val pts = ptsUs
         val totalUs = pts?.let { PtsTimeline.totalDurationUs(it) } ?: 0L
         val elapsedUs = pts?.let { PtsTimeline.positionUs(it, positionFrame) } ?: 0L
         val seekFraction = pts?.let { PtsTimeline.fractionForFrame(it, positionFrame) } ?: 0f
 
+        // Preview state: computed ONCE here (top bar refresh control and
+        // the PreviewSurface share it).
+        val previewState = EditorPreviewLogic.stateOf(
+            renderRequested = renderSeq > 0L,
+            renderInFlight = renderInFlight,
+            hasFrame = frame != null,
+            lastRenderFailed = lastRenderFailed,
+        )
+
+        // Clip facts for the top bar's info sheet (review phase 1: name,
+        // resolution, duration, frame count, FPS when derivable). FPS comes
+        // from the real timestamps: frames / duration. The name is the
+        // clip's display name (§2b), id fallback — never blank.
+        val clipInfo = ClipInfo(
+            name = sourceName ?: sourceId,
+            width = sourceWidth,
+            height = sourceHeight,
+            totalUs = totalUs,
+            frameCount = pts?.size ?: 0,
+            fps = if (pts != null && totalUs > 0L) (pts.size.toFloat() / (totalUs / 1_000_000f)) else 0f,
+        )
+
+        // Neutral root surface (design review 2026-11-10, maroon bug): the
+        // editor's own Column painted NO background, so AppNav's Scaffold
+        // surface (dynamic wallpaper color) showed through. The editor now
+        // paints its own fixed-neutral surface INSIDE RitimTheme(editor =
+        // true); inset ownership stays in AppNav.
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxSize(),
+        ) {
         Column(Modifier.fillMaxSize()) {
-            // Top bar: back + clip id.
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = stringResource(R.string.editor_back),
-                    )
-                }
-                Text(
-                    // The clip's display name (§2b), id fallback — the caller
-                    // resolves it; here it is only ever a label.
-                    text = sourceName ?: sourceId,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(start = 4.dp),
-                )
-            }
-            // Preview frame: shaped like the clip itself (PreviewSurface;
-            // owner finding 2026-11-10 — fixed box out, clip aspect ratio
-            // in). The weighted Box leaves the leftover vertical space when
-            // the surface bounds by height (very tall clips); the surface
-            // centers inside it.
+            // Fixed top bar (design review "Onerilen ilk yerlesim"): back +
+            // single-line name + one Export icon (opens the export sheet)
+            // + "..." (opens the clip-info sheet). The name shown is the
+            // clip's display name (§2b), id fallback — resolved by the
+            // caller, never blank.
+            EditorTopBar(
+                sourceId = sourceName ?: sourceId,
+                onBack = onBack,
+                onExport = onExport,
+                exportEnabled = sourceFd >= 0,
+                clipInfo = clipInfo,
+            )
+            // Bounded preview region (design review: the frame never shifts
+            // when the tab content changes): the preview is capped at
+            // EditorLayout.PREVIEW_HEIGHT_FRACTION of the available height
+            // instead of taking the flex space, so the frame's position is
+            // deterministic across tabs. PreviewSurface still shapes itself
+            // by the clip's ratio (ratio chain preserved) and centers
+            // inside the bounded Box.
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .heightIn(max = EditorLayout.previewMaxHeight()),
                 contentAlignment = Alignment.Center,
             ) {
                 PreviewSurface(
                     frame = frame,
-                    state = EditorPreviewLogic.stateOf(
-                        renderRequested = renderSeq > 0L,
-                        renderInFlight = renderInFlight,
-                        hasFrame = frame != null,
-                        lastRenderFailed = lastRenderFailed,
-                    ),
+                    state = previewState,
                     errorText = errorText,
                     accessLost = accessLost,
                     sourceWidth = sourceWidth,
                     sourceHeight = sourceHeight,
                     modifier = Modifier.fillMaxWidth(),
+                )
+                // Small corner refresh control (design review: the manual
+                // render leaves the prime area): status from the existing
+                // PreviewState data, tap = the old Render-preview button's
+                // onClick (full paused tier at the current position).
+                PreviewRefreshControl(
+                    state = previewState,
+                    canRender = canRender,
+                    onRefresh = {
+                        requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp),
                 )
             }
             // Transport row (owner request 2026-11-10 §1, MotionCam Pro
@@ -504,48 +605,8 @@ fun ClipEditorScreen(
                 onSeekStarted = { applyTierEvent(SliderTiers.Event.DragStarted) },
                 onSeekFinished = { applyTierEvent(SliderTiers.Event.DragEnded) },
             )
-            // Render affordance (DESIGN.md: tonal button for a secondary
-            // action) + the Export actions (filled button for the one
-            // primary action DNG, tonal for the secondary MP4). Export is
-            // offered whenever the clip is loaded — the job snapshots the
-            // CURRENT grade, so a queue-time snapshot of the user's edit is
-            // what gets exported; the queue runs it when the engine is
-            // available. Disabled without a fd (nothing to export).
-            // FlowRow: three buttons do not fit one narrow row without
-            // wrapping text vertically (seen on a 1080p phone) — let them
-            // flow onto a second line instead.
-            FlowRow(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                FilledTonalButton(
-                    onClick = {
-                        // Manual re-render of the current transport position
-                        // at the full paused tier.
-                        requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
-                    },
-                    enabled = canRender,
-                ) {
-                    Text(stringResource(R.string.editor_render_preview))
-                }
-                // Export: DNG filled (primary), MP4 tonal (secondary).
-                Button(
-                    onClick = { onExport(Target.DNG) },
-                    enabled = sourceFd >= 0,
-                ) {
-                    Text(stringResource(R.string.editor_export_dng))
-                }
-                FilledTonalButton(
-                    onClick = { onExport(Target.MP4) },
-                    enabled = sourceFd >= 0,
-                ) {
-                    Text(stringResource(R.string.editor_export_mp4))
-                }
-            }
-            // Tabs: Light / Color / Detail.
+            // Tabs: Light / Color / Detail (independent of the panel —
+            // design review: the tab row sits between transport and panel).
             TabRow(selectedTabIndex = tab, modifier = Modifier.fillMaxWidth()) {
                 Tab(
                     selected = tab == 0,
@@ -563,11 +624,22 @@ fun ClipEditorScreen(
                     text = { Text(stringResource(R.string.editor_tab_detail)) },
                 )
             }
-            // Panel with sliders (Light and Color tabs complete; Detail deferred).
+            // Settings panel — the ONLY region that scrolls (design review
+            // "Onerilen ilk yerlesim": sabit ust bar + sinirlandirilmis
+            // onizleme + kayan ayar paneli). The panel takes the flex
+            // space left by the bounded preview and scrolls inside it, so
+            // short screens + 1.3x text never squeeze the preview.
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainer,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
             ) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
                 when (tab) {
                     0 -> LightPanel(
                         grade = grade,
@@ -647,83 +719,29 @@ fun ClipEditorScreen(
                             onGradeChange(g)
                             applyTierEvent(SliderTiers.Event.GradeEdited)
                         },
+                        // ---- LUT section wiring (COL-07) ----
+                        // Selection/Strength are grade edits like the
+                        // tonemap choice: not drags, so they settle
+                        // IMMEDIATELY at the full tier. The import picker
+                        // and the library rows are not grade edits at all.
+                        lutEntries = lutEntries,
+                        lutImportError = lutImportError,
+                        onImportLut = { lutPicker.launch(arrayOf("*/*")) },
+                        onRemoveLut = onRemoveLut,
+                        onLutSelect = { g ->
+                            grade = g
+                            onGradeChange(g)
+                            applyTierEvent(SliderTiers.Event.GradeEdited)
+                        },
                     )
+                }
                 }
             }
         }
+    }
     }
 }
 
-/**
- * Compact transport row under the preview (owner request 2026-11-10 §1):
- * Play/Pause icon button (48dp touch target), draggable seek slider, and
- * elapsed / total timecode in tabular figures so the strip never reflows
- * while playing. The Pause glyph is a vendored vector (material-icons-core
- * 1.7.3 has no Pause); Play uses the core PlayArrow.
- */
-@Composable
-private fun TransportRow(
-    isPlaying: Boolean,
-    enabled: Boolean,
-    elapsedUs: Long,
-    totalUs: Long,
-    fraction: Float,
-    onPlayPause: () -> Unit,
-    onSeekFraction: (Float) -> Unit,
-    onSeekStarted: () -> Unit = {},
-    onSeekFinished: () -> Unit = {},
-) {
-    val seekDescription = stringResource(R.string.editor_seek)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        IconButton(onClick = onPlayPause, enabled = enabled) {
-            if (isPlaying) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_pause),
-                    contentDescription = stringResource(R.string.editor_pause),
-                )
-            } else {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = stringResource(R.string.editor_play),
-                )
-            }
-        }
-        // M3's Slider has no onValueChangeStarted; finger-down/up come from
-        // the interaction stream. A tap is a zero-length drag: Start + Stop
-        // still fire, so a tap seeks and settles through the same path.
-        val seekInteraction = remember { MutableInteractionSource() }
-        LaunchedEffect(seekInteraction) {
-            seekInteraction.interactions.collect { interaction ->
-                when (interaction) {
-                    is DragInteraction.Start -> onSeekStarted()
-                    is DragInteraction.Stop, is DragInteraction.Cancel -> onSeekFinished()
-                }
-            }
-        }
-        Slider(
-            value = fraction,
-            onValueChange = onSeekFraction,
-            onValueChangeFinished = onSeekFinished,
-            valueRange = 0f..1f,
-            enabled = enabled,
-            interactionSource = seekInteraction,
-            modifier = Modifier
-                .weight(1f)
-                .semantics { contentDescription = seekDescription },
-        )
-        Text(
-            text = Format.formatTimecodePair(elapsedUs, totalUs),
-            style = MaterialTheme.typography.labelMedium.merge(Tnum),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
 
 /** Light tab: Exposure / Highlights / tone controls (DESIGN.md Editor). */
 @Composable
@@ -901,6 +919,7 @@ private fun ColorPanel(
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPERATURE, grade))
             },
             onDragActiveChange = onDragActiveChange,
+            trackGradient = CompactSliderDefaults.TEMPERATURE_GRADIENT,
         )
         GradeSlider(
             label = stringResource(R.string.editor_slider_tint),
@@ -921,6 +940,7 @@ private fun ColorPanel(
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TINT, grade))
             },
             onDragActiveChange = onDragActiveChange,
+            trackGradient = CompactSliderDefaults.TINT_GRADIENT,
         )
         // CFA-stage toggles: MCRAW only (encoded clips decode YUV — there is
         // no CFA stage to reconstruct or vignette; the decision is pure and
@@ -952,23 +972,36 @@ private fun ColorPanel(
                 onChange(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
             },
             onDragActiveChange = onDragActiveChange,
+            trackGradient = CompactSliderDefaults.SATURATION_GRADIENT,
         )
     }
 }
 
 /**
- * Detail tab (COL-15/COL-16): Sharpness (edge sharpness, unsharp radius 1.5)
- * and Detail (fine-texture contrast, unsharp radius 0.75) sliders, then the
- * Tonemapping choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md
- * Inputs: "segmented buttons for codec and scope choice" — the same single
- * choice pattern). All three controls run on BOTH clip kinds: the native
- * develop pipeline and developEncoded share the same stages, so encoded
- * (Mi-Log MP4) clips get the same Detail tab with nothing hidden.
+ * Detail tab (COL-15/COL-16), in order: Noise Reduction and Chroma Denoise
+ * (DN-01..08 spatial denoise, percent 0..100, 0 = the stage skipped — the
+ * old look), then Sharpness (edge sharpness, unsharp radius 1.5) and Detail
+ * (fine-texture contrast, unsharp radius 0.75) sliders, then the Tonemapping
+ * choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md Inputs:
+ * "segmented buttons for codec and scope choice" — the same single choice
+ * pattern). The denoise pair leads because native stages 7/8 run BEFORE
+ * sharpness/detail (19/20): sliders read in pipeline order, and denoising
+ * first is also what makes the sharpeners amplify signal, not noise. All
+ * five controls run on BOTH clip kinds: the native develop pipeline and
+ * developEncoded share the same stages, so encoded (Mi-Log MP4) clips get
+ * the same Detail tab with nothing hidden.
  *
  * Tonemap values (rawedit::Grade): 0 = off, 1 = ACES (Narkowicz 2015 fit),
  * 2 = AgX (2022 Filmic AgX essential fit). The grade stores the choice, so
  * the used transform version travels with the saved grade (COL-16's
  * versioning requirement at this package's scope).
+ *
+ * The LUT section (COL-07) closes the tab: the imported cube library as
+ * radio rows (None + one per imported cube), an Import button, the Strength
+ * slider under the selected cube and a Remove action. Selection and
+ * Strength are grade edits (onLutSelect, the immediate settle path like
+ * the tonemap choice); import/remove are library operations (the screen's
+ * AppNav wiring owns the store).
  */
 @Composable
 private fun DetailPanel(
@@ -976,6 +1009,11 @@ private fun DetailPanel(
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
     onTonemapChange: (GradeK) -> Unit = {},
+    lutEntries: List<LutInfo> = emptyList(),
+    lutImportError: String? = null,
+    onImportLut: () -> Unit = {},
+    onRemoveLut: (LutInfo) -> Unit = {},
+    onLutSelect: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -983,6 +1021,38 @@ private fun DetailPanel(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // DN-01..08: both denoise controls first, in native pipeline order
+        // (stage 7 chroma, stage 8 luma — before sharpness/detail 19/20).
+        // Percent 0..100 like LUT Strength, whole steps, default 0 = the
+        // stage skipped (bit-identical to the pre-DN look).
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_noise_reduction),
+            value = grade.noiseReduction,
+            valueRange = 0f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = "${grade.noiseReduction.toInt()} %",
+            onChange = { v ->
+                onChange(grade.copy(noiseReduction = SliderSteps.snapNoiseReduction(v)))
+            },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.NOISE_REDUCTION, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_chroma_denoise),
+            value = grade.chromaDenoise,
+            valueRange = 0f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = "${grade.chromaDenoise.toInt()} %",
+            onChange = { v ->
+                onChange(grade.copy(chromaDenoise = SliderSteps.snapChromaDenoise(v)))
+            },
+            onDoubleTapReset = {
+                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.CHROMA_DENOISE, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
         GradeSlider(
             label = stringResource(R.string.editor_slider_sharpness),
             value = grade.sharpness,
@@ -1032,6 +1102,76 @@ private fun DetailPanel(
                 }
             }
         }
+        // ---- LUT section (COL-07) ----
+        // One choice row per cube plus None: the grade stores the id, the
+        // store resolves the path at render time, so a removed cube degrades
+        // to no-LUT (pathFor returns null) instead of breaking the render.
+        Text(
+            stringResource(R.string.editor_lut),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        if (lutEntries.isEmpty()) {
+            // No cubes yet: one hint line instead of a bare None row.
+            Text(
+                stringResource(R.string.editor_lut_none),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            // None row first: deselecting is the removal of the selection
+            // (lutId = null), not a grade reset — Strength keeps its value
+            // so re-selecting a cube restores the blend the user set.
+            LutRow(
+                label = stringResource(R.string.editor_lut_none),
+                selected = grade.lutId == null,
+                onClick = { onLutSelect(grade.copy(lutId = null)) },
+            )
+            lutEntries.forEach { lut ->
+                LutRow(
+                    label = lut.name,
+                    selected = grade.lutId == lut.id,
+                    onClick = { onLutSelect(grade.copy(lutId = lut.id)) },
+                    onRemove = { onRemoveLut(lut) },
+                )
+            }
+        }
+        // Import: tonal button (secondary action, DESIGN.md), full-width so
+        // the row reads as part of the section, not a floating chip.
+        FilledTonalButton(
+            onClick = onImportLut,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.editor_lut_import))
+        }
+        // Import failure lands here — local to the section, never in the
+        // preview's error surface (lutImportError is its own state).
+        if (lutImportError != null) {
+            Text(
+                lutImportError ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        // Strength only under a selected cube (COL-07: "Seçim ve Strength
+        // ayrı kaydedilsin" — the two controls, one visible at a time the
+        // selection makes it meaningful). Percent 0..100, whole steps, the
+        // GradeK default 100 = full LUT.
+        if (grade.lutId != null) {
+            GradeSlider(
+                label = stringResource(R.string.editor_lut_strength),
+                value = grade.lutStrength,
+                valueRange = 0f..100f,
+                step = SliderSteps.UNIT_STEP,
+                valueLabel = "${grade.lutStrength.toInt()} %",
+                onChange = { v ->
+                    onChange(grade.copy(lutStrength = SliderSteps.snapLutStrength(v)))
+                },
+                onDoubleTapReset = {
+                    onChange(SliderSteps.resetToDefault(SliderSteps.Axis.LUT_STRENGTH, grade))
+                },
+                onDragActiveChange = onDragActiveChange,
+            )
+        }
     }
 }
 
@@ -1040,6 +1180,50 @@ private data class TonemapOption(
     val labelRes: Int,
     val value: Int,
 )
+
+/**
+ * One LUT choice row (COL-07): radio semantics — the whole row is one
+ * selectable control at the 48dp minimum (DESIGN.md Inputs), the radio
+ * glyph mirrors selection, and a cube row additionally carries a Remove
+ * text action (library operation, distinct from deselecting).
+ */
+@Composable
+private fun LutRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onRemove: (() -> Unit)? = null,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .selectable(
+                selected = selected,
+                role = Role.RadioButton,
+                onClick = onClick,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 4.dp),
+        )
+        if (onRemove != null) {
+            TextButton(
+                onClick = onRemove,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.heightIn(min = 36.dp),
+            ) {
+                Text(stringResource(R.string.editor_lut_remove))
+            }
+        }
+    }
+}
 
 /**
  * One RAW stage toggle: label left, M3 Switch right, whole row tappable at
@@ -1070,62 +1254,5 @@ private fun RawToggleRow(
             modifier = Modifier.padding(end = 16.dp),
         )
         Switch(checked = checked, onCheckedChange = null)
-    }
-}
-
-@Composable
-private fun GradeSlider(
-    label: String,
-    value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    step: Float,
-    valueLabel: String,
-    onChange: (Float) -> Unit,
-    onDoubleTapReset: () -> Unit,
-    onDragActiveChange: (Boolean) -> Unit = {},
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            // Double tap anywhere on the slider row resets this control to
-            // its GradeK default (DESIGN.md Inputs: "double tap resets").
-            .pointerInput(label) {
-                detectTapGestures(onDoubleTap = { onDoubleTapReset() })
-            },
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(label, style = MaterialTheme.typography.labelLarge)
-            // tnum for EV / Kelvin / signed values (DESIGN.md Tabular numbers).
-            Text(
-                valueLabel,
-                style = MaterialTheme.typography.labelLarge.merge(Tnum),
-            )
-        }
-        // Finger down/up on a GRADE slider drives the same tier machine as
-        // the transport: while the finger is down, re-renders run at the low
-        // drag tier through the session's CACHED path — the frame is
-        // unchanged, only the grade moved, so the decode is skipped entirely
-        // (the whole point of the interactive path). A tap is a zero-length
-        // drag: Start + Stop both fire, so a tap settles to full quality too.
-        val gradeInteraction = remember { MutableInteractionSource() }
-        LaunchedEffect(gradeInteraction) {
-            gradeInteraction.interactions.collect { interaction ->
-                when (interaction) {
-                    is DragInteraction.Start -> onDragActiveChange(true)
-                    is DragInteraction.Stop, is DragInteraction.Cancel -> onDragActiveChange(false)
-                }
-            }
-        }
-        Slider(
-            value = value,
-            onValueChange = onChange,
-            valueRange = valueRange,
-            steps = SliderSteps.composeSteps(valueRange, step),
-            interactionSource = gradeInteraction,
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }

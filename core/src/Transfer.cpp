@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <rawedit/Lut.h>
 
 namespace rawedit {
 
@@ -57,15 +58,26 @@ void yuv709ToRgb(float y, float u, float v, float& r, float& g, float& b) {
 }
 } // namespace
 
-// Detail controls (COL-15) and tonemapping (COL-16), shared with the MCRAW
-// path. All three genuinely apply to a decoded, linearized encoded frame:
-// sharpness/detail are spatial operators on the developed RGB (they do not
-// care where the pixels came from), and tonemapping compresses the linear
-// scene range the Mi-Log decode produced. The implementations live in
-// Develop.cpp (unsharpLuma / tonemapFrame); see Develop.h for the full
-// COL-15/COL-16 record (radii, amount mapping, ACES/AgX versions, working
-// space, target display).
+// Noise reduction (DN-01..DN-08, spatial half), detail controls (COL-15)
+// and tonemapping (COL-16), shared with the MCRAW path. All genuinely apply
+// to a decoded, linearized encoded frame: denoise is a spatial operator on
+// the developed RGB (the codec's noise lives in those pixels exactly like
+// sensor noise lives in the MCRAW path — and the detail stages below would
+// amplify it otherwise), sharpness/detail are spatial operators too (they
+// do not care where the pixels came from), and tonemapping compresses the
+// linear scene range the Mi-Log decode produced. The implementations live
+// in Develop.cpp (denoiseChroma / denoiseLuma / unsharpLuma / tonemapFrame);
+// see Develop.h for the full DN-01..08/COL-15/COL-16 record (radii, sigma_r,
+// amount mapping, ACES/AgX versions, working space, target display).
 namespace {
+void encodedDenoiseStages(ImageF& img, const Grade& grade) {
+    // Same guards and strength clamps as developCpu stages 7-8.
+    if (grade.chromaDenoise != 0.0f)
+        denoiseChroma(img, std::min(std::max(grade.chromaDenoise, 0.0f), 100.0f) / 100.0f);
+    if (grade.noiseReduction != 0.0f)
+        denoiseLuma(img, std::min(std::max(grade.noiseReduction, 0.0f), 100.0f) / 100.0f);
+}
+
 void encodedDetailStages(ImageF& img, const Grade& grade) {
     if (grade.sharpness != 0.0f) {
         const float amount =
@@ -83,9 +95,14 @@ void encodedTonemapStage(ImageF& img, const Grade& grade) {
     if (grade.tonemap != 0)
         tonemapFrame(img, grade.tonemap);
 }
+
+void encodedLutStage(ImageF& img, const Grade& grade, const Lut* lut) {
+    if (lut != nullptr && grade.lutStrength != 0.0f)
+        applyLut(img, *lut, grade.lutStrength);
+}
 } // namespace
 
-ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
+ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, const Lut* lut) {
     ImageF out;
     out.w = frame.width;
     out.h = frame.height;
@@ -142,15 +159,21 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709) {
         }
     }
 
-    // ---- Detail controls (COL-15) and tonemapping (COL-16). ----
-    // The same stages 17-19 the MCRAW path runs, on the decoded and graded
-    // RGB: sharpness (radius 1.5 px) and detail (radius 0.75 px) as
-    // luminance-only unsharp masks, then the optional ACES/AgX tonemap. All
-    // three genuinely apply to an encoded clip: its pixels are ordinary
-    // linear RGB once the Mi-Log decode and grade have run. Neutral grades
-    // skip every stage (exact passthrough, the old look).
+    // ---- Noise reduction (DN-01..08), detail (COL-15), tonemap (COL-16),
+    // LUT (COL-07). ----
+    // The same stages 7-8 and 19-22 the MCRAW path runs, on the decoded and
+    // graded RGB: chroma denoise (radius 2 px) and luma denoise (3x3
+    // bilateral) FIRST — before the sharpening stages amplify what noise
+    // survives — then sharpness (radius 1.5 px) and detail (radius 0.75 px)
+    // as luminance-only unsharp masks, then the optional ACES/AgX tonemap,
+    // then the optional .cube LUT. All genuinely apply to an encoded clip:
+    // its pixels are ordinary linear RGB once the Mi-Log decode and grade
+    // have run. Neutral grades skip every stage (exact passthrough, the
+    // old look).
+    encodedDenoiseStages(out, grade);
     encodedDetailStages(out, grade);
     encodedTonemapStage(out, grade);
+    encodedLutStage(out, grade, lut);
 
     return out;
 }

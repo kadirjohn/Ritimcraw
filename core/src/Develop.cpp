@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <rawedit/Lut.h>
 
 namespace rawedit {
 
@@ -116,7 +117,7 @@ inline float smoothstepf(float e0, float e1, float x) {
 }
 
 // ---- Detail controls (COL-15): luminance-only unsharp mask. ----
-// Both Sharpness (stage 17) and Detail (stage 18) run the same operator at
+// Both Sharpness (stage 19) and Detail (stage 20) run the same operator at
 // different scales: compute the Rec.709 luma plane, blur it with a separable
 // Gaussian of the given radius (px), then add `amount * (luma - blur)` to
 // EVERY channel equally — chroma and hue are preserved (no chroma halos).
@@ -132,7 +133,7 @@ void unsharpLumaImpl(ImageF& img, float radius, float amount) {
     if (w < 2 || h < 2)
         return; // a 1-px image has no local contrast to sharpen
 
-    // Luma plane (Rec.709 weights, same as stage 16).
+    // Luma plane (Rec.709 weights, same as stage 18).
     const size_t n = static_cast<size_t>(w) * h;
     std::vector<float> luma(n);
     for (size_t i = 0; i < n; ++i) {
@@ -180,6 +181,203 @@ void unsharpLumaImpl(ImageF& img, float radius, float amount) {
     // Add the scaled high-pass delta to every channel equally.
     for (size_t i = 0; i < n; ++i) {
         const float d = amount * (luma[i] - blur[i]);
+        img.rgb[i * 3 + 0] += d;
+        img.rgb[i * 3 + 1] += d;
+        img.rgb[i * 3 + 2] += d;
+    }
+}
+
+// ---- Noise reduction (DN-01..DN-08, spatial half). ----
+// Two independent stages, both on the demosaiced, color-transformed RGB
+// BEFORE any tone control (see the stage-order comment in Develop.h for the
+// full reasoning: noise is a property of the sensor signal, and the later
+// sharpening/detail unsharp masks amplify what survives). Both take
+// strength in [0,1] (Grade stores [0,100]; the caller divides). Both are
+// edge-aware: a small bilateral range weight exp(-dl^2 / (2*sr^2)) on
+// luminance differences suppresses taps across an edge, so noise flattens
+// in flat regions while real edges survive. The spatial kernel is the SAME
+// 4-tap separable Gaussian as the detail stages (step = floor(radius),
+// clamped edges, taps sum to 1), so a flat region's blur equals its value
+// exactly — the stages are bit-identical on flat input at any strength.
+//
+// Radius / sigma_r mapping (documented per the request):
+//   chroma stage: radius 2 px (color blotches are low-frequency; a wider
+//     kernel smooths them without touching luma detail), sigma_r = 0.10
+//     of the local luma scale — chroma offsets ride on luma structure, so
+//     the range gate is generous.
+//   luma stage: radius 1 px (luma noise is high-frequency; one-pixel taps
+//     are enough and keep the operator cheap), sigma_r = 0.05 — tighter
+//     than chroma so real luminance texture is not mistaken for noise.
+// sigma_r values are absolute (linear working space, midgray 0.18): luma
+// differences beyond ~2*sigma_r (0.10 resp. 0.20) are treated as structure.
+void denoiseChromaImpl(ImageF& img, float strength) {
+    const uint32_t w = img.w, h = img.h;
+    if (w < 2 || h < 2 || strength <= 0.0f)
+        return;
+
+    const size_t n = static_cast<size_t>(w) * h;
+    // Luma plane and the two chroma offsets c = channel - luma.
+    std::vector<float> luma(n);
+    std::vector<float> cr(n), cb(n);
+    for (size_t i = 0; i < n; ++i) {
+        const float r = img.rgb[i * 3 + 0];
+        const float g = img.rgb[i * 3 + 1];
+        const float b = img.rgb[i * 3 + 2];
+        const float y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        luma[i] = y;
+        cr[i] = r - y;
+        cb[i] = b - y;
+    }
+
+    // 4-tap separable Gaussian, radius 2 px (same shape as unsharpLuma's).
+    const int step = 2;
+    const float radius = 2.0f;
+    const float c0 = std::exp(-0.5f / (radius * radius));
+    const float c1 = std::exp(-2.0f / (radius * radius));
+    // Bilateral range gate on luma differences (edge-aware chroma).
+    const float sr = 0.10f;
+    const float inv2sr2 = 1.0f / (2.0f * sr * sr);
+
+    // Edge-aware separable blur of one chroma plane: horizontal then
+    // vertical pass, each tap weighted by the Gaussian spatial weight AND
+    // the range weight against the center pixel's luma. The center tap has
+    // range weight 1 and spatial weight 1, so a flat plane (blur == value)
+    // reproduces itself exactly.
+    const auto blurPlane = [&](const std::vector<float>& plane, std::vector<float>& out) {
+        std::vector<float> tmp(n);
+        for (uint32_t y = 0; y < h; ++y) {
+            const float* row = &plane[static_cast<size_t>(y) * w];
+            const float* yrow = &luma[static_cast<size_t>(y) * w];
+            for (uint32_t x = 0; x < w; ++x) {
+                const int xm = std::max<int>(static_cast<int>(x) - step, 0);
+                const int xp = std::min<int>(static_cast<int>(x) + step, static_cast<int>(w) - 1);
+                const int xm2 = std::max<int>(static_cast<int>(x) - 2 * step, 0);
+                const int xp2 = std::min<int>(static_cast<int>(x) + 2 * step, static_cast<int>(w) - 1);
+                float sw = 1.0f, s = 0.0f;
+                const auto tap = [&](int xx, float c) {
+                    const float dl = yrow[xx] - yrow[x];
+                    const float rw = std::exp(-dl * dl * inv2sr2);
+                    s += (row[xx] - row[x]) * c * rw;
+                    sw += c * rw;
+                };
+                tap(xm, c0); tap(xp, c0); tap(xm2, c1); tap(xp2, c1);
+                tmp[static_cast<size_t>(y) * w + x] = row[x] + s / sw;
+            }
+        }
+        out.assign(n, 0.0f);
+        for (uint32_t y = 0; y < h; ++y) {
+            const int ym = std::max<int>(static_cast<int>(y) - step, 0);
+            const int yp = std::min<int>(static_cast<int>(y) + step, static_cast<int>(h) - 1);
+            const int ym2 = std::max<int>(static_cast<int>(y) - 2 * step, 0);
+            const int yp2 = std::min<int>(static_cast<int>(y) + 2 * step, static_cast<int>(h) - 1);
+            for (uint32_t x = 0; x < w; ++x) {
+                const float v = tmp[static_cast<size_t>(y) * w + x];
+                const float yc = luma[static_cast<size_t>(y) * w + x];
+                float sw = 1.0f, s = 0.0f;
+                const auto tap = [&](int yy, float c) {
+                    const float dl = luma[static_cast<size_t>(yy) * w + x] - yc;
+                    const float rw = std::exp(-dl * dl * inv2sr2);
+                    s += (tmp[static_cast<size_t>(yy) * w + x] - v) * c * rw;
+                    sw += c * rw;
+                };
+                tap(ym, c0); tap(yp, c0); tap(ym2, c1); tap(yp2, c1);
+                out[static_cast<size_t>(y) * w + x] = v + s / sw;
+            }
+        }
+    };
+    std::vector<float> bcr(n), bcb(n);
+    blurPlane(cr, bcr);
+    blurPlane(cb, bcb);
+
+    // Blend: out = (1-s)*c + s*blur(c), accumulated center-relative as
+    // c + s*(blur(c) - c) so a flat chroma region is bit-identical at any
+    // strength (the delta is exactly 0 there — no float-rounding drift).
+    // Luma is untouched. Green's chroma offset is reconstructed so the
+    // luma-weighted chroma sum stays zero (0.2126*cr + 0.7152*cg +
+    // 0.0722*cb = 0) on the blended offsets too — the reconstructed
+    // pixel's Rec.709 luma is exactly y. When both blended chroma offsets
+    // equal the originals the pixel keeps its exact original bytes (the
+    // reconstruction would otherwise round y + 0 + 0 differently).
+    for (size_t i = 0; i < n; ++i) {
+        const float y = luma[i];
+        const float dr = strength * (bcr[i] - cr[i]);
+        const float db = strength * (bcb[i] - cb[i]);
+        if (dr == 0.0f && db == 0.0f)
+            continue; // flat chroma: keep the original pixel exactly
+        const float newCr = cr[i] + dr;
+        const float newCb = cb[i] + db;
+        const float newCg = -(0.2126f * newCr + 0.0722f * newCb) / 0.7152f;
+        img.rgb[i * 3 + 0] = y + newCr;
+        img.rgb[i * 3 + 1] = y + newCg;
+        img.rgb[i * 3 + 2] = y + newCb;
+    }
+}
+
+// Spatial (luma) denoise — stage 8. Edge-preserving smoothing of the luma
+// plane: per pixel, a weighted average of the 3x3 neighborhood whose weight
+// is the Gaussian spatial weight (radius 1 px, so the 8 neighbors at
+// distance 1 and sqrt(2)) times the bilateral range weight
+// exp(-dl^2 / (2*sr^2)) on the LUMA difference to the center. Noise —
+// small, sign-random deviations — averages toward the neighborhood mean,
+// while a tap across a real edge (|dl| >> sr) collapses to ~0 weight and
+// the edge survives. The smoothed luma is blended by strength and the
+// DELTA (out - in) is added to r, g, b equally — the unsharpLuma idiom —
+// so chroma and hue are preserved. A flat region is bit-identical at any
+// strength (all taps equal the center, the weighted average is the center).
+// sigma_r = 0.05 in the linear working space (midgray 0.18): luma
+// differences above ~0.1 read as structure, below it as noise.
+void denoiseLumaImpl(ImageF& img, float strength) {
+    const uint32_t w = img.w, h = img.h;
+    if (w < 3 || h < 3 || strength <= 0.0f)
+        return; // a 1-2 px image has no neighborhood to average
+
+    const size_t n = static_cast<size_t>(w) * h;
+    std::vector<float> luma(n);
+    for (size_t i = 0; i < n; ++i)
+        luma[i] = 0.2126f * img.rgb[i * 3 + 0]
+                + 0.7152f * img.rgb[i * 3 + 1]
+                + 0.0722f * img.rgb[i * 3 + 2];
+
+    const float sr = 0.05f;
+    const float inv2sr2 = 1.0f / (2.0f * sr * sr);
+    // Gaussian spatial weights for the 3x3 neighborhood (sigma = 1 px):
+    // center 1, edge neighbors exp(-1/2), diagonal neighbors exp(-1).
+    const float we = std::exp(-0.5f), wd = std::exp(-1.0f);
+
+    std::vector<float> smooth(n);
+    for (uint32_t y = 0; y < h; ++y) {
+        const int ym = std::max<int>(static_cast<int>(y) - 1, 0);
+        const int yp = std::min<int>(static_cast<int>(y) + 1, static_cast<int>(h) - 1);
+        for (uint32_t x = 0; x < w; ++x) {
+            const int xm = std::max<int>(static_cast<int>(x) - 1, 0);
+            const int xp = std::min<int>(static_cast<int>(x) + 1, static_cast<int>(w) - 1);
+            const float c = luma[static_cast<size_t>(y) * w + x];
+            // Center-relative accumulation (sum of weighted DIFFERENCES):
+            // a flat neighborhood sums to exactly 0, so a flat region
+            // reproduces itself bit-exactly at any strength.
+            float sw = 1.0f, s = 0.0f;
+            const auto tap = [&](int yy, int xx, float ws) {
+                const float dl = luma[static_cast<size_t>(yy) * w + xx] - c;
+                const float rw = std::exp(-dl * dl * inv2sr2);
+                s += (luma[static_cast<size_t>(yy) * w + xx] - c) * ws * rw;
+                sw += ws * rw;
+            };
+            tap(ym, xm, wd); tap(ym, x, we); tap(ym, xp, wd);
+            tap(y, xm, we);                 tap(y, xp, we);
+            tap(yp, xm, wd); tap(yp, x, we); tap(yp, xp, wd);
+            // The bilateral sum sw is at least 1 (the center tap's weight),
+            // so the quotient is a bounded local mean — noise averages
+            // toward the neighborhood, never amplified.
+            smooth[static_cast<size_t>(y) * w + x] = c + s / sw;
+        }
+    }
+
+    // Blend by strength as a center-relative delta, d = s*(smooth - in): a
+    // flat region (smooth == in) is bit-identical at any strength — the
+    // delta is exactly 0, no float-rounding drift. The delta is added to
+    // every channel equally (chroma/hue preserved).
+    for (size_t i = 0; i < n; ++i) {
+        const float d = strength * (smooth[i] - luma[i]);
         img.rgb[i * 3 + 0] += d;
         img.rgb[i * 3 + 1] += d;
         img.rgb[i * 3 + 2] += d;
@@ -308,8 +506,16 @@ bool buildCameraToRec709(const RawMeta& meta, float out[9]) {
 
 // External stage entry points (declared in Develop.h). Thin wrappers over
 // the internal implementations above so developCpu and developEncoded
-// (Transfer.cpp) run the SAME detail and tonemapping stages while the math
-// helpers stay internal to this TU.
+// (Transfer.cpp) run the SAME denoise, detail and tonemapping stages while
+// the math helpers stay internal to this TU.
+void denoiseChroma(ImageF& img, float strength) {
+    denoiseChromaImpl(img, strength);
+}
+
+void denoiseLuma(ImageF& img, float strength) {
+    denoiseLumaImpl(img, strength);
+}
+
 void unsharpLuma(ImageF& img, float radius, float amount) {
     unsharpLumaImpl(img, radius, amount);
 }
@@ -401,7 +607,7 @@ ImageF demosaicBilinear(const std::vector<float>& cfa, uint32_t w, uint32_t h, C
     return img;
 }
 
-ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade) {
+ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut) {
     const uint32_t w = info.width;
     const uint32_t h = info.height;
     ImageF img;
@@ -567,7 +773,20 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // ---- Stages 7-11: tone controls (owner request 2026-11-10 section 2). ----
+    // ---- Stages 7-8: noise reduction (owner request DN-01..DN-08). ----
+    // Chroma first, then luma: the chroma stage's edge gate uses the luma
+    // structure of the still-noisy image either way, but running chroma
+    // first gives the luma stage a cleaner image to smooth. Both run on the
+    // demosaiced, color-transformed RGB before every tone control — noise
+    // is a property of the sensor signal, and the sharpening/detail stages
+    // (19-20) amplify what survives. Guarded by `!= 0`, so a neutral grade
+    // allocates nothing and stays bit-identical to the old pipeline.
+    if (grade.chromaDenoise != 0.0f)
+        denoiseChroma(img, std::min(std::max(grade.chromaDenoise, 0.0f), 100.0f) / 100.0f);
+    if (grade.noiseReduction != 0.0f)
+        denoiseLuma(img, std::min(std::max(grade.noiseReduction, 0.0f), 100.0f) / 100.0f);
+
+    // ---- Stages 9-13: tone controls (owner request 2026-11-10 section 2). ----
     // These run after camera->Rec.709 and before exposure, on scene-referred
     // linear values (midgray = 0.18): the shadows/midtones/contrast anchors
     // classify the scene, so an exposure change after them shifts the whole
@@ -576,7 +795,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // curve differs. All are guarded by `!= neutral` so a neutral grade
     // executes none of them (bit-identical to the pre-tone pipeline).
 
-    // Stage 7: black point (grade.blackPoint in [-100, 100], 0 = neutral).
+    // Stage 9: black point (grade.blackPoint in [-100, 100], 0 = neutral).
     // Endpoint remap of the toe, pinned at white: x' = lift + (1 - lift) * x
     // with lift = -0.25 * bp/100. Positive bp (lift < 0) crushes: the toe
     // crossing zero clamps to black at display, and everything below white
@@ -591,8 +810,8 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
             v = lift + (1.0f - lift) * v;
     }
 
-    // Stage 8: white point (grade.whitePoint in [-100, 100], 0 = neutral).
-    // Endpoint remap of the shoulder, mirror image of stage 7 and pinned at
+    // Stage 10: white point (grade.whitePoint in [-100, 100], 0 = neutral).
+    // Endpoint remap of the shoulder, mirror image of stage 9 and pinned at
     // black (0 stays 0, the toe is untouched): a uniform scale. Positive
     // brightens the shoulder — x' = x / (1 - 0.25*wp/100), at wp = +100 a
     // scale of 4/3, so brights rise and clip at display sooner. Negative
@@ -607,7 +826,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
             v *= scale;
     }
 
-    // Stage 9: shadows (grade.shadows in [-100, 100], 0 = neutral).
+    // Stage 11: shadows (grade.shadows in [-100, 100], 0 = neutral).
     // Gain weighted toward black, applied uniformly per pixel (diagonal
     // gain — neutrals stay neutral). weight = smoothstepf(0.18, 0, mx): 1 at
     // black, 0 at midgray and above; gain = 2^(strength * weight), the same
@@ -626,7 +845,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // Stage 10: midtones (grade.midtones in [-100, 100], 0 = neutral).
+    // Stage 12: midtones (grade.midtones in [-100, 100], 0 = neutral).
     // Gain weighted around midgray, the same diagonal-gain shape as
     // shadows. weight = smoothstepf(0, 0.18, mx) * (1 - smoothstepf(0.18,
     // 0.72, mx)): a tent that is 0 at black, 1 at midgray (0.18) and 0 again
@@ -645,7 +864,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // Stage 11: contrast (grade.contrast in [-100, 100], 0 = neutral).
+    // Stage 13: contrast (grade.contrast in [-100, 100], 0 = neutral).
     // Linear slope around the midgray pivot in scene-referred space:
     // x' = pivot + (x - pivot) * slope, pivot = 0.18, slope = 1 + c with
     // c = contrast/100. +100 doubles the distance from midgray (slope 2),
@@ -660,14 +879,14 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
             v = pivot + (v - pivot) * slope;
     }
 
-    // ---- Stage 12: exposure as 2^ev. ----
+    // ---- Stage 14: exposure as 2^ev. ----
     if (grade.exposureEv != 0.0f) {
         const float scale = std::pow(2.0f, grade.exposureEv);
         for (auto& v : img.rgb)
             v *= scale;
     }
 
-    // ---- Stage 13: highlights (grade.highlights in [-100, 100]). ----
+    // ---- Stage 15: highlights (grade.highlights in [-100, 100]). ----
     // Negative = recovery: a monotone shoulder compresses the over-knee
     // region toward the knee (filmic rolloff, detail comes back). Positive =
     // a gentle lift of the same region. Neutrals stay neutral (uniform gain
@@ -705,7 +924,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // ---- Stage 14: temperature (grade.tempK, 2000..50000, neutral 5600). ----
+    // ---- Stage 16: temperature (grade.tempK, 2000..50000, neutral 5600). ----
     // Warm/cool adjustment in linear space around the as-shot state: a
     // smooth red/blue push proportional to log2(tempK/5600), applied as a
     // diagonal gain so neutrals stay neutral (no cast on gray).
@@ -729,17 +948,17 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // ---- Stage 15: tint (grade.tint in [-100, 100], 0 = neutral). ----
+    // ---- Stage 17: tint (grade.tint in [-100, 100], 0 = neutral). ----
     // Green/magenta push on the green channel only: negative -> magenta
     // (green down), positive -> green up. Smooth, bounded, neutral-safe.
-    // Skipped together with stage 14 when the WB source is as-shot.
+    // Skipped together with stage 16 when the WB source is as-shot.
     if (!grade.asShot && grade.tint != 0.0f) {
         const float greenGain = std::pow(2.0f, 0.4f * (grade.tint / 100.0f));
         for (size_t i = 0; i < img.rgb.size(); i += 3)
             img.rgb[i + 1] *= greenGain;
     }
 
-    // ---- Stage 16: saturation (grade.saturation in [-100, 100], 0 = neutral). ----
+    // ---- Stage 18: saturation (grade.saturation in [-100, 100], 0 = neutral). ----
     // Chroma scaling around luma, LAST so it scales the final chroma after
     // every per-channel gain: r' = luma + (r - luma) * f, same for g/b, with
     // luma = 0.2126r + 0.7152g + 0.0722b (Rec.709). f = 2^(0.75 * sat/100):
@@ -759,8 +978,8 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // ---- Stage 17: sharpness (grade.sharpness in [-100, 100], 0 = neutral). ----
-    // ---- Stage 18: detail    (grade.detail    in [-100, 100], 0 = neutral). ----
+    // ---- Stage 19: sharpness (grade.sharpness in [-100, 100], 0 = neutral). ----
+    // ---- Stage 20: detail    (grade.detail    in [-100, 100], 0 = neutral). ----
     // COL-15: edge sharpness and fine-texture contrast on separate scales.
     // Both are luminance-only unsharp masks (see unsharpLuma): Sharpness at
     // radius 1.5 px (edge scale), Detail at radius 0.75 px (fine texture).
@@ -780,7 +999,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // ---- Stage 19: tonemapping (grade.tonemap, 0 = off, 1 = ACES, 2 = AgX). ----
+    // ---- Stage 21: tonemapping (grade.tonemap, 0 = off, 1 = ACES, 2 = AgX). ----
     // COL-16: optional display tone compression, LAST, after all grade
     // stages. Input/output is the linear working space (linear Rec.709
     // primaries); the Rec.709 OETF stays in the JNI bridge tail. The ACES and
@@ -789,6 +1008,17 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // passthrough (the old look).
     if (grade.tonemap != 0)
         tonemapFrame(img, grade.tonemap);
+
+    // ---- Stage 22: LUT (lut + grade.lutStrength in [0, 1], 0 = bypass). ----
+    // COL-07: optional .cube 3D LUT, LAST, after tonemapping. Input/output
+    // is the linear working space (linear Rec.709 primaries); the Rec.709
+    // OETF stays in the JNI bridge tail. The table is per-clip user data
+    // passed as `lut` (nullptr = none selected); the strength blend and the
+    // color-space contract are recorded in rawedit/Lut.h and the Grade
+    // comment block. No LUT or strength 0 = exact passthrough (the old
+    // look); the guard keeps the neutral fast path allocation-free.
+    if (lut != nullptr && grade.lutStrength != 0.0f)
+        applyLut(img, *lut, grade.lutStrength);
 
     return img;
 }

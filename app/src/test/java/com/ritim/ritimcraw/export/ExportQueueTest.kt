@@ -58,7 +58,7 @@ class ExportQueueTest {
             return Mp4SessionInfo(handle = 1L, frameCount = 1, width = 4, height = 4, cfa = 0, orientationDeg = 0)
         }
 
-        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK): ByteArray? =
+        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?): ByteArray? =
             ByteArray(4 * 4 * 3)
 
         override fun framePts(handle: Long, frameIndex: Int): Long = 0
@@ -486,7 +486,7 @@ class ExportQueueTest {
             override fun open(fd: Int) =
                 Mp4SessionInfo(1L, 3, 4, 4, 0, 0)
 
-            override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK) =
+            override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?) =
                 ByteArray(4 * 4 * 3)
 
             override fun framePts(handle: Long, frameIndex: Int): Long = 0
@@ -843,8 +843,12 @@ class ExportQueueTest {
                 return Mp4SessionInfo(1L, 1, 4, 4, 0, 0)
             }
 
-            override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK) =
-                ByteArray(4 * 4 * 3)
+            override fun renderFrame(
+                handle: Long,
+                frameIndex: Int,
+                grade: GradeK,
+                lutPath: String?,
+            ): ByteArray? = ByteArray(4 * 4 * 3)
 
             override fun framePts(handle: Long, frameIndex: Int): Long = 0
             override fun audioInfo(handle: Long): IntArray? = null

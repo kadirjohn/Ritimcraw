@@ -35,7 +35,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Thumbnail.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Thumbnail.cpp Lut.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -50,11 +50,17 @@ echo "== building tests =="
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_source"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_develop.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_develop"
+# test_noise: denoise stages (DN-01..08) on synthetic fixtures — no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_noise.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_noise"
 # test_transfer runs from the repo root so it finds the vendor cube LUT.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_transfer.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_transfer"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_dng.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_dng"
+# test_lut runs from the repo root so it finds the vendor cube fixture.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_lut.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_lut"
 # test_gyro runs from the repo root so it finds the STEPS/media/test fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gyro"
@@ -70,10 +76,14 @@ echo "== running test_source =="
 "$BUILD/test_source"
 echo "== running test_develop =="
 "$BUILD/test_develop"
+echo "== running test_noise =="
+"$BUILD/test_noise"
 echo "== running test_transfer =="
 (cd "$ROOT" && "$BUILD/test_transfer")
 echo "== running test_dng =="
 "$BUILD/test_dng"
+echo "== running test_lut =="
+(cd "$ROOT" && "$BUILD/test_lut")
 echo "== running test_gyro =="
 (cd "$ROOT" && "$BUILD/test_gyro")
 echo "== running test_thumbnail =="

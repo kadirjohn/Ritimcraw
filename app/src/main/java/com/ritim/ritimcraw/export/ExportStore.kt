@@ -167,6 +167,14 @@ class ExportStore(private val file: File) {
                 .append(",\"sharpness\":").append(num(g.sharpness))
                 .append(",\"detail\":").append(num(g.detail))
                 .append(",\"tonemap\":").append(g.tonemap)
+                // COL-07: the export snapshot carries the LUT choice and
+                // Strength too, so a queued job exports what the user saw.
+                .append(",\"lutId\":").append(if (g.lutId == null) "null" else ProjectJson.quote(g.lutId))
+                .append(",\"lutStrength\":").append(num(g.lutStrength))
+                // DN-01..08: the denoise percents travel with the snapshot
+                // for the same reason — the job exports what the user saw.
+                .append(",\"noiseReduction\":").append(num(g.noiseReduction))
+                .append(",\"chromaDenoise\":").append(num(g.chromaDenoise))
                 .append('}')
             return sb.toString()
         }
@@ -234,6 +242,17 @@ class ExportStore(private val file: File) {
                 sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
                 detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
                 tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
+                // LUT fields (COL-07) postdate older snapshots: absent or
+                // JSON-null lutId parses as null (no LUT = stage 22
+                // bypassed), absent lutStrength as 100 — the old look is
+                // preserved exactly.
+                lutId = m["lutId"] as? String,
+                lutStrength = (m["lutStrength"] as? Double)?.toFloat() ?: 100f,
+                // Denoise fields (DN-01..08) postdate older snapshots:
+                // absent parses as 0 (both stages skipped) — the old look
+                // is preserved exactly.
+                noiseReduction = (m["noiseReduction"] as? Double)?.toFloat() ?: 0f,
+                chromaDenoise = (m["chromaDenoise"] as? Double)?.toFloat() ?: 0f,
             )
         }
 

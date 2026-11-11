@@ -56,11 +56,18 @@ class PreviewSession private constructor(
 
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
-     * [maxDim]. Suspends until done; resumes with the frame or a failure
-     * carrying stage + cause + recovery. A closed session fails cleanly
-     * instead of touching the dead handle.
+     * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
+     * stage 22 bypassed, the old look; COL-07). Suspends until done;
+     * resumes with the frame or a failure carrying stage + cause +
+     * recovery. A closed session fails cleanly instead of touching the
+     * dead handle.
      */
-    override suspend fun render(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    override suspend fun render(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String?,
+    ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
                 PreviewRenderer.Companion.PreviewRenderException(
@@ -88,7 +95,7 @@ class PreviewSession private constructor(
                                 )
                             )
                         } else {
-                            renderBlocking(frameIndex, grade, maxDim)
+                            renderBlocking(frameIndex, grade, maxDim, lutPath)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)
@@ -109,7 +116,12 @@ class PreviewSession private constructor(
     }
 
     /** Blocking render; MUST run on the engine thread (thread-local error state). */
-    private fun renderBlocking(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    private fun renderBlocking(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String? = null,
+    ): Result<PreviewFrame> {
         val args = GradeMapping.toNative(grade)
         return renderArray(
             NativeSource.jniPreviewRender(
@@ -119,19 +131,27 @@ class PreviewSession private constructor(
                 args.shadows, args.midtones, args.contrast,
                 args.asShot, args.highlightReconstruction, args.keepVignetting,
                 args.sharpness, args.detail, args.tonemap,
+                lutPath, args.lutStrength,
+                args.noiseReduction, args.chromaDenoise,
                 maxDim,
             )
         )
     }
 
     /**
-     * Interactive slider render: same contract as [render], but the bridge
-     * reuses the session's cached CFA when [frameIndex] is the frame already
-     * decoded — a grade-only change skips the decode entirely (owner request
-     * 2026-11-10 section 1). Meant for the low-latency drag tier; the
-     * full-quality settle render can keep using [render].
+     * Interactive slider render: same contract as [render] (including
+     * [lutPath], COL-07), but the bridge reuses the session's cached CFA
+     * when [frameIndex] is the frame already decoded — a grade-only change
+     * skips the decode entirely (owner request 2026-11-10 section 1).
+     * Meant for the low-latency drag tier; the full-quality settle render
+     * can keep using [render].
      */
-    override suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> {
+    override suspend fun renderCached(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String?,
+    ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
                 PreviewRenderer.Companion.PreviewRenderException(
@@ -167,6 +187,8 @@ class PreviewSession private constructor(
                                     args.shadows, args.midtones, args.contrast,
                                     args.asShot, args.highlightReconstruction, args.keepVignetting,
                                     args.sharpness, args.detail, args.tonemap,
+                                    lutPath, args.lutStrength,
+                                    args.noiseReduction, args.chromaDenoise,
                                     maxDim,
                                 )
                             )
@@ -226,6 +248,51 @@ class PreviewSession private constructor(
         } catch (e: RejectedExecutionException) {
             cont.resume(-1L)
         }
+    }
+
+    /**
+     * The MCRAW clip's audio for editor playback (owner request
+     * 2026-11-11 section 4): the native readAudio one-shot (whole-clip
+     * interleaved 16-bit PCM — the core/Source.h contract), read ONCE on
+     * the engine thread (thread-local error state; the read is one-shot,
+     * never per-chunk) and handed to the pure [PcmClipAudioSource], which
+     * slices chunks and seeks in plain memory afterwards. [fdProvider] is
+     * ignored — the handle already owns the dup'd descriptor.
+     *
+     * Null (never a throw) when the clip has no audio — audioInfo 0/0 or
+     * an empty PCM — or the session is closed: silent playback, the
+     * previous behavior. The AUD-06 rule holds: the sample rate travels
+     * with the PCM, it is never assumed.
+     */
+    override suspend fun openAudio(fdProvider: () -> Int): ClipAudioSource? {
+        if (!SessionRules.isActive(opened = true, closed = closed.get())) return null
+        return suspendCoroutine { cont ->
+            try {
+                engine.execute {
+                    val source: ClipAudioSource? = try {
+                        if (closed.get()) {
+                            null
+                        } else {
+                            pcmAudioSource()
+                        }
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    cont.resume(source)
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(null)
+            }
+        }
+    }
+
+    /** Blocking PCM read; MUST run on the engine thread. */
+    private fun pcmAudioSource(): ClipAudioSource? {
+        val info = NativeSource.jniAudioInfo(handle)
+        if (info == null || info.size < 2 || info[0] <= 0 || info[1] <= 0) return null
+        val pcm = NativeSource.jniReadAudio(handle) ?: return null
+        if (pcm.isEmpty()) return null
+        return PcmClipAudioSource(info[0], info[1], pcm)
     }
 
     override fun close() {

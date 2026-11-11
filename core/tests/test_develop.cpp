@@ -114,6 +114,8 @@ Grade neutralToneGrade() {
     g.sharpness = 0.0f;
     g.detail = 0.0f;
     g.tonemap = 0;
+    g.noiseReduction = 0.0f;
+    g.chromaDenoise = 0.0f;
     return g;
 }
 
@@ -355,7 +357,7 @@ TEST_CASE("highlights_recovery_preserves_brightness_order") {
 TEST_CASE("temperature_slider_moves_red_and_blue_opposite") {
     auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
     // Manual WB: the sliders only act when asShot is false (the as-shot
-    // grade skips stages 14-15 entirely).
+    // grade skips stages 16-17 entirely).
     Grade warm; warm.asShot = false; warm.tempK = 32000.0f;   // >> 5600: warm
     Grade cool; cool.asShot = false; cool.tempK = 3000.0f;   // << 5600: cool
     auto base = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
@@ -567,7 +569,7 @@ TEST_CASE("saturation_scales_chroma_neutrals_untouched") {
 // COL-09, RAW-04, RAW-06) ----
 
 TEST_CASE("as_shot_skips_temperature_and_tint_stages") {
-    // asShot = true must skip stages 14-15 entirely, whatever tempK/tint
+    // asShot = true must skip stages 16-17 entirely, whatever tempK/tint
     // hold: the output is bit-identical to a neutral-WB grade. asShot =
     // false runs them (the manual path, locked by golden fixture B).
     auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);

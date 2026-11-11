@@ -30,20 +30,45 @@ interface EditorPreviewSession : AutoCloseable {
 
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
-     * [maxDim]. Suspends until done; resumes with the frame or a failure
-     * carrying stage + cause + recovery.
+     * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
+     * stage 20 bypassed, the old look; COL-07). Suspends until done;
+     * resumes with the frame or a failure carrying stage + cause +
+     * recovery.
      */
-    suspend fun render(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame>
+    suspend fun render(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String? = null,
+    ): Result<PreviewFrame>
 
     /**
      * Interactive slider render: the MCRAW session reuses its cached CFA
      * when the frame is unchanged (a grade-only change skips the decode);
      * the encoded path has no such stage and decodes like [render].
+     * [lutPath] as in [render] (COL-07).
      */
-    suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame>
+    suspend fun renderCached(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String? = null,
+    ): Result<PreviewFrame>
 
     /** ptsUs of frame [index] for the transport's timeline; -1 when unavailable. */
     suspend fun framePtsUs(index: Int): Long
+
+    /**
+     * Opens the clip's AUDIO for editor playback (owner request 2026-11-11
+     * section 4) as a positionable PCM stream for [EditorAudioPlayback].
+     * Null = the clip has no audio (silent playback — the previous
+     * behavior) or the audio is unavailable; never throws, never fails
+     * playback. [fdProvider] yields a FRESH read-only descriptor the
+     * returned source owns and closes at its release (the encoded path
+     * needs its own extractor over its own descriptor; the MCRAW path
+     * reads through the native handle and ignores it).
+     */
+    suspend fun openAudio(fdProvider: () -> Int): ClipAudioSource?
 }
 
 /**
@@ -168,12 +193,20 @@ class EncodedPreviewSession private constructor(
     private val source: EncodedSource,
     override val frames: Int,
     private val engine: ExecutorService,
+    private val sampleRate: Int,
+    private val channels: Int,
+    private val newAudioSource: (Int, Int, Int) -> ClipAudioSource =
+        { fd, rate, ch -> MediaExtractorAudioSource(fd, rate, ch) },
 ) : EditorPreviewSession {
 
     private val closed = AtomicBoolean(false)
 
-    override suspend fun render(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> =
-        renderOnEngine(frameIndex, grade, maxDim)
+    override suspend fun render(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String?,
+    ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
 
     /**
      * The encoded engine has no cached re-develop stage: its decode
@@ -182,13 +215,18 @@ class EncodedPreviewSession private constructor(
      * interactive drag path therefore maps 1:1 onto [render]; no caching is
      * invented for an engine that lacks it.
      */
-    override suspend fun renderCached(frameIndex: Int, grade: GradeK, maxDim: Int): Result<PreviewFrame> =
-        renderOnEngine(frameIndex, grade, maxDim)
+    override suspend fun renderCached(
+        frameIndex: Int,
+        grade: GradeK,
+        maxDim: Int,
+        lutPath: String?,
+    ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
 
     private suspend fun renderOnEngine(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
+        lutPath: String? = null,
     ): Result<PreviewFrame> {
         if (closed.get()) {
             return Result.failure(sessionClosed())
@@ -208,7 +246,7 @@ class EncodedPreviewSession private constructor(
                             // Closed while queued: never touch the dead source.
                             Result.failure(sessionClosed())
                         } else {
-                            frameOf(source.renderFrame(frameIndex, grade), maxDim)
+                            frameOf(source.renderFrame(frameIndex, grade, lutPath), maxDim)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)
@@ -263,6 +301,25 @@ class EncodedPreviewSession private constructor(
         return Result.success(ArgbScale.fit(out.copyOfRange(2, out.size), w, h, maxDim))
     }
 
+    /**
+     * The encoded clip's audio for editor playback: the audio track the
+     * open already described (sampleRate/channels from EncodedClipInfo —
+     * AUD-06), decoded by a SECOND extractor over a fresh descriptor (the
+     * session's video reader owns its own fd and extractor position, so
+     * the audio path must not touch either). No audio track (0/0) or no
+     * fresh descriptor = null: silent playback, never a failure.
+     *
+     * The extractor/codec work happens lazily on the audio thread that
+     * first seeks/reads the returned source — nothing framework runs on
+     * the preview engine here, so the video path pays no audio cost.
+     */
+    override suspend fun openAudio(fdProvider: () -> Int): ClipAudioSource? {
+        if (sampleRate <= 0 || channels <= 0) return null // no audio track
+        val fd = fdProvider()
+        if (fd < 0) return null
+        return newAudioSource(fd, sampleRate, channels)
+    }
+
     companion object {
 
         /**
@@ -284,13 +341,24 @@ class EncodedPreviewSession private constructor(
             fd: Int,
             engine: ExecutorService,
             newSource: () -> EncodedSource = { EncodedSource() },
+            newAudioSource: (Int, Int, Int) -> ClipAudioSource =
+                { fd, rate, ch -> MediaExtractorAudioSource(fd, rate, ch) },
         ): Result<EncodedPreviewSession> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val outcome: Result<EncodedPreviewSession> = try {
                         val source = newSource()
                         val info = source.open(fd)
-                        Result.success(EncodedPreviewSession(source, info.frameCount, engine))
+                        Result.success(
+                            EncodedPreviewSession(
+                                source,
+                                info.frameCount,
+                                engine,
+                                info.sampleRate,
+                                info.channels,
+                                newAudioSource,
+                            )
+                        )
                     } catch (t: Throwable) {
                         // A failed open owns nothing: EncodedSource already
                         // released both boundaries (and the adopted fd).

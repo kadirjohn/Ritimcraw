@@ -23,7 +23,8 @@ uint32_t thumbnailHeight(uint32_t height, int strideEvery) {
 }
 
 ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
-                        const RawMeta& meta, const Grade& grade, int strideEvery) {
+                        const RawMeta& meta, const Grade& grade, int strideEvery,
+                        const Lut* lut) {
     ImageF img;
 
     const uint32_t w = info.width;
@@ -64,7 +65,7 @@ ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
     FrameInfo smallInfo = info;
     smallInfo.width = outW;
     smallInfo.height = outH;
-    img = developCpu(small.data(), smallInfo, meta, grade);
+    img = developCpu(small.data(), smallInfo, meta, grade, lut);
     return img;
 }
 

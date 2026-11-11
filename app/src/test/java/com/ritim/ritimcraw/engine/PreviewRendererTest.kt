@@ -26,6 +26,8 @@ class PreviewRendererTest {
             shadows = -35f, midtones = 12f, contrast = 55f,
             asShot = false, highlightReconstruction = true, keepVignetting = false,
             sharpness = 25f, detail = -10f, tonemap = 1,
+            lutStrength = 75f,
+            noiseReduction = 40f, chromaDenoise = 65f,
         )
         val args = GradeMapping.toNative(grade)
         assertEquals(1.2f, args.exposureEv, 0f)
@@ -44,6 +46,47 @@ class PreviewRendererTest {
         assertEquals(25f, args.sharpness, 0f)
         assertEquals(-10f, args.detail, 0f)
         assertEquals(1, args.tonemap)
+        // COL-07: the UI percent maps to rawedit's 0..1 blend here.
+        assertEquals(0.75f, args.lutStrength, 0f)
+        // DN-01..08: the denoise percents pass through at the native 0..100
+        // scale — NO /100 here (unlike lutStrength); the core clamps itself.
+        assertEquals(40f, args.noiseReduction, 0f)
+        assertEquals(65f, args.chromaDenoise, 0f)
+    }
+
+    @Test
+    fun lut_strength_percent_maps_to_native_blend() {
+        // COL-07: GradeK stores a UI percent 0..100; the JNI boundary passes
+        // rawedit's 0..1 blend (lutStrength = lut(rgb)*s + rgb*(1-s)). The
+        // mapping happens HERE (GradeMapping.toNative for the preview, the
+        // same /100 inline at the two export-path call sites), so every JNI
+        // call site passes 0..1.
+        assertEquals(0.5f, GradeMapping.toNative(GradeK(lutStrength = 50f)).lutStrength, 0f)
+        assertEquals(0f, GradeMapping.toNative(GradeK(lutStrength = 0f)).lutStrength, 0f)
+        assertEquals(1f, GradeMapping.toNative(GradeK(lutStrength = 100f)).lutStrength, 0f)
+        // The GradeK default (100 = full LUT) maps to the full blend.
+        assertEquals(1f, GradeMapping.toNative(GradeK()).lutStrength, 0f)
+    }
+
+    @Test
+    fun denoise_percents_pass_through_at_native_scale() {
+        // DN-01..08: GradeK stores UI percents 0..100 and rawedit's Grade
+        // uses the SAME 0..100 scale for both denoise fields (unlike
+        // lutStrength's 0..1 blend). The mapping is a pure pass-through —
+        // the core clamps [0,100] — so the slider value the user sees is
+        // exactly the strength the native stage gets.
+        assertEquals(50f, GradeMapping.toNative(GradeK(noiseReduction = 50f)).noiseReduction, 0f)
+        assertEquals(0f, GradeMapping.toNative(GradeK(noiseReduction = 0f)).noiseReduction, 0f)
+        assertEquals(100f, GradeMapping.toNative(GradeK(noiseReduction = 100f)).noiseReduction, 0f)
+        assertEquals(50f, GradeMapping.toNative(GradeK(chromaDenoise = 50f)).chromaDenoise, 0f)
+        assertEquals(0f, GradeMapping.toNative(GradeK(chromaDenoise = 0f)).chromaDenoise, 0f)
+        assertEquals(100f, GradeMapping.toNative(GradeK(chromaDenoise = 100f)).chromaDenoise, 0f)
+        // The GradeK defaults (0 = the stage skipped) map to neutral — the
+        // pre-DN look (locked at the C++ level by the golden bit-identity
+        // test).
+        val defaults = GradeMapping.toNative(GradeK())
+        assertEquals(0f, defaults.noiseReduction, 0f)
+        assertEquals(0f, defaults.chromaDenoise, 0f)
     }
 
     @Test
@@ -75,6 +118,11 @@ class PreviewRendererTest {
         assertEquals(0f, args.sharpness, 0f)
         assertEquals(0f, args.detail, 0f)
         assertEquals(0, args.tonemap)
+        // The denoise fields default to 0 = both native stages 7/8 skipped —
+        // the default grade keeps the exact pre-DN-01..08 look (locked at the
+        // C++ level by the golden bit-identity test).
+        assertEquals(0f, args.noiseReduction, 0f)
+        assertEquals(0f, args.chromaDenoise, 0f)
     }
 
     @Test
@@ -85,6 +133,8 @@ class PreviewRendererTest {
             shadows = 90f, midtones = -33f, contrast = 100f,
             asShot = false, highlightReconstruction = false, keepVignetting = true,
             sharpness = -45f, detail = 67f, tonemap = 2,
+            lutStrength = 80f,
+            noiseReduction = 33f, chromaDenoise = 71f,
         )
         val args = GradeMapping.toNative(grade)
         val back = GradeK(
@@ -104,6 +154,11 @@ class PreviewRendererTest {
             sharpness = args.sharpness,
             detail = args.detail,
             tonemap = args.tonemap,
+            lutStrength = args.lutStrength * 100f,
+            // Denoise is already at the UI percent scale on the native side
+            // — no *100 on the way back.
+            noiseReduction = args.noiseReduction,
+            chromaDenoise = args.chromaDenoise,
         )
         assertEquals(grade.exposureEv, back.exposureEv, 0f)
         assertEquals(grade.highlights, back.highlights, 0f)
@@ -121,6 +176,12 @@ class PreviewRendererTest {
         assertEquals(grade.sharpness, back.sharpness, 0f)
         assertEquals(grade.detail, back.detail, 0f)
         assertEquals(grade.tonemap, back.tonemap)
+        // The percent travels through the mapping and back (the UI-side
+        // value; the /100 blend is the native side of the same boundary).
+        assertEquals(grade.lutStrength, back.lutStrength, 0f)
+        // DN: the percents pass through unchanged in both directions.
+        assertEquals(grade.noiseReduction, back.noiseReduction, 0f)
+        assertEquals(grade.chromaDenoise, back.chromaDenoise, 0f)
     }
 
     // ---- debounce window ----

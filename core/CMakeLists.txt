@@ -31,6 +31,7 @@ add_library(rawedit STATIC
     src/Develop.cpp
     src/Thumbnail.cpp
     src/Transfer.cpp
+    src/Lut.cpp
     src/DngWriter.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder)
@@ -48,10 +49,15 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     target_include_directories(test_develop PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_develop PRIVATE rawedit)
 
+    add_executable(test_noise tests/test_noise.cpp)
+    target_include_directories(test_noise PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_noise PRIVATE rawedit)
+
     add_executable(rawcli ../cli/main.cpp)
     target_link_libraries(rawcli PRIVATE rawedit)
 
     enable_testing()
     add_test(NAME source COMMAND test_source)
     add_test(NAME develop COMMAND test_develop)
+    add_test(NAME noise COMMAND test_noise)
 endif()

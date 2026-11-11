@@ -8,6 +8,8 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -251,6 +253,59 @@ class EncodedPreviewSessionTest {
         assertTrue(decoder.released)
     }
 
+    // ---- openAudio (owner request 2026-11-11 section 4) ----
+
+    @Test
+    fun open_audio_without_an_audio_track_is_null() = runBlocking {
+        // EncodedClipInfo 0/0 = no audio track: silent playback, never a
+        // failure and never a descriptor taken.
+        val fake = fakeSource(pts = longArrayOf(0), readerSampleRate = 0, readerChannels = 0)
+        val session = EncodedPreviewSession.open(fd = 7, engine, newSource = { fake }).getOrThrow()
+        var fdCalls = 0
+
+        assertNull(session.openAudio { fdCalls++; -1 })
+
+        assertEquals(0, fdCalls) // short-circuits BEFORE taking a descriptor
+        session.close()
+    }
+
+    @Test
+    fun open_audio_without_a_fresh_descriptor_is_null() = runBlocking {
+        val fake = fakeSource(pts = longArrayOf(0))
+        val session = EncodedPreviewSession.open(fd = 7, engine, newSource = { fake }).getOrThrow()
+
+        assertNull(session.openAudio { -1 })
+
+        session.close()
+    }
+
+    @Test
+    fun open_audio_hands_the_fresh_fd_and_the_clips_own_rate_to_the_source() = runBlocking {
+        // AUD-06: the audio source is built from the track's rate/channels
+        // (the open's EncodedClipInfo), and the fd it gets is the FRESH one
+        // from the provider — the audio path owns it from here on.
+        val fake = fakeSource(pts = longArrayOf(0), readerSampleRate = 44_100, readerChannels = 1)
+        var handed: Int? = null
+        val audio = FakeClipAudioSource()
+        val session = EncodedPreviewSession.open(
+            fd = 7,
+            engine,
+            newSource = { fake },
+            newAudioSource = { fd, rate, ch ->
+                handed = fd
+                audio
+            },
+        ).getOrThrow()
+
+        val opened = session.openAudio { 42 }
+
+        assertSame(audio, opened)
+        assertEquals(42, handed)
+        assertEquals(44_100, opened!!.sampleRate) // the clip's OWN rate (AUD-06)
+        assertEquals(1, opened.channels)
+        session.close()
+    }
+
     // ---- PreviewSessions factory: routing + fd ownership ----
 
     @Test
@@ -311,6 +366,8 @@ class EncodedPreviewSessionTest {
     private class FakeReader(
         private val samples: List<EncodedSample>,
         private val openOutcome: EncodedOpenOutcome? = null,
+        private val sampleRate: Int = 48_000,
+        private val channels: Int = 2,
     ) : EncodedTrackReader {
 
         var released = false
@@ -325,8 +382,8 @@ class EncodedPreviewSessionTest {
                     ptsUs = LongArray(samples.size) { samples[it].ptsUs },
                     sync = BooleanArray(samples.size) { samples[it].sync },
                 ),
-                sampleRate = 48_000,
-                channels = 2,
+                sampleRate = sampleRate,
+                channels = channels,
             )
         }
 
@@ -398,6 +455,7 @@ class EncodedPreviewSessionTest {
             isBt709: Boolean,
             orientationDeg: Int,
             grade: GradeK,
+            lutPath: String?,
         ): IntArray? {
             frames.add(frame)
             grades.add(grade)
@@ -438,8 +496,10 @@ class EncodedPreviewSessionTest {
     private fun fakeSource(
         pts: LongArray,
         developer: EncodedDeveloper = FakeDeveloper(),
+        readerSampleRate: Int = 48_000,
+        readerChannels: Int = 2,
     ): EncodedSource = EncodedSource(
-        reader = FakeReader(samples(pts)),
+        reader = FakeReader(samples(pts), sampleRate = readerSampleRate, channels = readerChannels),
         decoder = FakeDecoder(),
         developer = developer,
     )
@@ -465,6 +525,15 @@ private fun testFormat(): EncodedVideoFormat = EncodedVideoFormat(
     isBt709 = true,
     codecConfig = listOf(byteArrayOf(1, 2)),
 )
+
+/** A ClipAudioSource stand-in for the openAudio seam tests (nothing runs). */
+private class FakeClipAudioSource : ClipAudioSource {
+    override val sampleRate = 44_100
+    override val channels = 1
+    override fun seekTo(frameOffset: Long) {}
+    override fun readChunk(maxFrames: Int): ShortArray? = null
+    override fun release() {}
+}
 
 /**
  * ArgbScale tests: the pure tier downscaler for the encoded path (the

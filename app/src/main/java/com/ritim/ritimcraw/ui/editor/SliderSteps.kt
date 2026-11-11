@@ -33,6 +33,9 @@ object SliderSteps {
     fun snapContrast(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapSharpness(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapDetail(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapLutStrength(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapNoiseReduction(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapChromaDenoise(value: Float): Float = quantize(value, UNIT_STEP)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
@@ -53,6 +56,9 @@ object SliderSteps {
             contrast = snapContrast(grade.contrast),
             sharpness = snapSharpness(grade.sharpness),
             detail = snapDetail(grade.detail),
+            lutStrength = snapLutStrength(grade.lutStrength),
+            noiseReduction = snapNoiseReduction(grade.noiseReduction),
+            chromaDenoise = snapChromaDenoise(grade.chromaDenoise),
         )
     }
 
@@ -64,7 +70,8 @@ object SliderSteps {
     enum class Axis {
         EXPOSURE, HIGHLIGHTS, TEMPERATURE, TINT,
         SATURATION, BLACK_POINT, WHITE_POINT, SHADOWS, MIDTONES, CONTRAST,
-        SHARPNESS, DETAIL,
+        SHARPNESS, DETAIL, LUT_STRENGTH,
+        NOISE_REDUCTION, CHROMA_DENOISE,
     }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
@@ -80,6 +87,12 @@ object SliderSteps {
         Axis.CONTRAST -> current.copy(contrast = GradeK().contrast)
         Axis.SHARPNESS -> current.copy(sharpness = GradeK().sharpness)
         Axis.DETAIL -> current.copy(detail = GradeK().detail)
+        // COL-07: Strength resets to 100 (full LUT), the GradeK default.
+        Axis.LUT_STRENGTH -> current.copy(lutStrength = GradeK().lutStrength)
+        // DN-01..08: both denoise controls reset to 0 (neutral, the
+        // stages skipped — the old look), the GradeK default.
+        Axis.NOISE_REDUCTION -> current.copy(noiseReduction = GradeK().noiseReduction)
+        Axis.CHROMA_DENOISE -> current.copy(chromaDenoise = GradeK().chromaDenoise)
     }
 
     /**

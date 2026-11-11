@@ -5,6 +5,7 @@ import com.ritim.ritimcraw.export.ExportStore
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -275,6 +276,110 @@ class GradeStoreTest {
         assertEquals(0, GradeStore(file).get("off").tonemap)
         assertEquals(1, GradeStore(file).get("aces").tonemap)
         assertEquals(2, GradeStore(file).get("agx").tonemap)
+    }
+
+    @Test
+    fun lut_selection_and_strength_survive_persist_and_reload() {
+        // COL-07: the selection (lutId) and the Strength are SEPARATE grade
+        // fields, saved per clip with the rest of the grade.
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            lutId = "abc123def4567890",
+            lutStrength = 37f,
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals("abc123def4567890", reloaded.lutId)
+        assertEquals(37f, reloaded.lutStrength, 0f)
+        assertEquals(grade, reloaded)
+    }
+
+    @Test
+    fun old_format_file_loads_lut_as_neutral() {
+        // A project.json written by the pre-LUT build (COL-07): the two new
+        // fields are absent and must parse as their neutral defaults
+        // (lutId null = no LUT, lutStrength 100 = full) — the native pipeline
+        // bypasses stage 20 with lutId null, so the old look is preserved
+        // exactly (the binding requirement of this package).
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-lut-clip":{"version":1,"exposureEv":0.8,"highlights":-25.0,"tempK":4600.0,"tint":3.0,"saturation":10.0,"blackPoint":-5.0,"whitePoint":4.0,"shadows":-2.0,"midtones":1.0,"contrast":8.0,"asShot":false,"highlightReconstruction":true,"keepVignetting":true,"sharpness":15.0,"detail":-3.0,"tonemap":1}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-lut-clip")
+        assertEquals(0.8f, g.exposureEv, 0f)
+        assertEquals(15f, g.sharpness, 0f)
+        assertEquals(1, g.tonemap)
+        // The LUT fields are neutral: no selection, full strength.
+        assertNull(g.lutId)
+        assertEquals(100f, g.lutStrength, 0f)
+    }
+
+    @Test
+    fun json_null_lut_id_parses_as_no_selection() {
+        // renderGrades writes explicit JSON null for lutId (not the field
+        // being absent): both shapes must parse to null the same way.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"null-lut-clip":{"version":1,"exposureEv":0.0,"highlights":0.0,"tempK":5600.0,"tint":0.0,"saturation":0.0,"blackPoint":0.0,"whitePoint":0.0,"shadows":0.0,"midtones":0.0,"contrast":0.0,"asShot":true,"highlightReconstruction":true,"keepVignetting":true,"sharpness":0.0,"detail":0.0,"tonemap":0,"lutId":null,"lutStrength":100.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("null-lut-clip")
+        assertNull(g.lutId)
+        assertEquals(100f, g.lutStrength, 0f)
+    }
+
+    @Test
+    fun denoise_percents_survive_persist_and_reload() {
+        // DN-01..08: both denoise percents are ordinary grade fields — what
+        // the user set survives a persist + reload exactly.
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            noiseReduction = 42f,
+            chromaDenoise = 77f,
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(42f, reloaded.noiseReduction, 0f)
+        assertEquals(77f, reloaded.chromaDenoise, 0f)
+        assertEquals(grade, reloaded)
+    }
+
+    @Test
+    fun old_format_file_loads_denoise_as_neutral() {
+        // A project.json written by the pre-denoise build (DN-01..08): the
+        // two new fields are absent and must parse as 0 (both native stages
+        // 7/8 skipped) — the old look is preserved exactly, the binding
+        // requirement of this feature.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-dn-clip":{"version":1,"exposureEv":0.8,"highlights":-25.0,"tempK":4600.0,"tint":3.0,"saturation":10.0,"blackPoint":-5.0,"whitePoint":4.0,"shadows":-2.0,"midtones":1.0,"contrast":8.0,"asShot":false,"highlightReconstruction":true,"keepVignetting":true,"sharpness":15.0,"detail":-3.0,"tonemap":1,"lutId":null,"lutStrength":100.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-dn-clip")
+        // The pre-existing fields keep their saved values...
+        assertEquals(0.8f, g.exposureEv, 0f)
+        assertEquals(15f, g.sharpness, 0f)
+        assertNull(g.lutId)
+        // ...and the two denoise fields are neutral (0 = stage skipped).
+        assertEquals(0f, g.noiseReduction, 0f)
+        assertEquals(0f, g.chromaDenoise, 0f)
     }
 
     private fun projectFile(): File = File(tmp.root, "project.json")
