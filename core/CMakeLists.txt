@@ -21,6 +21,15 @@ target_include_directories(motioncam_decoder PUBLIC
     ${MOTIONCAM_DIR}/thirdparty)
 set_property(TARGET motioncam_decoder PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+# Vendored VQF orientation filter (MIT, commit 86ba56b), plain C++ version
+# (vqf/cpp/) verbatim; consumers are the gyro pipeline (core/src/Gyro.cpp)
+# and its tests. Registered as its own static lib so the app can link it
+# alongside rawedit when the gyro path moves on-device.
+set(VQF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vqf)
+add_library(vqf STATIC ${VQF_DIR}/vqf.cpp)
+target_include_directories(vqf PUBLIC ${VQF_DIR})
+set_property(TARGET vqf PROPERTY POSITION_INDEPENDENT_CODE ON)
+
 # rawedit core library.
 # Thumbnail.cpp + Transfer.cpp are linked by the app's preview path
 # (jni_bridge.cpp: developThumbnail + linearToRec709); DngWriter.cpp is

@@ -20,10 +20,17 @@ INCLUDES=(
   -I"$DECODER_SRC/lib/include"
   -I"$DECODER_SRC/thirdparty"
   -I"$ROOT/third_party/doctest-2.4.12"
+  -I"$ROOT/third_party/vqf"
 )
 FLAGS=(-std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden)
 
 mkdir -p "$BUILD"
+
+echo "== building vqf (vendored, MIT) =="
+# Orientation filter used by the gyro pipeline (Gyro.cpp consumers).
+# Linked into the binaries that need it (see test_gyro below).
+"$CXX" "${FLAGS[@]}" -c "$ROOT/third_party/vqf/vqf.cpp" -o "$BUILD/third_vqf.o"
+VQF_OBJS=("$BUILD/third_vqf.o")
 
 echo "== building motioncam decoder =="
 DECODED_OBJS=()
@@ -62,8 +69,9 @@ echo "== building tests =="
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_lut.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_lut"
 # test_gyro runs from the repo root so it finds the STEPS/media/test fixture.
+# It links vqf (Phase 2 orientation estimation tests).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
-  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gyro"
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" "${VQF_OBJS[@]}" -o "$BUILD/test_gyro"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_thumbnail.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_thumbnail"
 
