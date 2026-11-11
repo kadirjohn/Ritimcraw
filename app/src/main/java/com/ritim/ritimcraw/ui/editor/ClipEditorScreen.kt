@@ -78,6 +78,8 @@ import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -181,11 +183,12 @@ enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
  * exposure, 50 K temperature) and a double tap on a slider row resets that
  * one control to its GradeK default (DESIGN.md Inputs).
  *
- * Over the preview (owner feature list W5): a toggleable 256-bin luma
- * histogram with a clipping badge — recomputed on every frame publish
- * from the same frame the preview shows — and the before/after
- * press-hold: hold the frame area to swap to the neutral grade,
- * release to return.
+ * Over the preview (owner feature list W5): a toggleable 256-bin RGB +
+ * luma histogram (compact combined view, tap to expand with RGB / Luma
+ * / Parade modes and shadow-highlight clipping indicators) — recomputed
+ * on every frame publish from the same frame the preview shows — and
+ * the before/after press-hold: hold the frame area to swap to the
+ * neutral grade, release to return.
  */
 @Composable
 fun ClipEditorScreen(
@@ -331,13 +334,14 @@ fun ClipEditorScreen(
         var holdPausedPlayback by remember(sourceId) { mutableStateOf(false) }
 
         // Histogram overlay (owner feature list W5): toggleable 256-bin
-        // luma histogram + clipping badge over the preview. histogramVisible
-        // is saveable so it survives configuration changes like the tab and
-        // fullscreen do; the histogram itself is recomputed inside the
-        // render pump's publish — the one place the on-screen frame is
-        // swapped — so the overlay always shows the frame the preview
-        // currently shows, and toggling on is instant (the result is
-        // already current). Keyed to the clip: a clip switch starts empty.
+        // RGB + luma histogram with clipping indicators over the preview.
+        // histogramVisible is saveable so it survives configuration
+        // changes like the tab and fullscreen do; the histogram itself is
+        // recomputed inside the render pump's publish — the one place the
+        // on-screen frame is swapped — so the overlay always shows the
+        // frame the preview currently shows, and toggling on is instant
+        // (the result is already current). Keyed to the clip: a clip
+        // switch starts empty.
         var histogramVisible by rememberSaveable { mutableStateOf(false) }
         var histogram by remember(sourceId) {
             mutableStateOf(FrameHistogram.of(null))
@@ -627,13 +631,21 @@ fun ClipEditorScreen(
                                 // publish is the ONE place the on-screen frame
                                 // is swapped, so the pass runs here — the
                                 // overlay can never show a histogram for a
-                                // frame the preview is not showing. Strided
-                                // to at most FrameHistogram.MAX_SAMPLES pixels
-                                // (sub-millisecond even at source resolution),
-                                // on the pump coroutine like the publish
-                                // itself; a hidden overlay still recomputes
-                                // (cheap) so toggling on is instant.
-                                histogram = FrameHistogram.of(f.argb)
+                                // frame the preview is not showing. The pump
+                                // is a main-dispatcher LaunchedEffect and the
+                                // render resumes back on it, so the pass is
+                                // dispatched to Default for the four-channel
+                                // scan (still sub-millisecond: strided to at
+                                // most FrameHistogram.MAX_SAMPLES pixels) —
+                                // the UI thread only performs the state write.
+                                // Assignment ordering is unchanged: inside the
+                                // isFresh guard, a stale frame's histogram can
+                                // never overwrite a newer one's. A hidden
+                                // overlay still recomputes (cheap) so toggling
+                                // on is instant.
+                                histogram = withContext(Dispatchers.Default) {
+                                    FrameHistogram.of(f.argb)
+                                }
                                 lastRenderFailed = false
                                 errorText = null
                             },
