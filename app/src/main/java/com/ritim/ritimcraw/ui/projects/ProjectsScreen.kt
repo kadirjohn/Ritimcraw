@@ -21,11 +21,13 @@ import com.ritim.ritimcraw.ui.components.ScreenHeader
  */
 @Composable
 fun ProjectsScreen(modifier: Modifier = Modifier) {
-    Column(
-        modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-    ) {
+    // Canonical header call site (title consistency, owner finding
+    // 2026-11-12 — the contract lives in ScreenHeader's doc): the root
+    // Column pads NOTHING, so the title's left edge is ScreenHeader's
+    // own 16dp in all four browse screens. The 16dp screen gutter moved
+    // into the body container below — the centered empty state keeps
+    // its exact geometry.
+    Column(modifier.fillMaxSize()) {
         // Shared header (owner request 2026-11-11d: consistent top area
         // across the main screens) — same title, same compact rhythm as
         // Library/Exports; no actions on this screen yet.
@@ -33,7 +35,8 @@ fun ProjectsScreen(modifier: Modifier = Modifier) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .weight(1f)
+                .padding(horizontal = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {

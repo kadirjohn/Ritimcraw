@@ -20,6 +20,17 @@ import androidx.compose.ui.unit.dp
  * All four browse screens (Library, Projects, Exports, Settings) share
  * this treatment so their titles align and scale identically.
  *
+ * CALL-SITE CONTRACT (title consistency, owner finding 2026-11-12): this
+ * component owns the title's ENTIRE margin — the caller must compose it
+ * directly under a root Column that pads NOTHING (no horizontal padding,
+ * no nested Scaffold, no inset), i.e. the canonical chain is exactly
+ * AppNav Scaffold -> Box(padding) -> Crossfade -> Column (unpadded) ->
+ * ScreenHeader. A caller that pads its root Column horizontally stacks
+ * its gutter with this Row's own start = 16dp and shifts the title right
+ * of the other screens — the exact bug this contract exists to prevent.
+ * The 16dp screen gutter (DESIGN.md Layout) belongs to the BODY below
+ * the header, never to the header's parent.
+ *
  * [actions] rides the end (e.g. Exports' Clear) — a conventional toolbar
  * location, not a list footer.
  */
