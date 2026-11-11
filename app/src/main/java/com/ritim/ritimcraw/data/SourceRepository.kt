@@ -54,6 +54,16 @@ data class MediaSource(
      * project.json files stay byte-identical (the durationUs shape).
      */
     val manualRotationDeg: Int = 0,
+    /**
+     * The id of the imported sidecar .gcsv gyro log attached to this clip
+     * (GYRO PHASE 5, stabilization): a GyroStore entry id, blank when no
+     * log is attached. The attachment — not the log itself — lives on the
+     * clip so one log can serve re-imports of the same clip and the
+     * "gyros" library stays clip-agnostic. Persisted only when non-blank
+     * so pre-gyro project.json files stay byte-identical (the
+     * manualRotationDeg shape).
+     */
+    val gyroId: String = "",
 ) {
     /** True when the engine pass has filled in the format-line stats. */
     val hasStats: Boolean
@@ -247,6 +257,26 @@ class SourceRepository(
         return updated
     }
 
+    /**
+     * Attaches (or detaches, [gyroId] = "") the imported sidecar .gcsv gyro
+     * log (GYRO PHASE 5): the GyroStore entry id is stored on the clip after
+     * the editor's sync probe validated the log against THIS clip. A null
+     * return means the record is missing (the editor never attaches a gyro
+     * to a phantom clip). No-op writes are skipped so re-attaching the same
+     * log does not rewrite project.json.
+     */
+    fun setGyro(id: String, gyroId: String): MediaSource? {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val current = sources[index]
+        if (current.gyroId == gyroId) return current
+        val updated = current.copy(gyroId = gyroId)
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
+
     // ---- fingerprint ----
 
     /**
@@ -352,6 +382,12 @@ class SourceRepository(
                     // pre-rotation files stay byte-identical.
                     sb.append(",\"manualRotationDeg\":").append(s.manualRotationDeg)
                 }
+                if (s.gyroId.isNotBlank()) {
+                    // Attached sidecar gyro log (GYRO PHASE 5); omitted while
+                    // blank (never attached) so pre-gyro files stay
+                    // byte-identical.
+                    sb.append(",\"gyroId\":").append(jsonString(s.gyroId))
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -428,6 +464,10 @@ class SourceRepository(
                     // feature; 0 = never rotated (the container orientation
                     // alone decides the display).
                     manualRotationDeg = (m["manualRotationDeg"] as? Double)?.toInt() ?: 0,
+                    // Absent in records written before GYRO PHASE 5; blank =
+                    // no sidecar gyro log attached (stabilization stays a
+                    // no-op).
+                    gyroId = m["gyroId"] as? String ?: "",
                 )
             }
         }

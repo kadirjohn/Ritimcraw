@@ -53,6 +53,26 @@ import java.nio.charset.StandardCharsets
  * moves it as one value. Old schema-1 files parse them off/0 — temporal NR
  * never turns itself on behind the user's back.
  *
+ * The stabilization fields (gyro Phase 5) are appended LAST and rendered
+ * OMIT-WHEN-OFF: a grade with stabilization off writes NONE of the six keys,
+ * so every file this build writes for an off grade is byte-identical to the
+ * pre-stabilization format, and old files parse with the off defaults —
+ * stabilization never turns itself on behind the user's back (the same rule
+ * as temporal NR). While off the sub-values are inert and not persisted:
+ * toggling off forgets any tweak, toggling on starts from the defaults.
+ * stabilizationMode: 0 = Smooth, 1 = Lock First Frame, 2 = Horizon Lock (the
+ * tonemap Int precedent). stabilizationStrength is the 0..100 smoothing
+ * percent, default 70 — documented basis: the core's smoothing time constant
+ * is tau = (1 s)^strength (Stabilization.h), so 0.7 gives tau ≈ 2 ms on the
+ * fixtures' ~473 Hz gyro grid (visible smoothing) while 0.5 gives ≈ 31.6 µs
+ * (near-raw, no visible effect); the UI maps the percent onto 0..1.
+ * stabilizationZoomLimit caps the auto crop, 1.0..1.5, default 1.1.
+ * stabilizationTrimMs is the manual sync trim ±500 ms (trimOffsetMs over the
+ * anchored estimate; 0 = no trim). stabilizationFocalMm is the
+ * 35mm-equivalent focal override in mm; 0 = use the container's value (the
+ * container carries no sensor pitch, so the pixel focal is NOT derivable —
+ * the flagged width*mm/36 conversion lives in the core, Stabilization.h).
+ *
  * A grade set on clip A must never appear on clip B, including after closing
  * and reopening the app (QA-05) — GradeStoreTest.grades_do_not_leak_between_clips.
  */
@@ -84,6 +104,21 @@ data class GradeK(
     val chromaDenoise: Float = 0f,
     val temporalNr: Boolean = false,
     val temporalStrength: Float = 0f,
+    // Stabilization (gyro Phase 5) — appended LAST, rendered omit-when-off
+    // (see the class KDoc): the toggle gates the whole group, and the
+    // sub-values are inert + not persisted while off.
+    /** Stabilization master toggle; false = the whole group is a no-op. */
+    val stabilization: Boolean = false,
+    /** 0 = Smooth, 1 = Lock First Frame, 2 = Horizon Lock (tonemap Int precedent). */
+    val stabilizationMode: Int = 0,
+    /** Smoothing percent 0..100 (maps onto the core's tau exponent 0..1); default 70. */
+    val stabilizationStrength: Float = 70f,
+    /** Max auto-crop zoom 1.0..1.5; the core clamps appliedZoom to min(required, this). */
+    val stabilizationZoomLimit: Float = 1.1f,
+    /** Manual sync trim in ms, ±500 (trimOffsetMs over the anchored estimate). */
+    val stabilizationTrimMs: Float = 0f,
+    /** 35mm-equivalent focal override in mm; 0 = use the container's value. */
+    val stabilizationFocalMm: Float = 0f,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -245,7 +280,26 @@ class GradeStore(private val file: File) {
                 .append("\"temporalNr\":").append(g.temporalNr)
                 .append(',')
                 .append("\"temporalStrength\":").append(num(g.temporalStrength))
-                .append('}')
+            // Stabilization (gyro Phase 5): omit-when-off — a grade with
+            // stabilization off writes NONE of the six keys, so files this
+            // build writes for an off grade are byte-identical to the
+            // pre-stabilization format. The sub-values are inert while off,
+            // so they are not persisted either: toggling off forgets tweaks.
+            if (g.stabilization) {
+                sb.append(',')
+                    .append("\"stabilization\":").append(g.stabilization)
+                    .append(',')
+                    .append("\"stabilizationMode\":").append(g.stabilizationMode)
+                    .append(',')
+                    .append("\"stabilizationStrength\":").append(num(g.stabilizationStrength))
+                    .append(',')
+                    .append("\"stabilizationZoomLimit\":").append(num(g.stabilizationZoomLimit))
+                    .append(',')
+                    .append("\"stabilizationTrimMs\":").append(num(g.stabilizationTrimMs))
+                    .append(',')
+                    .append("\"stabilizationFocalMm\":").append(num(g.stabilizationFocalMm))
+            }
+            sb.append('}')
             return sb.toString()
         }
 
@@ -369,6 +423,16 @@ class GradeStore(private val file: File) {
                     // look (no temporal stage) is preserved exactly.
                     temporalNr = m["temporalNr"] as? Boolean ?: false,
                     temporalStrength = (m["temporalStrength"] as? Double)?.toFloat() ?: 0f,
+                    // Stabilization fields (gyro Phase 5) postdate older
+                    // schema-1 files: absent parses as the OFF defaults —
+                    // stabilization never turns itself on behind the user's
+                    // back, and the old look (no warp) is preserved exactly.
+                    stabilization = m["stabilization"] as? Boolean ?: false,
+                    stabilizationMode = (m["stabilizationMode"] as? Double)?.toInt() ?: 0,
+                    stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 70f,
+                    stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
+                    stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
+                    stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
                 )
             }
             return out

@@ -636,4 +636,41 @@ class FormatTest {
     fun eta_left_never_negative() {
         assertEquals("0s", Format.formatEtaLeft(-5L))
     }
+
+    // ---- formatSignedMs (gyro Phase 5: sync trim readout) ----
+
+    @Test
+    fun signed_ms_positive_has_plus() {
+        assertEquals("+120 ms", Format.formatSignedMs(120))
+    }
+
+    @Test
+    fun signed_ms_negative_has_minus() {
+        assertEquals("-30 ms", Format.formatSignedMs(-30))
+    }
+
+    @Test
+    fun signed_ms_zero_is_sign_free() {
+        // The trim's default: no sign noise on the 0 of the ±500 ms range.
+        assertEquals("0 ms", Format.formatSignedMs(0))
+    }
+
+    // ---- formatZoom (gyro Phase 5: zoom-limit readout) ----
+
+    @Test
+    fun zoom_two_decimals_on_the_step_grid() {
+        // 1.00..1.50 on the 0.05 grid: the readout width never changes.
+        assertEquals("1.00x", Format.formatZoom(1.0f))
+        assertEquals("1.10x", Format.formatZoom(1.1f))
+        assertEquals("1.50x", Format.formatZoom(1.5f))
+    }
+
+    // ---- formatMm (gyro Phase 5: focal override readout) ----
+
+    @Test
+    fun mm_one_decimal_on_the_step_grid() {
+        // The 0.5 mm grid never shows a second decimal.
+        assertEquals("23.5 mm", Format.formatMm(23.5f))
+        assertEquals("24.0 mm", Format.formatMm(24f))
+    }
 }

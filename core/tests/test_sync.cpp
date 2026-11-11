@@ -7,15 +7,23 @@
 // skip otherwise (fixtures are gitignored). They compute the anchored
 // offset and the overlap window from the FILES:
 //   - the .mcraw via a raw motioncam::Decoder (exact container ns +
-//     frame-0 recvdTimestampMs — Source.h does not surface either the
-//     sub-us remainder of the ns timestamps or recvdTimestampMs; the
-//     test opens its own read-only decoder the same way Gyro.cpp does)
+//     frame-0 recvdTimestampMs — Source.h surfaces recvdTimestampMs as
+//     FrameInfo.recvdMs now, but ptsUs still integer-divides away the
+//     sub-us remainder of the ns timestamps, so sync reads the exact
+//     ns through its own read-only decoder the same way Gyro.cpp does)
 //   - the .gcsv via parseGcsv (gyro span) plus its header epoch-ms
 //
 // The real-fixture tests therefore QUOTE the anchor values and the
 // overlap numbers, and state the per-fixture verdict (both fixtures
 // land ANCHORED; the MANUAL-REQUIRED path is covered synthetically in
 // "anchored estimate refuses missing anchors").
+//
+// The decoder is still opened directly (not via Source) because sync
+// needs the EXACT per-frame ns: FrameInfo.ptsUs is captureNs/1000 with
+// integer division, so ptsUs*1000 loses up to 999 ns. FrameInfo now
+// surfaces recvdTimestampMs as recvdMs (stabilization Phase 5), but
+// the exact-ns rationale keeps the direct decoder the honest path
+// here; the recvdMs cross-check lives in test_source.cpp.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -42,9 +50,11 @@ bool fixtureAvailable(const char* relpath) {
     return true;
 }
 
-// Reads the GCSV header "timestamp" (epoch ms) without leaning on ImuData
-// (which does not carry it — Phase 3 keeps the key out of the canonical
-// model; this helper exists so tests can quote the real value).
+// Reads the GCSV header "timestamp" (epoch ms) straight from the raw
+// file, independent of ImuData.logStartWallMs (which now carries it —
+// stabilization Phase 5); this helper stays as the raw-file
+// cross-check so the quoted anchor value never leans on the parser it
+// is testing against.
 long long gcsvHeaderTimestampMs(const std::string& path) {
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f)

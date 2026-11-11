@@ -21,12 +21,18 @@
 #include <vector>
 
 #include <rawedit/DngWriter.h>
+#include <rawedit/Gyro.h>
 #include <rawedit/Lut.h>
+#include <rawedit/Orientation.h>
+#include <rawedit/OrientationEstimate.h>
 #include <rawedit/Result.h>
 #include <rawedit/Source.h>
+#include <rawedit/Stabilization.h>
+#include <rawedit/Sync.h>
 #include <rawedit/Temporal.h>
 #include <rawedit/Thumbnail.h>
 #include <rawedit/Transfer.h>
+#include <rawedit/Warp.h>
 
 namespace {
 
@@ -113,6 +119,290 @@ bool resolveLut(JNIEnv* env, jstring lutPath, const rawedit::Lut** out) {
     gLutPath = path;
     *out = gLut.get();
     return true;
+}
+
+// Gyro stabilization cache (gyro Phase 5) ------------------------------------------------
+//
+// The gLut pattern mirrored for the sidecar .gcsv: parsing the log + running
+// the VQF orientation filter is expensive, so each engine thread keeps ONE
+// resolved artifact set keyed by path — same path = reuse, different path =
+// reparse, null/empty path = no stabilization. The artifacts hold only the
+// path-invariant work (parsed ImuData, axis-remapped sample streams, VQF
+// orientation series); the clip-wide stabilization plan is recomputed per
+// render because it depends on the request's mode/strength/focal/trim and
+// the Source's frame timestamps — a plan cache keyed on that tuple would
+// churn on every slider step anyway.
+struct GyroArtifacts {
+    rawedit::ImuData imu;                    // parsed log (logStartWallMs anchor)
+    std::vector<rawedit::ImuSample> gyro;   // canonical camera frame
+    std::vector<rawedit::ImuSample> accel;  // canonical camera frame
+    rawedit::VqfOrientation orientation;     // VQF series + camera gravity
+};
+
+thread_local std::string gGyroPath;
+thread_local std::unique_ptr<GyroArtifacts> gGyro;
+
+// Resolves the Kotlin gyroPath argument into the cached artifacts for this
+// render. Returns false ONLY on a parse failure (error state set, cache
+// cleared — a corrupt .gcsv fails the render loudly like a corrupt .cube).
+// Returns true with *out == nullptr when no log is attached (null/empty
+// path — no warp) or the file went missing since the attach probe (IoError
+// degrades to the unstabilized frame rather than failing the whole clip;
+// the honest no-op, never a fabricated warp).
+bool resolveGyro(JNIEnv* env, jstring gyroPath, const GyroArtifacts** out) {
+    *out = nullptr;
+    if (gyroPath == nullptr) return true;
+    const char* chars = env->GetStringUTFChars(gyroPath, nullptr);
+    if (chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "gyro: out of memory reading the path (recovery: free memory and retry)");
+        return false;
+    }
+    const std::string path(chars);
+    env->ReleaseStringUTFChars(gyroPath, chars);
+    if (path.empty()) return true;
+
+    if (gGyro != nullptr && path == gGyroPath) {
+        *out = gGyro.get();
+        return true;
+    }
+
+    auto parsed = rawedit::parseGcsv(path);
+    if (!parsed.isOk()) {
+        gGyro.reset();
+        gGyroPath.clear();
+        if (parsed.code == rawedit::ErrorCode::IoError) return true; // no log
+        setError(static_cast<int>(parsed.code), kStageDevelop,
+                 std::string("gyro: ") + rawedit::errorName(parsed.code) +
+                     " — " + parsed.detail +
+                     " (recovery: re-attach the clip's sidecar .gcsv)");
+        return false;
+    }
+
+    // Canonical composition (core/tests/test_orientation_estimate.cpp
+    // loadFixture): parse -> axisRemapForImu -> apply per gyro AND accel
+    // sample -> estimateOrientationVqf. The identity+unknown fallback remap
+    // is still applied when the metadata is absent — the documented
+    // fallback, never a silent guess.
+    auto artifacts = std::make_unique<GyroArtifacts>();
+    artifacts->imu = std::move(*parsed.value);
+    const rawedit::AxisRemap remap = rawedit::axisRemapForImu(artifacts->imu);
+    artifacts->gyro.reserve(artifacts->imu.gyro.size());
+    for (const rawedit::ImuSample& s : artifacts->imu.gyro) {
+        float x = s.x, y = s.y, z = s.z;
+        remap.apply(x, y, z);
+        rawedit::ImuSample c;
+        c.timestampNs = s.timestampNs;
+        c.x = x;
+        c.y = y;
+        c.z = z;
+        artifacts->gyro.push_back(c);
+    }
+    artifacts->accel.reserve(artifacts->imu.accel.size());
+    for (const rawedit::ImuSample& s : artifacts->imu.accel) {
+        float x = s.x, y = s.y, z = s.z;
+        remap.apply(x, y, z);
+        rawedit::ImuSample c;
+        c.timestampNs = s.timestampNs;
+        c.x = x;
+        c.y = y;
+        c.z = z;
+        artifacts->accel.push_back(c);
+    }
+    artifacts->orientation = rawedit::estimateOrientationVqf(
+        artifacts->gyro, artifacts->accel);
+    gGyro = std::move(artifacts);
+    gGyroPath = path;
+    *out = gGyro.get();
+    return true;
+}
+
+// The stabilization request as the six flat JNI params resolve it (gyro
+// Phase 5). Built only when a gyro log resolved: the Kotlin layer already
+// gated off / tier skip / no-attachment down to a null gyroPath, so the C++
+// side never sees a request it should not run. Mode ints are GradeK's
+// 0 = Smooth, 1 = LockFirstFrame, 2 = HorizonLock (the StabilizationMode
+// enum order minus Off); strength is already 0..1 (GradeK percent / 100 at
+// the Kotlin boundary, the lutStrength precedent); focalMm 0 = use the
+// container value; trimMs is the manual sync trim over the anchored
+// estimate.
+struct StabRequest {
+    rawedit::StabilizationMode mode = rawedit::StabilizationMode::Smooth;
+    double strength = 0.5;
+    double zoomLimit = 1.3;
+    double focalMmOverride = 0.0;
+    double trimMs = 0.0;
+};
+
+StabRequest stabRequestOf(jint mode, jfloat strength, jfloat zoomLimit,
+                          jfloat focalMm, jfloat trimMs) {
+    StabRequest r;
+    r.mode = mode == 1 ? rawedit::StabilizationMode::LockFirstFrame
+            : mode == 2 ? rawedit::StabilizationMode::HorizonLock
+            : rawedit::StabilizationMode::Smooth;
+    r.strength = strength;
+    r.zoomLimit = zoomLimit;
+    r.focalMmOverride = static_cast<double>(focalMm);
+    r.trimMs = static_cast<double>(trimMs);
+    return r;
+}
+
+// Warp decision from the plan's per-frame status: Ok / IntrinsicsAssumed /
+// LowOverlap warp (LowOverlap still warps from the clamped orientation —
+// the flag tells the UI which frames are held); Off / NoImu / Unsynced
+// carry identity H + zoom 1 and MUST NOT pay the warp cost (Stabilization.h
+// OFF-mode contract; Unsynced is the honest refusal to guess the clock
+// bridge).
+inline bool stabWarps(const rawedit::StabilizationFrame& f) {
+    return f.status == rawedit::StabilizationStatus::Ok ||
+           f.status == rawedit::StabilizationStatus::IntrinsicsAssumed ||
+           f.status == rawedit::StabilizationStatus::LowOverlap;
+}
+
+// The clip-wide stabilization plan evaluated at [frameIndex], for the
+// buffer being warped ([bufW] x [bufH] — thumbnail dims on the preview
+// path, full dims on the export path; the homography scales with the
+// buffer because the pixel focal is derived from its width). Self-contained
+// per render: the sync estimate comes from THIS Source's frame-0 anchors
+// (the probe's exact idiom), so the export path — a fresh session over the
+// same file — resolves the same offset as the preview. The trim composes
+// per Sync.h: an anchored estimate keeps its verdict (trimOffsetMs over
+// it); an unanchored one with a non-zero trim becomes the manual offset; an
+// unanchored one with no trim stays honestly Unsynced — offsetKnown false,
+// computeStabilization returns Unsynced identity frames and the caller
+// skips the warp. Never a fabricated zero offset.
+void stabilizationFrameFor(const StabRequest& req,
+                          rawedit::Source& src,
+                          int frameIndex,
+                          int bufW, int bufH,
+                          const GyroArtifacts* gyro,
+                          rawedit::StabilizationFrame* out) {
+    *out = rawedit::StabilizationFrame(); // identity + Off until proven
+    if (gyro == nullptr || bufW <= 0 || bufH <= 0) return;
+
+    // Sync: frame-0 anchors from the Source itself.
+    const rawedit::FrameInfo first = src.frameInfo(0);
+    const rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
+        first.recvdMs, gyro->imu.logStartWallMs, first.ptsUs * 1000);
+    rawedit::SyncModel model = est.model;
+    bool offsetKnown = false;
+    if (est.isAnchored()) {
+        offsetKnown = true;
+        if (req.trimMs != 0.0) {
+            model = rawedit::trimOffsetMs(est, req.trimMs).model;
+        }
+    } else if (req.trimMs != 0.0) {
+        offsetKnown = true;
+        model = rawedit::manualOffsetMs(req.trimMs).model;
+    }
+    // else: unanchored + no trim -> offsetKnown stays false (Unsynced).
+
+    // Focal: the grade's override wins; 0 = the container's 35mm-equiv
+    // value. focalLengthPxFromEquivalent is the one documented, FLAGGED
+    // fallback (f_px = width * mm / 36) — assumedFocal below wires the
+    // IntrinsicsAssumed status so the assumption is visible, never silent.
+    const double focalMm = req.focalMmOverride > 0.0
+        ? req.focalMmOverride
+        : src.rawMeta().focalLengthMm;
+    const double focalPx = rawedit::focalLengthPxFromEquivalent(focalMm, bufW);
+
+    rawedit::StabilizationParams params;
+    params.mode = req.mode;
+    params.strength = req.strength;
+    params.zoomLimit = req.zoomLimit;
+    params.focalLengthPx = focalPx;
+    params.width = bufW;
+    params.height = bufH;
+    // principalPoint keeps the {0,0} sentinel -> the buffer center; the
+    // warp's cx/cy must match that resolution exactly (width/2, height/2).
+
+    // Frame timestamps: the develop's frame clock (ptsUs) for the whole
+    // clip — frameInfo is metadata-only, so this walk adds no decode.
+    const size_t frames = src.frameCount();
+    std::vector<int64_t> frameTs(frames);
+    for (size_t i = 0; i < frames; ++i) {
+        frameTs[i] = src.frameInfo(i).ptsUs * 1000;
+    }
+
+    const rawedit::StabilizationResult result = rawedit::computeStabilization(
+        gyro->orientation.series, model, frameTs,
+        gyro->orientation.gravityCamera, offsetKnown, /*assumedFocal=*/true,
+        params);
+    if (frameIndex >= 0 &&
+        static_cast<size_t>(frameIndex) < result.frames.size()) {
+        *out = result.frames[static_cast<size_t>(frameIndex)];
+    }
+}
+
+// The warp input for one render (gyro Phase 5). gyro == nullptr is the
+// no-warp default: the Kotlin layer already gated off / tier-skip /
+// no-attachment down to a null gyroPath, and a log that went missing since
+// the attach probe degrades the same way — so a default StabInput warps
+// nothing and costs nothing.
+struct StabInput {
+    StabRequest request;
+    rawedit::Source* source = nullptr;
+    int frameIndex = -1;
+    const GyroArtifacts* gyro = nullptr;
+};
+
+// resolveStabilization's result: ok=false is a .gcsv parse failure (error
+// state set — the render must fail like a LUT parse failure); input.gyro ==
+// nullptr means this render simply does not warp.
+struct StabResolution {
+    bool ok = true;
+    StabInput input;
+};
+
+// Resolves the six flat JNI stabilization params into the warp input for
+// this render. The Kotlin boundary already did the gating (stabilization
+// off, tier skip, no attachment -> null gyroPath), so the ONLY decisions
+// left here are the cache lookup and the honest failure. strength arrives
+// already in rawedit's 0..1 scale (GradeK percent / 100 at the Kotlin
+// boundary, the lutStrength precedent).
+StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
+                                    jint stabMode, jfloat stabStrength,
+                                    jfloat stabZoomLimit, jfloat stabFocalMm,
+                                    jfloat stabTrimMs,
+                                    rawedit::Source* src, int frameIndex) {
+    StabResolution r;
+    const GyroArtifacts* gyro = nullptr;
+    if (!resolveGyro(env, gyroPath, &gyro)) {
+        r.ok = false;
+        return r;
+    }
+    if (gyro == nullptr) return r; // off / no log: the no-warp default
+    r.input.request = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
+                                    stabFocalMm, stabTrimMs);
+    r.input.source = src;
+    r.input.frameIndex = frameIndex;
+    r.input.gyro = gyro;
+    return r;
+}
+
+// The shared warp step (gyro Phase 5): evaluates the clip plan at the
+// buffer's OWN dims and warps [img] in place when the plan says this frame
+// warps. Placement (binding decision): BEFORE the upright rotation, on the
+// developed STORED-ORIENTATION buffer, identically on the preview and
+// export paths — the homography is computed in the stored frame, and the
+// export path rotates in Kotlin AFTER the native return
+// (RotationState.rotateRgb888), so the warp composes with the rotation
+// either way. No-op on the default input or a refusing status (Off / NoImu
+// / Unsynced carry identity H and MUST NOT pay the warp cost).
+void applyStabilization(const StabInput& in, rawedit::ImageF& img) {
+    if (in.gyro == nullptr || in.source == nullptr) return;
+    if (img.w == 0 || img.h == 0) return;
+    rawedit::StabilizationFrame frame;
+    stabilizationFrameFor(in.request, *in.source, in.frameIndex,
+                          static_cast<int>(img.w), static_cast<int>(img.h),
+                          in.gyro, &frame);
+    if (!stabWarps(frame)) return;
+    // cx/cy resolve the principalPoint sentinel exactly the way the core
+    // plan resolves it ({0,0} sentinel -> the buffer center): the warp and
+    // the plan must agree or the crop drifts off the intended center.
+    const double cx = static_cast<double>(img.w) / 2.0;
+    const double cy = static_cast<double>(img.h) / 2.0;
+    img = rawedit::warpFrame(img, frame.h, frame.zoom, cx, cy);
 }
 
 // Handle registry: a small fixed table keeps the bridge simple and avoids
@@ -325,7 +615,11 @@ inline uint8_t toByte(float rec709) {
 // ([width, height, pixels...], rotated upright per FrameInfo.orientationDeg).
 // Shared by the plain preview render and the cached interactive render so the
 // two paths stay pixel-identical. lut is the already-resolved stage-22 table
-// (nullptr = no LUT). Returns nullptr (error state set) on a
+// (nullptr = no LUT). stab is the resolved gyro stabilization input (gyro ==
+// nullptr = no warp — the default-constructed StabInput); the warp runs on
+// the developed STORED-ORIENTATION thumbnail, BEFORE the upright rotation
+// below (binding placement decision: the homography is computed in the
+// stored frame). Returns nullptr (error state set) on a
 // develop failure; a NewIntArray failure propagates as nullptr with a
 // pending JNI exception, which the Kotlin wrapper already maps to a render
 // failure.
@@ -335,6 +629,7 @@ jintArray developToArgb(JNIEnv* env,
                          const rawedit::RawMeta& meta,
                          const rawedit::Grade& grade,
                          const rawedit::Lut* lut,
+                         const StabInput& stab,
                          int maxDim) {
     const int strideEvery = strideFor(info, maxDim);
     rawedit::ImageF img = rawedit::developThumbnail(
@@ -345,6 +640,10 @@ jintArray developToArgb(JNIEnv* env,
                  "(recovery: re-import the clip)");
         return nullptr;
     }
+
+    // Gyro warp on the stored-orientation thumbnail (no-op without a
+    // resolved log; identity/Unsynced frames cost nothing).
+    applyStabilization(stab, img);
 
     const jsize w = static_cast<jsize>(img.w);
     const jsize h = static_cast<jsize>(img.h);
@@ -814,6 +1113,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
         jboolean temporalNr, jfloat temporalStrength,
+        jstring gyroPath, jint stabMode, jfloat stabStrength,
+        jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -828,6 +1129,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         return nullptr;
     }
     try {
+        // 0b. Resolve the gyro stabilization input (gyro Phase 5): a .gcsv
+        //     parse failure fails the render; a null path (off / tier skip /
+        //     no attachment — the Kotlin gate) warps nothing.
+        const StabResolution stab =
+            resolveStabilization(env, gyroPath, stabMode, stabStrength,
+                                 stabZoomLimit, stabFocalMm, stabTrimMs,
+                                 s, frameIndex);
+        if (!stab.ok) return nullptr;
+
         // 1. Frame read — through the ring, so with temporal NR on the
         //    center joins its neighbors in one LRU (the merge reads them
         //    all back from it; with NR off the ring is cleared by
@@ -844,7 +1154,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
             temporalNr == JNI_TRUE, temporalStrength);
         if (cfa == nullptr) return nullptr; // neighbor decode failed
 
-        // 3-4. Develop with CFA decimation + ARGB (shared preview tail).
+        // 3-4. Develop with CFA decimation + warp + ARGB (shared preview
+        //      tail; the warp is a no-op without a resolved log).
         return developToArgb(env, *cfa, info, meta,
                              gradeFromKotlin(exposureEv, highlights, tempK, tint,
                                              saturation, blackPoint, whitePoint,
@@ -855,7 +1166,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              noiseReduction, chromaDenoise,
                                              temporalNr == JNI_TRUE,
                                              temporalStrength),
-                             lut, maxDim);
+                             lut, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -887,6 +1198,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
         jboolean temporalNr, jfloat temporalStrength,
+        jstring gyroPath, jint stabMode, jfloat stabStrength,
+        jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -907,6 +1220,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         return nullptr;
     }
     try {
+        // 0b. Resolve the gyro stabilization input (gyro Phase 5): a .gcsv
+        //     parse failure fails the render; a null path (off / tier skip /
+        //     no attachment — the Kotlin gate) warps nothing.
+        const StabResolution stab =
+            resolveStabilization(env, gyroPath, stabMode, stabStrength,
+                                 stabZoomLimit, stabFocalMm, stabTrimMs,
+                                 s, frameIndex);
+        if (!stab.ok) return nullptr;
+
         // 1. Decode only when the requested frame is not the cached one —
         //    through the ring, so a neighbor prefetched during the previous
         //    frame's merge becomes this frame's center with no decode (with
@@ -929,7 +1251,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
             temporalNr == JNI_TRUE, temporalStrength);
         if (cfa == nullptr) return nullptr; // neighbor decode failed
 
-        // 3-4. Develop the (possibly merged) CFA + ARGB (shared preview tail).
+        // 3-4. Develop the (possibly merged) CFA + warp + ARGB (shared
+        //      preview tail; the warp is a no-op without a resolved log).
         return developToArgb(env, *cfa, e.cachedInfo, meta,
                              gradeFromKotlin(exposureEv, highlights, tempK, tint,
                                              saturation, blackPoint, whitePoint,
@@ -940,7 +1263,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              noiseReduction, chromaDenoise,
                                              temporalNr == JNI_TRUE,
                                              temporalStrength),
-                             lut, maxDim);
+                             lut, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -1004,6 +1327,90 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeLutProbe(
     return toJavaString(env, parsed.value->title);
 }
 
+// Gyro sync probe (GYRO PHASE 5) ------------------------------------------------
+//
+// Stateless validation + status estimate for the .gcsv attach flow: opens a
+// THROWAWAY Source from the clip's fd (Source::open dup's the fd, so the
+// caller's handle is untouched), reads frame 0's sync anchors + the
+// container's 35mm-equivalent focal length, parses the .gcsv at gyroPath,
+// and runs estimateOffsetFromAnchors. Returns a double array:
+//
+//   [0] anchored flag (1.0 = Anchored, 0.0 = ManualRequired)
+//   [1] offsetMs    (the estimate; 0 when manual-required)
+//   [2] errorBoundMs (symmetric bound; 0 when unknown)
+//   [3] focalLengthMm (container 35mm-equiv; 0 = absent)
+//   [4] sampleCount (gyro samples; 0 when the parse yielded none)
+//
+// or nullptr on failure with the error state set (the Kotlin layer reads
+// nativeLastError()). No handle, no cache, no render-path state touched —
+// the screen probes on the attach click, so it is safe from any thread and
+// never poisons a render (the nativeLutProbe contract).
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeGyroSyncProbe(
+        JNIEnv* env, jclass, jint fd, jstring gyroPath) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    const char* chars = env->GetStringUTFChars(gyroPath, nullptr);
+    if (chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "gyro: out of memory reading the path (recovery: free memory and retry)");
+        return nullptr;
+    }
+    const std::string path(chars);
+    env->ReleaseStringUTFChars(gyroPath, chars);
+    if (path.empty()) {
+        setError(static_cast<int>(rawedit::ErrorCode::BadHeader), kStageOpen,
+                 "gyro: bad header — the path is empty "
+                 "(recovery: pick the clip's sidecar .gcsv)");
+        return nullptr;
+    }
+
+    // 1. Throwaway Source from the dup'd fd: frame 0's anchors + focal.
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("gyro: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail +
+                     " (recovery: reopen the clip and retry)");
+        return nullptr;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+    const rawedit::FrameInfo first = src->frameInfo(0);
+    const int64_t frame0WallMs = first.recvdMs;
+    const int64_t frame0CaptureNs = first.ptsUs * 1000;
+    const double focalMm = src->rawMeta().focalLengthMm;
+
+    // 2. Parse the sidecar log.
+    auto parsed = rawedit::parseGcsv(path);
+    if (!parsed.isOk()) {
+        setError(static_cast<int>(parsed.code), kStageOpen,
+                 std::string("gyro: ") + rawedit::errorName(parsed.code) +
+                     " — " + parsed.detail +
+                     " (recovery: pick the clip's sidecar .gcsv)");
+        return nullptr;
+    }
+    const rawedit::ImuData& imu = *parsed.value;
+    const int64_t gyroStartWallMs = imu.logStartWallMs;
+    const double samples = static_cast<double>(imu.sampleCount());
+
+    // 3. Anchored estimate (ManualRequired — never fabricated — when either
+    //    anchor is absent; the UI shows the manual path then).
+    const rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
+        frame0WallMs, gyroStartWallMs, frame0CaptureNs);
+    const double out[5] = {
+        est.isAnchored() ? 1.0 : 0.0,
+        est.model.offsetMs(),
+        est.errorBoundMs,
+        focalMm,
+        samples,
+    };
+    jdoubleArray result = env->NewDoubleArray(5);
+    if (result == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(result, 0, 5, out);
+    return result;
+}
+
 // MP4 export pipeline ----------------------------------------------------------
 //
 // The exporter opens a session with nativePreviewOpen (same handle registry,
@@ -1027,7 +1434,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
-        jboolean temporalNr, jfloat temporalStrength) {
+        jboolean temporalNr, jfloat temporalStrength,
+        jstring gyroPath, jint stabMode, jfloat stabStrength,
+        jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
@@ -1041,6 +1450,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         return nullptr;
     }
     try {
+        // 0b. Resolve the gyro stabilization input (gyro Phase 5): the
+        //     Kotlin exporter passes the clip's gyro path when stabilization
+        //     is on (export is NEVER tier-gated — the temporal NR
+        //     precedent: export always applies at full quality); a .gcsv
+        //     parse failure fails the frame; a null path warps nothing.
+        const StabResolution stab =
+            resolveStabilization(env, gyroPath, stabMode, stabStrength,
+                                 stabZoomLimit, stabFocalMm, stabTrimMs,
+                                 s, frameIndex);
+        if (!stab.ok) return nullptr;
+
         // 1. Frame read — through the ring, like the preview paths (sequential
         //    export amortizes to ~1 decode per frame with temporal NR on).
         Entry& e = gEntries[handle - 1];
@@ -1073,6 +1493,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                      "(recovery: re-import the clip)");
             return nullptr;
         }
+
+        // 3b. Full-res gyro warp on the STORED-ORIENTATION buffer (gyro
+        //     Phase 5): measured 44.9832 ms/frame at 3840x2160 (commit b's
+        //     warpFrame doctest) on top of the existing export frame time —
+        //     acceptable for the offline CPU reference path (a GPU warp is
+        //     the N4 follow-up). The upright rotation happens in Kotlin
+        //     AFTER this return (RotationState.rotateRgb888), so warping
+        //     the non-rotated buffer composes with it exactly like the
+        //     preview path's pre-rotation placement.
+        applyStabilization(stab.input, img);
 
         // 3. linearToRec709 -> clamp -> 8-bit RGB888, row-major, 3 bytes
         //    per pixel. Not rotated: the exporter passes orientationDeg to

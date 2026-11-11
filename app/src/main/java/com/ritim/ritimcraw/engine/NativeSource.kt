@@ -219,6 +219,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -229,7 +235,8 @@ class NativeSource private constructor(
          * and only re-develops (grade-only change). A frameIndex change
          * decodes and replaces the cache; a reopened handle starts uncached.
          * lutPath/lutStrength as in nativePreviewRender (COL-07);
-         * noiseReduction/chromaDenoise as in nativePreviewRender (DN-01..08).
+         * noiseReduction/chromaDenoise as in nativePreviewRender (DN-01..08);
+         * the stabilization package as in nativePreviewRender (gyro Phase 5).
          */
         @JvmStatic private external fun nativePreviewSessionRenderCached(
             handle: Long,
@@ -256,6 +263,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
             maxDim: Int,
         ): IntArray?
 
@@ -327,6 +340,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -404,6 +423,23 @@ class NativeSource private constructor(
          */
         @JvmStatic private external fun nativeLutProbe(path: String): String?
 
+        /**
+         * Gyro sync probe (GYRO PHASE 5): statelessly validates the .gcsv
+         * at [gyroPath] against the clip behind [fd] and returns the sync
+         * estimate as [anchoredFlag, offsetMs, errorBoundMs,
+         * focalLengthMm, sampleCount] (see the bridge comment), or null on
+         * failure — then the error accessors say why. No handle, no
+         * render-cache touch, safe on any thread; the fd is dup'd by
+         * Source::open so the caller's handle is untouched. The attach
+         * flow probes after copying the file and removes the entry when
+         * this fails, so only logs that parse (and anchor, or honestly
+         * report manual-required) reach the editor.
+         */
+        @JvmStatic private external fun nativeGyroSyncProbe(
+            fd: Int,
+            gyroPath: String,
+        ): DoubleArray?
+
         // ---- Cross-module wrappers (external decls stay private; see the
         // mangling note at the top of the JNI section) ----
 
@@ -436,6 +472,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
@@ -446,6 +488,7 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
         )
 
@@ -475,6 +518,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
             maxDim: Int,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
@@ -485,6 +534,7 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
         )
 
@@ -524,6 +574,12 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
         ): ByteArray? = nativeExportFrame(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -533,6 +589,7 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
         )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
@@ -600,6 +657,18 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeLutProbe(path)
+        }
+
+        /**
+         * JNI bridge: see nativeGyroSyncProbe. Throws IllegalStateException
+         * when the .so is absent (the attach flow maps that to a plain
+         * failure).
+         */
+        internal fun jniGyroSyncProbe(fd: Int, gyroPath: String): DoubleArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeGyroSyncProbe(fd, gyroPath)
         }
 
         /** JNI bridge: closeSource for export sessions. */

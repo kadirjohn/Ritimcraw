@@ -268,7 +268,13 @@ class PhotoExporterTest {
         override fun open(fd: Int) =
             Mp4SessionInfo(1L, 1, width, height, 0, orientationDeg)
 
-        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?): ByteArray? {
+        override fun renderFrame(
+            handle: Long,
+            frameIndex: Int,
+            grade: GradeK,
+            lutPath: String?,
+            gyroPath: String?,
+        ): ByteArray? {
             renderedFrame = frameIndex
             sawGrade = grade
             sawLutPath = lutPath
@@ -377,7 +383,13 @@ class PhotoExporterTest {
         // left behind.
         val session = object : Mp4Session {
             override fun open(fd: Int): Mp4SessionInfo? = null
-            override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?): ByteArray? = null
+            override fun renderFrame(
+                handle: Long,
+                frameIndex: Int,
+                grade: GradeK,
+                lutPath: String?,
+                gyroPath: String?,
+            ): ByteArray? = null
             override fun framePts(handle: Long, frameIndex: Int): Long = 0
             override fun audioInfo(handle: Long): IntArray? = null
             override fun readAudio(handle: Long): ShortArray? = null

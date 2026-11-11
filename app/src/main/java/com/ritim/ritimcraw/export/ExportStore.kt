@@ -187,7 +187,20 @@ class ExportStore(private val file: File) {
                 .append(",\"chromaDenoise\":").append(num(g.chromaDenoise))
                 .append(",\"temporalNr\":").append(g.temporalNr)
                 .append(",\"temporalStrength\":").append(num(g.temporalStrength))
-                .append('}')
+            // Stabilization (gyro Phase 5): omit-when-off, matching
+            // GradeStore.renderGrade — a queued job with stabilization off
+            // writes none of the keys, so old rows stay byte-identical and
+            // parse with the off defaults (the job exports what the user
+            // saw: no warp).
+            if (g.stabilization) {
+                sb.append(",\"stabilization\":").append(g.stabilization)
+                    .append(",\"stabilizationMode\":").append(g.stabilizationMode)
+                    .append(",\"stabilizationStrength\":").append(num(g.stabilizationStrength))
+                    .append(",\"stabilizationZoomLimit\":").append(num(g.stabilizationZoomLimit))
+                    .append(",\"stabilizationTrimMs\":").append(num(g.stabilizationTrimMs))
+                    .append(",\"stabilizationFocalMm\":").append(num(g.stabilizationFocalMm))
+            }
+            sb.append('}')
             return sb.toString()
         }
 
@@ -277,6 +290,16 @@ class ExportStore(private val file: File) {
                 // behind the user's back; the old look is preserved exactly.
                 temporalNr = m["temporalNr"] as? Boolean ?: false,
                 temporalStrength = (m["temporalStrength"] as? Double)?.toFloat() ?: 0f,
+                // Stabilization (gyro Phase 5) postdates older snapshots:
+                // absent parses as the off defaults — a queued job never
+                // gains a warp behind the user's back; the old look is
+                // preserved exactly.
+                stabilization = m["stabilization"] as? Boolean ?: false,
+                stabilizationMode = (m["stabilizationMode"] as? Double)?.toInt() ?: 0,
+                stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 70f,
+                stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
+                stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
+                stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
             )
         }
 

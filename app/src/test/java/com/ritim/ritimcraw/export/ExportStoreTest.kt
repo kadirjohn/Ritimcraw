@@ -365,6 +365,80 @@ class ExportStoreTest {
     }
 
     @Test
+    fun stabilization_snapshot_fields_survive_reload() {
+        // Gyro Phase 5: the export snapshot carries the stabilization fields
+        // end to end, so a queued job exports with the warp the user saw when
+        // enqueuing — and an old queue without the fields reloads with
+        // stabilization off (never on behind the user's back).
+        val file = projectFile()
+        val snapshot = GradeK(
+            exposureEv = 0.75f,
+            stabilization = true,
+            stabilizationMode = 1, // Lock First Frame
+            stabilizationStrength = 80f,
+            stabilizationZoomLimit = 1.3f,
+            stabilizationTrimMs = -30f,
+            stabilizationFocalMm = 23.5f,
+        )
+        ExportStore(file).add(
+            ExportJob(
+                id = "a",
+                sourceId = "clip-a",
+                snapshot = snapshot,
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        val reloaded = ExportStore(file).all().single().snapshot
+        assertEquals(snapshot, reloaded)
+        assertEquals(true, reloaded.stabilization)
+        assertEquals(1, reloaded.stabilizationMode)
+        assertEquals(80f, reloaded.stabilizationStrength, 0f)
+        assertEquals(1.3f, reloaded.stabilizationZoomLimit, 0f)
+        assertEquals(-30f, reloaded.stabilizationTrimMs, 0f)
+        assertEquals(23.5f, reloaded.stabilizationFocalMm, 0f)
+    }
+
+    @Test
+    fun old_snapshot_without_stabilization_fields_loads_them_off() {
+        // A queue written by the pre-stabilization build: the snapshot JSON has
+        // no stabilization fields, so they parse as off and the queued job
+        // keeps its exact old look (the warp is a no-op when off).
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.5,"tonemap":1,"temporalNr":true,"temporalStrength":40.0},"target":"MP4","state":"QUEUED"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val snapshot = ExportStore(file).all().single().snapshot
+        assertEquals(false, snapshot.stabilization)
+        assertEquals(0, snapshot.stabilizationMode)
+        assertEquals(70f, snapshot.stabilizationStrength, 0f)
+        assertEquals(1.1f, snapshot.stabilizationZoomLimit, 0f)
+        assertEquals(0f, snapshot.stabilizationTrimMs, 0f)
+        assertEquals(0f, snapshot.stabilizationFocalMm, 0f)
+    }
+
+    @Test
+    fun off_snapshot_renders_without_stabilization_keys() {
+        // Omit-when-off at the QUEUE level: a job queued with stabilization
+        // off must render no stabilization keys, so rows written by this
+        // build for off jobs stay byte-identical to the pre-stabilization
+        // format (the same binding rule as the grade store).
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "plain"))
+        val text = file.readText()
+        assertTrue(!text.contains("stabilization"))
+    }
+
+    @Test
     fun snapshot_round_trips_denoise_percents() {
         // DN-01..08: the job snapshot carries both denoise percents with the
         // grade, so the export runs the same stages 7/8 the user saw when

@@ -60,16 +60,19 @@ class PreviewSession private constructor(
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
-     * stage 22 bypassed, the old look; COL-07). Suspends until done;
-     * resumes with the frame or a failure carrying stage + cause +
-     * recovery. A closed session fails cleanly instead of touching the
-     * dead handle.
+     * stage 22 bypassed, the old look; COL-07). [gyroPath] is the attached
+     * gyro log's path (null = no warp — gyro Phase 5; the stabilization
+     * gate is [GradeMapping.stabilizationArgs], applied at this render's
+     * tier). Suspends until done; resumes with the frame or a failure
+     * carrying stage + cause + recovery. A closed session fails cleanly
+     * instead of touching the dead handle.
      */
     override suspend fun render(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
         lutPath: String?,
+        gyroPath: String?,
     ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
@@ -98,7 +101,7 @@ class PreviewSession private constructor(
                                 )
                             )
                         } else {
-                            renderBlocking(frameIndex, grade, maxDim, lutPath)
+                            renderBlocking(frameIndex, grade, maxDim, lutPath, gyroPath)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)
@@ -124,6 +127,7 @@ class PreviewSession private constructor(
         grade: GradeK,
         maxDim: Int,
         lutPath: String? = null,
+        gyroPath: String? = null,
     ): Result<PreviewFrame> {
         val args = GradeMapping.toNative(grade)
         // DN-08 tier policy: temporal NR only at the settle/paused tier —
@@ -131,6 +135,9 @@ class PreviewSession private constructor(
         val temporal = args.copy(
             temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
         )
+        // Gyro Phase 5: the stabilization gate at this render's tier (null
+        // stab = no warp — off, tier skip, or no attached log).
+        val stab = GradeMapping.stabilizationArgs(grade, maxDim, gyroPath)
         return renderArray(
             NativeSource.jniPreviewRender(
                 handle, frameIndex,
@@ -142,6 +149,8 @@ class PreviewSession private constructor(
                 lutPath, args.lutStrength,
                 args.noiseReduction, args.chromaDenoise,
                 temporal.temporalNr, temporal.temporalStrength,
+                stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
+                stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
                 maxDim,
             )
         )
@@ -160,6 +169,7 @@ class PreviewSession private constructor(
         grade: GradeK,
         maxDim: Int,
         lutPath: String?,
+        gyroPath: String?,
     ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
@@ -194,6 +204,9 @@ class PreviewSession private constructor(
                             val temporal = args.copy(
                                 temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
                             )
+                            // Gyro Phase 5: the stabilization gate at this
+                            // render's tier (null stab = no warp).
+                            val stab = GradeMapping.stabilizationArgs(grade, maxDim, gyroPath)
                             renderArray(
                                 NativeSource.jniPreviewSessionRenderCached(
                                     handle, frameIndex,
@@ -205,6 +218,8 @@ class PreviewSession private constructor(
                                     lutPath, args.lutStrength,
                                     args.noiseReduction, args.chromaDenoise,
                                     temporal.temporalNr, temporal.temporalStrength,
+                                    stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
+                                    stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
                                     maxDim,
                                 )
                             )

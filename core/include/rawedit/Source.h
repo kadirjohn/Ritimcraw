@@ -54,6 +54,14 @@ struct FrameInfo {
     // sentinel is out of every uint16 range.
     int32_t dynamicBlack[4] = {-1, -1, -1, -1};
     int32_t dynamicWhite = -1;
+    // Frame-0-anchored wall clock (stabilization Phase 3/5): the
+    // container's per-frame "recvdTimestampMs" (epoch ms, string or
+    // number in the JSON) — the frame-received wall time the anchored
+    // sync estimate pairs with the GCSV header timestamp (Sync.h).
+    // -1 = this frame carries no timestamp (the pre-Phase-3 behavior:
+    // sync degrades to ManualRequired, never fabricated). Frame 0's
+    // value is the anchor; later frames keep theirs for diagnostics.
+    int64_t recvdMs = -1;
 };
 
 struct AudioInfo {

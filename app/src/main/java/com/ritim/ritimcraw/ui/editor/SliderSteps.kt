@@ -28,6 +28,28 @@ object SliderSteps {
      */
     const val TEMPORAL_STRENGTH_DEFAULT = 50f
 
+    /**
+     * Strength the Stabilization switch seeds on first enable (gyro Phase 5):
+     * the core's smoothing time constant is tau = (1 s)^strength over the
+     * 0..1 exponent (Stabilization.h), so on the fixtures' ~473 Hz gyro grid
+     * 0.5 gives tau ≈ 31.6 µs (near-raw — a toggle that visibly changes
+     * nothing would read as broken, same reasoning as temporal NR) while 0.7
+     * gives tau ≈ 2 ms (visible smoothing). 70% is the documented default.
+     */
+    const val STABILIZATION_STRENGTH_DEFAULT = 70f
+
+    /** Zoom limit the Stabilization switch seeds: 1.1x auto-crop ceiling. */
+    const val STABILIZATION_ZOOM_DEFAULT = 1.1f
+
+    /** Zoom limit slider step: 1.0..1.5 at 0.05 = 10 intervals, 11 values. */
+    const val STABILIZATION_ZOOM_STEP = 0.05f
+
+    /** Sync trim slider step: ±500 ms at 10 ms = 100 intervals. 10 ms is below the anchored ±25 ms bound, so the grid never hides a useful trim. */
+    const val STABILIZATION_TRIM_STEP_MS = 10f
+
+    /** Focal override step in mm: 35mm-equivalent focals are half-mm labeled at finest. */
+    const val STABILIZATION_FOCAL_STEP_MM = 0.5f
+
     /** Snaps a single axis to its step grid (slider change events). */
     fun snapExposure(value: Float): Float = quantize(value, EXPOSURE_STEP)
     fun snapHighlights(value: Float): Float = quantize(value, UNIT_STEP)
@@ -45,6 +67,10 @@ object SliderSteps {
     fun snapNoiseReduction(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapChromaDenoise(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapTemporalStrength(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapStabilizationStrength(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapStabilizationZoomLimit(value: Float): Float = quantize(value, STABILIZATION_ZOOM_STEP)
+    fun snapStabilizationTrimMs(value: Float): Float = quantize(value, STABILIZATION_TRIM_STEP_MS)
+    fun snapStabilizationFocalMm(value: Float): Float = quantize(value, STABILIZATION_FOCAL_STEP_MM)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
@@ -69,6 +95,10 @@ object SliderSteps {
             noiseReduction = snapNoiseReduction(grade.noiseReduction),
             chromaDenoise = snapChromaDenoise(grade.chromaDenoise),
             temporalStrength = snapTemporalStrength(grade.temporalStrength),
+            stabilizationStrength = snapStabilizationStrength(grade.stabilizationStrength),
+            stabilizationZoomLimit = snapStabilizationZoomLimit(grade.stabilizationZoomLimit),
+            stabilizationTrimMs = snapStabilizationTrimMs(grade.stabilizationTrimMs),
+            stabilizationFocalMm = snapStabilizationFocalMm(grade.stabilizationFocalMm),
         )
     }
 
@@ -83,6 +113,8 @@ object SliderSteps {
         SHARPNESS, DETAIL, LUT_STRENGTH,
         NOISE_REDUCTION, CHROMA_DENOISE,
         TEMPORAL_STRENGTH,
+        STABILIZATION_STRENGTH, STABILIZATION_ZOOM_LIMIT,
+        STABILIZATION_TRIM_MS, STABILIZATION_FOCAL_MM,
     }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
@@ -105,6 +137,17 @@ object SliderSteps {
         Axis.NOISE_REDUCTION -> current.copy(noiseReduction = GradeK().noiseReduction)
         Axis.CHROMA_DENOISE -> current.copy(chromaDenoise = GradeK().chromaDenoise)
         Axis.TEMPORAL_STRENGTH -> current.copy(temporalStrength = GradeK().temporalStrength)
+        // Gyro Phase 5: each stabilization slider resets independently to
+        // its GradeK default (70 / 1.1 / 0 / 0); the toggle and mode are not
+        // slider axes and are untouched by a reset.
+        Axis.STABILIZATION_STRENGTH ->
+            current.copy(stabilizationStrength = GradeK().stabilizationStrength)
+        Axis.STABILIZATION_ZOOM_LIMIT ->
+            current.copy(stabilizationZoomLimit = GradeK().stabilizationZoomLimit)
+        Axis.STABILIZATION_TRIM_MS ->
+            current.copy(stabilizationTrimMs = GradeK().stabilizationTrimMs)
+        Axis.STABILIZATION_FOCAL_MM ->
+            current.copy(stabilizationFocalMm = GradeK().stabilizationFocalMm)
     }
 
     /**

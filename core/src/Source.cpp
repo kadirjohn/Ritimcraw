@@ -316,6 +316,28 @@ FrameInfo Source::frameInfo(size_t i) const {
     if (info.dynamicWhite >= 0 && info.dynamicWhite <= blackFloor)
         info.dynamicWhite = -1;
 
+    // Frame-anchored wall clock (stabilization Phase 3/5): the JSON key
+    // is a string in the real containers and a number in some synthetics
+    // — both are read, mirroring the sync tests' container-clock helper.
+    // Unparseable / non-positive keeps the -1 sentinel (absent, never a
+    // fabricated anchor; sync degrades to ManualRequired downstream).
+    if (meta.contains("recvdTimestampMs") && !meta["recvdTimestampMs"].is_null()) {
+        long long recvd = -1;
+        bool ok = false;
+        if (meta["recvdTimestampMs"].is_string()) {
+            try {
+                recvd = std::stoll(meta["recvdTimestampMs"].get<std::string>());
+                ok = true;
+            } catch (...) {
+            }
+        } else if (meta["recvdTimestampMs"].is_number()) {
+            recvd = meta["recvdTimestampMs"].get<long long>();
+            ok = true;
+        }
+        if (ok && recvd > 0)
+            info.recvdMs = recvd;
+    }
+
     return info;
 }
 

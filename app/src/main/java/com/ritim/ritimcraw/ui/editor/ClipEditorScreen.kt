@@ -46,6 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -164,7 +165,85 @@ object EditorPreviewLogic {
      * second supported path.
      */
     fun showTemporalNr(path: SourcePath): Boolean = path == SourcePath.MCRAW
+
+    /**
+     * True when the Stabilization group (toggle + mode + strength + zoom +
+     * sync status + focal) belongs in the Detail tab. The warp consumes the
+     * gyro log against the clip's CFA frames, so it needs the MCRAW clip
+     * kind; the encoded (Mi-Log MP4) path takes the same Grade but the
+     * bridge ignores the stabilization fields there (no CFA, no gyro
+     * anchor). A separate named decision from [showTemporalNr] so the two
+     * can diverge (gyro Phase 5).
+     */
+    fun showStabilization(path: SourcePath): Boolean = path == SourcePath.MCRAW
+
+    /**
+     * The sync status line's verdict for the Stabilization group (gyro
+     * Phase 5): which of the three states the probe data supports. Pure so
+     * a JVM test can lock the mapping — the decision itself reads the
+     * probe's raw numbers, never a UI string.
+     *
+     * [gyroAttached] false = no sidecar .gcsv: NoData — the group shows
+     * the honest no-data state and stabilization stays a no-op (never a
+     * fabricated verdict). A probe that FAILED (probeFailed) also reads as
+     * NoData: the attach flow removes failed entries, so this is the
+     * transient between the failure and the removal.
+     *
+     * [anchored] true = both wall-clock anchors were present (the clip's
+     * recvd anchor vs the log's header timestamp): Anchored, with the
+     * probe's [errorBoundMs] shown as the ± bound. false = the anchors
+     * were absent: Manual — the trim slider is the user's offset.
+     */
+    fun syncStatus(
+        gyroAttached: Boolean,
+        probeFailed: Boolean,
+        anchored: Boolean,
+    ): GyroSyncStatus = when {
+        !gyroAttached || probeFailed -> GyroSyncStatus.NO_DATA
+        anchored -> GyroSyncStatus.ANCHORED
+        else -> GyroSyncStatus.MANUAL
+    }
+
+    /**
+     * The focal length the stabilization math uses (gyro Phase 5): the
+     * grade's override wins when set; otherwise the container's
+     * 35mm-equivalent value (0 = container absent too — the group shows
+     * the honest intrinsics-assumed state and the user must set a value).
+     */
+    fun effectiveFocalMm(gradeOverrideMm: Float, containerMm: Float): Float =
+        if (gradeOverrideMm > 0f) gradeOverrideMm else containerMm
+
+    /**
+     * Pixel focal length from a 35mm-equivalent millimeter value (gyro
+     * Phase 5): f_px = width · mm / 36 — the full-frame horizontal
+     * convention (36 mm film width), the core's
+     * focalLengthPxFromEquivalent mirror. 0 for a non-positive mm or
+     * width (the caller refuses the warp rather than fabricating an
+     * intrinsics-free homography). Pure so a JVM test locks the flagged
+     * conversion (Stabilization.h documents the same formula).
+     */
+    fun focalLengthPxFromEquivalent(mm35: Float, width: Int): Float =
+        if (mm35 <= 0f || width <= 0) 0f else width * mm35 / 36f
+
+    /**
+     * True when the stabilization math may run at all (gyro Phase 5): the
+     * stage needs the toggle on, a gyro log attached, and a usable pixel
+     * focal (container or override). False reads as the no-op pass-through
+     * — the group still shows, with the honest status line explaining why.
+     */
+    fun stabilizationReady(
+        stabilizationOn: Boolean,
+        gyroAttached: Boolean,
+        focalMm: Float,
+    ): Boolean = stabilizationOn && gyroAttached && focalMm > 0f
 }
+
+/**
+ * The Stabilization group's sync-status verdict (gyro Phase 5): the pure
+ * result of [EditorPreviewLogic.syncStatus], rendered by the group as the
+ * localized status line (Anchored ±N ms / Manual offset / No gyro data).
+ */
+enum class GyroSyncStatus { ANCHORED, MANUAL, NO_DATA }
 
 enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
 
@@ -286,6 +365,36 @@ fun ClipEditorScreen(
     // Rotates by ±90 (the clip-info sheet's two rows; AppNav persists
     // through SourceRepository.setManualRotation, normalized 0..359).
     onRotate: (byDeg: Int) -> Unit = {},
+    // ---- Stabilization wiring (gyro Phase 5) ----
+    // The clip's attached gyro log id (MediaSource.gyroId, AppNav reads the
+    // persisted record per clip and refreshes after attach/remove). Blank =
+    // none: the group shows the honest no-data status and the warp stays a
+    // no-op. The name line resolves the id through the store.
+    gyroId: String = "",
+    gyroNameFor: (String) -> String? = { null },
+    // The attached gyro log's id -> its copied .gcsv path (AppNav:
+    // GyroStore.pathFor). Null = no log: the render warp is a no-op. The
+    // pump resolves it PER REQUEST next to lutPathFor, so an attach or
+    // detach mid-session is picked up on the very next render without
+    // restarting the pump (the LaunchedEffect(sourceId) lives longer than
+    // a single attachment; the id is mirrored through rememberUpdatedState
+    // for exactly that reason — the lutPathFor precedent).
+    gyroPathFor: (String) -> String? = { null },
+    // The sidecar .gcsv's probe result (AppNav: jniGyroSyncProbe on the
+    // clip's fd + the copied log's path — [anchored, offsetMs, boundMs,
+    // focalMm, samples]). Null = no log attached or the probe failed; the
+    // group maps it to the status line (pure EditorPreviewLogic.syncStatus).
+    // The container focal is the probe's focalMm (the clip's own
+    // 35mm-equivalent value, 0 = absent).
+    gyroSync: DoubleArray? = null,
+    containerFocalMm: Float = 0f,
+    // Imports the picked SAF .gcsv (AppNav: GyroStore.import + the native
+    // sync probe + gyroId persist). Returns the probe on success or the
+    // failure for the group's local error line; never throws.
+    onAttachGyro: (uri: String, fallbackName: String) -> Result<DoubleArray> =
+        { _, _ -> Result.failure(IllegalStateException()) },
+    // Detaches the log (AppNav: setGyro(id, "") + refresh).
+    onRemoveGyro: () -> Unit = {},
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -484,6 +593,30 @@ fun ClipEditorScreen(
             onImportLut(uri.toString(), fallbackName).fold(
                 onSuccess = { lutImportError = null },
                 onFailure = { e -> lutImportError = e.message ?: "LUT import failed" },
+            )
+        }
+
+        // ---- Gyro attach (gyro Phase 5) ----
+        // Same shape as the LUT import: the error is LOCAL to the
+        // Stabilization group (never the preview's error surface), and the
+        // SAF picker takes any mime — the native sync probe validates the
+        // .gcsv, and a non-gcsv pick fails the probe with the recovery
+        // message instead of being blocked at the picker.
+        var gyroImportError by remember(sourceId) { mutableStateOf<String?>(null) }
+        val gyroPicker = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            val fallbackName = uri.lastPathSegment
+                ?.substringAfterLast('/')
+                ?.substringBeforeLast('.')
+                ?: uri.lastPathSegment
+                ?: ""
+            // AppNav does GyroStore.import + jniGyroSyncProbe + the gyroId
+            // persist; the failure message lands in the group's error line.
+            onAttachGyro(uri.toString(), fallbackName).fold(
+                onSuccess = { gyroImportError = null },
+                onFailure = { e -> gyroImportError = e.message ?: "gyro import failed" },
             )
         }
 
@@ -686,6 +819,14 @@ fun ClipEditorScreen(
         // followUpMaxDim (progressive pause settle) queues its full-res
         // follow-up AFTER publishing — through offerIfEmpty, so a request
         // that arrived meanwhile stays pending and wins.
+        // Gyro Phase 5: the pump's LaunchedEffect(sourceId) captures its
+        // body ONCE at launch and outlives any single attachment, so the
+        // CURRENT gyro id + path resolver are mirrored per recomposition
+        // here (in the composable body) — an attach or detach mid-session
+        // is picked up on the next render without restarting the pump.
+        val currentGyroPathFor by rememberUpdatedState(gyroPathFor)
+        val currentGyroId by rememberUpdatedState(gyroId)
+
         LaunchedEffect(sourceId) {
             // Monotonic publication: the pump is serial and the gate is
             // newest-wins, so polled requests arrive in strictly increasing
@@ -705,13 +846,19 @@ fun ClipEditorScreen(
                     // LUT, the old look). Resolved per request so an import
                     // or remove mid-session is picked up on the next render.
                     val lutPath = lutPathFor(req.grade.lutId)
+                    // Gyro Phase 5: same per-request resolution for the
+                    // attached gyro log (null = no warp). The tier gate
+                    // itself lives at the seam (GradeMapping.stabilizationArgs
+                    // -> PreviewTiers.stabilizationAppliesAt), so the pump
+                    // stays policy-free and every arm just carries the path.
+                    val gyroPath = currentGyroId.takeIf { it.isNotBlank() }?.let(currentGyroPathFor)
                     val result = if (sessionRender && s != null) {
                         if (req.cached) {
                             // Interactive drag render: the bridge reuses the
                             // cached CFA when the frame is unchanged.
-                            s.renderCached(req.frameIndex, req.grade, req.maxDim, lutPath)
+                            s.renderCached(req.frameIndex, req.grade, req.maxDim, lutPath, gyroPath)
                         } else {
-                            s.render(req.frameIndex, req.grade, req.maxDim, lutPath)
+                            s.render(req.frameIndex, req.grade, req.maxDim, lutPath, gyroPath)
                         }
                     } else {
                         // No session. The per-render fallback is the MCRAW
@@ -738,6 +885,7 @@ fun ClipEditorScreen(
                                     grade = req.grade,
                                     maxDim = req.maxDim,
                                     lutPath = lutPath,
+                                    gyroPath = gyroPath,
                                 )
                             }
                         }
@@ -1459,6 +1607,22 @@ fun ClipEditorScreen(
                             onGradeChange(g)
                             applyTierEvent(SliderTiers.Event.GradeEdited)
                         },
+                        // ---- Stabilization wiring (gyro Phase 5) ----
+                        // The group shows on MCRAW only (pure decision in
+                        // EditorPreviewLogic.showStabilization). The switch
+                        // and the mode choice settle IMMEDIATELY at the full
+                        // tier (not drags), like every other toggle; the
+                        // strength/zoom/trim/focal sliders are drags through
+                        // onChange/onDragActiveChange like every other
+                        // slider.
+                        showStabilization = EditorPreviewLogic.showStabilization(sourcePath),
+                        gyroAttached = gyroId.isNotBlank(),
+                        gyroSync = gyroSync,
+                        gyroName = gyroNameFor(gyroId),
+                        containerFocalMm = containerFocalMm,
+                        gyroImportError = gyroImportError,
+                        onAttachGyro = { gyroPicker.launch(arrayOf("*/*")) },
+                        onRemoveGyro = onRemoveGyro,
                     )
                 }
                 }
@@ -1861,6 +2025,11 @@ private fun ColorPanel(
  * at the full tier immediately (not a drag), the strength slider is a drag
  * like every other slider. Encoded (Mi-Log MP4) clips never see the group —
  * the bridge takes-and-ignores the temporal fields on that path.
+ * Stabilization (gyro Phase 5): on MCRAW clips an Off/On switch, the Mode
+ * choice (Smooth / Lock First Frame / Horizon Lock), Strength and Zoom limit
+ * sliders, the sync status line with the gyro attach/remove actions, the
+ * ±500 ms sync trim and the focal-length control — the honest no-data
+ * state when no .gcsv is attached, never a fabricated verdict.
  */
 @Composable
 private fun DetailPanel(
@@ -1875,6 +2044,15 @@ private fun DetailPanel(
     onRemoveLut: (LutInfo) -> Unit = {},
     onLutSelect: (GradeK) -> Unit = {},
     onToggleChange: (GradeK) -> Unit = {},
+    // ---- Stabilization group (gyro Phase 5) ----
+    showStabilization: Boolean = false,
+    gyroAttached: Boolean = false,
+    gyroSync: DoubleArray? = null,
+    gyroName: String? = null,
+    containerFocalMm: Float = 0f,
+    gyroImportError: String? = null,
+    onAttachGyro: () -> Unit = {},
+    onRemoveGyro: () -> Unit = {},
 ) {
     Column(
         Modifier
@@ -2078,11 +2256,254 @@ private fun DetailPanel(
                 )
             }
         }
+        // ---- Stabilization group (gyro Phase 5) ----
+        // MCRAW only (showStabilization): the warp consumes the gyro log
+        // against the clip's CFA frames. The switch settles immediately at
+        // the full tier ([onToggleChange]); every slider below is a drag
+        // ([onChange] + [onDragActiveChange]) like the rest of the panel.
+        // The group ALWAYS shows its honest state: no log attached = the
+        // no-data status line and an attach action, never a fabricated
+        // verdict — the warp itself stays a no-op until a log exists.
+        if (showStabilization) {
+            // The probe's numbers drive the status line (pure decision in
+            // EditorPreviewLogic.syncStatus): Anchored ±bound / Manual
+            // offset / No gyro data. gyroSync holds [anchored, offsetMs,
+            // boundMs, focalMm, samples] from the attach-time probe.
+            val sync = EditorPreviewLogic.syncStatus(
+                gyroAttached = gyroAttached,
+                probeFailed = gyroSync == null,
+                anchored = gyroSync != null && gyroSync[0] > 0.0,
+            )
+            val statusText = when (sync) {
+                GyroSyncStatus.ANCHORED -> stringResource(
+                    R.string.editor_stabilization_sync_anchored,
+                    gyroSync?.get(2)?.toInt() ?: 0,
+                )
+                GyroSyncStatus.MANUAL ->
+                    stringResource(R.string.editor_stabilization_sync_manual)
+                GyroSyncStatus.NO_DATA ->
+                    stringResource(R.string.editor_stabilization_sync_no_data)
+            }
+            Text(
+                stringResource(R.string.editor_stabilization),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            RawToggleRow(
+                label = stringResource(R.string.editor_stabilization),
+                checked = grade.stabilization,
+                onCheckedChange = { checked ->
+                    // First enable seeds the default strength, same
+                    // reasoning as temporal NR: the stage is a no-op at 0,
+                    // so a toggle that visibly changes nothing would read
+                    // as broken. A remembered strength survives the
+                    // off/on cycle untouched.
+                    onToggleChange(
+                        grade.copy(
+                            stabilization = checked,
+                            stabilizationStrength = if (checked && grade.stabilizationStrength <= 0f) {
+                                SliderSteps.STABILIZATION_STRENGTH_DEFAULT
+                            } else {
+                                grade.stabilizationStrength
+                            },
+                        )
+                    )
+                },
+            )
+            if (grade.stabilization) {
+                // Mode: Smooth (0) / Lock First Frame (1) / Horizon Lock
+                // (2) — the GradeK ints, segmented like the tonemap choice.
+                // Not a drag: settles immediately at the full tier.
+                Text(
+                    stringResource(R.string.editor_stabilization_mode),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    val modes = listOf(
+                        StabModeOption(R.string.editor_stabilization_mode_smooth, 0),
+                        StabModeOption(R.string.editor_stabilization_mode_lock_first_frame, 1),
+                        StabModeOption(R.string.editor_stabilization_mode_horizon_lock, 2),
+                    )
+                    modes.forEachIndexed { index, option ->
+                        SegmentedButton(
+                            selected = grade.stabilizationMode == option.value,
+                            onClick = {
+                                onToggleChange(grade.copy(stabilizationMode = option.value))
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = modes.size,
+                            ),
+                        ) {
+                            Text(stringResource(option.labelRes))
+                        }
+                    }
+                }
+                // Strength 0..100 (default 70): the smoothing amount.
+                GradeSlider(
+                    label = stringResource(R.string.editor_slider_stabilization_strength),
+                    value = grade.stabilizationStrength,
+                    valueRange = 0f..100f,
+                    step = SliderSteps.UNIT_STEP,
+                    valueLabel = Format.formatPercent(grade.stabilizationStrength.toInt()),
+                    onChange = { v ->
+                        onChange(
+                            grade.copy(
+                                stabilizationStrength = SliderSteps.snapStabilizationStrength(v),
+                            )
+                        )
+                    },
+                    onDoubleTapReset = {
+                        onChange(
+                            SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_STRENGTH, grade)
+                        )
+                    },
+                    onDragActiveChange = onDragActiveChange,
+                )
+                // Zoom limit 1.0..1.5 (default 1.1): the auto-crop ceiling
+                // that hides the warped-in border.
+                GradeSlider(
+                    label = stringResource(R.string.editor_slider_stabilization_zoom_limit),
+                    value = grade.stabilizationZoomLimit,
+                    valueRange = 1.0f..1.5f,
+                    step = SliderSteps.STABILIZATION_ZOOM_STEP,
+                    valueLabel = Format.formatZoom(grade.stabilizationZoomLimit),
+                    onChange = { v ->
+                        onChange(
+                            grade.copy(
+                                stabilizationZoomLimit = SliderSteps.snapStabilizationZoomLimit(v),
+                            )
+                        )
+                    },
+                    onDoubleTapReset = {
+                        onChange(
+                            SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_ZOOM_LIMIT, grade)
+                        )
+                    },
+                    onDragActiveChange = onDragActiveChange,
+                )
+                // Sync status line + the gyro log row: the honest verdict
+                // (never fabricated) with the attach/remove actions.
+                Text(
+                    stringResource(R.string.editor_stabilization_sync_status, statusText),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (gyroAttached) {
+                    if (gyroName != null) {
+                        Text(
+                            stringResource(R.string.editor_stabilization_gyro_name, gyroName),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = onRemoveGyro) {
+                        Text(stringResource(R.string.editor_stabilization_remove_gyro))
+                    }
+                } else {
+                    FilledTonalButton(
+                        onClick = onAttachGyro,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(stringResource(R.string.editor_stabilization_attach_gyro))
+                    }
+                }
+                if (gyroImportError != null) {
+                    Text(
+                        gyroImportError ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                // Sync offset trim ±500 ms (10 ms steps): the manual sync
+                // control. The trim ADDS to the probe's offset (keeps the
+                // Anchored verdict, widens the bound by |trim| — the core's
+                // trimOffsetMs). Shown once a log is attached: without a
+                // log there is no offset to trim.
+                if (gyroAttached) {
+                    GradeSlider(
+                        label = stringResource(R.string.editor_slider_stabilization_trim),
+                        value = grade.stabilizationTrimMs,
+                        valueRange = -500f..500f,
+                        step = SliderSteps.STABILIZATION_TRIM_STEP_MS,
+                        valueLabel = Format.formatSignedMs(grade.stabilizationTrimMs.toInt()),
+                        onChange = { v ->
+                            onChange(
+                                grade.copy(stabilizationTrimMs = SliderSteps.snapStabilizationTrimMs(v))
+                            )
+                        },
+                        onDoubleTapReset = {
+                            onChange(
+                                SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_TRIM_MS, grade)
+                            )
+                        },
+                        onDragActiveChange = onDragActiveChange,
+                    )
+                }
+                // Focal length (35mm equiv): the container's readout as the
+                // reference line, the editable override below it. The pixel
+                // focal is NOT derivable from the container alone (no
+                // sensor pitch), so the honest "intrinsics assumed" status
+                // shows whenever the warp runs on this conversion.
+                if (containerFocalMm > 0f) {
+                    Text(
+                        stringResource(
+                            R.string.editor_stabilization_focal_from_container,
+                            Format.formatMm(containerFocalMm),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                GradeSlider(
+                    label = stringResource(R.string.editor_slider_stabilization_focal),
+                    // 0 = use the container: the slider shows the effective
+                    // value (container when unset), so the row never reads
+                    // as a dead 0.
+                    value = EditorPreviewLogic.effectiveFocalMm(
+                        grade.stabilizationFocalMm, containerFocalMm,
+                    ).coerceIn(10f, 200f),
+                    valueRange = 10f..200f,
+                    step = SliderSteps.STABILIZATION_FOCAL_STEP_MM,
+                    valueLabel = Format.formatMm(
+                        EditorPreviewLogic.effectiveFocalMm(
+                            grade.stabilizationFocalMm, containerFocalMm,
+                        ).coerceIn(10f, 200f),
+                    ),
+                    onChange = { v ->
+                        onChange(
+                            grade.copy(
+                                stabilizationFocalMm = SliderSteps.snapStabilizationFocalMm(v),
+                            )
+                        )
+                    },
+                    onDoubleTapReset = {
+                        onChange(
+                            SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_FOCAL_MM, grade)
+                        )
+                    },
+                    onDragActiveChange = onDragActiveChange,
+                )
+                Text(
+                    stringResource(R.string.editor_stabilization_intrinsics_assumed),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
 /** One tonemapping segmented-button entry: label + rawedit::Grade value. */
 private data class TonemapOption(
+    val labelRes: Int,
+    val value: Int,
+)
+
+/**
+ * One stabilization mode segmented-button entry (gyro Phase 5): label +
+ * the GradeK mode int (0 Smooth, 1 Lock First Frame, 2 Horizon Lock).
+ */
+private data class StabModeOption(
     val labelRes: Int,
     val value: Int,
 )

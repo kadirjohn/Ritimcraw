@@ -390,5 +390,77 @@ class SourceRepositoryTest {
         )
     }
 
+    // ---- gyro attachment (GYRO PHASE 5) ----
+
+    @Test
+    fun set_gyro_persists_across_reload() {
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+
+        // The editor attached a validated sidecar log (a GyroStore id).
+        val updated = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .setGyro(imported.id, "0123456789abcdef")
+
+        assertEquals("0123456789abcdef", updated?.gyroId)
+        // Persisted: a fresh repository (and a fresh process) sees it.
+        assertEquals(
+            "0123456789abcdef",
+            SourceRepository(FakeResolver(), file).all().single().gyroId,
+        )
+        // The gyro key is written only when non-default.
+        assertTrue(file.readText().contains("\"gyroId\":\"0123456789abcdef\""))
+    }
+
+    @Test
+    fun set_gyro_blank_detaches_and_omits_the_key() {
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+        SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .setGyro(imported.id, "0123456789abcdef")
+
+        // Detach: storing "" writes no gyro key — pre-gyro files stay
+        // byte-identical.
+        val reloaded = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .setGyro(imported.id, "")
+
+        assertEquals("", reloaded?.gyroId)
+        assertTrue(!file.readText().contains("\"gyroId\""))
+    }
+
+    @Test
+    fun gyro_id_absent_records_parse_as_blank() {
+        val file = projectFile()
+        SourceRepository(FakeResolver("clip".toByteArray()), file).import("content://clip/1")
+
+        // Records written before GYRO PHASE 5 have no gyroId key: they
+        // parse as blank (no attachment), never as a crash.
+        val reloaded = SourceRepository(FakeResolver(), file).all().single()
+        assertEquals("", reloaded.gyroId)
+    }
+
+    @Test
+    fun set_gyro_skips_noop_writes_and_is_null_for_a_missing_record() {
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+        SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .setGyro(imported.id, "0123456789abcdef")
+        val before = file.readText()
+
+        // Re-attaching the SAME log must not rewrite (the no-op guard).
+        SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .setGyro(imported.id, "0123456789abcdef")
+        assertEquals(before, file.readText())
+
+        // Missing record: null, nothing written (the editor never attaches
+        // a gyro to a phantom clip).
+        assertNull(
+            SourceRepository(FakeResolver("clip".toByteArray()), file)
+                .setGyro("no-such-id", "0123456789abcdef"),
+        )
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }
