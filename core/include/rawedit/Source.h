@@ -61,8 +61,9 @@ struct AudioInfo {
     int channels = 0;
 };
 
-// Per-clip RAW metadata surfaced for the develop stage (Task 2) and the DNG
-// writer (Task 5). blackLevel is per-CFA-channel [4] in the 2x2 order
+// Per-clip RAW metadata surfaced for the develop stage (Task 2), the DNG
+// writer (Task 5) and the stabilization warp (Phase 4). blackLevel is
+// per-CFA-channel [4] in the 2x2 order
 // (r, g, g, b) matching the sensor arrangement; whiteLevel is a single value.
 // colorMatrix is 3x3 row-major, DNG direction XYZ -> native camera RGB (DNG
 // ColorMatrix1 semantics; do NOT multiply it onto camera RGB). forwardMatrix
@@ -71,6 +72,11 @@ struct AudioInfo {
 // CalibrationMatrix1, usually near-diagonal). asShotNeutral is [r, g, b];
 // wbGains is its reciprocal (DNG semantics). lensShading holds 4 planes of
 // (shadingH x shadingW) gains, row-major, plane-major (plane*shadingH*shadingW).
+// focalLengthMm is the container's "focalLengths"[0] — a 35mm-EQUIVALENT
+// focal in mm, NOT a pixel focal (the container carries no sensor pitch or
+// crop factor anywhere, so a pixel focal cannot be derived from the file —
+// Stabilization.h documents the one flagged conversion). 0 = the key is
+// absent; consumers must treat 0 as "unknown", never as a real value.
 struct RawMeta {
     uint16_t black[4] = {0, 0, 0, 0};
     uint16_t white = 0;
@@ -82,6 +88,7 @@ struct RawMeta {
     std::vector<float> lensShading;
     uint32_t shadingW = 0;
     uint32_t shadingH = 0;
+    double focalLengthMm = 0.0; // 35mm-equivalent mm; 0 = absent
 };
 
 // Per-frame Camera2 SENSOR_NOISE_PROFILE as stored in the MCRAW frame

@@ -102,6 +102,17 @@ bool initMeta(SourceImpl& impl) {
     getJson(cm, "sensorOrientation", orient);
     impl.sensorOrientation = orient;
 
+    // 35mm-equivalent focal length ("focalLengths" array, first lens; the
+    // container documents a per-lens array — MotionCam phones have one).
+    // 0 stays 0 when the key is absent: unknown, never a guess. A pixel
+    // focal CANNOT be derived from this (no sensor pitch/crop factor in
+    // the container); Stabilization.h's focalLengthPxFromEquivalent is the
+    // one flagged conversion and the UI focal control is the honest path.
+    std::vector<double> focalLengths;
+    getJson(cm, "focalLengths", focalLengths);
+    if (!focalLengths.empty() && focalLengths[0] > 0.0)
+        impl.meta.focalLengthMm = focalLengths[0];
+
     // White balance from the first frame's asShotNeutral: gains are the
     // reciprocal of the neutral vector (DNG semantics). Each field is parsed
     // and type-checked independently, so one malformed field cannot silently
