@@ -3,6 +3,8 @@ package com.ritim.ritimcraw.ui.editor
 import android.graphics.Bitmap
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,12 +17,22 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -28,6 +40,8 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.engine.PreviewFrame
+import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * Pure aspect-ratio fallback chain for the preview surface
@@ -117,8 +131,22 @@ fun PreviewSurface(
     // rotates ONLY this delta, never both. Default 0 keeps every existing
     // call site (and PreviewSurface's own tests) working unchanged.
     manualRotationDeg: Int = 0,
+    // Clip identity for the zoom/pan state (owner request 2026-11-11
+    // section 6): the transform RESETS when the clip changes, survives
+    // configuration changes (saveable), and is never keyed on playback
+    // (play/pause preserves it). Default "" keeps existing call sites
+    // working unchanged.
+    clipKey: String = "",
     modifier: Modifier = Modifier,
 ) {
+    // §6 zoom/pan state: keyed on the CLIP (a fresh clip starts at 1x
+    // centered — the reset rule), saveable (a pinch survives a
+    // configuration change), and independent of playback. listSaver
+    // because Float is not a Bundle value; the saver is a display-layer
+    // detail so ZoomPan stays pure Kotlin.
+    var zoomPan by rememberSaveable(clipKey, stateSaver = ZoomPanStateSaver) {
+        mutableStateOf(ZoomPan.State())
+    }
     val uprightRatio = PreviewSurfaceRatio.of(
         frameWidth = frame?.width ?: 0,
         frameHeight = frame?.height ?: 0,
@@ -136,7 +164,107 @@ fun PreviewSurface(
         modifier = modifier.aspectRatio(displayRatio).clipToBounds(),
     ) {
         Box(
-            Modifier.fillMaxSize(),
+            Modifier
+                .fillMaxSize()
+                // §6 gestures on the content Box: this handler sits
+                // INSIDE the surface, so in the Main pass it runs BEFORE
+                // the editor's hold handler on the parent surface
+                // modifier — whatever this handler consumes, the hold sees
+                // as consumed and cancels. One handler for the whole
+                // matrix (pinch always consumes; a single finger pans
+                // only while zoomed and only after slop; at 1x it is
+                // fully passive); the pure decisions are ZoomPan's and
+                // the hold handler in ClipEditorScreen is untouched.
+                .pointerInput(frame != null) {
+                    if (frame == null) return@pointerInput
+                    val slop = viewConfiguration.touchSlop
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        // The single-finger drag pointer (the first down;
+                        // a second finger switches to the pinch branch).
+                        var dragId: PointerId? = down.id
+                        // Zoomed-at-gesture-start gate: at 1x the whole
+                        // gesture is passive (the hold owns the stream).
+                        val zoomed = ZoomPan.isZoomed(zoomPan.zoom)
+                        var pastSlop = false
+                        // Pinch bookkeeping: the anchor centroid and
+                        // spread of the previous event, so the zoom ratio
+                        // is event-to-event (no runaway on a late join).
+                        var anchorCentroid = Offset.Zero
+                        var anchorSpread = -1f
+                        var pinchZooming = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.filter { it.pressed }
+                            if (pressed.isEmpty()) break
+
+                            // ---- pinch branch (2+ pointers) ----
+                            if (pressed.size >= 2) {
+                                // A second finger ALWAYS takes over: consume
+                                // every change so the hold can never engage
+                                // from a pinch — before it (this is the
+                                // first move after the down) or after it
+                                // (leftover fingers keep consuming until
+                                // every pointer lifts).
+                                event.changes.forEach { it.consume() }
+                                val a = pressed[0].position
+                                val b = pressed[1].position
+                                val centroid = Offset((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+                                val spread = hypot(a.x - b.x, a.y - b.y)
+                                if (anchorSpread >= 0f && anchorSpread > 0f) {
+                                    val ratio = spread / anchorSpread
+                                    val newZoom = if (pinchZooming) {
+                                        zoomPan.zoom * ratio
+                                    } else if (abs(spread - anchorSpread) > slop) {
+                                        // First responsive pinch move: the
+                                        // slop gate (a tiny jitter does not
+                                        // zoom), then the ratio counts
+                                        // from here.
+                                        pinchZooming = true
+                                        zoomPan.zoom * ratio
+                                    } else {
+                                        zoomPan.zoom
+                                    }
+                                    if (newZoom != zoomPan.zoom) {
+                                        zoomPan = ZoomPan.pinch(
+                                            zoomPan,
+                                            anchorCentroid.x / size.width,
+                                            anchorCentroid.y / size.height,
+                                            centroid.x / size.width,
+                                            centroid.y / size.height,
+                                            newZoom,
+                                        )
+                                    }
+                                }
+                                anchorCentroid = centroid
+                                anchorSpread = spread
+                                continue
+                            }
+
+                            // ---- single-pointer branch ----
+                            if (!zoomed) continue // at 1x: passive
+                            val drag = dragId
+                                ?.let { id -> pressed.firstOrNull { it.id == id } }
+                                ?: pressed.first().also { dragId = it.id }
+                            // Zoomed: pan after slop; consume from the slop
+                            // crossing on — a stationary press while
+                            // zoomed still reaches the hold handler (it
+                            // never sees a consume), and a pan never
+                            // triggers the hold.
+                            if (!pastSlop) {
+                                pastSlop = (drag.position - down.position).getDistance() > slop
+                            }
+                            if (pastSlop) {
+                                drag.consume()
+                                zoomPan = ZoomPan.panBy(
+                                    zoomPan,
+                                    drag.positionChange().x / size.width,
+                                    drag.positionChange().y / size.height,
+                                )
+                            }
+                        }
+                    }
+                },
             contentAlignment = Alignment.Center,
         ) {
             val f = frame
@@ -148,14 +276,23 @@ fun PreviewSurface(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
+                            // §6 transform order (the ZoomPan KDoc): the
+                            // §5 rotation and cover scale about the
+                            // content center, then the zoom about the
+                            // center, then the pan translation in the
+                            // box's screen space (applied last, so a drag
+                            // moves the rotated, zoomed content with the
+                            // finger).
                             rotationZ = manualRotationDeg.toFloat()
                             // The cover scale for quarter turns: the fitted
                             // upright content, once turned, would leave
                             // bars; scaling by the ratio between the
                             // content's long and short sides fills the
                             // swapped-ratio box exactly.
-                            scaleX = coverScale
-                            scaleY = coverScale
+                            scaleX = coverScale * zoomPan.zoom
+                            scaleY = coverScale * zoomPan.zoom
+                            translationX = zoomPan.panX * size.width
+                            translationY = zoomPan.panY * size.height
                         },
                 )
                 // The SAF grant was revoked or the clip moved (the existing
@@ -202,6 +339,17 @@ fun PreviewSurface(
         }
     }
 }
+
+/**
+ * Saver for the §6 zoom/pan state across configuration changes (owner
+ * request 2026-11-11 section 6: the transform survives rotation/dark
+ * mode). listSaver because Float is not a Bundle value; a display-layer
+ * detail, so it lives here instead of polluting the pure ZoomPan object.
+ */
+private val ZoomPanStateSaver: Saver<ZoomPan.State, *> = listSaver(
+    save = { listOf(it.zoom, it.panX, it.panY) },
+    restore = { ZoomPan.State(zoom = it[0], panX = it[1], panY = it[2]) },
+)
 
 /** PreviewFrame -> Compose ImageBitmap via Android Bitmap (UI layer only). */
 private fun PreviewFrame.toImageBitmap(): androidx.compose.ui.graphics.ImageBitmap =

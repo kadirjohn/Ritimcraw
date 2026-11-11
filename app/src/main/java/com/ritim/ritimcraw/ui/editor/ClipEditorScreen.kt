@@ -891,6 +891,11 @@ fun ClipEditorScreen(
                     // container-upright pixels, so there is never a double
                     // rotation.
                     manualRotationDeg = manualRotationDeg,
+                    // §6 zoom/pan: the clip identity keys the transform
+                    // state (reset on clip change, saveable across
+                    // configuration changes) — one pass-through line,
+                    // the whole feature lives in PreviewSurface/ZoomPan.
+                    clipKey = sourceId,
                     // The before/after press-hold gesture rides the surface's
                     // modifier (owner feature list W5): press-and-hold on the
                     // frame area swaps to the neutral grade, release returns
