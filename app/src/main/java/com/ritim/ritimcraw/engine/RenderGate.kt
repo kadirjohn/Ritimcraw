@@ -28,6 +28,20 @@ class RenderGate {
         pending.getAndSet(request)
 
     /**
+     * Stores [request] ONLY when the pending slot is empty (progressive
+     * pause settle, owner request 2026-11-11 section 2): the full-res
+     * follow-up lands after its intermediate render has published, so
+     * anything the user did in between — a seek, a slider settle, a new
+     * pause — must win. A compareAndSet(null, request) is exactly that:
+     * it cannot displace a pending request, and it returns false instead
+     * (the follow-up is dropped silently — the newer request renders the
+     * same frame the progressive path was heading for, superseded by
+     * sequence).
+     */
+    fun offerIfEmpty(request: RenderRequest): Boolean =
+        pending.compareAndSet(null, request)
+
+    /**
      * Takes the pending request (the slot empties). The pump calls this when
      * it is ready to start the next render.
      */
@@ -50,4 +64,15 @@ data class RenderRequest(
      * is unchanged, so a grade-only tweak skips the decode).
      */
     val cached: Boolean = false,
+    /**
+     * Progressive pause settle (owner request 2026-11-11 section 2): a
+     * SECOND render the pump offers through [RenderGate.offerIfEmpty] once
+     * THIS one has published — the intermediate 1280px pause frame sharpens
+     * in fast, then the full-res render replaces it. Null for every other
+     * request (one render, the previous behavior). The follow-up inherits
+     * this request's frame/grade and bumps its own sequence when offered,
+     * so a newer request in between (seek, slider settle) still wins by
+     * sequence — offerIfEmpty never displaces a pending request.
+     */
+    val followUpMaxDim: Int? = null,
 )
