@@ -18,12 +18,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.engine.PreviewFrame
 
 /**
@@ -62,6 +65,21 @@ object PreviewSurfaceRatio {
         sourceWidth > 0 && sourceHeight > 0 -> sourceWidth.toFloat() / sourceHeight
         else -> DEFAULT_RATIO
     }
+
+    /**
+     * The surface ratio AFTER the manual rotation delta (owner request
+     * 2026-11-11 section 5): quarter turns swap the shape the box takes,
+     * half turns do not. Pure so the display decision is JVM-testable.
+     */
+    fun withManualRotation(
+        uprightRatio: Float,
+        manualRotationDeg: Int,
+    ): Float =
+        if (com.ritim.ritimcraw.data.RotationState.swapsDimensions(manualRotationDeg)) {
+            1f / uprightRatio
+        } else {
+            uprightRatio
+        }
 }
 
 /**
@@ -93,18 +111,29 @@ fun PreviewSurface(
     accessLost: Boolean,
     sourceWidth: Int,
     sourceHeight: Int,
+    // Manual rotation delta (owner request 2026-11-11 section 5): the
+    // pixels arrive ALREADY upright (the native develop rotates by the
+    // container orientation — per-frame override included), so the display
+    // rotates ONLY this delta, never both. Default 0 keeps every existing
+    // call site (and PreviewSurface's own tests) working unchanged.
+    manualRotationDeg: Int = 0,
     modifier: Modifier = Modifier,
 ) {
-    val ratio = PreviewSurfaceRatio.of(
+    val uprightRatio = PreviewSurfaceRatio.of(
         frameWidth = frame?.width ?: 0,
         frameHeight = frame?.height ?: 0,
         sourceWidth = sourceWidth,
         sourceHeight = sourceHeight,
     )
+    // Quarter-turn deltas swap the box's shape; the Image inside rotates
+    // by the delta and scales to cover (fills exactly in the steady
+    // state — see RotationState.quarterTurnDisplayScale).
+    val displayRatio = PreviewSurfaceRatio.withManualRotation(uprightRatio, manualRotationDeg)
+    val coverScale = RotationState.quarterTurnDisplayScale(uprightRatio, manualRotationDeg)
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = modifier.aspectRatio(ratio),
+        modifier = modifier.aspectRatio(displayRatio).clipToBounds(),
     ) {
         Box(
             Modifier.fillMaxSize(),
@@ -116,7 +145,18 @@ fun PreviewSurface(
                     bitmap = remember(f) { f.toImageBitmap() },
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            rotationZ = manualRotationDeg.toFloat()
+                            // The cover scale for quarter turns: the fitted
+                            // upright content, once turned, would leave
+                            // bars; scaling by the ratio between the
+                            // content's long and short sides fills the
+                            // swapped-ratio box exactly.
+                            scaleX = coverScale
+                            scaleY = coverScale
+                        },
                 )
                 // The SAF grant was revoked or the clip moved (the existing
                 // access-lost pattern from library rows) — the preview cannot

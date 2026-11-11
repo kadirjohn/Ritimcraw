@@ -222,7 +222,16 @@ class PhotoExporter(
                                 PhotoPixels.toArgbInts(rgb, info.width, info.height),
                                 info.width,
                                 info.height,
-                                info.orientationDeg,
+                                // Section 5: the PNG pixels rotate by the
+                                // EFFECTIVE orientation (container + the
+                                // job's manual delta snapshot, composed
+                                // through the one rotation source of
+                                // truth) — a PNG carries no orientation
+                                // hint, so the pixels must be upright.
+                                com.ritim.ritimcraw.data.RotationState.effectiveDeg(
+                                    info.orientationDeg,
+                                    job.manualRotationDeg,
+                                ),
                             )
                             if (!pngWriter.write(developed.argb, developed.width, developed.height, partial.absolutePath)) {
                                 throw IllegalStateException(

@@ -266,13 +266,18 @@ class NativeSource private constructor(
         /**
          * Decodes frame [frameIndex] from the clip at [fd] and writes it as a
          * CFA DNG 1.4 file at [outPath] (the caller's out.partial staging
-         * path in app cache). True on success; on false read
-         * [previewErrorCode] / [previewErrorStage] / [previewLastError] from
-         * the same thread. Stages: 0 open, 1 frame read, 3 dng write.
+         * path in app cache). [manualRotationDeg] (owner request
+         * 2026-11-11 section 5) is the job's manual rotation delta
+         * snapshot: added to the frame's container orientation before the
+         * write, so the DNG Orientation tag carries the effective rotation
+         * while the CFA itself stays unrotated. True on success; on false
+         * read [previewErrorCode] / [previewErrorStage] / [previewLastError]
+         * from the same thread. Stages: 0 open, 1 frame read, 3 dng write.
          */
         @JvmStatic private external fun nativeDngExport(
             fd: Int,
             frameIndex: Int,
+            manualRotationDeg: Int,
             outPath: String,
         ): Boolean
 
@@ -476,8 +481,8 @@ class NativeSource private constructor(
         internal fun jniPreviewErrorStage(): Int = nativePreviewErrorStage()
 
         /** JNI bridge: see nativeDngExport. */
-        internal fun jniDngExport(fd: Int, frameIndex: Int, outPath: String): Boolean =
-            nativeDngExport(fd, frameIndex, outPath)
+        internal fun jniDngExport(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean =
+            nativeDngExport(fd, frameIndex, manualRotationDeg, outPath)
 
         /** JNI bridge: see nativeExportFrame. */
         internal fun jniExportFrame(

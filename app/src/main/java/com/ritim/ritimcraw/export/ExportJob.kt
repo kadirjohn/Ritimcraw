@@ -66,6 +66,17 @@ data class ExportJob(
      * non-zero so pre-picker project.json rows stay byte-identical.
      */
     val frameIndex: Int = 0,
+    /**
+     * The clip's manual rotation delta snapshotted at ENQUEUE time (owner
+     * request 2026-11-11 section 5), exactly like the grade: a later
+     * rotate tap must not change an in-flight export. The exporters
+     * compose it with the session's container orientation through
+     * RotationState.effectiveDeg. 0 for every job queued before the
+     * feature (and every never-rotated clip) — persisted only when
+     * non-zero so pre-rotation project.json rows stay byte-identical
+     * (the frameIndex shape).
+     */
+    val manualRotationDeg: Int = 0,
 ) {
 
     /**

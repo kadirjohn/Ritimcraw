@@ -86,7 +86,12 @@
     <string name="editor_clip_info_fps">Frame rate</string>
     <string name="editor_clip_info_raw_format">RAW sample format</string>
     <string name="editor_clip_info_raw_white_level">RAW white level</string>
+    <string name="editor_clip_info_rotation">Manual rotation</string>
     <string name="editor_clip_info_unknown">Unknown</string>
+    <string name="editor_rotate_left">Rotate 90° left</string>
+    <string name="editor_rotate_left_detail">Rotates the clip counter-clockwise by a quarter turn</string>
+    <string name="editor_rotate_right">Rotate 90° right</string>
+    <string name="editor_rotate_right_detail">Rotates the clip clockwise by a quarter turn</string>
     <string name="editor_copy_settings">Copy settings</string>
     <string name="editor_paste_settings">Paste settings</string>
     <string name="editor_paste_settings_detail">Applies the copied grade to this clip</string>

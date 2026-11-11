@@ -139,10 +139,12 @@ class DngExporterTest {
 
         var lastOutPath: String? = null
         var lastFrameIndex: Int = -1
+        var lastManualRotationDeg: Int = Int.MIN_VALUE
 
-        override fun render(fd: Int, frameIndex: Int, outPath: String): Boolean {
+        override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
             lastOutPath = outPath
             lastFrameIndex = frameIndex
+            lastManualRotationDeg = manualRotationDeg
             return when (behavior) {
                 Behavior.OK -> {
                     File(outPath).writeText("dng-bytes")
@@ -185,6 +187,28 @@ class DngExporterTest {
             // the requested frame index.
             assertEquals(out.absolutePath + ".partial", fake.lastOutPath)
             assertEquals(3, fake.lastFrameIndex)
+            // Manual rotation (§5): the default-0 job (a never-rotated clip)
+            // passes 0 through to the native boundary.
+            assertEquals(0, fake.lastManualRotationDeg)
+        } finally {
+            e.shutdown()
+        }
+    }
+
+    @Test
+    fun rotated_job_passes_manual_delta_to_the_native_boundary() {
+        val e = engine()
+        try {
+            val out = File(tmp.root, "clip-1.dng")
+            val fake = FakeDngRender(FakeDngRender.Behavior.OK)
+            val exporter = DngExporter(render = fake, engine = e)
+            val rotated = job().copy(manualRotationDeg = 270)
+            val result = runBlocking { exporter.export(rotated, 7, out) }
+            assertEquals(State.DONE, result.state)
+            // §5: the job's snapshot delta reaches the bridge untouched;
+            // the bridge adds it to the container orientation before the
+            // write so the DNG Orientation tag carries the effective value.
+            assertEquals(270, fake.lastManualRotationDeg)
         } finally {
             e.shutdown()
         }
@@ -237,7 +261,7 @@ class DngExporterTest {
             File(out, "child").writeText("x")
             val exporter = DngExporter(
                 render = object : DngRender {
-                    override fun render(fd: Int, frameIndex: Int, outPath: String): Boolean {
+                    override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
                         File(outPath).writeText("dng")
                         return true
                     }

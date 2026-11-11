@@ -81,10 +81,15 @@ object DngExportErrors {
 interface DngRender {
     /**
      * Decodes frame [frameIndex] from fd and writes a CFA DNG at [outPath].
+     * [manualRotationDeg] (owner request 2026-11-11 section 5) is the job's
+     * snapshot of the clip's manual rotation delta: the bridge ADDS it to
+     * the frame's container orientation before writing, so the DNG's
+     * Orientation tag carries the effective rotation while the CFA stays
+     * unrotated (a DNG is the raw mosaic; rotation belongs to the reader).
      * Returns null on failure; [code]/[stage]/[detail] then say why (the
      * same thread-local contract as the preview path).
      */
-    fun render(fd: Int, frameIndex: Int, outPath: String): Boolean
+    fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean
 
     /** rawedit::ErrorCode of the last failed call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
     fun code(): Int
@@ -98,14 +103,14 @@ interface DngRender {
 
 /** The real boundary: JNI calls into librawedit_jni.so. */
 internal object NativeDngRender : DngRender {
-    override fun render(fd: Int, frameIndex: Int, outPath: String): Boolean {
+    override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
         if (!NativeSource.nativeAvailable) {
             // The lib is absent (no NDK build): fail cleanly with the
             // unavailable message instead of UnsatisfiedLinkError. The
             // exporter's catch-all turns this into a FAILED job.
             throw IllegalStateException(NativeSource.nativeUnavailableMessage)
         }
-        return NativeSource.jniDngExport(fd, frameIndex, outPath)
+        return NativeSource.jniDngExport(fd, frameIndex, manualRotationDeg, outPath)
     }
 
     override fun code(): Int = NativeSource.jniPreviewErrorCode()
@@ -188,7 +193,7 @@ class DngExporter(
                 engine.execute {
                     val res = try {
                         onProgress?.invoke(0, 1)
-                        if (render.render(sourceFd, frameIndex, partial.absolutePath)) {
+                        if (render.render(sourceFd, frameIndex, job.manualRotationDeg, partial.absolutePath)) {
                             if (ExportStaging.finalize(partial, out)) {
                                 onProgress?.invoke(1, 1)
                                 Result.success(Unit)

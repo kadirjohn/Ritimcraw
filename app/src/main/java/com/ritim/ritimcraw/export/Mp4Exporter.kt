@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.engine.NativeSource
 import java.io.File
 import java.util.concurrent.ExecutorService
@@ -373,6 +374,7 @@ class ExportPipeline(
         grade: GradeK,
         outPath: String,
         lutPath: String? = null,
+        manualRotationDeg: Int = 0,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
     ) {
         val info = session.open(sourceFd)
@@ -380,7 +382,7 @@ class ExportPipeline(
                 Mp4ExportErrors.message(session.code(), session.stage(), session.detail())
             )
         try {
-            encode(info, grade, outPath, lutPath, onProgress)
+            encode(info, grade, outPath, lutPath, manualRotationDeg, onProgress)
         } finally {
             session.close(info.handle)
         }
@@ -391,6 +393,7 @@ class ExportPipeline(
         grade: GradeK,
         outPath: String,
         lutPath: String?,
+        manualRotationDeg: Int,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
     ) {
         // 1. Timeline: video pts from the source, normalized to 0.
@@ -429,8 +432,17 @@ class ExportPipeline(
 
         // 3. Configure encoders + muxer (throws on a rejected format). A
         // throw here must still release the writer (the muxer may exist).
+        // Rotation (owner request 2026-11-11 section 5): frames are
+        // rotated UPRIGHT in the pixels below, so the encoder is
+        // configured with the POST-rotation dimensions and NO muxer
+        // orientation hint — a hint would make players rotate upright
+        // pixels a second time. The effective orientation composes the
+        // session's container value with the job's manual delta through
+        // the one rotation source of truth.
+        val effectiveDeg = RotationState.effectiveDeg(info.orientationDeg, manualRotationDeg)
+        val outDims = RotationState.rotatedDims(info.width, info.height, effectiveDeg)
         try {
-            writer.start(outPath, info.width, info.height, info.orientationDeg, sampleRate, channels)
+            writer.start(outPath, outDims.width, outDims.height, 0, sampleRate, channels)
         } catch (e: Throwable) {
             writer.release()
             throw e
@@ -451,9 +463,16 @@ class ExportPipeline(
                                     session.code(), session.stage(), session.detail()
                                 )
                             )
+                        // Section 5: renderFrame returns NOT-rotated RGB888;
+                        // rotating by the EFFECTIVE orientation makes the
+                        // pixels themselves upright (the encoder wants
+                        // upright video — players that ignore rotation
+                        // metadata still show it right), then the I420
+                        // conversion runs on the rotated buffer/dims.
+                        val upright = RotationState.rotateRgb888(rgb, info.width, info.height, effectiveDeg)
                         writer.writeVideoFrame(
                             s.ptsUs,
-                            YuvConverter.toI420(rgb, info.width, info.height),
+                            YuvConverter.toI420(upright.rgb, upright.width, upright.height),
                         )
                         done++
                         onProgress?.invoke(done, videoPts.size)
@@ -494,9 +513,12 @@ class ExportPipeline(
 /**
  * Exports a clip as an SDR H.264/AAC MP4 through the native decode path
  * (full-res developCpu per frame -> RGB888 -> I420 -> MediaCodec video/avc;
- * clip PCM -> audio/mp4a-latm; MediaMuxer with the clip's orientation
- * hint — frames are NOT rotated in the pixels, players rotate at display
- * time).
+ * clip PCM -> audio/mp4a-latm; MediaMuxer). Rotation (owner request
+ * 2026-11-11 section 5): every frame is rotated UPRIGHT in the pixels by
+ * the clip's effective orientation (container + manual delta,
+ * RotationState) and the muxer hint is dropped — the encoder receives
+ * post-rotation dimensions, so even players that ignore rotation
+ * metadata show the video right-side up.
  *
  * The whole pipeline runs on the shared export engine thread
  * ([ExportEngine]) — one motioncam decoder is not concurrency-safe and the
@@ -539,7 +561,8 @@ class Mp4Exporter(
                 engine.execute {
                     val res = try {
                         ExportPipeline(session, writerFactory()).run(
-                            sourceFd, job.snapshot, partial.absolutePath, lutPath, onProgress
+                            sourceFd, job.snapshot, partial.absolutePath, lutPath,
+                            job.manualRotationDeg, onProgress
                         )
                         if (ExportStaging.finalize(partial, out)) {
                             Result.success(Unit)

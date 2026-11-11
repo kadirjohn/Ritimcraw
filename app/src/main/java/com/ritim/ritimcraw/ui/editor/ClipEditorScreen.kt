@@ -250,6 +250,15 @@ fun ClipEditorScreen(
     onSavePreset: (name: String) -> Unit = {},
     // Removes a preset by id (AppNav: PresetStore.remove + refresh).
     onRemovePreset: (id: String) -> Unit = {},
+    // ---- Manual rotation (owner request 2026-11-11 §5) ----
+    // The clip's persisted manual rotation delta (0/90/180/270). No local
+    // state: the persisted MediaSource record IS the state (AppNav reads
+    // it per clip and refreshes after each tap), so a configuration change
+    // or a clip switch shows the stored value with nothing extra to save.
+    manualRotationDeg: Int = 0,
+    // Rotates by ±90 (the clip-info sheet's two rows; AppNav persists
+    // through SourceRepository.setManualRotation, normalized 0..359).
+    onRotate: (byDeg: Int) -> Unit = {},
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -800,6 +809,9 @@ fun ClipEditorScreen(
             // stay 0 on both counts).
             rawSampleFormat = if (sourcePath == SourcePath.MCRAW) "raw16" else null,
             rawWhiteLevel = session?.rawWhiteLevel ?: 0,
+            // Manual rotation (§5): the persisted delta; the sheet's
+            // rotation row shows it and the two rotate actions tap it.
+            manualRotationDeg = manualRotationDeg,
         )
 
         // Neutral root surface (design review 2026-11-10, maroon bug): the
@@ -848,6 +860,8 @@ fun ClipEditorScreen(
                     presets = presets,
                     onSavePreset = onSavePreset,
                     onRemovePreset = onRemovePreset,
+                    // Manual rotation (§5): the sheet's rotate rows.
+                    onRotate = onRotate,
                 )
             }
             // Bounded preview region (design review: the frame never shifts
@@ -872,6 +886,11 @@ fun ClipEditorScreen(
                     accessLost = accessLost,
                     sourceWidth = sourceWidth,
                     sourceHeight = sourceHeight,
+                    // Manual rotation (§5): the display turns ONLY this
+                    // delta — the native develop already renders
+                    // container-upright pixels, so there is never a double
+                    // rotation.
+                    manualRotationDeg = manualRotationDeg,
                     // The before/after press-hold gesture rides the surface's
                     // modifier (owner feature list W5): press-and-hold on the
                     // frame area swaps to the neutral grade, release returns

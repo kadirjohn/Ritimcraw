@@ -143,6 +143,14 @@ class ExportStore(private val file: File) {
                 if (j.frameIndex != 0) {
                     sb.append(",\"frameIndex\":").append(j.frameIndex)
                 }
+                // manualRotationDeg (owner request 2026-11-11 section 5):
+                // omit-when-default — a never-rotated clip is the norm, so
+                // files written before the field stay byte-identical and
+                // old rows parse with 0 (no manual delta, exactly what
+                // they always exported).
+                if (j.manualRotationDeg != 0) {
+                    sb.append(",\"manualRotationDeg\":").append(j.manualRotationDeg)
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -211,6 +219,10 @@ class ExportStore(private val file: File) {
                     // queued before the picker — 0 keeps the old behavior
                     // (frame 0) for every legacy row.
                     frameIndex = (m["frameIndex"] as? Double)?.toInt() ?: 0,
+                    // manualRotationDeg (section 5): absent in rows queued
+                    // before manual rotation — 0 keeps the old behavior
+                    // (container orientation alone) for every legacy row.
+                    manualRotationDeg = (m["manualRotationDeg"] as? Double)?.toInt() ?: 0,
                 )
             }
         }

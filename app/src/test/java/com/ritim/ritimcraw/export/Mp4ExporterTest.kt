@@ -449,6 +449,7 @@ class Mp4ExporterTest {
         var audioBlocks = 0
         var sawPts = ArrayList<Long>()
         var startArgs: Array<Any>? = null
+        var lastVideoFrame: ByteArray? = null
         var outPath: String? = null
 
         override fun start(
@@ -476,6 +477,7 @@ class Mp4ExporterTest {
         override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
             videoFrames++
             sawPts.add(ptsUs)
+            lastVideoFrame = i420
         }
 
         override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {
@@ -522,9 +524,12 @@ class Mp4ExporterTest {
         assertEquals(1, session.closed.get())
         // Grade passed through to every render.
         assertEquals(listOf(0, 1, 2), session.rendered)
-        // Orientation + audio description reached start().
+        // Orientation + audio description reached start(). The muxer hint
+        // is 0 (§5): the pixels are pre-rotated upright by the pipeline, so
+        // a hint would double-rotate in players. The writer's dims were
+        // swapped for this 90° clip (square 4x4 here, so same numbers).
         val args = writer.startArgs!!
-        assertEquals(90, args[3])
+        assertEquals(0, args[3])
         assertEquals(48000, args[4])
         assertEquals(2, args[5])
     }
@@ -537,6 +542,39 @@ class Mp4ExporterTest {
         assertEquals(2, writer.videoFrames)
         assertEquals(0, writer.audioBlocks)
         assertEquals(0, writer.startArgs!![4]) // sampleRate 0 = no audio track
+    }
+
+    @Test
+    fun pipeline_rotates_pixels_upright_and_swaps_writer_dims() {
+        // §5 (owner request 2026-11-11): an 8x4 clip with container
+        // orientation 90 exports 4x8 — the pixels are pre-rotated upright
+        // (the encoder wants upright video) and the muxer hint is 0, so no
+        // player double-rotates.
+        val session = FakeSession(frames = 1, width = 8, height = 4, audio = false)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer).run(7, GradeK(), "/tmp/out.partial")
+        val args = writer.startArgs!!
+        assertEquals(4, args[1]) // width swapped
+        assertEquals(8, args[2]) // height swapped
+        assertEquals(0, args[3]) // no muxer hint: pixels already upright
+        // The encoded frame carries the swapped (upright) dimensions.
+        val frame = writer.lastVideoFrame!!
+        assertEquals(4 * 8 * 3 / 2, frame.size) // I420: w*h*1.5
+    }
+
+    @Test
+    fun pipeline_manual_rotation_composes_into_effective_degrees() {
+        // A quarter-turn manual delta on the same 90°-container clip makes
+        // the effective orientation 180: pixels turn by a half turn and the
+        // writer keeps the container dims (no swap for 180).
+        val session = FakeSession(frames = 1, width = 8, height = 4, audio = false)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer).run(7, GradeK(), "/tmp/out.partial", manualRotationDeg = 90)
+        val args = writer.startArgs!!
+        assertEquals(8, args[1]) // 180 effective: no dim swap
+        assertEquals(4, args[2])
+        assertEquals(0, args[3]) // hint stays 0 in every case
+        assertEquals(8 * 4 * 3 / 2, writer.lastVideoFrame!!.size)
     }
 
     @Test

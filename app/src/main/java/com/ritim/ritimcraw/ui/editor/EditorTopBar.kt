@@ -101,6 +101,14 @@ fun EditorTopBar(
     onSavePreset: (name: String) -> Unit = {},
     // Removes a preset by id (AppNav: PresetStore.remove + refresh).
     onRemovePreset: (id: String) -> Unit = {},
+    // ---- Manual rotation (owner request 2026-11-11 §5) ----
+    // Rotates the clip 90° per tap: +90 (right/clockwise), -90
+    // (left/counter-clockwise). The screen persists it per clip through
+    // SourceRepository.setManualRotation (normalized 0..359) and applies
+    // only this DELTA to the preview — the native develop already renders
+    // container-upright pixels, so the display never double-rotates.
+    // Default no-op keeps call sites without rotation working.
+    onRotate: (byDeg: Int) -> Unit = {},
 ) {
     var exportSheetOpen by remember { mutableStateOf(false) }
     var infoSheetOpen by remember { mutableStateOf(false) }
@@ -165,6 +173,7 @@ fun EditorTopBar(
                 infoSheetOpen = false
                 onDevelopFrame()
             },
+            onRotate = onRotate,
             onDismiss = { infoSheetOpen = false },
         )
     }
@@ -250,6 +259,7 @@ private fun ClipInfoSheet(
     onSavePreset: (String) -> Unit,
     onRemovePreset: (String) -> Unit,
     onDevelopFrame: () -> Unit,
+    onRotate: (byDeg: Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var saveDialogOpen by remember { mutableStateOf(false) }
@@ -313,6 +323,36 @@ private fun ClipInfoSheet(
                 value = info.rawWhiteLevel.toString(),
             )
         }
+        // ---- Manual rotation (owner request 2026-11-11 §5) ----
+        // Two actions, 90° per tap, in the clip-info sheet (NOT on the
+        // preview surface — the preview stays gesture-clean for §6). The
+        // sheet stays open so the user sees the preview rotate behind it
+        // and can keep tapping; material-icons-core has no rotate glyphs,
+        // so these are text ListItems exactly like the "Develop frame"
+        // row's shape. The supporting line names the direction in words.
+        if (info.manualRotationDeg != 0) {
+            // The applied delta (hide-when-default, the rawSampleFormat
+            // pattern): only a rotated clip shows its manual delta. Tabular
+            // numerals per DESIGN.md (values).
+            ClipInfoRow(
+                label = stringResource(R.string.editor_clip_info_rotation),
+                value = "${info.manualRotationDeg}°",
+            )
+        }
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_rotate_left)) },
+            supportingContent = {
+                Text(stringResource(R.string.editor_rotate_left_detail))
+            },
+            modifier = Modifier.clickable { onRotate(-90) },
+        )
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_rotate_right)) },
+            supportingContent = {
+                Text(stringResource(R.string.editor_rotate_right_detail))
+            },
+            modifier = Modifier.clickable { onRotate(90) },
+        )
         // ---- Settings actions (owner request 2026-11-11 §4) ----
         // Copy fills the clipboard; Paste applies it. Both are plain
         // ListItems like the export sheet's rows — the sheet stays open
@@ -498,6 +538,14 @@ data class ClipInfo(
      * says "16-bit CFA" separately.
      */
     val rawWhiteLevel: Int = 0,
+    /**
+     * The clip's persisted MANUAL rotation delta in degrees, 0/90/180/270
+     * (owner request 2026-11-11 §5). 0 is the never-rotated default; the
+     * preview rotates only this delta (the native develop already renders
+     * container-upright pixels) and every export composes it with the
+     * container orientation through RotationState.effectiveDeg.
+     */
+    val manualRotationDeg: Int = 0,
 )
 
 /**

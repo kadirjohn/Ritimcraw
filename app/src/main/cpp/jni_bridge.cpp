@@ -846,7 +846,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfo(
 
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
-        JNIEnv* env, jclass, jint fd, jint frameIndex, jstring outPath) {
+        JNIEnv* env, jclass, jint fd, jint frameIndex,
+        jint manualRotationDeg, jstring outPath) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
     const char* pathChars = env->GetStringUTFChars(outPath, nullptr);
@@ -879,7 +880,19 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
                      " — " + frame.detail);
         return JNI_FALSE;
     }
-    const rawedit::FrameInfo info = src->frameInfo(static_cast<size_t>(frameIndex));
+    // Section 5 (owner request 2026-11-11): the frame's orientationDeg is
+    // the CONTAINER orientation (the per-frame override when the source
+    // declares one — see Source.cpp frameInfo). The Kotlin layer snapshots
+    // the user's manual rotation delta (job.manualRotationDeg) and passes
+    // it here; the DNG's Orientation tag must carry the EFFECTIVE rotation
+    // (container + manual) while the CFA itself stays unrotated — a DNG is
+    // the raw mosaic, rotation belongs to the reader. The tag mapping lives
+    // in DngWriter.cpp tiffOrientation (90->6, 180->3, 270->8, else 1) and
+    // is mirrored in the JVM-tested data/RotationState.dngOrientationTag.
+    rawedit::FrameInfo info = src->frameInfo(static_cast<size_t>(frameIndex));
+    const int effectiveDeg =
+        (((info.orientationDeg + manualRotationDeg) % 360) + 360) % 360;
+    info.orientationDeg = effectiveDeg;
     const rawedit::RawMeta& meta = src->rawMeta();
 
     // 3. Write the CFA DNG to the staging path (writeCfaDng removes a

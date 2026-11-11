@@ -344,5 +344,51 @@ class SourceRepositoryTest {
         assertEquals(blank.id, stillBlank?.displayOrId)
     }
 
+    // ---- manual rotation (owner request 2026-11-11 section 5) ----
+
+    @Test
+    fun set_manual_rotation_persists_across_reload_and_normalizes() {
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+
+        // One tap on "Rotate 90° left": the delta is normalized (-90 ->
+        // 270) BEFORE it is stored, so the record never holds a negative
+        // or out-of-range value.
+        val updated = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .setManualRotation(imported.id, -90)
+
+        assertEquals(270, updated?.manualRotationDeg)
+        // Persisted: a fresh repository (and a fresh process) sees it.
+        assertEquals(270, SourceRepository(FakeResolver(), file).all().single().manualRotationDeg)
+        // The rotation key is written only when non-default.
+        assertTrue(file.readText().contains("\"manualRotationDeg\":270"))
+    }
+
+    @Test
+    fun set_manual_rotation_zero_omits_the_key_and_keeps_schema1_byte_identical() {
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+        val before = file.readText()
+
+        // Four quarter turns return to the default: storing 0 writes no
+        // rotation key — pre-rotation files stay byte-identical.
+        SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .setManualRotation(imported.id, 0)
+
+        assertEquals(before, file.readText())
+        assertEquals(0, SourceRepository(FakeResolver(), file).all().single().manualRotationDeg)
+    }
+
+    @Test
+    fun set_manual_rotation_is_a_noop_for_a_missing_record() {
+        val file = projectFile()
+        assertNull(
+            SourceRepository(FakeResolver("clip".toByteArray()), file)
+                .setManualRotation("no-such-id", 90),
+        )
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }
