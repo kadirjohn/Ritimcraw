@@ -86,7 +86,12 @@
     <string name="editor_clip_info_fps">Kare hızı</string>
     <string name="editor_clip_info_raw_format">RAW örnek biçimi</string>
     <string name="editor_clip_info_raw_white_level">RAW beyaz seviyesi</string>
+    <string name="editor_clip_info_rotation">Manuel döndürme</string>
     <string name="editor_clip_info_unknown">Bilinmiyor</string>
+    <string name="editor_rotate_left">90° sola döndür</string>
+    <string name="editor_rotate_left_detail">Klibi saat yönünün tersine çeyrek tur döndürür</string>
+    <string name="editor_rotate_right">90° sağa döndür</string>
+    <string name="editor_rotate_right_detail">Klibi saat yönünde çeyrek tur döndürür</string>
     <string name="editor_copy_settings">Ayarları kopyala</string>
     <string name="editor_paste_settings">Ayarları yapıştır</string>
     <string name="editor_paste_settings_detail">Kopyalanan grade\'i bu klibe uygular</string>

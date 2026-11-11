@@ -45,6 +45,15 @@ data class MediaSource(
      * while 0 so schema-1 files stay byte-identical.
      */
     val durationUs: Long = 0L,
+    /**
+     * The user's manual rotation delta on top of the container orientation
+     * (owner request 2026-11-11 section 5), normalized to 0..359 quarter
+     * turns (RotationState.applyManual). 0 = never rotated — the preview,
+     * exports and the clip-info sheet all treat the container value as the
+     * whole story. Persisted only when non-zero so pre-rotation
+     * project.json files stay byte-identical (the durationUs shape).
+     */
+    val manualRotationDeg: Int = 0,
 ) {
     /** True when the engine pass has filled in the format-line stats. */
     val hasStats: Boolean
@@ -219,6 +228,25 @@ class SourceRepository(
         write(load().filterNot { it.id == id })
     }
 
+    /**
+     * Sets the clip's manual rotation delta (owner request 2026-11-11
+     * section 5): the value is normalized through RotationState BEFORE it
+     * is stored, so the record can never hold 360 or -90. Returns the
+     * updated source, or null when the record is missing (the rotate rows
+     * hide for an unknown clip; the editor never rotates a phantom).
+     */
+    fun setManualRotation(id: String, rotationDeg: Int): MediaSource? {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val updated = sources[index].copy(
+            manualRotationDeg = RotationState.applyManual(rotationDeg, 0)
+        )
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
+
     // ---- fingerprint ----
 
     /**
@@ -318,6 +346,12 @@ class SourceRepository(
                     // files stay byte-identical.
                     sb.append(",\"durationUs\":").append(s.durationUs)
                 }
+                if (s.manualRotationDeg != 0) {
+                    // Manual rotation delta (owner request 2026-11-11
+                    // section 5); omitted while 0 (never rotated) so
+                    // pre-rotation files stay byte-identical.
+                    sb.append(",\"manualRotationDeg\":").append(s.manualRotationDeg)
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -390,6 +424,10 @@ class SourceRepository(
                     // Absent in records written before the thumbnail pass;
                     // 0 = unknown, the duration part of the row hides.
                     durationUs = (m["durationUs"] as? Double)?.toLong() ?: 0L,
+                    // Absent in records written before the manual-rotation
+                    // feature; 0 = never rotated (the container orientation
+                    // alone decides the display).
+                    manualRotationDeg = (m["manualRotationDeg"] as? Double)?.toInt() ?: 0,
                 )
             }
         }

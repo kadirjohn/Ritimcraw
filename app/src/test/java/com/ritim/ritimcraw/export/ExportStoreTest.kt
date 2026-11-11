@@ -578,6 +578,58 @@ class ExportStoreTest {
     }
 
     @Test
+    fun manual_rotation_round_trips_and_omits_when_zero() {
+        // §5 (owner request 2026-11-11): the manual rotation delta the job
+        // snapshotted at enqueue persists with it (a crash between queue
+        // and drain still exports the rotated composition), and
+        // omit-when-zero keeps pre-rotation files byte-identical — the
+        // same convention as frameIndex.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(
+            job(id = "rotated", target = Target.MP4).copy(manualRotationDeg = 270)
+        )
+        store.add(job(id = "plain", target = Target.DNG)) // 0 = default
+
+        val jobs = ExportStore(file).all()
+        assertEquals(270, jobs.single { it.id == "rotated" }.manualRotationDeg)
+        assertEquals(0, jobs.single { it.id == "plain" }.manualRotationDeg)
+
+        // Only the non-zero delta is written: the plain row's JSON carries
+        // no manualRotationDeg key (legacy rows stay byte-identical).
+        val text = file.readText()
+        assertTrue(text.contains("\"manualRotationDeg\":270"))
+        val plainRow = text.substringAfter("\"id\":\"plain\"")
+        assertTrue(!plainRow.substringBefore("}").contains("manualRotationDeg"))
+
+        // Retry keeps the rotation: the retried export composes the same
+        // effective orientation (requeued() preserves it via copy()).
+        store.retry("rotated")
+        assertEquals(270, ExportStore(file).all().single { it.id == "rotated" }.manualRotationDeg)
+    }
+
+    @Test
+    fun old_export_row_without_manual_rotation_parses_zero() {
+        // A project.json written before manual rotation (schema 1, no
+        // manualRotationDeg field): the row parses with 0 — container
+        // orientation alone, exactly what every pre-rotation job always
+        // exported.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.0},"target":"DNG","state":"DONE","detail":"clip-a-dng.dng"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val job = ExportStore(file).all().single()
+        assertEquals(0, job.manualRotationDeg)
+    }
+
+    @Test
     fun corrupt_store_falls_back_to_empty_queue() {
         val file = projectFile()
         file.parentFile?.mkdirs()

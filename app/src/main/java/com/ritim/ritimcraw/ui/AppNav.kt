@@ -534,6 +534,17 @@ fun AppNav() {
                     var sourceDims by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.let { it.width to it.height } ?: (0 to 0))
                     }
+                    // Manual rotation delta (owner request 2026-11-11 §5):
+                    // clip-keyed read of the persisted record; each rotate
+                    // tap (the clip-info sheet's rows) accumulates the delta
+                    // through RotationState.applyManual, persists via
+                    // setManualRotation (normalized absolute, omit-when-
+                    // default in project.json) and refreshes this state so
+                    // the preview, the sheet's rotation row and both export
+                    // enqueues all see the same value.
+                    var manualRotation by remember(r.sourceId) {
+                        mutableStateOf(stores.sources.get(r.sourceId)?.manualRotationDeg ?: 0)
+                    }
                     val sourceUri by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.uri)
                     }
@@ -637,6 +648,11 @@ fun AppNav() {
                                     // "<id>.dng".
                                     outputName = display?.takeIf { it.isNotBlank() }
                                         ?.let { ExportQueue.displayOutputName(it, target) },
+                                    // Manual rotation snapshot at queue time
+                                    // (§5, the grade-snapshot rule): a later
+                                    // rotate tap must not change an in-flight
+                                    // export.
+                                    manualRotationDeg = manualRotation,
                                 )
                             )
                             exportJobs = stores.exports.all()
@@ -667,6 +683,9 @@ fun AppNav() {
                                     frameIndex = frameIndex,
                                     outputName = display?.takeIf { it.isNotBlank() }
                                         ?.let { ExportQueue.displayOutputName(it, Target.PHOTO) },
+                                    // Manual rotation snapshot at queue time
+                                    // (§5, the grade-snapshot rule).
+                                    manualRotationDeg = manualRotation,
                                 )
                             )
                             exportJobs = stores.exports.all()
@@ -751,6 +770,23 @@ fun AppNav() {
                         // renders read it per request; pause/clip-end
                         // settle semantics are unchanged inside the editor.
                         previewQuality = previewQuality,
+                        // ---- Manual rotation (owner request 2026-11-11 §5) ----
+                        // The editor displays the persisted delta; a rotate
+                        // tap accumulates ±90 through the pure
+                        // RotationState.applyManual, persists the normalized
+                        // absolute value (per clip, omit-when-default), and
+                        // refreshes the clip-keyed state. Exports snapshot it
+                        // at enqueue above.
+                        manualRotationDeg = manualRotation,
+                        onRotate = { byDeg ->
+                            val next = com.ritim.ritimcraw.data.RotationState.applyManual(
+                                manualRotation, byDeg,
+                            )
+                            val updated = stores.sources.setManualRotation(r.sourceId, next)
+                            if (updated != null) {
+                                manualRotation = updated.manualRotationDeg
+                            }
+                        },
                     )
                 }
             } else {
