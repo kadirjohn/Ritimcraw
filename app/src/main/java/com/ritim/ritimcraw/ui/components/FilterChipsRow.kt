@@ -13,6 +13,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
@@ -21,6 +22,21 @@ import androidx.compose.ui.unit.dp
  * inside a scrollable Row, so no label — including the Turkish
  * "Sıkıştırılmış" (Encoded) — ever wraps into stacked characters; the row
  * scrolls when the chips exceed the screen width instead.
+ *
+ * Owner finding 2026-11-11 E5: on the device the "Encoded" chip stacked
+ * its characters vertically ("En/co/de/d"). The row's horizontalScroll
+ * already hands chips unbounded width (Scroll.kt ScrollingLayoutNode:
+ * maxWidth = Constraints.Infinity), but the label Text had NO
+ * single-line guard, and M3's ChipContent measures the label with
+ * constraints.offset(horizontal = -(leadingIconWidth + trailingIconWidth))
+ * — the selected chip's check icon subtracts from the label's width — so
+ * a squeezed label fell back to per-character line breaks. The guard is
+ * BY CONSTRUCTION now: this component emits the label Text itself with
+ * maxLines = 1 + softWrap = false, so every caller's chips stay
+ * single-line and measure their full intrinsic width (the row scrolls
+ * for the overflow instead of ever stacking a label). Callers pass the
+ * plain label STRING per index; no caller can reintroduce a stacked
+ * label.
  *
  * The chips are stock M3 FilterChips: the Monet-derived secondary
  * container colors carry the active state, and the selected chip shows
@@ -33,7 +49,10 @@ fun FilterChipsRow(
     count: Int,
     selected: (Int) -> Boolean,
     onSelect: (Int) -> Unit,
-    label: @Composable (Int) -> Unit,
+    // A @Composable slot returning the plain label STRING: the row owns
+    // the Text (and its single-line guard), the caller owns the wording
+    // (stringResource stays at the call site).
+    label: @Composable (Int) -> String,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -48,7 +67,20 @@ fun FilterChipsRow(
             FilterChip(
                 selected = isSelected,
                 onClick = { onSelect(index) },
-                label = { label(index) },
+                label = {
+                    // E5: the single-line guard lives HERE, once, for every
+                    // chip this row emits. softWrap = false keeps the chip
+                    // at the label's full intrinsic width (the row scrolls
+                    // for overflow); Visible (not Clip) so a label wider
+                    // than any mismeasured constraint still paints whole
+                    // rather than cutting mid-glyph.
+                    Text(
+                        label(index),
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Visible,
+                    )
+                },
                 leadingIcon = if (isSelected) {
                     {
                         Icon(

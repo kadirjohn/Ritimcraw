@@ -74,11 +74,15 @@ fun SettingsScreen(
         ScreenHeader(title = stringResource(R.string.settings_title))
         // Preview quality row (owner request 2026-11-11b section 3): the
         // headline + supporting text state the tradeoff; the segmented row
-        // carries the choice. Each button's label line shows the dims in
-        // tabular numerals (DESIGN.md Numbers) so the tradeoff is visible,
-        // not just named. The picker changes ONLY playback + scrub — the
-        // supporting text says so (paused frames always settle to the
-        // clip's own resolution).
+        // carries the choice. Owner finding 2026-11-11 E3: an M3
+        // SegmentedButton centers ALL of its content at the same spot
+        // (SegmentedButtonContent places every child identically), so a
+        // label Text plus a dims Text overlapped on the device. Each button
+        // now carries ONLY its label; the SELECTED level's dims render as
+        // one supporting line UNDER the row in tabular numerals (DESIGN.md
+        // Numbers) — the tradeoff stays visible, nothing overlaps. The
+        // picker changes ONLY playback + scrub — the supporting text says
+        // so (paused frames always settle to the clip's own resolution).
         ListItem(
             headlineContent = { Text(stringResource(R.string.settings_preview_quality)) },
             supportingContent = {
@@ -86,16 +90,16 @@ fun SettingsScreen(
             },
         )
         val qualityOptions = listOf(
-            Triple(R.string.settings_preview_quality_low, R.string.settings_preview_quality_dims, PreviewQuality.LOW),
-            Triple(R.string.settings_preview_quality_balanced, R.string.settings_preview_quality_dims, PreviewQuality.BALANCED),
-            Triple(R.string.settings_preview_quality_high, R.string.settings_preview_quality_dims, PreviewQuality.HIGH),
+            R.string.settings_preview_quality_low to PreviewQuality.LOW,
+            R.string.settings_preview_quality_balanced to PreviewQuality.BALANCED,
+            R.string.settings_preview_quality_high to PreviewQuality.HIGH,
         )
         SingleChoiceSegmentedButtonRow(
             Modifier
                 .fillMaxWidth()
                 .padding(vertical = 4.dp),
         ) {
-            qualityOptions.forEachIndexed { index, (labelRes, dimsRes, level) ->
+            qualityOptions.forEachIndexed { index, (labelRes, level) ->
                 SegmentedButton(
                     selected = previewQuality == level,
                     onClick = { onPreviewQualityChange(level) },
@@ -105,17 +109,21 @@ fun SettingsScreen(
                     ),
                 ) {
                     Text(stringResource(labelRes))
-                    Text(
-                        stringResource(
-                            dimsRes,
-                            level.playbackMaxDim,
-                            level.scrubMaxDim,
-                        ),
-                        style = MaterialTheme.typography.labelMedium.merge(Tnum),
-                    )
                 }
             }
         }
+        // The selected level's dims, under the row (E3): playback / scrub
+        // caps in tabular numerals, changing with the selection.
+        Text(
+            stringResource(
+                R.string.settings_preview_quality_dims,
+                previewQuality.playbackMaxDim,
+                previewQuality.scrubMaxDim,
+            ),
+            style = MaterialTheme.typography.labelMedium.merge(Tnum),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
         ListItem(
             headlineContent = { Text(stringResource(R.string.settings_device_report)) },
             supportingContent = {

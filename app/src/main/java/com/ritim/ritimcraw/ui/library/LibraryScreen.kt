@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.library
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -85,6 +86,12 @@ enum class LibraryFilter(val labelRes: Int) {
  * delete, on Cancel, and on the bar's close button; the list refreshes
  * through the caller's [sources] flow, and deleting everything lands on
  * the empty-library state.
+ *
+ * Title alignment (owner finding 2026-11-11 E4): the header (and the
+ * selection bar that replaces it) composes OUTSIDE the nested list
+ * Scaffold, so the title's layout chain matches Projects/Exports/Settings
+ * exactly — all four titles sit at the same height. The nested Scaffold
+ * serves only the list + FAB + snackbar.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -119,6 +126,15 @@ fun LibraryScreen(
     val selecting = selection.isNotEmpty()
     var confirmDeleteOpen by remember { mutableStateOf(false) }
 
+    // E6 (owner finding 2026-11-11): the system back gesture/button while
+    // rows are selected must CLOSE SELECTION, not the app. Enabled
+    // exactly while selection mode is active (the pure
+    // [LibrarySelection.onBack] rule); with no selection the handler is
+    // disabled and back keeps its system default.
+    BackHandler(enabled = selecting) {
+        selectedIds = LibrarySelection.onBack(selectedIds)
+    }
+
     // SAF picker: ACTION_OPEN_DOCUMENT with a persistable read grant.
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -151,150 +167,166 @@ fun LibraryScreen(
         )
     }
 
-    // The FAB hides while selecting (the trash bar owns the screen; an
-    // Import mid-selection would refresh the list under the selection).
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        // §4.1 compact header: the app shell's Scaffold already applies
-        // the status-bar inset in its innerPadding — a nested Scaffold's
-        // default contentWindowInsets would stack a SECOND one on top
-        // (the excessive empty space above the title). Zero insets here;
-        // this Scaffold exists only for the FAB + snackbar.
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(data) } },
-        floatingActionButton = {
-            if (!selecting) {
-                ExtendedFloatingActionButton(
-                    onClick = { picker.launch(arrayOf("*/*")) },
-                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                    text = { Text(stringResource(R.string.library_import)) },
-                )
-            }
-        },
-    ) { padding ->
-        Column(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-        ) {
-            if (selecting) {
-                // The selection bar (E2) replaces the title + filter row:
-                // close (X) exits the mode, the count carries the state,
-                // trash opens the confirm dialog. Plain Row of IconButtons
-                // (48dp targets each) — stock M3, browse screens.
-                val closeDescription = stringResource(R.string.library_selection_close)
-                val deleteDescription = stringResource(R.string.library_selection_delete)
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = { selectedIds = emptySet() }) {
-                        Icon(
-                            Icons.Filled.Close,
-                            contentDescription = closeDescription,
-                        )
-                    }
-                    Text(
-                        text = stringResource(R.string.library_selection_count, selection.size),
-                        style = MaterialTheme.typography.titleMedium.merge(Tnum),
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 8.dp),
+    // E4 (owner finding 2026-11-11): the title must sit at the SAME height
+    // as Projects/Exports/Settings. All four screens hang off AppNav's
+    // Scaffold -> Box(padding) -> Crossfade; the other three continue
+    // straight into Column -> ScreenHeader, while Library's header
+    // previously composed INSIDE the nested Scaffold below — putting its
+    // Surface + SubcomposeLayout layers in the title's own layout chain,
+    // and the owner measured the Library title visibly lower than the
+    // other three screens on the device. Hoisting the header (and the
+    // selection bar that replaces it) OUT of the Scaffold makes the
+    // title's chain structurally identical to ProjectsScreen's:
+    // AppNav Scaffold -> Box(padding) -> Crossfade -> Column ->
+    // ScreenHeader.
+    Column(modifier.fillMaxSize()) {
+        if (selecting) {
+            // The selection bar (E2) replaces the title + filter row:
+            // close (X) exits the mode, the count carries the state,
+            // trash opens the confirm dialog. Plain Row of IconButtons
+            // (48dp targets each) — stock M3, browse screens.
+            val closeDescription = stringResource(R.string.library_selection_close)
+            val deleteDescription = stringResource(R.string.library_selection_delete)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { selectedIds = emptySet() }) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = closeDescription,
                     )
-                    IconButton(onClick = { confirmDeleteOpen = true }) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = deleteDescription,
-                        )
-                    }
                 }
-            } else {
-                ScreenHeader(title = stringResource(R.string.library_title))
-                // The chips hide while selecting: the selection lives in
-                // the visible (filtered) list, so switching filters
-                // mid-selection could orphan checked rows — the bar owns
-                // the top area instead. Single-line scrollable row (§4.2):
-                // chips measure at intrinsic width, "Encoded" never wraps.
-                FilterChipsRow(
-                    count = LibraryFilter.entries.size,
-                    selected = { index -> filter == LibraryFilter.entries[index] },
-                    onSelect = { index -> filter = LibraryFilter.entries[index] },
-                    label = { index ->
-                        Text(stringResource(LibraryFilter.entries[index].labelRes))
+                Text(
+                    text = stringResource(R.string.library_selection_count, selection.size),
+                    style = MaterialTheme.typography.titleMedium.merge(Tnum),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 8.dp),
+                )
+                IconButton(onClick = { confirmDeleteOpen = true }) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = deleteDescription,
+                    )
+                }
+            }
+        } else {
+            ScreenHeader(title = stringResource(R.string.library_title))
+            // The chips hide while selecting: the selection lives in the
+            // visible (filtered) list, so switching filters mid-selection
+            // could orphan checked rows — the bar owns the top area
+            // instead. Single-line scrollable row (§4.2): chips measure at
+            // intrinsic width, "Encoded" never wraps.
+            FilterChipsRow(
+                count = LibraryFilter.entries.size,
+                selected = { index -> filter == LibraryFilter.entries[index] },
+                onSelect = { index -> filter = LibraryFilter.entries[index] },
+                // E5: the row emits the guarded single-line label Text
+                // itself; the caller passes the plain string.
+                label = { index ->
+                    stringResource(LibraryFilter.entries[index].labelRes)
+                },
+            )
+        }
+        // The FAB hides while selecting (the trash bar owns the screen; an
+        // Import mid-selection would refresh the list under the selection).
+        Scaffold(
+            Modifier.weight(1f),
+            // §4.1 compact header: the app shell's Scaffold already applies
+            // the status-bar inset in its innerPadding — a nested Scaffold's
+            // default contentWindowInsets would stack a SECOND one on top
+            // (the excessive empty space above the title). Zero insets here;
+            // this Scaffold exists only for the list + FAB + snackbar.
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(data) } },
+            floatingActionButton = {
+                if (!selecting) {
+                    ExtendedFloatingActionButton(
+                        onClick = { picker.launch(arrayOf("*/*")) },
+                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                        text = { Text(stringResource(R.string.library_import)) },
+                    )
+                }
+            },
+        ) { padding ->
+            Column(
+                Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+            ) {
+                if (visible.isEmpty()) {
+                    EmptyLibrary(Modifier.weight(1f))
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        // Vertical rhythm (§4.3 consistent spacing) plus bottom
+                        // clearance (§4.4): the last row must scroll fully
+                        // clear of the Import FAB — the button never
+                        // permanently obstructs a row.
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
+                    ) {
+                        items(visible, key = { it.id }) { source ->
+                            LibraryRow(
+                                source = source,
+                                thumbnailPath = thumbnailAt(source.id),
+                                selected = source.id in selection,
+                                selecting = selecting,
+                                showDivider = source !== visible.lastOrNull(),
+                                onToggleSelected = {
+                                    selectedIds = LibrarySelection.toggle(selectedIds, source.id)
+                                },
+                                onOpen = { onOpenClip(source.id) },
+                                onGrantAccess = { onGrantAccess(source) },
+                            )
+                        }
+                    }
+                    LibraryThumbnailBackfill(
+                        sources = visible,
+                        thumbnailAt = thumbnailAt,
+                        batchLimit = thumbnailBatchLimit,
+                        onGenerateThumbnails = onGenerateThumbnails,
+                    )
+                }
+            }
+            if (confirmDeleteOpen && selecting) {
+                // The E2 confirm dialog: states HOW MANY clips leave, because
+                // deletion is multi-select and irreversible (the original SAF
+                // file stays on disk — only the app's record of it goes).
+                AlertDialog(
+                    onDismissRequest = { confirmDeleteOpen = false },
+                    title = { Text(stringResource(R.string.library_delete_title)) },
+                    text = {
+                        Text(pluralStringResource(R.plurals.library_delete_message, selection.size, selection.size))
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                confirmDeleteOpen = false
+                                val ids = selection.toList()
+                                selectedIds = emptySet() // exit selection mode first
+                                onDeleteClips(ids)
+                            },
+                        ) {
+                            Text(stringResource(R.string.library_delete_confirm))
+                        }
+                    },
+                    dismissButton = {
+                        // Cancel exits selection mode too (the brief's rule:
+                        // selection exits after delete OR cancel).
+                        TextButton(
+                            onClick = {
+                                confirmDeleteOpen = false
+                                selectedIds = emptySet()
+                            },
+                        ) {
+                            Text(stringResource(R.string.library_delete_cancel))
+                        }
                     },
                 )
             }
-            if (visible.isEmpty()) {
-                EmptyLibrary(Modifier.weight(1f))
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    // Vertical rhythm (§4.3 consistent spacing) plus bottom
-                    // clearance (§4.4): the last row must scroll fully
-                    // clear of the Import FAB — the button never
-                    // permanently obstructs a row.
-                    contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
-                ) {
-                    items(visible, key = { it.id }) { source ->
-                        LibraryRow(
-                            source = source,
-                            thumbnailPath = thumbnailAt(source.id),
-                            selected = source.id in selection,
-                            selecting = selecting,
-                            showDivider = source !== visible.lastOrNull(),
-                            onToggleSelected = {
-                                selectedIds = LibrarySelection.toggle(selectedIds, source.id)
-                            },
-                            onOpen = { onOpenClip(source.id) },
-                            onGrantAccess = { onGrantAccess(source) },
-                        )
-                    }
-                }
-                LibraryThumbnailBackfill(
-                    sources = visible,
-                    thumbnailAt = thumbnailAt,
-                    batchLimit = thumbnailBatchLimit,
-                    onGenerateThumbnails = onGenerateThumbnails,
-                )
-            }
-        }
-        if (confirmDeleteOpen && selecting) {
-            // The E2 confirm dialog: states HOW MANY clips leave, because
-            // deletion is multi-select and irreversible (the original SAF
-            // file stays on disk — only the app's record of it goes).
-            AlertDialog(
-                onDismissRequest = { confirmDeleteOpen = false },
-                title = { Text(stringResource(R.string.library_delete_title)) },
-                text = {
-                    Text(pluralStringResource(R.plurals.library_delete_message, selection.size, selection.size))
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            confirmDeleteOpen = false
-                            val ids = selection.toList()
-                            selectedIds = emptySet() // exit selection mode first
-                            onDeleteClips(ids)
-                        },
-                    ) {
-                        Text(stringResource(R.string.library_delete_confirm))
-                    }
-                },
-                dismissButton = {
-                    // Cancel exits selection mode too (the brief's rule:
-                    // selection exits after delete OR cancel).
-                    TextButton(
-                        onClick = {
-                            confirmDeleteOpen = false
-                            selectedIds = emptySet()
-                        },
-                    ) {
-                        Text(stringResource(R.string.library_delete_cancel))
-                    }
-                },
-            )
         }
     }
 }

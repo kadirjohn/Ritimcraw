@@ -5,9 +5,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * LibrarySelection tests (owner finding 2026-11-11 E2): the pure
- * long-press/tap toggle and stale-id prune rules behind the Library's
- * selection mode.
+ * LibrarySelection tests (owner findings 2026-11-11 E2 + E6): the pure
+ * long-press/tap toggle, stale-id prune, and system-back rules behind
+ * the Library's selection mode.
  */
 class LibrarySelectionTest {
 
@@ -61,5 +61,19 @@ class LibrarySelectionTest {
     fun prune_keeps_a_live_selection_untouched() {
         val selected = setOf("a", "b")
         assertEquals(selected, LibrarySelection.prune(selected, setOf("a", "b", "c")))
+    }
+
+    // ---- onBack (owner finding E6: back closes selection, not the app) ----
+
+    @Test
+    fun back_with_rows_selected_exits_selection_mode() {
+        // Back clears the set — selection mode ends, the screen stays.
+        assertTrue(LibrarySelection.onBack(setOf("a", "b")).isEmpty())
+    }
+
+    @Test
+    fun back_with_no_selection_stays_empty() {
+        // The handler is disabled with no selection; the rule is total.
+        assertTrue(LibrarySelection.onBack(emptySet()).isEmpty())
     }
 }
