@@ -9,6 +9,15 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.outlined.ExitToApp
+import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -29,8 +38,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
@@ -84,35 +93,19 @@ import java.io.File
  */
 enum class Destination(
     val labelRes: Int,
-    // §4.5 icon consistency: proper outlined/filled glyph pairs per
-    // destination. Vendored vector drawables (res/drawable/ic_nav_*),
-    // because material-icons-extended is NOT in the offline cache and the
-    // cached core set had no fitting glyphs (PlayArrow/ExitToApp were
-    // stand-ins). Filled variant for the selected item, outlined for the
-    // rest — the stock M3 NavigationBar pattern.
-    val outlinedRes: Int,
-    val filledRes: Int,
+    // §4.5 icon consistency: outlined/filled glyph pairs per destination,
+    // drawn from the cached core Material set. The owner chose these glyphs
+    // deliberately (2026-11-12 request) — including the stock Settings gear
+    // with its center detail — over the vendored ic_nav_* pair from 1ca091d.
+    // Filled variant for the selected item, outlined for the rest — the
+    // stock M3 NavigationBar pattern.
+    val outlined: ImageVector,
+    val filled: ImageVector,
 ) {
-    LIBRARY(
-        R.string.nav_library,
-        R.drawable.ic_nav_library_outlined,
-        R.drawable.ic_nav_library_filled,
-    ),
-    PROJECTS(
-        R.string.nav_projects,
-        R.drawable.ic_nav_projects_outlined,
-        R.drawable.ic_nav_projects_filled,
-    ),
-    EXPORTS(
-        R.string.nav_exports,
-        R.drawable.ic_nav_exports_outlined,
-        R.drawable.ic_nav_exports_filled,
-    ),
-    SETTINGS(
-        R.string.nav_settings,
-        R.drawable.ic_nav_settings_outlined,
-        R.drawable.ic_nav_settings_filled,
-    ),
+    LIBRARY(R.string.nav_library, Icons.Outlined.PlayArrow, Icons.Filled.PlayArrow),
+    PROJECTS(R.string.nav_projects, Icons.AutoMirrored.Outlined.List, Icons.AutoMirrored.Filled.List),
+    EXPORTS(R.string.nav_exports, Icons.AutoMirrored.Outlined.ExitToApp, Icons.AutoMirrored.Filled.ExitToApp),
+    SETTINGS(R.string.nav_settings, Icons.Outlined.Settings, Icons.Filled.Settings),
 }
 
 /** editor/{sourceId} back stack entry. */
@@ -512,12 +505,10 @@ fun AppNav() {
                             icon = {
                                 Icon(
                                     // Filled variant for the selected item (DESIGN.md Icons):
-                                    // the vendored glyph pair, tinted by
-                                    // NavigationBar's own Monet
+                                    // the owner-chosen core Material glyph pair,
+                                    // tinted by NavigationBar's own Monet
                                     // selected/unselected colors.
-                                    painterResource(
-                                        if (selected) d.filledRes else d.outlinedRes
-                                    ),
+                                    if (selected) d.filled else d.outlined,
                                     contentDescription = stringResource(d.labelRes),
                                 )
                             },
