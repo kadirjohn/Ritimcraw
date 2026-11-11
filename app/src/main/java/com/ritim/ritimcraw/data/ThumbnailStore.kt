@@ -58,4 +58,15 @@ class ThumbnailStore(private val dir: File) {
 
     /** Creates the store's directory (idempotent). */
     fun ensureDir(): File = dir.apply { mkdirs() }
+
+    /**
+     * Deletes clip [id]'s persisted PNG (owner finding 2026-11-11 E2:
+     * Library delete). A no-op when none exists — deleting a clip that
+     * never got its thumbnail must not throw. Other ids' files are never
+     * touched (the id is the file name, so one delete cannot collide).
+     */
+    fun remove(id: String) {
+        val f = File(dir, "$id.png")
+        if (f.exists()) f.delete()
+    }
 }

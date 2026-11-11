@@ -5,9 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,11 +24,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -34,6 +42,7 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -47,6 +56,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -84,6 +94,16 @@ enum class LibraryFilter(val labelRes: Int) {
  *
  * Rows with revoked access show "Access lost" with a "Grant access" action
  * instead of disappearing (QA-23).
+ *
+ * Delete (owner finding 2026-11-11 E2: long-press a row, trash the
+ * selection): long-press enters selection mode with that row checked,
+ * taps toggle rows, the bar's trash opens a confirm dialog stating how
+ * many clips will be removed, and [onDeleteClips] does the removal — the
+ * app's record + grade + thumbnail only, NEVER the user's original file
+ * (see [com.ritim.ritimcraw.data.ClipDeletion]). Selection mode exits on
+ * delete, on Cancel, and on the bar's close button; the list refreshes
+ * through the caller's [sources] flow, and deleting everything lands on
+ * the empty-library state.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,6 +115,10 @@ fun LibraryScreen(
     thumbnailAt: (id: String) -> String?,
     thumbnailBatchLimit: Int,
     onGenerateThumbnails: (pending: List<String>) -> Unit,
+    // E2 delete: the caller (AppNav) composes the store removes through
+    // ClipDeletion and refreshes the list. Default keeps previews and any
+    // other caller compiling unchanged.
+    onDeleteClips: (ids: List<String>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
@@ -103,6 +127,16 @@ fun LibraryScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val importDone = stringResource(R.string.library_import_done)
+
+    // Selection mode (E2): active exactly while the set is non-empty —
+    // every transition is a pure LibrarySelection rule. Stale ids (rows
+    // the list no longer has) are pruned on every sources change so the
+    // selection can never reference deleted rows.
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    val selection = LibrarySelection.prune(selectedIds, visible.map { it.id }.toSet())
+    if (selection != selectedIds) selectedIds = selection
+    val selecting = selection.isNotEmpty()
+    var confirmDeleteOpen by remember { mutableStateOf(false) }
 
     // SAF picker: ACTION_OPEN_DOCUMENT with a persistable read grant.
     val picker = rememberLauncherForActivityResult(
@@ -136,15 +170,19 @@ fun LibraryScreen(
         )
     }
 
+    // The FAB hides while selecting (the trash bar owns the screen; an
+    // Import mid-selection would refresh the list under the selection).
     Scaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(data) } },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { picker.launch(arrayOf("*/*")) },
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text(stringResource(R.string.library_import)) },
-            )
+            if (!selecting) {
+                ExtendedFloatingActionButton(
+                    onClick = { picker.launch(arrayOf("*/*")) },
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text(stringResource(R.string.library_import)) },
+                )
+            }
         },
     ) { padding ->
         Column(
@@ -152,28 +190,67 @@ fun LibraryScreen(
                 .padding(padding)
                 .fillMaxSize()
         ) {
-            Text(
-                text = stringResource(R.string.library_title),
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                LibraryFilter.entries.forEach { f ->
-                    FilterChip(
-                        selected = filter == f,
-                        onClick = { filter = f },
-                        label = { Text(stringResource(f.labelRes)) },
-                        leadingIcon = if (filter == f) {
-                            { Icon(Icons.Filled.Check, contentDescription = null) }
-                        } else {
-                            null
-                        },
+            if (selecting) {
+                // The selection bar (E2) replaces the title + filter row:
+                // close (X) exits the mode, the count carries the state,
+                // trash opens the confirm dialog. Plain Row of IconButtons
+                // (48dp targets each) — stock M3, browse screens.
+                val closeDescription = stringResource(R.string.library_selection_close)
+                val deleteDescription = stringResource(R.string.library_selection_delete)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = { selectedIds = emptySet() }) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = closeDescription,
+                        )
+                    }
+                    Text(
+                        text = stringResource(R.string.library_selection_count, selection.size),
+                        style = MaterialTheme.typography.titleMedium.merge(Tnum),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 8.dp),
                     )
+                    IconButton(onClick = { confirmDeleteOpen = true }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = deleteDescription,
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    text = stringResource(R.string.library_title),
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+                // The chips hide while selecting: the selection lives in
+                // the visible (filtered) list, so switching filters
+                // mid-selection could orphan checked rows — the bar owns
+                // the top area instead.
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    LibraryFilter.entries.forEach { f ->
+                        FilterChip(
+                            selected = filter == f,
+                            onClick = { filter = f },
+                            label = { Text(stringResource(f.labelRes)) },
+                            leadingIcon = if (filter == f) {
+                                { Icon(Icons.Filled.Check, contentDescription = null) }
+                            } else {
+                                null
+                            },
+                        )
+                    }
                 }
             }
             if (visible.isEmpty()) {
@@ -187,6 +264,11 @@ fun LibraryScreen(
                         LibraryRow(
                             source = source,
                             thumbnailPath = thumbnailAt(source.id),
+                            selected = source.id in selection,
+                            selecting = selecting,
+                            onToggleSelected = {
+                                selectedIds = LibrarySelection.toggle(selectedIds, source.id)
+                            },
                             onOpen = { onOpenClip(source.id) },
                             onGrantAccess = { onGrantAccess(source) },
                         )
@@ -200,6 +282,42 @@ fun LibraryScreen(
                 )
             }
         }
+        if (confirmDeleteOpen && selecting) {
+            // The E2 confirm dialog: states HOW MANY clips leave, because
+            // deletion is multi-select and irreversible (the original SAF
+            // file stays on disk — only the app's record of it goes).
+            AlertDialog(
+                onDismissRequest = { confirmDeleteOpen = false },
+                title = { Text(stringResource(R.string.library_delete_title)) },
+                text = {
+                    Text(pluralStringResource(R.plurals.library_delete_message, selection.size, selection.size))
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            confirmDeleteOpen = false
+                            val ids = selection.toList()
+                            selectedIds = emptySet() // exit selection mode first
+                            onDeleteClips(ids)
+                        },
+                    ) {
+                        Text(stringResource(R.string.library_delete_confirm))
+                    }
+                },
+                dismissButton = {
+                    // Cancel exits selection mode too (the brief's rule:
+                    // selection exits after delete OR cancel).
+                    TextButton(
+                        onClick = {
+                            confirmDeleteOpen = false
+                            selectedIds = emptySet()
+                        },
+                    ) {
+                        Text(stringResource(R.string.library_delete_cancel))
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -212,10 +330,14 @@ private fun matches(filter: LibraryFilter, s: MediaSource): Boolean = when (filt
     LibraryFilter.DNG, LibraryFilter.MILOG, LibraryFilter.PHOTOS -> false
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LibraryRow(
     source: MediaSource,
     thumbnailPath: String?,
+    selected: Boolean,
+    selecting: Boolean,
+    onToggleSelected: () -> Unit,
     onOpen: () -> Unit,
     onGrantAccess: () -> Unit,
 ) {
@@ -268,18 +390,53 @@ private fun LibraryRow(
                 accessLost = accessLost,
             )
         },
-        trailingContent = if (accessLost) {
-            {
-                Text(
-                    stringResource(R.string.library_row_grant_access),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+        trailingContent = when {
+            // While selecting (E2) the trailing slot carries the row's
+            // checkbox state — the stock core-icon pair (outlined
+            // CheckCircle unchecked, filled CheckCircle checked, primary
+            // tint), and the thumbnail stays in the leading slot so the
+            // user still picks rows by picture. The whole row toggles
+            // (combinedClickable), so the icon needs no own target.
+            selecting -> {
+                {
+                    Icon(
+                        imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircle,
+                        contentDescription = null,
+                        tint = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
             }
-        } else {
-            null
+            accessLost -> {
+                {
+                    Text(
+                        stringResource(R.string.library_row_grant_access),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            else -> null
         },
-        modifier = Modifier.clickable { if (accessLost) onGrantAccess() else onOpen() },
+        // E2: long-press starts selection with this row checked; a tap
+        // toggles while selecting (never opens — no accidental clip open
+        // mid-delete), and outside selection mode the tap behavior is
+        // EXACTLY what it always was (open, or grant access when lost).
+        modifier = Modifier.combinedClickable(
+            onClick = {
+                if (selecting) {
+                    onToggleSelected()
+                } else if (accessLost) {
+                    onGrantAccess()
+                } else {
+                    onOpen()
+                }
+            },
+            onLongClick = { onToggleSelected() },
+        ),
     )
 }
 

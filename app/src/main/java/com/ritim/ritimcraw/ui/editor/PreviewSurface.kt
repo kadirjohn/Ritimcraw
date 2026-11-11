@@ -8,7 +8,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -34,8 +33,10 @@ import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.RotationState
@@ -94,6 +95,42 @@ object PreviewSurfaceRatio {
         } else {
             uprightRatio
         }
+
+    /**
+     * The size the preview surface may claim inside a bounded region
+     * (owner finding 2026-11-11 E1: "dikey görünümü açınca malesef ki
+     * sağ üstteki üç nokta ile belirtilen menü kayboldu" — the portrait
+     * preview covered the top bar's ⋮ menu). Pure so the claim rule is
+     * JVM-testable; the composable half only measures with it.
+     *
+     * Rule: fill the region's width when the full-width height fits the
+     * region's height cap; otherwise bound the surface by the cap and
+     * derive the width from the ratio. The result NEVER exceeds either
+     * bound — unlike `Modifier.aspectRatio`, whose fallback sizes a
+     * child that cannot satisfy the incoming constraints at full width
+     * by the UNBOUNDED full-width height (Compose foundation-layout
+     * 1.7.3 AspectRatio.kt tryMaxWidth(enforceConstraints = false)),
+     * letting a portrait-shaped surface overflow its capped wrapper
+     * and paint over the top bar. This rule replaces that fallback.
+     *
+     * Degenerate inputs collapse to zero (an empty region claims
+     * nothing); a non-positive ratio claims nothing (guarded upstream
+     * by the ratio chain, which never returns one).
+     */
+    fun claimedSize(
+        regionWidth: Int,
+        regionHeight: Int,
+        ratio: Float,
+    ): Pair<Int, Int> {
+        if (regionWidth <= 0 || regionHeight <= 0 || ratio <= 0f) return 0 to 0
+        val fullWidthHeight = (regionWidth / ratio).toInt()
+        return if (fullWidthHeight <= regionHeight) {
+            regionWidth to fullWidthHeight
+        } else {
+            val boundedWidth = (regionHeight * ratio).toInt().coerceAtMost(regionWidth)
+            boundedWidth to regionHeight
+        }
+    }
 }
 
 /**
@@ -103,7 +140,11 @@ object PreviewSurfaceRatio {
  * box. Inside the caller's bounded space it fills the width whenever the
  * ratio fits; a clip taller than the available space bounds the surface
  * by height (centered by the caller's wrapper), keeping the clip's shape
- * instead of overflowing the controls below.
+ * instead of overflowing the controls below. That bound is enforced by
+ * [PreviewSurfaceRatio.claimedSize] through the [previewBounds] sizer
+ * (owner finding 2026-11-11 E1): a portrait-shaped preview used to
+ * overflow the capped wrapper and cover the top bar's ⋮ menu — the
+ * unenforced aspectRatio fallback — and now never does.
  *
  * Every state renders centered INSIDE the same shaped surface:
  * the rendered frame (ContentScale.Fit — letterboxed during any ratio
@@ -161,7 +202,12 @@ fun PreviewSurface(
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = modifier.aspectRatio(displayRatio).clipToBounds(),
+        // E1 sizing: the surface claims exactly the region
+        // PreviewSurfaceRatio.claimedSize allows — full width when the
+        // ratio fits the caller's height cap, else bounded by that cap —
+        // never the over-tall aspectRatio fallback that covered the top
+        // bar's ⋮ (owner finding 2026-11-11 E1).
+        modifier = modifier.previewBounds(displayRatio).clipToBounds(),
     ) {
         Box(
             Modifier
@@ -337,6 +383,34 @@ fun PreviewSurface(
                 )
             }
         }
+    }
+}
+
+/**
+ * Sizer for the preview surface (owner finding 2026-11-11 E1): the
+ * surface measures at exactly the size
+ * [PreviewSurfaceRatio.claimedSize] allows within the incoming
+ * constraints — full width when the ratio's full-width height fits the
+ * caller's height cap, else the cap-bounded size. This replaces
+ * `Modifier.aspectRatio`, whose unenforced fallback sizes a portrait-
+ * shaped surface at the full-width height even when that exceeds the
+ * capped wrapper (Compose foundation-layout 1.7.3 AspectRatio.kt
+ * tryMaxWidth(enforceConstraints = false) after fillMaxWidth forces
+ * minWidth = maxWidth): the overflow painted up over the editor's top
+ * bar and hid the ⋮ menu. Measuring with a fixed Constraints never
+ * overflows; the caller's Box centers the bounded surface as before.
+ */
+private fun Modifier.previewBounds(ratio: Float): Modifier = layout { measurable, constraints ->
+    val (width, height) = PreviewSurfaceRatio.claimedSize(
+        regionWidth = constraints.maxWidth,
+        regionHeight = constraints.maxHeight,
+        ratio = ratio,
+    )
+    val placeable = measurable.measure(
+        Constraints.fixed(width = width, height = height),
+    )
+    layout(placeable.width, placeable.height) {
+        placeable.placeRelative(0, 0)
     }
 }
 

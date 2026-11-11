@@ -27,6 +27,12 @@
     <string name="library_import_failed_storage">İçe aktarma başarısız oldu: dosya depolamadan okunamadı (%1$s). Çözüm: klibin hâlâ mevcut olduğunu kontrol edin, sonra yeniden seçin.</string>
     <string name="library_import_failed_unknown">İçe aktarma başarısız oldu: %1$s. Çözüm: klibi özgün konumundan yeniden seçin.</string>
     <string name="library_import_done">İçe aktarıldı</string>
+    <string name="library_selection_count">%1$d öğe seçildi</string>
+    <string name="library_selection_close">Seçimden çık</string>
+    <string name="library_selection_delete">Klipleri sil</string>
+    <string name="library_delete_title">Klipler kaldırılsın mı?</string>
+    <string name="library_delete_confirm">Kaldır</string>
+    <string name="library_delete_cancel">Vazgeç</string>
 
     <!-- Clip editor -->
     <string name="editor_back">Kitaplığa dön</string>
@@ -171,4 +177,9 @@
     <string name="settings_preview_quality_balanced">Dengeli</string>
     <string name="settings_preview_quality_high">Yüksek</string>
     <string name="settings_preview_quality_dims">%1$d / %2$d px</string>
+
+    <!-- E2 Library delete: how many clips the confirm dialog removes. -->
+    <plurals name="library_delete_message">
+        <item quantity="other">%1$d klip kitaplıktan kaldırılacak. Özgün dosyalar cihazınızda kalır.</item>
+    </plurals>
 </resources>
