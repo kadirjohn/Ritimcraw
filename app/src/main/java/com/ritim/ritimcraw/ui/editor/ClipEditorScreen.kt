@@ -3,6 +3,8 @@ package com.ritim.ritimcraw.ui.editor
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,6 +42,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -67,6 +70,7 @@ import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Pure preview-area decision logic (JVM-testable without Compose): which
@@ -148,6 +152,12 @@ enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
  * never biases color judgment. Sliders snap to their step grid (0.1 EV
  * exposure, 50 K temperature) and a double tap on a slider row resets that
  * one control to its GradeK default (DESIGN.md Inputs).
+ *
+ * Over the preview (owner feature list W5): a toggleable 256-bin luma
+ * histogram with a clipping badge — recomputed on every frame publish
+ * from the same frame the preview shows — and the before/after
+ * press-hold: hold the frame area to swap to the neutral grade,
+ * release to return.
  */
 @Composable
 fun ClipEditorScreen(
@@ -240,6 +250,28 @@ fun ClipEditorScreen(
         var fullscreen by rememberSaveable { mutableStateOf(false) }
         BackHandler(enabled = fullscreen) { fullscreen = false }
 
+        // Before/after press-hold (owner feature list W5): while held, the
+        // preview renders the CURRENT frame with the neutral/original grade;
+        // release re-renders with the actual grade. Both renders go through
+        // the render gate and the pump below, exactly like every other
+        // request. heldRenderIssued tracks whether THIS hold actually issued
+        // a render (an already-neutral grade skips both renders); the
+        // startHold helper is defined next to requestRender below.
+        var heldRenderIssued by remember(sourceId) { mutableStateOf(false) }
+
+        // Histogram overlay (owner feature list W5): toggleable 256-bin
+        // luma histogram + clipping badge over the preview. histogramVisible
+        // is saveable so it survives configuration changes like the tab and
+        // fullscreen do; the histogram itself is recomputed inside the
+        // render pump's publish — the one place the on-screen frame is
+        // swapped — so the overlay always shows the frame the preview
+        // currently shows, and toggling on is instant (the result is
+        // already current). Keyed to the clip: a clip switch starts empty.
+        var histogramVisible by rememberSaveable { mutableStateOf(false) }
+        var histogram by remember(sourceId) {
+            mutableStateOf(FrameHistogram.of(null))
+        }
+
         // ---- LUT import (COL-07) ----
         // The import error is LOCAL to the LUT section: errorText drives the
         // preview FAILED state (EditorPreviewLogic.stateOf), so a failed
@@ -301,6 +333,42 @@ fun ClipEditorScreen(
                 is SliderTiers.Decision.RenderAtSettleTier ->
                     requestRender(positionFrame, grade, d.maxDim)
                 SliderTiers.Decision.NoRender -> Unit
+            }
+        }
+
+        /**
+         * Before/after press-hold (owner feature list W5): press renders the
+         * current frame with the neutral/original grade (the CACHED path —
+         * the frame on screen was just rendered at the same index, so the
+         * decode is reused and the swap costs one develop, no new decode);
+         * release re-renders with the actual grade, also cached. Both go
+         * through the render gate like every other request: newest-wins
+         * pending slot + monotonic publication mean a newer request (a
+         * seek, a slider settle, playback started mid-hold) supersedes the
+         * hold render by sequence and the release render restores the grade
+         * — the drag-tier/settle pipeline cannot be corrupted. Paused-only
+         * (BeforeAfter.canHold): during playback the loop's continuous
+         * graded offers would supersede a neutral render within one frame,
+         * so the hold is ignored there rather than fighting the loop.
+         * An already-neutral grade skips both renders (the picture would
+         * not change), tracked by heldRenderIssued so a release never
+         * issues a render its press never issued.
+         */
+        fun startHold(pressed: Boolean) {
+            if (pressed) {
+                if (!BeforeAfter.canHold(isPlaying, frame != null, canRender)) return
+                if (!BeforeAfter.holdChangesPicture(grade)) return
+                heldRenderIssued = true
+                requestRender(
+                    positionFrame, BeforeAfter.holdGrade(),
+                    PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                )
+            } else if (heldRenderIssued) {
+                heldRenderIssued = false
+                requestRender(
+                    positionFrame, grade,
+                    PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                )
             }
         }
 
@@ -431,6 +499,17 @@ fun ClipEditorScreen(
                         result.fold(
                             onSuccess = { f ->
                                 frame = f
+                                // Histogram recompute (owner feature list W5):
+                                // publish is the ONE place the on-screen frame
+                                // is swapped, so the pass runs here — the
+                                // overlay can never show a histogram for a
+                                // frame the preview is not showing. Strided
+                                // to at most FrameHistogram.MAX_SAMPLES pixels
+                                // (sub-millisecond even at source resolution),
+                                // on the pump coroutine like the publish
+                                // itself; a hidden overlay still recomputes
+                                // (cheap) so toggling on is instant.
+                                histogram = FrameHistogram.of(f.argb)
                                 lastRenderFailed = false
                                 errorText = null
                             },
@@ -596,7 +675,75 @@ fun ClipEditorScreen(
                     accessLost = accessLost,
                     sourceWidth = sourceWidth,
                     sourceHeight = sourceHeight,
-                    modifier = Modifier.fillMaxWidth(),
+                    // The before/after press-hold gesture rides the surface's
+                    // modifier (owner feature list W5): press-and-hold on the
+                    // frame area swaps to the neutral grade, release returns
+                    // to the current grade. The press must SURVIVE the
+                    // platform long-press window to engage — a quick release,
+                    // a drag beyond the touch slop, or another handler
+                    // consuming the stream cancels — which is also what keeps
+                    // quick taps on the frame and on the corner controls
+                    // (refresh chip, fullscreen button — they overlap the
+                    // surface's bounds) from flashing the original. Manual
+                    // long-press detection instead of detectTapGestures:
+                    // its onPress block is CANCELLED when onLongPress fires,
+                    // so it cannot bridge engage-on-long-press to
+                    // release-on-lift; withTimeoutOrNull drives the window
+                    // without needing move events (a perfectly still finger
+                    // still engages), the same shape Compose's own
+                    // awaitLongPressOrCancellation uses. Attached here in
+                    // the editor, so PreviewSurface stays a pure display
+                    // component and both layouts (normal and fullscreen)
+                    // get the feature through this one call site.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pointerInput(Unit) {
+                            val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+                            val slop = viewConfiguration.touchSlop
+                            awaitEachGesture {
+                                val down = awaitFirstDown()
+                                // The long-press window: true when the press
+                                // ended early (lift, drag, or consumed),
+                                // null when the window elapsed with the
+                                // finger still down.
+                                val endedEarly = withTimeoutOrNull(longPressTimeout) {
+                                    var lifted = false
+                                    while (!lifted) {
+                                        val event = awaitPointerEvent()
+                                        val change =
+                                            event.changes.firstOrNull { it.id == down.id }
+                                        if (change == null || !change.pressed ||
+                                            event.changes.any { it.isConsumed } ||
+                                            (change.position - down.position).getDistance() > slop
+                                        ) {
+                                            lifted = true
+                                        }
+                                    }
+                                    true
+                                }
+                                // Null = the window elapsed with the finger
+                                // still down (long press confirmed); non-null
+                                // = the press ended early, so this gesture is
+                                // a tap/drag, not a hold.
+                                if (endedEarly != null) return@awaitEachGesture
+                                // Long press confirmed: show the original.
+                                startHold(true)
+                                // The hold ends when the finger lifts or the
+                                // stream is consumed; either way the release
+                                // render restores the current grade.
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change =
+                                        event.changes.firstOrNull { it.id == down.id }
+                                    if (change == null || !change.pressed ||
+                                        event.changes.any { it.isConsumed }
+                                    ) {
+                                        break
+                                    }
+                                }
+                                startHold(false)
+                            }
+                        },
                 )
                 // Small corner refresh control (design review: the manual
                 // render leaves the prime area): status from the existing
@@ -612,6 +759,31 @@ fun ClipEditorScreen(
                         .align(Alignment.BottomEnd)
                         .padding(8.dp),
                 )
+                // Histogram toggle (owner feature list W5): the mirror of
+                // the fullscreen TopEnd toggle — the preview's corner icon
+                // buttons read as one group, and the bar_chart glyph says
+                // what it does. Same 48dp IconButton target, vendored
+                // Material Symbols glyph (material-icons-core 1.7.3 has
+                // no BarChart).
+                HistogramToggleButton(
+                    visible = histogramVisible,
+                    onToggle = { histogramVisible = !histogramVisible },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp),
+                )
+                // The overlay itself (BottomStart, mirroring the refresh
+                // chip's BottomEnd): visible only when toggled on, drawn
+                // from the recompute above — the same frame the preview
+                // shows, so the histogram and the picture never disagree.
+                if (histogramVisible) {
+                    HistogramOverlay(
+                        result = histogram,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp),
+                    )
+                }
                 // Fullscreen toggle (owner request 2026-11-11 section 2):
                 // the SAME editor session — the toggle only changes the
                 // layout, so the clip stays open, the transport keeps its
