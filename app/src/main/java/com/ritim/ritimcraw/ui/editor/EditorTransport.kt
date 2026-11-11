@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,11 +29,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
@@ -71,6 +74,12 @@ import com.ritim.ritimcraw.util.Format
  * kept and settled). [precisionReadout] is the localized line to show
  * while active (null = not active). Defaults keep every other call site
  * unchanged.
+ *
+ * Steady timecode width (owner round 3a, 2026-11-11): the readout Text
+ * is pinned to the measured width of the widest possible pair, so the
+ * label and the weighted slider beside it never move while the frame
+ * field ticks — font-independent (tnum-ignoring device fonts are the
+ * diagnosed cause of the sway; see Format.timecodeWidthProbes).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -90,6 +99,27 @@ fun TransportRow(
     onPrecisionRelease: () -> Unit = {},
 ) {
     val seekDescription = stringResource(R.string.editor_seek)
+    // Steady readout width (owner round 3a, 2026-11-11): the timecode
+    // pair's frame field ticks ~24x/s during playback, and on a device
+    // font that ignores tnum the proportional digits oscillate the
+    // label's natural width — the label sways and the weighted slider
+    // beside it resizes with it. Pin the readout to the width of the
+    // WIDEST pair measured with the exact style it renders with. The
+    // uniform-digit probes bound every mixed-digit pair from above on
+    // any font (see Format.timecodeWidthProbes); on a tabular font all
+    // ten measure identical, so this equals the single widest string.
+    // The style is hoisted so the measure and the Text share one object.
+    val timecodeStyle = MaterialTheme.typography.labelMedium.merge(Tnum)
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val timecodeMinWidth = remember(timecodeStyle, density) {
+        val probes = Format.timecodeWidthProbes()
+        with(density) {
+            probes.maxOf { probe ->
+                textMeasurer.measure(probe, timecodeStyle).size.width.toDp()
+            }
+        }
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -163,8 +193,9 @@ fun TransportRow(
         }
         Text(
             text = Format.formatTimecodePair(elapsedUs, totalUs),
-            style = MaterialTheme.typography.labelMedium.merge(Tnum),
+            style = timecodeStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.widthIn(min = timecodeMinWidth),
         )
     }
 }

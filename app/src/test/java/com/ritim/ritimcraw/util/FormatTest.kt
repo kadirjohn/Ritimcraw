@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -194,6 +195,122 @@ class FormatTest {
         assertEquals(
             "00:00:00:00 / 00:00:10:00",
             Format.formatTimecodePair(0L, 10_000_000L),
+        )
+    }
+
+    // ---- widestTimecodePair / timecodeWidthProbes (owner round 3a) ----
+
+    @Test
+    fun widest_pair_is_the_all_zeros_shape() {
+        assertEquals("00:00:00:00 / 00:00:00:00", Format.widestTimecodePair())
+    }
+
+    @Test
+    fun width_probes_lead_with_the_widest_pair_then_every_uniform_digit() {
+        val probes = Format.timecodeWidthProbes()
+        assertEquals(10, probes.size)
+        assertEquals(Format.widestTimecodePair(), probes.first())
+        (0..9).forEach { digit ->
+            val d = '0' + digit
+            assertEquals("$d$d:$d$d:$d$d:$d$d / $d$d:$d$d:$d$d:$d$d", probes[digit])
+        }
+    }
+
+    @Test
+    fun every_sampled_pair_fits_the_widest_shape_in_length() {
+        // Sampled playback positions on the real 261110_004208 fixture
+        // (first/mid/last ptsUs from the rawcli info pass) plus the
+        // structural edges: zero, one frame in, past an hour, and the
+        // last instant that still renders two-digit hours (99:59:59).
+        // Every pair with hours <= 99 is exactly the widest shape's
+        // 25 chars, so the pinned min-width box never resizes.
+        val widest = Format.widestTimecodePair()
+        val samples = listOf(
+            0L,
+            1_000_000L / 24,                 // one frame in
+            258_175_962_047L,                // fixture first pts
+            258_181_118_675L,                // fixture mid pts
+            258_186_242_047L,                // fixture last pts
+            3_723_000_000L,                  // past an hour
+            359_999_000_000L,               // 99:59:59:00 at 24 fps
+        )
+        samples.forEach { pts ->
+            // A single timecode is the pair's half; both halves must
+            // keep the 11-char shape for the pair to stay at 25.
+            assertEquals("single timecode at pts $pts outgrew the shape", 11, Format.formatTimecode(pts).length)
+            assertEquals(
+                "pair at pts $pts outgrew the widest shape",
+                widest.length,
+                Format.formatTimecodePair(pts, 258_186_242_047L).length,
+            )
+        }
+    }
+
+    @Test
+    fun pair_length_never_changes_across_playback() {
+        // The owner-visible property under test: as the current timecode
+        // ticks frame by frame, the pair string's length is CONSTANT, so
+        // a width pinned to the widest shape is never outgrown
+        // mid-playback. Frame-by-frame over three 5 s windows (start,
+        // mid, end of the fixture clip — the fast-ticking regime the
+        // owner sees) plus every 100th frame across the whole clip
+        // (covers every digit combination in the slower fields without
+        // six million String.format calls).
+        val last = 258_186_242_047L
+        val frameUs = 1_000_000L / 24
+        val window = 5_000_000L
+        val starts = listOf(0L, last / 2, (last - window).coerceAtLeast(0L))
+        starts.forEach { start ->
+            var t = start
+            while (t <= start + window && t <= last) {
+                assertEquals(25, Format.formatTimecodePair(t, last).length)
+                t += frameUs
+            }
+        }
+        var t = 0L
+        while (t <= last) {
+            assertEquals(25, Format.formatTimecodePair(t, last).length)
+            t += frameUs * 100
+        }
+    }
+
+    @Test
+    fun real_pairs_share_the_probe_skeleton() {
+        // The font-independent width bound: every real pair (hours <= 99)
+        // is 16 digits + colons + " / " — the same skeleton as the
+        // uniform-digit probes — so the widest uniform probe bounds any
+        // mixed-digit pair on ANY font (glyph advances add up; 16 copies
+        // of the widest digit advance >= any 16 actual digit advances).
+        val skeleton = Regex("\\d\\d:\\d\\d:\\d\\d:\\d\\d / \\d\\d:\\d\\d:\\d\\d:\\d\\d")
+        Format.timecodeWidthProbes().forEach { probe ->
+            assertTrue("probe $probe broke the skeleton", skeleton.matches(probe))
+        }
+        listOf(
+            0L,
+            1_000_000L / 24,
+            258_181_118_675L,
+            258_186_242_047L,
+            3_723_000_000L,
+            359_999_000_000L,
+        ).forEach { pts ->
+            val pair = Format.formatTimecodePair(pts, 258_186_242_047L)
+            assertTrue("pair $pair broke the skeleton", skeleton.matches(pair))
+        }
+    }
+
+    @Test
+    fun past_99_hours_outgrows_the_widest_shape_documented_assumption() {
+        // formatTimecode pads hours to two digits but never clamps them:
+        // a 100-hour clip renders three-digit hours and outgrows the
+        // pinned width. Documented assumption (KDoc on widestTimecodePair):
+        // no phone recording reaches 100 hours; if one ever did, the
+        // readout would resize once per hour boundary and hold steady
+        // again — the frame field still never moves the box.
+        val hundredHours = 100L * 3_600 * 1_000_000
+        assertTrue(
+            "the >99h clamp assumption changed — update widestTimecodePair",
+            Format.formatTimecodePair(hundredHours, hundredHours).length >
+                Format.widestTimecodePair().length,
         )
     }
 

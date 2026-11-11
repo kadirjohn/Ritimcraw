@@ -101,6 +101,44 @@ object Format {
         "${formatTimecode(currentUs, fps)} / ${formatTimecode(totalUs, fps)}"
 
     /**
+     * The widest possible transport readout string (owner round 3a,
+     * 2026-11-11: the readout swayed left-right during playback).
+     * formatTimecode pads every field to two digits, so every pair with
+     * hours <= 99 has exactly this 25-char shape and the all-zeros pair
+     * is its canonical representative. The transport measures this shape
+     * once and pins the readout's minimum width to it, so the label keeps
+     * a steady width while the frame field ticks ~24x/s — even on a
+     * device font that ignores the tnum feature and renders proportional
+     * digits.
+     *
+     * Documented assumption: formatTimecode pads hours to two digits but
+     * does NOT clamp them — a clip past 99:59:59:<fps-1> would render
+     * three-digit hours ("100:00:00:00") and grow past this bound. No
+     * phone recording reaches 100 hours; if one ever did, the pinned
+     * readout would resize once (hours change hourly, not per frame) and
+     * hold steady again.
+     */
+    fun widestTimecodePair(): String = "00:00:00:00 / 00:00:00:00"
+
+    /**
+     * Width probes for the transport readout: the uniform-digit variants
+     * of [widestTimecodePair], one per digit 0..9, the all-zeros pair
+     * itself first. A proportional-digit font (the diagnosed cause of
+     * the sway — the device font ignores tnum) has no single widest
+     * digit knowable in advance: the all-zeros pair measures the ZERO
+     * glyphs, and if another digit renders wider, a real pair would
+     * still exceed a min-width pinned to the zeros. Glyph advances add
+     * up (digits do not kern), so the widest UNIFORM pair bounds every
+     * MIXED pair from above: 16 x the widest digit advance >= any 16
+     * actual digit advances. Measuring these ten strings once and
+     * taking the maximum therefore pins the readout for ANY font —
+     * tabular fonts measure all ten identical, proportional fonts get
+     * their true widest digit.
+     */
+    fun timecodeWidthProbes(): List<String> =
+        (0..9).map { digit -> widestTimecodePair().replace('0', '0' + digit) }
+
+    /**
      * Export remaining-time text (owner request 2026-11-11 §1): "45s",
      * "2m 13s", "59m 59s", "2h 1m". Whole seconds in, two-unit max —
      * seconds only under a minute, minutes+seconds under an hour, hours+
