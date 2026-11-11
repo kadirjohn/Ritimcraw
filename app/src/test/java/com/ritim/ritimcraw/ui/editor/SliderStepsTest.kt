@@ -123,6 +123,36 @@ class SliderStepsTest {
         assertEquals(true, g.temporalNr) // the toggle is not a slider axis
     }
 
+    @Test
+    fun stabilization_strength_snaps_to_whole_numbers() {
+        // Gyro Phase 5: the stabilization strength slider is an integer
+        // 0..100 percent like the other amount sliders.
+        val g = SliderSteps.snap(GradeK(stabilization = true, stabilizationStrength = 68.6f))
+        assertEquals(69f, g.stabilizationStrength, 1e-4f)
+        assertEquals(true, g.stabilization) // the toggle is not a slider axis
+    }
+
+    @Test
+    fun stabilization_zoom_limit_snaps_to_0_05() {
+        // Gyro Phase 5: the zoom limit slider is 1.0..1.5 at 0.05 steps.
+        val g = SliderSteps.snap(GradeK(stabilization = true, stabilizationZoomLimit = 1.234f))
+        assertEquals(1.25f, g.stabilizationZoomLimit, 1e-4f)
+    }
+
+    @Test
+    fun stabilization_trim_ms_snaps_to_10ms() {
+        // Gyro Phase 5: the sync trim slider is ±500 ms at 10 ms steps.
+        val g = SliderSteps.snap(GradeK(stabilization = true, stabilizationTrimMs = -123f))
+        assertEquals(-120f, g.stabilizationTrimMs, 1e-4f)
+    }
+
+    @Test
+    fun stabilization_focal_mm_snaps_to_half_mm() {
+        // Gyro Phase 5: the focal override slider snaps to half-mm steps.
+        val g = SliderSteps.snap(GradeK(stabilization = true, stabilizationFocalMm = 23.7f))
+        assertEquals(23.5f, g.stabilizationFocalMm, 1e-4f)
+    }
+
     // ---- double-tap reset ----
 
     @Test
@@ -270,6 +300,40 @@ class SliderStepsTest {
         assertEquals(55f, reset.sharpness, 0f)
         assertEquals(2, reset.tonemap)
         assertEquals(1f, reset.exposureEv, 0f)
+    }
+
+    @Test
+    fun double_tap_resets_each_stabilization_slider_only() {
+        // Gyro Phase 5: each stabilization slider resets independently to
+        // its GradeK default (70 / 1.1 / 0 / 0) — the tapped control goes to
+        // its default, the OTHER stabilization controls, the toggle and
+        // the mode stay put.
+        val current = GradeK(
+            exposureEv = 1f, sharpness = 55f,
+            stabilization = true, stabilizationMode = 2,
+            stabilizationStrength = 40f, stabilizationZoomLimit = 1.4f,
+            stabilizationTrimMs = 80f, stabilizationFocalMm = 35f,
+        )
+
+        val strength = SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_STRENGTH, current)
+        assertEquals(70f, strength.stabilizationStrength, 0f)
+        assertEquals(1.4f, strength.stabilizationZoomLimit, 0f)
+        assertEquals(2, strength.stabilizationMode)
+
+        val zoom = SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_ZOOM_LIMIT, current)
+        assertEquals(1.1f, zoom.stabilizationZoomLimit, 0f)
+        assertEquals(40f, zoom.stabilizationStrength, 0f)
+        assertEquals(80f, zoom.stabilizationTrimMs, 0f)
+
+        val trim = SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_TRIM_MS, current)
+        assertEquals(0f, trim.stabilizationTrimMs, 0f)
+        assertEquals(35f, trim.stabilizationFocalMm, 0f)
+        assertEquals(true, trim.stabilization)
+
+        val focal = SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_FOCAL_MM, current)
+        assertEquals(0f, focal.stabilizationFocalMm, 0f)
+        assertEquals(80f, focal.stabilizationTrimMs, 0f)
+        assertEquals(1f, focal.exposureEv, 0f)
     }
 
     // ---- Compose steps argument ----

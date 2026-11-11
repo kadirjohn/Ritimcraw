@@ -441,5 +441,80 @@ class GradeStoreTest {
         assertEquals(72.5f, reloaded.temporalStrength, 0f)
     }
 
+    @Test
+    fun old_format_file_loads_stabilization_as_off() {
+        // A project.json written by the pre-stabilization build (gyro
+        // Phase 5). The six new fields are absent and must parse as the OFF
+        // defaults — stabilization never turns itself on behind the user's
+        // back, and since the warp is a no-op when off, the old look is
+        // preserved exactly (the binding rule of this package).
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-stab-clip":{"version":1,"exposureEv":0.8,"sharpness":10.0,"detail":-3.0,"tonemap":1,"tempK":4600.0,"tint":3.0,"temporalNr":true,"temporalStrength":40.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-stab-clip")
+        // Pre-existing fields keep their saved values...
+        assertEquals(0.8f, g.exposureEv, 0f)
+        assertEquals(true, g.temporalNr)
+        assertEquals(40f, g.temporalStrength, 0f)
+        // ...and stabilization is off with its defaults.
+        assertEquals(false, g.stabilization)
+        assertEquals(0, g.stabilizationMode)
+        assertEquals(70f, g.stabilizationStrength, 0f)
+        assertEquals(1.1f, g.stabilizationZoomLimit, 0f)
+        assertEquals(0f, g.stabilizationTrimMs, 0f)
+        assertEquals(0f, g.stabilizationFocalMm, 0f)
+    }
+
+    @Test
+    fun stabilization_values_survive_persist_and_reload() {
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            stabilization = true,
+            stabilizationMode = 2, // Horizon Lock
+            stabilizationStrength = 85f,
+            stabilizationZoomLimit = 1.25f,
+            stabilizationTrimMs = -40f,
+            stabilizationFocalMm = 24f,
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(grade, reloaded)
+        assertEquals(true, reloaded.stabilization)
+        assertEquals(2, reloaded.stabilizationMode)
+        assertEquals(85f, reloaded.stabilizationStrength, 0f)
+        assertEquals(1.25f, reloaded.stabilizationZoomLimit, 0f)
+        assertEquals(-40f, reloaded.stabilizationTrimMs, 0f)
+        assertEquals(24f, reloaded.stabilizationFocalMm, 0f)
+    }
+
+    @Test
+    fun off_grade_renders_without_stabilization_keys() {
+        // Omit-when-off: a grade with stabilization off renders NONE of the
+        // six keys, so the file this build writes for an off grade is
+        // byte-identical to the pre-stabilization format (the binding
+        // back-compat rule of this package). The sub-values being non-default
+        // must NOT leak keys while the toggle is off.
+        val rendered = GradeStore.renderGrade(
+            GradeK(stabilization = false, stabilizationStrength = 99f, stabilizationTrimMs = 120f)
+        )
+        assertEquals(false, rendered.contains("stabilization"))
+        // The on case renders all six, so the omission is the toggle's doing.
+        val on = GradeStore.renderGrade(GradeK(stabilization = true))
+        assertEquals(true, on.contains("\"stabilization\":true"))
+        assertEquals(true, on.contains("\"stabilizationMode\":0"))
+        assertEquals(true, on.contains("\"stabilizationStrength\":70.0"))
+        assertEquals(true, on.contains("\"stabilizationZoomLimit\":1.1"))
+        assertEquals(true, on.contains("\"stabilizationTrimMs\":0.0"))
+        assertEquals(true, on.contains("\"stabilizationFocalMm\":0.0"))
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }
