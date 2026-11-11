@@ -11,10 +11,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -23,27 +23,38 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.runtime.remember
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.export.ExportEta
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.State
+import com.ritim.ritimcraw.export.Target
+import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
 
 /**
- * Exports screen (DESIGN.md Export job): job rows with the format line, DONE
- * and CANCELLED stamps, and a failed card naming the stage and cause with
- * "Nothing was written" and a Retry action. Jobs stay until cleared.
+ * Exports screen (owner request 2026-11-11d §5): structured job cards —
+ * source filename, export type, output filename, status, Open — with the
+ * existing status semantics carrying the visual distinctions:
  *
- * DONE rows open on tap (owner request 2026-11-11 §1): the whole row and
+ * - QUEUED / CANCELLED: plain surface card, status line only.
+ * - RUNNING: plain surface card + the live progress block (bar, frames,
+ *   ETA — exactly the existing RunningJobProgress).
+ * - DONE: primary-container tinted card, output filename in tabular
+ *   numerals, Open action; the whole card opens on tap (as before).
+ * - FAILED: error-container card naming the stage and cause with
+ *   "Nothing was written" and Retry (exactly the existing card).
+ *
+ * Clear moved from the list's footer to the header's end slot (§5.2: a
+ * conventional toolbar location). Meaning unchanged: it clears job
+ * history only — never the output files on disk.
+ *
+ * DONE rows open on tap (owner request 2026-11-11 §1): the whole card and
  * its Open button both fire [onOpen] with the job — the shell decides what
  * that opens (the job's media-store row, the app's own copy through
  * FileProvider, or an understandable message; see ExportOpen).
- *
- * The engine wires in the device pass; this build renders whatever jobs the
- * [ExportStore][com.ritim.ritimcraw.export.ExportStore] holds.
  */
 @Composable
 fun ExportsScreen(
@@ -61,10 +72,17 @@ fun ExportsScreen(
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        Text(
-            stringResource(R.string.exports_title),
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(vertical = 8.dp),
+        // §5.2: Clear is a header/toolbar action now, not a list footer.
+        // Same callback, same meaning — job history only.
+        ScreenHeader(
+            title = stringResource(R.string.exports_title),
+            actions = {
+                if (jobs.isNotEmpty()) {
+                    TextButton(onClick = onClear) {
+                        Text(stringResource(R.string.exports_clear))
+                    }
+                }
+            },
         )
         if (jobs.isEmpty()) {
             Column(
@@ -88,90 +106,154 @@ fun ExportsScreen(
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 8.dp),
+                contentPadding = PaddingValues(vertical = 4.dp, horizontal = 0.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(jobs, key = { it.id }) { job ->
-                    ExportJobRow(job, sourceNames[job.sourceId] ?: job.sourceId, onRetry, onOpen)
+                    ExportJobCard(job, sourceNames, onRetry, onOpen)
                 }
             }
-            TextButton(
-                onClick = onClear,
-                modifier = Modifier
-                    .align(Alignment.End)
-                    .padding(vertical = 4.dp),
-            ) {
-                Text(stringResource(R.string.exports_clear))
+        }
+    }
+}
+
+/**
+ * One structured job card (§5): source filename headline, export type
+ * beneath, then the state-specific block. The status distinctions come
+ * from the job's existing state only.
+ */
+@Composable
+private fun ExportJobCard(
+    job: ExportJob,
+    sourceNames: Map<String, String>,
+    onRetry: (ExportJob) -> Unit,
+    onOpen: (ExportJob) -> Unit,
+) {
+    if (job.state == State.FAILED) {
+        FailedJobCard(job, ExportRowModel.sourceName(job, sourceNames), onRetry)
+        return
+    }
+    // DONE reads as the positive result: the Monet primary-container tint
+    // marks the row that has something to open (a stock M3 role, no new
+    // colors). Every other state keeps the plain surface card.
+    val done = job.state == State.DONE
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (done) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerLow
+            },
+            contentColor = if (done) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                // 48dp targets (DESIGN.md): the card itself is the tap
+                // target in addition to the Open button (DONE only).
+                if (ExportRowModel.isOpenable(job.state)) {
+                    Modifier.clickable { onOpen(job) }
+                } else {
+                    Modifier
+                },
+            ),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp),
+        ) {
+            // Source filename (§5): the clip's display name — the row's
+            // headline, medium weight (§3.1 filenames).
+            Text(
+                ExportRowModel.sourceName(job, sourceNames),
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // Export type (§5): the existing format line. On the DONE card
+            // it inherits the container's on-color (onSurfaceVariant is not
+            // designed for primaryContainer); size alone separates it from
+            // the headline.
+            Text(
+                stringResource(
+                    when (job.target) {
+                        Target.DNG -> R.string.exports_format_dng
+                        Target.PHOTO -> R.string.exports_format_photo
+                        Target.MP4 -> R.string.exports_format_mp4
+                    }
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (done) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            when (job.state) {
+                State.QUEUED ->
+                    StatusLine(stringResource(R.string.exports_job_queued))
+                State.RUNNING -> RunningJobProgress(job)
+                State.DONE -> {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // Status + output filename in one line (§5): the
+                        // existing "Done — <file>" resource names the file
+                        // this job wrote — job.fileName, the single source
+                        // every path already goes through, so the row can
+                        // never name a file the job did not write. Tabular
+                        // numerals: digits in file names never reflow.
+                        // Inherits the card's onPrimaryContainer content
+                        // color (the DONE tint).
+                        Text(
+                            stringResource(
+                                R.string.exports_job_done_named,
+                                ExportRowModel.outputFileName(job),
+                            ),
+                            style = MaterialTheme.typography.bodySmall.merge(Tnum),
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        // Open stays a discoverable button on every DONE
+                        // card (§5.2), not just the tap target. Pinned to
+                        // the card's content color: TextButton defaults
+                        // to primary, which fights the container tint.
+                        TextButton(
+                            onClick = { onOpen(job) },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            ),
+                        ) {
+                            Text(stringResource(R.string.exports_job_open))
+                        }
+                    }
+                }
+                State.CANCELLED ->
+                    StatusLine(stringResource(R.string.exports_job_cancelled))
+                State.FAILED -> Unit // handled by FailedJobCard
             }
         }
     }
 }
 
 @Composable
-private fun ExportJobRow(
-    job: ExportJob,
-    // The clip's display name (§2b), id fallback resolved by the caller.
-    sourceName: String,
-    onRetry: (ExportJob) -> Unit,
-    onOpen: (ExportJob) -> Unit,
-) {
-    if (job.state == State.FAILED) {
-        FailedJobCard(job, sourceName, onRetry)
-    } else {
-        ListItem(
-            headlineContent = { Text(sourceName) },
-            supportingContent = {
-                Column {
-                    // Format line on every non-failed row (DESIGN.md Export job).
-                    // RAW-11 Frame Picker: a PHOTO row (a developed frame)
-                    // reads "PNG photo" — its own format line, not the MP4
-                    // fallback.
-                    Text(
-                        stringResource(
-                            when (job.target) {
-                                com.ritim.ritimcraw.export.Target.DNG -> R.string.exports_format_dng
-                                com.ritim.ritimcraw.export.Target.PHOTO -> R.string.exports_format_photo
-                                com.ritim.ritimcraw.export.Target.MP4 -> R.string.exports_format_mp4
-                            }
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    when (job.state) {
-                        State.QUEUED ->
-                            Text(stringResource(R.string.exports_job_queued))
-                        State.RUNNING -> RunningJobProgress(job)
-                        State.DONE -> {
-                            // DONE stamp with the output name (detail on a DONE
-                            // job is the output file name).
-                            Text(
-                                stringResource(
-                                    R.string.exports_job_done_named,
-                                    job.detail ?: "",
-                                )
-                            )
-                            // The whole row opens the finished file (owner
-                            // request §1); the button is the visible affordance
-                            // for the same action.
-                            TextButton(onClick = { onOpen(job) }) {
-                                Text(stringResource(R.string.exports_job_open))
-                            }
-                        }
-                        State.CANCELLED ->
-                            Text(stringResource(R.string.exports_job_cancelled))
-                        State.FAILED -> Unit // handled by FailedJobCard
-                    }
-                }
-            },
-            // 48dp targets (DESIGN.md): the row itself is the tap target in
-            // addition to the Open button.
-            modifier = if (job.state == State.DONE) {
-                Modifier.clickable { onOpen(job) }
-            } else {
-                Modifier
-            },
-        )
-    }
+private fun StatusLine(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 }
 
 /**
@@ -192,7 +274,7 @@ private fun ExportJobRow(
 private fun RunningJobProgress(job: ExportJob) {
     val frames = job.framesDone
     val total = job.framesTotal
-    Column(Modifier.padding(top = 2.dp)) {
+    Column(Modifier.padding(top = 4.dp)) {
         if (frames != null && total != null && total > 0) {
             val finalizing = frames >= total
             LinearProgressIndicator(

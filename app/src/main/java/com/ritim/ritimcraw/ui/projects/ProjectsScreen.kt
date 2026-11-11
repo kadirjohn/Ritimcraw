@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.ui.components.ScreenHeader
 
 /**
  * Projects screen: designed empty state (DESIGN.md Empty states). Projects
@@ -25,11 +26,10 @@ fun ProjectsScreen(modifier: Modifier = Modifier) {
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        Text(
-            stringResource(R.string.projects_title),
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(vertical = 8.dp),
-        )
+        // Shared header (owner request 2026-11-11d: consistent top area
+        // across the main screens) — same title, same compact rhythm as
+        // Library/Exports; no actions on this screen yet.
+        ScreenHeader(title = stringResource(R.string.projects_title))
         Column(
             Modifier
                 .fillMaxWidth()
