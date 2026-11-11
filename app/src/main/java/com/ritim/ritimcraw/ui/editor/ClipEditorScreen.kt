@@ -130,9 +130,29 @@ object EditorPreviewLogic {
      */
     fun recordedWidth(sessionWidth: Int, persistedWidth: Int): Int =
         if (sessionWidth > 0) sessionWidth else persistedWidth
+
+    /**
+     * Where ONE system back press lands while the editor is open (owner
+     * finding 2026-11-11: back exited the app from the normal editor —
+     * the BackHandler was enabled only in fullscreen). Fullscreen pops
+     * first; outside fullscreen the press leaves the editor (the
+     * screen's onBack returns to the library). Pure so a JVM test can
+     * lock the chain; the screen's BackHandler is always active and
+     * branches on this decision.
+     */
+    fun onBack(fullscreen: Boolean): EditorBackDestination =
+        if (fullscreen) EditorBackDestination.EXIT_FULLSCREEN
+        else EditorBackDestination.LEAVE_EDITOR
 }
 
 enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
+
+/**
+ * Where one system back press lands while the editor is open: the pure
+ * result of [EditorPreviewLogic.onBack], branched on by the screen's
+ * always-active BackHandler.
+ */
+enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
 
 /**
  * Clip editor (DESIGN.md Editor): preview frame on
@@ -262,10 +282,24 @@ fun ClipEditorScreen(
         // editor session — only the layout changes (top bar / tabs / panel
         // hidden, the preview takes the flex space, the transport stays).
         // Saveable so it survives configuration changes like the tab does;
-        // the system back chain pops fullscreen FIRST, then the editor
-        // (BackHandler below) — never a double-back to leave the clip.
+        // the system back chain pops fullscreen FIRST, then the editor —
+        // never a double-back to leave the clip.
         var fullscreen by rememberSaveable { mutableStateOf(false) }
-        BackHandler(enabled = fullscreen) { fullscreen = false }
+        // The system back chain (owner finding 2026-11-11: back exited the
+        // app from the normal editor): the editor's BackHandler is ALWAYS
+        // active while the editor is open — enabled-only-in-fullscreen let
+        // the press fall through to the system and kill the app. One press
+        // pops fullscreen first (the pure decision in
+        // EditorPreviewLogic.onBack); outside fullscreen it leaves the
+        // editor (onBack returns to the library). The ModalBottomSheets
+        // compose after this handler, so an open sheet still wins the
+        // press and dismisses first.
+        BackHandler {
+            when (EditorPreviewLogic.onBack(fullscreen)) {
+                EditorBackDestination.EXIT_FULLSCREEN -> fullscreen = false
+                EditorBackDestination.LEAVE_EDITOR -> onBack()
+            }
+        }
         // Frame Picker sheet (RAW-11): opened from the clip-info sheet's
         // "Develop frame" row. Saveable like the tab/fullscreen flags so a
         // configuration change (rotation) does not drop a half-made choice.
