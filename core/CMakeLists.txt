@@ -52,7 +52,8 @@ add_library(rawedit STATIC
     src/Orientation.cpp
     src/OrientationEstimate.cpp
     src/Sync.cpp
-    src/Temporal.cpp)
+    src/Temporal.cpp
+    src/Stabilization.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)
@@ -75,6 +76,9 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_temporal tests/test_temporal.cpp)
     target_include_directories(test_temporal PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_temporal PRIVATE rawedit)
+    add_executable(test_stabilization tests/test_stabilization.cpp)
+    target_include_directories(test_stabilization PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_stabilization PRIVATE rawedit)
 
     add_executable(rawcli ../cli/main.cpp)
     target_link_libraries(rawcli PRIVATE rawedit)
@@ -84,4 +88,5 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME develop COMMAND test_develop)
     add_test(NAME noise COMMAND test_noise)
     add_test(NAME temporal COMMAND test_temporal)
+    add_test(NAME stabilization COMMAND test_stabilization)
 endif()
