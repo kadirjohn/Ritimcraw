@@ -20,6 +20,14 @@ object SliderSteps {
     /** Highlights / Tint and the six tone controls are integer steps. */
     const val UNIT_STEP = 1f
 
+    /**
+     * Strength the Temporal NR switch seeds on first enable (DN-05..DN-09):
+     * the native stage is a no-op at 0, so a toggle that visibly changes
+     * nothing would read as broken. Midpoint — conservative but effective
+     * (the owner's directive for this stage).
+     */
+    const val TEMPORAL_STRENGTH_DEFAULT = 50f
+
     /** Snaps a single axis to its step grid (slider change events). */
     fun snapExposure(value: Float): Float = quantize(value, EXPOSURE_STEP)
     fun snapHighlights(value: Float): Float = quantize(value, UNIT_STEP)
@@ -33,6 +41,7 @@ object SliderSteps {
     fun snapContrast(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapSharpness(value: Float): Float = quantize(value, UNIT_STEP)
     fun snapDetail(value: Float): Float = quantize(value, UNIT_STEP)
+    fun snapTemporalStrength(value: Float): Float = quantize(value, UNIT_STEP)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
@@ -53,6 +62,7 @@ object SliderSteps {
             contrast = snapContrast(grade.contrast),
             sharpness = snapSharpness(grade.sharpness),
             detail = snapDetail(grade.detail),
+            temporalStrength = snapTemporalStrength(grade.temporalStrength),
         )
     }
 
@@ -64,7 +74,7 @@ object SliderSteps {
     enum class Axis {
         EXPOSURE, HIGHLIGHTS, TEMPERATURE, TINT,
         SATURATION, BLACK_POINT, WHITE_POINT, SHADOWS, MIDTONES, CONTRAST,
-        SHARPNESS, DETAIL,
+        SHARPNESS, DETAIL, TEMPORAL_STRENGTH,
     }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
@@ -80,6 +90,7 @@ object SliderSteps {
         Axis.CONTRAST -> current.copy(contrast = GradeK().contrast)
         Axis.SHARPNESS -> current.copy(sharpness = GradeK().sharpness)
         Axis.DETAIL -> current.copy(detail = GradeK().detail)
+        Axis.TEMPORAL_STRENGTH -> current.copy(temporalStrength = GradeK().temporalStrength)
     }
 
     /**

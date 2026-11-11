@@ -54,6 +54,8 @@
     <string name="editor_tonemap_off">Kapalı</string>
     <string name="editor_tonemap_aces">ACES</string>
     <string name="editor_tonemap_agx">AgX</string>
+    <string name="editor_temporal_nr">Temporal NR</string>
+    <string name="editor_slider_temporal_strength">Güç</string>
     <string name="editor_render_preview">Önizlemeyi oluştur</string>
     <string name="editor_play">Oynat</string>
     <string name="editor_pause">Duraklat</string>

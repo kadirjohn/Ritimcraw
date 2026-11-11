@@ -54,6 +54,8 @@
     <string name="editor_tonemap_off">Off</string>
     <string name="editor_tonemap_aces">ACES</string>
     <string name="editor_tonemap_agx">AgX</string>
+    <string name="editor_temporal_nr">Temporal NR</string>
+    <string name="editor_slider_temporal_strength">Strength</string>
     <string name="editor_render_preview">Render preview</string>
     <string name="editor_play">Play</string>
     <string name="editor_pause">Pause</string>
