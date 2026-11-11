@@ -1074,16 +1074,35 @@ fun ClipEditorScreen(
                 },
                 onSeekStarted = { applyTierEvent(SliderTiers.Event.DragStarted) },
                 onSeekFinished = { applyTierEvent(SliderTiers.Event.DragEnded) },
+                // Adaptive readout format (owner request 2026-11-11b
+                // section 7): the transport pair's field count follows the
+                // clip's TOTAL (2/3/4 fields), so the salise field only
+                // appears when the clip runs a minute or longer. The real
+                // clip fps feeds the frames field (the previous pair used
+                // Format's 24 default; the precision readout already used
+                // the real rate — now the pair matches it).
+                fps = clipInfo.fps,
                 // Precision frame scrub (owner request 2026-11-11 section
                 // 2): while active, the readout line above the bar shows
                 // the exact 1-based frame number + its timecode (the
-                // frame picker's string precedent; the timecode comes
-                // from the pure readoutTimecode).
+                // frame picker's string precedent). The timecode now uses
+                // the ADAPTIVE format (owner request 2026-11-11b section
+                // 7: the precision readout matches the transport pair) —
+                // same elapsed microseconds and same nominal fps as the
+                // pair, so the two readouts agree on every shared field.
+                // PrecisionScrub.readoutTimecode (PrecisionScrub.kt, fixed
+                // 4-field, outside this change's file footprint) stays the
+                // pure fixed-format helper; the FORMAT CALL here is the
+                // only precision-readout change.
                 precisionReadout = if (precisionActive && pts != null) {
                     stringResource(
                         R.string.editor_precision_frame,
                         positionFrame + 1,
-                        PrecisionScrub.readoutTimecode(positionFrame, pts, clipInfo.fps),
+                        Format.adaptiveTimecode(
+                            elapsedUs,
+                            Format.nominalFps(clipInfo.fps),
+                            Format.fieldsFor(totalUs),
+                        ),
                     )
                 } else {
                     null
@@ -1317,6 +1336,7 @@ fun ClipEditorScreen(
             frameIndex = positionFrame,
             elapsedUs = elapsedUs,
             fps = clipInfo.fps,
+            totalUs = totalUs,
             onDevelopPhoto = { frameIndex, separate ->
                 framePickerOpen = false
                 onDevelopPhoto(frameIndex, separate)
@@ -1346,6 +1366,7 @@ private fun FramePickerSheet(
     frameIndex: Int,
     elapsedUs: Long,
     fps: Float,
+    totalUs: Long,
     onDevelopPhoto: (frameIndex: Int, separate: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1358,15 +1379,21 @@ private fun FramePickerSheet(
         // Frame number + timecode: the display number is 1-BASED (frame 1
         // is the first frame — the count a photographer reads off a
         // clip), while the callback hands the 0-BASED index the render
-        // pipeline takes. The timecode matches the transport strip
-        // (same elapsed microseconds; fps derives from the real
-        // timestamps, and formatTimecode falls back to 24 for an
-        // underivable rate — a 0-fps clip still shows a sane clock).
+        // pipeline takes. The timecode matches the transport strip's
+        // ADAPTIVE format (owner request 2026-11-11b section 7: both
+        // readouts agree on every shared field) — same elapsed
+        // microseconds, same nominal fps (falls back to 24 for an
+        // underivable rate), same 2/3/4 field count from the clip's
+        // total. [totalUs] is passed in (the sheet's caller owns it).
         Text(
             text = stringResource(
                 R.string.editor_frame_picker_frame,
                 frameIndex + 1,
-                Format.formatTimecode(elapsedUs, fps.toInt()),
+                Format.adaptiveTimecode(
+                    elapsedUs,
+                    Format.nominalFps(fps),
+                    Format.fieldsFor(totalUs),
+                ),
             ),
             style = MaterialTheme.typography.labelMedium.merge(Tnum),
             color = MaterialTheme.colorScheme.onSurfaceVariant,

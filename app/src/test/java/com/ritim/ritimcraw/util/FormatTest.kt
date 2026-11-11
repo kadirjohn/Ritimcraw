@@ -410,6 +410,33 @@ class FormatTest {
     }
 
     @Test
+    fun adaptive_timecode_fields_are_two_digits_at_any_timestamp() {
+        // The per-digit cell grid's structural invariant (the transport
+        // renders one Text node per DIGIT): every field is EXACTLY two
+        // digits, so the node count (and with it every colon's x) is
+        // content-independent during playback — a field can never grow
+        // to three digits and push the cells after it. Pinned per the
+        // round-3b acceptance: the separator sits at the same x at ANY
+        // two frame values. Scope: the timestamps the transport really
+        // renders (current <= total, both under the documented >99h
+        // assumption — past it the hours field grows, see
+        // widestTimecodePair's KDoc — and fps <= 99, so the frames
+        // field stays two digits).
+        val underHundredHours = 258_186_242_047L          // ~71.6 h fixture
+        listOf(0L, 999_999L, 59_999_999L, 60_000_000L, 3_599_999_999L,
+               3_600_000_000L, underHundredHours).forEach { pts ->
+            listOf(2, 3, 4).forEach { fields ->
+                val fieldsList = Format.adaptiveTimecodeFields(pts, 24, fields)
+                assertEquals("field count at $pts us / $fields fields",
+                    fields, fieldsList.size)
+                fieldsList.forEach { field ->
+                    assertEquals("field $field at $pts us / $fields fields", 2, field.length)
+                }
+            }
+        }
+    }
+
+    @Test
     fun adaptive_timecode_rejects_other_field_counts() {
         listOf(0, 1, 5, -1).forEach { fields ->
             try {
