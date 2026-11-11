@@ -26,6 +26,7 @@ class PreviewRendererTest {
             shadows = -35f, midtones = 12f, contrast = 55f,
             asShot = false, highlightReconstruction = true, keepVignetting = false,
             sharpness = 25f, detail = -10f, tonemap = 1,
+            temporalNr = true, temporalStrength = 62.5f,
         )
         val args = GradeMapping.toNative(grade)
         assertEquals(1.2f, args.exposureEv, 0f)
@@ -44,6 +45,10 @@ class PreviewRendererTest {
         assertEquals(25f, args.sharpness, 0f)
         assertEquals(-10f, args.detail, 0f)
         assertEquals(1, args.tonemap)
+        // Temporal NR (DN-05..DN-09): toggle + strength travel like every
+        // other grade field.
+        assertEquals(true, args.temporalNr)
+        assertEquals(62.5f, args.temporalStrength, 0f)
     }
 
     @Test
@@ -75,6 +80,11 @@ class PreviewRendererTest {
         assertEquals(0f, args.sharpness, 0f)
         assertEquals(0f, args.detail, 0f)
         assertEquals(0, args.tonemap)
+        // Temporal NR defaults to OFF/0 (DN-05..DN-09): a default grade never
+        // runs the temporal stage, so the default look is unchanged and old
+        // projects keep their exact old look.
+        assertEquals(false, args.temporalNr)
+        assertEquals(0f, args.temporalStrength, 0f)
     }
 
     @Test
@@ -85,6 +95,7 @@ class PreviewRendererTest {
             shadows = 90f, midtones = -33f, contrast = 100f,
             asShot = false, highlightReconstruction = false, keepVignetting = true,
             sharpness = -45f, detail = 67f, tonemap = 2,
+            temporalNr = true, temporalStrength = 100f,
         )
         val args = GradeMapping.toNative(grade)
         val back = GradeK(
@@ -104,6 +115,8 @@ class PreviewRendererTest {
             sharpness = args.sharpness,
             detail = args.detail,
             tonemap = args.tonemap,
+            temporalNr = args.temporalNr,
+            temporalStrength = args.temporalStrength,
         )
         assertEquals(grade.exposureEv, back.exposureEv, 0f)
         assertEquals(grade.highlights, back.highlights, 0f)
@@ -121,6 +134,8 @@ class PreviewRendererTest {
         assertEquals(grade.sharpness, back.sharpness, 0f)
         assertEquals(grade.detail, back.detail, 0f)
         assertEquals(grade.tonemap, back.tonemap)
+        assertEquals(grade.temporalNr, back.temporalNr)
+        assertEquals(grade.temporalStrength, back.temporalStrength, 0f)
     }
 
     // ---- debounce window ----

@@ -145,6 +145,8 @@ class ExportStore(private val file: File) {
                 .append(",\"sharpness\":").append(num(g.sharpness))
                 .append(",\"detail\":").append(num(g.detail))
                 .append(",\"tonemap\":").append(g.tonemap)
+                .append(",\"temporalNr\":").append(g.temporalNr)
+                .append(",\"temporalStrength\":").append(num(g.temporalStrength))
                 .append('}')
             return sb.toString()
         }
@@ -207,6 +209,11 @@ class ExportStore(private val file: File) {
                 sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
                 detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
                 tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
+                // Temporal NR (DN-05..DN-09) postdates older snapshots: fall
+                // back to off/0 so a queued job never gains temporal NR
+                // behind the user's back; the old look is preserved exactly.
+                temporalNr = m["temporalNr"] as? Boolean ?: false,
+                temporalStrength = (m["temporalStrength"] as? Double)?.toFloat() ?: 0f,
             )
         }
 

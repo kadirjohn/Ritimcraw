@@ -119,6 +119,7 @@ class PreviewSession private constructor(
                 args.shadows, args.midtones, args.contrast,
                 args.asShot, args.highlightReconstruction, args.keepVignetting,
                 args.sharpness, args.detail, args.tonemap,
+                args.temporalNr, args.temporalStrength,
                 maxDim,
             )
         )
@@ -167,6 +168,7 @@ class PreviewSession private constructor(
                                     args.shadows, args.midtones, args.contrast,
                                     args.asShot, args.highlightReconstruction, args.keepVignetting,
                                     args.sharpness, args.detail, args.tonemap,
+                                    args.temporalNr, args.temporalStrength,
                                     maxDim,
                                 )
                             )

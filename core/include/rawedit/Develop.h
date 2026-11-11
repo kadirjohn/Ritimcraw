@@ -159,6 +159,12 @@ struct Grade {
     float sharpness = 0.0f;
     float detail = 0.0f;
     int tonemap = 0; // 0 off, 1 ACES, 2 AgX — see the comment block above
+    // Temporal NR (DN-05..DN-09): the caller (JNI bridge) applies it to the
+    // CFA frames BEFORE developCpu — developCpu itself never reads these;
+    // they live on Grade so the whole grade pipeline (Kotlin model, JNI
+    // signatures, project store, UI) carries them like any other control.
+    bool temporalNr = false;
+    float temporalStrength = 0.0f; // 0..100, the user slider
 };
 
 // Linear RGB float image, row-major, 3 floats per pixel (r, g, b).

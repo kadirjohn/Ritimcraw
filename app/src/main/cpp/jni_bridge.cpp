@@ -23,6 +23,7 @@
 #include <rawedit/DngWriter.h>
 #include <rawedit/Result.h>
 #include <rawedit/Source.h>
+#include <rawedit/Temporal.h>
 #include <rawedit/Thumbnail.h>
 #include <rawedit/Transfer.h>
 
@@ -65,6 +66,31 @@ void setError(int code, int stage, const std::string& message) {
 // "too many open clips" class of failure), so the table itself is guarded.
 constexpr int kMaxSources = 8;
 
+// One immutable decoded CFA. Every decoded frame is wrapped in a shared
+// const buffer the moment readFrame returns it, and the interactive cache,
+// the temporal ring and the merge input all hold shared_ptrs to the SAME
+// allocation: a frame is decoded at most once per eviction cycle and never
+// copied between caches. Const-by-construction also enforces the Temporal.h
+// "pristine inputs" contract — nothing can write a merged frame back into a
+// buffer the ring still shares.
+using CfaBuffer = std::shared_ptr<const std::vector<uint16_t>>;
+
+// One decoded CFA in the temporal neighbor ring, keyed by frame index.
+// PRISTINE by contract: the ring stores only what readFrame returned —
+// temporal OUTPUT is never fed back as temporal INPUT (Temporal.h "what the
+// caller owns"), so a merged frame can never become another merge's input.
+struct RingFrame {
+    int index = -1;
+    CfaBuffer cfa;
+};
+
+// Temporal neighbor ring capacity (DN-09): center + prev + next is 3; the
+// 4th slot lets a one-frame scrub back-and-forth stay cached. A 4K CFA is
+// ~16.6 MB (uint16), so the ring bound is ~66 MB per open clip at 4K — the
+// documented worst case (the ring is cleared on close/reopen and emptied
+// when temporal NR turns off).
+constexpr size_t kTemporalRingCapacity = 4;
+
 struct Entry {
     std::unique_ptr<rawedit::Source> source;
     bool inUse = false;
@@ -73,13 +99,41 @@ struct Entry {
     // decode. Frame-keyed; a new handle (reopen) starts with an empty cache.
     // All access is confined to the owner session's engine thread except
     // slot bookkeeping, which the registry mutex already guards.
-    std::vector<uint16_t> cachedCfa;
+    CfaBuffer cachedCfa;
     rawedit::FrameInfo cachedInfo{};
     int cachedFrameIndex = -1;
+    // Temporal NR state (spec DN-05..DN-09), same threading contract as the
+    // interactive cache above (owner session's engine thread only):
+    //   ring           — LRU of pristine decoded CFAs, see RingFrame;
+    //   mergedCfa      — the last temporal merge OUTPUT, non-null while
+    //                    mergedFrameIndex/mergedStrength match the request
+    //                    (the merge is a pure function of the pristine
+    //                    window + strength, so a grade-only re-render — any
+    //                    non-temporal slider — reuses it instead of
+    //                    re-merging).
+    std::vector<RingFrame> ring;
+    int mergedFrameIndex = -1;
+    float mergedStrength = -1.0f;
+    CfaBuffer mergedCfa;
 };
 
 Entry gEntries[kMaxSources];
 std::mutex gRegistryMutex;
+
+// Drops every per-session cache of one Entry (interactive + temporal). Call
+// sites hold the registry mutex. The shared_ptr resets drop the Entry's
+// references so the buffers free with the last owner — a closed 4K clip's
+// ~66 MB ring must not stay resident.
+void clearEntryCaches(Entry& e) {
+    e.cachedCfa = nullptr;
+    e.cachedInfo = rawedit::FrameInfo{};
+    e.cachedFrameIndex = -1;
+    e.ring.clear();
+    e.ring.shrink_to_fit();
+    e.mergedFrameIndex = -1;
+    e.mergedStrength = -1.0f;
+    e.mergedCfa = nullptr;
+}
 
 int64_t insertSource(std::unique_ptr<rawedit::Source> src) {
     std::lock_guard<std::mutex> lock(gRegistryMutex);
@@ -87,11 +141,8 @@ int64_t insertSource(std::unique_ptr<rawedit::Source> src) {
         if (!gEntries[i].inUse) {
             gEntries[i].source = std::move(src);
             gEntries[i].inUse = true;
-            // A reopened slot starts with an empty interactive cache.
-            gEntries[i].cachedCfa.clear();
-            gEntries[i].cachedCfa.shrink_to_fit();
-            gEntries[i].cachedInfo = rawedit::FrameInfo{};
-            gEntries[i].cachedFrameIndex = -1;
+            // A reopened slot starts with empty caches.
+            clearEntryCaches(gEntries[i]);
             // Handle packs slot index; slots are tiny so this is exact.
             return static_cast<int64_t>(i) + 1;
         }
@@ -157,15 +208,21 @@ int strideFor(const rawedit::FrameInfo& info, int maxDim) {
 // safety gain. The three RAW booleans (asShot, highlightReconstruction,
 // keepVignetting) follow the same flat-register style as jbooleans; the
 // detail/tonemap package (COL-15/COL-16) appends two floats and the tonemap
-// selector int in the same style. Parameter order = GradeK field order
+// selector int in the same style; temporal NR (DN-05..DN-09) appends its
+// toggle + strength the same way. Parameter order = GradeK field order
 // (Develop.h Grade order): exposureEv, highlights, tempK, tint, saturation,
 // blackPoint, whitePoint, shadows, midtones, contrast, asShot,
-// highlightReconstruction, keepVignetting, sharpness, detail, tonemap.
+// highlightReconstruction, keepVignetting, sharpness, detail, tonemap,
+// temporalNr, temporalStrength. developCpu itself ignores the temporal
+// fields (the bridge applies the stage to the CFA before developCpu); they
+// ride Grade so the whole grade pipeline carries them like any other
+// control.
 rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, float tint,
                                float saturation, float blackPoint, float whitePoint,
                                float shadows, float midtones, float contrast,
                                bool asShot, bool highlightReconstruction, bool keepVignetting,
-                               float sharpness, float detail, int tonemap) {
+                               float sharpness, float detail, int tonemap,
+                               bool temporalNr, float temporalStrength) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
@@ -183,6 +240,8 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.sharpness = sharpness;
     g.detail = detail;
     g.tonemap = tonemap;
+    g.temporalNr = temporalNr;
+    g.temporalStrength = temporalStrength;
     return g;
 }
 
@@ -260,6 +319,235 @@ jintArray developToArgb(JNIEnv* env,
     return arr;
 }
 
+// Temporal NR window assembly (spec DN-05..DN-09) ------------------------------
+//
+// Everything the JNI entry points need from Temporal.h, gathered behind one
+// helper so the preview, cached-preview and export paths run the SAME logic:
+//   - an LRU ring of pristine decoded CFAs (kTemporalRingCapacity entries,
+//     newest first) so sequential playback/scrub amortizes to ~1 decode per
+//     frame (DN-09);
+//   - PTS-window eligibility via temporalNeighborEligible against the LOCAL
+//     frame duration (median of the center frame's immediate neighbors'
+//     PTS deltas; falls back to 1/fps-style spacing from pts[0] when the
+//     clip has fewer than three frames);
+//   - dimension + CFA-pattern agreement with the center frame (a neighbor
+//     from a format change inside the clip is rejected, never blended);
+//   - per-frame noise profiles via Source::noiseProfile (the temporal stage
+//     itself falls back to its documented fallback sigma when invalid);
+//   - a (frameIndex, strength)-keyed merge cache: the merge is a pure
+//     function of the pristine window + strength, so a grade-only re-render
+//     (any non-temporal slider moved) reuses the previous merge output
+//     instead of re-running motion estimation.
+//
+// Returns the CFA to develop: the merged frame when temporal NR produced
+// one, or the PRISTINE center otherwise. NEVER mutates the ring (the ring
+// is inputs-only). A nullptr source ring entry (decode failure) is treated
+// as "no such neighbor" — the merge then proceeds with the other side, the
+// conservative behavior.
+
+// Returns frame i's pristine CFA from the ring, decoding it once on a miss.
+// The buffer is shared-const (CfaBuffer), so the returned pointer stays valid
+// no matter what later loads do to the ring (eviction frees the RingFrame,
+// not a buffer someone else still holds). MRU order is maintained by moving
+// a hit to the back. Returns nullptr on a decode failure (error already set).
+CfaBuffer loadRingFrame(rawedit::Source& s, Entry& e, int frameIndex) {
+    for (size_t i = 0; i < e.ring.size(); ++i) {
+        if (e.ring[i].index != frameIndex) continue;
+        // Move the hit to the back (MRU) — cheap: shared_ptr swap.
+        if (i + 1 != e.ring.size()) {
+            RingFrame hit = std::move(e.ring[i]);
+            e.ring.erase(e.ring.begin() + static_cast<long>(i));
+            e.ring.push_back(std::move(hit));
+        }
+        return e.ring.back().cfa;
+    }
+    auto frame = s.readFrame(static_cast<size_t>(frameIndex));
+    if (!frame.isOk()) {
+        setError(static_cast<int>(frame.code), kStageFrameRead,
+                 std::string("frame read: ") + rawedit::errorName(frame.code) +
+                     " — " + frame.detail);
+        return nullptr;
+    }
+    RingFrame nf;
+    nf.index = frameIndex;
+    nf.cfa = CfaBuffer(new std::vector<uint16_t>(std::move(*frame.value)));
+    e.ring.push_back(std::move(nf));
+    while (e.ring.size() > kTemporalRingCapacity) e.ring.erase(e.ring.begin());
+    return e.ring.back().cfa;
+}
+
+// Ensures the ALREADY-DECODED center buffer is in the ring WITHOUT a decode:
+// a hit just refreshes MRU order; a miss pushes the shared buffer (no copy).
+// Used by temporalMergedCfa so a cache-hit center (the interactive cache
+// survived, but the ring was cleared by an off->on toggle or evicted during
+// a scrub) rejoins its neighbors at zero decode cost.
+CfaBuffer ensureRingFrame(Entry& e, int frameIndex, CfaBuffer cfa) {
+    for (size_t i = 0; i < e.ring.size(); ++i) {
+        if (e.ring[i].index != frameIndex) continue;
+        if (i + 1 != e.ring.size()) {
+            RingFrame hit = std::move(e.ring[i]);
+            e.ring.erase(e.ring.begin() + static_cast<long>(i));
+            e.ring.push_back(std::move(hit));
+        }
+        return e.ring.back().cfa;
+    }
+    RingFrame nf;
+    nf.index = frameIndex;
+    nf.cfa = std::move(cfa);
+    e.ring.push_back(std::move(nf));
+    while (e.ring.size() > kTemporalRingCapacity) e.ring.erase(e.ring.begin());
+    return e.ring.back().cfa;
+}
+
+// True when neighbor info can be blended with center info: same CFA
+// geometry (dimensions + pattern). Orientation change inside one clip would
+// also land here; FrameInfo has no per-frame orientation change in this
+// container, so geometry is the full check.
+bool temporalNeighborCompatible(const rawedit::FrameInfo& center,
+                                const rawedit::FrameInfo& neighbor) {
+    return center.width == neighbor.width && center.height == neighbor.height &&
+           center.cfa == neighbor.cfa;
+}
+
+// Local median frame duration around the center frame (microseconds):
+// median of {pts[i] - pts[i-1], pts[i+1] - pts[i]} — the local spacing, not
+// a whole-clip average, so a VFR clip with a slow intro still uses the
+// spacing around THIS frame. 0 when unknown (fewer than two frames); the
+// caller then skips the distance decay (dPts fields stay 0 = no decay).
+int64_t localFrameDurationUs(rawedit::Source& s, int frameIndex) {
+    const size_t n = s.frameCount();
+    if (n < 2) return 0;
+    const int i = frameIndex;
+    int64_t deltas[2] = {0, 0};
+    int k = 0;
+    if (i - 1 >= 0) deltas[k++] = s.frameInfo(static_cast<size_t>(i)).ptsUs -
+                                  s.frameInfo(static_cast<size_t>(i - 1)).ptsUs;
+    if (i + 1 < static_cast<int>(n))
+        deltas[k++] = s.frameInfo(static_cast<size_t>(i + 1)).ptsUs -
+                      s.frameInfo(static_cast<size_t>(i)).ptsUs;
+    if (k == 2) return (deltas[0] + deltas[1]) / 2; // median of 2 = mean
+    return deltas[0];
+}
+
+// The assembled window. Prev/next are shared-const buffers: eviction frees
+// the RingFrame, never a buffer this window still holds. Null when that
+// side is missing or ineligible. Noise profiles travel by value (8 floats
+// each); the temporal stage ignores them when .valid is false (fallback
+// sigma).
+struct TemporalWindow {
+    CfaBuffer prev;
+    CfaBuffer next;
+    rawedit::NoiseProfile prevNoise{};
+    rawedit::NoiseProfile nextNoise{};
+    rawedit::NoiseProfile centerNoise{};
+    int64_t prevDPtsUs = 0;
+    int64_t nextDPtsUs = 0;
+    int64_t frameDurationUs = 0;
+};
+
+// Loads the eligible temporal neighbors of frameIndex into the ring and
+// assembles the window. Returns false ONLY on a hard decode failure of a
+// neighbor (error set); missing/ineligible neighbors just leave their side
+// null. The center CFA itself is NOT loaded here — the caller routes it
+// through loadRingFrame too (the ring is the complete temporal window
+// store; sequential playback then decodes only the new frontier frame,
+// because frame i+1's prefetch is frame i's neighbor).
+bool assembleTemporalWindow(rawedit::Source& s, Entry& e, int frameIndex,
+                            const rawedit::FrameInfo& centerInfo,
+                            TemporalWindow& w) {
+    const int n = static_cast<int>(s.frameCount());
+    w.frameDurationUs = localFrameDurationUs(s, frameIndex);
+    w.centerNoise = s.noiseProfile(static_cast<size_t>(frameIndex));
+    for (int side = 0; side < 2; ++side) {
+        const int ni = side == 0 ? frameIndex - 1 : frameIndex + 1;
+        if (ni < 0 || ni >= n) continue;
+        const rawedit::FrameInfo niInfo = s.frameInfo(static_cast<size_t>(ni));
+        const int64_t dPts = niInfo.ptsUs - centerInfo.ptsUs;
+        if (!rawedit::temporalNeighborEligible(dPts, w.frameDurationUs)) continue;
+        if (!temporalNeighborCompatible(centerInfo, niInfo)) continue;
+        const CfaBuffer cfa = loadRingFrame(s, e, ni);
+        if (cfa == nullptr) return false; // decode failed: hard error
+        if (side == 0) {
+            w.prev = cfa;
+            w.prevNoise = s.noiseProfile(static_cast<size_t>(ni));
+            w.prevDPtsUs = dPts;
+        } else {
+            w.next = cfa;
+            w.nextNoise = s.noiseProfile(static_cast<size_t>(ni));
+            w.nextDPtsUs = dPts;
+        }
+    }
+    return true;
+}
+
+// Produces the CFA for developCpu with temporal NR applied when enabled:
+//   strength <= 0 or temporalNr off  -> the pristine center, untouched, and
+//   the temporal caches are emptied (an off->on toggle starts clean);
+//   cache hit (frame + strength)     -> the previous merge output;
+//   otherwise                        -> temporalMergeCfa over the window,
+//   output cached in mergedCfa.
+// centerCfa is the ALREADY-DECODED center (the interactive cache or a fresh
+// readFrame — the caller routes it through loadRingFrame too, so the ring
+// holds every frame of the window). On a neighbor decode failure returns
+// nullptr (error already set) so the caller fails the render; the
+// conservative alternative (merge with the other side only) would hide a
+// broken clip behind a slow render.
+CfaBuffer temporalMergedCfa(
+        rawedit::Source& s, Entry& e, int frameIndex,
+        CfaBuffer centerCfa,
+        const rawedit::FrameInfo& centerInfo,
+        bool temporalNr, float strength) {
+    if (!temporalNr || strength <= 0.0f) {
+        // Zero-cost when off: no neighbor decodes, no merge. Drop any
+        // temporal caches — including this render's center ring entry, so
+        // a clip with temporal NR off never holds temporal memory between
+        // renders (the interactive cachedCfa is untouched).
+        e.mergedFrameIndex = -1;
+        e.mergedStrength = -1.0f;
+        e.mergedCfa = nullptr;
+        e.ring.clear();
+        e.ring.shrink_to_fit();
+        return centerCfa;
+    }
+    if (e.mergedFrameIndex == frameIndex && e.mergedStrength == strength &&
+        e.mergedCfa != nullptr) {
+        return e.mergedCfa; // grade-only re-render: same merge, reuse
+    }
+    // The center joins the ring FIRST (no decode: the buffer is shared), so
+    // the window assembly below and any same-frame retry read it from there.
+    centerCfa = ensureRingFrame(e, frameIndex, std::move(centerCfa));
+    TemporalWindow w;
+    if (!assembleTemporalWindow(s, e, frameIndex, centerInfo, w)) {
+        return nullptr;
+    }
+    if (w.prev == nullptr && w.next == nullptr) {
+        // No eligible neighbor: both-rejected/edge frame. Output is the
+        // center bit for bit (the shared pristine buffer itself — no copy);
+        // cached so a grade-only re-render reuses it.
+        e.mergedFrameIndex = frameIndex;
+        e.mergedStrength = strength;
+        e.mergedCfa = centerCfa;
+        return e.mergedCfa;
+    }
+    rawedit::TemporalSettings ts;
+    ts.strength = strength;
+    ts.centerNoise = &w.centerNoise;
+    ts.prevNoise = &w.prevNoise;
+    ts.nextNoise = &w.nextNoise;
+    ts.prevDPtsUs = w.prevDPtsUs;
+    ts.nextDPtsUs = w.nextDPtsUs;
+    ts.frameDurationUs = w.frameDurationUs;
+    auto merged = std::make_shared<std::vector<uint16_t>>(centerCfa->size(), 0);
+    rawedit::temporalMergeCfa(centerCfa->data(), centerInfo,
+                              w.prev ? w.prev->data() : nullptr,
+                              w.next ? w.next->data() : nullptr,
+                              s.rawMeta(), ts, merged->data(), nullptr);
+    e.mergedFrameIndex = frameIndex;
+    e.mergedStrength = strength;
+    e.mergedCfa = CfaBuffer(std::move(merged));
+    return e.mergedCfa;
+}
+
 } // namespace
 
 extern "C" {
@@ -284,12 +572,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeCloseSource(JNIEnv*, jclass, 
         Entry& e = gEntries[handle - 1];
         e.source.reset();
         e.inUse = false;
-        // Drop the interactive cache with the Source it belongs to (a
-        // reopened handle starts fresh).
-        e.cachedCfa.clear();
-        e.cachedCfa.shrink_to_fit();
-        e.cachedInfo = rawedit::FrameInfo{};
-        e.cachedFrameIndex = -1;
+        // Drop the caches with the Source they belong to (a reopened handle
+        // starts fresh) and return their memory.
+        clearEntryCaches(e);
     }
 }
 
@@ -451,6 +736,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jfloat sharpness, jfloat detail, jint tonemap,
+        jboolean temporalNr, jfloat temporalStrength,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -461,25 +747,31 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         return nullptr;
     }
     try {
-        // 1. Frame read.
-        auto frame = s->readFrame(static_cast<size_t>(frameIndex));
-        if (!frame.isOk()) {
-            setError(static_cast<int>(frame.code), kStageFrameRead,
-                     std::string("frame read: ") + rawedit::errorName(frame.code) +
-                         " — " + frame.detail);
-            return nullptr;
-        }
+        // 1. Frame read — through the ring, so with temporal NR on the
+        //    center joins its neighbors in one LRU (the merge reads them
+        //    all back from it; with NR off the ring is cleared by
+        //    temporalMergedCfa and this was a plain decode).
+        Entry& e = gEntries[handle - 1];
+        const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
+        if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
 
-        // 2-3. Develop with CFA decimation + ARGB (shared preview tail).
-        return developToArgb(env, *frame.value, info, meta,
+        // 2. Temporal NR on the CFA (pristine buffer back when off).
+        const CfaBuffer cfa = temporalMergedCfa(
+            *s, e, frameIndex, center, info,
+            temporalNr == JNI_TRUE, temporalStrength);
+        if (cfa == nullptr) return nullptr; // neighbor decode failed
+
+        // 3-4. Develop with CFA decimation + ARGB (shared preview tail).
+        return developToArgb(env, *cfa, info, meta,
                              gradeFromKotlin(exposureEv, highlights, tempK, tint,
                                              saturation, blackPoint, whitePoint,
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
                                              keepVignetting, sharpness, detail,
-                                             tonemap),
+                                             tonemap, temporalNr == JNI_TRUE,
+                                             temporalStrength),
                              maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -509,6 +801,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
         jfloat sharpness, jfloat detail, jint tonemap,
+        jboolean temporalNr, jfloat temporalStrength,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -525,29 +818,37 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         return nullptr;
     }
     try {
-        // 1. Decode only when the requested frame is not the cached one.
+        // 1. Decode only when the requested frame is not the cached one —
+        //    through the ring, so a neighbor prefetched during the previous
+        //    frame's merge becomes this frame's center with no decode (with
+        //    temporal NR off the ring is cleared right after; the shared
+        //    buffer survives in the interactive cache).
         if (frameIndex != e.cachedFrameIndex) {
-            auto frame = s->readFrame(static_cast<size_t>(frameIndex));
-            if (!frame.isOk()) {
-                setError(static_cast<int>(frame.code), kStageFrameRead,
-                         std::string("frame read: ") + rawedit::errorName(frame.code) +
-                             " — " + frame.detail);
-                return nullptr;
-            }
-            e.cachedCfa = std::move(*frame.value);
+            const CfaBuffer buf = loadRingFrame(*s, e, frameIndex);
+            if (buf == nullptr) return nullptr; // decode failed (error set)
+            e.cachedCfa = buf;
             e.cachedInfo = s->frameInfo(static_cast<size_t>(frameIndex));
             e.cachedFrameIndex = frameIndex;
         }
         const rawedit::RawMeta& meta = s->rawMeta();
 
-        // 2-3. Develop the (possibly cached) CFA + ARGB (shared preview tail).
-        return developToArgb(env, e.cachedCfa, e.cachedInfo, meta,
+        // 2. Temporal NR on the CFA. The interactive cache stays PRISTINE
+        //    (temporal output never re-enters as input); the merge reads
+        //    the center from the cache's shared buffer via the ring.
+        const CfaBuffer cfa = temporalMergedCfa(
+            *s, e, frameIndex, e.cachedCfa, e.cachedInfo,
+            temporalNr == JNI_TRUE, temporalStrength);
+        if (cfa == nullptr) return nullptr; // neighbor decode failed
+
+        // 3-4. Develop the (possibly merged) CFA + ARGB (shared preview tail).
+        return developToArgb(env, *cfa, e.cachedInfo, meta,
                              gradeFromKotlin(exposureEv, highlights, tempK, tint,
                                              saturation, blackPoint, whitePoint,
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
                                              keepVignetting, sharpness, detail,
-                                             tonemap),
+                                             tonemap, temporalNr == JNI_TRUE,
+                                             temporalStrength),
                              maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -591,7 +892,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jfloat sharpness, jfloat detail, jint tonemap) {
+        jfloat sharpness, jfloat detail, jint tonemap,
+        jboolean temporalNr, jfloat temporalStrength) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     rawedit::Source* s = sourceFor(handle);
@@ -601,26 +903,30 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         return nullptr;
     }
     try {
-        // 1. Frame read.
-        auto frame = s->readFrame(static_cast<size_t>(frameIndex));
-        if (!frame.isOk()) {
-            setError(static_cast<int>(frame.code), kStageFrameRead,
-                     std::string("frame read: ") + rawedit::errorName(frame.code) +
-                         " — " + frame.detail);
-            return nullptr;
-        }
+        // 1. Frame read — through the ring, like the preview paths (sequential
+        //    export amortizes to ~1 decode per frame with temporal NR on).
+        Entry& e = gEntries[handle - 1];
+        const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
+        if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
 
-        // 2. Full-res develop with the job's grade snapshot (core/Develop.h).
+        // 2. Temporal NR on the CFA (pristine buffer back when off).
+        const CfaBuffer cfa = temporalMergedCfa(
+            *s, e, frameIndex, center, info,
+            temporalNr == JNI_TRUE, temporalStrength);
+        if (cfa == nullptr) return nullptr; // neighbor decode failed
+
+        // 3. Full-res develop with the job's grade snapshot (core/Develop.h).
         gLastErrorStage = kStageDevelop;
         rawedit::ImageF img = rawedit::developCpu(
-            frame.value->data(), info, meta,
+            cfa->data(), info, meta,
             gradeFromKotlin(exposureEv, highlights, tempK, tint,
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
-                            sharpness, detail, tonemap));
+                            sharpness, detail, tonemap,
+                            temporalNr == JNI_TRUE, temporalStrength));
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "
@@ -789,9 +1095,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jfloat sharpness, jfloat detail, jint tonemap) {
+        jfloat sharpness, jfloat detail, jint tonemap,
+        jboolean temporalNr, jfloat temporalStrength) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageDevelop;
+    // Temporal NR (DN-05..DN-09) is a CFA-frame stage; the encoded path has
+    // no CFA and no neighbor frames available at this seam, so the two
+    // fields travel for signature parity (one signature across every
+    // develop entry point) and are ignored here. developEncoded never reads
+    // them; the encoded UI keeps the control MCRAW-gated.
 
     if (width <= 0 || height <= 0 || yPlane == nullptr || uPlane == nullptr ||
         (semiPlanar == JNI_FALSE && vPlane == nullptr)) {
@@ -865,7 +1177,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
-                            sharpness, detail, tonemap),
+                            sharpness, detail, tonemap,
+                            temporalNr == JNI_TRUE, temporalStrength),
             isBt709 != JNI_FALSE);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,

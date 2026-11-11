@@ -168,6 +168,7 @@ internal object NativeMp4Session : Mp4Session {
             grade.shadows, grade.midtones, grade.contrast,
             grade.asShot, grade.highlightReconstruction, grade.keepVignetting,
             grade.sharpness, grade.detail, grade.tonemap,
+            grade.temporalNr, grade.temporalStrength,
         )
     }
 

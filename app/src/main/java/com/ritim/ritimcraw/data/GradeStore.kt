@@ -31,6 +31,13 @@ import java.nio.charset.StandardCharsets
  * native stage records the selected transform's version, working space and
  * target display; see Grade in core/include/rawedit/Develop.h).
  *
+ * The temporal NR fields (spec DN-05..DN-09) default to off/0. temporalNr is
+ * the toggle; temporalStrength is the 0..100 slider. Temporal NR is a CFA
+ * stage the bridge applies BEFORE developCpu (see Temporal.h), carried on
+ * GradeK like any other control so the whole pipeline (store, JNI, UI)
+ * moves it as one value. Old schema-1 files parse them off/0 — temporal NR
+ * never turns itself on behind the user's back.
+ *
  * A grade set on clip A must never appear on clip B, including after closing
  * and reopening the app (QA-05) — GradeStoreTest.grades_do_not_leak_between_clips.
  */
@@ -52,6 +59,8 @@ data class GradeK(
     val sharpness: Float = 0f,
     val detail: Float = 0f,
     val tonemap: Int = 0,
+    val temporalNr: Boolean = false,
+    val temporalStrength: Float = 0f,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -178,7 +187,9 @@ class GradeStore(private val file: File) {
                     .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
                     .append("\"sharpness\":").append(num(g.sharpness)).append(',')
                     .append("\"detail\":").append(num(g.detail)).append(',')
-                    .append("\"tonemap\":").append(g.tonemap)
+                    .append("\"tonemap\":").append(g.tonemap).append(',')
+                    .append("\"temporalNr\":").append(g.temporalNr).append(',')
+                    .append("\"temporalStrength\":").append(num(g.temporalStrength))
                     .append('}')
             }
             sb.append('}')
@@ -288,6 +299,12 @@ class GradeStore(private val file: File) {
                     sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
                     detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
                     tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
+                    // Temporal NR fields (DN-05..DN-09) postdate older
+                    // schema-1 files: fall back to off/0 — temporal NR never
+                    // turns itself on behind the user's back, and the old
+                    // look (no temporal stage) is preserved exactly.
+                    temporalNr = m["temporalNr"] as? Boolean ?: false,
+                    temporalStrength = (m["temporalStrength"] as? Double)?.toFloat() ?: 0f,
                 )
             }
             return out

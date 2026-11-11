@@ -47,6 +47,8 @@ object GradeMapping {
         val sharpness: Float,
         val detail: Float,
         val tonemap: Int,
+        val temporalNr: Boolean,
+        val temporalStrength: Float,
     )
 
     fun toNative(grade: GradeK): NativeArgs = NativeArgs(
@@ -66,6 +68,8 @@ object GradeMapping {
         sharpness = grade.sharpness,
         detail = grade.detail,
         tonemap = grade.tonemap,
+        temporalNr = grade.temporalNr,
+        temporalStrength = grade.temporalStrength,
     )
 }
 
@@ -144,6 +148,7 @@ class PreviewRenderer private constructor(
             args.shadows, args.midtones, args.contrast,
             args.asShot, args.highlightReconstruction, args.keepVignetting,
             args.sharpness, args.detail, args.tonemap,
+            args.temporalNr, args.temporalStrength,
             maxDim,
         )
         if (out == null || out.size < 2) {

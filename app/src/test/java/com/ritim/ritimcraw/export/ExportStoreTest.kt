@@ -299,6 +299,55 @@ class ExportStoreTest {
     }
 
     @Test
+    fun temporal_nr_snapshot_fields_survive_reload() {
+        // The export snapshot carries the temporal NR fields (DN-05..DN-09)
+        // end to end: a queued job exports with the temporal stage the user
+        // actually set, and an old queue without the fields reloads with
+        // temporal NR off (never on behind the user's back).
+        val file = projectFile()
+        val snapshot = GradeK(
+            exposureEv = 0.75f,
+            temporalNr = true,
+            temporalStrength = 55f,
+        )
+        ExportStore(file).add(
+            ExportJob(
+                id = "a",
+                sourceId = "clip-a",
+                snapshot = snapshot,
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        val reloaded = ExportStore(file).all().single().snapshot
+        assertEquals(snapshot, reloaded)
+        assertEquals(true, reloaded.temporalNr)
+        assertEquals(55f, reloaded.temporalStrength, 0f)
+    }
+
+    @Test
+    fun old_snapshot_without_temporal_fields_loads_them_off() {
+        // A queue written by the pre-temporal-NR build: the snapshot JSON has
+        // no temporal fields, so they parse as off/0 and the queued job keeps
+        // its exact old look (temporal stage is a no-op when off).
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.5,"tonemap":1},"target":"MP4","state":"QUEUED"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val snapshot = ExportStore(file).all().single().snapshot
+        assertEquals(false, snapshot.temporalNr)
+        assertEquals(0f, snapshot.temporalStrength, 0f)
+    }
+
+    @Test
     fun clear_empties_queue() {
         val file = projectFile()
         val store = ExportStore(file)

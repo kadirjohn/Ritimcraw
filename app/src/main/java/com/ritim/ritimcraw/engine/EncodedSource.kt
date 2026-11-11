@@ -355,6 +355,10 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             grade.shadows, grade.midtones, grade.contrast,
             grade.asShot, grade.highlightReconstruction, grade.keepVignetting,
             grade.sharpness, grade.detail, grade.tonemap,
+            // Signature parity with the CFA paths; the encoded (Mi-Log) path
+            // has no CFA and no neighbor frames, so the bridge ignores the
+            // temporal fields here (DN-05..DN-09 apply only to MCRAW clips).
+            grade.temporalNr, grade.temporalStrength,
         )
     }
 
