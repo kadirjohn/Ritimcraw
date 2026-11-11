@@ -102,7 +102,6 @@ class ExportQueue(
                     detail = ExportQueue.INTERRUPTED_DETAIL,
                     framesDone = null,
                     framesTotal = null,
-                    startedAtMs = null,
                 )
             )
             publishRevision()
@@ -149,17 +148,12 @@ class ExportQueue(
     /** Runs one job end to end and writes the outcome back to the store. */
     internal suspend fun runOne(job: ExportJob) {
         // RUNNING first: the UI shows "Exporting…" while this runs. Progress
-        // counts reset per run (a retry restarts from frame 0). startedAtMs
-        // anchors the UI's linear ETA estimate (owner request §1). The
-        // ProgressWriter is built from THIS row (not the QUEUED input) so
-        // every throttled progress write carries the anchor — building it
-        // from the input would null startedAtMs on the first report.
+        // counts reset per run (a retry restarts from frame 0).
         val running = job.copy(
             state = State.RUNNING,
             detail = null,
             framesDone = null,
             framesTotal = null,
-            startedAtMs = progressClock(),
         )
         store.update(running)
         publishRevision()
@@ -211,10 +205,9 @@ class ExportQueue(
 
         // The job may have been retried/cleared while it ran: write by id
         // so the store keeps the freshest state for this id. The terminal
-        // job carries null counts (progress only shows while RUNNING) and
-        // no start time (the job is over; a DONE row never shows an ETA).
+        // job carries null counts (progress only shows while RUNNING).
         store.update(
-            result.copy(framesDone = null, framesTotal = null, startedAtMs = null)
+            result.copy(framesDone = null, framesTotal = null)
         )
         publishRevision()
 

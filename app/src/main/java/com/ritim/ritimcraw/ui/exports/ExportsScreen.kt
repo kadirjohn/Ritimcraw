@@ -19,11 +19,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.remember
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.export.ExportEta
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.ui.theme.Tnum
@@ -178,9 +181,12 @@ private fun ExportJobRow(
  * indeterminate while the total is still unknown. When the frames are
  * done but the job is still RUNNING, the mux/finalize stage is running —
  * the bar shows full and the text says "Finishing file…" instead of a
- * misleading "310/310". The ETA is a simple linear estimate shown only
- * after enough data (see [Format.etaSeconds] — fewer than 10 frames
- * extrapolates wildly).
+ * misleading "310/310".
+ *
+ * The remaining-time estimate is the [ExportEta] EMA: one observation per
+ * persisted progress write (the display cadence), no estimate before its
+ * seed window, monotone-ish hold so the number never jumps (see ExportEta
+ * for why the old wall-clock linear estimate jumped).
  */
 @Composable
 private fun RunningJobProgress(job: ExportJob) {
@@ -201,9 +207,12 @@ private fun RunningJobProgress(job: ExportJob) {
                 // All frames encoded; the muxer/finalize stage is running.
                 Text(stringResource(R.string.exports_job_finalizing))
             } else {
-                val eta = job.startedAtMs?.let { start ->
-                    Format.etaSeconds(frames, total, start, System.currentTimeMillis())
-                }
+                // One estimator per RUNNING row, keyed by job id: it feeds on
+                // the persisted progress writes and holds its estimate —
+                // see ExportEta. Remembers across recompositions, resets for
+                // a different job (the list recycles rows) and re-seeds on a
+                // retry (counts went backwards).
+                val eta = remember(job.id) { ExportEta() }.observe(frames, total)
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -218,7 +227,7 @@ private fun RunningJobProgress(job: ExportJob) {
                         Text(
                             stringResource(
                                 R.string.exports_job_eta,
-                                Format.formatDuration(eta * 1000L),
+                                Format.formatEtaLeft(eta),
                             ),
                             style = MaterialTheme.typography.bodyMedium.merge(Tnum),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

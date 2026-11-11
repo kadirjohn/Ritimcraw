@@ -114,7 +114,7 @@
     <string name="exports_job_running">Exporting…</string>
     <string name="exports_job_running_frames">Exporting… %1$d/%2$d frames</string>
     <string name="exports_job_finalizing">Finishing file…</string>
-    <string name="exports_job_eta">About %1$s left</string>
+    <string name="exports_job_eta">~%1$s left</string>
     <string name="exports_job_done_named">Done — %1$s</string>
     <string name="exports_job_open">Open</string>
     <string name="exports_open_missing_title">Export not available</string>
