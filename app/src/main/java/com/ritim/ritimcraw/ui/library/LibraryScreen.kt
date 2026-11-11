@@ -1,41 +1,27 @@
 package com.ritim.ritimcraw.ui.library
 
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
@@ -47,30 +33,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
-import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
-import com.ritim.ritimcraw.data.SourceRepository
 import com.ritim.ritimcraw.data.ThumbnailRules
+import com.ritim.ritimcraw.ui.components.FileListRow
+import com.ritim.ritimcraw.ui.components.FilterChipsRow
+import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.theme.Tnum
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /** Library filter chips (DESIGN.md Library). */
 enum class LibraryFilter(val labelRes: Int) {
@@ -83,9 +63,10 @@ enum class LibraryFilter(val labelRes: Int) {
 }
 
 /**
- * Library of imported clips (DESIGN.md Library): filter chips with a check
- * icon on the selected chip, ListItem rows, and an extended FAB "Import"
- * that opens the SAF document picker (ACTION_OPEN_DOCUMENT).
+ * Library of imported clips (DESIGN.md Library): a compact header, a
+ * single-line scrollable chip row, thumbnail-first rows (the shared
+ * FileListRow), and an extended FAB "Import" that opens the SAF document
+ * picker (ACTION_OPEN_DOCUMENT).
  *
  * The picked document is imported through [SourceRepository.import] with
  * takePersistableUriPermission so the clip survives reboots. Failures show
@@ -174,6 +155,12 @@ fun LibraryScreen(
     // Import mid-selection would refresh the list under the selection).
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        // §4.1 compact header: the app shell's Scaffold already applies
+        // the status-bar inset in its innerPadding — a nested Scaffold's
+        // default contentWindowInsets would stack a SECOND one on top
+        // (the excessive empty space above the title). Zero insets here;
+        // this Scaffold exists only for the FAB + snackbar.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(data) } },
         floatingActionButton = {
             if (!selecting) {
@@ -224,41 +211,31 @@ fun LibraryScreen(
                     }
                 }
             } else {
-                Text(
-                    text = stringResource(R.string.library_title),
-                    style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
+                ScreenHeader(title = stringResource(R.string.library_title))
                 // The chips hide while selecting: the selection lives in
                 // the visible (filtered) list, so switching filters
                 // mid-selection could orphan checked rows — the bar owns
-                // the top area instead.
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    LibraryFilter.entries.forEach { f ->
-                        FilterChip(
-                            selected = filter == f,
-                            onClick = { filter = f },
-                            label = { Text(stringResource(f.labelRes)) },
-                            leadingIcon = if (filter == f) {
-                                { Icon(Icons.Filled.Check, contentDescription = null) }
-                            } else {
-                                null
-                            },
-                        )
-                    }
-                }
+                // the top area instead. Single-line scrollable row (§4.2):
+                // chips measure at intrinsic width, "Encoded" never wraps.
+                FilterChipsRow(
+                    count = LibraryFilter.entries.size,
+                    selected = { index -> filter == LibraryFilter.entries[index] },
+                    onSelect = { index -> filter = LibraryFilter.entries[index] },
+                    label = { index ->
+                        Text(stringResource(LibraryFilter.entries[index].labelRes))
+                    },
+                )
             }
             if (visible.isEmpty()) {
                 EmptyLibrary(Modifier.weight(1f))
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(vertical = 8.dp),
+                    // Vertical rhythm (§4.3 consistent spacing) plus bottom
+                    // clearance (§4.4): the last row must scroll fully
+                    // clear of the Import FAB — the button never
+                    // permanently obstructs a row.
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
                 ) {
                     items(visible, key = { it.id }) { source ->
                         LibraryRow(
@@ -266,6 +243,7 @@ fun LibraryScreen(
                             thumbnailPath = thumbnailAt(source.id),
                             selected = source.id in selection,
                             selecting = selecting,
+                            showDivider = source !== visible.lastOrNull(),
                             onToggleSelected = {
                                 selectedIds = LibrarySelection.toggle(selectedIds, source.id)
                             },
@@ -330,13 +308,13 @@ private fun matches(filter: LibraryFilter, s: MediaSource): Boolean = when (filt
     LibraryFilter.DNG, LibraryFilter.MILOG, LibraryFilter.PHOTOS -> false
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LibraryRow(
     source: MediaSource,
     thumbnailPath: String?,
     selected: Boolean,
     selecting: Boolean,
+    showDivider: Boolean,
     onToggleSelected: () -> Unit,
     onOpen: () -> Unit,
     onGrantAccess: () -> Unit,
@@ -347,149 +325,49 @@ private fun LibraryRow(
     // model keeps the hide rules out of the composable.
     val durationText = LibraryRowModel.durationText(source)
     val supporting = LibraryRowModel.supportingLine(source, durationText)
-    ListItem(
+    FileListRow(
         // The clip's real file name (owner request §2b); the id when the
         // resolver could not name it — displayOrId is never blank.
-        headlineContent = {
+        fileName = source.displayOrId,
+        supportingLine = supporting,
+        thumbnailPath = thumbnailPath,
+        accessLost = accessLost,
+        accessLostLine = if (accessLost) {
+            stringResource(R.string.library_row_access_lost)
+        } else {
+            null
+        },
+        selecting = selecting,
+        selected = selected,
+        showDivider = showDivider,
+        onToggleSelected = onToggleSelected,
+        onOpen = onOpen,
+        onGrantAccess = onGrantAccess,
+        onLongClick = onToggleSelected,
+        supportingFallback = {
+            // The kind line degrades gracefully until the generation pass
+            // probes the clip (never a faked metadata line).
             Text(
-                source.displayOrId,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                stringResource(
+                    if (source.kind == SourceKind.MCRAW) R.string.library_row_kind_mcraw
+                    else R.string.library_row_kind_encoded
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         },
-        supportingContent = {
-            Column {
-                // Format line (body-small per DESIGN.md Typography): recorded
-                // resolution + duration (owner request §1); the kind line
-                // degrades gracefully until the generation pass probes the
-                // clip. Tabular numerals so the digits never reflow.
-                if (supporting != null) {
-                    Text(
-                        supporting,
-                        style = MaterialTheme.typography.bodySmall.merge(Tnum),
-                    )
-                } else {
-                    Text(
-                        stringResource(
-                            if (source.kind == SourceKind.MCRAW) R.string.library_row_kind_mcraw
-                            else R.string.library_row_kind_encoded
-                        ),
-                    )
-                }
-                if (accessLost) {
-                    Text(
-                        stringResource(R.string.library_row_access_lost),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+        trailingContent = if (accessLost) {
+            {
+                Text(
+                    stringResource(R.string.library_row_grant_access),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
+        } else {
+            null
         },
-        leadingContent = {
-            ClipThumbnail(
-                path = thumbnailPath,
-                accessLost = accessLost,
-            )
-        },
-        trailingContent = when {
-            // While selecting (E2) the trailing slot carries the row's
-            // checkbox state — the stock core-icon pair (outlined
-            // CheckCircle unchecked, filled CheckCircle checked, primary
-            // tint), and the thumbnail stays in the leading slot so the
-            // user still picks rows by picture. The whole row toggles
-            // (combinedClickable), so the icon needs no own target.
-            selecting -> {
-                {
-                    Icon(
-                        imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircle,
-                        contentDescription = null,
-                        tint = if (selected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
-            }
-            accessLost -> {
-                {
-                    Text(
-                        stringResource(R.string.library_row_grant_access),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-            else -> null
-        },
-        // E2: long-press starts selection with this row checked; a tap
-        // toggles while selecting (never opens — no accidental clip open
-        // mid-delete), and outside selection mode the tap behavior is
-        // EXACTLY what it always was (open, or grant access when lost).
-        modifier = Modifier.combinedClickable(
-            onClick = {
-                if (selecting) {
-                    onToggleSelected()
-                } else if (accessLost) {
-                    onGrantAccess()
-                } else {
-                    onOpen()
-                }
-            },
-            onLongClick = { onToggleSelected() },
-        ),
     )
-}
-
-/**
- * The row's leading thumbnail (owner request 2026-11-11 section 1): the
- * persisted first-frame PNG (developed once with the NEUTRAL grade — the
- * owner accepts it looks dark), or the placeholder box while missing —
- * never a crash, never a re-develop per composition. Rounded with the
- * theme's shape, cropped to fill.
- */
-@Composable
-private fun ClipThumbnail(
-    path: String?,
-    accessLost: Boolean,
-) {
-    // Decode off the UI thread (produceState cancels the load when the row
-    // leaves composition — a fast scroll never strands decodes).
-    val bitmap by path?.let { p ->
-        produceState<Bitmap?>(initialValue = null, p) {
-            value = withContext(Dispatchers.IO) {
-                try {
-                    BitmapFactory.decodeFile(p)
-                } catch (e: Exception) {
-                    null
-                }
-            }
-        }
-    } ?: remember { mutableStateOf<Bitmap?>(null) }
-    Box(
-        modifier = Modifier
-            .size(64.dp)
-            .clip(MaterialTheme.shapes.small)
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        val b = bitmap
-        if (b != null) {
-            Image(
-                bitmap = b.asImageBitmap(),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-        } else if (accessLost) {
-            // The access-lost marker rides the placeholder while the clip
-            // cannot be probed (the row keeps its Grant access action).
-            Icon(
-                imageVector = Icons.Outlined.Warning,
-                contentDescription = null,
-                modifier = Modifier.align(androidx.compose.ui.Alignment.Center),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
 }
 
 /**
