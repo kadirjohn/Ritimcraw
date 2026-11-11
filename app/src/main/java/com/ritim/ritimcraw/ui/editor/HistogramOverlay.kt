@@ -94,7 +94,7 @@ private fun DrawScope.drawLumaBars(
     result: FrameHistogram.Result,
     barColor: Color,
 ) {
-    val bins = result.bins
+    val bins = result.bins(FrameHistogram.Channel.LUMA)
     val max = bins.max()
     if (max <= 0) return
     val w = size.width
