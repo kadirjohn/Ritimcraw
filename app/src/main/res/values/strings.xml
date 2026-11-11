@@ -100,6 +100,7 @@
     <string name="editor_preset_delete">Delete preset</string>
     <string name="editor_frame_picker_title">Develop frame</string>
     <string name="editor_frame_picker_frame">Frame %1$d · %2$s</string>
+    <string name="editor_precision_frame">Frame %1$d · %2$s</string>
     <string name="editor_frame_picker_photo_clip">Photo: use clip grade</string>
     <string name="editor_frame_picker_photo_clip_detail">Develops this frame with the clip\'s current grade</string>
     <string name="editor_frame_picker_photo_separate">Photo: separate develop</string>

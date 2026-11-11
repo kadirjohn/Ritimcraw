@@ -333,6 +333,18 @@ fun ClipEditorScreen(
         var heldRenderIssued by remember(sourceId) { mutableStateOf(false) }
         var holdPausedPlayback by remember(sourceId) { mutableStateOf(false) }
 
+        // Precision frame scrub (owner request 2026-11-11 section 2): a
+        // press-and-hold on the seek bar enters precision frame mode and
+        // the same physical drag then steps WHOLE frames instead of
+        // seeking by time. Pure decisions in PrecisionScrub, the gesture
+        // in EditorTransport (precisionScrubGesture); this screen only
+        // owns the state: active flag + the frame the gesture started
+        // from (the gesture reports the TOTAL dp since it engaged, so the
+        // mapping is anchored once). Transient like dragActive — a clip
+        // switch resets it with the rest of the transport.
+        var precisionActive by remember(sourceId) { mutableStateOf(false) }
+        var precisionStartFrame by remember(sourceId) { mutableStateOf(0) }
+
         // Histogram overlay (owner feature list W5): toggleable 256-bin
         // RGB + luma histogram with clipping indicators over the preview.
         // histogramVisible is saveable so it survives configuration
@@ -1062,6 +1074,91 @@ fun ClipEditorScreen(
                 },
                 onSeekStarted = { applyTierEvent(SliderTiers.Event.DragStarted) },
                 onSeekFinished = { applyTierEvent(SliderTiers.Event.DragEnded) },
+                // Precision frame scrub (owner request 2026-11-11 section
+                // 2): while active, the readout line above the bar shows
+                // the exact 1-based frame number + its timecode (the
+                // frame picker's string precedent; the timecode comes
+                // from the pure readoutTimecode).
+                precisionReadout = if (precisionActive && pts != null) {
+                    stringResource(
+                        R.string.editor_precision_frame,
+                        positionFrame + 1,
+                        PrecisionScrub.readoutTimecode(positionFrame, pts, clipInfo.fps),
+                    )
+                } else {
+                    null
+                },
+                onPrecisionEngage = {
+                    // The pure engage decision owns the branch; this
+                    // lambda only writes the states it decides.
+                    when (
+                        PrecisionScrub.onEngage(
+                            isPlaying = isPlaying,
+                            enabled = pts != null && pts.size > 1,
+                            frameCount = pts?.size ?: 0,
+                            canRender = canRender,
+                        )
+                    ) {
+                        PrecisionScrub.Engage.Reject -> false
+                        PrecisionScrub.Engage.PauseAndEnter -> {
+                            // Pause the wall clock and settle progressively
+                            // — the pause button's exact path, so a hold
+                            // during playback behaves like pausing (the
+                            // follow-up only survives as the newest request,
+                            // which the first scrub step naturally is).
+                            isPlaying = false
+                            requestRender(
+                                positionFrame, grade,
+                                PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                                followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                            )
+                            precisionActive = true
+                            precisionStartFrame = positionFrame
+                            true
+                        }
+                        PrecisionScrub.Engage.Enter -> {
+                            // Already paused: the current frame is on
+                            // screen; only the mapping anchors here.
+                            precisionActive = true
+                            precisionStartFrame = positionFrame
+                            true
+                        }
+                    }
+                },
+                onPrecisionDragDp = { totalDp ->
+                    val p = pts ?: return@TransportRow
+                    // Quantized whole frames (round-to-nearest): sub-half
+                    // wiggles hold the frame, and an unchanged frame skips
+                    // the render entirely. Every step renders the paused
+                    // tier through the cached path; the render gate
+                    // coalesces rapid steps into the newest pending one.
+                    val frame = PrecisionScrub.frameForDrag(precisionStartFrame, totalDp, p.size)
+                    if (frame != positionFrame) {
+                        positionFrame = frame
+                        requestRender(
+                            frame, grade,
+                            PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                        )
+                    }
+                },
+                onPrecisionRelease = {
+                    // The owner's spec: release KEEPS the parked frame
+                    // (pause behavior) and settles it progressively — the
+                    // pause button's path. The slider's press cancel still
+                    // emits its own DragEnded settle (1280, same as every
+                    // drag release today); whichever request is newest
+                    // when the pump drains wins, so the frame is correct
+                    // either way and the SOURCE follow-up lands whenever
+                    // this release is the last request.
+                    if (precisionActive) {
+                        precisionActive = false
+                        requestRender(
+                            positionFrame, grade,
+                            PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                            followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                        )
+                    }
+                },
             )
             // Tabs: Light / Color / Detail (independent of the panel —
             // design review: the tab row sits between transport and panel).
