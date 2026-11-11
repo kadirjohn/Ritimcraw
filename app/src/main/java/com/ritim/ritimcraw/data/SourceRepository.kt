@@ -37,10 +37,19 @@ data class MediaSource(
     val height: Int = 0,
     val frameCount: Int = 0,
     val cfa: String = "",
+    /**
+     * The clip's duration from its real frame timestamps (owner request
+     * 2026-11-11 section 1): last pts minus first pts. 0 when unknown (or
+     * a single-frame clip — the row hides the duration part then). Filled
+     * by the thumbnail/stats generation pass; omitted from project.json
+     * while 0 so schema-1 files stay byte-identical.
+     */
+    val durationUs: Long = 0L,
 ) {
     /** True when the engine pass has filled in the format-line stats. */
     val hasStats: Boolean
-        get() = (width > 0 && height > 0) || frameCount > 0 || cfa.isNotBlank()
+        get() = (width > 0 && height > 0) || frameCount > 0 ||
+            cfa.isNotBlank() || durationUs > 0L
 
     /**
      * What the UI shows as the clip's name (owner request §2b): the real
@@ -143,6 +152,39 @@ class SourceRepository(
         }
         if (name.isNullOrBlank()) return current
         val updated = current.copy(displayName = name)
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
+
+    /**
+     * Backfills the recorded stats of a record the generation pass probed
+     * (owner request 2026-11-11 section 1: the Library row's resolution and
+     * duration come from the clip's RECORDED frame data, never faked). No-op
+     * when the record is missing, or when every probed value is already
+     * present — a re-probe must not overwrite a filled record. Returns the
+     * updated source, or the unchanged one.
+     */
+    fun backfillStats(
+        id: String,
+        width: Int,
+        height: Int,
+        frameCount: Int,
+        cfa: String,
+        durationUs: Long,
+    ): MediaSource? {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val current = sources[index]
+        val updated = current.copy(
+            width = if (width > 0) width else current.width,
+            height = if (height > 0) height else current.height,
+            frameCount = if (frameCount > 0) frameCount else current.frameCount,
+            cfa = if (cfa.isNotBlank()) cfa else current.cfa,
+            durationUs = if (durationUs > 0L) durationUs else current.durationUs,
+        )
+        if (updated == current) return current
         sources[index] = updated
         write(sources)
         return updated
@@ -270,6 +312,12 @@ class SourceRepository(
                         .append(",\"frameCount\":").append(s.frameCount)
                         .append(",\"cfa\":").append(jsonString(s.cfa))
                 }
+                if (s.durationUs > 0L) {
+                    // Duration from the real timestamps (owner request
+                    // 2026-11-11 section 1); omitted while 0 so schema-1
+                    // files stay byte-identical.
+                    sb.append(",\"durationUs\":").append(s.durationUs)
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -339,6 +387,9 @@ class SourceRepository(
                     height = (m["height"] as? Double)?.toInt() ?: 0,
                     frameCount = (m["frameCount"] as? Double)?.toInt() ?: 0,
                     cfa = m["cfa"] as? String ?: "",
+                    // Absent in records written before the thumbnail pass;
+                    // 0 = unknown, the duration part of the row hides.
+                    durationUs = (m["durationUs"] as? Double)?.toLong() ?: 0L,
                 )
             }
         }
