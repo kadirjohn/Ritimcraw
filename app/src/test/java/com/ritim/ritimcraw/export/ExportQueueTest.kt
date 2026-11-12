@@ -35,14 +35,32 @@ class ExportQueueTest {
         val log: MutableList<String>,
         val failOn: String? = null,
     ) : DngRender {
-        override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+        override fun render(
+            fd: Int,
+            frameIndex: Int,
+            manualRotationDeg: Int,
+            cropX: Float,
+            cropY: Float,
+            cropW: Float,
+            cropH: Float,
+            outPath: String,
+        ): Boolean {
             log.add("dng:$fd:${File(outPath).name}")
             if (failOn != null && File(outPath).name.startsWith(failOn)) return false
             File(outPath).writeBytes(ByteArray(16))
             return true
         }
 
-        override fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+        override fun renderLinear(
+            fd: Int,
+            frameIndex: Int,
+            manualRotationDeg: Int,
+            cropX: Float,
+            cropY: Float,
+            cropW: Float,
+            cropH: Float,
+            outPath: String,
+        ): Boolean {
             log.add("linear:$fd:${File(outPath).name}")
             if (failOn != null && File(outPath).name.startsWith(failOn)) return false
             File(outPath).writeBytes(ByteArray(16))

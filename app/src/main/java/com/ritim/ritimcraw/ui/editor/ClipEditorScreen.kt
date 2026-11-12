@@ -66,6 +66,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.GradePreset
 import com.ritim.ritimcraw.data.LutInfo
@@ -1271,7 +1272,35 @@ fun ClipEditorScreen(
                     if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
                         result.fold(
                             onSuccess = { f ->
-                                frame = f
+                                // Crop + straighten (RAW-09): the
+                                // published preview is the GRADED frame
+                                // cut to the crop rect, in the same
+                                // effective space the user sees. The
+                                // native develop renders
+                                // CONTAINER-upright pixels and the
+                                // surface turns only the manual delta,
+                                // so the rect is mapped through the
+                                // delta first (CropState.applyToArgb
+                                // returns the input buffer untouched
+                                // while the crop group is neutral).
+                                val cropped = CropState.applyToArgb(
+                                    argb = f.argb,
+                                    width = f.width,
+                                    height = f.height,
+                                    rect = CropState.RectF(
+                                        req.grade.cropX,
+                                        req.grade.cropY,
+                                        req.grade.cropW,
+                                        req.grade.cropH,
+                                    ),
+                                    straightenDeg = req.grade.straightenDeg,
+                                    spaceDeltaDeg = manualRotationDeg,
+                                )
+                                frame = PreviewFrame(
+                                    width = cropped.width,
+                                    height = cropped.height,
+                                    argb = cropped.argb,
+                                )
                                 // The rendered frame's index, published
                                 // beside the frame (feature N6): the
                                 // scope compute's RAW fetch asks for

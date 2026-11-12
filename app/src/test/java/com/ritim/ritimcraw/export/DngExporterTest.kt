@@ -141,14 +141,25 @@ class DngExporterTest {
         var lastOutPath: String? = null
         var lastFrameIndex: Int = -1
         var lastManualRotationDeg: Int = Int.MIN_VALUE
+        var lastCrop: FloatArray? = null
         var renderCalls = 0
         var renderLinearCalls = 0
 
-        override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+        override fun render(
+            fd: Int,
+            frameIndex: Int,
+            manualRotationDeg: Int,
+            cropX: Float,
+            cropY: Float,
+            cropW: Float,
+            cropH: Float,
+            outPath: String,
+        ): Boolean {
             renderCalls++
             lastOutPath = outPath
             lastFrameIndex = frameIndex
             lastManualRotationDeg = manualRotationDeg
+            lastCrop = floatArrayOf(cropX, cropY, cropW, cropH)
             return when (behavior) {
                 Behavior.OK -> {
                     File(outPath).writeText("dng-bytes")
@@ -159,11 +170,21 @@ class DngExporterTest {
             }
         }
 
-        override fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+        override fun renderLinear(
+            fd: Int,
+            frameIndex: Int,
+            manualRotationDeg: Int,
+            cropX: Float,
+            cropY: Float,
+            cropW: Float,
+            cropH: Float,
+            outPath: String,
+        ): Boolean {
             renderLinearCalls++
             lastOutPath = outPath
             lastFrameIndex = frameIndex
             lastManualRotationDeg = manualRotationDeg
+            lastCrop = floatArrayOf(cropX, cropY, cropW, cropH)
             return when (behavior) {
                 Behavior.OK -> {
                     File(outPath).writeText("linear-dng-bytes")
@@ -228,6 +249,33 @@ class DngExporterTest {
             // the bridge adds it to the container orientation before the
             // write so the DNG Orientation tag carries the effective value.
             assertEquals(270, fake.lastManualRotationDeg)
+        } finally {
+            e.shutdown()
+        }
+    }
+
+    @Test
+    fun cropped_job_passes_snapshot_fractions_to_the_native_boundary() {
+        val e = engine()
+        try {
+            val out = File(tmp.root, "clip-1.dng")
+            val fake = FakeDngRender(FakeDngRender.Behavior.OK)
+            val exporter = DngExporter(render = fake, engine = e)
+            // RAW-09: a half-width crop in the snapshot rides along to the
+            // native boundary untouched — the bridge owns the effective-space
+            // to source-CFA mapping; the Kotlin layer never re-maps.
+            val cropped = job().copy(
+                snapshot = GradeK(cropX = 0.25f, cropW = 0.5f, straightenDeg = 7.5f),
+            )
+            val result = runBlocking { exporter.export(cropped, 7, out) }
+            assertEquals(State.DONE, result.state)
+            // JUnit 4 has no FloatArray assertArrayEquals: element-wise.
+            val crop = fake.lastCrop!!
+            assertEquals(4, crop.size)
+            assertEquals(0.25f, crop[0])
+            assertEquals(0f, crop[1])
+            assertEquals(0.5f, crop[2])
+            assertEquals(1f, crop[3])
         } finally {
             e.shutdown()
         }
@@ -302,11 +350,29 @@ class DngExporterTest {
             File(out, "child").writeText("x")
             val exporter = DngExporter(
                 render = object : DngRender {
-                    override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+                    override fun render(
+                        fd: Int,
+                        frameIndex: Int,
+                        manualRotationDeg: Int,
+                        cropX: Float,
+                        cropY: Float,
+                        cropW: Float,
+                        cropH: Float,
+                        outPath: String,
+                    ): Boolean {
                         File(outPath).writeText("dng")
                         return true
                     }
-                    override fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+                    override fun renderLinear(
+                        fd: Int,
+                        frameIndex: Int,
+                        manualRotationDeg: Int,
+                        cropX: Float,
+                        cropY: Float,
+                        cropW: Float,
+                        cropH: Float,
+                        outPath: String,
+                    ): Boolean {
                         File(outPath).writeText("linear-dng")
                         return true
                     }

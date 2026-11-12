@@ -1973,10 +1973,80 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfo(
 // used (the Source lives only for this call), so the function is safe to
 // call from any single engine thread.
 
+// RAW-09 crop cut: the Kotlin layer passes the crop rect as fractions of
+// the EFFECTIVE-upright frame (the space the user sees and crops in). The
+// CFA pixels live in SOURCE space, and effective = source rotated CW by
+// effectiveDeg (the same convention the DNG Orientation tag uses), so the
+// fractions map through the rotation exactly like the JVM-tested
+// CropState.mapRect: a rect in effective space becomes
+//   90:  (y, 1-x-w, h, w)   180: (1-x-w, 1-y-h, w, h)
+//   270: (1-y-h, x, h, w)   else: unchanged
+// The mapped rect is then snapped to the 2x2 Bayer grid (even offsets and
+// sizes keep the CFA pattern phase intact — the same contract as
+// CropState.pixelRect(align = 2)) and the decoded CFA is cut to the window:
+// a plain copy, never a resample. Returns true when the cut was applied;
+// full-frame fractions leave the buffer untouched.
+static bool dngCropCut(std::vector<uint16_t>& cfa, rawedit::FrameInfo& info,
+                       int effectiveDeg,
+                       float cropX, float cropY, float cropW, float cropH) {
+    const bool full = cropX <= 0.0f && cropY <= 0.0f &&
+                      cropW >= 1.0f && cropH >= 1.0f;
+    if (full) return false;
+
+    const int width = static_cast<int>(info.width);
+    const int height = static_cast<int>(info.height);
+    if (width <= 0 || height <= 0) return false;
+
+    // Effective-space fractions -> source-space fractions (CropState.mapRect).
+    int deg = ((effectiveDeg % 360) + 360) % 360;
+    float fx = cropX, fy = cropY, fw = cropW, fh = cropH;
+    switch (deg) {
+        case 90:  fx = cropY; fy = 1.0f - cropX - cropW; fw = cropH; fh = cropW; break;
+        case 180: fx = 1.0f - cropX - cropW; fy = 1.0f - cropY - cropH; fw = cropW; fh = cropH; break;
+        case 270: fx = 1.0f - cropY - cropH; fy = cropX; fw = cropH; fh = cropW; break;
+        default: break;
+    }
+
+    // Source-space pixel window on the 2x2 Bayer grid (mirrors
+    // CropState.pixelRect with align = 2: round, align, clamp inside).
+    int x = static_cast<int>(std::lround(fx * width));
+    int y = static_cast<int>(std::lround(fy * height));
+    int w = static_cast<int>(std::lround(fw * width));
+    int h = static_cast<int>(std::lround(fh * height));
+    x -= x % 2; y -= y % 2;
+    w = std::max(w - w % 2, 2);
+    h = std::max(h - h % 2, 2);
+    if (x + w > width) x = std::max(width - w, 0);
+    if (y + h > height) y = std::max(height - h, 0);
+    w = std::min(w, width - x);
+    h = std::min(h, height - y);
+    if (w <= 0 || h <= 0) return false;
+
+    // Plain window copy: the selected region at native resolution, never
+    // stretched and never resampled (a raw mosaic must not be interpolated).
+    std::vector<uint16_t> cut(static_cast<size_t>(w * h));
+    for (int row = 0; row < h; ++row) {
+        const uint16_t* srcRow = cfa.data() + static_cast<size_t>(y + row) * width + x;
+        std::copy(srcRow, srcRow + w, cut.data() + static_cast<size_t>(row) * w);
+    }
+    cfa = std::move(cut);
+
+    // The cut frame is a whole "sensor" of its own: the DNG's dimensions and
+    // ActiveArea describe the cropped buffer from (0,0) — a reader must not
+    // see the original frame geometry. The orientation tag keeps the
+    // effective rotation (the reader still turns the pixels upright).
+    info.width = static_cast<uint32_t>(w);
+    info.height = static_cast<uint32_t>(h);
+    info.activeArea = rawedit::Rect{0, 0, w, h};
+    return true;
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
         JNIEnv* env, jclass, jint fd, jint frameIndex,
-        jint manualRotationDeg, jstring outPath) {
+        jint manualRotationDeg,
+        jfloat cropX, jfloat cropY, jfloat cropW, jfloat cropH,
+        jstring outPath) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
     const char* pathChars = env->GetStringUTFChars(outPath, nullptr);
@@ -2024,6 +2094,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
     info.orientationDeg = effectiveDeg;
     const rawedit::RawMeta& meta = src->rawMeta();
 
+    // 2b. RAW-09: cut the selected region from the decoded CFA before the
+    //     write. The fractions arrive in effective-upright space; the cut
+    //     maps them into source space, aligns to the 2x2 Bayer grid and
+    //     copies the window — native resolution, never stretched. The
+    //     straighten dial is deliberately NOT applied here: the raw mosaic
+    //     must not be resampled (documented RAW-09 skip).
+    dngCropCut(*frame.value, info, effectiveDeg,
+               cropX, cropY, cropW, cropH);
+
     // 3. Write the CFA DNG to the staging path (writeCfaDng removes a
     //    partial file on failure, so the staging file exists only on
     //    success — the Kotlin layer renames it into place).
@@ -2064,7 +2143,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeLinearDngExport(
         JNIEnv* env, jclass, jint fd, jint frameIndex,
-        jint manualRotationDeg, jstring outPath) {
+        jint manualRotationDeg,
+        jfloat cropX, jfloat cropY, jfloat cropW, jfloat cropH,
+        jstring outPath) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
     const char* pathChars = env->GetStringUTFChars(outPath, nullptr);
@@ -2105,6 +2186,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeLinearDngExport(
         (((info.orientationDeg + manualRotationDeg) % 360) + 360) % 360;
     info.orientationDeg = effectiveDeg;
     const rawedit::RawMeta& meta = src->rawMeta();
+
+    // 2b. RAW-09: the crop cut runs BEFORE developLinear, so the demosaic
+    //     works on the selected region only (a cut after the demosaic would
+    //     leave the RGB buffer at full size). Same Bayer-aligned plain
+    //     window copy as the CFA arm; straighten is a documented skip.
+    dngCropCut(*frame.value, info, effectiveDeg,
+               cropX, cropY, cropW, cropH);
 
     // 3. The minimal linear develop (stage 1 + demosaic + WB; the stage list
     //    is recorded in the file's ImageDescription). A camera failure here

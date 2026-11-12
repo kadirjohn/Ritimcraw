@@ -233,7 +233,27 @@ class PhotoExporter(
                                     job.manualRotationDeg,
                                 ),
                             )
-                            if (!pngWriter.write(developed.argb, developed.width, developed.height, partial.absolutePath)) {
+                            // RAW-09: the crop/straighten cut runs on the
+                            // already-upright pixels (the effective rotation
+                            // above composed container + manual delta), so
+                            // the fraction rect needs no further space
+                            // mapping — spaceDeltaDeg is 0 here, unlike the
+                            // preview fold which still holds the container
+                            // orientation.
+                            val cropped = com.ritim.ritimcraw.data.CropState.applyToArgb(
+                                argb = developed.argb,
+                                width = developed.width,
+                                height = developed.height,
+                                rect = com.ritim.ritimcraw.data.CropState.RectF(
+                                    job.snapshot.cropX,
+                                    job.snapshot.cropY,
+                                    job.snapshot.cropW,
+                                    job.snapshot.cropH,
+                                ),
+                                straightenDeg = job.snapshot.straightenDeg,
+                                spaceDeltaDeg = 0,
+                            )
+                            if (!pngWriter.write(cropped.argb, cropped.width, cropped.height, partial.absolutePath)) {
                                 throw IllegalStateException(
                                     PhotoExportErrors.kotlinMessage(
                                         PhotoExportErrors.STAGE_ENCODE,

@@ -122,6 +122,23 @@ data class GradeK(
     val stabilizationTrimMs: Float = 0f,
     /** 35mm-equivalent focal override in mm; 0 = use the container's value. */
     val stabilizationFocalMm: Float = 0f,
+    // Crop + straighten (RAW-09) — appended LAST, rendered
+    // omit-when-neutral (see the class KDoc): a full-rect FREE crop
+    // with 0-deg straighten writes NONE of the six keys, so files this
+    // build writes for an untouched clip stay byte-identical to the
+    // pre-crop format.
+    /** Aspect preset 0..4: Free / 16:9 / 9:16 / 4:3 / 1:1 (CropState). */
+    val cropAspect: Int = 0,
+    /** Crop rect x fraction (left edge), EFFECTIVE-upright space. */
+    val cropX: Float = 0f,
+    /** Crop rect y fraction (top edge), EFFECTIVE-upright space. */
+    val cropY: Float = 0f,
+    /** Crop rect width fraction. */
+    val cropW: Float = 1f,
+    /** Crop rect height fraction. */
+    val cropH: Float = 1f,
+    /** Straighten angle in degrees, -15..+15 (positive = CW). */
+    val straightenDeg: Float = 0f,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -302,6 +319,30 @@ class GradeStore(private val file: File) {
                     .append(',')
                     .append("\"stabilizationFocalMm\":").append(num(g.stabilizationFocalMm))
             }
+            // Crop + straighten (RAW-09): omit-when-neutral — a grade
+            // whose crop group is neutral (full rect, FREE, 0 straighten)
+            // writes NONE of the six keys, keeping files this build
+            // writes for an untouched clip byte-identical to the
+            // pre-crop format.
+            if (!CropState.isNeutral(
+                    CropState.RectF(g.cropX, g.cropY, g.cropW, g.cropH),
+                    g.cropAspect,
+                    g.straightenDeg,
+                )
+            ) {
+                sb.append(',')
+                    .append("\"cropAspect\":").append(g.cropAspect)
+                    .append(',')
+                    .append("\"cropX\":").append(num(g.cropX))
+                    .append(',')
+                    .append("\"cropY\":").append(num(g.cropY))
+                    .append(',')
+                    .append("\"cropW\":").append(num(g.cropW))
+                    .append(',')
+                    .append("\"cropH\":").append(num(g.cropH))
+                    .append(',')
+                    .append("\"straightenDeg\":").append(num(g.straightenDeg))
+            }
             sb.append('}')
             return sb.toString()
         }
@@ -436,6 +477,16 @@ class GradeStore(private val file: File) {
                     stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
                     stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                     stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
+                    // Crop + straighten fields (RAW-09) postdate older
+                    // schema-1 files: absent parses as the neutral
+                    // defaults (full rect, FREE, 0 deg) — the old look
+                    // is preserved exactly.
+                    cropAspect = (m["cropAspect"] as? Double)?.toInt() ?: 0,
+                    cropX = (m["cropX"] as? Double)?.toFloat() ?: 0f,
+                    cropY = (m["cropY"] as? Double)?.toFloat() ?: 0f,
+                    cropW = (m["cropW"] as? Double)?.toFloat() ?: 1f,
+                    cropH = (m["cropH"] as? Double)?.toFloat() ?: 1f,
+                    straightenDeg = (m["straightenDeg"] as? Double)?.toFloat() ?: 0f,
                 )
             }
             return out

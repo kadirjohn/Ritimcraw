@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.export
 
+import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.engine.NativeSource
@@ -485,8 +486,16 @@ class ExportPipeline(
         // the one rotation source of truth.
         val effectiveDeg = RotationState.effectiveDeg(info.orientationDeg, manualRotationDeg)
         val outDims = RotationState.rotatedDims(info.width, info.height, effectiveDeg)
+        // Crop + straighten (RAW-09): the writer's dims are the rotated
+        // dims cut to the crop rect (even-snapped — the encoder wants
+        // even YUV sizes; a neutral crop passes the rotated dims
+        // through unchanged, byte-identical to the pre-crop stream).
+        val cropRect = CropState.RectF(
+            grade.cropX, grade.cropY, grade.cropW, grade.cropH,
+        )
+        val cropOutDims = CropState.outputDims(outDims.width, outDims.height, cropRect, even = true)
         try {
-            writer.start(outPath, outDims.width, outDims.height, 0, sampleRate, channels)
+            writer.start(outPath, cropOutDims.width, cropOutDims.height, 0, sampleRate, channels)
         } catch (e: Throwable) {
             writer.release()
             throw e
@@ -513,10 +522,23 @@ class ExportPipeline(
                         // upright video — players that ignore rotation
                         // metadata still show it right), then the I420
                         // conversion runs on the rotated buffer/dims.
+                        // RAW-09: the crop (and straighten) applies on the
+                        // upright pixels — same space the rect lives in.
+                        // Neutral crop returns the upright buffer by
+                        // reference (no copy, no visible change).
                         val upright = RotationState.rotateRgb888(rgb, info.width, info.height, effectiveDeg)
+                        val cropped = CropState.applyToRgb(
+                            rgb = upright.rgb,
+                            width = upright.width,
+                            height = upright.height,
+                            rect = cropRect,
+                            straightenDeg = grade.straightenDeg,
+                            spaceDeltaDeg = 0,
+                            even = true,
+                        )
                         writer.writeVideoFrame(
                             s.ptsUs,
-                            YuvConverter.toI420(upright.rgb, upright.width, upright.height),
+                            YuvConverter.toI420(cropped.rgb, cropped.width, cropped.height),
                         )
                         done++
                         onProgress?.invoke(done, videoPts.size)

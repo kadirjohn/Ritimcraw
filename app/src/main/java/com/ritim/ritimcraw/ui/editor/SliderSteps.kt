@@ -51,6 +51,12 @@ object SliderSteps {
     /** Focal override step in mm: 35mm-equivalent focals are half-mm labeled at finest. */
     const val STABILIZATION_FOCAL_STEP_MM = 0.5f
 
+    /** Straighten step in degrees (RAW-09): half-degree ticks over ±15. */
+    const val STRAIGHTEN_STEP_DEG = 0.5f
+
+    /** Crop fraction step (RAW-09): 1 percent per tick. */
+    const val CROP_FRACTION_STEP = 0.01f
+
     /** Snaps a single axis to its step grid (slider change events). */
     fun snapExposure(value: Float): Float = quantize(value, EXPOSURE_STEP)
     fun snapHighlights(value: Float): Float = quantize(value, UNIT_STEP)
@@ -72,6 +78,10 @@ object SliderSteps {
     fun snapStabilizationZoomLimit(value: Float): Float = quantize(value, STABILIZATION_ZOOM_STEP)
     fun snapStabilizationTrimMs(value: Float): Float = quantize(value, STABILIZATION_TRIM_STEP_MS)
     fun snapStabilizationFocalMm(value: Float): Float = quantize(value, STABILIZATION_FOCAL_STEP_MM)
+
+    /** RAW-09: straighten half-degree ticks; crop fractions 1 percent. */
+    fun snapStraighten(value: Float): Float = quantize(value, STRAIGHTEN_STEP_DEG)
+    fun snapCropFraction(value: Float): Float = quantize(value, CROP_FRACTION_STEP)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
@@ -100,6 +110,11 @@ object SliderSteps {
             stabilizationZoomLimit = snapStabilizationZoomLimit(grade.stabilizationZoomLimit),
             stabilizationTrimMs = snapStabilizationTrimMs(grade.stabilizationTrimMs),
             stabilizationFocalMm = snapStabilizationFocalMm(grade.stabilizationFocalMm),
+            cropX = snapCropFraction(grade.cropX),
+            cropY = snapCropFraction(grade.cropY),
+            cropW = snapCropFraction(grade.cropW),
+            cropH = snapCropFraction(grade.cropH),
+            straightenDeg = snapStraighten(grade.straightenDeg),
         )
     }
 
@@ -116,6 +131,8 @@ object SliderSteps {
         TEMPORAL_STRENGTH,
         STABILIZATION_STRENGTH, STABILIZATION_ZOOM_LIMIT,
         STABILIZATION_TRIM_MS, STABILIZATION_FOCAL_MM,
+        // RAW-09: the crop sliders and the straighten dial.
+        CROP_X, CROP_Y, CROP_W, CROP_H, STRAIGHTEN,
     }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
@@ -149,6 +166,15 @@ object SliderSteps {
             current.copy(stabilizationTrimMs = GradeK().stabilizationTrimMs)
         Axis.STABILIZATION_FOCAL_MM ->
             current.copy(stabilizationFocalMm = GradeK().stabilizationFocalMm)
+        // RAW-09: each crop/straighten slider resets independently to
+        // its GradeK default (0/0/1/1 fractions, 0 deg) — the neutral
+        // full rect. A preset choice is not a slider axis and is
+        // untouched by a reset.
+        Axis.CROP_X -> current.copy(cropX = GradeK().cropX)
+        Axis.CROP_Y -> current.copy(cropY = GradeK().cropY)
+        Axis.CROP_W -> current.copy(cropW = GradeK().cropW)
+        Axis.CROP_H -> current.copy(cropH = GradeK().cropH)
+        Axis.STRAIGHTEN -> current.copy(straightenDeg = GradeK().straightenDeg)
     }
 
     /**

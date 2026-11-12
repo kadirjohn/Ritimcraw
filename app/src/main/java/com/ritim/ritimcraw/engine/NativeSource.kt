@@ -319,14 +319,29 @@ class NativeSource private constructor(
          * 2026-11-11 section 5) is the job's manual rotation delta
          * snapshot: added to the frame's container orientation before the
          * write, so the DNG Orientation tag carries the effective rotation
-         * while the CFA itself stays unrotated. True on success; on false
-         * read [previewErrorCode] / [previewErrorStage] / [previewLastError]
-         * from the same thread. Stages: 0 open, 1 frame read, 3 dng write.
+         * while the CFA itself stays unrotated.
+         *
+         * cropX/cropY/cropW/cropH (RAW-09): the job snapshot's crop rect as
+         * fractions of the EFFECTIVE-upright frame (the space the user
+         * sees). The bridge maps the fractions through the effective
+         * rotation into source-CFA space, aligns the cut to the 2x2 Bayer
+         * grid and cuts the decoded CFA before the write — the DNG carries
+         * the selected region at native resolution, never stretched.
+         * Full-frame fractions (0,0,1,1) skip the cut entirely. The
+         * straighten dial is NOT part of this path: the raw mosaic must
+         * not be resampled (documented RAW-09 skip).
+         * True on success; on false read [previewErrorCode] /
+         * [previewErrorStage] / [previewLastError] from the same thread.
+         * Stages: 0 open, 1 frame read, 3 dng write.
          */
         @JvmStatic private external fun nativeDngExport(
             fd: Int,
             frameIndex: Int,
             manualRotationDeg: Int,
+            cropX: Float,
+            cropY: Float,
+            cropW: Float,
+            cropH: Float,
             outPath: String,
         ): Boolean
 
@@ -339,7 +354,11 @@ class NativeSource private constructor(
          * as-shot WB — nothing else; the display tone map is NOT part of
          * this path) are recorded in the file's ImageDescription tag.
          * [manualRotationDeg] carries the job's effective-rotation snapshot
-         * exactly like nativeDngExport. True on success; on false read
+         * exactly like nativeDngExport, and cropX/cropY/cropW/cropH carry
+         * the effective-space crop fractions the same way: the bridge cuts
+         * the CFA (Bayer-aligned, never stretched) BEFORE developLinear, so
+         * the demosaic runs on the selected region only. Straighten is a
+         * documented skip here too. True on success; on false read
          * [previewErrorCode] / [previewErrorStage] / [previewLastError] from
          * the same thread. Stages: 0 open, 1 frame read, 2 develop,
          * 3 dng write.
@@ -348,6 +367,10 @@ class NativeSource private constructor(
             fd: Int,
             frameIndex: Int,
             manualRotationDeg: Int,
+            cropX: Float,
+            cropY: Float,
+            cropW: Float,
+            cropH: Float,
             outPath: String,
         ): Boolean
 
@@ -625,13 +648,31 @@ class NativeSource private constructor(
         internal fun jniRawHistogram(handle: Long, frameIndex: Int): IntArray? =
             nativeRawHistogram(handle, frameIndex)
 
-        /** JNI bridge: see nativeDngExport. */
-        internal fun jniDngExport(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean =
-            nativeDngExport(fd, frameIndex, manualRotationDeg, outPath)
+        /** JNI bridge: see nativeDngExport (crop fractions = RAW-09). */
+        internal fun jniDngExport(
+            fd: Int,
+            frameIndex: Int,
+            manualRotationDeg: Int,
+            cropX: Float,
+            cropY: Float,
+            cropW: Float,
+            cropH: Float,
+            outPath: String,
+        ): Boolean =
+            nativeDngExport(fd, frameIndex, manualRotationDeg, cropX, cropY, cropW, cropH, outPath)
 
-        /** JNI bridge: see nativeLinearDngExport (RAW-13 Linear DNG). */
-        internal fun jniLinearDngExport(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean =
-            nativeLinearDngExport(fd, frameIndex, manualRotationDeg, outPath)
+        /** JNI bridge: see nativeLinearDngExport (RAW-13 Linear DNG, RAW-09 crop). */
+        internal fun jniLinearDngExport(
+            fd: Int,
+            frameIndex: Int,
+            manualRotationDeg: Int,
+            cropX: Float,
+            cropY: Float,
+            cropW: Float,
+            cropH: Float,
+            outPath: String,
+        ): Boolean =
+            nativeLinearDngExport(fd, frameIndex, manualRotationDeg, cropX, cropY, cropW, cropH, outPath)
 
         /** JNI bridge: see nativeExportFrame. */
         internal fun jniExportFrame(

@@ -90,10 +90,25 @@ interface DngRender {
      * the frame's container orientation before writing, so the DNG's
      * Orientation tag carries the effective rotation while the CFA stays
      * unrotated (a DNG is the raw mosaic; rotation belongs to the reader).
+     * [cropX]/[cropY]/[cropW]/[cropH] (RAW-09) are the job snapshot's crop
+     * rect as fractions of the EFFECTIVE-upright frame: the bridge maps
+     * them into source-CFA space, aligns the cut to the 2x2 Bayer grid and
+     * cuts the decoded CFA before the write — never stretched. Full-frame
+     * fractions skip the cut. Straighten is NOT applied here (the raw
+     * mosaic must not be resampled; documented RAW-09 skip).
      * Returns null on failure; [code]/[stage]/[detail] then say why (the
      * same thread-local contract as the preview path).
      */
-    fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean
+    fun render(
+        fd: Int,
+        frameIndex: Int,
+        manualRotationDeg: Int,
+        cropX: Float,
+        cropY: Float,
+        cropW: Float,
+        cropH: Float,
+        outPath: String,
+    ): Boolean
 
     /**
      * Decodes frame [frameIndex] from fd and writes a LINEAR DNG at [outPath]
@@ -104,10 +119,22 @@ interface DngRender {
      * demosaic, as-shot WB) and records the list in the file's
      * ImageDescription tag; the display tone map is NOT part of this path.
      * [manualRotationDeg] carries the job's effective-rotation snapshot
-     * exactly like [render]. Returns null on failure; [code]/[stage]/[detail]
-     * then say why (stage 2 = develop exists only on this path).
+     * exactly like [render], and the crop fractions carry the RAW-09 cut
+     * the same way: the bridge cuts the CFA BEFORE developLinear, so the
+     * demosaic runs on the selected region only.
+     * Returns null on failure; [code]/[stage]/[detail] then say why (stage
+     * 2 = develop exists only on this path).
      */
-    fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean
+    fun renderLinear(
+        fd: Int,
+        frameIndex: Int,
+        manualRotationDeg: Int,
+        cropX: Float,
+        cropY: Float,
+        cropW: Float,
+        cropH: Float,
+        outPath: String,
+    ): Boolean
 
     /** rawedit::ErrorCode of the last failed call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
     fun code(): Int
@@ -121,23 +148,45 @@ interface DngRender {
 
 /** The real boundary: JNI calls into librawedit_jni.so. */
 internal object NativeDngRender : DngRender {
-    override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+    override fun render(
+        fd: Int,
+        frameIndex: Int,
+        manualRotationDeg: Int,
+        cropX: Float,
+        cropY: Float,
+        cropW: Float,
+        cropH: Float,
+        outPath: String,
+    ): Boolean {
         if (!NativeSource.nativeAvailable) {
             // The lib is absent (no NDK build): fail cleanly with the
             // unavailable message instead of UnsatisfiedLinkError. The
             // exporter's catch-all turns this into a FAILED job.
             throw IllegalStateException(NativeSource.nativeUnavailableMessage)
         }
-        return NativeSource.jniDngExport(fd, frameIndex, manualRotationDeg, outPath)
+        return NativeSource.jniDngExport(
+            fd, frameIndex, manualRotationDeg, cropX, cropY, cropW, cropH, outPath,
+        )
     }
 
-    override fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+    override fun renderLinear(
+        fd: Int,
+        frameIndex: Int,
+        manualRotationDeg: Int,
+        cropX: Float,
+        cropY: Float,
+        cropW: Float,
+        cropH: Float,
+        outPath: String,
+    ): Boolean {
         if (!NativeSource.nativeAvailable) {
             // Same unavailable guard as render (the lib is absent): fail
             // cleanly instead of UnsatisfiedLinkError.
             throw IllegalStateException(NativeSource.nativeUnavailableMessage)
         }
-        return NativeSource.jniLinearDngExport(fd, frameIndex, manualRotationDeg, outPath)
+        return NativeSource.jniLinearDngExport(
+            fd, frameIndex, manualRotationDeg, cropX, cropY, cropW, cropH, outPath,
+        )
     }
 
     override fun code(): Int = NativeSource.jniPreviewErrorCode()
@@ -223,12 +272,29 @@ class DngExporter(
     ): ExportJob {
         val partial = ExportStaging.partial(out)
         // RAW-13: the render call follows the job's own target — the same
-        // staging/finalize/error mapping wraps either file contract.
+        // staging/finalize/error mapping wraps either file contract. The
+        // crop fractions ride along in both arms (RAW-09): the snapshot's
+        // effective-space rect, cut natively before the write (CFA) or
+        // before the demosaic (linear).
         val doRender: () -> Boolean =
             if (job.target == Target.LINEAR) {
-                { render.renderLinear(sourceFd, frameIndex, job.manualRotationDeg, partial.absolutePath) }
+                {
+                    render.renderLinear(
+                        sourceFd, frameIndex, job.manualRotationDeg,
+                        job.snapshot.cropX, job.snapshot.cropY,
+                        job.snapshot.cropW, job.snapshot.cropH,
+                        partial.absolutePath,
+                    )
+                }
             } else {
-                { render.render(sourceFd, frameIndex, job.manualRotationDeg, partial.absolutePath) }
+                {
+                    render.render(
+                        sourceFd, frameIndex, job.manualRotationDeg,
+                        job.snapshot.cropX, job.snapshot.cropY,
+                        job.snapshot.cropW, job.snapshot.cropH,
+                        partial.absolutePath,
+                    )
+                }
             }
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
