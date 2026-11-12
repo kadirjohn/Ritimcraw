@@ -674,6 +674,17 @@ fun ClipEditorScreen(
         // down, renders use the low drag tier through the session's CACHED
         // path; the drag end emits exactly one full-quality settle render.
         var dragActive by remember(sourceId) { mutableStateOf(false) }
+        // Zoomed-preview tier policy (owner request 2026-11-12 section 3):
+        // while the pinch transform is zoomed, every SliderTiers-priced
+        // render stays at the full settle tier (the magnified bitmap
+        // would read soft at the 480px drag tier). SAVEABLE and keyed on
+        // the clip — the exact lifecycle of the transform it mirrors
+        // (PreviewSurface's zoomPan is rememberSaveable(clipKey)): a
+        // fresh clip starts at 1x (the transform resets on clipKey
+        // change and no settle callback fires, so this resets with it),
+        // and a configuration change mid-zoom keeps BOTH the transform
+        // and this flag, so the tier policy survives rotation intact.
+        var previewZoomed by rememberSaveable(sourceId) { mutableStateOf(false) }
         // Fullscreen preview (owner request 2026-11-11 section 2): the SAME
         // editor session — only the layout changes (top bar / tabs / panel
         // hidden, the preview takes the flex space, the transport stays).
@@ -852,7 +863,10 @@ fun ClipEditorScreen(
          * stays the fixed full preview tier.
          */
         fun applyTierEvent(event: SliderTiers.Event) {
-            val t = SliderTiers.onEvent(event, dragActive, previewQuality.scrubMaxDim)
+            val t = SliderTiers.onEvent(
+                event, dragActive, previewQuality.scrubMaxDim,
+                zoomed = previewZoomed,
+            )
             dragActive = t.dragActive
             when (val d = t.decision) {
                 is SliderTiers.Decision.RenderAtDragTier ->
@@ -1029,7 +1043,10 @@ fun ClipEditorScreen(
             delay(RenderDebounce.WINDOW_MS)
             requestRender(
                 positionFrame, grade,
-                SliderTiers.tierFor(dragActive, previewQuality.scrubMaxDim),
+                SliderTiers.tierFor(
+                    dragActive, previewQuality.scrubMaxDim,
+                    zoomed = previewZoomed,
+                ),
                 cached = dragActive,
             )
         }
@@ -1497,6 +1514,31 @@ fun ClipEditorScreen(
                     // configuration changes) — one pass-through line,
                     // the whole feature lives in PreviewSurface/ZoomPan.
                     clipKey = sourceId,
+                    // Zoom settle (owner request 2026-11-12 section 3):
+                    // a zoom-changing pinch just ended. The flag follows
+                    // the settled transform (back at 1x it drops and the
+                    // normal tier policy returns); a gesture that ends
+                    // ZOOMED additionally owes the full-quality re-render
+                    // — the PAUSE path exactly (SliderTiers.owesZoomSettle
+                    // is the pure decision; the callback's own firing
+                    // condition supplies its pinchZooming=true premise).
+                    // cached: the frame on screen is the same index (the
+                    // pinch never moved the position), so the decode is
+                    // reused and the settle costs one develop, like pause.
+                    onZoomSettled = { settled ->
+                        previewZoomed = ZoomPan.isZoomed(settled.zoom)
+                        if (SliderTiers.owesZoomSettle(
+                                pinchZooming = true,
+                                zoomed = previewZoomed,
+                            )
+                        ) {
+                            requestRender(
+                                positionFrame, grade,
+                                PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                                followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                            )
+                        }
+                    },
                     // The before/after press-hold gesture rides the surface's
                     // modifier (owner feature list W5): press-and-hold on the
                     // frame area swaps to the neutral grade, release returns
@@ -1793,7 +1835,10 @@ fun ClipEditorScreen(
                         isPlaying = false
                         requestRender(
                             idx, grade,
-                            SliderTiers.tierFor(dragActive, previewQuality.scrubMaxDim),
+                            SliderTiers.tierFor(
+                                dragActive, previewQuality.scrubMaxDim,
+                                zoomed = previewZoomed,
+                            ),
                             cached = true,
                         )
                     }
