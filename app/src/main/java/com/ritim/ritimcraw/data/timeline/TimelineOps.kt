@@ -156,6 +156,48 @@ object TimelineOps {
     /** Which edge a trim acts on. */
     enum class TrimEdge { START, END }
 
+    /**
+     * The UNDO path for trim: restores an edge to its pre-trim position,
+     * bypassing the shrink-only guard (an undo legitimately EXTENDS the
+     * clip back). Same dual-edge contract as [trim] — both ranges move
+     * by the same delta — and the linked audio follows the same way.
+     * Internal: only TimelineEdit.TrimClip's inverse builds one.
+     */
+    internal fun trimRestore(
+        project: TimelineProject,
+        clipId: String,
+        edge: TrimEdge,
+        oldPosition: Double,
+    ): TimelineProject? {
+        val clip = project.clip(clipId) ?: return null
+        val s = clip.sourceRange
+        // The restore delta: how far the edge moves back. The linked
+        // audio follows by the SAME delta (the forward trim's rule,
+        // mirrored) — one number, both clips, no separate inversion.
+        val delta = when (edge) {
+            TrimEdge.START -> oldPosition - s.start // restoring start: +d
+            TrimEdge.END -> oldPosition - s.end // restoring end: +d
+        }
+        val restored: TimelineClip = when (edge) {
+            TrimEdge.START -> clip.copy(
+                sourceRange = FrameRange(s.start + delta, s.end),
+                timelineRange = FrameRange(clip.timelineRange.start + delta, clip.timelineRange.end),
+            )
+            TrimEdge.END -> clip.copy(
+                sourceRange = FrameRange(s.start, s.end + delta),
+                timelineRange = FrameRange(clip.timelineRange.start, clip.timelineRange.end + delta),
+            )
+        }
+        var clips = project.clips.map { if (it.id == clipId) restored else it }
+        clip.linkedAudioId?.let { audioId ->
+            val audio = clips.firstOrNull { it.id == audioId }
+            if (audio != null) {
+                clips = clips.map { if (it.id == audioId) trimClipOnly(audio, edge, delta) else it }
+            }
+        }
+        return project.copy(clips = clips)
+    }
+
     private fun deltaFor(edge: TrimEdge, old: FrameRange, newPosition: Double): Double =
         when (edge) {
             TrimEdge.START -> newPosition - old.start
@@ -195,14 +237,18 @@ object TimelineOps {
      * anchored to the surviving left piece, documented so the UI shows
      * "split" as one clip becoming two, not a delete+add. The right piece
      * gets [rightId] (minted by the caller, so the caller can pre-book
-     * the id for its own bookkeeping before applying).
+     * the id for its own bookkeeping before applying — and so the
+     * transaction layer knows the id for undo).
      *
      * Linked audio (linkedAudioId) splits at the SAME edit point (TL-05):
      * the audio's own playhead-relative position is the video's frame -
      * video.timelineRange.start + audio.timelineRange.start (the shared
      * timebase), and the audio's left piece keeps the audio clip's id.
-     * The new pieces carry the new cross-link (left.video.linkedAudioId
-     * = audio left id, right.video.linkedAudioId = audio right id).
+     * The new audio right piece gets [audioRightId] when supplied (the
+     * transaction layer supplies it so undo can address the piece), else
+     * a freshly minted id. The new pieces carry the new cross-link
+     * (left.video.linkedAudioId = audio left id, right.video.linkedAudioId
+     * = audio right id).
      *
      * Returns the split result, or null when the clip is missing or the
      * frame is not strictly inside the clip (edges and outside are
@@ -212,7 +258,13 @@ object TimelineOps {
      * piece that covers it — mismatched A/V ranges are the caller's data
      * problem, not a reason to refuse the video edit).
      */
-    fun split(project: TimelineProject, clipId: String, frame: Double, rightId: String): TimelineProject? {
+    fun split(
+        project: TimelineProject,
+        clipId: String,
+        frame: Double,
+        rightId: String,
+        audioRightId: String? = null,
+    ): TimelineProject? {
         val clip = project.clip(clipId) ?: return null
         val t = clip.timelineRange
         if (frame <= t.start || frame >= t.end) return null
@@ -233,7 +285,7 @@ object TimelineOps {
             if (audio != null) {
                 val audioFrame = frame - clip.timelineRange.start + audio.timelineRange.start
                 if (audioFrame > audio.timelineRange.start && audioFrame < audio.timelineRange.end) {
-                    val audioPair = splitClip(audio, audioFrame, TimelineIds.newId())
+                    val audioPair = splitClip(audio, audioFrame, audioRightId ?: TimelineIds.newId())
                     val idx = clips.indexOfFirst { it.id == audioId }
                     clips[idx] = audioPair.left
                     clips.add(idx + 1, audioPair.right)
