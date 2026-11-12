@@ -278,6 +278,20 @@ class NativeSource private constructor(
         /** Pipeline stage of the last failed preview call (0 open, 1 frame read, 2 develop). */
         @JvmStatic private external fun nativePreviewErrorStage(): Int
 
+        /**
+         * RAW histogram stats (feature N6): PRE-DEVELOP CFA statistics of
+         * [frameIndex] — one compact jintArray (layout version, frame
+         * index, dims, 3x256 bins, RAW clip counts, per-channel samples,
+         * the black/white levels actually used; 787 ints — see the bridge
+         * comment for the exact layout) or null on failure (read the
+         * error accessors from the same thread). The stats describe the
+         * sensor domain: they do NOT move with exposure/WB/LUT/grade
+         * sliders; they change only with the frame. Reuses the handle's
+         * interactive CFA cache (never a second decode); must run on the
+         * session's engine thread like every preview call.
+         */
+        @JvmStatic private external fun nativeRawHistogram(handle: Long, frameIndex: Int): IntArray?
+
         // ---- DNG export JNI (decode frame -> writeCfaDng to a staging path) ----
 
         /**
@@ -543,6 +557,10 @@ class NativeSource private constructor(
 
         /** JNI bridge: pipeline stage of the last failed preview call. */
         internal fun jniPreviewErrorStage(): Int = nativePreviewErrorStage()
+
+        /** JNI bridge: see nativeRawHistogram (engine thread only). */
+        internal fun jniRawHistogram(handle: Long, frameIndex: Int): IntArray? =
+            nativeRawHistogram(handle, frameIndex)
 
         /** JNI bridge: see nativeDngExport. */
         internal fun jniDngExport(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean =

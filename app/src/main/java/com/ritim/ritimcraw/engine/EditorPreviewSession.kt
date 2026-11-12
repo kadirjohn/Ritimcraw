@@ -82,6 +82,30 @@ interface EditorPreviewSession : AutoCloseable {
         gyroPath: String? = null,
     ): Result<PreviewFrame>
 
+    /**
+     * PRE-DEVELOP RAW CFA histogram stats of frame [frameIndex] (feature
+     * N6): the sensor-domain histogram of the pristine CFA, reusing the
+     * session's interactive CFA cache — the SAME single decode the render
+     * path used, never a second one. The stats describe the RAW sensor
+     * data: they do NOT move with exposure/WB/LUT/grade sliders; they
+     * change only with the frame (see [RawHistogram]). Suspends until
+     * done; resumes with the stats or a failure carrying stage + cause +
+     * recovery. Runs on the engine thread like every native call.
+     *
+     * The DEFAULT is an honest failure, the rawWhiteLevel precedent: an
+     * encoded clip has no RAW sensor domain (its pixels were developed
+     * by the camera), so [EncodedPreviewSession] reports unavailable
+     * instead of inventing stats — the editor then shows the RAW mode
+     * as empty rather than fabricating curves.
+     */
+    suspend fun rawHistogram(frameIndex: Int): Result<RawHistogram> =
+        Result.failure(
+            PreviewRenderer.Companion.PreviewRenderException(
+                "RAW histogram unavailable (stage: open): clip has no RAW sensor data — " +
+                    "recovery: open an MCRAW clip"
+            )
+        )
+
     /** ptsUs of frame [index] for the transport's timeline; -1 when unavailable. */
     suspend fun framePtsUs(index: Int): Long
 
