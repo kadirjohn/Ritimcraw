@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.anchoredDraggable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
@@ -196,6 +197,15 @@ fun EditorPanelHandle(
  * The screen sizes this sheet by the drag offset (height modifier) and
  * subtracts the fixed rows around it for the anchor math; the sheet
  * itself never measures the panel back — no feedback loop.
+ *
+ * Landscape two-column workspace (owner request 2026-11-11d sections
+ * 17.1-17.2): [landscape] = true composes the SAME sheet as the full-height
+ * RIGHT column — no drag handle (section 17.3 does not force the portrait's
+ * vertical panel dragging in landscape), the same per-category scroll
+ * states, the same content slot. The screen weights the columns from
+ * OrientationLayout's responsive 30-40% band; the sheet itself stays
+ * layout-agnostic (it just fills the height it is given and scrolls
+ * inside, section 17.2: "independently scrollable").
  */
 @Composable
 fun EditorPanelSheet(
@@ -203,19 +213,29 @@ fun EditorPanelSheet(
     category: Int,
     scrollStates: Map<Int, ScrollState>,
     modifier: Modifier = Modifier,
+    landscape: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.fillMaxWidth()) {
-            EditorPanelHandle(dragState)
+        Column(
+            Modifier
+                .fillMaxWidth()
+                // Landscape: the sheet IS the full-height right column
+                // (the Row child's fillMaxHeight constraint).
+                .then(if (landscape) Modifier.fillMaxHeight() else Modifier),
+        ) {
+            if (!landscape) {
+                EditorPanelHandle(dragState)
+            }
             // weight(1f): the scroll region takes whatever the sheet's
             // height constraint leaves below the handle, so the content
             // SCROLLS INSIDE the panel instead of expanding it (section
             // 11.3 states B/C are scrollable; the screen fixes the height
-            // via the drag offset).
+            // via the drag offset — or the full column height, in
+            // landscape).
             Column(
                 Modifier
                     .fillMaxWidth()
