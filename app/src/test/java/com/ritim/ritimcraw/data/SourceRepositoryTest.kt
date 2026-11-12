@@ -462,5 +462,55 @@ class SourceRepositoryTest {
         )
     }
 
+    // ---- gyro auto-match on import (owner request 2026-11-12, G1) ----
+
+    @Test
+    fun import_leaves_gyro_id_blank_until_an_attach_sets_it() {
+        val file = projectFile()
+        // The auto-match attaches AFTER import (AppNav's autoMatchGyro
+        // runs on the imported record): a fresh import must carry no
+        // attachment — the store never invents one.
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+
+        assertEquals("", imported.gyroId)
+        assertEquals("", SourceRepository(FakeResolver(), file).all().single().gyroId)
+    }
+
+    @Test
+    fun auto_attach_shape_persists_across_reload() {
+        // The full auto-attach store shape: import (the video), then the
+        // attach that AppNav's autoMatchGyro performs after a successful
+        // probe (setGyro with a GyroStore id) — the attachment must
+        // survive a reload exactly like the editor's manual attach.
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val imported = repo.import("content://clip/1")
+
+        val updated = repo.setGyro(imported.id, "0123456789abcdef")
+
+        assertEquals("0123456789abcdef", updated?.gyroId)
+        assertEquals(
+            "0123456789abcdef",
+            SourceRepository(FakeResolver(), file).all().single().gyroId,
+        )
+    }
+
+    @Test
+    fun reimport_preserves_an_auto_attached_gyro_id() {
+        // The auto-attach runs after EVERY import; the same clip picked
+        // again (fingerprint dedupe) hits the existing-record branch,
+        // which must keep the attachment rather than reset it.
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val imported = repo.import("content://clip/1")
+        repo.setGyro(imported.id, "0123456789abcdef")
+
+        val reimported = repo.import("content://clip/1")
+
+        assertEquals(imported.id, reimported.id)
+        assertEquals("0123456789abcdef", reimported.gyroId)
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }

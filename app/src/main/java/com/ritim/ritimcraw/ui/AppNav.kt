@@ -4,9 +4,13 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -18,7 +22,9 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -27,6 +33,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -46,9 +53,12 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeStore
+import com.ritim.ritimcraw.data.GyroFolderStore
+import com.ritim.ritimcraw.data.GyroMatcher
+import com.ritim.ritimcraw.data.GyroStore
+import com.ritim.ritimcraw.data.GyroTree
 import com.ritim.ritimcraw.data.PreviewQualityStore
 import com.ritim.ritimcraw.data.LutStore
-import com.ritim.ritimcraw.data.GyroStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.PresetStore
 import com.ritim.ritimcraw.data.SourceKind
@@ -150,6 +160,12 @@ fun AppNav() {
                 project,
                 File(context.filesDir, "gyros").apply { mkdirs() },
             ),
+            // The granted gyro-folder tree URI (owner request 2026-11-12,
+            // G1): the auto-match queries this tree's .gcsv children on
+            // every video import. Same shared project.json, own
+            // top-level "gyroFolder" scalar, omit-when-absent — the
+            // PreviewQualityStore pattern.
+            gyroFolder = GyroFolderStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -324,6 +340,155 @@ fun AppNav() {
     fun enqueueFeedback() {
         // SHORT (not LONG): confirmation, not an error the user must read.
         scope.launch { exportSnackbar.showSnackbar(exportQueuedText, duration = SnackbarDuration.Short) }
+    }
+
+    // ---- Gyro .gcsv auto-match on import (owner request 2026-11-12, G1) ----
+    // The granted gyro folder (Documents/MotionCam on the owner's
+    // device) is queried for .gcsv logs after every video import; a
+    // same-named log attaches through the SAME path as the editor's
+    // manual attach (GyroStore.import -> jniGyroSyncProbe -> setGyro),
+    // with the same probe-failure cleanup. The pure matching rule is
+    // GyroMatcher (JVM-tested); the tree query is GyroTree
+    // (device-gated, exercised by the owner on device).
+    var gyroFolder by remember { mutableStateOf(stores.gyroFolder.get()) }
+    var gyroAmbiguous by remember { mutableStateOf<Pair<MediaSource, List<GyroTree.GcsvDocument>>?>(null) }
+    // The one-time folder offer: shown at most once per session, only
+    // after an import that found no granted folder. rememberSaveable
+    // keeps the dismissal across config changes; a fresh app start may
+    // ask again (deliberate — the feature is invisible until granted).
+    var gyroFolderHintShown by rememberSaveable { mutableStateOf(false) }
+    val gyroAttachedText = stringResource(R.string.gyro_auto_attached_snackbar)
+    val gyroFolderHintText = stringResource(R.string.gyro_folder_hint_snackbar)
+    val gyroFolderPickText = stringResource(R.string.gyro_folder_hint_action)
+
+    // The SAF tree picker (ACTION_OPEN_DOCUMENT_TREE): persists the
+    // grant like the app's other SAF picks, then remembers the tree in
+    // GyroFolderStore. Used by the Settings row and the import-time
+    // hint's action.
+    val gyroFolderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult // user backed out
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        } catch (e: SecurityException) {
+            // Non-fatal: the query will fail and the import flow degrades
+            // to silent no-attach, the same contract as a lost clip grant.
+        }
+        stores.gyroFolder.put(uri.toString())
+        gyroFolder = uri.toString()
+    }
+
+    /**
+     * Attaches [gcsvUri] to [source] through the exact editor attach
+     * path (gyro Phase 5): GyroStore.import (fingerprint dedupe + app-
+     * private copy) -> jniGyroSyncProbe on the clip's fd -> setGyro. A
+     * probe failure removes the imported entry again (the library never
+     * holds an unusable log) and reports nothing — the auto-match must
+     * never fail an import that succeeded. Returns true when attached.
+     */
+    fun autoAttachGyro(source: MediaSource, gcsvUri: String, fallbackName: String): Boolean {
+        return try {
+            val imported = stores.gyros.import(gcsvUri, fallbackName)
+            val path = stores.gyros.pathFor(imported.id)
+            if (path == null) {
+                stores.gyros.remove(imported.id)
+                false
+            } else {
+                val fd = try {
+                    context.contentResolver
+                        .openFileDescriptor(Uri.parse(source.uri), "r")
+                        ?.detachFd() ?: -1
+                } catch (e: Exception) {
+                    -1
+                }
+                if (fd < 0) {
+                    stores.gyros.remove(imported.id)
+                    false
+                } else {
+                    try {
+                        val probe = NativeSource.jniGyroSyncProbe(fd, path)
+                        runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
+                        if (probe == null || probe.size < 5) {
+                            stores.gyros.remove(imported.id)
+                            false
+                        } else {
+                            val updated = stores.sources.setGyro(source.id, imported.id)
+                            updated != null
+                        }
+                    } catch (e: Exception) {
+                        runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
+                        stores.gyros.remove(imported.id)
+                        false
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // A failed tree read, a vanished document, an import error:
+            // the auto-match is best-effort and never blocks the import.
+            false
+        }
+    }
+
+    /**
+     * Runs after EVERY successful video import: no granted folder and
+     * the hint not yet shown -> offer the folder pick once (a
+     * dismissible snackbar action, never a blocking dialog); folder
+     * granted -> query its .gcsv children and match. One match
+     * auto-attaches with the "Gyro data attached" snackbar; two or
+     * more open the ambiguity dialog; zero stays silent (the rule is
+     * exact-or-nothing — a wrong .gcsv silently stabilizes with wrong
+     * data, so attaching nothing is the right outcome).
+     *
+     * A clip that ALREADY has a gyro attached (a re-import of a clip
+     * the editor attached one to) is left untouched: the auto-match
+     * never overwrites an existing attachment, and the hint never
+     * fires for it.
+     */
+    fun autoMatchGyro(source: MediaSource) {
+        if (source.gyroId.isNotBlank()) return
+        val folder = gyroFolder
+        if (folder == null) {
+            if (!gyroFolderHintShown) {
+                gyroFolderHintShown = true
+                scope.launch {
+                    if (
+                        exportSnackbar.showSnackbar(
+                            gyroFolderHintText,
+                            actionLabel = gyroFolderPickText,
+                            duration = SnackbarDuration.Long,
+                        ) == SnackbarResult.ActionPerformed
+                    ) {
+                        gyroFolderPicker.launch(null)
+                    }
+                }
+            }
+            return
+        }
+        val logs = try {
+            GyroTree.listGcsv(context, folder)
+        } catch (e: Exception) {
+            // Dropped grant or unreachable provider: degrade to silent
+            // no-attach (the same contract as a lost clip grant).
+            return
+        }
+        when (val m = GyroMatcher.match(source.displayName, logs.map { it.displayName })) {
+            is GyroMatcher.Match.One -> {
+                val doc = logs.first { it.displayName == m.name }
+                if (autoAttachGyro(source, doc.uri, doc.displayName)) {
+                    sources = stores.sources.all()
+                    scope.launch {
+                        exportSnackbar.showSnackbar(gyroAttachedText, duration = SnackbarDuration.Short)
+                    }
+                }
+            }
+            is GyroMatcher.Match.Ambiguous ->
+                gyroAmbiguous = source to logs.filter { it.displayName in m.names }
+            GyroMatcher.Match.None -> Unit // silent: no log matches this clip
+        }
     }
 
     // DONE rows open on tap (owner request 2026-11-11 §1). The DECISION is
@@ -967,11 +1132,21 @@ fun AppNav() {
                                 // (fingerprint dedupe keeps ids and grades stable),
                                 // then generate the thumbnail + recorded stats
                                 // asynchronously — the import never blocks on the
-                                // develop (owner request 2026-11-11 §1).
+                                // develop (owner request 2026-11-11 §1). The gyro
+                                // auto-match (G1) runs after the import succeeds;
+                                // it is best-effort and never fails the import.
                                 try {
                                     val imported = stores.sources.import(uri)
                                     sources = stores.sources.all()
                                     scope.launch { generateThumbnail(imported) }
+                                    // The auto-match runs AFTER the import
+                                    // returns: the Library's "Imported"
+                                    // snackbar never waits on the tree
+                                    // query + copy + probe. The scope is
+                                    // the main dispatcher, so the store
+                                    // access stays single-threaded like
+                                    // every other store call.
+                                    scope.launch { autoMatchGyro(imported) }
                                     Result.success(imported)
                                 } catch (e: Exception) {
                                     Result.failure(e)
@@ -1060,9 +1235,58 @@ fun AppNav() {
                                 stores.previewQuality.put(level)
                                 previewQuality = level
                             },
+                            // ---- Gyro folder grant (G1) ----
+                            // The durable entry point for the grant: the
+                            // row shows the current folder (or the not-set
+                            // wording) and re-picks on tap. This row is
+                            // what the import-time hint's action opens
+                            // too — one grant, one place to change it.
+                            gyroFolderLabel = gyroFolder?.let { GyroTree.folderLabel(it) },
+                            onPickGyroFolder = { gyroFolderPicker.launch(null) },
                         )
                     }
                 }
+            }
+            // The ambiguity picker (G1): two or more .gcsv logs in the
+            // granted folder carry the imported clip's base name — the
+            // matcher never guesses, the user picks. Each candidate row
+            // attaches through the same auto-attach path (probe cleanup
+            // included); Cancel attaches nothing.
+            gyroAmbiguous?.let { (source, candidates) ->
+                AlertDialog(
+                    onDismissRequest = { gyroAmbiguous = null },
+                    title = { Text(stringResource(R.string.gyro_ambiguous_title)) },
+                    text = {
+                        Column {
+                            Text(stringResource(R.string.gyro_ambiguous_body))
+                            candidates.forEach { doc ->
+                                ListItem(
+                                    headlineContent = { Text(doc.displayName) },
+                                    modifier = Modifier.clickable {
+                                        gyroAmbiguous = null
+                                        if (autoAttachGyro(source, doc.uri, doc.displayName)) {
+                                            sources = stores.sources.all()
+                                            scope.launch {
+                                                exportSnackbar.showSnackbar(
+                                                    gyroAttachedText,
+                                                    duration = SnackbarDuration.Short,
+                                                )
+                                            }
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        TextButton(
+                            onClick = { gyroAmbiguous = null },
+                        ) {
+                            Text(stringResource(R.string.gyro_ambiguous_cancel))
+                        }
+                    },
+                )
             }
         }
     }
@@ -1084,4 +1308,7 @@ private class Stores(
     // .gcsv's bytes app-private, so no persistable URI grant is needed
     // and the log survives restarts, exactly like the cube copies.
     val gyros: GyroStore,
+    // The granted gyro-folder tree URI (owner request 2026-11-12, G1):
+    // same shared project.json, own top-level "gyroFolder" scalar.
+    val gyroFolder: GyroFolderStore,
 )

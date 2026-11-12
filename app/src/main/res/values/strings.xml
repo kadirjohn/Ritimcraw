@@ -197,6 +197,16 @@
     <string name="settings_preview_quality_balanced">Balanced</string>
     <string name="settings_preview_quality_high">High</string>
     <string name="settings_preview_quality_dims">%1$d / %2$d px</string>
+    <string name="settings_gyro_folder">Gyro log folder</string>
+    <string name="settings_gyro_folder_body">Pick the folder that holds your MotionCam .gcsv gyro logs. New imports matching a log\'s name attach it automatically.</string>
+    <string name="settings_gyro_folder_none">Not set — tap to pick the folder holding your .gcsv gyro logs</string>
+    <string name="settings_gyro_folder_set">Current: %1$s — tap to change</string>
+    <string name="gyro_auto_attached_snackbar">Gyro data attached</string>
+    <string name="gyro_folder_hint_snackbar">Import a MotionCam clip and a same-named .gcsv gyro log can attach automatically. Pick the gyro folder?</string>
+    <string name="gyro_folder_hint_action">Pick folder</string>
+    <string name="gyro_ambiguous_title">Multiple gyro logs match</string>
+    <string name="gyro_ambiguous_body">More than one .gcsv gyro log in the gyro folder has this clip\'s name. Pick the correct one to attach.</string>
+    <string name="gyro_ambiguous_cancel">Cancel</string>
 
     <!-- E2 Library delete: how many clips the confirm dialog removes. -->
     <plurals name="library_delete_message">
