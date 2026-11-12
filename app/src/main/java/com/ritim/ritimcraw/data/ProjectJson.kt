@@ -22,8 +22,13 @@ package com.ritim.ritimcraw.data
  */
 internal object ProjectJson {
 
-    /** Canonical section order in the rendered file. */
-    private val SECTION_ORDER = listOf("grades", "sources", "exports", "luts")
+    /**
+     * Canonical section order in the rendered file. "timeline" (the
+     * timeline editing model, TimelineStore — Stage C) is appended
+     * additively at the end: the four original stores keep their order
+     * and their rendered files, and the timeline section renders last.
+     */
+    private val SECTION_ORDER = listOf("grades", "sources", "exports", "luts", "timeline")
 
     /**
      * Renders the whole project.json with [section] set to [renderedSection],
