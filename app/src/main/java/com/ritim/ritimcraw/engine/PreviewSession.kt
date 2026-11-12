@@ -242,6 +242,105 @@ class PreviewSession private constructor(
         }
     }
 
+    /**
+     * PRE-DEVELOP RAW CFA histogram stats of frame [frameIndex] (feature
+     * N6): the sensor-domain histogram of the pristine CFA, reusing the
+     * session's interactive CFA cache (the bridge's nativeRawHistogram
+     * mirrors renderCached's cache discipline — the frame the editor is
+     * looking at is served from the cache or the temporal ring, never a
+     * second decode). Runs on the SAME engine thread as the renders
+     * (thread-local error state + one native session), so a stats call
+     * never races a render. The stats do not move with grade sliders;
+     * they change only with the frame. A closed session fails cleanly.
+     */
+    override suspend fun rawHistogram(frameIndex: Int): Result<RawHistogram> {
+        if (!SessionRules.isActive(opened = true, closed = closed.get())) {
+            return Result.failure(
+                PreviewRenderer.Companion.PreviewRenderException(
+                    "Preview failed (stage: open): session closed — recovery: reopen the clip"
+                )
+            )
+        }
+        if (frameIndex < 0 || (frameCount > 0 && frameIndex >= frameCount)) {
+            return Result.failure(
+                IllegalArgumentException(
+                    "frameIndex $frameIndex out of range (frameCount=$frameCount)"
+                )
+            )
+        }
+        return suspendCoroutine { cont ->
+            try {
+                engine.execute {
+                    val outcome: Result<RawHistogram> = try {
+                        if (closed.get()) {
+                            // Closed while queued: never touch the dead handle.
+                            Result.failure(
+                                PreviewRenderer.Companion.PreviewRenderException(
+                                    "Preview failed (stage: open): session closed — " +
+                                        "recovery: reopen the clip"
+                                )
+                            )
+                        } else {
+                            rawHistogramBlocking(frameIndex)
+                        }
+                    } catch (t: Throwable) {
+                        Result.failure(t)
+                    }
+                    cont.resume(outcome)
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(
+                    Result.failure(
+                        PreviewRenderer.Companion.PreviewRenderException(
+                            "Preview failed (stage: open): preview engine unavailable — " +
+                                "recovery: reopen the clip"
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Blocking RAW stats call; MUST run on the engine thread (thread-local
+     * error state). The error mapping mirrors renderArray: a null buffer
+     * reads the bridge's stage + cause + recovery, a malformed buffer
+     * (version/length drift) is a failure — never fabricated stats.
+     */
+    private fun rawHistogramBlocking(frameIndex: Int): Result<RawHistogram> {
+        val out = NativeSource.jniRawHistogram(handle, frameIndex)
+        if (out == null) {
+            val code = NativeSource.jniPreviewErrorCode()
+            val stage = NativeSource.jniPreviewErrorStage()
+            val detail = NativeSource.previewLastError()
+            return Result.failure(
+                PreviewRenderer.Companion.PreviewRenderException(
+                    PreviewErrors.message(code, stage, detail)
+                )
+            )
+        }
+        val stats = RawHistogram.fromJni(out)
+        if (stats == null) {
+            return Result.failure(
+                PreviewRenderer.Companion.PreviewRenderException(
+                    "RAW histogram failed (stage: develop): malformed stats buffer — " +
+                        "recovery: reopen the clip"
+                )
+            )
+        }
+        if (stats.frameIndex != frameIndex) {
+            // The stale guard's last line of defense: the bridge echoed a
+            // different frame than asked — surface it, never draw it.
+            return Result.failure(
+                PreviewRenderer.Companion.PreviewRenderException(
+                    "RAW histogram failed (stage: develop): stale frame stats — " +
+                        "recovery: reopen the clip"
+                )
+            )
+        }
+        return Result.success(stats)
+    }
+
     /** Blocking cached render; MUST run on the engine thread. */
     private fun renderArray(out: IntArray?): Result<PreviewFrame> {
         if (out == null || out.size < 2) {

@@ -28,6 +28,7 @@
 #include <rawedit/Orientation.h>
 #include <rawedit/OrientationEstimate.h>
 #include <rawedit/Result.h>
+#include <rawedit/RawStats.h>
 #include <rawedit/Source.h>
 #include <rawedit/Stabilization.h>
 #include <rawedit/Sync.h>
@@ -1318,6 +1319,151 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
     } catch (const std::exception& e) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  std::string("develop: ") + e.what() + " (recovery: reopen the clip)");
+        return nullptr;
+    }
+}
+
+// RAW histogram stats (feature N6) ------------------------------------------------
+//
+// PRE-DEVELOP CFA statistics for the RAW histogram mode: one compact
+// jintArray describing the sensor domain of one frame — what the sensor
+// captured, BEFORE develop. The stats therefore do NOT move with
+// exposure/WB/LUT/grade sliders (they act after the sensor data); the
+// array changes only with the frame. The processed histogram
+// (FrameHistogram on the rendered ARGB) keeps tracking the displayed
+// result; the two clip domains are NEVER compared (owner request
+// rgb-histogram-request.md line 21).
+//
+// jintArray LAYOUT (fixed, 787 ints):
+//   [0]      = layout version (1 today; the Kotlin mapper rejects
+//              anything else)
+//   [1]      = frameIndex the stats describe (the stale guard: the
+//              caller drops a result whose index is not the frame it
+//              asked for)
+//   [2]      = width,  [3] = height (the CFA dims, for reference)
+//   [4..771] = bins: 3 channels x 256 bins, channel-major —
+//              [4 + ch*256 + b] = R/G/B histogram count (ch 0=R, 1=G
+//              with both green sites combined, 2=B; normalized to [0,1]
+//              against that site's [black, white] range, exactly the
+//              develop stage's stage-1 mapping). 4 + 3*256 = 772, so
+//              the trailer starts at 772 — count it before packing.
+//   [772..774] = RAW white-clip counts per channel (samples >= white)
+//   [775..777] = RAW black-clip counts per channel (samples <= black)
+//   [778..780] = samples per channel (the G count covers both green
+//               sites; the clip thresholds' denominator)
+//   [781..784] = the black levels actually used, 2x2 cell-slot order
+//                (r, g, g, b) — the frame's dynamic levels when it
+//                carried them, the container fallback otherwise
+//   [785]     = the white level actually used
+//   [786]     = reserved (0)
+//
+// CACHE REUSE: the decoded pristine CFA is never decoded twice — the
+// entry's interactive cache (cachedCfa/cachedInfo/cachedFrameIndex)
+// serves the frame when it matches, else the frame decodes through the
+// ring exactly like the render path (loadRingFrame) and replaces the
+// cache. The 16 MB CFA never crosses JNI; only this compact array does.
+//
+// THREADING: same single preview engine thread as
+// nativePreviewSessionRenderCached — the Kotlin layer routes the call
+// through the session's engine executor (EditorPreviewSession.rawHistogram),
+// so the cache needs no locking beyond the registry's slot bookkeeping.
+//
+// Errors: the existing setError + null-return pattern (the Kotlin layer
+// reads nativePreviewErrorCode/Stage/LastError). An invalid handle, a
+// missing frame or a decode failure returns nullptr; the UI shows the
+// RAW mode empty, never fabricated data.
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRawHistogram(
+        JNIEnv* env, jclass, jlong handle, jint frameIndex) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (handle <= 0 || handle > kMaxSources) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "invalid clip handle (recovery: reopen the clip)");
+        return nullptr;
+    }
+    Entry& e = gEntries[handle - 1];
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 gLastError);
+        return nullptr;
+    }
+    if (frameIndex < 0 ||
+        static_cast<size_t>(frameIndex) >= s->frameCount()) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 std::string("rawHistogram: frame index ") +
+                     std::to_string(frameIndex) + " out of range (frameCount=" +
+                     std::to_string(s->frameCount()) +
+                     ", recovery: use the current frame index)");
+        return nullptr;
+    }
+    try {
+        // 1. The pristine CFA through the interactive cache — the same
+        //    reuse the render path performs. A cache miss decodes and
+        //    stores via the ring (never a second decode for the same
+        //    frame). The cache holds PRISTINE frames (temporal merge
+        //    output never re-enters as input), which is exactly the
+        //    pre-develop sensor domain this feature reads.
+        if (frameIndex != e.cachedFrameIndex) {
+            const CfaBuffer buf = loadRingFrame(*s, e, frameIndex);
+            if (buf == nullptr) return nullptr; // decode failed (error set)
+            e.cachedCfa = buf;
+            e.cachedInfo = s->frameInfo(static_cast<size_t>(frameIndex));
+            e.cachedFrameIndex = frameIndex;
+        }
+        const rawedit::FrameInfo& info = e.cachedInfo;
+        const rawedit::RawMeta& meta = s->rawMeta();
+
+        // 2. The pure stats pass (core/src/RawStats.cpp; the level
+        //    resolution mirrors Develop stage 1, -1 sentinels included).
+        //    The container fallback levels widen uint16 -> int32 here
+        //    (the core signature takes int32 so the -1 sentinel is in
+        //    range).
+        const int32_t blackFallback[4] = {
+            static_cast<int32_t>(meta.black[0]),
+            static_cast<int32_t>(meta.black[1]),
+            static_cast<int32_t>(meta.black[2]),
+            static_cast<int32_t>(meta.black[3]),
+        };
+        const rawedit::RawHistogramStats stats = rawedit::rawHistogramStats(
+            e.cachedCfa->data(), info.width, info.height, info.cfa,
+            info.dynamicBlack, blackFallback, info.dynamicWhite,
+            static_cast<int32_t>(meta.white));
+
+        // 3. Pack the compact array (layout above). The trailer offsets
+        //    are derived, not restated: 4 header + 3*256 bins = 772, and
+        //    each trailer block starts where the previous one ends.
+        constexpr int kOut = 787;
+        constexpr int kTrailer = 772; // 4 + 3 * 256
+        std::vector<jint> out(kOut, 0);
+        out[0] = 1; // layout version
+        out[1] = frameIndex;
+        out[2] = static_cast<jint>(info.width);
+        out[3] = static_cast<jint>(info.height);
+        for (int ch = 0; ch < 3; ++ch)
+            for (int b = 0; b < rawedit::RawHistogramStats::kBins; ++b)
+                out[4 + ch * 256 + b] = static_cast<jint>(stats.bins[ch][b]);
+        for (int ch = 0; ch < 3; ++ch) out[kTrailer + ch] = stats.whiteClips[ch];
+        for (int ch = 0; ch < 3; ++ch) out[kTrailer + 3 + ch] = stats.blackClips[ch];
+        for (int ch = 0; ch < 3; ++ch) out[kTrailer + 6 + ch] = stats.samples[ch];
+        for (int slot = 0; slot < 4; ++slot) out[kTrailer + 9 + slot] = stats.blackUsed[slot];
+        out[kTrailer + 13] = stats.whiteUsed;
+        out[kTrailer + 14] = 0; // reserved
+        jintArray arr = env->NewIntArray(kOut);
+        if (arr == nullptr) return nullptr;
+        env->SetIntArrayRegion(arr, 0, kOut, out.data());
+        return arr;
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "rawHistogram: out of memory decoding the frame "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 std::string("rawHistogram: ") + e.what() +
+                     " (recovery: reopen the clip)");
         return nullptr;
     }
 }

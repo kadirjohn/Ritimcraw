@@ -79,6 +79,7 @@ import com.ritim.ritimcraw.engine.PreviewRenderer
 import com.ritim.ritimcraw.engine.PreviewSessions
 import com.ritim.ritimcraw.engine.PreviewQuality
 import com.ritim.ritimcraw.engine.PreviewTiers
+import com.ritim.ritimcraw.engine.RawHistogram
 import com.ritim.ritimcraw.engine.SourcePath
 import com.ritim.ritimcraw.engine.SourcePathDecision
 import com.ritim.ritimcraw.engine.PtsTimeline
@@ -90,8 +91,10 @@ import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -503,12 +506,25 @@ fun ClipEditorScreen(
         // so a rotation or process death keeps the user's scope exactly
         // as they left it; the results are keyed to the clip (a switch
         // starts empty). First open shows Waveform · Luma (spec §1:
-        // "ilk açılışta Luma seçilsin"); the histogram content keeps its
-        // own mode inside HistogramScopeView. The compute itself lives
+        // "ilk açılışta Luma seçilsin"); the histogram content's mode
+        // (RGB / Luma / Parade / RAW, feature N6) is saveable here too
+        // — the RAW fetch is keyed to it. The compute itself lives
         // in the scope compute effect below the render pump (spec §7).
         var scopeOpen by rememberSaveable { mutableStateOf(false) }
         var scopeContent by rememberSaveable { mutableStateOf(ScopeContent.WAVEFORM) }
         var waveformModeOrdinal by rememberSaveable { mutableStateOf(WaveformMode.LUMA.ordinal) }
+        // The histogram content's own mode (feature N6): RGB / Luma /
+        // Parade / RAW. Saveable like the waveform mode — and lifted
+        // to the screen for the same reason (the waveform's
+        // precedent): the RAW mode's PRE-DEVELOP sensor-domain stats
+        // are fetched by the scope compute effect below, which keys
+        // on the mode, so the choice must live where the compute is
+        // keyed. The RAW stats themselves are keyed to the clip like
+        // the processed histogram (a switch starts empty).
+        var histogramModeOrdinal by rememberSaveable {
+            mutableStateOf(HistogramMode.RGB.ordinal)
+        }
+        var rawHistogram by remember(sourceId) { mutableStateOf<RawHistogram?>(null) }
         // Sampling quality (spec §6): scope-ONLY resolution — it changes
         // how many pixels each waveform pass samples, never the source /
         // preview / export pipeline. Saveable like the mode; keyed into
@@ -595,6 +611,13 @@ fun ClipEditorScreen(
 
         // ---- Preview + transport bookkeeping (all keyed to the clip) ----
         var frame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
+        // The index of the frame LAST PUBLISHED by the render pump
+        // (feature N6): the pump's publish swaps `frame` and this
+        // index together, so the scope compute's RAW fetch asks for
+        // stats of exactly the frame on screen. -1 until the first
+        // publish (no RAW fetch before a frame exists). Keyed to the
+        // clip like `frame` — a switch resets both.
+        var renderedFrameIndex by remember(sourceId) { mutableStateOf(-1) }
         var lastRenderFailed by remember(sourceId) { mutableStateOf(false) }
         var errorText by remember(sourceId) { mutableStateOf<String?>(null) }
         var renderInFlight by remember(sourceId) { mutableStateOf(false) }
@@ -1037,6 +1060,12 @@ fun ClipEditorScreen(
                         result.fold(
                             onSuccess = { f ->
                                 frame = f
+                                // The rendered frame's index, published
+                                // beside the frame (feature N6): the
+                                // scope compute's RAW fetch asks for
+                                // stats of THIS frame, never guessing
+                                // the index from transport state.
+                                renderedFrameIndex = req.frameIndex
                                 lastRenderFailed = false
                                 errorText = null
                             },
@@ -1114,7 +1143,10 @@ fun ClipEditorScreen(
         // selector is a pure UI switch; the waveform pass runs only for
         // the WAVEFORM content, at the user's sampling quality (spec §6:
         // scope-ONLY resolution — the source/preview/export pipeline is
-        // untouched).
+        // untouched). The RAW fetch (feature N6) runs only for the
+        // HISTOGRAM content in the RAW mode — it is a native engine
+        // round-trip, not a sub-millisecond pass, so it is gated on the
+        // combination that draws it, never run speculatively.
         // MEASUREMENT TOOLING (spec §7 "tuned with measured cost"): every
         // compute logs one line to logcat tag "ritim-scope" (mode,
         // sampling, frame size, elapsed ms) and records into the
@@ -1123,9 +1155,15 @@ fun ClipEditorScreen(
         // restarts; the decay ticker below drains the readout when
         // computes stop). The device pass confirms the pacing and the
         // per-compute cost from either.
-        LaunchedEffect(scopeOpen, scopeContent, waveformModeOrdinal, scopeSamplingOrdinal, sourceId) {
+        LaunchedEffect(
+            scopeOpen, scopeContent, histogramModeOrdinal,
+            waveformModeOrdinal, scopeSamplingOrdinal, sourceId,
+        ) {
             if (!scopeOpen) return@LaunchedEffect
             val content = scopeContent
+            val histMode = HistogramMode.entries[
+                histogramModeOrdinal.coerceIn(0, HistogramMode.entries.lastIndex)
+            ]
             val mode = WaveformMode.entries[
                 waveformModeOrdinal.coerceIn(0, WaveformMode.entries.lastIndex)
             ]
@@ -1146,6 +1184,7 @@ fun ClipEditorScreen(
                 if (f == null) {
                     histogram = FrameHistogram.of(null)
                     waveformRendered = null
+                    rawHistogram = null
                 } else {
                     histogram = withContext(Dispatchers.Default) {
                         FrameHistogram.of(f.argb)
@@ -1156,6 +1195,47 @@ fun ClipEditorScreen(
                                 WaveformScope.of(f.argb, f.width, f.height, mode, sampling),
                                 mode,
                             )
+                        }
+                    }
+                    if (content == ScopeContent.HISTOGRAM && histMode == HistogramMode.RAW) {
+                        // Feature N6: the PRE-DEVELOP sensor-domain
+                        // stats, fetched through the session seam (the
+                        // same engine thread as the renders; the bridge
+                        // reuses the interactive CFA cache — never a
+                        // second decode). The index asked is the pump's
+                        // OWN publish (renderedFrameIndex), never
+                        // transport state. The stale-guard at the
+                        // write: collectLatest's cancellation is
+                        // cooperative — a fetch whose coroutine was
+                        // cancelled still resumes INTO this block, so
+                        // the frame index is re-checked before the
+                        // stats are shown. A result that lands for a
+                        // frame the screen has already moved past is
+                        // dropped, never drawn. A failure (or no
+                        // session — an encoded clip) leaves the stats
+                        // null: the RAW mode shows its honest
+                        // unavailability notice, never a fabricated
+                        // curve and never the processed histogram in
+                        // the sensor domain's place.
+                        val asked = renderedFrameIndex
+                        if (asked >= 0) {
+                            val s = session
+                            val outcome = s?.rawHistogram(asked)
+                            // The fetch is a suspendCoroutine over the
+                            // engine executor — cancellation lands at
+                            // the NEXT check, this one: a fetch that
+                            // was in flight when a newer frame
+                            // published ends HERE (like withContext
+                            // ends the waveform's stale block), before
+                            // any write and before the Hz record.
+                            currentCoroutineContext().ensureActive()
+                            // Last line of defense: never draw stats
+                            // for a frame the screen has moved past.
+                            if (renderedFrameIndex == asked) {
+                                rawHistogram = outcome?.getOrNull()
+                            }
+                        } else {
+                            rawHistogram = null
                         }
                     }
                 }
@@ -1754,6 +1834,9 @@ fun ClipEditorScreen(
                     onContentChange = { scopeContent = it },
                     onClose = { scopeOpen = false },
                     histogram = histogram,
+                    rawHistogram = rawHistogram,
+                    histogramModeOrdinal = histogramModeOrdinal,
+                    onHistogramModeChange = { histogramModeOrdinal = it },
                     waveform = waveformRendered,
                     waveformModeOrdinal = waveformModeOrdinal,
                     onWaveformModeChange = { waveformModeOrdinal = it },

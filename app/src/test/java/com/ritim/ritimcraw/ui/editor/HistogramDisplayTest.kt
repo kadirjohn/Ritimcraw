@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.editor
 
+import com.ritim.ritimcraw.engine.RawHistogram
 import com.ritim.ritimcraw.ui.editor.FrameHistogram.Channel
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -227,5 +228,84 @@ class HistogramDisplayTest {
         // top 3 values (253, 254, 255) are ignored.
         val values = FloatArray(256) { it.toFloat() }
         assertEquals(252f, HistogramDisplay.percentile99(values), 0f)
+    }
+
+    // ---- the RAW mode's display pipeline (feature N6) ----
+
+    /** A RawHistogram with hand-set bins: spikes at bin 200, away from the edges. */
+    private fun spikeRaw(): RawHistogram {
+        val red = IntArray(RawHistogram.BINS)
+        val green = IntArray(RawHistogram.BINS)
+        val blue = IntArray(RawHistogram.BINS)
+        red[200] = 100
+        green[200] = 50
+        blue[200] = 25
+        return RawHistogram(
+            frameIndex = 0, width = 4032, height = 3024,
+            redBins = red, greenBins = green, blueBins = blue,
+            whiteClips = IntArray(3), blackClips = IntArray(3),
+            samples = intArrayOf(100, 50, 25),
+            blackUsed = IntArray(4), whiteUsed = 1023,
+        )
+    }
+
+    @Test
+    fun raw_mode_scales_all_three_channels_by_one_denominator() {
+        // The sensor domain gets the SAME common-scale discipline as
+        // the processed RGB mode (red 100, green 50, blue 25 in one
+        // bin): the tallest channel clamps at 1, the others keep their
+        // true relative heights — per-channel scaling would lie about
+        // relative CFA levels.
+        val display = HistogramDisplay.computeRaw(spikeRaw())
+        assertEquals(3, display.size)
+        val red = display.getValue(RawHistogram.Channel.RED)
+        val green = display.getValue(RawHistogram.Channel.GREEN)
+        val blue = display.getValue(RawHistogram.Channel.BLUE)
+        assertEquals(1f, red.max(), 0.001f)
+        assertEquals(red[203] * 0.5f, green[203], 0.001f)
+        assertEquals(red[203] * 0.25f, blue[203], 0.001f)
+    }
+
+    @Test
+    fun raw_mode_smoothing_never_touches_the_sensor_counts() {
+        // The owner's raw-counts-stay-raw rule, sensor domain edition:
+        // computeRaw smooths a COPY; the bins and clip counts must be
+        // bitwise unchanged afterwards, so the RAW clip indicators
+        // (which read the exact sensor counts) can never be created or
+        // hidden by the display smoothing.
+        val raw = spikeRaw()
+        val binsBefore = raw.bins(RawHistogram.Channel.RED).copyOf()
+        val clipsBefore = raw.whiteClipped(RawHistogram.Channel.RED)
+        HistogramDisplay.computeRaw(raw)
+        assertArrayEquals(binsBefore, raw.bins(RawHistogram.Channel.RED))
+        assertEquals(clipsBefore, raw.whiteClipped(RawHistogram.Channel.RED))
+    }
+
+    @Test
+    fun raw_mode_unavailable_is_an_empty_map_never_a_fabricated_curve() {
+        // Null stats (an encoded clip has no sensor data, or the fetch
+        // failed) map to an EMPTY display — the view shows its honest
+        // unavailability notice. The pipeline never invents a shape.
+        assertTrue(HistogramDisplay.computeRaw(null).isEmpty())
+    }
+
+    @Test
+    fun raw_mode_empty_bins_yield_all_zero_display_values() {
+        // A degenerate all-zero sensor histogram draws flat zero
+        // curves, no NaN, no division by zero (the denominator floor).
+        val zero = RawHistogram(
+            frameIndex = 0, width = 4032, height = 3024,
+            redBins = IntArray(RawHistogram.BINS),
+            greenBins = IntArray(RawHistogram.BINS),
+            blueBins = IntArray(RawHistogram.BINS),
+            whiteClips = IntArray(3), blackClips = IntArray(3),
+            samples = IntArray(3), blackUsed = IntArray(4), whiteUsed = 1023,
+        )
+        val display = HistogramDisplay.computeRaw(zero)
+        for (values in display.values) {
+            for (v in values) {
+                assertEquals(0f, v, 0f)
+            }
+        }
     }
 }

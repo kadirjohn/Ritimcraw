@@ -32,6 +32,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.engine.RawHistogram
 import com.ritim.ritimcraw.ui.theme.Tnum
 
 /**
@@ -67,12 +68,15 @@ import com.ritim.ritimcraw.ui.theme.Tnum
  * the histogram's "Clipped" badge appear inside the reserved band
  * instead of adding height.
  *
- * STATE: the open flag, the content choice and the waveform mode live
- * in the SCREEN (saveable there because the strip leaves composition
- * when closed — screen-level state keeps the user's choices across
- * close/open); the histogram's own mode stays inside
- * [HistogramScopeView] like the overlay kept it. First open shows
- * Waveform · Luma (spec §1: "ilk açılışta Luma seçilsin").
+ * STATE: the open flag, the content choice, the waveform mode AND the
+ * histogram mode live in the SCREEN (saveable there because the strip
+ * leaves composition when closed — screen-level state keeps the
+ * user's choices across close/open); the histogram's mode moved up
+ * with feature N6 (the waveform's precedent: the RAW mode's
+ * sensor-domain stats are fetched by the screen's scope compute keyed
+ * to the mode, so the choice must live where the compute is keyed).
+ * First open shows Waveform · Luma (spec §1: "ilk açılışta Luma
+ * seçilsin").
  *
  * REFERENCES (spec §8): the mid-gray guide line is TOGGLEABLE from the
  * header and drawn only while the derivation is honest — [midGraySignal]
@@ -107,10 +111,17 @@ internal val ScopeLabelBandHeight = 26.dp
  * [waveform] its pre-rendered waveform pixels — both computed off the UI
  * thread from the CURRENT published frame by the screen's scope compute
  * effect (spec §7: closed strip = the compute stops entirely), null/empty
- * until the first frame publishes. The sampling params carry the
- * waveform pass's quality choice (spec §6) and [hz] its measured compute
- * rate (spec §7 pacing validation) — screen state, keyed where the
- * compute is keyed. [midGrayAvailable]/[midGrayShown]/[onMidGrayChange]
+ * until the first frame publishes. [rawHistogram] is the RAW mode's
+ * PRE-DEVELOP sensor-domain stats (feature N6) — fetched by the same
+ * compute effect through the session seam when the histogram mode is
+ * RAW; null when unavailable (an encoded clip has no sensor data, or
+ * the fetch failed), which the histogram content shows as an honest
+ * notice, never a fabricated curve. The histogram mode params
+ * ([histogramModeOrdinal]/[onHistogramModeChange]) carry the mode the
+ * same way the waveform's do — screen state, keyed where the compute
+ * is keyed. The sampling params carry the waveform pass's quality
+ * choice (spec §6) and [hz] its measured compute rate (spec §7 pacing
+ * validation). [midGrayAvailable]/[midGrayShown]/[onMidGrayChange]
  * carry the spec §8 reference: the toggle shows only while the
  * derivation is honest (the screen's gate), and the line draws only
  * when the user has it on.
@@ -121,6 +132,9 @@ fun ScopeStrip(
     onContentChange: (ScopeContent) -> Unit,
     onClose: () -> Unit,
     histogram: FrameHistogram.Result,
+    rawHistogram: RawHistogram?,
+    histogramModeOrdinal: Int,
+    onHistogramModeChange: (Int) -> Unit,
     waveform: WaveformDisplay.Rendered?,
     waveformModeOrdinal: Int,
     onWaveformModeChange: (Int) -> Unit,
@@ -199,6 +213,9 @@ fun ScopeStrip(
             } else {
                 HistogramScopeView(
                     result = histogram,
+                    modeOrdinal = histogramModeOrdinal,
+                    onModeChange = onHistogramModeChange,
+                    raw = rawHistogram,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
