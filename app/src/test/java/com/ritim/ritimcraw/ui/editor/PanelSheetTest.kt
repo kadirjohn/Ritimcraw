@@ -105,4 +105,31 @@ class PanelSheetTest {
         assertEquals(PanelState.NORMAL, PanelSheet.panelAfterCategoryTap(PanelState.NORMAL))
         assertEquals(PanelState.EXPANDED, PanelSheet.panelAfterCategoryTap(PanelState.EXPANDED))
     }
+
+    // ---- collapsed strip trim (owner add-on 2026-11-12) ----
+
+    @Test
+    fun collapsed_strip_is_trimmed_to_36dp() {
+        // Before the trim the collapsed anchor was the 48dp handle
+        // target itself; after it the visible strip is 36dp — a 25%
+        // reduction of the strip the preview has to give up.
+        assertEquals(36f, PanelCollapsedHeight.value, 0f)
+    }
+
+    @Test
+    fun handle_target_stays_the_48dp_minimum() {
+        // The trim shrinks the STRIP, never the touch target: the handle
+        // keeps its 48dp minimum touch target (DESIGN.md).
+        assertEquals(48f, PanelHandleHeight.value, 0f)
+    }
+
+    @Test
+    fun handle_overhangs_the_trimmed_strip_by_12dp() {
+        // The 48dp target inside the 36dp collapsed sheet overhangs 12dp
+        // downward into the navigation bar's empty top chrome —
+        // hit-testable because the sheet draws its shape with
+        // Modifier.background, not a clipping Surface.
+        assertTrue(PanelCollapsedHeight < PanelHandleHeight)
+        assertEquals(12f, (PanelHandleHeight - PanelCollapsedHeight).value, 0f)
+    }
 }

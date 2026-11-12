@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.engine.PreviewFrame
-import com.ritim.ritimcraw.engine.SliderTiers
 import kotlin.math.abs
 import kotlin.math.hypot
 

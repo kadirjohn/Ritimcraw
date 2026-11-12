@@ -584,8 +584,10 @@ fun ClipEditorScreen(
         val scopeStripHeightPx =
             if (scopePresentation == ScopePresentation.STRIP) scopeStripHeight else 0
         val topBarHeightPx = with(density) { EditorTopBarHeight.toPx() }
-        // The collapsed anchor: the handle strip's height (§11.3 state A).
-        val collapsedHeightPx = with(density) { PanelHandleHeight.roundToPx() }
+        // The collapsed anchor: the trimmed handle strip's height
+        // (§11.3 state A; owner add-on 2026-11-12: the visible strip is
+        // 36dp now, the 48dp touch target overhangs below it).
+        val collapsedHeightPx = with(density) { PanelCollapsedHeight.roundToPx() }
         // The free region for the panel + preview together (§11.3): the
         // column minus the fixed rows above and below the flex area —
         // the open scope strip is one of those fixed rows in the
@@ -2344,11 +2346,13 @@ fun ClipEditorScreen(
                     // before then), so the first frame composes the
                     // sheet at the collapsed-strip height and the
                     // anchors effect snaps it to the restored state
-                    // synchronously on the same first layout pass.
+                    // synchronously on the same first layout pass
+                    // (the trimmed 36dp strip, owner add-on
+                    // 2026-11-12).
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(
-                            if (panelDrag.anchors.size == 0) PanelHandleHeight
+                            if (panelDrag.anchors.size == 0) PanelCollapsedHeight
                             else with(density) { panelDrag.offset.toDp() },
                         ),
                 ) {
