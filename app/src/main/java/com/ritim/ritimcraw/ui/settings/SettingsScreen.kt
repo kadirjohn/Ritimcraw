@@ -30,6 +30,7 @@ import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.CodecReport
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.PreviewQuality
+import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.theme.Tnum
 
@@ -62,6 +63,14 @@ fun SettingsScreen(
     // keep every existing caller and preview working.
     previewQuality: PreviewQuality = PreviewQuality.DEFAULT,
     onPreviewQualityChange: (PreviewQuality) -> Unit = {},
+    // ---- Render backend (owner request 2026-11-12, deliverable B) ----
+    // The persisted requested backend (AppNav reads RenderBackendStore) and
+    // the change callback (AppNav persists + refreshes its state). Defaults
+    // keep every existing caller working; the picker is the REQUESTED axis
+    // only — the effective backend is computed per job from the runtime
+    // gates and reported honestly (RenderBackend/BackendRules).
+    renderBackend: RenderBackend = RenderBackend.DEFAULT,
+    onRenderBackendChange: (RenderBackend) -> Unit = {},
     // ---- Gyro folder grant (owner request 2026-11-12, G1) ----
     // The granted tree's friendly label (Documents/MotionCam), or null
     // when no folder is granted. The row re-picks on tap; AppNav owns
@@ -142,6 +151,41 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 4.dp),
             )
+            // Render backend row (owner request 2026-11-12, deliverable B):
+            // the REQUESTED image-processing backend. Same segmented pattern
+            // as preview quality (one label per button, E3). The supporting
+            // text states the semantics honestly: CPU is the reference, Auto
+            // is capability/parity-gated, GPU is experimental with honest
+            // fallback — and the encoder axis is independent of this choice.
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_render_backend)) },
+                supportingContent = {
+                    Text(stringResource(R.string.settings_render_backend_body))
+                },
+            )
+            val backendOptions = listOf(
+                R.string.settings_render_backend_cpu to RenderBackend.CPU,
+                R.string.settings_render_backend_auto to RenderBackend.AUTO,
+                R.string.settings_render_backend_gpu to RenderBackend.GPU_EXPERIMENTAL,
+            )
+            SingleChoiceSegmentedButtonRow(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+            ) {
+                backendOptions.forEachIndexed { index, (labelRes, backend) ->
+                    SegmentedButton(
+                        selected = renderBackend == backend,
+                        onClick = { onRenderBackendChange(backend) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = backendOptions.size,
+                        ),
+                    ) {
+                        Text(stringResource(labelRes))
+                    }
+                }
+            }
             // Gyro folder grant (G1): the durable home of the grant. The row
             // states what the folder is for and shows the current folder (or
             // the not-set wording); a tap opens the SAF tree picker. The

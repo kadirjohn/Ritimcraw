@@ -42,6 +42,8 @@
 #include <rawedit/Transfer.h>
 #include <rawedit/Warp.h>
 
+#include "gles/GlesPipeline.h"
+
 namespace {
 
 // Last error detail for the most recent failed call on this thread.
@@ -1759,6 +1761,128 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGyroSyncProbe(
     return result;
 }
 
+// GLES capability probe + single-frame demosaic parity (owner request
+// 2026-11-12, deliverable C) ---------------------------------------------------
+//
+// Both are STATELESS probes (the nativeGyroSyncProbe contract): no
+// handle, no render-cache state, no session, safe from any thread; any
+// fd is dup'd by Source::open so the caller's copy is untouched. The
+// device entry point is the debug Measure harness (PreviewMetrics leg 4);
+// nothing here changes a render decision on its own — the numbers feed
+// BackendGates (engine/RenderBackend.kt) in a later deliverable.
+//
+// nativeGlesProbe: creates a throwaway GLES context (grafika EglCore
+// topology, gles/GlesPipeline.cpp), reads what the device reports,
+// releases the context, and returns
+//
+//   [0] contextOk      1 when the EGL context + pbuffer came up
+//   [1] glesMajor      parsed from glGetString(GL_VERSION) (0 = unknown)
+//   [2] glesMinor
+//   [3] computeOk      ES 3.1+ context with a nonzero dispatch limit
+//   [4] floatFboOk     GL_EXT_color_buffer_float advertised
+//   [5] maxTextureSize
+//
+// A device with NO context is an honest report, not an error: the array
+// returns with contextOk=0 and the failing EGL step in the error detail
+// (read nativeLastError from the same thread). nullptr is reserved for
+// JNI-level failure (error state set).
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesProbe(
+        JNIEnv* env, jclass) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    std::string detail;
+    const gles::Capabilities caps = gles::probeCapabilities(&detail);
+    if (!caps.contextOk) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "gles probe: no context at " + detail +
+                     " (recovery: the CPU render path stays the default)");
+    }
+    const double out[6] = {
+        caps.contextOk ? 1.0 : 0.0,
+        static_cast<double>(caps.glesMajor),
+        static_cast<double>(caps.glesMinor),
+        caps.computeOk ? 1.0 : 0.0,
+        caps.floatFboOk ? 1.0 : 0.0,
+        static_cast<double>(caps.maxTextureSize),
+    };
+    jdoubleArray result = env->NewDoubleArray(6);
+    if (result == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(result, 0, 6, out);
+    return result;
+}
+
+// nativeGlesParity: opens the clip behind [fd], decodes frame 0, and runs
+// the CALLER-PROVIDED GLSL ES 3.10 compute source [computeSource] — the
+// Kotlin single source of truth (GlesShaderSources.DEMOSAIC_COMPUTE; the
+// device compiles the exact text the host validator checked) — on a
+// throwaway GLES 3.1 context, against rawedit::developLinear: the DNG
+// path's own reference, on the same frame. Returns
+//
+//   [0] ran           1 when the GPU pass produced real numbers
+//   [1] maxDiffLsb    largest |gpu - cpu| in 16-bit LSB units
+//   [2] mismatchCount samples whose 16-bit outputs differ
+//   [3] samples       w * h * 3
+//
+// ran=0: a GPU stage failed (EGL, compile, dispatch, map) — the error
+// detail carries the step or the compile log (nativeLastError). nullptr:
+// clip-level failure (open/decode; error state set). The PASS VERDICT is
+// Kotlin's (GpuParityRules) — this reports the raw numbers only, never a
+// claim. Runtime behavior is device-test-pending: no phone has run it.
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesParity(
+        JNIEnv* env, jclass, jint fd, jstring computeSource) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    const char* chars = env->GetStringUTFChars(computeSource, nullptr);
+    if (chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "gles parity: out of memory reading the shader source "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    }
+    const std::string source(chars);
+    env->ReleaseStringUTFChars(computeSource, chars);
+
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("gles parity: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail +
+                     " (recovery: reopen the clip and retry)");
+        return nullptr;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+    const rawedit::FrameInfo info = src->frameInfo(0);
+    auto frame = src->readFrame(0);
+    if (!frame.isOk()) {
+        setError(static_cast<int>(frame.code), kStageFrameRead,
+                 std::string("gles parity: frame 0 decode — ") +
+                     rawedit::errorName(frame.code) + " — " + frame.detail +
+                     " (recovery: reopen the clip and retry)");
+        return nullptr;
+    }
+    const gles::ParityReport rep =
+        gles::demosaicParity(source, *frame.value, info, src->rawMeta());
+    if (!rep.ran) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "gles parity: " + rep.detail +
+                     " (recovery: the CPU render path stays the default)");
+    }
+    const double out[4] = {
+        rep.ran ? 1.0 : 0.0,
+        static_cast<double>(rep.maxDiffLsb),
+        static_cast<double>(rep.mismatchCount),
+        static_cast<double>(rep.samples),
+    };
+    jdoubleArray result = env->NewDoubleArray(4);
+    if (result == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(result, 0, 4, out);
+    return result;
+}
+
 // MP4 export pipeline ----------------------------------------------------------
 //
 // The exporter opens a session with nativePreviewOpen (same handle registry,
@@ -1864,8 +1988,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         applyStabilization(stab.input, img, /*maxDim=*/0);
 
         // 3. linearToRec709 -> clamp -> 8-bit RGB888, row-major, 3 bytes
-        //    per pixel. Not rotated: the exporter passes orientationDeg to
-        //    MediaMuxer.setOrientationHint so players rotate at display time.
+        //    per pixel, NOT rotated here: the Kotlin exporter rotates the
+        //    pixels upright (RotationState.rotateRgb888) before crop/YUV,
+        //    so the muxer's orientation hint stays 0 — the pixels are
+        //    already upright.
         const jsize w = static_cast<jsize>(img.w);
         const jsize h = static_cast<jsize>(img.h);
         const jsize n = w * h * 3;

@@ -60,6 +60,7 @@ import com.ritim.ritimcraw.data.GyroMatcher
 import com.ritim.ritimcraw.data.GyroStore
 import com.ritim.ritimcraw.data.GyroTree
 import com.ritim.ritimcraw.data.PreviewQualityStore
+import com.ritim.ritimcraw.data.RenderBackendStore
 import com.ritim.ritimcraw.data.LutStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.PresetStore
@@ -153,6 +154,11 @@ fun AppNav() {
             // section 3): same shared project.json, own top-level
             // "previewQuality" scalar, omit-when-default.
             previewQuality = PreviewQualityStore(project),
+            // App-level render-backend choice (owner request 2026-11-12,
+            // deliverable B): same shared project.json, own top-level
+            // "renderBackend" scalar, omit-when-default — the
+            // PreviewQualityStore pattern.
+            renderBackend = RenderBackendStore(project),
             // The gyro log copies live app-private (files/gyros): the
             // attach flow copies the SAF bytes in (gyro Phase 5), so no
             // persistable URI grant is needed and the logs survive
@@ -265,6 +271,13 @@ fun AppNav() {
     // value on each render request, so a change in Settings applies to the
     // next clip opened — and to the current one after recomposition.
     var previewQuality by remember { mutableStateOf(stores.previewQuality.get()) }
+    // The app-level render-backend choice (owner request 2026-11-12 §B):
+    // the REQUESTED backend, persisted + refreshed exactly like the
+    // preview-quality scalar above. The EFFECTIVE backend is computed per
+    // render/export from the runtime gates (BackendRules) — this state is
+    // only what the user asked for. Export jobs snapshot it at job start
+    // (§14: an ongoing export never changes backend mid-run).
+    var renderBackend by remember { mutableStateOf(stores.renderBackend.get()) }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     // EditorRoute is a data class — rememberSaveable cannot put it in a
     // Bundle (owner finding 2026-11-10: backgrounding the app with the
@@ -651,7 +664,10 @@ fun AppNav() {
     // The measurement harness run: opens the FIRST imported clip read-only
     // and hands the fd to PreviewMetrics (which closes it). The summary
     // block lands in logcat under "ritim-pm"; the run is serial (the
-    // button disables itself while measuring).
+    // button disables itself while measuring). After the preview legs, the
+    // GLES leg (deliverable C) opens its OWN fd: capability probe +
+    // single-frame demosaic parity, the owner's one-tap device entry
+    // point for the GPU groundwork (device-test-pending).
     LaunchedEffect(measureKick) {
         if (measureKick == 0) return@LaunchedEffect
         val first = sources.firstOrNull { it.access == Access.OK }
@@ -664,6 +680,10 @@ fun AppNav() {
                 .openFileDescriptor(Uri.parse(first.uri), "r")
                 ?.detachFd() ?: -1
             if (fd >= 0) PreviewMetrics.measure(fd)
+            val glesFd = context.contentResolver
+                .openFileDescriptor(Uri.parse(first.uri), "r")
+                ?.detachFd() ?: -1
+            if (glesFd >= 0) PreviewMetrics.measureGles(glesFd)
         } catch (e: Exception) {
             // The harness logs its own failures; a lost grant degrades to
             // "no run", never a crash.
@@ -1314,6 +1334,17 @@ fun AppNav() {
                                 stores.previewQuality.put(level)
                                 previewQuality = level
                             },
+                            // The backend row persists immediately (owner
+                            // request 2026-11-12 §B): the REQUESTED axis.
+                            // The next render/export job reads the current
+                            // value and computes the effective backend from
+                            // the runtime gates — a change applies to the
+                            // next job, never to one already running (§14).
+                            renderBackend = renderBackend,
+                            onRenderBackendChange = { backend ->
+                                stores.renderBackend.put(backend)
+                                renderBackend = backend
+                            },
                             // ---- Gyro folder grant (G1) ----
                             // The durable entry point for the grant: the
                             // row shows the current folder (or the not-set
@@ -1387,6 +1418,9 @@ private class Stores(
     // App-level preview quality (owner request 2026-11-11b §3): same
     // shared project.json, own top-level "previewQuality" scalar.
     val previewQuality: PreviewQualityStore,
+    // App-level render-backend choice (owner request 2026-11-12 §B):
+    // same shared project.json, own top-level "renderBackend" scalar.
+    val renderBackend: RenderBackendStore,
     // Gyro log copies (gyro Phase 5): same shared project.json, own
     // "gyros" section (GyroStore) — the attach flow copies the picked
     // .gcsv's bytes app-private, so no persistable URI grant is needed
