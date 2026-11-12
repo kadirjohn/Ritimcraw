@@ -430,11 +430,61 @@ void tonemapFrameImpl(ImageF& img, int mode) {
             v = acesFit(v);
         return;
     }
-    if (mode != 2)
+    if (mode < 2 || mode > 5)
         return;
 
     // AgX: inset -> log2 encode clamped to [-12.47393, 4.026069] EV around
-    // 0.18 -> 6th-order contrast approx -> Punchy look -> outset -> gamma 2.2.
+    // 0.18 -> 6th-order contrast approx -> LOOK variant (below) -> outset ->
+    // gamma 2.2. tonemap 2..5 select the look that Sobotka's AgX calls an
+    // "appearance"/look: a per-channel ASC-CDL-style op between the sigmoid
+    // and the outset. Provenance of each look's constants (see Develop.h for
+    // the full COL-16 record):
+    //   2 Punchy   — config.ocio look "Punchy": power 1.35, sat 1.4. This is
+    //                the look the minimal fit shipped with; kept bit-exactly
+    //                as it was (byte-identical rendering for old grades is a
+    //                hard requirement, pinned by tests). NOTE the minimal
+    //                fit's evaluation order (luma taken BEFORE the power, the
+    //                pre-2025.04.20 iolite form) is part of value 2.
+    //   3 Golden   — config.ocio look "Golden": slope (1, 0.9, 0.5),
+    //                power 0.8, sat 1.3, ASC-CDL order per the upstream
+    //                look: slope, then power, then sat about Rec.709 luma
+    //                (luma computed from the POST-power values, the current
+    //                iolite form).
+    //   4 Greyscale— Blender's AgX config (EaryChow/AgX, the config Blender
+    //                ships) look "AgX - Greyscale": BT.2020 luma weights
+    //                (0.2589235355689848, 0.6104985346066525,
+    //                0.13057792982436284 — their MatrixTransform rows
+    //                verbatim; the post-inset AgX space is 2020-primaries),
+    //                expressed here as sat = 0 about that luma. Blender
+    //                applies the matrix in the linear domain, we apply it in
+    //                the post-sigmoid look slot (where iolite's looks also
+    //                live) — same look, essential-fit evaluation point.
+    //   5 Base     — Sobotka's plain "AgX Base": identity look. The sigmoid
+    //                alone; what iolite's minimal fit calls AGX_LOOK 0
+    //                ("Default").
+    struct AgxLook {
+        float slope[3]; // ASC CDL slope (per-channel gain, pre-power)
+        float power[3]; // ASC CDL power (per-channel gamma post-slope)
+        float sat;      // saturation about lumaW, post-power
+        float lumaW[3]; // luma weights for the sat op (see per-look notes)
+        bool punchyLegacyOrder; // value 2 only: luma from PRE-power values
+    };
+    static const AgxLook looks[4] = {
+        // 2 Punchy (legacy minimal-fit evaluation order, see above)
+        {{1.0f, 1.0f, 1.0f}, {1.35f, 1.35f, 1.35f}, 1.4f,
+         {0.2126f, 0.7152f, 0.0722f}, true},
+        // 3 Golden (ASC CDL: Rec.709 luma for the sat op)
+        {{1.0f, 0.9f, 0.5f}, {0.8f, 0.8f, 0.8f}, 1.3f,
+         {0.2126f, 0.7152f, 0.0722f}, false},
+        // 4 Greyscale (slope 1, power 1, sat 0: pure luma)
+        {{1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}, 0.0f,
+         {0.2589235355689848f, 0.6104985346066525f, 0.13057792982436284f}, false},
+        // 5 Base (identity: slope 1, power 1, sat 1)
+        {{1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}, 1.0f,
+         {0.2126f, 0.7152f, 0.0722f}, false},
+    };
+    const AgxLook& look = looks[mode - 2];
+
     static const float inset[9] = {
         0.856627153315983f, 0.0951212405381588f, 0.0482516061458583f,
         0.137318972929847f, 0.761241990602591f, 0.101439036467562f,
@@ -454,10 +504,24 @@ void tonemapFrameImpl(ImageF& img, int mode) {
             v[c] = inset[c * 3 + 0] * r + inset[c * 3 + 1] * g + inset[c * 3 + 2] * b;
             v[c] = agxEncode(v[c], minEv, maxEv);
         }
-        // Punchy look: power 1.35, sat 1.4 (ASC-CDL-style around luma).
-        const float luma = 0.2126f * v[0] + 0.7152f * v[1] + 0.0722f * v[2];
-        for (int c = 0; c < 3; ++c)
-            v[c] = luma + 1.4f * (std::pow(v[c], 1.35f) - luma);
+        if (look.punchyLegacyOrder) {
+            // Punchy exactly as the minimal fit shipped it (pre-2025.04.20
+            // iolite order): luma from the sigmoid output, then power, then
+            // sat around that luma. Bit-for-bit the old code path.
+            const float luma = look.lumaW[0] * v[0] + look.lumaW[1] * v[1]
+                             + look.lumaW[2] * v[2];
+            for (int c = 0; c < 3; ++c)
+                v[c] = luma + look.sat * (std::pow(v[c], look.power[c]) - luma);
+        } else {
+            // ASC CDL order (current iolite / OCIO CDLTransform): slope,
+            // power, THEN luma of the powered values, then sat.
+            for (int c = 0; c < 3; ++c)
+                v[c] = std::pow(v[c] * look.slope[c], look.power[c]);
+            const float luma = look.lumaW[0] * v[0] + look.lumaW[1] * v[1]
+                             + look.lumaW[2] * v[2];
+            for (int c = 0; c < 3; ++c)
+                v[c] = luma + look.sat * (v[c] - luma);
+        }
         // Outset, clamp to the display box, Rec.709 gamma 2.2.
         for (int c = 0; c < 3; ++c) {
             float o = outset[c * 3 + 0] * v[0] + outset[c * 3 + 1] * v[1] + outset[c * 3 + 2] * v[2];

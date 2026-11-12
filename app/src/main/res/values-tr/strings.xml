@@ -66,6 +66,11 @@
     <string name="editor_tonemap_off">Kapalı</string>
     <string name="editor_tonemap_aces">ACES</string>
     <string name="editor_tonemap_agx">AgX</string>
+    <string name="editor_tonemap_agx_look">AgX Görünümü</string>
+    <string name="editor_tonemap_agx_punchy">Punchy</string>
+    <string name="editor_tonemap_agx_golden">Golden</string>
+    <string name="editor_tonemap_agx_greyscale">Greyscale</string>
+    <string name="editor_tonemap_agx_base">Base</string>
     <string name="editor_lut">LUT</string>
     <string name="editor_lut_import">LUT içe aktar</string>
     <string name="editor_lut_import_failed">LUT dosyası içe aktarılamadı. Çözüm: geçerli bir .cube dosyası seçin.</string>

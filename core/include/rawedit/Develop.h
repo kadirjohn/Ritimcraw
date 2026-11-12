@@ -105,7 +105,9 @@ namespace rawedit {
 // outside, unchanged. Per COL-16 the selected transform's version, working
 // space and target display are recorded here:
 //   tonemap    : 0 = off (default — exact passthrough, old look preserved),
-//                1 = ACES, 2 = AgX (21).
+//                1 = ACES, 2 = AgX Punchy (21), 3 = AgX Golden,
+//                4 = AgX Greyscale, 5 = AgX Base. Values 3-5 share AgX's
+//                encode/matrices with 2 and differ ONLY in the look slot.
 //   ACES (tonemap 1): "ACES Filmic Tone Mapping Curve", Krzysztof
 //   Narkowicz, 2015 (the widely used RRT+ODT fit; aces_fit x = (x(2.51x +
 //   0.03)) / (x(2.43x + 0.59) + 0.14), clamped to [0,1]). Working space:
@@ -127,6 +129,27 @@ namespace rawedit {
 //   space). Version: 2022 essential fit with the Punchy look. Target
 //   display: Rec.709 / sRGB-class with a 2.2 EOTF (the minimal fit's
 //   documented display assumption).
+//   AgX looks (tonemap 2-5, COL-16 follow-up). Upstream AgX ships looks as
+//   ASC CDL (slope/power/saturation) applied between the sigmoid and the
+//   outset, NOT as per-look matrices. Values 2-5 run the identical
+//   encode/inset/outset and differ only in the look slot:
+//     2 Punchy   — Sobotka config.ocio "Punchy": power 1.35, sat 1.4.
+//       BYTE-IDENTICAL to the pre-variant AgX (uses the minimal fit's
+//       original evaluation order: luma computed BEFORE the CDL power;
+//       iolite moved luma after power on 2025.04.20 — our value 2 keeps
+//       the legacy order so existing grades render identically).
+//     3 Golden   — Sobotka config.ocio "Golden": slope [1, 0.9, 0.5],
+//       power 0.8, sat 1.3, current ASC CDL order (luma after power).
+//       Deliberately warm: tints neutrals by design.
+//     4 Greyscale — Blender AgX config (EaryChow/AgX) "AgX-Greyscale":
+//       sat 0 about BT.2020 luma weights (0.2589235355689848,
+//       0.6104985346066525, 0.13057792982436284, the MatrixTransform rows
+//       verbatim; Blender applies them pre-encode in linear, we apply
+//       them in the post-sigmoid look slot — same weights, evaluation
+//       point differs, documented here honestly).
+//     5 Base     — the look Sobotka's own config files call "Default"/
+//       "minimal": identity (slope 1, power 1, sat 1). AgX with no look
+//       tuning at all.
 //
 // RAW metadata toggles (spec RAW-07, COL-09, RAW-04, RAW-06). All three
 // default to TRUE, which is exactly the pre-toggle pipeline, so a
@@ -219,7 +242,7 @@ struct Grade {
     bool keepVignetting = true;
     float sharpness = 0.0f;
     float detail = 0.0f;
-    int tonemap = 0; // 0 off, 1 ACES, 2 AgX — see the comment block above
+    int tonemap = 0; // 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base — see above
     float lutStrength = 0.0f; // 0 = bypass — see the COL-07 block above
     // Appended AFTER lutStrength (not at their stage positions) so the
     // existing field/JNI parameter order of every earlier control stays

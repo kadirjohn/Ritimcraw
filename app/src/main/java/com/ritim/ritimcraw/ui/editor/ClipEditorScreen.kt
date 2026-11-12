@@ -3073,14 +3073,57 @@ private fun DetailPanel(
             )
             options.forEachIndexed { index, option ->
                 SegmentedButton(
-                    selected = grade.tonemap == option.value,
-                    onClick = { onTonemapChange(grade.copy(tonemap = option.value)) },
+                    // The AgX tab (2) is selected for ANY AgX look (2-5);
+                    // re-tapping it keeps the chosen variant instead of
+                    // snapping back to Punchy.
+                    selected = if (option.value >= 2) grade.tonemap >= 2
+                               else grade.tonemap == option.value,
+                    onClick = {
+                        val value = if (option.value >= 2 && grade.tonemap >= 2) grade.tonemap
+                                    else option.value
+                        if (value != grade.tonemap)
+                            onTonemapChange(grade.copy(tonemap = value))
+                    },
                     shape = SegmentedButtonDefaults.itemShape(
                         index = index,
                         count = options.size,
                     ),
                 ) {
                     Text(stringResource(option.labelRes))
+                }
+            }
+        }
+        // AgX look (COL-16 follow-up): a second row ONLY while AgX is
+        // active — Punchy (2) / Golden (3) / Greyscale (4) / Base (5), the
+        // rawedit::Grade Ints from the core look table. Same discrete
+        // settle path as the row above (not a drag). Look names stay
+        // untranslated everywhere: they are the upstream AgX look names,
+        // like ACES/AgX themselves.
+        if (grade.tonemap >= 2) {
+            Text(
+                stringResource(R.string.editor_tonemap_agx_look),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                val looks = listOf(
+                    TonemapOption(R.string.editor_tonemap_agx_punchy, 2),
+                    TonemapOption(R.string.editor_tonemap_agx_golden, 3),
+                    TonemapOption(R.string.editor_tonemap_agx_greyscale, 4),
+                    TonemapOption(R.string.editor_tonemap_agx_base, 5),
+                )
+                looks.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = grade.tonemap == option.value,
+                        onClick = {
+                            onTonemapChange(grade.copy(tonemap = option.value))
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = looks.size,
+                        ),
+                    ) {
+                        Text(stringResource(option.labelRes))
+                    }
                 }
             }
         }
