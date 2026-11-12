@@ -232,6 +232,7 @@
     <string name="exports_open_dng_body">Bu cihazda hiçbir uygulama ham DNG açamaz. Dosyayı açabilen bir okuyucuya paylaşın.</string>
     <string name="exports_open_share">Paylaş</string>
     <string name="exports_job_cancelled">İptal edildi</string>
+    <string name="exports_job_cancel">İptal et</string>
     <string name="exports_job_failed_stage">Dışa aktarım başarısız oldu: %1$s</string>
     <string name="exports_job_failed_cause">Neden: %1$s</string>
     <string name="exports_job_failed_written">Hiçbir şey yazılmadı.</string>

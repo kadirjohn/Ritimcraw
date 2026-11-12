@@ -232,6 +232,7 @@
     <string name="exports_open_dng_body">No app on this device can open a raw DNG. Share the file to a reader that can.</string>
     <string name="exports_open_share">Share</string>
     <string name="exports_job_cancelled">Cancelled</string>
+    <string name="exports_job_cancel">Cancel</string>
     <string name="exports_job_failed_stage">Export failed: %1$s</string>
     <string name="exports_job_failed_cause">Cause: %1$s</string>
     <string name="exports_job_failed_written">Nothing was written.</string>

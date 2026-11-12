@@ -55,6 +55,15 @@ import com.ritim.ritimcraw.util.Format
  * its Open button both fire [onOpen] with the job — the shell decides what
  * that opens (the job's media-store row, the app's own copy through
  * FileProvider, or an understandable message; see ExportOpen).
+ *
+ * CANCEL (owner request 2026-11-13: "export menüsünde iptal etme kısmı
+ * olmalı"): QUEUED and RUNNING rows carry a Cancel action ([onCancel]);
+ * terminal rows never do (see [ExportRowModel.isCancellable]). A QUEUED
+ * cancel lands instantly (the queue flips the row and never starts the
+ * job); a RUNNING cancel flips the row right at the tap and stops the
+ * export cooperatively at the next frame boundary — the row settles as
+ * CANCELLED within one frame, which reads as immediate on the frame tick
+ * cadence (the persisted progress writes are throttled to 500ms anyway).
  */
 @Composable
 fun ExportsScreen(
@@ -62,6 +71,9 @@ fun ExportsScreen(
     onRetry: (ExportJob) -> Unit = {},
     onClear: () -> Unit = {},
     onOpen: (ExportJob) -> Unit = {},
+    // Cancel action for the two live states (see the CANCEL note above):
+    // the shell routes it to the queue's cancel(job.id).
+    onCancel: (ExportJob) -> Unit = {},
     // sourceId -> display name (owner request §2b): rows show the clip's
     // real file name; the id is the fallback for unknown/missing sources.
     sourceNames: Map<String, String> = emptyMap(),
@@ -118,7 +130,7 @@ fun ExportsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(jobs, key = { it.id }) { job ->
-                    ExportJobCard(job, sourceNames, onRetry, onOpen)
+                    ExportJobCard(job, sourceNames, onRetry, onOpen, onCancel)
                 }
             }
         }
@@ -136,6 +148,7 @@ private fun ExportJobCard(
     sourceNames: Map<String, String>,
     onRetry: (ExportJob) -> Unit,
     onOpen: (ExportJob) -> Unit,
+    onCancel: (ExportJob) -> Unit,
 ) {
     if (job.state == State.FAILED) {
         FailedJobCard(job, ExportRowModel.sourceName(job, sourceNames), onRetry)
@@ -205,9 +218,38 @@ private fun ExportJobCard(
                 modifier = Modifier.padding(top = 2.dp),
             )
             when (job.state) {
-                State.QUEUED ->
-                    StatusLine(stringResource(R.string.exports_job_queued))
-                State.RUNNING -> RunningJobProgress(job)
+                State.QUEUED -> {
+                    // The queued row carries the cancel action in the DONE
+                    // row's action-row shape (status weighted, action
+                    // trailing): the job has not started, so a tap cancels
+                    // it instantly and the row settles as CANCELLED.
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            stringResource(R.string.exports_job_queued),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // Plain surface card: the button keeps the default
+                        // primary content color (no container fight, unlike
+                        // the DONE row's pinned onPrimaryContainer).
+                        TextButton(onClick = { onCancel(job) }) {
+                            Text(stringResource(R.string.exports_job_cancel))
+                        }
+                    }
+                }
+                // The running row keeps its live progress block; the cancel
+                // action rides the frames line's Row (the button never
+                // stacks under the progress bar). A tap flips the row to
+                // CANCELLED right away and the queue stops the export at
+                // the next frame boundary — see RunningJobProgress's
+                // caller note in the screen KDoc.
+                State.RUNNING -> RunningJobProgress(job, onCancel)
                 State.DONE -> {
                     Row(
                         Modifier
@@ -280,7 +322,7 @@ private fun StatusLine(text: String) {
  * for why the old wall-clock linear estimate jumped).
  */
 @Composable
-private fun RunningJobProgress(job: ExportJob) {
+private fun RunningJobProgress(job: ExportJob, onCancel: (ExportJob) -> Unit) {
     val frames = job.framesDone
     val total = job.framesTotal
     Column(Modifier.padding(top = 4.dp)) {
@@ -296,7 +338,19 @@ private fun RunningJobProgress(job: ExportJob) {
             )
             if (finalizing) {
                 // All frames encoded; the muxer/finalize stage is running.
-                Text(stringResource(R.string.exports_job_finalizing))
+                // The cancel action stays reachable here too — the finalize
+                // is part of the live run the user may stop.
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        stringResource(R.string.exports_job_finalizing),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    CancelButton(job, onCancel)
+                }
             } else {
                 // One estimator per RUNNING row, keyed by job id: it feeds on
                 // the persisted progress writes and holds its estimate —
@@ -306,24 +360,27 @@ private fun RunningJobProgress(job: ExportJob) {
                 val eta = remember(job.id) { ExportEta() }.observe(frames, total)
                 Row(
                     Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        stringResource(R.string.exports_job_running_frames, frames, total),
-                        // Frame counts are numbers: tnum keeps the digits
-                        // from jittering as they tick up (DESIGN.md).
-                        style = MaterialTheme.typography.bodyMedium.merge(Tnum),
-                    )
-                    if (eta != null) {
+                    Column(Modifier.weight(1f)) {
                         Text(
-                            stringResource(
-                                R.string.exports_job_eta,
-                                Format.formatEtaLeft(eta),
-                            ),
+                            stringResource(R.string.exports_job_running_frames, frames, total),
+                            // Frame counts are numbers: tnum keeps the digits
+                            // from jittering as they tick up (DESIGN.md).
                             style = MaterialTheme.typography.bodyMedium.merge(Tnum),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (eta != null) {
+                            Text(
+                                stringResource(
+                                    R.string.exports_job_eta,
+                                    Format.formatEtaLeft(eta),
+                                ),
+                                style = MaterialTheme.typography.bodyMedium.merge(Tnum),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
+                    CancelButton(job, onCancel)
                 }
             }
         } else {
@@ -334,8 +391,34 @@ private fun RunningJobProgress(job: ExportJob) {
                     .fillMaxWidth()
                     .padding(top = 2.dp, bottom = 4.dp),
             )
-            Text(stringResource(R.string.exports_job_running))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(R.string.exports_job_running),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                CancelButton(job, onCancel)
+            }
         }
+    }
+}
+
+/**
+ * The cancel action for a live row (owner request 2026-11-13): a stock M3
+ * TextButton — text for a tertiary action per DESIGN.md, the same shape
+ * as the DONE row's Open (the button's own minimum interactive size is
+ * the 48dp touch target; the row padding keeps its separation from the
+ * row's other content). The queue makes the tap feel immediate: the row
+ * flips to CANCELLED at the tap, the export stops at the next frame
+ * boundary.
+ */
+@Composable
+private fun CancelButton(job: ExportJob, onCancel: (ExportJob) -> Unit) {
+    TextButton(onClick = { onCancel(job) }) {
+        Text(stringResource(R.string.exports_job_cancel))
     }
 }
 

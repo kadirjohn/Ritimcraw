@@ -1313,6 +1313,16 @@ fun AppNav() {
                                 exportJobs = stores.exports.all()
                             },
                             onOpen = ::openExport,
+                            // Cancel (owner request 2026-11-13): the queue
+                            // flips the row and stops the job itself — a
+                            // QUEUED job never starts, a RUNNING one stops
+                            // at the next frame boundary. No kick needed:
+                            // an active drain re-reads the store itself, and
+                            // the revision flow refreshes the rows.
+                            onCancel = { job ->
+                                queue.cancel(job.id)
+                                exportJobs = stores.exports.all()
+                            },
                         )
                         Destination.SETTINGS -> SettingsScreen(
                             onMeasure = if (BuildConfig.DEBUG) {

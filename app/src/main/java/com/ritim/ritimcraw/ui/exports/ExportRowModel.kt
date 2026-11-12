@@ -37,4 +37,16 @@ object ExportRowModel {
      * the screen always had.
      */
     fun isOpenable(state: State): Boolean = state == State.DONE
+
+    /**
+     * Whether the row offers a Cancel action (owner request 2026-11-13:
+     * "export menüsünde iptal etme kısmı olmalı" — the exports screen
+     * must have a cancel action): the two LIVE states only. A QUEUED job
+     * has not started (the queue skips it — it never runs); a RUNNING
+     * job stops cooperatively at the next frame boundary. Terminal rows
+     * (DONE/FAILED/CANCELLED) have nothing to cancel — the queue's
+     * cancel() is a no-op on them by the same rule.
+     */
+    fun isCancellable(state: State): Boolean =
+        state == State.QUEUED || state == State.RUNNING
 }

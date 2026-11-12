@@ -93,4 +93,23 @@ class ExportRowModelTest {
         assertFalse(ExportRowModel.isOpenable(State.FAILED))
         assertFalse(ExportRowModel.isOpenable(State.CANCELLED))
     }
+
+    // ---- isCancellable (owner request 2026-11-13) ----
+
+    @Test
+    fun queued_and_running_rows_offer_cancel() {
+        // The two live states only: a QUEUED job never starts, a RUNNING
+        // one stops at the next frame boundary.
+        assertTrue(ExportRowModel.isCancellable(State.QUEUED))
+        assertTrue(ExportRowModel.isCancellable(State.RUNNING))
+    }
+
+    @Test
+    fun terminal_rows_never_offer_cancel() {
+        // DONE/FAILED/CANCELLED have nothing to cancel — the queue's
+        // cancel() is a no-op on them by the same rule.
+        assertFalse(ExportRowModel.isCancellable(State.DONE))
+        assertFalse(ExportRowModel.isCancellable(State.FAILED))
+        assertFalse(ExportRowModel.isCancellable(State.CANCELLED))
+    }
 }
