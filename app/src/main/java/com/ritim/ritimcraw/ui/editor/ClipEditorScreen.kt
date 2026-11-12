@@ -1,5 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
+import android.os.SystemClock
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -45,6 +47,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -89,9 +92,48 @@ import com.ritim.ritimcraw.util.Format
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * The scope compute pacing window (owner spec PLAY-10, 2026-11-12 §7:
+ * "~10 scope updates/sec during playback, tuned with measured cost"):
+ * at most one compute per window, always on the newest published frame
+ * (see the scope compute effect). The measurement tooling — the strip's
+ * Hz readout and the "ritim-scope" logcat line — exists to validate
+ * this number on a device.
+ */
+private const val ScopeComputePeriodMs = 100L
+
+/**
+ * The scope's trailing-1s compute-rate meter — the Hz readout's source
+ * (see the scope compute effect). A plain class, no Compose: the screen
+ * holds ONE per clip (remember keyed to it) so the history survives the
+ * compute effect's restarts — a mode or sampling switch must not zero
+ * the readout — while the effect's pacing anchor deliberately DOES
+ * reset, so a switch recomputes the current frame immediately.
+ */
+private class ScopeRateMeter {
+    private val computeAt = ArrayDeque<Long>()
+
+    /** Records a compute at [nowMs]; returns the trailing-1s count. */
+    fun record(nowMs: Long): Int {
+        computeAt.addLast(nowMs)
+        return prune(nowMs)
+    }
+
+    /** The trailing-1s count without recording (the decay ticker). */
+    fun rate(nowMs: Long): Int = prune(nowMs)
+
+    private fun prune(nowMs: Long): Int {
+        while (computeAt.isNotEmpty() && nowMs - computeAt.first() > 1_000L) {
+            computeAt.removeFirst()
+        }
+        return computeAt.size
+    }
+}
 
 /**
  * Pure preview-area decision logic (JVM-testable without Compose): which
@@ -444,7 +486,8 @@ fun ClipEditorScreen(
         // (the preview Box takes the flex space between them — it
         // flexes as the panel grows/shrinks, §11.7):
         //   free region = column height - top bar (56dp constant) -
-        //                 transport height - nav height
+        //                 transport height - nav height - scope strip
+        //                 (the last one only while the strip is open)
         // The top bar is a fixed 56dp Row (EditorTopBar), so its px value
         // is a density conversion, not a measurement. Transport and nav
         // are measured via onSizeChanged because their heights vary with
@@ -452,13 +495,78 @@ fun ClipEditorScreen(
         var editorColumnHeight by remember { mutableStateOf(0) }
         var transportHeight by remember { mutableStateOf(0) }
         var navHeight by remember { mutableStateOf(0) }
+        // ---- Scope strip state (owner spec PLAY-10, 2026-11-12 §1-2) ----
+        // The ONE scope area is a strip below the transport, above the
+        // panel (never an overlay on the image), carrying a Histogram |
+        // Waveform content selector. The open flag, the content and the
+        // waveform mode are saveable like the tab and fullscreen flags,
+        // so a rotation or process death keeps the user's scope exactly
+        // as they left it; the results are keyed to the clip (a switch
+        // starts empty). First open shows Waveform · Luma (spec §1:
+        // "ilk açılışta Luma seçilsin"); the histogram content keeps its
+        // own mode inside HistogramScopeView. The compute itself lives
+        // in the scope compute effect below the render pump (spec §7).
+        var scopeOpen by rememberSaveable { mutableStateOf(false) }
+        var scopeContent by rememberSaveable { mutableStateOf(ScopeContent.WAVEFORM) }
+        var waveformModeOrdinal by rememberSaveable { mutableStateOf(WaveformMode.LUMA.ordinal) }
+        // Sampling quality (spec §6): scope-ONLY resolution — it changes
+        // how many pixels each waveform pass samples, never the source /
+        // preview / export pipeline. Saveable like the mode; keyed into
+        // the compute effect so a change while paused recomputes the
+        // CURRENT frame at the new quality immediately.
+        var scopeSamplingOrdinal by rememberSaveable {
+            mutableStateOf(WaveformScope.Sampling.MEDIUM.ordinal)
+        }
+        // The mid-gray reference toggle (spec §8): saveable like the
+        // other strip choices. The AVAILABILITY gate is derived live at
+        // the call site from the grade (see the scopeRegion): the
+        // reference's derivation (18% scene linear through the Rec.709
+        // OETF ≈ 41% coded signal) is valid only while the analyzed
+        // signal's luma path is the bare OETF — a tonemap curve
+        // (ACES/AgX) or a LUT rewrites the transform and the line would
+        // lie, so the toggle disappears instead (no fabricated fixed
+        // line over a signal it does not describe). The contrast-pivot
+        // reference (spec §8's other half) is kept absent: its
+        // application lives in the prebuilt native engine, invisible
+        // source — no reliable mapping exists, and the spec says keep
+        // it off and record the gap.
+        var scopeMidGrayShown by rememberSaveable { mutableStateOf(false) }
+        var histogram by remember(sourceId) { mutableStateOf(FrameHistogram.of(null)) }
+        var waveformRendered by remember(sourceId) {
+            mutableStateOf<WaveformDisplay.Rendered?>(null)
+        }
+        // Measurement (spec §7: "~10 scope updates/sec during playback,
+        // tuned with measured cost"): every compute records into the
+        // clip's ScopeRateMeter and logs one line to logcat tag
+        // "ritim-scope"; the trailing-1s count lands in scopeHz (read
+        // by the strip's label band in Tnum). The meter is remembered
+        // per clip so its history survives the compute effect's
+        // restarts; scopeHz itself is not saveable — a fresh session
+        // measures fresh.
+        val scopeMeter = remember(sourceId) { ScopeRateMeter() }
+        var scopeHz by remember { mutableIntStateOf(0) }
+        // The strip's measured height for the anchor math — measured via
+        // onSizeChanged like the transport (its chrome varies with font
+        // scale), never assumed. The strip is simply NOT composed when
+        // closed, so the value is read ONLY while it is open (the gate
+        // below): a closed strip contributes nothing and closing returns
+        // its space to the free region (spec §2: "kapatıldığında
+        // kapladığı alan geri kazanılsın") — the anchors re-measure and
+        // the panel grows back.
+        var scopeStripHeight by remember { mutableStateOf(0) }
+        val scopeStripHeightPx = if (scopeOpen) scopeStripHeight else 0
         val topBarHeightPx = with(density) { EditorTopBarHeight.toPx() }
         // The collapsed anchor: the handle strip's height (§11.3 state A).
         val collapsedHeightPx = with(density) { PanelHandleHeight.roundToPx() }
         // The free region for the panel + preview together (§11.3): the
-        // column minus the fixed rows above and below the flex area.
+        // column minus the fixed rows above and below the flex area —
+        // the open scope strip is one of those fixed rows in the
+        // portrait column. (In the landscape workspace the strip lives
+        // inside the preview column and flexes the preview instead; the
+        // draggable sheet never composes there, so this region only
+        // ever bounds the portrait sheet's anchors.)
         val freeRegionPx = (editorColumnHeight - topBarHeightPx.toInt() -
-            transportHeight - navHeight).coerceAtLeast(0)
+            transportHeight - navHeight - scopeStripHeightPx).coerceAtLeast(0)
         // Anchors update whenever the measured region changes (first
         // composition, rotation, font-scale change). updateAnchors snaps
         // synchronously to the CURRENT target, so the offset lands on the
@@ -604,20 +712,6 @@ fun ClipEditorScreen(
         // switch resets it with the rest of the transport.
         var precisionActive by remember(sourceId) { mutableStateOf(false) }
         var precisionStartFrame by remember(sourceId) { mutableStateOf(0) }
-
-        // Histogram overlay (owner feature list W5): toggleable 256-bin
-        // RGB + luma histogram with clipping indicators over the preview.
-        // histogramVisible is saveable so it survives configuration
-        // changes like the tab and fullscreen do; the histogram itself is
-        // recomputed inside the render pump's publish — the one place the
-        // on-screen frame is swapped — so the overlay always shows the
-        // frame the preview currently shows, and toggling on is instant
-        // (the result is already current). Keyed to the clip: a clip
-        // switch starts empty.
-        var histogramVisible by rememberSaveable { mutableStateOf(false) }
-        var histogram by remember(sourceId) {
-            mutableStateOf(FrameHistogram.of(null))
-        }
 
         // ---- LUT import (COL-07) ----
         // The import error is LOCAL to the LUT section: errorText drives the
@@ -943,25 +1037,6 @@ fun ClipEditorScreen(
                         result.fold(
                             onSuccess = { f ->
                                 frame = f
-                                // Histogram recompute (owner feature list W5):
-                                // publish is the ONE place the on-screen frame
-                                // is swapped, so the pass runs here — the
-                                // overlay can never show a histogram for a
-                                // frame the preview is not showing. The pump
-                                // is a main-dispatcher LaunchedEffect and the
-                                // render resumes back on it, so the pass is
-                                // dispatched to Default for the four-channel
-                                // scan (still sub-millisecond: strided to at
-                                // most FrameHistogram.MAX_SAMPLES pixels) —
-                                // the UI thread only performs the state write.
-                                // Assignment ordering is unchanged: inside the
-                                // isFresh guard, a stale frame's histogram can
-                                // never overwrite a newer one's. A hidden
-                                // overlay still recomputes (cheap) so toggling
-                                // on is instant.
-                                histogram = withContext(Dispatchers.Default) {
-                                    FrameHistogram.of(f.argb)
-                                }
                                 lastRenderFailed = false
                                 errorText = null
                             },
@@ -997,6 +1072,117 @@ fun ClipEditorScreen(
                     }
                     renderInFlight = false
                 }
+            }
+        }
+
+        // SCOPE COMPUTE (owner spec PLAY-10, 2026-11-12 §7): the ONE place
+        // scope results are derived — strip-gated, OFF the render pump and
+        // OFF the UI thread. The pump's publish only swaps `frame`; this
+        // effect observes it, so the pump stays a pure render pipeline.
+        // Gated on the strip's own state:
+        // - CLOSED -> return BEFORE snapshotFlow: `frame` is never even
+        //   observed, so a closed scope does ZERO per-frame work (spec:
+        //   "Scope kapalıyken hesabı durdur").
+        // - The keys are (open, content, waveform mode, sampling, clip):
+        //   a mode, content or sampling switch while paused RESTARTS the
+        //   effect and snapshotFlow re-emits the CURRENT frame — the
+        //   scope matches the last frame immediately, no re-render
+        //   needed (spec: after pause/seek/grade change/reset the scope
+        //   matches the frame).
+        // - collectLatest = latest-wins (spec: "yeni kare gelirse eski
+        //   hesap iptal"): a frame published while a compute still runs
+        //   cancels it; computes are never queued and results never land
+        //   out of publication order.
+        // - THROTTLE-LATEST PACING (spec §7: "~10 scope updates/sec during
+        //   playback, tuned with measured cost"): each block first waits
+        //   out the remainder of the [ScopeComputePeriodMs] window since
+        //   the last COMPLETED compute. A newer frame during the wait
+        //   cancels the block — killing only a delay — and the new block
+        //   re-arms against the same window anchor. So during playback
+        //   at most ~10 computes/sec run, ALWAYS on the newest frame,
+        //   while the first change after a quiet period (pause, seek,
+        //   grade change) computes immediately. Deliberately NOT the
+        //   sample() operator: the newest frame must never be dropped,
+        //   and the window must anchor to the last compute, not to
+        //   collection start.
+        // Content, mode and sampling are captured at launch (not re-read
+        // mid-flow): this effect instance IS those key values — a switch
+        // restarts it, so a mid-flight block can never compute a
+        // half-switched combination. The histogram is computed whenever
+        // the strip is open (sub-millisecond: strided to
+        // FrameHistogram.MAX_SAMPLES), so the Histogram | Waveform
+        // selector is a pure UI switch; the waveform pass runs only for
+        // the WAVEFORM content, at the user's sampling quality (spec §6:
+        // scope-ONLY resolution — the source/preview/export pipeline is
+        // untouched).
+        // MEASUREMENT TOOLING (spec §7 "tuned with measured cost"): every
+        // compute logs one line to logcat tag "ritim-scope" (mode,
+        // sampling, frame size, elapsed ms) and records into the
+        // screen's ScopeRateMeter — the trailing-1s count the strip
+        // renders as its Hz readout (the meter outlives this effect's
+        // restarts; the decay ticker below drains the readout when
+        // computes stop). The device pass confirms the pacing and the
+        // per-compute cost from either.
+        LaunchedEffect(scopeOpen, scopeContent, waveformModeOrdinal, scopeSamplingOrdinal, sourceId) {
+            if (!scopeOpen) return@LaunchedEffect
+            val content = scopeContent
+            val mode = WaveformMode.entries[
+                waveformModeOrdinal.coerceIn(0, WaveformMode.entries.lastIndex)
+            ]
+            val sampling = WaveformScope.Sampling.entries[
+                scopeSamplingOrdinal.coerceIn(0, WaveformScope.Sampling.entries.lastIndex)
+            ]
+            // The pacing anchor: 0 at launch, so the first compute after
+            // a (re)start — open, mode, content or sampling switch —
+            // runs immediately (the scope matches the current frame
+            // right away); only then does the window arm.
+            var lastComputeAt = 0L
+            snapshotFlow { frame }.collectLatest { f ->
+                val since = SystemClock.elapsedRealtime() - lastComputeAt
+                if (since < ScopeComputePeriodMs) {
+                    delay(ScopeComputePeriodMs - since)
+                }
+                val startedAt = SystemClock.elapsedRealtime()
+                if (f == null) {
+                    histogram = FrameHistogram.of(null)
+                    waveformRendered = null
+                } else {
+                    histogram = withContext(Dispatchers.Default) {
+                        FrameHistogram.of(f.argb)
+                    }
+                    if (content == ScopeContent.WAVEFORM) {
+                        waveformRendered = withContext(Dispatchers.Default) {
+                            WaveformDisplay.render(
+                                WaveformScope.of(f.argb, f.width, f.height, mode, sampling),
+                                mode,
+                            )
+                        }
+                    }
+                }
+                lastComputeAt = SystemClock.elapsedRealtime()
+                scopeHz = scopeMeter.record(lastComputeAt)
+                Log.d(
+                    "ritim-scope",
+                    "compute mode=${mode.name} sampling=${sampling.name} " +
+                        "frame=${f?.width ?: 0}x${f?.height ?: 0} " +
+                        "elapsedMs=${lastComputeAt - startedAt}",
+                )
+            }
+        }
+
+        // The Hz readout's decay: a paused scope must not freeze at its
+        // last playback rate. While the strip is open, a slow ticker
+        // re-reads the meter — its trailing-1s prune drops computes as
+        // they age out, so the readout falls to 0 about a second after
+        // the last compute. Cancellation is the off switch: closing the
+        // strip or leaving the screen cancels the delay, and the loop
+        // with it (the strip is not composed while closed, so the
+        // frozen value is never shown).
+        LaunchedEffect(scopeOpen) {
+            if (!scopeOpen) return@LaunchedEffect
+            while (true) {
+                scopeHz = scopeMeter.rate(SystemClock.elapsedRealtime())
+                delay(500)
             }
         }
 
@@ -1284,31 +1470,23 @@ fun ClipEditorScreen(
                             .align(Alignment.BottomEnd)
                             .padding(8.dp),
                     )
-                    // Histogram toggle (owner feature list W5): the mirror of
-                    // the fullscreen TopEnd toggle — the preview's corner icon
-                    // buttons read as one group, and the bar_chart glyph says
-                    // what it does. Same 48dp IconButton target, vendored
-                    // Material Symbols glyph (material-icons-core 1.7.3 has
-                    // no BarChart).
-                    HistogramToggleButton(
-                        visible = histogramVisible,
-                        onToggle = { histogramVisible = !histogramVisible },
+                    // Scope toggle (owner spec PLAY-10, 2026-11-12 §2 + the
+                    // manager's design decision): the mirror of the
+                    // fullscreen TopEnd toggle — the preview's corner icon
+                    // buttons read as one group. Opens/closes the SCOPE
+                    // STRIP below the transport (never an overlay on the
+                    // image); the strip's own selector picks Histogram or
+                    // Waveform. Same 48dp IconButton target, vendored
+                    // waveform-trace glyph (material-icons-core 1.7.3 has
+                    // no waveform icon), same translucent scrim as the
+                    // fullscreen and refresh controls.
+                    ScopeToggleButton(
+                        visible = scopeOpen,
+                        onToggle = { scopeOpen = !scopeOpen },
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(8.dp),
                     )
-                    // The overlay itself (BottomStart, mirroring the refresh
-                    // chip's BottomEnd): visible only when toggled on, drawn
-                    // from the recompute above — the same frame the preview
-                    // shows, so the histogram and the picture never disagree.
-                    if (histogramVisible) {
-                        HistogramOverlay(
-                            result = histogram,
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .padding(8.dp),
-                        )
-                    }
                 }
                 // Fullscreen toggle (owner request 2026-11-11 section 2):
                 // the SAME editor session — the toggle only changes the
@@ -1547,6 +1725,54 @@ fun ClipEditorScreen(
             }
         }
 
+        // The scope strip region (owner spec PLAY-10, 2026-11-12 §2): below
+        // the transport, above the panel — in BOTH layouts (the landscape
+        // branch places it inside the preview column; the portrait branch
+        // stacks it in the main column). Never in fullscreen: the immersive
+        // preview owns the screen and the strip returns with the workspace
+        // (the open flag survives, so exiting fullscreen restores it).
+        // onSizeChanged feeds the anchor math (§11.3): the strip's height
+        // varies with font scale, so it is measured, never assumed. The
+        // zeroing effect: leaving composition fires NO onSizeChanged, so a
+        // closed/hidden strip must actively reset the measurement —
+        // otherwise a stale height would keep shrinking the free region
+        // after close. Closing returns the space (spec §2: closing
+        // "kapatıldığında kapladığı alan geri kazanılsın"): the gates below
+        // keep scopeStripHeightPx at 0 whenever the strip is not composed,
+        // the anchors re-measure to the taller free region and the panel
+        // grows back.
+        val scopeRegion: @Composable () -> Unit = {
+            if (scopeOpen && !fullscreen) {
+                // The honesty gate, derived LIVE from the grade: the
+                // mid-gray line is drawable only while the transform is
+                // the bare Rec.709 OETF (tonemap off, no LUT) — the
+                // moment a curve or cube rewrites it, the reference
+                // vanishes instead of lying.
+                val midGrayAvailable = grade.tonemap == 0 && grade.lutId == null
+                ScopeStrip(
+                    content = scopeContent,
+                    onContentChange = { scopeContent = it },
+                    onClose = { scopeOpen = false },
+                    histogram = histogram,
+                    waveform = waveformRendered,
+                    waveformModeOrdinal = waveformModeOrdinal,
+                    onWaveformModeChange = { waveformModeOrdinal = it },
+                    samplingOrdinal = scopeSamplingOrdinal,
+                    onSamplingChange = { scopeSamplingOrdinal = it },
+                    hz = scopeHz,
+                    midGrayAvailable = midGrayAvailable,
+                    midGrayShown = scopeMidGrayShown,
+                    onMidGrayChange = { scopeMidGrayShown = it },
+                    modifier = Modifier.onSizeChanged { scopeStripHeight = it.height },
+                )
+            }
+        }
+        LaunchedEffect(scopeOpen, fullscreen) {
+            if (!scopeOpen || fullscreen) {
+                scopeStripHeight = 0
+            }
+        }
+
         val panelRegion: @Composable () -> Unit = {
             when (tab) {
                 0 -> LightPanel(
@@ -1778,6 +2004,10 @@ fun ClipEditorScreen(
                     ) {
                         previewRegion()
                         transportRegion()
+                        // The scope strip stays with the preview it
+                        // describes (the workspace's preview column), the
+                        // panel column keeps its full height.
+                        scopeRegion()
                     }
                     // RIGHT column: the adjustment panel, full height and
                     // independently scrollable (section 17.2) — the same
@@ -1817,6 +2047,9 @@ fun ClipEditorScreen(
             } else {
                 previewRegion()
                 transportRegion()
+                // The scope strip: below the preview and transport, above
+                // the draggable panel (spec §2's portrait placement).
+                scopeRegion()
             }
             // Draggable, collapsible adjustment panel (owner request
             // 2026-11-11d §11): the bottom-anchored sheet whose height IS

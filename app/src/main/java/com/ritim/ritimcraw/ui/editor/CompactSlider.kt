@@ -265,7 +265,7 @@ object CompactSliderDefaults {
      * the image, not the blackbody's own color). Muted pastels (owner
      * request 2026-11-11d section 14.1: "subtle, readable, and not
      * visually overwhelming") on the 4dp track line; hues pending the
-     * device pass, like PREVIEW_HEIGHT_FRACTION.
+     * device pass.
      */
     val TEMPERATURE_GRADIENT = listOf(Color(0xFF7EA6C4), Color(0xFFC9B458))
 

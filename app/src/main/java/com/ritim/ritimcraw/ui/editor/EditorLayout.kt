@@ -5,18 +5,11 @@ package com.ritim.ritimcraw.ui.editor
  * ilk yerlesim", superseded for the preview region by owner request
  * 2026-11-11d §11.7: the preview now flexes with the draggable panel
  * instead of carrying a height cap — see PanelSheet for the panel's
- * anchor math). What remains here is the compact slider's track math.
+ * anchor math; the histogram overlay's height cap went with the overlay,
+ * which is now the scope strip's content). What remains here is the
+ * compact slider's track math.
  */
 object EditorLayout {
-
-    /**
-     * The preview region's soft height fraction, kept for the histogram
-     * overlay's expanded-panel sizing (HistogramOverlay.kt): a soft
-     * aesthetic cap on the graph's height, not a layout constraint —
-     * the overlay is bottom-anchored INSIDE the flexing preview Box, so
-     * it can never leave the preview whatever the panel's state.
-     */
-    const val PREVIEW_HEIGHT_FRACTION = 0.38f
 
     /**
      * Fraction (0..1) of [value] within [range], saturated at the
