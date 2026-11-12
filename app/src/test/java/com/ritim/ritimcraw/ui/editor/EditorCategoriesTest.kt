@@ -9,9 +9,12 @@ import org.junit.Test
  * EditorCategories tests: the editor panel's structure per the 2026-11-13
  * editor panel segmentation plan — the four main-category indices the
  * bottom navigation, the landscape rail, the panel region dispatch and
- * the per-category scroll map all key on, and the Color tab's
- * Balance | Wheels | Look sub-tab list with its gate and sanitizer. Locking
- * the counts and the orders here means a future category or sub-tab change
+ * the per-category scroll map all key on, the Color tab's
+ * Balance | Wheels | Look sub-tab list with its gate and sanitizer, and
+ * the Frame tab's Crop | Stabilize list with its own gate and sanitizer
+ * (Stabilize needs the gyro track, so the encoded path drops it — Crop
+ * is grade state the export path applies to any clip). Locking the
+ * counts and the orders here means a future category or sub-tab change
  * must touch the pure object, and the nav/rail/dispatch/row follow it.
  */
 class EditorCategoriesTest {
@@ -131,6 +134,92 @@ class EditorCategoriesTest {
             assertEquals(
                 EditorCategories.COLOR_BALANCE,
                 EditorCategories.sanitizeColorSubTab(garbage, showColorTools = false),
+            )
+        }
+    }
+
+    // ---- the Frame sub-tabs (segmentation plan: Crop | Stabilize) ----
+
+    @Test
+    fun frame_subtabs_in_row_order() {
+        // The Frame tab's two segments in SecondaryTabRow order; the
+        // pinned row composes from this list, so the order here IS the
+        // order on screen.
+        assertEquals(
+            listOf(0, 1),
+            EditorCategories.FRAME_SUBTABS,
+        )
+        assertEquals(
+            EditorCategories.FRAME_CROP,
+            EditorCategories.FRAME_SUBTABS.first(),
+        )
+        assertEquals(
+            EditorCategories.FRAME_STABILIZE,
+            EditorCategories.FRAME_SUBTABS.last(),
+        )
+    }
+
+    @Test
+    fun visible_frame_subtabs_drop_stabilize_on_the_encoded_path() {
+        // Stabilization needs the gyro track, so the group carries the
+        // showStabilization gate (path == SourcePath.MCRAW): the encoded
+        // path takes the same Grade but ignores the stabilization
+        // fields, so the body would be dead controls there. The row
+        // composes exactly the usable tabs — and the screen skips the
+        // row entirely on a single entry (a one-tab row is chrome with
+        // nothing to choose).
+        assertEquals(
+            EditorCategories.FRAME_SUBTABS,
+            EditorCategories.visibleFrameSubTabs(showStabilization = true),
+        )
+        assertEquals(
+            listOf(EditorCategories.FRAME_CROP),
+            EditorCategories.visibleFrameSubTabs(showStabilization = false),
+        )
+    }
+
+    @Test
+    fun frame_sanitize_keeps_a_valid_selection() {
+        // Every visible sub-tab sanitizes to itself — the saved
+        // selection survives a reopen unchanged on its own clip kind.
+        for (subTab in EditorCategories.visibleFrameSubTabs(showStabilization = true)) {
+            assertEquals(subTab, EditorCategories.sanitizeFrameSubTab(subTab, showStabilization = true))
+        }
+        for (subTab in EditorCategories.visibleFrameSubTabs(showStabilization = false)) {
+            assertEquals(subTab, EditorCategories.sanitizeFrameSubTab(subTab, showStabilization = false))
+        }
+    }
+
+    @Test
+    fun frame_sanitize_falls_back_to_crop_when_stabilize_meets_the_encoded_path() {
+        // The plan's cross-clip case: a Stabilize selection saved on an
+        // MCRAW clip falls back to Crop when the same editor opens an
+        // encoded clip — the gate dropped the tab from under the saved
+        // selection, and the row/body must never show a selected tab
+        // the row did not compose.
+        assertEquals(
+            EditorCategories.FRAME_CROP,
+            EditorCategories.sanitizeFrameSubTab(
+                EditorCategories.FRAME_STABILIZE,
+                showStabilization = false,
+            ),
+        )
+    }
+
+    @Test
+    fun frame_sanitize_falls_back_to_first_visible_on_garbage_ints() {
+        // A saveable Int restored after a version change could be
+        // anything: the sanitizer resolves to the first visible sub-tab
+        // (Crop on both clip kinds), never an IndexOutOfBounds, never a
+        // selected index outside the composed list.
+        for (garbage in listOf(-1, 2, 99, Int.MIN_VALUE, Int.MAX_VALUE)) {
+            assertEquals(
+                EditorCategories.FRAME_CROP,
+                EditorCategories.sanitizeFrameSubTab(garbage, showStabilization = true),
+            )
+            assertEquals(
+                EditorCategories.FRAME_CROP,
+                EditorCategories.sanitizeFrameSubTab(garbage, showStabilization = false),
             )
         }
     }
