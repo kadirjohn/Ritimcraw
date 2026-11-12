@@ -14,11 +14,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -34,6 +30,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.engine.RawHistogram
 import kotlin.math.exp
 import kotlin.math.max
 
@@ -57,15 +54,20 @@ import kotlin.math.max
  * the strip's height never changes on a clipping-state change, so the
  * panel anchors below never churn mid-session). The mode row is
  * always visible — the strip IS the expanded scope; there is no
- * compact shape to save space for. The mode stays saveable INSIDE
- * this composable (the overlay's precedent): it is internal to the
- * histogram content — the waveform does not share it — so the screen's
- * wiring stays one call.
+ * compact shape to save space for. The mode now lives in the SCREEN
+ * (saveable there — feature N6, the waveform's precedent): the RAW
+ * mode's sensor-domain stats are fetched by the screen's scope compute
+ * keyed to the mode, so the choice must live where the compute is
+ * keyed. The screen passes the ordinal + callback down, exactly like
+ * WaveformScopeView.
  *
  * MODES: RGB (combined) — the three channel fills + a subtle grey luma
  * outline on top, the owner's Lightroom-style improvement over
  * RapidRAW; Luma — the grey curve alone; Parade — three side-by-side
- * channel graphs, one common scale so relative channel levels read.
+ * channel graphs, one common scale so relative channel levels read;
+ * RAW (feature N6) — the PRE-DEVELOP sensor-domain CFA histogram of
+ * the frame, the same combined-channel shape over the develop-
+ * normalized bins.
  *
  * CHANNEL COLORS ARE LITERAL, NOT ROLES — the one documented exception
  * to DESIGN.md's roles-never-hex rule: the red/green/blue channel
@@ -98,6 +100,20 @@ import kotlin.math.max
  * the Start side — the strip's own bottom row, where the waveform's
  * signal label also sits.
  *
+ * THE TWO DOMAINS NEVER MIX (feature N6, the owner's mandate): the
+ * RGB/Luma/Parade modes describe the PROCESSED displayed image
+ * (post-grade, post-OETF) and light the processed "Clipped" badge; the
+ * RAW mode describes the PRE-DEVELOP sensor data and lights its OWN
+ * "RAW clip" badge — visually distinct (a different string AND a
+ * different color treatment, never the errorContainer the processed
+ * badge uses, so the two can never be mistaken for each other). A
+ * processed clip never lights the RAW badge and a RAW clip never
+ * lights the processed badge; each mode shows ONLY its own domain's
+ * indicators. When the RAW stats are unavailable (an encoded clip has
+ * no sensor data, or the fetch failed) the RAW mode shows an honest
+ * "RAW: no sensor data" notice in the label band — never a fabricated
+ * curve, never the processed histogram in its place.
+ *
  * PERFORMANCE: the per-frame work is one pass in FrameHistogram (off
  * the UI thread, in the screen's scope compute effect); here the
  * smoothed/normalized display arrays are remembered per result
@@ -109,12 +125,15 @@ import kotlin.math.max
 @Composable
 fun HistogramScopeView(
     result: FrameHistogram.Result,
+    modeOrdinal: Int,
+    onModeChange: (Int) -> Unit,
+    raw: RawHistogram?,
     modifier: Modifier = Modifier,
 ) {
-    // The histogram's own mode, saveable like the overlay kept it (see
-    // the KDoc). Coerced: the ordinal crosses process-death
-    // save/restore; a stale value must select the nearest real mode.
-    var modeOrdinal by rememberSaveable { mutableIntStateOf(HistogramMode.RGB.ordinal) }
+    // The mode now arrives from the screen (see the KDoc): the RAW
+    // fetch is keyed to it there. Coerced the same way — the ordinal
+    // crosses process-death save/restore; a stale value must select
+    // the nearest real mode.
     val mode = HistogramMode.entries[modeOrdinal.coerceIn(0, HistogramMode.entries.lastIndex)]
 
     // Resolved OUTSIDE the Canvas draw lambda (draw lambdas are not
@@ -129,26 +148,48 @@ fun HistogramScopeView(
         FrameHistogram.Channel.BLUE to BlueChannelColor,
         FrameHistogram.Channel.LUMA to lumaColor,
     )
+    // The RAW channel colors: the same three site colors (a CFA site's
+    // color IS its meaning, the same documented exception), keyed by
+    // the RAW domain's own Channel type — the two enums never share a
+    // map, so a processed-slot lookup can never answer a RAW question.
+    val rawChannelColors = mapOf(
+        RawHistogram.Channel.RED to RedChannelColor,
+        RawHistogram.Channel.GREEN to GreenChannelColor,
+        RawHistogram.Channel.BLUE to BlueChannelColor,
+    )
 
     // Display-only smoothing + normalization, remembered per result so
     // it recomputes once per published frame, not per draw. The raw
-    // counts are never touched.
+    // counts are never touched. RAW has its own pipeline (computeRaw)
+    // over the sensor-domain bins — the two domains never share a
+    // compute path.
     val display = remember(result, mode) {
         HistogramDisplay.compute(result, mode)
+    }
+    val rawDisplay = remember(raw, mode) {
+        if (mode == HistogramMode.RAW) HistogramDisplay.computeRaw(raw) else null
     }
     // Clip indicators read the RAW counts (not the smoothed display).
     val shadowClipSlots = FrameHistogram.Channel.entries.filter { result.isBlackClipped(it) }
     val highlightClipSlots = FrameHistogram.Channel.entries.filter { result.isWhiteClipped(it) }
+    // The RAW indicators read the SENSOR-domain counts — never the
+    // processed result's (see the KDoc: the domains never mix).
+    val rawShadowClipSlots = raw?.let { r ->
+        RawHistogram.Channel.entries.filter { r.isBlackClipped(it) }
+    } ?: emptyList()
+    val rawHighlightClipSlots = raw?.let { r ->
+        RawHistogram.Channel.entries.filter { r.isWhiteClipped(it) }
+    } ?: emptyList()
 
     Column(modifier) {
-        // Mode switch: RGB / Luma / Parade. The labels are literal
-        // codes in every locale (owner spec: mode names stay
+        // Mode switch: RGB / Luma / Parade / RAW. The labels are
+        // literal codes in every locale (owner spec: mode names stay
         // untranslated), like ACES/AgX do.
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             HistogramMode.entries.forEachIndexed { index, m ->
                 SegmentedButton(
                     selected = m == mode,
-                    onClick = { modeOrdinal = m.ordinal },
+                    onClick = { onModeChange(m.ordinal) },
                     shape = SegmentedButtonDefaults.itemShape(
                         index = index,
                         count = HistogramMode.entries.size,
@@ -160,7 +201,25 @@ fun HistogramScopeView(
         }
         Spacer(Modifier.height(6.dp))
         Canvas(Modifier.fillMaxWidth().height(ScopeGraphHeight)) {
-            if (mode == HistogramMode.PARADE) {
+            if (mode == HistogramMode.RAW) {
+                // PRE-DEVELOP sensor domain: the RAW curves over the
+                // develop-normalized CFA bins, with the RAW domain's
+                // OWN clip dots. No processed indicator is drawn here,
+                // ever (the owner's mandate).
+                drawGrid(gridColor)
+                if (rawDisplay != null) {
+                    // Same draw order as the processed RGB mode: blue
+                    // -> green -> red, SrcOver fills mix, red reads on
+                    // top.
+                    drawRawCurve(rawDisplay, RawHistogram.Channel.BLUE, BlueChannelColor)
+                    drawRawCurve(rawDisplay, RawHistogram.Channel.GREEN, GreenChannelColor)
+                    drawRawCurve(rawDisplay, RawHistogram.Channel.RED, RedChannelColor)
+                }
+                drawRawClipDots(rawShadowClipSlots, rawChannelColors, dotBackingColor,
+                    anchorStart = true, boundsWidth = size.width)
+                drawRawClipDots(rawHighlightClipSlots, rawChannelColors, dotBackingColor,
+                    anchorStart = false, boundsWidth = size.width)
+            } else if (mode == HistogramMode.PARADE) {
                 drawParade(display, channelColors, gridColor, dotBackingColor,
                     shadowClipSlots, highlightClipSlots)
             } else {
@@ -196,7 +255,37 @@ fun HistogramScopeView(
             Modifier.fillMaxWidth().height(ScopeLabelBandHeight),
             contentAlignment = Alignment.CenterStart,
         ) {
-            if (result.isClipped()) {
+            if (mode == HistogramMode.RAW) {
+                // The RAW label band: the sensor-domain badge ONLY —
+                // the processed "Clipped" badge is never shown in this
+                // mode, and this badge is never shown in the processed
+                // modes. Visually distinct (the KDoc): a different
+                // string AND a different color treatment than the
+                // processed badge's errorContainer.
+                if (raw != null && raw.isClipped()) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        shape = MaterialTheme.shapes.small,
+                    ) {
+                        Text(
+                            stringResource(R.string.editor_histogram_raw_clip),
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                } else if (raw == null) {
+                    // Honest unavailability: an encoded clip has no
+                    // sensor data, or the fetch failed — NEVER a
+                    // fabricated curve or the processed histogram in
+                    // the RAW mode's place.
+                    Text(
+                        stringResource(R.string.editor_histogram_raw_unavailable),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (result.isClipped()) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -257,6 +346,29 @@ private fun DrawScope.drawOutline(
     val outline = Path()
     val sink = Path()
     buildCurvePaths(values, 0f, size.width, size.height, sink, outline)
+    drawPath(
+        outline, color,
+        style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+    )
+}
+
+/**
+ * One RAW channel's filled curve — the same shape as [drawCurve] over
+ * the sensor-domain display values (feature N6). A separate function
+ * (not a shared generic) so the two domains' draw paths stay visibly
+ * separate in the source: the RAW canvas block never calls a
+ * processed-channel helper and vice versa.
+ */
+private fun DrawScope.drawRawCurve(
+    display: Map<RawHistogram.Channel, FloatArray>,
+    channel: RawHistogram.Channel,
+    color: Color,
+) {
+    val values = display[channel] ?: return
+    val fill = Path()
+    val outline = Path()
+    buildCurvePaths(values, 0f, size.width, size.height, fill, outline)
+    drawPath(fill, color.copy(alpha = 0.5f))
     drawPath(
         outline, color,
         style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
@@ -383,14 +495,57 @@ private fun DrawScope.drawClipDots(
 }
 
 /**
+ * The RAW domain's clip-dot indicator — the same pill shape as
+ * [drawClipDots] over the sensor-domain slots (feature N6). Separate
+ * for the same reason as [drawRawCurve]: the RAW draw path never calls
+ * the processed helper, so a slot of one domain can never be looked up
+ * in the other's color map.
+ */
+private fun DrawScope.drawRawClipDots(
+    slots: List<RawHistogram.Channel>,
+    channelColors: Map<RawHistogram.Channel, Color>,
+    backingColor: Color,
+    anchorStart: Boolean,
+    boundsLeft: Float = 0f,
+    boundsWidth: Float,
+) {
+    if (slots.isEmpty()) return
+    val radius = 2.5.dp.toPx()
+    val gap = 3.dp.toPx()
+    val pad = 3.dp.toPx()
+    val outer = 4.dp.toPx()
+    val backingWidth = slots.size * 2 * radius + (slots.size - 1) * gap + 2 * pad
+    val backingHeight = 2 * radius + 2 * pad
+    val left = if (anchorStart) {
+        boundsLeft + outer
+    } else {
+        boundsLeft + boundsWidth - outer - backingWidth
+    }
+    val top = size.height - outer - backingHeight
+    drawRoundRect(
+        color = backingColor,
+        topLeft = Offset(left, top),
+        size = Size(backingWidth, backingHeight),
+        cornerRadius = CornerRadius(backingHeight / 2),
+    )
+    slots.forEachIndexed { i, slot ->
+        val cx = left + pad + radius + i * (2 * radius + gap)
+        val cy = top + backingHeight / 2
+        drawCircle(channelColors.getValue(slot), radius = radius, center = Offset(cx, cy))
+    }
+}
+
+/**
  * The histogram's display modes. The labels are literal untranslated
  * codes in every locale (owner spec: RGB / Luma / Parade are product
- * vocabulary, like ACES and AgX).
+ * vocabulary, like ACES and AgX; RAW is the same kind of product
+ * code — the sensor domain's name).
  */
 internal enum class HistogramMode(val label: String) {
     RGB("RGB"),
     LUMA("Luma"),
     PARADE("Parade"),
+    RAW("RAW"),
 }
 
 /**
@@ -423,6 +578,12 @@ internal object HistogramDisplay {
                 FrameHistogram.Channel.RED, FrameHistogram.Channel.GREEN,
                 FrameHistogram.Channel.BLUE,
             )
+            // The RAW mode's display is computed by [computeRaw] from
+            // the sensor-domain RawHistogram — a DIFFERENT input type,
+            // never this processed-image pipeline. This branch exists
+            // only to satisfy the exhaustive when; it never runs (the
+            // view calls computeRaw directly for RAW).
+            HistogramMode.RAW -> emptyList()
         }
         // The scale is set by the FILLED channels only (see the KDoc).
         val filled = when (mode) {
@@ -441,6 +602,49 @@ internal object HistogramDisplay {
             denominator = max(denominator, percentile99(smoothed.getValue(channel)))
         }
         val out = HashMap<FrameHistogram.Channel, FloatArray>(drawn.size)
+        for (channel in drawn) {
+            val values = smoothed.getValue(channel)
+            out[channel] = FloatArray(values.size) { (values[it] / denominator).coerceIn(0f, 1f) }
+        }
+        return out
+    }
+
+    /**
+     * The RAW mode's display pipeline (feature N6) — the same
+     * display-only discipline over the PRE-DEVELOP sensor-domain bins:
+     * Gaussian-smooth a COPY of each CFA channel's bins (the same
+     * kernel as the processed pipeline — [smooth] is domain-agnostic),
+     * then normalize all three by ONE common denominator (the largest
+     * 99th-percentile smoothed count). The raw counts and clip counts
+     * in [raw] are untouched — the RAW indicators read the exact
+     * sensor clips, not bin-edge approximations, so smoothing can
+     * never create or hide a RAW clip warning.
+     *
+     * A SEPARATE entry point from [compute], not a mode branch inside
+     * it: the RAW mode's input type is [RawHistogram] (the sensor
+     * domain), not [FrameHistogram.Result] (the processed domain) —
+     * the two domains never share a compute path, so a processed
+     * result can never be drawn as RAW or the reverse. Returns an
+     * EMPTY map when [raw] is null (stats unavailable): the caller
+     * shows the honest unavailability notice, never a fabricated
+     * curve.
+     */
+    fun computeRaw(raw: RawHistogram?): Map<RawHistogram.Channel, FloatArray> {
+        if (raw == null) return emptyMap()
+        val drawn = listOf(
+            RawHistogram.Channel.RED,
+            RawHistogram.Channel.GREEN,
+            RawHistogram.Channel.BLUE,
+        )
+        val smoothed = HashMap<RawHistogram.Channel, FloatArray>(drawn.size)
+        for (channel in drawn) {
+            smoothed[channel] = smooth(raw.bins(channel))
+        }
+        var denominator = 1f
+        for (channel in drawn) {
+            denominator = max(denominator, percentile99(smoothed.getValue(channel)))
+        }
+        val out = HashMap<RawHistogram.Channel, FloatArray>(drawn.size)
         for (channel in drawn) {
             val values = smoothed.getValue(channel)
             out[channel] = FloatArray(values.size) { (values[it] / denominator).coerceIn(0f, 1f) }

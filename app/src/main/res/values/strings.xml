@@ -144,6 +144,8 @@
     <string name="editor_fullscreen_exit">Exit fullscreen</string>
     <string name="editor_histogram">Histogram</string>
     <string name="editor_histogram_clipped">Clipped</string>
+    <string name="editor_histogram_raw_clip">RAW clip</string>
+    <string name="editor_histogram_raw_unavailable">RAW: no sensor data</string>
     <string name="editor_scope_waveform">Waveform</string>
     <string name="editor_scope_show">Show scope</string>
     <string name="editor_scope_hide">Hide scope</string>
