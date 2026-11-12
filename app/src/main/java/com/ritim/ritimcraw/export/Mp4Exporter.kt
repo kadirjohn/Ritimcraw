@@ -5,6 +5,7 @@ import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.engine.NativeSource
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.RejectedExecutionException
 import kotlin.coroutines.resume
@@ -290,6 +291,18 @@ interface Mp4MediaWriter {
 
     /** Releases everything (best effort; safe to call twice). */
     fun release()
+
+    /**
+     * Optional per-export stage-timing sink (owner request 2026-11-13,
+     * export stage timing): the pipeline attaches its [ExportStageTiming]
+     * right before the encode loop, and a writer that measures its
+     * internals reports them per frame through
+     * [ExportStageTiming.markWriterStages] (same thread — writeVideoFrame
+     * runs inside the pipeline's loop iteration). Default no-op: the JVM
+     * fakes and any timing-unaware writer keep compiling and behave
+     * identically; a null argument turns the writer's timing off.
+     */
+    fun attachTiming(timing: ExportStageTiming?) {}
 }
 
 /** AAC input: one block = 1024 PCM frames per channel (the AAC frame size). */
@@ -388,6 +401,188 @@ fun imageInputSize(
 }
 
 /**
+ * Per-export stage timing (owner request 2026-11-13, "export stage
+ * timing"): a pure accumulator + formatter, JVM-testable end to end — the
+ * only impure inputs are System.nanoTime at the call sites and the
+ * INJECTED log sink, so this class carries no Android imports.
+ *
+ * BOUNDARY HONESTY: the "native" stage times ONE JNI call,
+ * Mp4Session.renderFrame. Inside that single call the bridge runs the
+ * MCRAW decode (+ temporal NR when on) + the 24-stage developCpu + the
+ * gyro warp (when on) + the Rec.709 OETF + the RGB888 pack — and
+ * jni_bridge.cpp is outside this mission's file boundary, so those
+ * sub-stages are NOT separable here. The call is timed as one number and
+ * the boundary is documented, never guessed. The separable stages are
+ * the Kotlin ones (rotate / crop / yuv) and the writer internals
+ * (encoder input wait / plane copy / drain-mux, reported by the writer
+ * through [markWriterStages]).
+ *
+ * OUTPUT — all through the injected sink, one line each (never one line
+ * per frame):
+ *  - a per-frame SAMPLE line at frames 1, 30, 60, 90 (the first frame +
+ *    steady-state checkpoints),
+ *  - one STAGE AVERAGES line over the whole export,
+ *  - one EXPORT SUMMARY line (source -> upright -> encoded dims, active
+ *    effect groups, frame count, total encode time).
+ *
+ * COST: two LongArrays per export, ~8 System.nanoTime reads per frame,
+ * strings built only at the sample checkpoints and at close — no
+ * hot-loop allocations. A null sink (timing off) is never even
+ * constructed by the pipeline, so timing-off exports collect nothing
+ * and are byte-identical.
+ */
+class ExportStageTiming(private val log: ((String) -> Unit)?) {
+
+    /** Clears the per-frame slots at the top of a video frame iteration. */
+    fun startFrame() {
+        for (i in frameNanos.indices) frameNanos[i] = 0
+        frameWallStartNanos = System.nanoTime()
+    }
+
+    /** Adds [nanos] to the frame's [stage] slot (each call site times its own block). */
+    fun mark(stage: Int, nanos: Long) {
+        if (stage in 0 until STAGE_COUNT) frameNanos[stage] += nanos
+    }
+
+    /**
+     * Writer-internal stages, reported by the writer at the END of its
+     * writeVideoFrame (same thread — the call runs inside the pipeline's
+     * frame iteration, so the slots are filled before [endFrame] reads
+     * them). A writer that does not measure (the JVM fakes, any
+     * timing-unaware writer) simply never calls this and the slots stay
+     * at honest zeros.
+     */
+    fun markWriterStages(encWaitNanos: Long, planeCopyNanos: Long, drainNanos: Long) {
+        frameNanos[STAGE_ENC_WAIT] += encWaitNanos
+        frameNanos[STAGE_PLANE_COPY] += planeCopyNanos
+        frameNanos[STAGE_DRAIN_MUX] += drainNanos
+    }
+
+    /** Closes one video frame: accumulates, emits a sample line at checkpoints. */
+    fun endFrame() {
+        for (i in 0 until STAGE_COUNT) sums[i] += frameNanos[i]
+        frames++
+        if (isSampleFrame(frames)) log?.invoke(sampleLine())
+    }
+
+    /**
+     * Emits the per-export lines (call once, after the last frame): stage
+     * averages over [frames] frames, then the one-line EXPORT SUMMARY
+     * with the three dimension pairs ([sourceW]x[sourceH] as decoded,
+     * [rotatedW]x[rotatedH] after the upright rotation, [encodedW]x
+     * [encodedH] after the crop — what the encoder received), the active
+     * effect groups, the frame count and the whole-encode [encodeNanos].
+     */
+    fun close(
+        sourceW: Int,
+        sourceH: Int,
+        rotatedW: Int,
+        rotatedH: Int,
+        encodedW: Int,
+        encodedH: Int,
+        grade: GradeK,
+        gyroActive: Boolean,
+        encodeNanos: Long,
+    ) {
+        val sink = log ?: return
+        if (frames > 0) {
+            sink(
+                "export stages avg over $frames frames: " +
+                    stagePairs { sums[it] / frames.toDouble() } + " total=" +
+                    ms(encodeNanos / frames.toDouble()) + "ms"
+            )
+        }
+        sink(
+            "EXPORT SUMMARY: source ${sourceW}x$sourceH -> upright ${rotatedW}x$rotatedH" +
+                " -> encoded ${encodedW}x$encodedH, effects " +
+                effects(grade, gyroActive) + ", $frames frames, " +
+                ms(encodeNanos.toDouble()) + " ms"
+        )
+    }
+
+    // ---- internals ----
+
+    private val frameNanos = LongArray(STAGE_COUNT)
+    private val sums = LongArray(STAGE_COUNT)
+    private var frames = 0
+    private var frameWallStartNanos = 0L
+
+    private fun isSampleFrame(f: Int): Boolean =
+        f == SAMPLE_FRAMES[0] || f == SAMPLE_FRAMES[1] ||
+            f == SAMPLE_FRAMES[2] || f == SAMPLE_FRAMES[3]
+
+    /** "native=45.2ms rotate=1.1ms ... drain_mux=0.8ms" for the given per-stage source. */
+    private fun stagePairs(nanos: (Int) -> Double): String {
+        val sb = StringBuilder(96)
+        for (s in 0 until STAGE_COUNT) {
+            if (s > 0) sb.append(' ')
+            sb.append(stageName(s)).append('=').append(ms(nanos(s))).append("ms")
+        }
+        return sb.toString()
+    }
+
+    /** The per-frame sample line: stages + the frame's true wall time. */
+    private fun sampleLine(): String =
+        "export frame $frames: " + stagePairs { frameNanos[it].toDouble() } +
+            " total=" + ms((System.nanoTime() - frameWallStartNanos).toDouble()) + "ms"
+
+    private fun ms(nanos: Double): String = String.format(Locale.ROOT, "%.1f", nanos / 1_000_000.0)
+
+    companion object {
+        /** The export diagnostics tag (MediaCodecMp4Writer logs here too). */
+        const val TAG = "ritim-export"
+
+        /** renderFrame: ONE JNI call — decode + temporal NR + develop + gyro warp + OETF + pack (see class KDoc). */
+        const val STAGE_NATIVE = 0
+        /** Kotlin upright rotation (RotationState.rotateRgb888). */
+        const val STAGE_ROTATE = 1
+        /** Kotlin crop/straighten (CropState.applyToRgb). */
+        const val STAGE_CROP = 2
+        /** Kotlin I420 conversion (YuvConverter.toI420). */
+        const val STAGE_YUV = 3
+        /** Writer: the dequeueInputBuffer wait for a free encoder input buffer. */
+        const val STAGE_ENC_WAIT = 4
+        /** Writer: getInputImage + copyI420ToImage + imageInputSize + queueInputBuffer. */
+        const val STAGE_PLANE_COPY = 5
+        /** Writer: drain — encoded packets out of the codec into the muxer. */
+        const val STAGE_DRAIN_MUX = 6
+        const val STAGE_COUNT = 7
+
+        /** Per-frame sample checkpoints: the first frame + steady-state points. */
+        val SAMPLE_FRAMES = intArrayOf(1, 30, 60, 90)
+
+        fun stageName(stage: Int): String = when (stage) {
+            STAGE_NATIVE -> "native"
+            STAGE_ROTATE -> "rotate"
+            STAGE_CROP -> "crop"
+            STAGE_YUV -> "yuv"
+            STAGE_ENC_WAIT -> "enc_wait"
+            STAGE_PLANE_COPY -> "plane_copy"
+            STAGE_DRAIN_MUX -> "drain_mux"
+            else -> "stage$stage"
+        }
+
+        /**
+         * Active-effect tokens for the summary line: the effect groups
+         * whose per-frame cost the timing is meant to attribute — spatial
+         * NR (luma or chroma percent), temporal NR, gyro stabilization
+         * (on AND a log attached — [gyroActive] is the pipeline's own
+         * gate), tonemap, LUT. A neutral grade is "none", never an empty
+         * list.
+         */
+        fun effects(grade: GradeK, gyroActive: Boolean): String {
+            val parts = ArrayList<String>(5)
+            if (grade.noiseReduction > 0f || grade.chromaDenoise > 0f) parts.add("nr")
+            if (grade.temporalNr) parts.add("temporal")
+            if (gyroActive) parts.add("gyro")
+            if (grade.tonemap != 0) parts.add("tonemap")
+            if (grade.lutId != null) parts.add("lut")
+            return if (parts.isEmpty()) "none" else parts.joinToString("+")
+        }
+    }
+}
+
+/**
  * The MP4 export pipeline state machine (JVM-testable over fake
  * [Mp4Session]/[Mp4MediaWriter]; no Android imports):
  *
@@ -401,6 +596,15 @@ fun imageInputSize(
 class ExportPipeline(
     private val session: Mp4Session,
     private val writer: Mp4MediaWriter,
+    /**
+     * Optional per-export stage-timing log sink (owner request
+     * 2026-11-13): non-null constructs one [ExportStageTiming] for the
+     * encode, attaches it to the writer, and emits the sample/average/
+     * summary lines through it. Null (the default) = timing fully off —
+     * nothing is constructed, nothing is collected, the encoded bytes
+     * are identical (see ExportStageTiming).
+     */
+    private val stageLog: ((String) -> Unit)? = null,
 ) {
 
     /**
@@ -514,17 +718,26 @@ class ExportPipeline(
             // Progress counts VIDEO frames only (the frame counter the user
             // sees); it starts once the encoders are actually configured —
             // a rejected configure would otherwise show 0/N "progress".
+            // Stage timing (owner request 2026-11-13): one sink per export,
+            // attached to the writer BEFORE the loop so its internals are
+            // attributed to the right frame; null = timing off entirely.
+            val timing = if (stageLog != null) ExportStageTiming(stageLog) else null
+            timing?.let { writer.attachTiming(it) }
+            val tEncode0 = System.nanoTime()
             onProgress?.invoke(0, videoPts.size)
             var done = 0
             for (s in PtsTimeline.interleave(videoPts, audioPts)) {
                 when (s.track) {
                     PtsTimeline.Sample.Track.VIDEO -> {
+                        timing?.startFrame()
+                        val t0 = System.nanoTime()
                         val rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath)
                             ?: throw IllegalStateException(
                                 Mp4ExportErrors.message(
                                     session.code(), session.stage(), session.detail()
                                 )
                             )
+                        timing?.mark(ExportStageTiming.STAGE_NATIVE, System.nanoTime() - t0)
                         // Section 5: renderFrame returns NOT-rotated RGB888;
                         // rotating by the EFFECTIVE orientation makes the
                         // pixels themselves upright (the encoder wants
@@ -535,7 +748,10 @@ class ExportPipeline(
                         // upright pixels — same space the rect lives in.
                         // Neutral crop returns the upright buffer by
                         // reference (no copy, no visible change).
+                        val t1 = System.nanoTime()
                         val upright = RotationState.rotateRgb888(rgb, info.width, info.height, effectiveDeg)
+                        timing?.mark(ExportStageTiming.STAGE_ROTATE, System.nanoTime() - t1)
+                        val t2 = System.nanoTime()
                         val cropped = CropState.applyToRgb(
                             rgb = upright.rgb,
                             width = upright.width,
@@ -545,10 +761,15 @@ class ExportPipeline(
                             spaceDeltaDeg = 0,
                             even = true,
                         )
-                        writer.writeVideoFrame(
-                            s.ptsUs,
-                            YuvConverter.toI420(cropped.rgb, cropped.width, cropped.height),
-                        )
+                        timing?.mark(ExportStageTiming.STAGE_CROP, System.nanoTime() - t2)
+                        val t3 = System.nanoTime()
+                        val i420 = YuvConverter.toI420(cropped.rgb, cropped.width, cropped.height)
+                        timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3)
+                        // The writer's own stages (enc_wait / plane_copy /
+                        // drain_mux) are marked INTO this timing object while
+                        // writeVideoFrame runs, before endFrame reads them.
+                        writer.writeVideoFrame(s.ptsUs, i420)
+                        timing?.endFrame()
                         done++
                         onProgress?.invoke(done, videoPts.size)
                     }
@@ -566,6 +787,17 @@ class ExportPipeline(
                     )
                 )
             }
+            timing?.close(
+                sourceW = info.width,
+                sourceH = info.height,
+                rotatedW = outDims.width,
+                rotatedH = outDims.height,
+                encodedW = cropOutDims.width,
+                encodedH = cropOutDims.height,
+                grade = grade,
+                gyroActive = grade.stabilization && gyroPath != null,
+                encodeNanos = System.nanoTime() - tEncode0,
+            )
         } finally {
             writer.release()
         }
@@ -609,6 +841,14 @@ class Mp4Exporter(
     private val engine: ExecutorService = ExportEngine.thread,
     private val lutPathFor: (String?) -> String? = { null },
     private val gyroPathFor: (String) -> String? = { null },
+    /**
+     * Per-export stage-timing log sink (owner request 2026-11-13): each
+     * line the timing emits lands here (the app wires it to Log.i under
+     * the "ritim-export" tag, DEBUG builds only — see [ExportStageTiming]
+     * for the line formats). Null (the default) = timing off: nothing is
+     * collected, the encoded bytes are identical.
+     */
+    private val stageLog: ((String) -> Unit)? = null,
 ) {
 
     /**
@@ -644,7 +884,7 @@ class Mp4Exporter(
             try {
                 engine.execute {
                     val res = try {
-                        ExportPipeline(session, writerFactory()).run(
+                        ExportPipeline(session, writerFactory(), stageLog).run(
                             sourceFd, job.snapshot, partial.absolutePath, lutPath, gyroPath,
                             job.manualRotationDeg, onProgress
                         )
