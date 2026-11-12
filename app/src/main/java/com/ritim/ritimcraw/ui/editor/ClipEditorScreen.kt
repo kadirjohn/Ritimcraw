@@ -609,6 +609,15 @@ fun ClipEditorScreen(
         }
         var grade by remember(sourceId) { mutableStateOf(initialGrade) }
 
+        // ---- Grade undo/redo history (feature N7) ----
+        // Per-open-editor, keyed to the clip like every other editor
+        // state: a clip switch starts a FRESH history seeded with the
+        // clip's initial grade (the stack's bottom — undo returns null
+        // there). In memory only, deliberately: process death empties it
+        // while GradeStore keeps the grade itself, so the honest
+        // post-death state is "nothing to undo" (GradeHistory KDoc).
+        val gradeHistory = remember(sourceId) { GradeHistory(initialGrade) }
+
         // ---- Preview + transport bookkeeping (all keyed to the clip) ----
         var frame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
         // The index of the frame LAST PUBLISHED by the render pump
@@ -840,6 +849,45 @@ fun ClipEditorScreen(
                     requestRender(positionFrame, grade, d.maxDim)
                 SliderTiers.Decision.NoRender -> Unit
             }
+        }
+
+        /**
+         * The single recording apply path for user grade edits (feature
+         * N7): writes the grade state, persists through onGradeChange
+         * (the AppNav funnel), records into the history, and settles
+         * the render tier. Slider-path edits (drag frames and tap-to-
+         * position jumps alike — both arrive through a panel's onChange
+         * route) record with the SLIDER_GESTURE cause, so consecutive
+         * frames of one gesture coalesce into ONE undo step, closed by
+         * gradeHistory.settle() on drag end; discrete edits (toggles,
+         * the tonemap/LUT choices, paste/preset applies, double-tap
+         * resets) pass null and never coalesce.
+         */
+        fun applyGradeEdit(g: GradeK, cause: Any? = null) {
+            grade = g
+            onGradeChange(g)
+            gradeHistory.record(g, cause)
+            if (cause == null) {
+                // Discrete edits settle immediately at the full tier
+                // (GradeEdited with no drag active), like the panel
+                // toggles always have.
+                applyTierEvent(SliderTiers.Event.GradeEdited)
+            } else if (dragActive) {
+                // Mid-drag frames render immediately at the low tier
+                // through the cached path.
+                applyTierEvent(SliderTiers.Event.GradeEdited)
+            }
+        }
+
+        /**
+         * Applies an undo/redo result WITHOUT recording (feature N7):
+         * undo must never clear the redo stack. Persistence and the
+         * live preview follow through the same onGradeChange +
+         * debounce-effect path every other grade write takes.
+         */
+        fun applyRestoredGrade(g: GradeK) {
+            grade = g
+            onGradeChange(g)
         }
 
         /**
@@ -1861,22 +1909,29 @@ fun ClipEditorScreen(
                 0 -> LightPanel(
                     grade = grade,
                     onChange = { g ->
-                        grade = g
-                        onGradeChange(g)
-                        // Mid-drag grade steps render IMMEDIATELY at the
-                        // low tier through the cached path (the debounce
-                        // effect restarts on every step, so its trailing
-                        // edge only covers a finger PAUSE mid-drag; a
-                        // settled edit — double-tap reset, tap on the
-                        // track — settles through the debounce alone).
-                        if (dragActive) {
-                            applyTierEvent(SliderTiers.Event.GradeEdited)
-                        }
+                        // Slider-path edit: records with the drag cause so
+                        // one finger drag is ONE undo step (feature N7);
+                        // the tier wiring inside applyGradeEdit matches the
+                        // old inline code exactly (mid-drag frames render
+                        // immediately at the low tier through the cached
+                        // path; the debounce effect's trailing edge only
+                        // covers a finger PAUSE mid-drag).
+                        applyGradeEdit(g, GradeHistory.SLIDER_GESTURE)
                     },
                     onDragActiveChange = { active ->
                         applyTierEvent(
                             if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
                         )
+                        // Drag end closes the history's open entry, so
+                        // the NEXT gesture pushes a fresh undo step
+                        // (feature N7; a tap is a zero-length drag, its
+                        // Start+Stop pair closes the entry it opened).
+                        if (!active) gradeHistory.settle()
+                    },
+                    // Double-tap resets are discrete steps (feature N7):
+                    // their own undo entry, never coalesced into a drag.
+                    onReset = { g ->
+                        applyGradeEdit(g)
                     },
                 )
                 1 -> ColorPanel(
@@ -1887,28 +1942,29 @@ fun ClipEditorScreen(
                     // EditorPreviewLogic.showRawStageToggles).
                     showRawStageToggles = EditorPreviewLogic.showRawStageToggles(sourcePath),
                     onChange = { g ->
-                        grade = g
-                        onGradeChange(g)
-                        // Same tier wiring as LightPanel: the machine is
-                        // shared, so which tab the drag started on does
-                        // not matter.
-                        if (dragActive) {
-                            applyTierEvent(SliderTiers.Event.GradeEdited)
-                        }
+                        // Same slider-path recording as LightPanel: the
+                        // machine is shared, so which tab the drag
+                        // started on does not matter.
+                        applyGradeEdit(g, GradeHistory.SLIDER_GESTURE)
                     },
                     onDragActiveChange = { active ->
                         applyTierEvent(
                             if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
                         )
+                        if (!active) gradeHistory.settle()
                     },
                     // RAW toggles (As Shot, the reconstruction/vignetting
                     // switches) are not drags: they settle IMMEDIATELY at
                     // the full tier (SliderTiers.GradeEdited with no drag
-                    // active), not through the debounce.
+                    // active), not through the debounce — and they record
+                    // as DISCRETE history steps (null cause, feature N7).
                     onToggleChange = { g ->
-                        grade = g
-                        onGradeChange(g)
-                        applyTierEvent(SliderTiers.Event.GradeEdited)
+                        applyGradeEdit(g)
+                    },
+                    // Double-tap resets are discrete steps (feature N7):
+                    // their own undo entry, never coalesced into a drag.
+                    onReset = { g ->
+                        applyGradeEdit(g)
                     },
                 )
                 else -> DetailPanel(
@@ -1919,27 +1975,23 @@ fun ClipEditorScreen(
                     // takes-and-ignores the temporal fields).
                     showTemporalNr = EditorPreviewLogic.showTemporalNr(sourcePath),
                     onChange = { g ->
-                        grade = g
-                        onGradeChange(g)
-                        // Same tier wiring as the other tabs: mid-drag
-                        // grade steps render immediately at the low tier
-                        // through the cached path.
-                        if (dragActive) {
-                            applyTierEvent(SliderTiers.Event.GradeEdited)
-                        }
+                        // Same slider-path recording as the other tabs:
+                        // mid-drag grade steps render immediately at the
+                        // low tier through the cached path.
+                        applyGradeEdit(g, GradeHistory.SLIDER_GESTURE)
                     },
                     onDragActiveChange = { active ->
                         applyTierEvent(
                             if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
                         )
+                        if (!active) gradeHistory.settle()
                     },
                     // The tonemapping choice is not a drag: it settles
                     // IMMEDIATELY at the full tier (GradeEdited with no
-                    // drag active), like the RAW toggles.
+                    // drag active), like the RAW toggles — a discrete
+                    // history step (null cause, feature N7).
                     onTonemapChange = { g ->
-                        grade = g
-                        onGradeChange(g)
-                        applyTierEvent(SliderTiers.Event.GradeEdited)
+                        applyGradeEdit(g)
                     },
                     // ---- LUT section wiring (COL-07) ----
                     // Selection/Strength are grade edits like the
@@ -1951,17 +2003,21 @@ fun ClipEditorScreen(
                     onImportLut = { lutPicker.launch(arrayOf("*/*")) },
                     onRemoveLut = onRemoveLut,
                     onLutSelect = { g ->
-                        grade = g
-                        onGradeChange(g)
-                        applyTierEvent(SliderTiers.Event.GradeEdited)
+                        // A LUT selection is a discrete history step (null
+                        // cause, feature N7).
+                        applyGradeEdit(g)
                     },
                     // The Temporal NR switch is not a drag either: it
                     // settles IMMEDIATELY at the full tier, like the
-                    // RAW toggles and the tonemapping choice.
+                    // RAW toggles and the tonemapping choice — a discrete
+                    // history step (null cause, feature N7).
                     onToggleChange = { g ->
-                        grade = g
-                        onGradeChange(g)
-                        applyTierEvent(SliderTiers.Event.GradeEdited)
+                        applyGradeEdit(g)
+                    },
+                    // Double-tap resets are discrete steps (feature N7):
+                    // their own undo entry, never coalesced into a drag.
+                    onReset = { g ->
+                        applyGradeEdit(g)
                     },
                     // ---- Stabilization wiring (gyro Phase 5) ----
                     // The group shows on MCRAW only (pure decision in
@@ -2040,8 +2096,24 @@ fun ClipEditorScreen(
                     canPaste = GradeClipboard.hasContent(),
                     onCopySettings = { GradeClipboard.copy(grade) },
                     onApplyGrade = { g ->
-                        grade = g
-                        onGradeChange(g)
+                        // Paste/preset applies are DISCRETE history steps
+                        // (null cause, feature N7): one apply, one undo.
+                        applyGradeEdit(g)
+                    },
+                    // ---- Grade undo/redo (feature N7) ----
+                    // The buttons are gated by the history's snapshot
+                    // reads (reactive); the callbacks apply the popped
+                    // grade WITHOUT recording, so undo never clears the
+                    // redo stack. Persistence and the live preview follow
+                    // through the same onGradeChange path every grade
+                    // write takes.
+                    canUndo = gradeHistory.canUndo,
+                    canRedo = gradeHistory.canRedo,
+                    onUndo = {
+                        gradeHistory.undo()?.let { applyRestoredGrade(it) }
+                    },
+                    onRedo = {
+                        gradeHistory.redo()?.let { applyRestoredGrade(it) }
                     },
                     presets = presets,
                     onSavePreset = onSavePreset,
@@ -2303,12 +2375,21 @@ private fun FramePickerSheet(
 }
 
 
-/** Light tab: Exposure / Highlights / tone controls (DESIGN.md Editor). */
+/**
+ * Light tab: Exposure / Highlights / tone controls (DESIGN.md Editor).
+ *
+ * [onReset] carries the double-tap resets SEPARATELY from [onChange]
+ * (feature N7): a reset is a discrete grade edit — its own undo step,
+ * never coalesced into the surrounding slider gestures — while onChange
+ * stays the slider path (drag frames and tap-to-position jumps, one
+ * gesture = one undo step).
+ */
 @Composable
 private fun LightPanel(
     grade: GradeK,
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -2324,7 +2405,7 @@ private fun LightPanel(
             valueLabel = Format.formatEv(grade.exposureEv),
             onChange = { v -> onChange(grade.copy(exposureEv = SliderSteps.snapExposure(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.EXPOSURE, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.EXPOSURE, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2336,7 +2417,7 @@ private fun LightPanel(
             valueLabel = Format.formatSigned(grade.highlights.toInt()),
             onChange = { v -> onChange(grade.copy(highlights = SliderSteps.snapHighlights(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.HIGHLIGHTS, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.HIGHLIGHTS, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2348,7 +2429,7 @@ private fun LightPanel(
             valueLabel = Format.formatSigned(grade.blackPoint.toInt()),
             onChange = { v -> onChange(grade.copy(blackPoint = SliderSteps.snapBlackPoint(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.BLACK_POINT, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.BLACK_POINT, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2360,7 +2441,7 @@ private fun LightPanel(
             valueLabel = Format.formatSigned(grade.whitePoint.toInt()),
             onChange = { v -> onChange(grade.copy(whitePoint = SliderSteps.snapWhitePoint(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.WHITE_POINT, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.WHITE_POINT, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2372,7 +2453,7 @@ private fun LightPanel(
             valueLabel = Format.formatSigned(grade.shadows.toInt()),
             onChange = { v -> onChange(grade.copy(shadows = SliderSteps.snapShadows(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.SHADOWS, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SHADOWS, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2384,7 +2465,7 @@ private fun LightPanel(
             valueLabel = Format.formatSigned(grade.midtones.toInt()),
             onChange = { v -> onChange(grade.copy(midtones = SliderSteps.snapMidtones(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.MIDTONES, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.MIDTONES, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2396,7 +2477,7 @@ private fun LightPanel(
             valueLabel = Format.formatSigned(grade.contrast.toInt()),
             onChange = { v -> onChange(grade.copy(contrast = SliderSteps.snapContrast(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.CONTRAST, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.CONTRAST, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2429,6 +2510,9 @@ private fun ColorPanel(
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
     onToggleChange: (GradeK) -> Unit = {},
+    // Double-tap resets ride their own route (feature N7): discrete undo
+    // steps, never coalesced into the slider gestures (see LightPanel).
+    onReset: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -2476,7 +2560,7 @@ private fun ColorPanel(
                 )
             },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPERATURE, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPERATURE, grade))
             },
             onDragActiveChange = onDragActiveChange,
             trackGradient = CompactSliderDefaults.TEMPERATURE_GRADIENT,
@@ -2497,7 +2581,7 @@ private fun ColorPanel(
                 )
             },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TINT, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.TINT, grade))
             },
             onDragActiveChange = onDragActiveChange,
             trackGradient = CompactSliderDefaults.TINT_GRADIENT,
@@ -2529,7 +2613,7 @@ private fun ColorPanel(
             valueLabel = Format.formatSigned(grade.saturation.toInt()),
             onChange = { v -> onChange(grade.copy(saturation = SliderSteps.snapSaturation(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
             },
             onDragActiveChange = onDragActiveChange,
             trackGradient = CompactSliderDefaults.SATURATION_GRADIENT,
@@ -2588,6 +2672,9 @@ private fun DetailPanel(
     onRemoveLut: (LutInfo) -> Unit = {},
     onLutSelect: (GradeK) -> Unit = {},
     onToggleChange: (GradeK) -> Unit = {},
+    // Double-tap resets ride their own route (feature N7): discrete undo
+    // steps, never coalesced into the slider gestures (see LightPanel).
+    onReset: (GradeK) -> Unit = {},
     // ---- Stabilization group (gyro Phase 5) ----
     showStabilization: Boolean = false,
     gyroAttached: Boolean = false,
@@ -2618,7 +2705,7 @@ private fun DetailPanel(
                 onChange(grade.copy(noiseReduction = SliderSteps.snapNoiseReduction(v)))
             },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.NOISE_REDUCTION, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.NOISE_REDUCTION, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2632,7 +2719,7 @@ private fun DetailPanel(
                 onChange(grade.copy(chromaDenoise = SliderSteps.snapChromaDenoise(v)))
             },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.CHROMA_DENOISE, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.CHROMA_DENOISE, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2644,7 +2731,7 @@ private fun DetailPanel(
             valueLabel = Format.formatSigned(grade.sharpness.toInt()),
             onChange = { v -> onChange(grade.copy(sharpness = SliderSteps.snapSharpness(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.SHARPNESS, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SHARPNESS, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2656,7 +2743,7 @@ private fun DetailPanel(
             valueLabel = Format.formatSigned(grade.detail.toInt()),
             onChange = { v -> onChange(grade.copy(detail = SliderSteps.snapDetail(v))) },
             onDoubleTapReset = {
-                onChange(SliderSteps.resetToDefault(SliderSteps.Axis.DETAIL, grade))
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.DETAIL, grade))
             },
             onDragActiveChange = onDragActiveChange,
         )
@@ -2750,7 +2837,7 @@ private fun DetailPanel(
                     onChange(grade.copy(lutStrength = SliderSteps.snapLutStrength(v)))
                 },
                 onDoubleTapReset = {
-                    onChange(SliderSteps.resetToDefault(SliderSteps.Axis.LUT_STRENGTH, grade))
+                    onReset(SliderSteps.resetToDefault(SliderSteps.Axis.LUT_STRENGTH, grade))
                 },
                 onDragActiveChange = onDragActiveChange,
             )
@@ -2794,7 +2881,7 @@ private fun DetailPanel(
                         onChange(grade.copy(temporalStrength = SliderSteps.snapTemporalStrength(v)))
                     },
                     onDoubleTapReset = {
-                        onChange(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPORAL_STRENGTH, grade))
+                        onReset(SliderSteps.resetToDefault(SliderSteps.Axis.TEMPORAL_STRENGTH, grade))
                     },
                     onDragActiveChange = onDragActiveChange,
                 )
@@ -2897,7 +2984,7 @@ private fun DetailPanel(
                         )
                     },
                     onDoubleTapReset = {
-                        onChange(
+                        onReset(
                             SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_STRENGTH, grade)
                         )
                     },
@@ -2919,7 +3006,7 @@ private fun DetailPanel(
                         )
                     },
                     onDoubleTapReset = {
-                        onChange(
+                        onReset(
                             SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_ZOOM_LIMIT, grade)
                         )
                     },
@@ -2976,7 +3063,7 @@ private fun DetailPanel(
                             )
                         },
                         onDoubleTapReset = {
-                            onChange(
+                            onReset(
                                 SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_TRIM_MS, grade)
                             )
                         },
@@ -3021,7 +3108,7 @@ private fun DetailPanel(
                         )
                     },
                     onDoubleTapReset = {
-                        onChange(
+                        onReset(
                             SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_FOCAL_MM, grade)
                         )
                     },

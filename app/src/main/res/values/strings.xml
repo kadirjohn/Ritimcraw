@@ -108,6 +108,8 @@
     <string name="editor_export_dng">Export DNG</string>
     <string name="editor_export_mp4">Export MP4</string>
     <string name="editor_more">More options</string>
+    <string name="editor_undo">Undo</string>
+    <string name="editor_redo">Redo</string>
     <string name="editor_clip_info">Clip info</string>
     <string name="editor_clip_info_name">File</string>
     <string name="editor_clip_info_resolution">Resolution</string>
