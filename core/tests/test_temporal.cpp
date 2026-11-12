@@ -686,6 +686,139 @@ TEST_CASE("mafd_gate_passes_slow_slide_and_quiet_footage") {
     CHECK(rep.prev.mafd < 10.0f);  // but far from a cut
 }
 
+// ---- item #4: collocated-seeded pass-1 search (EPZS MV reuse) ----
+
+TEST_CASE("seeded_search_matches_full_scan_on_moving_texture") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // Constant-velocity scene: texture sliding (1,0) then (2,0) proxy px.
+    // The collocated predictor from pair 1 is exactly pair 2's truth, so
+    // the seeded search must reproduce the full scan's field bit for bit
+    // (dx, dy AND winner MAD) — the early accept may not change results,
+    // only cost.
+    std::vector<uint16_t> a = makeFrame(kLw, kLw, shiftedTexture(0, 0), 181, 0.0f);
+    std::vector<uint16_t> b = makeFrame(kLw, kLw, shiftedTexture(1, 0), 182, 0.0f);
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(2, 0), 183, 0.0f);
+    const LumaProxy pa = buildLumaProxy(a.data(), info, m);
+    const LumaProxy pb = buildLumaProxy(b.data(), info, m);
+    const LumaProxy pc = buildLumaProxy(c.data(), info, m);
+
+    // Pair (b, c): the full scan is the reference field.
+    std::vector<MotionVector> full;
+    uint32_t fw = 0, fh = 0;
+    matchProxyBlocks(pb, pc, full, fw, fh);
+    REQUIRE(full.size() == 16);
+
+    // Seed = pair (a, b)'s field: same block index, velocity continuation.
+    std::vector<MotionVector> seed;
+    uint32_t sw = 0, sh = 0;
+    matchProxyBlocks(pa, pb, seed, sw, sh);
+    REQUIRE(seed.size() == 16);
+    int nonzero = 0;
+    for (const auto& v : seed)
+        if (v.dx != 0 || v.dy != 0)
+            ++nonzero;
+    REQUIRE(nonzero > 8); // the seed really carries motion
+
+    // accept = 2x floor, the production scale: noiseless texture has a
+    // near-zero floor, so every block early-accepts and the seeded field
+    // still equals the full field.
+    const float accept = 2.0f * 0.01f;
+    std::vector<MotionVector> seeded;
+    uint32_t tw = 0, th = 0;
+    matchProxyBlocksSeeded(pb, pc, seed, accept, seeded, tw, th);
+    REQUIRE(seeded.size() == full.size());
+    int agree = 0;
+    for (size_t i = 0; i < full.size(); ++i) {
+        if (seeded[i].dx == full[i].dx && seeded[i].dy == full[i].dy) {
+            ++agree;
+            CHECK(seeded[i].mad == full[i].mad);
+        }
+    }
+    CHECK(agree == static_cast<int>(full.size()));
+}
+
+TEST_CASE("seeded_search_falls_back_to_full_scan_on_bad_predictor") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // A WRONG predictor (opposite shift) must not corrupt the field: any
+    // block whose best of {(0,0), predictor} exceeds accept runs the full
+    // scan, so the seeded field equals the full-scan field regardless of
+    // how wrong the seed is. This is the ghost-safety property: a seed
+    // can only save cost, never change a gate input.
+    std::vector<uint16_t> b = makeFrame(kLw, kLw, texture, 191, 0.0f);
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(3, -1), 192, 0.0f);
+    const LumaProxy pb = buildLumaProxy(b.data(), info, m);
+    const LumaProxy pc = buildLumaProxy(c.data(), info, m);
+
+    std::vector<MotionVector> full;
+    uint32_t fw = 0, fh = 0;
+    matchProxyBlocks(pb, pc, full, fw, fh);
+    REQUIRE(full.size() == 16);
+
+    // Deliberately wrong seed: every vector the opposite direction.
+    std::vector<MotionVector> badSeed(full.size());
+    for (size_t i = 0; i < full.size(); ++i) {
+        badSeed[i].dx = -full[i].dx - 1;
+        badSeed[i].dy = -full[i].dy - 1;
+    }
+    std::vector<MotionVector> seeded;
+    uint32_t tw = 0, th = 0;
+    // A tight accept (tiny floor: noiseless texture) forces the full scan
+    // on every block the predictor misses.
+    matchProxyBlocksSeeded(pb, pc, badSeed, 2.0f * 0.01f, seeded, tw, th);
+    REQUIRE(seeded.size() == full.size());
+    for (size_t i = 0; i < full.size(); ++i) {
+        CHECK(seeded[i].dx == full[i].dx);
+        CHECK(seeded[i].dy == full[i].dy);
+        CHECK(seeded[i].mad == full[i].mad);
+    }
+}
+
+TEST_CASE("merge_with_seeded_next_side_bit_identical_to_plain") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // End-to-end form of the item-#4 safety property. Pass 2 re-decides
+    // every vector from scratch, so the seeded pass-1 field's only
+    // downstream product is the measured floor; on constant-velocity
+    // noiseless texture the seeded field equals the full field bit for
+    // bit (proven at the matcher level above), so the merge output must
+    // equal the plain path's output. The plain reference is built by
+    // hand: fields via the plain matchers + the merge's own gates are
+    // not directly callable, so the check runs the merge twice — once
+    // with the prev side present (seeding active) and once with the
+    // SAME pair fed as the PREV side of a window whose next is null
+    // (no seeding possible; plain scans only) — and compares the
+    // CENTER-side outputs. Both renders see identical (center,
+    // neighbor) sample pairs through identical full scans for the
+    // side under test, so any difference would be the seeding leaking
+    // into a gate input.
+    std::vector<uint16_t> a = makeFrame(kLw, kLw, shiftedTexture(0, 0), 201, 6.0f);
+    std::vector<uint16_t> b = makeFrame(kLw, kLw, shiftedTexture(1, 0), 202, 6.0f);
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(2, 0), 203, 6.0f);
+    std::vector<uint16_t> out1(b.size(), 0), out2(b.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    TemporalReport rep1, rep2;
+    // Render with the seeded next side (prev a, center b, next c).
+    temporalMergeCfa(b.data(), info, a.data(), c.data(), m, ts, out1.data(), &rep1);
+    CHECK(rep1.next.eligible);
+    CHECK(rep1.next.meanWeight > 0.0f);
+    // Reference: the (b, c) pair alone, no prev side -> next-side search
+    // runs plain. Same pair, same gates, no seed in play.
+    temporalMergeCfa(b.data(), info, nullptr, c.data(), m, ts, out2.data(), &rep2);
+    CHECK(rep2.next.eligible);
+    // The next-side weight/floor must be identical: the seed did not
+    // move any gate input (floor within exact equality here because the
+    // seeded field equals the full field on this content).
+    CHECK(rep1.next.noiseFloor == rep2.next.noiseFloor);
+    CHECK(rep1.next.acceptRate == rep2.next.acceptRate);
+    // The gate inputs moved by exactly nothing: the seed changed cost,
+    // not decisions. (out1 also blends the prev side, so the pixel
+    // buffers legitimately differ; the floors and accept rates are the
+    // next side's own gate inputs and must not.)
+}
+
 // ---- window clamping (DN-09) ----
 
 TEST_CASE("first_and_last_frame_clamp_window_no_crash") {

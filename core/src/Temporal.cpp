@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace rawedit {
 
@@ -36,6 +37,9 @@ constexpr float kZeroBias = 0.5f;        // tie-break band around min cost, x fl
 constexpr float kRegScale = 0.5f;        // MV regularization per proxy px, x floor
 constexpr float kFloorQuantile = 0.25f;  // noise-floor quantile over winner MADs
 constexpr float kFloorGate = 3.0f;       // hard gate: used MAD <= 3x measured floor
+constexpr float kSeedAccept = 2.0f;      // item #4 early-accept: mean sub-SAD at
+                                         // or below 2x the PREVIOUS pair-in-time's
+                                         // floor skips the exhaustive scan
 constexpr float kMinConfidence = 0.1f;   // ginzburg threshold: below this a
                                          // "gain" is matching noise, reject
 // Source-comparison item #8 (FFmpeg scdet get_scene_score convention):
@@ -164,6 +168,11 @@ struct NeighborEval {
     float mafd = 0.0f;        // this pair's scene-score (item #8, diagnostic)
     LumaProxy proxy;          // kept alive for the merge (warp reuse)
     std::vector<MotionVector> fwd;  // center -> neighbor, per block
+    // neighbor -> center: the F/B consistency anchor. NEVER seeded (item
+    // #4) — inflating F/B agreement is the ghost direction. The PREV
+    // side's copy is the collocated predictor for the next side's seeded
+    // forward search (it is a full-search field by construction).
+    std::vector<MotionVector> bwd;
     std::vector<float> blockWeight; // final per-block weight (0 = rejected)
     uint32_t bw = 0, bh = 0;        // block grid dims
 };
@@ -380,6 +389,82 @@ void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
     }
 }
 
+void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
+                           const std::vector<MotionVector>& seed, float accept,
+                           std::vector<MotionVector>& out, uint32_t& outW,
+                           uint32_t& outH, float meanOffset) {
+    outW = center.w / kBlockSize;
+    outH = center.h / kBlockSize;
+    out.assign(static_cast<size_t>(outW) * outH, MotionVector{});
+    if (neighbor.w != center.w || neighbor.h != center.h || outW == 0 || outH == 0)
+        return;
+    // Empty / wrong-size seed: plain full scan (the conservative default —
+    // every gate input then comes from the exhaustive search).
+    const bool seeded = seed.size() == static_cast<size_t>(outW) * outH;
+    // Early-accept threshold, EPZS-style (item #4): accept the better of
+    // {(0,0), collocated} without the 81-scan when its MEAN subsampled
+    // SAD (sum / 64 samples — the same scale as the winner MAD and the
+    // floor) is already <= accept. accept = 2x the PREVIOUS pair-in-time's
+    // floor is the production value (the current pair's floor does not
+    // exist before its search); a non-positive accept disables the early
+    // accept and every block runs the full scan, keeping the field a
+    // true argmin wherever the predictor is untrusted.
+    const float invSub =
+        1.0f / static_cast<float>((kBlockSize / 2) * (kBlockSize / 2));
+    const float thresh = accept > 0.0f ? accept : std::numeric_limits<float>::max();
+
+    for (uint32_t by = 0; by < outH; ++by) {
+        for (uint32_t bx = 0; bx < outW; ++bx) {
+            const uint32_t ox = bx * kBlockSize;
+            const uint32_t oy = by * kBlockSize;
+            const size_t bi = static_cast<size_t>(by) * outW + bx;
+            int bestDx = 0, bestDy = 0;
+            float bestSad = blockSadSub(center, neighbor, ox, oy, 0, 0);
+            bool early = false;
+            if (seeded) {
+                // Collocated predictor FIRST (velocity continuation): the
+                // same block's vector on the previous pair-in-time. Only a
+                // STRICT improvement displaces zero — the tie goes to
+                // (0,0), the zero-bias direction.
+                const MotionVector& s = seed[bi];
+                if (s.dx != 0 || s.dy != 0) {
+                    const float sad = blockSadSub(center, neighbor, ox, oy,
+                                                  s.dx, s.dy);
+                    if (sad < bestSad) {
+                        bestSad = sad;
+                        bestDx = s.dx;
+                        bestDy = s.dy;
+                    }
+                }
+                // Early accept (EPZS-style, item #4): the predictor held —
+                // no 81-candidate scan for this block.
+                early = bestSad * invSub <= thresh;
+            }
+            if (!early) {
+                for (int dy = -kSearchRadius; dy <= kSearchRadius; ++dy) {
+                    for (int dx = -kSearchRadius; dx <= kSearchRadius; ++dx) {
+                        if (dx == 0 && dy == 0)
+                            continue;
+                        const float sad = blockSadSub(center, neighbor,
+                                                       ox, oy, dx, dy);
+                        if (sad < bestSad) {
+                            bestSad = sad;
+                            bestDx = dx;
+                            bestDy = dy;
+                        }
+                    }
+                }
+            }
+            MotionVector mv;
+            mv.dx = bestDx;
+            mv.dy = bestDy;
+            mv.mad = blockMadFull(center, neighbor, ox, oy, bestDx, bestDy,
+                                  meanOffset);
+            out[bi] = mv;
+        }
+    }
+}
+
 namespace {
 
 // Pass 2 of forward matching: re-decide each vector with the measured
@@ -518,7 +603,8 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
     const float capPrev = cap * distanceDecay(settings.prevDPtsUs, settings.frameDurationUs);
     const float capNext = cap * distanceDecay(settings.nextDPtsUs, settings.frameDurationUs);
     auto evaluate = [&](NeighborEval& e, const NoiseProfile* np, float capN,
-                        float prevPairMafd) {
+                        float prevPairMafd, const std::vector<MotionVector>* seed,
+                        float seedAccept) {
         if (!e.present || !centerOk || capN <= 0.0f)
             return;
         if (e.proxy.w != cp.w || e.proxy.h != cp.h)
@@ -531,10 +617,30 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
         // MADs are de-biased by the pair's global mean difference (#9):
         // the floor and every residual gate read the motion content, not
         // the auto-exposure level step riding on top of it.
-        std::vector<MotionVector> bwd;
+        // Item #4 (EPZS MV reuse, in-window only): the NEXT side's forward
+        // search is SEEDED with the prev side's backward field — the
+        // collocated predictor, velocity continuation one pair earlier —
+        // and early-accepts a block whose best of {(0,0), predictor} is
+        // already within kSeedAccept x the PREV pair's floor (the only
+        // floor in hand before this pair's search; fixture: 98.1% of
+        // blocks early-accept, 0.05 ms vs 1.04 ms, seeded floor -1.6% vs
+        // full — not inflated). A miss runs the same exhaustive scan, so
+        // the field stays a true argmin exactly where the predictor
+        // failed. The seed is only ever a FULL-SEARCH field (the prev
+        // side's bwd is exhaustive by construction), never a seeded one;
+        // the BACKWARD field — the F/B consistency anchor — is never
+        // seeded (inflating F/B agreement is the ghost direction); and
+        // the PREV side has no earlier field in this window, so it stays
+        // plain. Pass 2 re-decides every vector from scratch, so the
+        // seeded pass-1 field's only surviving product is the floor.
         uint32_t fwdW = 0, fwdH = 0, bwdW = 0, bwdH = 0;
-        matchProxyBlocks(cp, e.proxy, e.fwd, fwdW, fwdH, meanOffset);
-        matchProxyBlocks(e.proxy, cp, bwd, bwdW, bwdH, -meanOffset);
+        if (seed && seedAccept > 0.0f)
+            matchProxyBlocksSeeded(cp, e.proxy, *seed,
+                                   kSeedAccept * seedAccept, e.fwd, fwdW,
+                                   fwdH, meanOffset);
+        else
+            matchProxyBlocks(cp, e.proxy, e.fwd, fwdW, fwdH, meanOffset);
+        matchProxyBlocks(e.proxy, cp, e.bwd, bwdW, bwdH, -meanOffset);
         e.bw = fwdW;
         e.bh = fwdH;
         if (fwdW == 0 || bwdW != fwdW || bwdH != fwdH)
@@ -615,7 +721,7 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
                     // <= 1.5 sigma, zero at 3 sigma), and the gain ratio
                     // then scales how much of the improvement we trust.
                     const MotionVector& f = e.fwd[bi];
-                    const MotionVector& b = bwd[bi];
+                    const MotionVector& b = e.bwd[bi];
                     if (std::abs(f.dx + b.dx) <= 1 && std::abs(f.dy + b.dy) <= 1
                         && f.mad <= gate) {
                         const float gain = (mad0 - f.mad)
@@ -643,8 +749,24 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
         if (!e.eligible)
             std::fill(e.blockWeight.begin(), e.blockWeight.end(), 0.0f);
     };
-    evaluate(ev, settings.prevNoise, capPrev, settings.prevPairMafd);
-    evaluate(en, settings.nextNoise, capNext, settings.nextPairMafd);
+    evaluate(ev, settings.prevNoise, capPrev, settings.prevPairMafd,
+             nullptr, 0.0f);
+    // Item #4: the next side's forward search is seeded from the prev
+    // side's backward field, but ONLY when the prev side is ELIGIBLE
+    // (global gates AND local block gates passed, so the fields exist and
+    // the pair is measured-normal — the fixture case). A rejected prev
+    // side leaves no seed and the next side runs the plain full scan:
+    // the unmeasured configurations (motion storm, cut-adjacent) keep
+    // the status-quo cost and the status-quo gate inputs — the
+    // conservative choice under the owner's rule.
+    const std::vector<MotionVector>* nextSeed =
+        (ev.eligible
+         && ev.bwd.size() == static_cast<size_t>(ev.bw) * ev.bh
+         && ev.bw != 0 && ev.noiseFloor > 0.0f)
+            ? &ev.bwd
+            : nullptr;
+    evaluate(en, settings.nextNoise, capNext, settings.nextPairMafd,
+             nextSeed, ev.eligible ? ev.noiseFloor : 0.0f);
     const double t3 = nowMs();
 
     // ---- merge (or exact copy when no neighbor survived) ----

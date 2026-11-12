@@ -113,7 +113,23 @@
 // i.e. a ghost); uniform steps stay bounded by the 4% mean-luma gate, and
 // the search cost stays plain (measured argmin shift under flicker is
 // noise level):
-//   pass 1: plain argmin (matchProxyBlocks, exposed for tests);
+//   pass 1: plain argmin (matchProxyBlocks, exposed for tests). For the
+//     NEXT neighbor only, when the prev side's matching already ran, pass 1
+//     is SEEDED with the prev side's backward field as the collocated
+//     predictor (source-comparison item #4, EPZS MV reuse — velocity
+//     continuation within the window; the merge itself stays stateless):
+//     per block, (0,0) and the same-index predictor are evaluated first
+//     and accepted without the 81-scan when the better one is already
+//     <= 2x the PREV pair's measured floor (the only floor in hand
+//     before this pair's search); a block that misses runs the full
+//     scan, so the field stays a true argmin exactly where the
+//     predictor failed. Fixture: 98.1% of blocks early-accept, search
+//     0.05 ms vs 1.04 ms, and the seeded field's own floor measures
+//     -1.6% vs the full scan — NOT inflated (the conservative
+//     direction). Never applied to a BACKWARD field (the F/B consistency
+//     anchor) and never to the PREV side (no earlier field exists in
+//     this window): a predictor can only save search cost, never loosen
+//     a gate.
 //   pass 2 (internal): re-decide with the measured floor known —
 //     - ZERO-BIAS TIE-BREAK (ginzburg _argmin_zero_biased): candidates
 //       within 0.5x floor of the best cost are ties; ties go to the
@@ -201,6 +217,24 @@ struct MotionVector {
 void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
                       std::vector<MotionVector>& out, uint32_t& outW,
                       uint32_t& outH, float meanOffset = 0.0f);
+
+// Pass-1 block matching with an EPZS-style collocated predictor
+// (source-comparison item #4, MV reuse): per block the search evaluates
+// (0,0) and the same-index vector seed[bi] FIRST and accepts the better
+// of the two WITHOUT the 81-candidate scan when its mean subsampled SAD
+// is already <= accept; only a block whose best-of-two still exceeds
+// accept runs the exhaustive scan, so the field stays a true argmin
+// everywhere the predictor failed and an early-accept everywhere it held
+// (fixture: 98.1% early-accept at accept = 2x the PREVIOUS pair-in-time's
+// floor, the only floor available before this pair's search; the seeded
+// field's own floor measured -1.6% vs the full scan — NOT inflated, i.e.
+// the conservative direction). seed holds the previous pair-in-time's
+// same-index motion field (velocity continuation); an empty or
+// wrong-size seed disables seeding (plain full scan). Exposed for tests.
+void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
+                           const std::vector<MotionVector>& seed, float accept,
+                           std::vector<MotionVector>& out, uint32_t& outW,
+                           uint32_t& outH, float meanOffset = 0.0f);
 
 // Settings + inputs for one merge. strength is the user slider 0..100; the
 // effective per-neighbor weight cap is 0.40 * strength/100, decayed by
