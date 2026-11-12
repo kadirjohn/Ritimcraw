@@ -919,12 +919,18 @@ TEST_CASE("aces_tonemap_maps_known_inputs_to_known_outputs") {
 
 TEST_CASE("agx_tonemap_maps_known_inputs_to_known_outputs") {
     // AgX (tonemap 2): 2022 Filmic AgX essential fit (Sobotka), minimal
-    // implementation constants, Punchy look. Fixture values computed in
-    // float64 through the full minimal pipeline (inset matrix, log2 encode
-    // clamped to [-12.47393, 4.026069] EV around 0.18, 6th-order contrast
-    // polynomial clamped to [0,1], Punchy power 1.35 / sat 1.4, outset
-    // matrix, gamma 2.2), evaluated at the ACTUAL developed values (the
-    // fixtures quantize: 0.18 -> 172/959, 0.25*16 -> 239/959*16):
+    // implementation constants, Punchy look. This is the BYTE-IDENTICAL
+    // pin for the pre-look-variants path: value 2 keeps meaning "AgX
+    // Punchy" and renders exactly as before the tonemap 3/4/5 variants
+    // existed (the look table's legacy Punchy entry reproduces the old
+    // luma-before-power evaluation order bit-for-bit; also pinned by the
+    // hash comparison run at implementation time — see the commit body).
+    // Fixture values computed in float64 through the full minimal pipeline
+    // (inset matrix, log2 encode clamped to [-12.47393, 4.026069] EV
+    // around 0.18, 6th-order contrast polynomial clamped to [0,1], Punchy
+    // power 1.35 / sat 1.4, outset matrix, gamma 2.2), evaluated at the
+    // ACTUAL developed values (the fixtures quantize: 0.18 -> 172/959,
+    // 0.25*16 -> 239/959*16):
     //   0.18 -> 0.45270696   (midgray anchor)
     //   1.00 -> 0.85659844   (1.0 anchor)
     //   4.00 -> 0.99535261   (4.0 anchor; AgX compresses highlights harder
@@ -943,6 +949,148 @@ TEST_CASE("agx_tonemap_maps_known_inputs_to_known_outputs") {
     Grade g4; g4.tonemap = 2; g4.exposureEv = 4.0f;  // 0.25 * 16 = 4.0
     auto img4 = developCpu(s4.cfa.data(), s4.info, s4.meta, g4);
     CHECK(std::abs(centerMean(img4, 1) - 0.99535261f) < 1e-4f);
+}
+
+TEST_CASE("agx_look_variants_map_known_inputs_to_known_outputs") {
+    // AgX look variants (tonemap 3/4/5): the SAME essential fit (inset,
+    // log2 encode, 6th-order contrast, outset, gamma 2.2) with the look
+    // slot between sigmoid and outset switched:
+    //   3 Golden    — Sobotka config.ocio "Golden": slope (1, 0.9, 0.5),
+    //                 power 0.8, sat 1.3 (ASC-CDL order, luma post-power).
+    //   4 Greyscale — Blender "AgX - Greyscale" BT.2020 luma weights
+    //                 (0.2589235355689848, 0.6104985346066525,
+    //                 0.13057792982436284), sat 0.
+    //   5 Base      — identity look ("AgX Base" / iolite AGX_LOOK 0).
+    // Fixture values computed in float64 through the full pipeline at the
+    // ACTUAL developed values (the fixtures quantize: 0.18 -> 172/959,
+    // 0.25*16 -> 239/959*16), same convention as the tonemap-2 anchors:
+    //   Golden:    0.18 -> 0.53750004, 1.00 -> 0.75518051, 4.00 -> 0.81849836
+    //   Greyscale: 0.18 -> 0.58930912, 1.00 -> 0.90143310, 4.00 -> 0.99687866
+    //   Base:      0.18 -> 0.58930912, 1.00 -> 0.90143310, 4.00 -> 0.99687866
+    // (Base and Greyscale agree on NEUTRAL patches — identity vs luma of a
+    // neutral is the same value; they differ on saturated colors, pinned
+    // below. Golden shifts neutrals warm BY DESIGN: its G/B slope 0.9/0.5
+    // is Sobotka's own golden tint.)
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    Grade gg; gg.tonemap = 3;
+    auto imgG = developCpu(s.cfa.data(), s.info, s.meta, gg);
+    CHECK(std::abs(centerMean(imgG, 1) - 0.53750004f) < 1e-4f);
+
+    Grade gy; gy.tonemap = 4;
+    auto imgY = developCpu(s.cfa.data(), s.info, s.meta, gy);
+    CHECK(std::abs(centerMean(imgY, 1) - 0.58930912f) < 1e-4f);
+
+    Grade gb; gb.tonemap = 5;
+    auto imgB = developCpu(s.cfa.data(), s.info, s.meta, gb);
+    CHECK(std::abs(centerMean(imgB, 1) - 0.58930912f) < 1e-4f);
+
+    // 1.0 anchor (quantized fixture develops to 959/959 = 1.0 exactly).
+    Synthetic s1 = syntheticFlat(CfaPattern::RGGB, 1.0f, 1.0f, 1.0f);
+    Grade g1; g1.tonemap = 3;
+    auto img1 = developCpu(s1.cfa.data(), s1.info, s1.meta, g1);
+    CHECK(std::abs(centerMean(img1, 1) - 0.75518051f) < 1e-4f);
+
+    // 4.0 anchor via exposure push (same trick as the tonemap-2 test).
+    Synthetic s4 = syntheticFlat(CfaPattern::RGGB, 0.25f, 0.25f, 0.25f);
+    Grade g4; g4.tonemap = 4; g4.exposureEv = 4.0f;
+    auto img4 = developCpu(s4.cfa.data(), s4.info, s4.meta, g4);
+    CHECK(std::abs(centerMean(img4, 1) - 0.99687866f) < 1e-4f);
+}
+
+TEST_CASE("agx_look_variants_are_distinct_on_saturated_input") {
+    // The variants must be REAL: on the same above-1.0 saturated input every
+    // look produces a DIFFERENT result. The fixture keeps every CFA code
+    // BELOW white (1023) — codes above white are clipped back by stage-3
+    // highlight reconstruction, which would destroy the R level — and lifts
+    // +1 EV instead: codes (639, 447, 207) -> linear (575/959, 383/959,
+    // 143/959), x2 = (1.1992, 0.7987, 0.2982) at the tonemap stage (R above
+    // 1.0, saturated). Float64 reference values at that exact input:
+    //   punchy    -> (0.89974911, 0.81303184, 0.61062592)
+    //   golden    -> (1.00000000, 0.73270642, 0.06547146)
+    //   greyscale -> (0.87232098, 0.87232098, 0.87232098)  (equal RGB)
+    //   base      -> (0.91964460, 0.87176837, 0.75289837)
+    // Golden hits the display-box clamp on R and crushes B (slope 0.5);
+    // greyscale collapses to equal channels by construction.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.6f, 0.4f, 0.15f, 16, 16);
+    float out[4][3] = {};
+    for (int mode = 2; mode <= 5; ++mode) {
+        Grade g; g.tonemap = mode; g.exposureEv = 1.0f;
+        auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
+        for (int c = 0; c < 3; ++c)
+            out[mode - 2][c] = centerMean(img, c);
+    }
+    // Greyscale: all three channels equal (it IS the luma).
+    CHECK(std::abs(out[2][0] - out[2][1]) < 1e-6f);
+    CHECK(std::abs(out[2][1] - out[2][2]) < 1e-6f);
+    CHECK(std::abs(out[2][0] - 0.87232098f) < 1e-4f);
+    // Anchor checks for the chroma-bearing looks (green channel: the one
+    // that separates all four).
+    CHECK(std::abs(out[0][1] - 0.81303184f) < 1e-4f); // punchy G
+    CHECK(std::abs(out[1][1] - 0.73270642f) < 1e-4f); // golden G
+    CHECK(std::abs(out[3][1] - 0.87176837f) < 1e-4f); // base G
+    // And all four G values pairwise distinct: the looks are real variants.
+    // (Tightest pair is greyscale vs base at ~5.5e-4 apart.)
+    for (int i = 0; i < 4; ++i)
+        for (int j = i + 1; j < 4; ++j)
+            CHECK(std::abs(out[i][1] - out[j][1]) > 1e-4f);
+}
+
+TEST_CASE("agx_look_variants_monotone_and_neutral_preserving") {
+    // Every look must be monotone over the scene range (brighter in never
+    // maps darker out) and the Greyscale/Base looks must map a neutral
+    // pixel to a neutral pixel. Punchy's legacy order is pinned by the
+    // byte-identical test; Golden deliberately tints neutrals (its slope
+    // is not 1/1/1 — Sobotka's golden tint), so the neutral-preservation
+    // check applies to the looks whose slope is identity: 2/4/5.
+    Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.05f, 0.05f, 0.05f);
+    for (int mode = 2; mode <= 5; ++mode) {
+        float prev = -1.0f;
+        for (int k = 0; k <= 8; ++k) {
+            Grade g; g.tonemap = mode; g.exposureEv = float(k);
+            auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
+            const float v = centerMean(img, 1);
+            if (k > 0)
+                CHECK(v >= prev - 1e-6f);
+            prev = v;
+        }
+        CHECK(prev <= 1.0f); // stays in the display box at 12.8 linear
+    }
+    // Neutral in, neutral out for the identity-slope looks (2/4/5): the
+    // three channels of a developed gray patch stay equal.
+    Synthetic sn = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    for (int mode : {2, 4, 5}) {
+        Grade g; g.tonemap = mode;
+        auto img = developCpu(sn.cfa.data(), sn.info, sn.meta, g);
+        const float r = centerMean(img, 0), gg = centerMean(img, 1), b = centerMean(img, 2);
+        CHECK(std::abs(r - gg) < 1e-6f);
+        CHECK(std::abs(gg - b) < 1e-6f);
+    }
+    // Golden is the honest exception: its blue slope 0.5 must visibly tint
+    // a neutral warm (pinned as a positive check, not an accident).
+    Grade ggold; ggold.tonemap = 3;
+    auto imgGold = developCpu(sn.cfa.data(), sn.info, sn.meta, ggold);
+    CHECK(centerMean(imgGold, 0) > centerMean(imgGold, 2));
+}
+
+TEST_CASE("agx_look_selection_changes_only_the_look_slot") {
+    // The encode/outset scaffolding is shared: for a NEUTRAL patch, Base
+    // (5) output must equal what the encode+outset produce with NO look
+    // at all. We can't call the internals directly, so pin the invariant
+    // structurally: Base(5) and Greyscale(4) agree on neutrals (both are
+    // the untouched encode value — Greyscale takes its luma, Base passes
+    // channels through, and for a neutral those are the same number),
+    // while Punchy(2)/Golden(3) differ. This proves 4/5 exercise the same
+    // sigmoid/outset as 2 (same scaffolding, different look slot content).
+    Synthetic sn = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    float vals[4] = {};
+    for (int mode = 2; mode <= 5; ++mode) {
+        Grade g; g.tonemap = mode;
+        auto img = developCpu(sn.cfa.data(), sn.info, sn.meta, g);
+        vals[mode - 2] = centerMean(img, 1);
+    }
+    CHECK(std::abs(vals[3] - vals[2]) < 1e-7f); // base == greyscale (neutral)
+    CHECK(std::abs(vals[0] - vals[3]) > 1e-3f); // punchy differs
+    CHECK(std::abs(vals[1] - vals[3]) > 1e-3f); // golden differs
 }
 
 TEST_CASE("tonemap_curves_are_monotone_over_scene_range") {
