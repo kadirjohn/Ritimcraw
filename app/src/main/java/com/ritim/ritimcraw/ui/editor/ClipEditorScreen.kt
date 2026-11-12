@@ -545,6 +545,20 @@ fun ClipEditorScreen(
         LaunchedEffect(fullscreen) {
             if (fullscreen) fullscreenChromeVisible = true
         }
+        // Landscape panel hide/reopen (owner request 2026-11-11d section
+        // 17.3: "an obvious affordance for hiding the adjustment area" +
+        // "collapsing the adjustment area may expand the preview
+        // horizontally"): in the two-column workspace the right column
+        // carries a hide button; hidden, the preview column widens to the
+        // FULL width (OrientationLayout.previewWidthFraction) and a reopen
+        // chip appears on the preview's right edge — the affordance stays
+        // discoverable and easy to restore (the same scrimmed IconButton
+        // group as the fullscreen/histogram corner controls). Saveable so a
+        // rotation keeps the panel where the user left it (section 18: no
+        // reset on orientation switch); the PORTRAIT sheet has its own
+        // collapse affordance (the drag handle) and never reads this
+        // state — the two layouts' panel states are independent.
+        var panelVisible by rememberSaveable { mutableStateOf(true) }
         // The system back chain (owner finding 2026-11-11: back exited the
         // app from the normal editor): the editor's BackHandler is ALWAYS
         // active while the editor is open — enabled-only-in-fullscreen let
@@ -1331,6 +1345,31 @@ fun ClipEditorScreen(
                     )
                     }
                 }
+                // Panel reopen affordance (owner request 2026-11-11d section
+                // 17.3: the hide must stay "discoverable and easy to
+                // restore"): in the landscape two-column workspace with the
+                // right column hidden, a scrimmed chip on the preview's right
+                // edge brings the adjustment panel back. Same scrimmed
+                // IconButton group as the corner controls — one control
+                // language; CenterEnd so it sits where the panel's edge was.
+                if (landscapeTwoColumn && !panelVisible) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(8.dp),
+                    ) {
+                        IconButton(
+                            onClick = { panelVisible = true },
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_panel_show),
+                                contentDescription = stringResource(R.string.editor_panel_show),
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -1722,14 +1761,15 @@ fun ClipEditorScreen(
                 ) {
                     // LEFT column: preview over transport. The width is
                     // OrientationLayout's responsive preview share — the
-                    // complement of the panel band (60-70%). panelVisible
-                    // stays true until section 17.3's hide/reopen
-                    // affordance lands with its own saveable state.
+                    // complement of the panel band (60-70%), or the FULL
+                    // width while the panel is hidden (section 17.3: the
+                    // preview expands horizontally, never vertically, in
+                    // the landscape workspace).
                     Column(
                         Modifier
                             .weight(
                                 OrientationLayout.previewWidthFraction(
-                                    panelVisible = true,
+                                    panelVisible = panelVisible,
                                     widthDp = configuration.screenWidthDp,
                                     heightDp = configuration.screenHeightDp,
                                 ),
@@ -1744,21 +1784,34 @@ fun ClipEditorScreen(
                     // sheet composable in landscape mode: no drag handle
                     // (section 17.3 does not force the portrait's vertical
                     // panel dragging here), the same per-category scroll
-                    // states, the same panel content.
-                    EditorPanelSheet(
-                        dragState = panelDrag,
-                        category = tab,
-                        scrollStates = categoryScrollStates,
-                        modifier = Modifier
-                            .weight(
-                                OrientationLayout.panelWidthFraction(
-                                    configuration.screenWidthDp,
-                                ),
-                            )
-                            .fillMaxHeight(),
-                        landscape = true,
-                    ) {
-                        panelRegion()
+                    // states, the same panel content. The header row
+                    // carries section 17.3's hide affordance.
+                    if (panelVisible) {
+                        EditorPanelSheet(
+                            dragState = panelDrag,
+                            category = tab,
+                            scrollStates = categoryScrollStates,
+                            modifier = Modifier
+                                .weight(
+                                    OrientationLayout.panelWidthFraction(
+                                        configuration.screenWidthDp,
+                                    ),
+                                )
+                                .fillMaxHeight(),
+                            landscape = true,
+                            header = {
+                                IconButton(
+                                    onClick = { panelVisible = false },
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_panel_hide),
+                                        contentDescription = stringResource(R.string.editor_panel_hide),
+                                    )
+                                }
+                            },
+                        ) {
+                            panelRegion()
+                        }
                     }
                 }
             } else {

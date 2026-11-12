@@ -206,6 +206,11 @@ fun EditorPanelHandle(
  * OrientationLayout's responsive 30-40% band; the sheet itself stays
  * layout-agnostic (it just fills the height it is given and scrolls
  * inside, section 17.2: "independently scrollable").
+ *
+ * [header] composes at the top of the landscape column only (the portrait
+ * sheet's affordance is its drag handle): the screen supplies the section
+ * 17.3 hide button there — the visibility state is the screen's, the
+ * sheet just provides the slot.
  */
 @Composable
 fun EditorPanelSheet(
@@ -214,6 +219,7 @@ fun EditorPanelSheet(
     scrollStates: Map<Int, ScrollState>,
     modifier: Modifier = Modifier,
     landscape: Boolean = false,
+    header: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     Surface(
@@ -229,6 +235,13 @@ fun EditorPanelSheet(
         ) {
             if (!landscape) {
                 EditorPanelHandle(dragState)
+            }
+            // Landscape header (owner request 2026-11-11d section 17.3): the
+            // full-height column has no drag handle, so the hide affordance
+            // lives in this header row instead — the screen supplies it
+            // (the state is the screen's, not the sheet's).
+            if (landscape && header != null) {
+                header()
             }
             // weight(1f): the scroll region takes whatever the sheet's
             // height constraint leaves below the handle, so the content

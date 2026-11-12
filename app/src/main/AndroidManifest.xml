@@ -15,7 +15,24 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.Ritimcraw">
+            android:theme="@style/Theme.Ritimcraw"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+            <!-- Orientation state preservation (owner request 2026-11-11d
+                 sections 17.3 + 18: "Do not reset editing state or playback
+                 when switching orientation"): MainActivity opts into handling
+                 the orientation change itself, so the system does NOT
+                 recreate the activity on rotation. Compose's
+                 LocalConfiguration still updates in place through
+                 AndroidComposeView.onConfigurationChanged (the editor reads
+                 screenWidthDp/screenHeightDp from it every recomposition —
+                 OrientationLayout re-splits the workspace responsively), and
+                 every remember(sourceId) block — the render session,
+                 decoder, playback position, grade, panel and scroll state —
+                 simply keeps living: no recreation, no reprocessing, no
+                 re-decode. The rememberSaveable states (tab, panelState,
+                 per-category scrolls, fullscreen, histogram) remain the
+                 safety net for process death and the rare recreation
+                 (system-initiated relaunch, don't-keep-activities). -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
