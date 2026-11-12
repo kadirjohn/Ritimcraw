@@ -27,8 +27,11 @@ internal object ProjectJson {
      * timeline editing model, TimelineStore — Stage C) is appended
      * additively at the end: the four original stores keep their order
      * and their rendered files, and the timeline section renders last.
+     * "audio" (the audio track model, AudioStore — Stage C AUD-02/03)
+     * follows the same additive precedent, appended after "timeline".
      */
-    private val SECTION_ORDER = listOf("grades", "sources", "exports", "luts", "timeline")
+    private val SECTION_ORDER =
+        listOf("grades", "sources", "exports", "luts", "timeline", "audio")
 
     /**
      * Renders the whole project.json with [section] set to [renderedSection],
