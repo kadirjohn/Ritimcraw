@@ -156,6 +156,22 @@ object EditorPreviewLogic {
         else EditorBackDestination.LEAVE_EDITOR
 
     /**
+     * Fullscreen chrome tap-toggle (owner request 2026-11-11d §16.2: "A
+     * preview tap may toggle control visibility if this can be
+     * implemented safely without interfering with current gestures"): a
+     * CLEAN quick tap on the preview — lift inside the long-press
+     * window, no slop movement, nothing consumed, so it can never fire
+     * during the before/after hold (which needs the window to ELAPSE)
+     * or a zoom/pan (which moves or consumes) — toggles the fullscreen
+     * overlay chrome (transport row, corner chips, histogram overlay).
+     * ONLY in fullscreen: outside it a preview tap does nothing — the
+     * panel and navigation are structural layout, not overlay chrome,
+     * and §16.1's hide affordance is the fullscreen toggle itself. Pure
+     * so a JVM test locks the gating.
+     */
+    fun togglesFullscreenChrome(inFullscreen: Boolean): Boolean = inFullscreen
+
+    /**
      * True when the Temporal NR group (toggle + strength slider) belongs in
      * the Detail tab. Temporal denoise merges neighboring CFA frames
      * (DN-05..DN-09), so it needs the MCRAW clip kind; the encoded (Mi-Log
@@ -510,6 +526,22 @@ fun ClipEditorScreen(
         // the system back chain pops fullscreen FIRST, then the editor —
         // never a double-back to leave the clip.
         var fullscreen by rememberSaveable { mutableStateOf(false) }
+        // Fullscreen overlay chrome (§16.2): the transport row, the corner
+        // chips (refresh, histogram toggle) and the histogram overlay hide
+        // behind a clean quick tap on the preview — §16.2's optional "A
+        // preview tap may toggle control visibility", classified inside the
+        // SAME gesture window as the before/after hold (a clean tap lifts
+        // BEFORE the long-press window elapses; the hold needs it to elapse
+        // — the two can never both fire on one gesture). Saveable so a
+        // rotation keeps the chrome where it was; re-entering fullscreen
+        // always shows the chrome again (a fresh entry never inherits a
+        // hidden state). The exit toggle itself stays visible while hidden
+        // chrome is on (the scrimmed TopEnd button is §16.2's retained
+        // Exit-fullscreen control; hiding it would strand the user).
+        var fullscreenChromeVisible by rememberSaveable { mutableStateOf(true) }
+        LaunchedEffect(fullscreen) {
+            if (fullscreen) fullscreenChromeVisible = true
+        }
         // The system back chain (owner finding 2026-11-11: back exited the
         // app from the normal editor): the editor's BackHandler is ALWAYS
         // active while the editor is open — enabled-only-in-fullscreen let
@@ -1067,9 +1099,17 @@ fun ClipEditorScreen(
         // editor's own Column painted NO background, so AppNav's Scaffold
         // surface (dynamic wallpaper color) showed through. The editor now
         // paints its own fixed-neutral surface INSIDE RitimTheme(editor =
-        // true); inset ownership stays in AppNav.
+        // true); inset ownership stays in AppNav. Fullscreen darkens the
+        // root to surfaceDim (§16.2 "Use a neutral near-black background"):
+        // the same 0e0e0e the preview surface itself paints, so the
+        // letterbox around a centered frame reads as one seamless near-
+        // black stage (roles, never hex — DESIGN.md).
         Surface(
-            color = MaterialTheme.colorScheme.surface,
+            color = if (fullscreen) {
+                MaterialTheme.colorScheme.surfaceDim
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
             modifier = Modifier.fillMaxSize(),
         ) {
         Column(
@@ -1176,7 +1216,7 @@ fun ClipEditorScreen(
                     // get the feature through this one call site.
                     modifier = Modifier
                         .fillMaxWidth()
-                        .pointerInput(Unit) {
+                        .pointerInput(fullscreen) {
                             val longPressTimeout = viewConfiguration.longPressTimeoutMillis
                             val slop = viewConfiguration.touchSlop
                             awaitEachGesture {
@@ -1184,15 +1224,29 @@ fun ClipEditorScreen(
                                 // The long-press window: true when the press
                                 // ended early (lift, drag, or consumed),
                                 // null when the window elapsed with the
-                                // finger still down.
+                                // finger still down. The early-end REASON is
+                                // kept: a CLEAN lift (still pressed at lift,
+                                // no slop, nothing consumed) is a quick tap
+                                // — §16.2's preview-tap chrome toggle in
+                                // fullscreen; anything else (slop, a
+                                // consumed stream — zoom/pan, a chip) is a
+                                // drag or a control touch and never toggles.
+                                var cleanTap = false
                                 val endedEarly = withTimeoutOrNull(longPressTimeout) {
                                     var lifted = false
                                     while (!lifted) {
                                         val event = awaitPointerEvent()
                                         val change =
                                             event.changes.firstOrNull { it.id == down.id }
-                                        if (change == null || !change.pressed ||
-                                            event.changes.any { it.isConsumed } ||
+                                        if (change == null || !change.pressed) {
+                                            // Lift inside the window: a tap
+                                            // only if nothing moved or was
+                                            // consumed on the way.
+                                            cleanTap = change != null &&
+                                                !event.changes.any { it.isConsumed } &&
+                                                (change.position - down.position).getDistance() <= slop
+                                            lifted = true
+                                        } else if (event.changes.any { it.isConsumed } ||
                                             (change.position - down.position).getDistance() > slop
                                         ) {
                                             lifted = true
@@ -1203,8 +1257,15 @@ fun ClipEditorScreen(
                                 // Null = the window elapsed with the finger
                                 // still down (long press confirmed); non-null
                                 // = the press ended early, so this gesture is
-                                // a tap/drag, not a hold.
-                                if (endedEarly != null) return@awaitEachGesture
+                                // a tap/drag, not a hold. A clean tap in
+                                // fullscreen toggles the overlay chrome
+                                // (pure gate in EditorPreviewLogic).
+                                if (endedEarly != null) {
+                                    if (cleanTap && EditorPreviewLogic.togglesFullscreenChrome(fullscreen)) {
+                                        fullscreenChromeVisible = !fullscreenChromeVisible
+                                    }
+                                    return@awaitEachGesture
+                                }
                                 // Long press confirmed: show the original.
                                 startHold(true)
                                 // The hold ends when the finger lifts, the
@@ -1235,40 +1296,44 @@ fun ClipEditorScreen(
                 // render leaves the prime area): status from the existing
                 // PreviewState data, tap = the old Render-preview button's
                 // onClick (full paused tier at the current position).
-                PreviewRefreshControl(
-                    state = previewState,
-                    canRender = canRender,
-                    onRefresh = {
-                        requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp),
-                )
-                // Histogram toggle (owner feature list W5): the mirror of
-                // the fullscreen TopEnd toggle — the preview's corner icon
-                // buttons read as one group, and the bar_chart glyph says
-                // what it does. Same 48dp IconButton target, vendored
-                // Material Symbols glyph (material-icons-core 1.7.3 has
-                // no BarChart).
-                HistogramToggleButton(
-                    visible = histogramVisible,
-                    onToggle = { histogramVisible = !histogramVisible },
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(8.dp),
-                )
-                // The overlay itself (BottomStart, mirroring the refresh
-                // chip's BottomEnd): visible only when toggled on, drawn
-                // from the recompute above — the same frame the preview
-                // shows, so the histogram and the picture never disagree.
-                if (histogramVisible) {
-                    HistogramOverlay(
-                        result = histogram,
+                // Hidden with the fullscreen chrome (§16.2: minimal
+                // overlays; the tap toggle brings it back).
+                if (!fullscreen || fullscreenChromeVisible) {
+                    PreviewRefreshControl(
+                        state = previewState,
+                        canRender = canRender,
+                        onRefresh = {
+                            requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
+                        },
                         modifier = Modifier
-                            .align(Alignment.BottomStart)
+                            .align(Alignment.BottomEnd)
                             .padding(8.dp),
                     )
+                    // Histogram toggle (owner feature list W5): the mirror of
+                    // the fullscreen TopEnd toggle — the preview's corner icon
+                    // buttons read as one group, and the bar_chart glyph says
+                    // what it does. Same 48dp IconButton target, vendored
+                    // Material Symbols glyph (material-icons-core 1.7.3 has
+                    // no BarChart).
+                    HistogramToggleButton(
+                        visible = histogramVisible,
+                        onToggle = { histogramVisible = !histogramVisible },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp),
+                    )
+                    // The overlay itself (BottomStart, mirroring the refresh
+                    // chip's BottomEnd): visible only when toggled on, drawn
+                    // from the recompute above — the same frame the preview
+                    // shows, so the histogram and the picture never disagree.
+                    if (histogramVisible) {
+                        HistogramOverlay(
+                            result = histogram,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(8.dp),
+                        )
+                    }
                 }
                 // Fullscreen toggle (owner request 2026-11-11 section 2):
                 // the SAME editor session — the toggle only changes the
@@ -1314,6 +1379,12 @@ fun ClipEditorScreen(
             // The modifier measures the row for the panel anchor math
             // (§11.3) — its height varies with font scale and the
             // precision-mode readout, so it is measured, not assumed.
+            // Fullscreen keeps the transport (§16.2 retains play/pause and
+            // seeking) but hides it with the overlay chrome on a preview
+            // tap; a hidden transport never contributes to the anchor math
+            // (transportHeight stays at its last measured value only while
+            // the panel is hidden too — both are outside this branch).
+            if (!fullscreen || fullscreenChromeVisible) {
             TransportRow(
                 modifier = Modifier
                     .onSizeChanged { transportHeight = it.height },
@@ -1470,6 +1541,7 @@ fun ClipEditorScreen(
                     }
                 },
             )
+            }
             // Draggable, collapsible adjustment panel (owner request
             // 2026-11-11d §11): the bottom-anchored sheet whose height IS
             // the drag offset, settling between the three PanelSheet
