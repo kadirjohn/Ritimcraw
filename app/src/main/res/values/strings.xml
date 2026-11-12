@@ -104,6 +104,7 @@
     <string name="editor_export">Export</string>
     <string name="editor_export_sheet_title">Export clip</string>
     <string name="editor_export_choice_dng">DNG frame</string>
+    <string name="editor_export_choice_dng_linear">Linear DNG</string>
     <string name="editor_export_choice_mp4">MP4 video</string>
     <string name="editor_export_dng">Export DNG</string>
     <string name="editor_export_mp4">Export MP4</string>
@@ -160,6 +161,8 @@
     <string name="editor_scope_midgray_show">Show mid-gray reference</string>
     <string name="editor_scope_midgray_hide">Hide mid-gray reference</string>
     <string name="editor_scope_hz">%1$d Hz</string>
+    <string name="editor_zebra_show">Show clipping</string>
+    <string name="editor_zebra_hide">Hide clipping</string>
     <string name="export_queued_snackbar">Export queued — see Exports</string>
     <string name="editor_not_loaded_title">Clip not open</string>
     <string name="editor_not_loaded_body">The clip could not be opened by the native engine in this build. Recovery: reopen the clip from the library once the engine build is enabled.</string>
@@ -170,6 +173,8 @@
     <string name="exports_empty_body">Exported clips appear here with their progress and results.</string>
     <string name="exports_format_dng">CFA DNG</string>
     <string name="exports_format_dng_detail">Writes 16-bit CFA</string>
+    <string name="exports_format_dng_linear">Linear DNG</string>
+    <string name="exports_format_dng_linear_detail">Demosaiced linear RGB</string>
     <string name="exports_format_mp4">H.264 MP4</string>
     <string name="exports_format_photo">PNG photo</string>
     <string name="exports_job_queued">Queued</string>

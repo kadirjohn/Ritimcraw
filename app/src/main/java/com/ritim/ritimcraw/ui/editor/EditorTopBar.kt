@@ -262,6 +262,18 @@ private fun ExportSheet(
             },
             modifier = Modifier.clickable { onExport(Target.DNG) },
         )
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_export_choice_dng_linear)) },
+            supportingContent = {
+                // RAW-13: the second DNG file contract — the demosaiced,
+                // scene-referred linear deliverable, next to the raw mosaic.
+                Text(
+                    stringResource(R.string.exports_format_dng_linear) + " · " +
+                        stringResource(R.string.exports_format_dng_linear_detail)
+                )
+            },
+            modifier = Modifier.clickable { onExport(Target.LINEAR) },
+        )
         Spacer(Modifier.height(16.dp))
     }
 }

@@ -275,4 +275,18 @@ float sampleShading(const RawMeta& meta, float u, float v, int plane);
 // Exposed for tests; developCpu calls it after normalization stages.
 ImageF demosaicBilinear(const std::vector<float>& cfa, uint32_t w, uint32_t h, CfaPattern pattern);
 
+// The RAW-13 linear develop: CFA -> demosaiced, white-balanced,
+// scene-referred linear RGB in the camera-native primaries, as 16-bit
+// samples (width*height*3 uint16 values, row-major r-g-b, float 0..1
+// scaled by 65535). Exactly three stages of the developCpu pipeline run —
+// stage 1 black/white normalization (frame-preferred levels), stage 4
+// bilinear demosaic, stage 5 as-shot white balance (multiply by
+// 1/asShotNeutral) — and NOTHING else: no shading, no highlight
+// reconstruction, no camera->Rec.709, no tone controls, no LUT, no denoise.
+// The stage list is recorded in the Linear DNG's ImageDescription tag
+// (DngWriter.cpp kLinearDngStages names this function). Returns an empty
+// vector on null/empty input.
+std::vector<uint16_t> developLinear(const uint16_t* cfa, const FrameInfo& info,
+                                    const RawMeta& meta);
+
 } // namespace rawedit

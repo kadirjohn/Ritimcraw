@@ -164,6 +164,16 @@ object FrameHistogram {
         maxOf(1, Math.round(sampled * CLIP_FRACTION))
 
     /**
+     * The Rec.709 luma of one 8-bit pixel channel triple — the shared
+     * definition behind the luma histogram, the LUMA clip counts and the
+     * zebra overlay's per-pixel clip decision (PLAY-11: the zebra and the
+     * clip pills must agree, so there is exactly ONE luma function, here).
+     * Integer weights (see the object KDoc): 0.2126/0.7152/0.0722 scaled by
+     * 256 and rounded, `shr 8` to stay in int arithmetic.
+     */
+    fun luma(r: Int, g: Int, b: Int): Int = (54 * r + 183 * g + 19 * b) shr 8
+
+    /**
      * One strided pass over [argb] (packed 0xAARRGGBB, row-major): the
      * four 256-bin histograms plus per-slot clip counts, all from the
      * same sampled pixels. A null/empty array yields an all-zero result
@@ -201,8 +211,10 @@ object FrameHistogram {
             if (r >= WHITE_CLIP_VALUE) white[Channel.RED.ordinal]++
             if (g >= WHITE_CLIP_VALUE) white[Channel.GREEN.ordinal]++
             if (b >= WHITE_CLIP_VALUE) white[Channel.BLUE.ordinal]++
-            // Rec.709 luma, integer weights (see the object KDoc).
-            val y = (54 * r + 183 * g + 19 * b) shr 8
+            // Rec.709 luma — the shared definition ([luma]), so the
+            // histogram's luma curve, the clip counts and the zebra
+            // overlay's decision can never drift apart.
+            val y = luma(r, g, b)
             luma[y]++
             if (y <= BLACK_CLIP_VALUE) black[Channel.LUMA.ordinal]++
             if (y >= WHITE_CLIP_VALUE) white[Channel.LUMA.ordinal]++

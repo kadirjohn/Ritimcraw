@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include <rawedit/Develop.h>
 #include <rawedit/DngWriter.h>
 #include <rawedit/Gyro.h>
 #include <rawedit/Lut.h>
@@ -1834,6 +1835,101 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
         setError(static_cast<int>(written.code), kStageDngWrite,
                  std::string("dng write: ") + rawedit::errorName(written.code) +
                      " — " + written.detail);
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+// Linear DNG export ---------------------------------------------------------------
+//
+// RAW-13 (owner spec section 3): the demosaiced, LINEAR scene-referred
+// deliverable, a separate file contract from the CFA DNG above. Same
+// one-shot shape as nativeDngExport (open from fd, decode frame, write to
+// the staging path; no handle registry, safe from any single engine
+// thread), with the minimal develop between read and write:
+//   developLinear (Develop.cpp) = stage 1 black/white normalization
+//   (frame-preferred levels) + stage 4 bilinear demosaic + stage 5 as-shot
+//   white balance, nothing else — the linear output and the display tone
+//   map are separate paths ("Görüntüleme ton eşlemesi ile lineer veri
+//   çıkışı ayrı yollar"). The exact stage list is recorded in the file's
+//   ImageDescription tag (270) by writeLinearDng.
+//
+// The metadata decisions (writeLinearDng): BlackLevel 0 / WhiteLevel 65535
+// (stage 1 already mapped the sensor range to 0..1), AsShotNeutral
+// (1,1,1) (the WB multiply is baked into the pixels — a reader must not
+// double-apply), ColorMatrix1 kept as-is (the pixels stay in the
+// camera-native primaries). Rotation: same contract as the CFA export —
+// the Orientation tag carries container + manual while the pixels stay
+// unrotated (rotation belongs to the reader).
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeLinearDngExport(
+        JNIEnv* env, jclass, jint fd, jint frameIndex,
+        jint manualRotationDeg, jstring outPath) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    const char* pathChars = env->GetStringUTFChars(outPath, nullptr);
+    if (pathChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDngWrite,
+                 "linear dng export: out of memory reading the output path "
+                 "(recovery: free memory and retry)");
+        return JNI_FALSE;
+    }
+    const std::string path(pathChars);
+    env->ReleaseStringUTFChars(outPath, pathChars);
+
+    // 1. Open the clip from the SAF fd (the bridge dups it; the caller's fd
+    //    is untouched).
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("open: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail);
+        return JNI_FALSE;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+
+    // 2. Decode the frame (the expensive step — seconds on a 4K frame).
+    gLastErrorStage = kStageFrameRead;
+    auto frame = src->readFrame(static_cast<size_t>(frameIndex));
+    if (!frame.isOk()) {
+        setError(static_cast<int>(frame.code), kStageFrameRead,
+                 std::string("frame read: ") + rawedit::errorName(frame.code) +
+                     " — " + frame.detail);
+        return JNI_FALSE;
+    }
+    rawedit::FrameInfo info = src->frameInfo(static_cast<size_t>(frameIndex));
+    // Same effective-rotation contract as the CFA export (owner request
+    // 2026-11-11 section 5): the tag carries container + manual, the pixels
+    // stay unrotated.
+    const int effectiveDeg =
+        (((info.orientationDeg + manualRotationDeg) % 360) + 360) % 360;
+    info.orientationDeg = effectiveDeg;
+    const rawedit::RawMeta& meta = src->rawMeta();
+
+    // 3. The minimal linear develop (stage 1 + demosaic + WB; the stage list
+    //    is recorded in the file's ImageDescription). A camera failure here
+    //    is a develop-stage failure, not a write failure.
+    gLastErrorStage = kStageDevelop;
+    const std::vector<uint16_t> rgb =
+        rawedit::developLinear(frame.value->data(), info, meta);
+    if (rgb.empty()) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported),
+                 kStageDevelop,
+                 "linear develop: empty frame (recovery: reopen the clip)");
+        return JNI_FALSE;
+    }
+
+    // 4. Write the Linear DNG to the staging path (writeLinearDng removes a
+    //    partial file on failure, so the staging file exists only on
+    //    success — the Kotlin layer renames it into place).
+    gLastErrorStage = kStageDngWrite;
+    rawedit::Result<void> written = rawedit::writeLinearDng(
+        path, rgb.data(), info, meta);
+    if (!written.isOk()) {
+        setError(static_cast<int>(written.code), kStageDngWrite,
+                 std::string("linear dng write: ") +
+                     rawedit::errorName(written.code) + " — " + written.detail);
         return JNI_FALSE;
     }
     return JNI_TRUE;

@@ -4,9 +4,11 @@ import com.ritim.ritimcraw.data.GradeK
 
 /**
  * Export target format (sprint plan Task 5: CFA DNG or SDR H.264 MP4;
- * RAW-11 Frame Picker adds PHOTO — the developed frame as a PNG).
+ * RAW-11 Frame Picker adds PHOTO — the developed frame as a PNG; RAW-13
+ * adds LINEAR — the demosaiced, scene-referred Linear DNG, a separate file
+ * contract from the raw-mosaic DNG).
  */
-enum class Target { DNG, MP4, PHOTO }
+enum class Target { DNG, MP4, PHOTO, LINEAR }
 
 /** Export job lifecycle (sprint plan Task 5). */
 enum class State { QUEUED, RUNNING, DONE, CANCELLED, FAILED }

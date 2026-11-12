@@ -42,6 +42,13 @@ class ExportQueueTest {
             return true
         }
 
+        override fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+            log.add("linear:$fd:${File(outPath).name}")
+            if (failOn != null && File(outPath).name.startsWith(failOn)) return false
+            File(outPath).writeBytes(ByteArray(16))
+            return true
+        }
+
         override fun code(): Int = DngExportErrors.CODE_IO
         override fun stage(): Int = DngExportErrors.STAGE_DNG_WRITE
         override fun detail(): String? = "fake io failure"
@@ -151,6 +158,9 @@ class ExportQueueTest {
         assertEquals("clip1-mp4.mp4", ExportQueue.outputName("clip1", Target.MP4))
         // RAW-11 Frame Picker: a developed frame lands as a PNG.
         assertEquals("clip1-photo.png", ExportQueue.outputName("clip1", Target.PHOTO))
+        // RAW-13: the linear target's name disambiguates the legacy ".dng"
+        // — a Linear DNG is a separate file contract from the CFA DNG.
+        assertEquals("clip1-linear.dng", ExportQueue.outputName("clip1", Target.LINEAR))
     }
 
     // ---- DISPLAY-DERIVED OUTPUT NAMES (owner request 2026-11-11 §2b) ----
@@ -165,6 +175,9 @@ class ExportQueueTest {
         assertEquals("Sunset Trip.dng", ExportQueue.displayOutputName("Sunset Trip", Target.DNG))
         // RAW-11: a photo job swaps in the PNG extension.
         assertEquals("Sunset Trip.png", ExportQueue.displayOutputName("Sunset Trip.raw", Target.PHOTO))
+        // RAW-13: a Linear DNG IS a .dng file — the display name keeps the
+        // extension; the legacy name is what disambiguates.
+        assertEquals("Sunset Trip.dng", ExportQueue.displayOutputName("Sunset Trip.raw", Target.LINEAR))
     }
 
     @Test
@@ -417,6 +430,32 @@ class ExportQueueTest {
         assertEquals(State.DONE, jobs[0].state)
         assertEquals("clip1-mp4.mp4", jobs[0].detail)
         assertTrue(File(tmp.root, "clip1-mp4.mp4").exists())
+    }
+
+    // ---- LINEAR arm (RAW-13 Linear DNG) ----
+
+    @Test
+    fun queue_dispatches_linear_to_the_dng_exporter_render_linear() = runBlocking {
+        // A LINEAR job rides the DNG arm (the shared exporter, staging, and
+        // error mapping) but must reach renderLinear — never the CFA render —
+        // and land as <sourceId>-linear.dng.
+        val store = store()
+        store.add(job("j1", "clip1", Target.LINEAR).copy(frameIndex = 7))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        assertEquals(1, log.size)
+        assertEquals("linear:7:clip1-linear.dng.partial", log[0])
+        val jobs = store.all()
+        assertEquals(State.DONE, jobs[0].state)
+        assertEquals("clip1-linear.dng", jobs[0].detail)
+        assertTrue(File(tmp.root, "clip1-linear.dng").exists())
+        assertTrue(!File(tmp.root, "clip1-linear.dng.partial").exists())
     }
 
     // ---- PHOTO arm (RAW-11 Frame Picker) ----
@@ -796,6 +835,15 @@ class ExportQueueTest {
         assertEquals("Pictures/ritiMCRAW", photo.relativePath)
         assertEquals("image/png", photo.mime)
         assertEquals("clip1-photo.png", photo.name)
+
+        // RAW-13: a Linear DNG is a demosaiced image file — it publishes to
+        // the images collection like the CFA DNG (same folder, same DNG mime;
+        // the name disambiguates the two contracts).
+        val linear = MediaPublish.placement("clip1", Target.LINEAR)
+        assertEquals(MediaPublish.Collection.IMAGES, linear.collection)
+        assertEquals("Pictures/ritiMCRAW", linear.relativePath)
+        assertEquals("image/x-adobe-dng", linear.mime)
+        assertEquals("clip1-linear.dng", linear.name)
     }
 
     @Test

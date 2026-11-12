@@ -1038,4 +1038,85 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     return img;
 }
 
+// The RAW-13 linear develop: the minimal, fully-documented stage list that
+// turns CFA samples into the LINEAR DNG's pixel data. Exactly three stages
+// of the full developCpu pipeline run (the ones a scene-referred linear
+// deliverable needs and nothing the display path owns):
+//   stage 1  — black/white normalization per CFA channel, frame-preferred
+//              levels (the same rule developCpu stage 1 uses)
+//   stage 4  — bilinear demosaic (demosaicBilinear, the shared code)
+//   stage 5  — as-shot white balance: multiply by 1/asShotNeutral
+// Deliberately NOT run: lens shading (2), highlight reconstruction (3),
+// camera->Rec.709 (6), denoise (7-8), the tone controls (9-18), the detail
+// stages (19-20), tonemapping (21) and the LUT (22). The output stays in
+// the camera-native RGB primaries, scene-referred, linear — "Görüntüleme
+// ton eşlemesi ile lineer veri çıkışı ayrı yollar" (the display tone map
+// and the linear data output are separate paths; owner spec RAW-13). The
+// stage list is recorded verbatim in the DNG's ImageDescription tag (see
+// DngWriter.cpp kLinearDngStages, which names this function — the two must
+// not drift apart).
+//
+// Output: width*height*3 uint16 samples, row-major, r-g-b order, the float
+// 0..1 values scaled by 65535 (rounded, clamped) — the exact bit layout
+// writeLinearDng serializes into the strip.
+std::vector<uint16_t> developLinear(const uint16_t* cfa, const FrameInfo& info,
+                                    const RawMeta& meta) {
+    const uint32_t w = info.width;
+    const uint32_t h = info.height;
+    std::vector<uint16_t> out;
+    if (w == 0 || h == 0 || cfa == nullptr)
+        return out;
+
+    const size_t n = static_cast<size_t>(w) * h;
+
+    // Stage 1: black/white normalization per CFA channel — copied from
+    // developCpu stage 1 (same frame-preferred rule, same slot mapping).
+    std::vector<float> norm(n);
+    const bool useFrameBlack = info.dynamicBlack[0] >= 0;
+    const float white = info.dynamicWhite > 0
+        ? static_cast<float>(info.dynamicWhite)
+        : static_cast<float>(meta.white);
+    float black[4];
+    for (int slot = 0; slot < 4; ++slot)
+        black[slot] = useFrameBlack
+            ? static_cast<float>(info.dynamicBlack[slot])
+            : static_cast<float>(meta.black[slot]);
+    float range[4];
+    for (int slot = 0; slot < 4; ++slot)
+        range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            const int slot = cellSlot(y & 1, x & 1);
+            const float v =
+                (static_cast<float>(cfa[y * static_cast<size_t>(w) + x]) -
+                 black[slot]) / range[slot];
+            norm[y * static_cast<size_t>(w) + x] =
+                std::min(std::max(v, 0.0f), 1.0f);
+        }
+    }
+
+    // Stage 4: bilinear demosaic (the shared code path with developCpu).
+    const ImageF img = demosaicBilinear(norm, w, h, info.cfa);
+
+    // Stage 5: as-shot white balance — multiply by 1/asShotNeutral, the
+    // same per-channel reciprocals developCpu stage 5 computes. No camera
+    // ->Rec.709 after it: the pixels stay in the camera-native primaries
+    // (ColorMatrix1 in the DNG describes them; AsShotNeutral is written as
+    // (1,1,1) because this multiply already applied the WB).
+    const float invNeutral[3] = {
+        meta.asShotNeutral[0] > 0.0f ? 1.0f / meta.asShotNeutral[0] : 1.0f,
+        meta.asShotNeutral[1] > 0.0f ? 1.0f / meta.asShotNeutral[1] : 1.0f,
+        meta.asShotNeutral[2] > 0.0f ? 1.0f / meta.asShotNeutral[2] : 1.0f,
+    };
+
+    // Float 0..1 -> uint16 (x 65535, rounded, clamped).
+    out.resize(img.rgb.size());
+    for (size_t i = 0; i < img.rgb.size(); ++i) {
+        float v = img.rgb[i] * invNeutral[i % 3];
+        v = std::min(std::max(v, 0.0f), 1.0f);
+        out[i] = static_cast<uint16_t>(std::lround(v * 65535.0f));
+    }
+    return out;
+}
+
 } // namespace rawedit

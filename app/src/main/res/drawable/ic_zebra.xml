@@ -1,0 +1,26 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Diagonal zebra stripes: the clip warning's toggle (owner spec
+         PLAY-11). The stripes say what the overlay paints over clipped
+         pixels. 48dp touch target comes from the IconButton; Compose's
+         Icon tints it via LocalContentColor. Vendored stroke path
+         (material-icons-core 1.7.3 has no zebra glyph). -->
+    <path
+        android:pathData="M4,20 L20,4"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M4,12 L12,4"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M12,20 L20,12"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round" />
+</vector>

@@ -333,3 +333,174 @@ TEST_CASE("dng_falls_back_to_container_levels") {
 
     std::remove(path);
 }
+
+TEST_CASE("linear_dng_roundtrip_tags") {
+    // RAW-13: the Linear DNG contract — demosaiced, scene-referred linear
+    // 16-bit RGB, PhotometricInterpretation 34892 (LinearRaw), 3 samples
+    // per pixel, WB baked in (AsShotNeutral = 1), BlackLevel 0 /
+    // WhiteLevel 65535 (stage-1 normalization already mapped the sensor
+    // range to 0..1), the stage list recorded in ImageDescription, and the
+    // pixels round-tripped verbatim.
+    const char* path = "/tmp/rawedit-test-linear-dng.dng";
+
+    FrameInfo frame;
+    frame.ptsUs = 123456789;
+    frame.width = 64;
+    frame.height = 48;
+    frame.bitDepth = 16;
+    frame.cfa = CfaPattern::RGGB;
+    frame.activeArea = Rect{0, 0, 64, 48};
+    frame.orientationDeg = 0;
+
+    RawMeta meta;
+    meta.black[0] = 64; meta.black[1] = 64;
+    meta.black[2] = 64; meta.black[3] = 64;
+    meta.white = 1023;
+    meta.asShotNeutral[0] = 0.5f;
+    meta.asShotNeutral[1] = 1.0f;
+    meta.asShotNeutral[2] = 0.25f;
+    meta.colorMatrix[0] = 1.0f;  meta.colorMatrix[1] = 0.0f;  meta.colorMatrix[2] = 0.0f;
+    meta.colorMatrix[3] = -0.5f; meta.colorMatrix[4] = 1.0f;  meta.colorMatrix[5] = 0.1f;
+    meta.colorMatrix[6] = 0.0f;  meta.colorMatrix[7] = 0.0f;  meta.colorMatrix[8] = 1.5f;
+
+    // Synthetic demosaiced payload: a simple RGB gradient, 3 samples per
+    // pixel, distinct per channel so the round-trip proves order.
+    std::vector<uint16_t> rgb(64 * 48 * 3);
+    for (size_t i = 0; i < rgb.size(); ++i)
+        rgb[i] = static_cast<uint16_t>(1000 + (i % 3000));
+
+    const Result<void> res = writeLinearDng(path, rgb.data(), frame, meta);
+    REQUIRE(res.isOk());
+
+    const std::vector<uint8_t> b = readFile(path);
+    const auto tags = parseIfd(b);
+
+    // Core TIFF tags.
+    CHECK(tagLong(tags, 254) == 0);                       // NewSubfileType
+    CHECK(tagLong(tags, 256) == 64);                      // ImageWidth
+    CHECK(tagLong(tags, 257) == 48);                      // ImageLength
+    CHECK(tagShort(tags, 259) == 1);                      // Compression
+    CHECK(tagShort(tags, 262) == 34892);                  // Photometric LinearRaw
+    CHECK(tagShort(tags, 274) == 1);                      // Orientation
+    CHECK(tagShort(tags, 277) == 3);                      // SamplesPerPixel
+    CHECK(tagLong(tags, 278) == 48);                       // RowsPerStrip
+    const uint32_t stripBytes = tagLong(tags, 279);       // StripByteCounts
+    CHECK(stripBytes == 64 * 48 * 3 * 2);
+    const uint32_t stripOff = tagLong(tags, 273);         // StripOffsets
+    CHECK(stripOff + stripBytes == b.size());
+
+    // BitsPerSample: 3 SHORTs, all 16 — 6 bytes, so the value is external.
+    const Tag bps = get(tags, 258);
+    CHECK(bps.type == 3);
+    CHECK(bps.count == 3);
+    CHECK(bps.value.size() == 6);
+    for (int i = 0; i < 3; ++i)
+        CHECK(rd16(bps.value, static_cast<size_t>(i) * 2) == 16);
+
+    // ImageDescription (270): the recorded stage list, NUL-terminated.
+    const Tag desc = get(tags, 270);
+    CHECK(desc.type == 2); // ASCII
+    REQUIRE(desc.count > 1);
+    CHECK(desc.value.back() == 0);
+    const std::string text(desc.value.begin(), desc.value.end() - 1);
+    CHECK(text.find("stages = black/white normalization") != std::string::npos);
+    CHECK(text.find("bilinear demosaic") != std::string::npos);
+    CHECK(text.find("as-shot white balance") != std::string::npos);
+    CHECK(text.find("developLinear") != std::string::npos);
+
+    // CFAPlaneColor (50710): RGB plane order.
+    const Tag planes = get(tags, 50710);
+    CHECK(planes.type == 1);
+    CHECK(planes.count == 3);
+    CHECK(planes.value[0] == 0);
+    CHECK(planes.value[1] == 1);
+    CHECK(planes.value[2] == 2);
+
+    CHECK(tagShort(tags, 50711) == 1);                    // CFALayout Rectangular
+
+    const Tag ver = get(tags, 50706);                     // DNGVersion
+    CHECK(ver.type == 1);
+    CHECK(ver.count == 4);
+    CHECK(ver.value[0] == 1);
+    CHECK(ver.value[1] == 4);
+    CHECK(ver.value[2] == 0);
+    CHECK(ver.value[3] == 0);
+
+    // BlackLevel: 3 SHORTs, all 0 (stage 1 already normalized).
+    const Tag rep = get(tags, 50713);                     // BlackLevelRepeatDim
+    CHECK(rep.type == 3);
+    CHECK(rep.count == 2);
+    CHECK(rd16(rep.value, 0) == 1);
+    CHECK(rd16(rep.value, 2) == 1);
+    const Tag black = get(tags, 50714);
+    CHECK(black.type == 3);
+    CHECK(black.count == 3);
+    CHECK(black.value.size() == 6);
+    for (int i = 0; i < 3; ++i)
+        CHECK(rd16(black.value, static_cast<size_t>(i) * 2) == 0);
+
+    CHECK(tagLong(tags, 50717) == 65535);                 // WhiteLevel
+
+    // ColorMatrix1 kept as-is (the pixels stay in the camera primaries).
+    const Tag cm = get(tags, 50721);
+    CHECK(cm.type == 10);
+    CHECK(cm.count == 9);
+    CHECK(rd32(cm.value, 0) == 1000000);                  // [0] = 1.0
+    CHECK(rd32(cm.value, 24) == static_cast<uint32_t>(-500000)); // [3] = -0.5
+
+    // AsShotNeutral = (1,1,1): the WB is baked into the pixels.
+    const Tag neutral = get(tags, 50728);
+    CHECK(neutral.type == 5);
+    CHECK(neutral.count == 3);
+    for (int i = 0; i < 3; ++i) {
+        CHECK(rd32(neutral.value, static_cast<size_t>(i) * 8) == 1000000);
+        CHECK(rd32(neutral.value, static_cast<size_t>(i) * 8 + 4) == 1000000);
+    }
+
+    const Tag area = get(tags, 50829);                     // ActiveArea
+    CHECK(area.type == 4);
+    CHECK(area.count == 4);
+    CHECK(rd32(area.value, 0) == 0);
+    CHECK(rd32(area.value, 4) == 0);
+    CHECK(rd32(area.value, 8) == 48);
+    CHECK(rd32(area.value, 12) == 64);
+
+    // Pixel data round-trip: the strip holds the RGB samples verbatim.
+    for (size_t i = 0; i < rgb.size(); ++i) {
+        const uint16_t got = rd16(b, stripOff + i * 2);
+        if (got != rgb[i]) { CHECK(false); break; }
+    }
+
+    // Tags must be ascending (TIFF requirement).
+    uint16_t prev = 0;
+    for (const auto& kv : tags) {
+        CHECK(kv.first > prev);
+        prev = kv.first;
+    }
+
+    std::remove(path);
+}
+
+TEST_CASE("linear_dng_rejects_bad_input") {
+    FrameInfo frame;
+    frame.width = 64;
+    frame.height = 48;
+    frame.bitDepth = 16;
+    frame.cfa = CfaPattern::RGGB;
+    RawMeta meta;
+    std::vector<uint16_t> rgb(64 * 48 * 3);
+
+    CHECK(!writeLinearDng("/tmp/should-not-exist-linear.dng", nullptr, frame, meta).isOk());
+
+    FrameInfo zero = frame;
+    zero.width = 0;
+    CHECK(!writeLinearDng("/tmp/should-not-exist-linear.dng", rgb.data(), zero, meta).isOk());
+
+    FrameInfo deep = frame;
+    deep.bitDepth = 10;
+    CHECK(!writeLinearDng("/tmp/should-not-exist-linear.dng", rgb.data(), deep, meta).isOk());
+
+    // No partial file left behind.
+    std::ifstream in("/tmp/should-not-exist-linear.dng");
+    CHECK(!in.good());
+}
