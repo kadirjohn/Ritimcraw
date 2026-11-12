@@ -204,13 +204,18 @@ class NativeSource private constructor(
          * (read the error accessors from the same thread).
          *
          * lutPath/lutStrength (COL-07): the selected .cube's path (null =
-         * no LUT — stage 22 bypassed, the old look) and the strength blend
+         * no LUT — stage 24 bypassed, the old look) and the strength blend
          * ALREADY mapped to rawedit's 0..1 scale (GradeK's percent / 100).
          * A parse failure fails the render with the lut error.
          *
          * noiseReduction/chromaDenoise (DN-01..08): the two denoise
          * strengths at GradeK's native 0..100 scale (the core clamps);
          * 0 = the stage is skipped entirely (the old look).
+         *
+         * wheel/split (COL-13): the three-band color wheel offsets
+         * (unit-disc [-1,1], (0,0) = neutral — stage 18) and the split-tone
+         * scalars (hue degrees, -1 = off; balance -100..100 — stage 19),
+         * all at GradeK's native scale.
          */
         @JvmStatic private external fun nativePreviewRender(
             handle: Long,
@@ -237,6 +242,15 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             gyroPath: String?,
             stabMode: Int,
             stabStrength: Float,
@@ -254,6 +268,7 @@ class NativeSource private constructor(
          * decodes and replaces the cache; a reopened handle starts uncached.
          * lutPath/lutStrength as in nativePreviewRender (COL-07);
          * noiseReduction/chromaDenoise as in nativePreviewRender (DN-01..08);
+         * the wheel/split-tone package as in nativePreviewRender (COL-13);
          * the stabilization package as in nativePreviewRender (gyro Phase 5).
          */
         @JvmStatic private external fun nativePreviewSessionRenderCached(
@@ -281,6 +296,15 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             gyroPath: String?,
             stabMode: Int,
             stabStrength: Float,
@@ -386,10 +410,13 @@ class NativeSource private constructor(
          *
          * lutPath/lutStrength (COL-07): the job snapshot's LUT path (null =
          * no LUT) and the strength blend already mapped to 0..1 (percent /
-         * 100). The SAME stage-22 apply as the preview, so the owner's
+         * 100). The SAME stage-24 apply as the preview, so the owner's
          * preview-vs-export acceptance check compares like with like.
          * noiseReduction/chromaDenoise (DN-01..08): the job snapshot's
          * denoise strengths at the native 0..100 scale (0 = stage skipped).
+         * wheel/split (COL-13): the job snapshot's wheel offsets and
+         * split-tone scalars — the SAME stage-18/19 apply as the preview
+         * (identical math, identical order; export parity by construction).
          */
         @JvmStatic private external fun nativeExportFrame(
             handle: Long,
@@ -416,6 +443,15 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             gyroPath: String?,
             stabMode: Int,
             stabStrength: Float,
@@ -443,7 +479,7 @@ class NativeSource private constructor(
          * decode -> WB/temp/tint/exposure -> denoise stages 7/8 (DN-01..08,
          * the same kernels as the RAW path; 0 = skipped) ->
          * sharpness/detail/tonemap, the shared COL-15/COL-16 stages, then
-         * the optional stage-22 LUT, COL-07) -> linearToRec709 -> clamp ->
+         * the optional stage-24 LUT, COL-07) -> linearToRec709 -> clamp ->
          * 8-bit ARGB, rotated upright by [orientationDeg]. Returns
          * [width, height, then w*h ARGB_8888 ints] (the preview contract) or
          * null on failure (read the error accessors from the same thread).
@@ -453,6 +489,10 @@ class NativeSource private constructor(
          * mapped to rawedit's 0..1 scale (GradeK percent / 100).
          * noiseReduction/chromaDenoise (DN-01..08): the denoise strengths at
          * the native 0..100 scale (0 = stage skipped, the old look).
+         * wheel/split (COL-13): travel for signature parity (one flat
+         * signature across every develop entry point) but are IGNORED here —
+         * the tone-band color stages are MCRAW-only; the encoded path grades
+         * via its WB/temp/tint/exposure loop.
          */
         @JvmStatic private external fun nativeEncodedDevelop(
             yPlane: ByteArray,
@@ -487,6 +527,15 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
         ): IntArray?
 
         /**
@@ -572,6 +621,15 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             gyroPath: String?,
             stabMode: Int,
             stabStrength: Float,
@@ -588,6 +646,8 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+            wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
         )
@@ -618,6 +678,15 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             gyroPath: String?,
             stabMode: Int,
             stabStrength: Float,
@@ -634,6 +703,8 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+            wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
         )
@@ -700,6 +771,15 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             gyroPath: String?,
             stabMode: Int,
             stabStrength: Float,
@@ -715,6 +795,8 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+            wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
         )
 
@@ -758,6 +840,15 @@ class NativeSource private constructor(
             chromaDenoise: Float,
             temporalNr: Boolean,
             temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
         ): IntArray? = nativeEncodedDevelop(
             yPlane, uPlane, vPlane,
             width, height, stride, uvStride,
@@ -769,6 +860,8 @@ class NativeSource private constructor(
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
             temporalNr, temporalStrength,
+            wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+            wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
         )
 
         /** JNI bridge: readAudio for export sessions. */

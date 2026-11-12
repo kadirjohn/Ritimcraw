@@ -21,11 +21,15 @@
 //  15. highlights (monotone soft shoulder above the knee)
 //  16. temperature (warm/cool diagonal gain)
 //  17. tint (green/magenta gain)
-//  18. saturation (chroma scaling around luma; neutrals stay neutral)
-//  19. sharpness (luminance unsharp mask at edge scale; chroma untouched)
-//  20. detail (luminance unsharp mask at fine-texture scale; chroma untouched)
-//  21. tonemapping (optional display tone compression; LAST, after grade)
-//  22. LUT (optional .cube 3D LUT; COL-07 — see rawedit/Lut.h)
+//  18. color wheel (three tonal bands: shadows/midtones/highlights offsets;
+//      per-band diagonal gains, center of each wheel is neutral)
+//  19. split tone (shadow/highlight hue tinting with a balance-controlled
+//      crossover; per-band diagonal gains)
+//  20. saturation (chroma scaling around luma; neutrals stay neutral)
+//  21. sharpness (luminance unsharp mask at edge scale; chroma untouched)
+//  22. detail (luminance unsharp mask at fine-texture scale; chroma untouched)
+//  23. tonemapping (optional display tone compression; LAST, after grade)
+//  24. LUT (optional .cube 3D LUT; COL-07 — see rawedit/Lut.h)
 //
 // Stages 9-13 (the tone controls) run after the camera->Rec.709 transform
 // and before exposure: their weights and pivots are defined in scene-referred
@@ -33,8 +37,11 @@
 // the post-exposure image — an exposure change then shifts the whole graded
 // range uniformly instead of moving the shadows/midtones anchors. Endpoints
 // remap first (9-10), then the regional gains (11-12), then the global slope
-// (13). Saturation runs LAST (18), after all per-channel gains, so it scales
-// the final chroma; it is the only stage that mixes channels.
+// (13). The color wheel (18) and split tone (19) are per-band diagonal gains
+// in the same scene-referred space, reusing the shadows/midtones/highlights
+// band weights. Saturation runs LAST of the color stages (20), after all
+// per-channel gains, so it scales the final chroma; it is the only stage
+// that mixes channels.
 //
 // The denoise stages 7-8 run EARLY, right after the camera->Rec.709
 // transform and before every tone control: noise lives in the sensor signal,
@@ -54,6 +61,16 @@
 // each defaults to the pre-toggle behavior, so the defaults preserve the
 // current look exactly.
 //
+// Color wheel + split tone (spec COL-13): the three tonal bands reuse the
+// shadows/midtones/highlights slider weights — shadows = smoothstepf(0.18,
+// 0, mx), midtones = the 0.18-peaked tent, highlights = smoothstepf(0.18,
+// 0.72, mx) — which together form an exact partition of unity over the
+// tonal range, so the three wheels tile it without double-counting and
+// their anchors match the sliders. Both stages are diagonal per-channel
+// gains (per-channel gain scaled by the band weight), never cross-channel
+// mixes, so a neutral pixel stays neutral and hue never twists; saturation
+// (20) still runs after them to scale the final chroma.
+//
 // All math is float. ImageF is the common linear working space.
 
 #pragma once
@@ -71,7 +88,7 @@ namespace rawedit {
 //   highlights  : [-100,100] soft shoulder on near-clipped highlights (15)
 //   tempK       : [2000,50000] warm/cool diagonal gain around 5600 K (16)
 //   tint        : [-100,100] green/magenta push (17)
-//   saturation  : [-100,100] chroma scaling around luma, 0 neutral (18)
+//   saturation  : [-100,100] chroma scaling around luma, 0 neutral (20)
 //   blackPoint  : [-100,100] tonal endpoint remap; negative lifts the toe
 //                 (fades blacks), positive crushes it. 0 neutral (9)
 //   whitePoint  : [-100,100] tonal endpoint remap; negative pulls the
@@ -86,11 +103,11 @@ namespace rawedit {
 // Detail controls (owner request 2026-11-10 section 3, COL-15):
 //   sharpness  : [-100,100] edge sharpening. Luminance-only unsharp mask at
 //                radius 1.5 px (COL-15's "kenar keskinligi" — edge scale).
-//                0 neutral (19).
+//                0 neutral (21).
 //   detail     : [-100,100] fine-texture contrast. Second luminance-only
 //                unsharp mask at radius 0.75 px (COL-15's "ince doku
 //                kontrastini ayri olceklerde isle" — the two scales stay
-//                separate, Detail is its own control). 0 neutral (20).
+//                separate, Detail is its own control). 0 neutral (22).
 // Amount mapping for both: the unsharp weight is 0.5 * (v/100) on the
 // [-100,100] slider, clamped to [-0.5, 0.5] — +100 adds half the local
 // high-pass delta (crisp), -100 subtracts half of it (soft/blur). Both work
@@ -99,13 +116,13 @@ namespace rawedit {
 // no blur and is an exact passthrough.
 //
 // Tonemapping (owner request 2026-11-10 section 3, COL-16). Applied AFTER
-// all grade stages (19-20 included), BEFORE the Rec.709 OETF that lives in
+// all grade stages (21-22 included), BEFORE the Rec.709 OETF that lives in
 // the JNI bridge tail — so the stage input/output is linear RGB in the
 // working space (linear Rec.709 primaries), and the OETF still happens
 // outside, unchanged. Per COL-16 the selected transform's version, working
 // space and target display are recorded here:
 //   tonemap    : 0 = off (default — exact passthrough, old look preserved),
-//                1 = ACES, 2 = AgX (21).
+//                1 = ACES, 2 = AgX (23).
 //   ACES (tonemap 1): "ACES Filmic Tone Mapping Curve", Krzysztof
 //   Narkowicz, 2015 (the widely used RRT+ODT fit; aces_fit x = (x(2.51x +
 //   0.03)) / (x(2.43x + 0.59) + 0.14), clamped to [0,1]). Working space:
@@ -160,7 +177,7 @@ namespace rawedit {
 //   lutStrength : [0,1] blend of the selected .cube 3D LUT against the
 //                 un-LUT'd pixel — out = lut(rgb) * strength + rgb *
 //                 (1 - strength); 1 is the pure table, 0 an exact bypass
-//                 (22). The TABLE itself is per-clip user data, not a
+//                 (24). The TABLE itself is per-clip user data, not a
 //                 grade scalar: developCpu/developEncoded take it as a
 //                 separate `const Lut*` (nullptr = no LUT selected), so
 //                 the neutral fast path stays allocation-free and a
@@ -233,6 +250,34 @@ struct Grade {
     // signatures, project store, UI) carries them like any other control.
     bool temporalNr = false;
     float temporalStrength = 0.0f; // 0..100, the user slider
+    // Color wheel (COL-13, stage 18): three tonal-band color offsets, one
+    // (x, y) pair per band, in the wheel's own unit-disc coordinate system:
+    // the UI maps a drag on the wheel to x (left/right) and y (up/down) in
+    // [-1, 1], the CENTER (0, 0) is neutral — no gain is applied. x pushes
+    // toward orange/teal (warm/cool), y toward magenta/green, the same axes
+    // the UI wheel displays; the core only needs a consistent 2-D offset
+    // it can decompose into per-channel gains. The band weight is the
+    // matching tone-slider weight (shadows/midtones/highlights), so the
+    // wheels and the sliders classify tones identically. Appended AFTER
+    // temporalStrength (same convention as every package above) so the
+    // existing field/JNI order stays stable.
+    float wheelShadowX = 0.0f; // [-1,1] shadows wheel, x axis
+    float wheelShadowY = 0.0f; // [-1,1] shadows wheel, y axis
+    float wheelMidX = 0.0f;    // [-1,1] midtones wheel, x axis
+    float wheelMidY = 0.0f;    // [-1,1] midtones wheel, y axis
+    float wheelHighX = 0.0f;   // [-1,1] highlights wheel, x axis
+    float wheelHighY = 0.0f;   // [-1,1] highlights wheel, y axis
+    // Split tone (COL-13, stage 19): a hue tint applied to the shadow band
+    // and an independent one for the highlight band, blended by a shared
+    // balance-controlled crossover. splitShadowHue / splitHighlightHue are
+    // hue angles in degrees [0, 360); -1 (the default) = OFF — the band is
+    // untinted. splitBalance in [-100, 100] moves the crossover midpoint
+    // m = 0.18 * 2^(balance/100): 0 anchors it at midgray (the wheel-band
+    // anchor), positive pushes it up (more of the range counts as shadow),
+    // negative pulls it down.
+    float splitShadowHue = -1.0f;    // degrees, -1 = off
+    float splitHighlightHue = -1.0f; // degrees, -1 = off
+    float splitBalance = 0.0f;       // [-100,100], crossover shift
 };
 
 // Linear RGB float image, row-major, 3 floats per pixel (r, g, b).
@@ -244,7 +289,7 @@ struct ImageF {
 
 // Internal stage helpers shared by developCpu and developEncoded: the
 // encoded (Mi-Log) path runs the SAME denoise stages (7-8), detail stages
-// (19-20), tonemapping stage (21) and LUT stage (22) on its decoded RGB, so
+// (21-22), tonemapping stage (23) and LUT stage (24) on its decoded RGB, so
 // both pipelines stay in lockstep (DN-01..08/COL-15/COL-16/COL-07). Not
 // part of the stable surface — declared here only so the two develop
 // implementations share one definition. applyLut itself lives in
@@ -258,7 +303,7 @@ void tonemapFrame(ImageF& img, int mode);
 //   cfa: width*height uint16 samples, row-major, 2x2 repeating pattern
 //        given by info.cfa.
 //   meta: per-clip RAW metadata (levels, color matrix, WB, shading map).
-//   lut: optional .cube 3D LUT applied as stage 22 (COL-07). nullptr =
+//   lut: optional .cube 3D LUT applied as stage 24 (COL-07). nullptr =
 //        no LUT selected — the stage is skipped entirely and the neutral
 //        fast path stays allocation-free. Combined with the default
 //        Grade.lutStrength 0 this keeps every existing call site

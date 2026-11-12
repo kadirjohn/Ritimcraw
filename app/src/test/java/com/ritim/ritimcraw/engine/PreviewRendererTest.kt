@@ -202,6 +202,51 @@ class PreviewRendererTest {
         assertEquals(grade.temporalStrength, back.temporalStrength, 0f)
     }
 
+    @Test
+    fun color_package_passes_through_at_native_scale() {
+        // COL-13: the nine color-package fields are ALREADY at rawedit's
+        // native scale in GradeK (like noiseReduction, unlike lutStrength) —
+        // the mapping is a pure pass-through, so the wheel offsets, hues and
+        // balance the user sets are exactly what the native stages 18/19
+        // receive, at every JNI seam (preview, cached, MP4 export, encoded —
+        // the parity contract).
+        val grade = GradeK(
+            wheelShadowX = 0.35f, wheelShadowY = -0.6f,
+            wheelMidX = -0.9f, wheelMidY = 0.25f,
+            wheelHighX = 0.7f, wheelHighY = 0.85f,
+            splitShadowHue = 210f, splitHighlightHue = 45f,
+            splitBalance = -30f,
+        )
+        val args = GradeMapping.toNative(grade)
+        assertEquals(0.35f, args.wheelShadowX, 0f)
+        assertEquals(-0.6f, args.wheelShadowY, 0f)
+        assertEquals(-0.9f, args.wheelMidX, 0f)
+        assertEquals(0.25f, args.wheelMidY, 0f)
+        assertEquals(0.7f, args.wheelHighX, 0f)
+        assertEquals(0.85f, args.wheelHighY, 0f)
+        assertEquals(210f, args.splitShadowHue, 0f)
+        assertEquals(45f, args.splitHighlightHue, 0f)
+        assertEquals(-30f, args.splitBalance, 0f)
+    }
+
+    @Test
+    fun color_package_defaults_are_neutral() {
+        // The GradeK defaults (offsets 0, hues -1 = off, balance 0) map to the
+        // neutral center: both native stages 18/19 are skipped by their
+        // guards, so a default grade keeps the exact pre-COL-13 look (locked
+        // at the C++ level by the bit-identity tests).
+        val args = GradeMapping.toNative(GradeK())
+        assertEquals(0f, args.wheelShadowX, 0f)
+        assertEquals(0f, args.wheelShadowY, 0f)
+        assertEquals(0f, args.wheelMidX, 0f)
+        assertEquals(0f, args.wheelMidY, 0f)
+        assertEquals(0f, args.wheelHighX, 0f)
+        assertEquals(0f, args.wheelHighY, 0f)
+        assertEquals(-1f, args.splitShadowHue, 0f)
+        assertEquals(-1f, args.splitHighlightHue, 0f)
+        assertEquals(0f, args.splitBalance, 0f)
+    }
+
     // ---- stabilizationArgs (gyro Phase 5: the ONE testable preview gate) ----
 
     @Test

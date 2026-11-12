@@ -549,6 +549,84 @@ class SliderStepsTest {
         assertEquals(15f, r.endInclusive, 1e-6f)
     }
 
+    // ---- Color wheel + split tone (COL-13) ----
+
+    @Test
+    fun wheel_offsets_snap_to_the_0_05_grid() {
+        // The wheel is a pad, not sliders, but the whole-grade snap still
+        // quantizes its offsets: 20 intervals per axis, the straighten
+        // half-degree precedent.
+        val g = SliderSteps.snap(
+            GradeK(
+                wheelShadowX = 0.123f, wheelShadowY = -0.22f,
+                wheelMidX = 0.77f, wheelMidY = 0.06f,
+                wheelHighX = -0.99f, wheelHighY = 0.48f,
+            )
+        )
+        assertEquals(0.1f, g.wheelShadowX, 1e-4f)
+        assertEquals(-0.2f, g.wheelShadowY, 1e-4f)
+        assertEquals(0.75f, g.wheelMidX, 1e-4f)
+        assertEquals(0.05f, g.wheelMidY, 1e-4f)
+        assertEquals(-1.0f, g.wheelHighX, 1e-4f)
+        assertEquals(0.5f, g.wheelHighY, 1e-4f)
+    }
+
+    @Test
+    fun split_tone_axes_snap_to_their_grids() {
+        // Hues are degrees 0..360 (1-degree grid), balance is -100..100
+        // (whole numbers) — the slider-like controls of the package.
+        val g = SliderSteps.snap(
+            GradeK(splitShadowHue = 210.6f, splitHighlightHue = 45.4f, splitBalance = -29.5f)
+        )
+        assertEquals(211f, g.splitShadowHue, 1e-4f)
+        // 45.4 is nearer 45 than 46 on the whole-degree grid.
+        assertEquals(45f, g.splitHighlightHue, 1e-4f)
+        // -29.5 is EXACTLY between -29 and -30: round half up -> -29.
+        assertEquals(-29f, g.splitBalance, 1e-4f)
+    }
+
+    @Test
+    fun snap_keeps_a_neutral_color_package_neutral() {
+        // A neutral grade stays neutral under the snap (0, -1 and 0 are
+        // all grid values), so the omit-when-neutral store contract
+        // survives a snap — the binding back-compat rule.
+        val g = SliderSteps.snap(GradeK())
+        assertEquals(0f, g.wheelShadowX, 0f)
+        assertEquals(0f, g.wheelMidY, 0f)
+        assertEquals(-1f, g.splitShadowHue, 0f)
+        assertEquals(-1f, g.splitHighlightHue, 0f)
+        assertEquals(0f, g.splitBalance, 0f)
+    }
+
+    @Test
+    fun double_tap_resets_each_split_tone_axis_only() {
+        // COL-13: each split-tone slider resets independently to its
+        // GradeK default (hue -1 = off, balance 0 = midgray crossover) —
+        // the tapped control goes neutral, the OTHER hue, the wheel
+        // offsets and every other axis stay put.
+        val current = GradeK(
+            exposureEv = 1f, wheelShadowX = 0.4f, wheelMidY = -0.6f,
+            splitShadowHue = 210f, splitHighlightHue = 45f, splitBalance = -30f,
+        )
+
+        val shadowHue = SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_SHADOW_HUE, current)
+        assertEquals(-1f, shadowHue.splitShadowHue, 0f)
+        assertEquals(45f, shadowHue.splitHighlightHue, 0f)
+        assertEquals(-30f, shadowHue.splitBalance, 0f)
+        assertEquals(0.4f, shadowHue.wheelShadowX, 0f)
+        assertEquals(1f, shadowHue.exposureEv, 0f)
+
+        val highlightHue = SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_HIGHLIGHT_HUE, current)
+        assertEquals(-1f, highlightHue.splitHighlightHue, 0f)
+        assertEquals(210f, highlightHue.splitShadowHue, 0f)
+        assertEquals(-0.6f, highlightHue.wheelMidY, 0f)
+
+        val balance = SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_BALANCE, current)
+        assertEquals(0f, balance.splitBalance, 0f)
+        assertEquals(210f, balance.splitShadowHue, 0f)
+        assertEquals(45f, balance.splitHighlightHue, 0f)
+    }
+
     // ---- Compose steps argument ----
 
     @Test

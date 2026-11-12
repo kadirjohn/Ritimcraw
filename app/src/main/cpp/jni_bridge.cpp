@@ -103,7 +103,7 @@ thread_local std::unique_ptr<rawedit::Lut> gLut;
 
 // Resolves the Kotlin lutPath argument into a table for this render.
 // Returns false ONLY on a parse failure (error state set, cache cleared —
-// the render fails loudly rather than silently dropping stage 20). Returns
+// the render fails loudly rather than silently dropping stage 24). Returns
 // true with *out == nullptr when no LUT is selected (null or empty path —
 // the old no-LUT look) or the path's file is missing (IoError is treated
 // as no-LUT: LutStore.pathFor already checked existence, but a file
@@ -683,7 +683,11 @@ int strideFor(const rawedit::FrameInfo& info, int maxDim) {
 // the Kotlin layer maps GradeK's 0..100 percent to rawedit's 0..1 blend
 // before the call, so the jfloat here is already native-scale. The noise
 // package (DN-01..08) appends its two floats, and the temporal package
-// (DN-05..09) its bool+float, last, in rawedit's native scale. developCpu
+// (DN-05..09) its bool+float, last, in rawedit's native scale. The color
+// package (COL-13) appends its nine floats after temporalStrength in Grade
+// order: six wheel offsets (unit-disc [-1,1], (0,0) neutral) and three
+// split-tone scalars (two hue degrees with -1 = off, balance -100..100).
+// developCpu
 // itself ignores the temporal fields (the bridge applies the stage to the
 // CFA before developCpu); they ride Grade so the whole grade pipeline
 // carries them like any other control.
@@ -694,7 +698,12 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
                                float sharpness, float detail, int tonemap,
                                float lutStrength,
                                float noiseReduction, float chromaDenoise,
-                               bool temporalNr, float temporalStrength) {
+                               bool temporalNr, float temporalStrength,
+                               float wheelShadowX, float wheelShadowY,
+                               float wheelMidX, float wheelMidY,
+                               float wheelHighX, float wheelHighY,
+                               float splitShadowHue, float splitHighlightHue,
+                               float splitBalance) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
@@ -717,6 +726,15 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.chromaDenoise = chromaDenoise;
     g.temporalNr = temporalNr;
     g.temporalStrength = temporalStrength;
+    g.wheelShadowX = wheelShadowX;
+    g.wheelShadowY = wheelShadowY;
+    g.wheelMidX = wheelMidX;
+    g.wheelMidY = wheelMidY;
+    g.wheelHighX = wheelHighX;
+    g.wheelHighY = wheelHighY;
+    g.splitShadowHue = splitShadowHue;
+    g.splitHighlightHue = splitHighlightHue;
+    g.splitBalance = splitBalance;
     return g;
 }
 
@@ -1278,12 +1296,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
         jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // render with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -1330,7 +1353,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
                                              temporalNr == JNI_TRUE,
-                                             temporalStrength),
+                                             temporalStrength,
+                                             wheelShadowX, wheelShadowY,
+                                             wheelMidX, wheelMidY,
+                                             wheelHighX, wheelHighY,
+                                             splitShadowHue, splitHighlightHue,
+                                             splitBalance),
                              lut, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -1363,12 +1391,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
         jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // render with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -1427,7 +1460,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
                                              temporalNr == JNI_TRUE,
-                                             temporalStrength),
+                                             temporalStrength,
+                                             wheelShadowX, wheelShadowY,
+                                             wheelMidX, wheelMidY,
+                                             wheelHighX, wheelHighY,
+                                             splitShadowHue, splitHighlightHue,
+                                             splitBalance),
                              lut, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -1745,11 +1783,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
         jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // export frame with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -1795,7 +1838,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                             asShot, highlightReconstruction, keepVignetting,
                             sharpness, detail, tonemap, lutStrength,
                             noiseReduction, chromaDenoise,
-                            temporalNr == JNI_TRUE, temporalStrength),
+                            temporalNr == JNI_TRUE, temporalStrength,
+                            wheelShadowX, wheelShadowY,
+                            wheelMidX, wheelMidY,
+                            wheelHighX, wheelHighY,
+                            splitShadowHue, splitHighlightHue,
+                            splitBalance),
             lut);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
@@ -2257,10 +2305,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
-        jboolean temporalNr, jfloat temporalStrength) {
+        jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageDevelop;
-    // Resolve the stage-22 LUT first (COL-07): a parse failure fails the
+    // Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // develop with the lut error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -2268,7 +2321,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
     // no CFA and no neighbor frames available at this seam, so the two
     // fields travel for signature parity (one signature across every
     // develop entry point) and are ignored here. developEncoded never reads
-    // them; the encoded UI keeps the control MCRAW-gated.
+    // them; the encoded UI keeps the control MCRAW-gated. The color wheel /
+    // split-tone fields (COL-13) travel the same way: tone-band stages are
+    // MCRAW-only (the encoded path grades via its WB/temp/tint/exposure
+    // loop), so they ride the signature for parity and are ignored here.
 
     if (width <= 0 || height <= 0 || yPlane == nullptr || uPlane == nullptr ||
         (semiPlanar == JNI_FALSE && vPlane == nullptr)) {
@@ -2344,7 +2400,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             asShot, highlightReconstruction, keepVignetting,
                             sharpness, detail, tonemap, lutStrength,
                             noiseReduction, chromaDenoise,
-                            temporalNr == JNI_TRUE, temporalStrength),
+                            temporalNr == JNI_TRUE, temporalStrength,
+                            wheelShadowX, wheelShadowY,
+                            wheelMidX, wheelMidY,
+                            wheelHighX, wheelHighY,
+                            splitShadowHue, splitHighlightHue,
+                            splitBalance),
             isBt709 != JNI_FALSE, lut);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,

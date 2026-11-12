@@ -161,15 +161,19 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, c
 
     // ---- Noise reduction (DN-01..08), detail (COL-15), tonemap (COL-16),
     // LUT (COL-07). ----
-    // The same stages 7-8 and 19-22 the MCRAW path runs, on the decoded and
+    // The same stages 7-8 and 21-24 the MCRAW path runs, on the decoded and
     // graded RGB: chroma denoise (radius 2 px) and luma denoise (3x3
     // bilateral) FIRST — before the sharpening stages amplify what noise
     // survives — then sharpness (radius 1.5 px) and detail (radius 0.75 px)
     // as luminance-only unsharp masks, then the optional ACES/AgX tonemap,
     // then the optional .cube LUT. All genuinely apply to an encoded clip:
     // its pixels are ordinary linear RGB once the Mi-Log decode and grade
-    // have run. Neutral grades skip every stage (exact passthrough, the
-    // old look).
+    // have run. The tone-band color stages (9-20: black/white point,
+    // shadows/midtones/highlights, wheel, split tone, saturation) stay
+    // MCRAW-only — the encoded path's per-pixel WB/exposure loop covers its
+    // grading needs, so the wheel/split fields travel in Grade for
+    // signature parity and are ignored here. Neutral grades skip every
+    // stage (exact passthrough, the old look).
     encodedDenoiseStages(out, grade);
     encodedDetailStages(out, grade);
     encodedTonemapStage(out, grade);

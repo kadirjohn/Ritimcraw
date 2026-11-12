@@ -301,7 +301,7 @@ class GradeStoreTest {
         // A project.json written by the pre-LUT build (COL-07): the two new
         // fields are absent and must parse as their neutral defaults
         // (lutId null = no LUT, lutStrength 100 = full) — the native pipeline
-        // bypasses stage 20 with lutId null, so the old look is preserved
+        // bypasses stage 24 with lutId null, so the old look is preserved
         // exactly (the binding requirement of this package).
         val file = projectFile()
         file.parentFile?.mkdirs()
@@ -514,6 +514,105 @@ class GradeStoreTest {
         assertEquals(true, on.contains("\"stabilizationZoomLimit\":1.1"))
         assertEquals(true, on.contains("\"stabilizationTrimMs\":0.0"))
         assertEquals(true, on.contains("\"stabilizationFocalMm\":0.0"))
+    }
+
+    @Test
+    fun wheel_and_split_tone_survive_persist_and_reload() {
+        // COL-13: the nine color-package fields are ordinary grade fields —
+        // what the user set survives a persist + reload exactly.
+        val file = projectFile()
+        val grade = GradeK(
+            exposureEv = 0.5f,
+            wheelShadowX = 0.3f,
+            wheelShadowY = -0.2f,
+            wheelMidX = -0.8f,
+            wheelMidY = 0.15f,
+            wheelHighX = 0.6f,
+            wheelHighY = 0.9f,
+            splitShadowHue = 210f,
+            splitHighlightHue = 45f,
+            splitBalance = -30f,
+        )
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(grade, reloaded)
+        assertEquals(0.3f, reloaded.wheelShadowX, 0f)
+        assertEquals(-0.2f, reloaded.wheelShadowY, 0f)
+        assertEquals(-0.8f, reloaded.wheelMidX, 0f)
+        assertEquals(0.15f, reloaded.wheelMidY, 0f)
+        assertEquals(0.6f, reloaded.wheelHighX, 0f)
+        assertEquals(0.9f, reloaded.wheelHighY, 0f)
+        assertEquals(210f, reloaded.splitShadowHue, 0f)
+        assertEquals(45f, reloaded.splitHighlightHue, 0f)
+        assertEquals(-30f, reloaded.splitBalance, 0f)
+    }
+
+    @Test
+    fun old_format_file_loads_color_package_as_neutral() {
+        // A project.json written by the pre-color-wheel build (COL-13): the
+        // nine new fields are absent and must parse as their neutral
+        // defaults (offsets 0, hues -1 = off, balance 0) — the native
+        // pipeline treats all nine as no-ops, so the old look is preserved
+        // exactly (the binding requirement of this package).
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-wheel-clip":{"version":1,"exposureEv":0.8,"highlights":-25.0,"tempK":4600.0,"tint":3.0,"saturation":10.0,"blackPoint":-5.0,"whitePoint":4.0,"shadows":-2.0,"midtones":1.0,"contrast":8.0,"asShot":false,"highlightReconstruction":true,"keepVignetting":true,"sharpness":15.0,"detail":-3.0,"tonemap":1,"lutId":null,"lutStrength":100.0,"noiseReduction":0.0,"chromaDenoise":0.0,"temporalNr":false,"temporalStrength":0.0,"stabilization":false,"stabilizationMode":0,"stabilizationStrength":50.0,"stabilizationZoomLimit":1.1,"stabilizationTrimMs":0.0,"stabilizationFocalMm":0.0,"cropX":0,"cropY":0,"cropW":1.0,"cropH":1.0,"straightenDeg":0.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-wheel-clip")
+        // The pre-existing fields keep their saved values...
+        assertEquals(0.8f, g.exposureEv, 0f)
+        assertEquals(15f, g.sharpness, 0f)
+        assertEquals(1, g.tonemap)
+        // ...and the nine color-package fields are neutral.
+        assertEquals(0f, g.wheelShadowX, 0f)
+        assertEquals(0f, g.wheelShadowY, 0f)
+        assertEquals(0f, g.wheelMidX, 0f)
+        assertEquals(0f, g.wheelMidY, 0f)
+        assertEquals(0f, g.wheelHighX, 0f)
+        assertEquals(0f, g.wheelHighY, 0f)
+        assertEquals(-1f, g.splitShadowHue, 0f)
+        assertEquals(-1f, g.splitHighlightHue, 0f)
+        assertEquals(0f, g.splitBalance, 0f)
+    }
+
+    @Test
+    fun neutral_color_package_renders_without_keys() {
+        // Omit-when-neutral: a wheel-neutral grade renders NONE of the nine
+        // keys, so the file this build writes for a neutral grade is
+        // byte-identical to the pre-COL-13 format (the binding back-compat
+        // rule of this package). Any one non-neutral field forces the full
+        // nine-key package: the wheel and split tone travel as one unit
+        // (they are one stage pair in the native pipeline).
+        val rendered = GradeStore.renderGrade(GradeK())
+        assertEquals(false, rendered.contains("wheelShadowX"))
+        assertEquals(false, rendered.contains("splitShadowHue"))
+
+        val wheelOnly = GradeStore.renderGrade(GradeK(wheelShadowX = 0.4f))
+        assertEquals(true, wheelOnly.contains("\"wheelShadowX\":0.4"))
+        // The package renders as one unit: the neutral split-tone keys ride
+        // along (parsed back as neutral by the fallbacks).
+        assertEquals(true, wheelOnly.contains("\"splitShadowHue\":-1.0"))
+        assertEquals(true, wheelOnly.contains("\"splitBalance\":0.0"))
+    }
+
+    @Test
+    fun split_balance_alone_is_not_neutral_for_rendering() {
+        // The wheelSplitNeutral gate is all-nine-neutral, but balance alone
+        // is a REAL setting, not a neutral one: with a hue on, balance
+        // shifts the crossover, so a grade whose only non-neutral field is
+        // the balance must still write its keys (and does — the gate
+        // requires ALL nine neutral). This locks the gate's boundary.
+        val balanceOnly = GradeStore.renderGrade(
+            GradeK(splitShadowHue = 30f, splitBalance = 80f)
+        )
+        assertEquals(true, balanceOnly.contains("\"splitBalance\":80.0"))
+        assertEquals(true, balanceOnly.contains("\"splitShadowHue\":30.0"))
     }
 
     private fun projectFile(): File = File(tmp.root, "project.json")

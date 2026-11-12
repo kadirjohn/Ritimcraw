@@ -129,7 +129,7 @@ class LutStoreTest {
     fun path_for_resolves_null_unknown_and_imported() {
         val s = store(UriKeyedResolver(mapOf("content://luts/a" to cubeA)))
 
-        // No selection: null (stage 20 bypassed — the old look).
+        // No selection: null (stage 24 bypassed — the old look).
         assertNull(s.pathFor(null))
         // Unknown id (a grade whose cube was removed): null, so the render
         // degrades to no-LUT instead of failing.

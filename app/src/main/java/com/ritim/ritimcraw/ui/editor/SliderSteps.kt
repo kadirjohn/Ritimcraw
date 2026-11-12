@@ -58,6 +58,20 @@ object SliderSteps {
     /** Crop fraction step (RAW-09): 1 percent per tick. */
     const val CROP_FRACTION_STEP = 0.01f
 
+    /**
+     * Wheel offset step (COL-13): 0.05 of the unit-disc radius per tick —
+     * 20 intervals per axis, fine enough that the drag feels continuous
+     * while the stored value stays a two-decimal grid value (the
+     * straighten half-degree precedent).
+     */
+    const val WHEEL_OFFSET_STEP = 0.05f
+
+    /** Split-tone hue step (COL-13): whole degrees, the UNIT_STEP precedent. */
+    const val SPLIT_HUE_STEP_DEG = 1f
+
+    /** Split-tone balance step (COL-13): whole numbers over -100..100. */
+    const val SPLIT_BALANCE_STEP = 1f
+
     /** Snaps a single axis to its step grid (slider change events). */
     fun snapExposure(value: Float): Float = quantize(value, EXPOSURE_STEP)
     fun snapHighlights(value: Float): Float = quantize(value, UNIT_STEP)
@@ -83,6 +97,11 @@ object SliderSteps {
     /** RAW-09: straighten half-degree ticks; crop fractions 1 percent. */
     fun snapStraighten(value: Float): Float = quantize(value, STRAIGHTEN_STEP_DEG)
     fun snapCropFraction(value: Float): Float = quantize(value, CROP_FRACTION_STEP)
+
+    /** COL-13: wheel offsets 0.05 grid; split hues/balance whole numbers. */
+    fun snapWheelOffset(value: Float): Float = quantize(value, WHEEL_OFFSET_STEP)
+    fun snapSplitHue(value: Float): Float = quantize(value, SPLIT_HUE_STEP_DEG)
+    fun snapSplitBalance(value: Float): Float = quantize(value, SPLIT_BALANCE_STEP)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
@@ -116,6 +135,19 @@ object SliderSteps {
             cropW = snapCropFraction(grade.cropW),
             cropH = snapCropFraction(grade.cropH),
             straightenDeg = snapStraighten(grade.straightenDeg),
+            // COL-13: wheel offsets to the 0.05 grid, split hues/balance to
+            // whole numbers. A neutral grade stays neutral under the snap
+            // (0, -1 and 0 are all grid values), so the omit-when-neutral
+            // store contract survives a snap.
+            wheelShadowX = snapWheelOffset(grade.wheelShadowX),
+            wheelShadowY = snapWheelOffset(grade.wheelShadowY),
+            wheelMidX = snapWheelOffset(grade.wheelMidX),
+            wheelMidY = snapWheelOffset(grade.wheelMidY),
+            wheelHighX = snapWheelOffset(grade.wheelHighX),
+            wheelHighY = snapWheelOffset(grade.wheelHighY),
+            splitShadowHue = snapSplitHue(grade.splitShadowHue),
+            splitHighlightHue = snapSplitHue(grade.splitHighlightHue),
+            splitBalance = snapSplitBalance(grade.splitBalance),
         )
     }
 
@@ -134,6 +166,9 @@ object SliderSteps {
         STABILIZATION_TRIM_MS, STABILIZATION_FOCAL_MM,
         // RAW-09: the crop sliders and the straighten dial.
         CROP_X, CROP_Y, CROP_W, CROP_H, STRAIGHTEN,
+        // COL-13: the split-tone sliders (the wheel is a pad, not sliders —
+        // its reset lives in the wheel UI, not here).
+        SPLIT_SHADOW_HUE, SPLIT_HIGHLIGHT_HUE, SPLIT_BALANCE,
     }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
@@ -178,6 +213,16 @@ object SliderSteps {
         Axis.CROP_W -> current.copy(cropW = GradeK().cropW, cropX = GradeK().cropX)
         Axis.CROP_H -> current.copy(cropH = GradeK().cropH, cropY = GradeK().cropY)
         Axis.STRAIGHTEN -> current.copy(straightenDeg = GradeK().straightenDeg)
+        // COL-13: each split-tone slider resets independently to its GradeK
+        // default (hue -1 = off, balance 0 = midgray crossover). The wheel
+        // is a pad, not sliders — its double-tap reset is the wheel UI's
+        // own center reset, not an Axis.
+        Axis.SPLIT_SHADOW_HUE ->
+            current.copy(splitShadowHue = GradeK().splitShadowHue)
+        Axis.SPLIT_HIGHLIGHT_HUE ->
+            current.copy(splitHighlightHue = GradeK().splitHighlightHue)
+        Axis.SPLIT_BALANCE ->
+            current.copy(splitBalance = GradeK().splitBalance)
     }
 
     /**

@@ -214,6 +214,15 @@ internal object NativeMp4Session : Mp4Session {
             // core clamps), same as GradeMapping.toNative.
             grade.noiseReduction, grade.chromaDenoise,
             grade.temporalNr, grade.temporalStrength,
+            // COL-13: the color package — six wheel offsets + three
+            // split-tone scalars, native scale already (same pass-through
+            // as GradeMapping.toNative). The SAME stages 18/19 run here as
+            // in the preview: identical math, identical order — export
+            // parity by construction.
+            grade.wheelShadowX, grade.wheelShadowY,
+            grade.wheelMidX, grade.wheelMidY,
+            grade.wheelHighX, grade.wheelHighY,
+            grade.splitShadowHue, grade.splitHighlightHue, grade.splitBalance,
             // Gyro Phase 5: null gyroPath (or stabilization off) = the
             // bridge's no-warp default (null path -> resolveStabilization
             // returns the default StabInput -> applyStabilization no-ops).

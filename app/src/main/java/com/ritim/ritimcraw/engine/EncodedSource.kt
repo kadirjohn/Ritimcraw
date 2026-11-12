@@ -375,6 +375,14 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             // has no CFA and no neighbor frames, so the bridge ignores the
             // temporal fields here (DN-05..DN-09 apply only to MCRAW clips).
             grade.temporalNr, grade.temporalStrength,
+            // COL-13: same parity-travel-and-ignore contract — the wheel and
+            // split-tone fields ride the signature but the encoded path's
+            // grade is its own WB/exposure loop (see Transfer.cpp: the tone
+            // band stages 9-20 stay MCRAW-only).
+            grade.wheelShadowX, grade.wheelShadowY,
+            grade.wheelMidX, grade.wheelMidY,
+            grade.wheelHighX, grade.wheelHighY,
+            grade.splitShadowHue, grade.splitHighlightHue, grade.splitBalance,
         )
     }
 

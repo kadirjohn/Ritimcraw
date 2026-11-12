@@ -52,6 +52,19 @@ object GradeMapping {
         val chromaDenoise: Float,
         val temporalNr: Boolean,
         val temporalStrength: Float,
+        // COL-13: the color package — six wheel offsets (unit-disc [-1,1],
+        // (0,0) neutral) then three split-tone scalars (hue degrees, -1 =
+        // off; balance -100..100), in Grade order. Appended after
+        // temporalStrength at every JNI seam; see toNative.
+        val wheelShadowX: Float,
+        val wheelShadowY: Float,
+        val wheelMidX: Float,
+        val wheelMidY: Float,
+        val wheelHighX: Float,
+        val wheelHighY: Float,
+        val splitShadowHue: Float,
+        val splitHighlightHue: Float,
+        val splitBalance: Float,
     )
 
     fun toNative(grade: GradeK): NativeArgs = NativeArgs(
@@ -81,6 +94,19 @@ object GradeMapping {
         chromaDenoise = grade.chromaDenoise,
         temporalNr = grade.temporalNr,
         temporalStrength = grade.temporalStrength,
+        // COL-13: the wheel offsets and split-tone scalars are ALREADY at
+        // rawedit's native scale in GradeK (like noiseReduction, unlike
+        // lutStrength) — pass through raw; core stages 18/19 guard on
+        // neutral themselves.
+        wheelShadowX = grade.wheelShadowX,
+        wheelShadowY = grade.wheelShadowY,
+        wheelMidX = grade.wheelMidX,
+        wheelMidY = grade.wheelMidY,
+        wheelHighX = grade.wheelHighX,
+        wheelHighY = grade.wheelHighY,
+        splitShadowHue = grade.splitShadowHue,
+        splitHighlightHue = grade.splitHighlightHue,
+        splitBalance = grade.splitBalance,
     )
 
     /**
@@ -185,7 +211,7 @@ class PreviewRenderer private constructor(
     /**
      * Renders frame [frameIndex] with [grade] scaled so the long edge fits
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
-     * stage 22 bypassed, the old look; COL-07). [gyroPath] is the attached
+     * stage 24 bypassed, the old look; COL-07). [gyroPath] is the attached
      * gyro log's path (null = no warp — gyro Phase 5; the stabilization
      * gate is [GradeMapping.stabilizationArgs], applied here at this
      * render's tier). MUST run on the renderer's engine thread (the
@@ -225,6 +251,11 @@ class PreviewRenderer private constructor(
             lutPath, args.lutStrength,
             args.noiseReduction, args.chromaDenoise,
             temporal.temporalNr, temporal.temporalStrength,
+            // COL-13 color package: after temporalStrength, before gyro.
+            args.wheelShadowX, args.wheelShadowY,
+            args.wheelMidX, args.wheelMidY,
+            args.wheelHighX, args.wheelHighY,
+            args.splitShadowHue, args.splitHighlightHue, args.splitBalance,
             stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
             stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
             maxDim,

@@ -456,7 +456,7 @@ fun ClipEditorScreen(
     // Removes a cube from the library (AppNav: LutStore.remove + refresh).
     onRemoveLut: (LutInfo) -> Unit = {},
     // The grade's lutId -> the copied cube's path (AppNav: LutStore.pathFor).
-    // Null = no LUT: stage 20 is bypassed and the old look is preserved.
+    // Null = no LUT: stage 24 is bypassed and the old look is preserved.
     lutPathFor: (String?) -> String? = { null },
     // ---- Frame Picker (RAW-11) ----
     // Develops the transport's CURRENT frame as a photo. The screen owns

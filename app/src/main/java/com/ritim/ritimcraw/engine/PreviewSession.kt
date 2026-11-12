@@ -60,7 +60,7 @@ class PreviewSession private constructor(
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
-     * stage 22 bypassed, the old look; COL-07). [gyroPath] is the attached
+     * stage 24 bypassed, the old look; COL-07). [gyroPath] is the attached
      * gyro log's path (null = no warp — gyro Phase 5; the stabilization
      * gate is [GradeMapping.stabilizationArgs], applied at this render's
      * tier). Suspends until done; resumes with the frame or a failure
@@ -149,6 +149,11 @@ class PreviewSession private constructor(
                 lutPath, args.lutStrength,
                 args.noiseReduction, args.chromaDenoise,
                 temporal.temporalNr, temporal.temporalStrength,
+                // COL-13 color package: after temporalStrength, before gyro.
+                args.wheelShadowX, args.wheelShadowY,
+                args.wheelMidX, args.wheelMidY,
+                args.wheelHighX, args.wheelHighY,
+                args.splitShadowHue, args.splitHighlightHue, args.splitBalance,
                 stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
                 stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
                 maxDim,
@@ -218,6 +223,11 @@ class PreviewSession private constructor(
                                     lutPath, args.lutStrength,
                                     args.noiseReduction, args.chromaDenoise,
                                     temporal.temporalNr, temporal.temporalStrength,
+                                    // COL-13 color package: after temporalStrength, before gyro.
+                                    args.wheelShadowX, args.wheelShadowY,
+                                    args.wheelMidX, args.wheelMidY,
+                                    args.wheelHighX, args.wheelHighY,
+                                    args.splitShadowHue, args.splitHighlightHue, args.splitBalance,
                                     stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
                                     stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
                                     maxDim,
