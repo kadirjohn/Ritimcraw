@@ -472,6 +472,30 @@ class NativeSource private constructor(
             gyroPath: String,
         ): DoubleArray?
 
+        /**
+         * Stabilization zoom probe (audit fix 2026-11-12, Fix 5): evaluates
+         * the clip-wide stabilization plan for the six flat request params —
+         * the identical plan the renders run — and returns
+         * [requiredZoom, appliedZoom, statusInt] without warping anything
+         * (see the bridge comment). statusInt is frame 0's status in the
+         * core's StabilizationStatus order (Ok=0, Off=1, NoImu=2,
+         * Unsynced=3, LowOverlap=4, IntrinsicsAssumed=5). Null = no verdict:
+         * dead handle, no gyro log, or a .gcsv parse failure (the error
+         * accessors say which). The zooms are buffer-independent, so one
+         * probe per settle covers every tier. MUST run on the session's
+         * engine thread (thread-local gyro cache + error state) — the seam
+         * confines it like framePtsUs.
+         */
+        @JvmStatic private external fun nativeStabZoomProbe(
+            handle: Long,
+            gyroPath: String,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
+        ): DoubleArray?
+
         // ---- Cross-module wrappers (external decls stay private; see the
         // mangling note at the top of the JNI section) ----
 
@@ -705,6 +729,29 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeGyroSyncProbe(fd, gyroPath)
+        }
+
+        /**
+         * JNI bridge: see nativeStabZoomProbe. Throws IllegalStateException
+         * when the .so is absent; null otherwise means "no verdict" (the
+         * caller shows no readout, never a fabricated zoom).
+         */
+        internal fun jniStabZoomProbe(
+            handle: Long,
+            gyroPath: String,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
+        ): DoubleArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeStabZoomProbe(
+                handle, gyroPath, stabMode, stabStrength,
+                stabZoomLimit, stabFocalMm, stabTrimMs,
+            )
         }
 
         /** JNI bridge: closeSource for export sessions. */

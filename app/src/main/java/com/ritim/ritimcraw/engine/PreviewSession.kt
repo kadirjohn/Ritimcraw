@@ -381,6 +381,44 @@ class PreviewSession private constructor(
     }
 
     /**
+     * The stabilization zoom verdict (audit fix 2026-11-12, Fix 5): the
+     * native probe over this session's handle, confined to the engine
+     * thread (thread-local gyro cache + error state — the bridge comment's
+     * binding rule) exactly like framePtsUs. Null is the honest no-verdict
+     * (dead handle / no log / parse failure), never a fabricated zoom; a
+     * closed session's handle is dead, so the same null covers it.
+     */
+    override suspend fun stabZoomProbe(
+        gyroPath: String,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        stabFocalMm: Float,
+        stabTrimMs: Float,
+    ): DoubleArray? = suspendCoroutine { cont ->
+        try {
+            engine.execute {
+                cont.resume(
+                    try {
+                        if (closed.get()) {
+                            null // closed while queued: never touch the dead handle
+                        } else {
+                            NativeSource.jniStabZoomProbe(
+                                handle, gyroPath, stabMode, stabStrength,
+                                stabZoomLimit, stabFocalMm, stabTrimMs,
+                            )
+                        }
+                    } catch (t: Throwable) {
+                        null // engine-side failure: no verdict, never fabricated
+                    }
+                )
+            }
+        } catch (e: RejectedExecutionException) {
+            cont.resume(null)
+        }
+    }
+
+    /**
      * The MCRAW clip's audio for editor playback (owner request
      * 2026-11-11 section 4): the native readAudio one-shot (whole-clip
      * interleaved 16-bit PCM — the core/Source.h contract), read ONCE on

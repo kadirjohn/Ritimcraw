@@ -72,6 +72,7 @@ import com.ritim.ritimcraw.data.LutInfo
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
+import com.ritim.ritimcraw.engine.GradeMapping
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.engine.PreviewFrame
@@ -302,6 +303,52 @@ object EditorPreviewLogic {
         gyroAttached: Boolean,
         focalMm: Float,
     ): Boolean = stabilizationOn && gyroAttached && focalMm > 0f
+
+    // ---- Zoom-limit honesty readout (audit fix 2026-11-12, Fix 5) ----
+
+    // The native zoom probe's statusInt values: the core's StabilizationStatus
+    // enum order (Stabilization.h), mirrored here because the probe ships
+    // them as plain ints. The warp set is Ok / IntrinsicsAssumed / LowOverlap
+    // (the bridge's stabWarps); Off / NoImu / Unsynced refuse and carry no
+    // honest zoom to show.
+    const val STAB_STATUS_OK = 0
+    const val STAB_STATUS_OFF = 1
+    const val STAB_STATUS_NO_IMU = 2
+    const val STAB_STATUS_UNSYNCED = 3
+    const val STAB_STATUS_LOW_OVERLAP = 4
+    const val STAB_STATUS_INTRINSICS_ASSUMED = 5
+
+    /**
+     * The zoom-limit honesty verdict (audit fix 2026-11-12, Fix 5): which
+     * readout the probe's clip-wide numbers support — the APPLIED crop
+     * when the user's limit covers the need, or LIMITED when the plan's
+     * required zoom was clamped down to it. Pure so a JVM test locks the
+     * mapping; the decision reads the probe's raw numbers, never a UI
+     * string.
+     *
+     * [requiredZoom] is the plan's unclamped static-crop need and
+     * [appliedZoom] its value after the zoomLimit clamp (the core computes
+     * applied = min(required, limit), so required > applied EXACTLY when
+     * the limit bit — no epsilon needed, both sides are the same doubles
+     * the probe shipped). The readout shows [appliedZoom] either way: that
+     * is the crop the frames actually pay.
+     *
+     * Null = no verdict: the status is one of the refusal set (Off / NoImu
+     * / Unsynced — the warp does not run, so no zoom is shown, never a
+     * fabricated "crop 1.00x") or an unknown status int (forward compat —
+     * a future core status reads as no readout until this mirror learns
+     * it, never a guess).
+     */
+    fun stabZoomVerdict(
+        statusInt: Int,
+        requiredZoom: Double,
+        appliedZoom: Double,
+    ): StabZoomVerdict? = when (statusInt) {
+        STAB_STATUS_OK, STAB_STATUS_INTRINSICS_ASSUMED, STAB_STATUS_LOW_OVERLAP ->
+            if (requiredZoom > appliedZoom) StabZoomVerdict.LIMITED
+            else StabZoomVerdict.APPLIED
+        else -> null
+    }
 }
 
 /**
@@ -311,6 +358,18 @@ object EditorPreviewLogic {
  * No gyro data).
  */
 enum class GyroSyncStatus { ANCHORED, MANUAL, NO_DATA }
+
+/**
+ * The Stabilization group's zoom-limit honesty verdict (audit fix
+ * 2026-11-12, Fix 5): the pure result of
+ * [EditorPreviewLogic.stabZoomVerdict], rendered by the group as the
+ * zoom readout beside the sync status line — APPLIED shows the effective
+ * crop ("crop 1.05x"), LIMITED shows the limit-clamped crop ("limited to
+ * 1.10x") so the user SEES when their zoom limit is cutting the warp's
+ * reach. Null from the pure function renders no readout at all (refusal
+ * statuses warp nothing — an invented "crop 1.00x" would lie).
+ */
+enum class StabZoomVerdict { APPLIED, LIMITED }
 
 enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
 
@@ -781,6 +840,13 @@ fun ClipEditorScreen(
         // .gcsv, and a non-gcsv pick fails the probe with the recovery
         // message instead of being blocked at the picker.
         var gyroImportError by remember(sourceId) { mutableStateOf<String?>(null) }
+        // The zoom-limit honesty readout's data (audit fix 2026-11-12, Fix
+        // 5): the native probe's [requiredZoom, appliedZoom, statusInt] for
+        // the CURRENT grade + attached log, or null = no verdict (the
+        // group renders no readout rather than fabricating a zoom). Filled
+        // by the probe effect below; keyed to the clip like every other
+        // editor state.
+        var stabZoom by remember(sourceId) { mutableStateOf<DoubleArray?>(null) }
         val gyroPicker = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri ->
@@ -1022,6 +1088,60 @@ fun ClipEditorScreen(
                 positionFrame, grade,
                 SliderTiers.tierFor(dragActive, previewQuality.scrubMaxDim),
                 cached = dragActive,
+            )
+        }
+
+        // Zoom-limit honesty probe (audit fix 2026-11-12, Fix 5): one
+        // native plan evaluation per stab-grade change — the clip-wide
+        // required/applied zoom does not depend on the frame or the
+        // preview tier (the crop math is uniform-scale invariant, so one
+        // probe covers every tier), so the readout updates when the user
+        // edits the stab sliders/attach, not per render. The gate is the
+        // SAME one the renders run (GradeMapping.stabilizationArgs —
+        // toggle + attached log + tier pass; the tier is irrelevant since
+        // Fix 1 but the call stays identical so the probe can never
+        // disagree with the render gate), and the probe itself runs on the
+        // engine thread through the session seam (the bridge's thread
+        // contract). Null lands as "no readout" — never a fabricated zoom.
+        // The stab grade fields + gyroId + session all key the effect: an
+        // edit restarts it, a detach clears the readout, and the session
+        // arriving is what makes the probe possible at all.
+        val currentGyroPathForProbe by rememberUpdatedState(gyroPathFor)
+        LaunchedEffect(
+            grade.stabilization, grade.stabilizationMode,
+            grade.stabilizationStrength, grade.stabilizationZoomLimit,
+            grade.stabilizationFocalMm, grade.stabilizationTrimMs,
+            gyroId, session,
+        ) {
+            val s = session ?: return@LaunchedEffect
+            if (!grade.stabilization || gyroId.isBlank()) {
+                stabZoom = null
+                return@LaunchedEffect
+            }
+            val gyroPath = currentGyroPathForProbe(gyroId)
+            // The identical mapping the renders use: null = the render
+            // gate refuses (no log path), so no honest verdict exists.
+            val stab = GradeMapping.stabilizationArgs(
+                grade, PreviewTiers.PAUSED_MAX_DIM, gyroPath,
+            ) ?: run {
+                stabZoom = null
+                return@LaunchedEffect
+            }
+            val probePath = stab.gyroPath
+            if (probePath == null) {
+                // Unreachable by the guard above (stabilizationArgs copies
+                // its non-null gyroPath in) — but the rule is absolute:
+                // no path, no verdict, never a fabricated zoom.
+                stabZoom = null
+                return@LaunchedEffect
+            }
+            stabZoom = s.stabZoomProbe(
+                gyroPath = probePath,
+                stabMode = stab.mode,
+                stabStrength = stab.strength,
+                stabZoomLimit = stab.zoomLimit,
+                stabFocalMm = stab.focalMm,
+                stabTrimMs = stab.trimMs,
             )
         }
 
@@ -2033,6 +2153,7 @@ fun ClipEditorScreen(
                     showStabilization = EditorPreviewLogic.showStabilization(sourcePath),
                     gyroAttached = gyroId.isNotBlank(),
                     gyroSync = gyroSync,
+                    stabZoom = stabZoom,
                     gyroName = gyroNameFor(gyroId),
                     containerFocalMm = containerFocalMm,
                     gyroImportError = gyroImportError,
@@ -2682,6 +2803,12 @@ private fun DetailPanel(
     showStabilization: Boolean = false,
     gyroAttached: Boolean = false,
     gyroSync: DoubleArray? = null,
+    // The zoom-limit honesty readout (audit fix 2026-11-12, Fix 5): the
+    // native probe's [requiredZoom, appliedZoom, statusInt] over the
+    // CURRENT grade + attached log, or null = no verdict (the group
+    // renders no readout rather than fabricating a zoom — the pure
+    // EditorPreviewLogic.stabZoomVerdict decides what shows).
+    stabZoom: DoubleArray? = null,
     gyroName: String? = null,
     containerFocalMm: Float = 0f,
     gyroImportError: String? = null,
@@ -3025,6 +3152,38 @@ private fun DetailPanel(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // The zoom-limit honesty readout (audit fix 2026-11-12, Fix
+                // 5): the probe's clip-wide numbers under the slider they
+                // describe — APPLIED shows the effective crop the frames
+                // actually pay ("Crop 1.05x"), LIMITED shows the limit-
+                // clamped crop ("Limited to 1.10x") so the user SEES when
+                // the limit cuts the warp's reach. Both show the APPLIED
+                // zoom (probe[1]): that is the crop the frames pay. Null
+                // (refusal statuses / no verdict / short probe) renders
+                // nothing — never a fabricated zoom.
+                val zoomReadout: Pair<StabZoomVerdict, Float>? =
+                    stabZoom?.takeIf { it.size >= 3 }?.let { probe ->
+                        EditorPreviewLogic.stabZoomVerdict(
+                            statusInt = probe[2].toInt(),
+                            requiredZoom = probe[0],
+                            appliedZoom = probe[1],
+                        )?.let { verdict -> verdict to probe[1].toFloat() }
+                    }
+                when (val readout = zoomReadout) {
+                    null -> Unit
+                    else -> Text(
+                        stringResource(
+                            if (readout.first == StabZoomVerdict.APPLIED) {
+                                R.string.editor_stabilization_zoom_applied
+                            } else {
+                                R.string.editor_stabilization_zoom_limited
+                            },
+                            Format.formatZoom(readout.second),
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (gyroAttached) {
                     if (gyroName != null) {
                         Text(

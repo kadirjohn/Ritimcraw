@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.ui.editor
 import com.ritim.ritimcraw.engine.SourcePath
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -335,6 +336,93 @@ class EditorPreviewLogicTest {
         assertFalse(
             EditorPreviewLogic.stabilizationReady(
                 stabilizationOn = true, gyroAttached = true, focalMm = 0f,
+            ),
+        )
+    }
+
+    // ---- zoom-limit honesty verdict (audit fix 2026-11-12, Fix 5) ----
+
+    @Test
+    fun applied_when_limit_covers_the_need() {
+        // required <= applied (the clamp was a no-op): the honest readout
+        // is the crop actually paid — APPLIED, rendered as "crop 1.05x".
+        assertEquals(
+            StabZoomVerdict.APPLIED,
+            EditorPreviewLogic.stabZoomVerdict(
+                statusInt = EditorPreviewLogic.STAB_STATUS_OK,
+                requiredZoom = 1.05, appliedZoom = 1.05,
+            ),
+        )
+    }
+
+    @Test
+    fun limited_when_required_exceeds_the_clamp() {
+        // required > applied EXACTLY when the zoom limit bit (the core
+        // computes applied = min(required, limit) from the same doubles):
+        // the readout flags the limit, rendered as "limited to 1.10x".
+        assertEquals(
+            StabZoomVerdict.LIMITED,
+            EditorPreviewLogic.stabZoomVerdict(
+                statusInt = EditorPreviewLogic.STAB_STATUS_OK,
+                requiredZoom = 1.23, appliedZoom = 1.10,
+            ),
+        )
+    }
+
+    @Test
+    fun every_warping_status_shows_a_verdict() {
+        // The core's stabWarps set: Ok / IntrinsicsAssumed / LowOverlap all
+        // run the warp, so all three carry an honest zoom — the assumed-
+        // intrinsics and low-overlap paths show the same readout as the
+        // clean one (their status lines already flag the degradation).
+        for (status in listOf(
+            EditorPreviewLogic.STAB_STATUS_OK,
+            EditorPreviewLogic.STAB_STATUS_INTRINSICS_ASSUMED,
+            EditorPreviewLogic.STAB_STATUS_LOW_OVERLAP,
+        )) {
+            assertEquals(
+                StabZoomVerdict.APPLIED,
+                EditorPreviewLogic.stabZoomVerdict(
+                    statusInt = status,
+                    requiredZoom = 1.05, appliedZoom = 1.05,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun refusal_statuses_render_no_readout() {
+        // Off / NoImu / Unsynced refuse BEFORE the zoom math: the warp does
+        // not run, so no zoom exists to show — null, never a fabricated
+        // "crop 1.00x" over an unstabilized frame.
+        for (status in listOf(
+            EditorPreviewLogic.STAB_STATUS_OFF,
+            EditorPreviewLogic.STAB_STATUS_NO_IMU,
+            EditorPreviewLogic.STAB_STATUS_UNSYNCED,
+        )) {
+            assertNull(
+                EditorPreviewLogic.stabZoomVerdict(
+                    statusInt = status,
+                    requiredZoom = 1.23, appliedZoom = 1.10,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun unknown_status_is_null_never_a_guess() {
+        // Forward compat: a future core status int the mirror has not
+        // learned reads as no readout, never a guessed verdict.
+        assertNull(
+            EditorPreviewLogic.stabZoomVerdict(
+                statusInt = 6,
+                requiredZoom = 1.05, appliedZoom = 1.05,
+            ),
+        )
+        assertNull(
+            EditorPreviewLogic.stabZoomVerdict(
+                statusInt = -1,
+                requiredZoom = 1.05, appliedZoom = 1.05,
             ),
         )
     }

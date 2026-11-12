@@ -1855,6 +1855,87 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
     return static_cast<jlong>(s->frameInfo(static_cast<size_t>(index)).ptsUs);
 }
 
+// Stabilization zoom probe (audit fix 2026-11-12, Fix 5) -----------------------
+//
+// The zoom-limit honesty readout behind the Stabilization group's status
+// line: evaluates the CLIP-WIDE plan for the six flat request params —
+// the identical stabilizationFrameFor the renders run — and returns the
+// plan's numbers WITHOUT warping anything:
+//
+//   [0] requiredZoom  (unclamped static-crop need, >= 1.0)
+//   [1] appliedZoom   (after the user's zoomLimit clamp)
+//   [2] statusInt     (frame 0's StabilizationStatus: Ok=0, Off=1, NoImu=2,
+//                      Unsynced=3, LowOverlap=4, IntrinsicsAssumed=5 — the
+//                      core Stabilization.h enum order; the Kotlin mirror
+//                      documents the same list)
+//
+// or nullptr when there is no verdict to show: a bad handle (the
+// nativeFramePtsUs silent-null precedent), no gyro log attached (null/empty
+// path — resolveGyro's honest no-op), or a .gcsv parse failure (error state
+// set, like a failing render — the next native call resets it per the
+// entry-point convention). The UI shows NO readout on null — never a
+// fabricated zoom.
+//
+// WHY THE PROBE IS CHEAP AND TIER-FREE: the plan evaluation is the same
+// one the renders pay (~0.2 ms on the 4K fixture, PreviewTiers' measured
+// table) and the zooms are BUFFER-INDEPENDENT — focalLengthPxFromEquivalent
+// scales the pixel focal linearly with the buffer width and staticCropZoom
+// is a dimensionless corner-coverage ratio, so evaluating at the clip's
+// RECORDED CFA dims (frameInfo(0).width/height) yields the same
+// required/applied zooms any preview tier or the full-res export would.
+// One probe per settle covers every tier.
+//
+// THREADING (binding): like every session native call this MUST run on the
+// session's engine thread — resolveGyro's gyro cache and the error state
+// are thread_local. The Kotlin seam (PreviewSession.stabZoomProbe) confines
+// it via engine.execute exactly like framePtsUs; the probe never runs from
+// any other thread.
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabZoomProbe(
+        JNIEnv* env, jclass, jlong handle, jstring gyroPath,
+        jint stabMode, jfloat stabStrength, jfloat stabZoomLimit,
+        jfloat stabFocalMm, jfloat stabTrimMs) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) return nullptr; // dead session: no verdict, silently
+
+    // The gyro resolves exactly like a render's: the thread-local cache
+    // (warm after the first render), false only on a parse failure.
+    const GyroArtifacts* gyro = nullptr;
+    if (!resolveGyro(env, gyroPath, &gyro)) return nullptr; // error set
+    if (gyro == nullptr) return nullptr; // no log attached: no verdict
+
+    // The clip's recorded CFA dims as the evaluation buffer: any dims give
+    // the same zooms (the scale invariant above), so the source's own
+    // dimensions are the honest choice. frameInfo is metadata-only — no
+    // decode, no cache touch.
+    const rawedit::FrameInfo info0 = s->frameInfo(0);
+    const int bufW = info0.width;
+    const int bufH = info0.height;
+
+    // The full plan evaluation the renders run, frame 0, measure filled:
+    // requiredZoom/appliedZoom are clip-wide (the static crop is one
+    // number over the whole q_rel list), status is frame 0's own verdict.
+    const StabRequest req = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
+                                          stabFocalMm, stabTrimMs);
+    rawedit::StabilizationFrame frame;
+    StabMeasure measure;
+    stabilizationFrameFor(req, *s, /*frameIndex=*/0, bufW, bufH, gyro,
+                          &frame, &measure);
+
+    const double out[3] = {
+        measure.requiredZoom,
+        measure.appliedZoom,
+        static_cast<double>(static_cast<int>(measure.status)),
+    };
+    jdoubleArray result = env->NewDoubleArray(3);
+    if (result == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(result, 0, 3, out);
+    return result;
+}
+
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfo(
         JNIEnv* env, jclass, jlong handle) {
