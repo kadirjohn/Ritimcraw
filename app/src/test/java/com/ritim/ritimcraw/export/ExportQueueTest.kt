@@ -1165,4 +1165,321 @@ class ExportQueueTest {
         // never FAILED by a kick's recoverInterrupted.
         assertEquals(State.DONE, store.all().single().state)
     }
+
+    // ---- CANCELLATION (owner request 2026-11-13: "export menüsünde
+    // iptal etme kısmı olmalı" — the exports screen must have a cancel
+    // action) ----
+
+    @Test
+    fun cancel_of_a_queued_job_skips_it_and_the_next_job_runs() = runBlocking {
+        val store = store()
+        store.add(job("j1", "clip1"))
+        store.add(job("j2", "clip2"))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        assertTrue(queue.cancel("j1"))
+        val ran = queue.runAll()
+        // The cancelled job never ran; the next queued job did.
+        assertEquals(1, ran)
+        val jobs = store.all()
+        assertEquals(State.CANCELLED, jobs[0].state)
+        assertNull(jobs[0].detail) // a user stop is not an error
+        assertEquals(State.DONE, jobs[1].state)
+        assertTrue(log.none { it.contains("clip1") })
+        assertTrue(log.any { it.contains("clip2") })
+        // The cancelled job left no file behind (it never started).
+        assertTrue(!File(tmp.root, "clip1-dng.dng").exists())
+    }
+
+    @Test
+    fun cancel_of_a_queued_job_during_an_active_drain_skips_it() = runBlocking {
+        // j1 is RUNNING (held mid-render), j2 is QUEUED behind it: the
+        // cancel of j2 must land instantly and the ACTIVE drain — which
+        // loops until no job is QUEUED — must never pick it up.
+        val store = store()
+        store.add(job("j1", "clip1"))
+        store.add(job("j2", "clip2"))
+        val log = mutableListOf<String>()
+        val rendered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val render = object : DngRender {
+            override fun render(
+                fd: Int,
+                frameIndex: Int,
+                manualRotationDeg: Int,
+                cropX: Float,
+                cropY: Float,
+                cropW: Float,
+                cropH: Float,
+                outPath: String,
+            ): Boolean {
+                log.add("render:${File(outPath).name}")
+                File(outPath).writeBytes(ByteArray(16))
+                rendered.countDown()
+                release.await()
+                return true
+            }
+
+            override fun renderLinear(
+                fd: Int,
+                frameIndex: Int,
+                manualRotationDeg: Int,
+                cropX: Float,
+                cropY: Float,
+                cropW: Float,
+                cropH: Float,
+                outPath: String,
+            ): Boolean = render(fd, frameIndex, manualRotationDeg, cropX, cropY, cropW, cropH, outPath)
+
+            override fun code(): Int = 0
+            override fun stage(): Int = 0
+            override fun detail(): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(render, freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        val drain = async(kotlinx.coroutines.Dispatchers.Default) { queue.runAll() }
+        assertTrue(rendered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        assertTrue(queue.cancel("j2"))
+        // The row flipped AT THE TAP, while the drain is still busy with j1.
+        assertEquals(State.CANCELLED, store.all()[1].state)
+        release.countDown()
+        assertEquals(1, drain.await())
+        val jobs = store.all()
+        assertEquals(State.DONE, jobs[0].state)
+        assertEquals(State.CANCELLED, jobs[1].state)
+        // The drain never dispatched j2 (only j1's render is in the log).
+        assertEquals(1, log.size)
+        assertTrue(log[0].contains("clip1"))
+    }
+
+    @Test
+    fun cancel_of_a_running_mp4_stops_at_the_next_frame_boundary() = runBlocking {
+        // COOPERATIVE STOP: the request lands while frame 1's native render
+        // is in flight; the loop must exit at the NEXT boundary (the (2,3)
+        // progress report), never mid-native-call, and the engine thread
+        // must survive to serve the next job.
+        val store = store()
+        store.add(job("j1", "clip1", Target.MP4))
+        val log = mutableListOf<String>()
+        val inSecond = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val session = object : Mp4Session {
+            override fun open(fd: Int): Mp4SessionInfo {
+                log.add("open")
+                return Mp4SessionInfo(handle = 1L, frameCount = 3, width = 4, height = 4, cfa = 0, orientationDeg = 0)
+            }
+
+            override fun renderFrame(
+                handle: Long,
+                frameIndex: Int,
+                grade: GradeK,
+                lutPath: String?,
+                gyroPath: String?,
+            ): ByteArray? {
+                log.add("render:$frameIndex")
+                if (frameIndex == 1) {
+                    inSecond.countDown()
+                    release.await()
+                }
+                return ByteArray(4 * 4 * 3)
+            }
+
+            override fun framePts(handle: Long, frameIndex: Int): Long = frameIndex * 33_336L
+            override fun audioInfo(handle: Long): IntArray? = null
+            override fun readAudio(handle: Long): ShortArray? = null
+            override fun close(handle: Long) {}
+            override fun code(): Int = 0
+            override fun stage(): Int = 0
+            override fun detail(): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(session, { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        val drain = async(kotlinx.coroutines.Dispatchers.Default) { queue.runAll() }
+        assertTrue(inSecond.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(State.RUNNING, store.all().single().state)
+        assertTrue(queue.cancel("j1"))
+        // The row flipped optimistically AT THE TAP (the UI stops showing
+        // progress immediately, even though the stop itself is cooperative).
+        assertEquals(State.CANCELLED, store.all().single().state)
+        // A second tap has nothing left to do.
+        assertFalse(queue.cancel("j1"))
+        // A job queued behind the cancelled one must still run: a cancel
+        // never wedges the queue.
+        store.add(job("j2", "clip2"))
+        release.countDown()
+        assertEquals(2, drain.await())
+        val jobs = store.all()
+        assertEquals(State.CANCELLED, jobs[0].state)
+        assertNull(jobs[0].detail)
+        assertEquals(State.DONE, jobs[1].state)
+        // The loop exited at the first boundary AFTER the request: frames
+        // 0 and 1 rendered, frame 2 never started.
+        assertEquals(listOf("open", "render:0", "render:1"), log.take(3))
+        assertTrue(log.none { it == "render:2" })
+        // Partial-file semantics — nothing behind, exactly like FAILED:
+        // no final file (finalize never ran), no partial (the exporter's
+        // own failure path discarded it).
+        assertTrue(!File(tmp.root, "clip1-mp4.mp4").exists())
+        assertTrue(!File(tmp.root, "clip1-mp4.mp4.partial").exists())
+    }
+
+    @Test
+    fun cancel_of_a_running_dng_cleans_the_finalized_file_too() = runBlocking {
+        // THE SINGLE-FRAME WINDOW: a DNG export reports (1,1) only AFTER the
+        // staged rename, so a cancel detected at that report leaves a FINAL
+        // file the exporter's own partial-discard cannot remove — the
+        // queue's terminal cleanup must delete it too (a cancelled job
+        // leaves NOTHING behind, mirroring FAILED).
+        val store = store()
+        store.add(job("j1", "clip1"))
+        val log = mutableListOf<String>()
+        val rendered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val render = object : DngRender {
+            override fun render(
+                fd: Int,
+                frameIndex: Int,
+                manualRotationDeg: Int,
+                cropX: Float,
+                cropY: Float,
+                cropW: Float,
+                cropH: Float,
+                outPath: String,
+            ): Boolean {
+                File(outPath).writeBytes(ByteArray(16))
+                rendered.countDown()
+                release.await()
+                return true
+            }
+
+            override fun renderLinear(
+                fd: Int,
+                frameIndex: Int,
+                manualRotationDeg: Int,
+                cropX: Float,
+                cropY: Float,
+                cropW: Float,
+                cropH: Float,
+                outPath: String,
+            ): Boolean = render(fd, frameIndex, manualRotationDeg, cropX, cropY, cropW, cropH, outPath)
+
+            override fun code(): Int = 0
+            override fun stage(): Int = 0
+            override fun detail(): String? = null
+        }
+        val queue = ExportQueue(
+            store, DngExporter(render, freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        val drain = async(kotlinx.coroutines.Dispatchers.Default) { queue.runAll() }
+        assertTrue(rendered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        assertTrue(queue.cancel("j1"))
+        release.countDown()
+        assertEquals(1, drain.await())
+        val j = store.all().single()
+        assertEquals(State.CANCELLED, j.state)
+        assertNull(j.detail)
+        // The finalize renamed the partial into the final name BEFORE the
+        // (1,1) report carried the cancel — the queue deleted the final
+        // file: neither it nor the partial exists.
+        assertTrue(!File(tmp.root, "clip1-dng.dng").exists())
+        assertTrue(!File(tmp.root, "clip1-dng.dng.partial").exists())
+    }
+
+    @Test
+    fun cancel_of_a_done_or_failed_job_is_a_noop() = runBlocking {
+        val store = store()
+        store.add(job("j1", "clip1"))
+        store.add(job("j2", "clip2"))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log, failOn = "clip2-dng"), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        queue.runAll()
+        assertEquals(State.DONE, store.all()[0].state)
+        assertEquals(State.FAILED, store.all()[1].state)
+        assertFalse(queue.cancel("j1"))
+        assertFalse(queue.cancel("j2"))
+        // Terminal rows are untouched: the DONE row keeps its state, its
+        // detail and its finished file; the FAILED row keeps its cause.
+        assertEquals(State.DONE, store.all()[0].state)
+        assertEquals("clip1-dng.dng", store.all()[0].detail)
+        assertTrue(File(tmp.root, "clip1-dng.dng").exists())
+        assertEquals(State.FAILED, store.all()[1].state)
+        // Unknown id: nothing to do either.
+        assertFalse(queue.cancel("nope"))
+    }
+
+    @Test
+    fun runone_on_a_row_cancelled_before_the_start_never_runs_it() = runBlocking {
+        // THE PICK-TO-START RACE: the drain already HELD the job object
+        // when the cancel landed. The start transition re-reads the row
+        // under the control lock and must refuse to run a row that is no
+        // longer QUEUED — the exporter never runs, the fd is never opened,
+        // and the row is left exactly as the cancel wrote it.
+        val store = store()
+        val j1 = job("j1", "clip1")
+        store.add(j1)
+        val log = mutableListOf<String>()
+        val io = RecordingIo(tmp)
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            io,
+        )
+        assertTrue(queue.cancel("j1"))
+        queue.runOne(j1)
+        assertEquals(State.CANCELLED, store.all().single().state)
+        assertTrue(log.isEmpty())
+        assertEquals(0, io.opened.size)
+        // A row cleared away before the start is not resurrected either
+        // (update() would re-add it — the start check must not write).
+        store.clear()
+        queue.runOne(job("j2", "clip2"))
+        assertTrue(store.all().isEmpty())
+    }
+
+    @Test
+    fun recover_interrupted_never_touches_a_cancelled_row() = runBlocking {
+        // A CANCELLED row is terminal: the crash-recovery pass (which only
+        // rewrites RUNNING rows) must not resurrect it, and no later drain
+        // may ever pick it up again.
+        val store = store()
+        store.add(job("j1", "clip1").copy(state = State.CANCELLED))
+        store.add(job("j2", "clip2").copy(state = State.RUNNING))
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        assertEquals(1, queue.recoverInterrupted()) // only the stale RUNNING row
+        val jobs = store.all()
+        assertEquals(State.CANCELLED, jobs[0].state)
+        assertEquals(State.FAILED, jobs[1].state)
+        assertEquals(ExportQueue.INTERRUPTED_DETAIL, jobs[1].detail)
+        // And the drain never picks the CANCELLED row up.
+        assertEquals(0, queue.runAll())
+        assertEquals(State.CANCELLED, store.all()[0].state)
+    }
 }

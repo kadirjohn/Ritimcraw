@@ -49,6 +49,27 @@ import java.util.concurrent.atomic.AtomicBoolean
  * [runAll] makes a kick while a drain is active a NO-OP: the active drain
  * loops until no job is QUEUED, so it picks up the new job itself; the
  * second call simply returns without touching RUNNING rows.
+ *
+ * CANCELLATION (owner request 2026-11-13: "export menüsünde iptal etme
+ * kısmı olmalı" — the exports screen must have a cancel action):
+ * [cancel] stops a QUEUED job instantly (the row turns CANCELLED under
+ * the same lock as the drain's pick, so the job can never start) and a
+ * RUNNING job cooperatively (the request lands in a per-job set; the
+ * drain checks it at every frame boundary — the queue-owned progress
+ * callback every exporter already reports through — and aborts between
+ * native calls; the engine thread is NEVER interrupted, it just returns
+ * early and serves the next job). The RUNNING row flips to CANCELLED
+ * optimistically at the tap so the action feels immediate; the drain
+ * confirms the same state at the boundary. A cancelled job leaves
+ * NOTHING behind, like FAILED ("nothing was written"): the exporter's
+ * own failure path discards the staged partial, and the one race where
+ * the FINAL file already exists (a single-frame target whose last
+ * report fires after the staged rename) deletes it too. DONE is the one
+ * winner: a cancel arriving after the last frame completed loses to the
+ * finished, published file. The request flag lives HERE, in memory —
+ * never on the persisted job: a cancel is transient control state, and
+ * a persisted flag would resurrect stale cancels after a restart. See
+ * [cancel], [runOne] and [ExportCancelled].
  */
 class ExportQueue(
     private val store: ExportStore,
@@ -78,6 +99,110 @@ class ExportQueue(
 
     /** The next job to run, or null when no job is QUEUED. */
     fun nextJob(): ExportJob? = store.all().firstOrNull { it.state == State.QUEUED }
+
+    /**
+     * Per-job cancel REQUESTS (cooperative stop, owner request 2026-11-13):
+     * ids the user asked to stop while they were RUNNING. The drain reads
+     * this on the engine thread at every frame boundary (the progress
+     * callback) and aborts the job there — between native calls, never by
+     * interrupting the thread. Volatile control state that lives only as
+     * long as the process: a QUEUED cancel needs no entry (the CANCELLED
+     * row itself stops the pick), and every entry is removed at the job's
+     * terminal write (or at start when a cancelled-then-retried row runs
+     * again).
+     *
+     * Guarded by [controlLock]: the check-and-act pairs below (pick vs
+     * cancel's state write; progress check vs cancel's flag set) must be
+     * atomic against each other, or a late cancel could slip between the
+     * drain's read and its write and be lost.
+     */
+    private val cancelRequests = mutableSetOf<String>()
+
+    /**
+     * Serializes the drain's control decisions against [cancel]: the
+     * pick-to-RUNNING transition in [runOne], the progress-boundary check
+     * in the callback below, and the terminal write. [cancel] takes the
+     * same lock for its state write + flag set, so the two sides can never
+     * interleave half-way. The lock is held only for in-memory set/store
+     * decisions — never across a native call or a suspension.
+     */
+    private val controlLock = Any()
+
+    /**
+     * Requests a job to stop (owner request 2026-11-13: "export menüsünde
+     * iptal etme kısmı olmalı" — the exports screen must have a cancel
+     * action). No-op on terminal rows (DONE/FAILED/CANCELLED — nothing to
+     * stop) and on unknown ids. Idempotent: a second tap while a request
+     * is pending does nothing.
+     *
+     * QUEUED: the row turns CANCELLED HERE, instantly, under [controlLock]
+     * — the same lock the drain's pick-to-RUNNING transition in [runOne]
+     * holds, so the drain can never start a job the user cancelled first.
+     * The drain then simply skips it (its pick only takes QUEUED rows).
+     *
+     * RUNNING: the request lands in [cancelRequests] AND the row flips to
+     * CANCELLED optimistically — right at the tap, so the action feels
+     * immediate and the progress UI stops. The actual stop is cooperative:
+     * the drain checks the flag at the next frame boundary (every exporter
+     * reports progress there — the callback in [runOne]) and unwinds
+     * through the exporter's own failure path, which releases the
+     * writer/session and discards the staged partial. The drain confirms
+     * the CANCELLED state (and cleans any final file that slipped past —
+     * see [runOne]) at that boundary.
+     *
+     * The engine thread is NEVER interrupted (it is shared with the
+     * preview path and must survive): the drain returns to it between
+     * native calls and it simply serves the next job.
+     *
+     * @return true when this call changed something (a QUEUED row
+     * cancelled, or a RUNNING row's request registered); false when there
+     * was nothing to do (terminal row, unknown id, or request already
+     * pending).
+     */
+    fun cancel(jobId: String): Boolean = synchronized(controlLock) {
+        val current = store.all().firstOrNull { it.id == jobId }
+            ?: return@synchronized false
+        when (current.state) {
+            // Terminal rows: nothing to stop. A cancel racing the last
+            // frame (the row still reads RUNNING) resolves at the drain's
+            // boundary check — DONE wins there (see [runOne]).
+            State.DONE, State.FAILED, State.CANCELLED -> false
+            // Queued: CANCELLED on the spot, atomically with the drain's
+            // pick (both hold [controlLock]). The row keeps its position
+            // (update replaces by id); the drain's QUEUED-only pick never
+            // sees it again. No flag entry needed — the state is the stop.
+            State.QUEUED -> {
+                store.update(
+                    current.copy(
+                        state = State.CANCELLED,
+                        detail = null,
+                        framesDone = null,
+                        framesTotal = null,
+                    )
+                )
+                publishRevision()
+                true
+            }
+            // Running: register the request and flip the row optimistically
+            // (the tap must feel immediate — the UI stops showing progress
+            // right away). The drain confirms the same state at the next
+            // boundary; a too-late cancel (last frame already done) loses
+            // to DONE at that check.
+            State.RUNNING -> {
+                val fresh = cancelRequests.add(jobId)
+                store.update(
+                    current.copy(
+                        state = State.CANCELLED,
+                        detail = null,
+                        framesDone = null,
+                        framesTotal = null,
+                    )
+                )
+                publishRevision()
+                fresh
+            }
+        }
+    }
 
     /**
      * Marks every persisted RUNNING job FAILED (owner finding 2026-11-10:
@@ -145,24 +270,64 @@ class ExportQueue(
         }
     }
 
-    /** Runs one job end to end and writes the outcome back to the store. */
+    /**
+     * Runs one job end to end and writes the outcome back to the store.
+     * CANCEL-AWARE: the pick-to-RUNNING transition, the progress-boundary
+     * check and the terminal write all run under [controlLock] alongside
+     * [cancel], so the two sides can never interleave half-way (see the
+     * CANCELLATION note on the class).
+     */
     internal suspend fun runOne(job: ExportJob) {
         // RUNNING first: the UI shows "Exporting…" while this runs. Progress
         // counts reset per run (a retry restarts from frame 0).
-        val running = job.copy(
-            state = State.RUNNING,
-            detail = null,
-            framesDone = null,
-            framesTotal = null,
-        )
-        store.update(running)
-        publishRevision()
+        //
+        // The transition re-reads the row under [controlLock]: a QUEUED job
+        // cancelled between the drain's pick and this write already holds a
+        // CANCELLED row here — cancel's CANCELLED write and this QUEUED
+        // check both run under the lock, so re-reading inside it is the one
+        // place the race resolves. A row that is no longer QUEUED never
+        // starts (the exporter never runs, the fd is never opened) and its
+        // state is left exactly as the cancel/clear/retry left it.
+        val running = synchronized(controlLock) {
+            val current = store.all().firstOrNull { it.id == job.id }
+            if (current == null || current.state != State.QUEUED) {
+                return // cancelled/cleared/retried away before the start
+            }
+            val started = current.copy(
+                state = State.RUNNING,
+                detail = null,
+                framesDone = null,
+                framesTotal = null,
+            )
+            store.update(started)
+            publishRevision()
+            started
+        }
 
         // Progress callback the queue owns: the exporter reports frame
         // counts; writes are THROTTLED (project.json is rewritten on every
         // store write, so a per-frame write would hammer it — see
         // [ProgressWriter]) and the terminal write below always lands.
+        //
+        // CANCEL CHECK: every report first checks [cancelRequests] under
+        // [controlLock]. A pending request throws [ExportCancelled] RIGHT
+        // HERE — on the engine thread, between native calls — and the
+        // exporter's own catch-all unwinds it (releases the writer/session,
+        // discards the staged partial) and resumes with a failure. The
+        // check and the throttled write are one locked section: a cancel
+        // arriving mid-write cannot slip past this boundary to the next
+        // frame, and a late cancel can never transiently flip the
+        // optimistic CANCELLED row back to RUNNING.
         val progress = ProgressWriter(store, running, progressClock, ::publishRevision)
+        val out = io.outputFile(job, job.target)
+        val onProgress: (Int, Int) -> Unit = { done, total ->
+            synchronized(controlLock) {
+                if (job.id in cancelRequests) {
+                    throw ExportCancelled(job.id)
+                }
+                progress.report(done, total)
+            }
+        }
 
         // The runner owns the source fd's lifetime: acquire once, close in
         // finally (the native side dups it per open, so closing after the
@@ -178,20 +343,14 @@ class ExportQueue(
                 // job.target to pick the linear render, so the queue keeps
                 // one DNG-shaped pipeline (staging, engine, error mapping).
                 Target.DNG, Target.LINEAR ->
-                    dng.export(job, fd, io.outputFile(job, job.target), job.frameIndex) { done, total ->
-                        progress.report(done, total)
-                    }
+                    dng.export(job, fd, out, job.frameIndex, onProgress)
                 Target.MP4 ->
-                    mp4.export(job, fd, io.outputFile(job, Target.MP4)) { done, total ->
-                        progress.report(done, total)
-                    }
+                    mp4.export(job, fd, out, onProgress)
                 // RAW-11 Frame Picker: the photo arm develops the job's
                 // frame with the job's snapshot (clip grade or the separate
                 // neutral develop) at full resolution, as a PNG.
                 Target.PHOTO ->
-                    photo.export(job, fd, io.outputFile(job, Target.PHOTO)) { done, total ->
-                        progress.report(done, total)
-                    }
+                    photo.export(job, fd, out, onProgress)
             }
         } catch (e: Throwable) {
             // An exporter must never throw, but the queue must survive one
@@ -209,10 +368,43 @@ class ExportQueue(
         // The job may have been retried/cleared while it ran: write by id
         // so the store keeps the freshest state for this id. The terminal
         // job carries null counts (progress only shows while RUNNING).
-        store.update(
-            result.copy(framesDone = null, framesTotal = null)
-        )
-        publishRevision()
+        //
+        // CANCEL RESOLUTION, under [controlLock] so it cannot interleave
+        // with a concurrent [cancel]:
+        //  - a pending request converts ANY non-DONE outcome to CANCELLED
+        //    (the exporter reported a failure — either the cooperative
+        //    stop unwound it, or a genuine failure raced the request; the
+        //    user asked to stop either way, and a stop is not an error).
+        //    The output file is deleted either way: a cancelled job
+        //    leaves NOTHING behind, mirroring FAILED ("nothing was
+        //    written") — the delete covers the one window the exporter's
+        //    own discard cannot, a single-frame target (DNG/PHOTO, or an
+        //    MP4 whose last frame report fired after the staged rename)
+        //    whose final file already exists.
+        //  - DONE wins over a too-late cancel: the request converts only a
+        //    non-DONE outcome, so a finished export keeps its state, its
+        //    file and its publish below — a published export is never
+        //    un-made. (The too-late request is still dropped from the set.)
+        //  - the request is removed here whatever the outcome, so an entry
+        //    never outlives the run (a retry of the row starts flag-free).
+        synchronized(controlLock) {
+            val requested = job.id in cancelRequests
+            val terminal = if (requested && result.state != State.DONE) {
+                ExportStaging.discard(out) // no final file behind a cancel
+                ExportStaging.discard(ExportStaging.partial(out)) // nor a partial
+                result.copy(
+                    state = State.CANCELLED,
+                    detail = null,
+                    framesDone = null,
+                    framesTotal = null,
+                )
+            } else {
+                result.copy(framesDone = null, framesTotal = null)
+            }
+            cancelRequests.remove(job.id)
+            store.update(terminal)
+            publishRevision()
+        }
 
         // A finished export is ALSO published to the system media store
         // (owner finding 2026-11-10: exports were invisible outside the
@@ -360,6 +552,27 @@ class ExportQueue(
         }
     }
 }
+
+/**
+ * Control-flow exception the queue's progress callback throws on the
+ * engine thread when it finds the job's cancel request (see
+ * [ExportQueue.cancel]): the cooperative stop signal. It is thrown
+ * BETWEEN native calls, at a frame boundary — the engine thread is never
+ * interrupted. Every exporter already wraps its pipeline in a catch-all
+ * that releases the writer/session, discards the staged partial and
+ * resumes with a failure, so this exception rides the EXISTING failure
+ * path out — no exporter knows it exists. The queue's terminal write
+ * recognizes the pending request and converts the failure to CANCELLED
+ * (never FAILED): a user stop is not an error.
+ *
+ * Carries the job id for log/test legibility only — the queue matches the
+ * pending request by the id it already holds, never by this exception.
+ * Never escapes the queue: the exporters absorb it into their failure
+ * path, and the terminal write clears the request whatever the outcome.
+ */
+internal class ExportCancelled(
+    val jobId: String,
+) : IllegalStateException("export cancelled by the user")
 
 /**
  * Throttled progress persistence for one running job (JVM-testable via an

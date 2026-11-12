@@ -232,6 +232,7 @@
     <string name="exports_open_dng_body">Bu cihazda hiçbir uygulama ham DNG açamaz. Dosyayı açabilen bir okuyucuya paylaşın.</string>
     <string name="exports_open_share">Paylaş</string>
     <string name="exports_job_cancelled">İptal edildi</string>
+    <string name="exports_job_cancel">İptal et</string>
     <string name="exports_job_failed_stage">Dışa aktarım başarısız oldu: %1$s</string>
     <string name="exports_job_failed_cause">Neden: %1$s</string>
     <string name="exports_job_failed_written">Hiçbir şey yazılmadı.</string>
@@ -248,6 +249,9 @@
     <string name="settings_device_report">Cihaz raporu</string>
     <string name="settings_device_report_body">Codec yoklaması geldiğinde bu cihazın codec yetenekleri burada görünür.</string>
     <string name="settings_device_report_count">%1$d codec</string>
+    <string name="settings_codec_hw">Donanım</string>
+    <string name="settings_codec_sw">Yazılım</string>
+    <string name="settings_report_close">Kapat</string>
     <string name="settings_measure">Önizleme performansını ölç</string>
     <string name="settings_measuring">Ölçülüyor…</string>
     <string name="settings_version">Sürüm %1$s</string>
