@@ -182,8 +182,11 @@ name/canonical/hardware/softwareOnly is what actually ran.
 ## 5. GLES backend facts (deliverable C scope)
 
 - GLES 3.1 + compute shaders is the chosen backend (Vulkan not required for
-  compute). EXT_color_buffer_float required for float FBOs, probed at
-  runtime with fallback (not assumed).
+  compute). EXT_color_buffer_float is required only by LATER float-FBO
+  stages; the deliverable-C parity harness stays GLES 3.1 core (SSBOs in
+  and out, no textures, no image units, no float framebuffers), so it
+  runs on any ES 3.1 device. The extension is still probed at runtime for
+  the later stages (not assumed).
 - EGL context: created/released safely on a background thread; no window
   surface required for compute + readback (pbuffer/offscreen suffices).
   Topology follows the grafika EglCore pattern (Apache-2.0 reference,
@@ -192,9 +195,19 @@ name/canonical/hardware/softwareOnly is what actually ran.
   ~126.6 MiB. Texture-filterable and framebuffer-renderable are separate
   properties (RGBA16F filterable, RGBA32F not filterable on many GPUs).
 - highp in shaders; do not early-clamp scene-linear values.
-- glReadPixels is acceptable ONLY for the single-frame prototype parity
-  harness (deliverable C); production preview/export paths must not
-  depend on it.
+- NDK gap (verified against NDK 30.0.16248370): glShaderStorageBlockBinding
+  — the only core ES 3.1 mechanism for SSBO block binding, since GLSL ES
+  3.10 has no layout(binding=) for storage blocks — is declared in NO NDK
+  GLES header and exported by NO platform stub libGLESv3.so (checked API
+  31/34/35). The parity harness fetches the driver's implementation via
+  eglGetProcAddress; a null pointer is reported as an honest parity-run
+  failure (the CPU render path stays the default). Later GPU stages must
+  use the same workaround (or move to ES 3.20 layout(binding=), which is
+  NOT guaranteed on ES 3.1-only devices).
+- glReadPixels is used NOWHERE — not even the single-frame prototype
+  parity harness (deliverable C reads back through a MAPPED shader
+  storage buffer, glMapBufferRange); production preview/export paths
+  keep the result on the GPU, so no readback path exists to migrate.
 - Host honesty: this host has no EGL (desktop) and no GLSL compiler
   (glslangValidator/glslc absent). The shader source is validated by a
   self-written host syntax check (balanced delimiters, version/precision
@@ -213,3 +226,36 @@ name/canonical/hardware/softwareOnly is what actually ran.
   device-test-pending.
 - No device data exists for any claim in this document. Owner device tests
   for this stage are listed in the final handback.
+
+## 7. Deliverable C status (implemented this stage)
+
+Safe GLES context + capability probe + single-frame bilinear demosaic
+parity — device-independent portion complete:
+
+- Native (Android-only, compiled by :app:assembleDebug):
+  `app/src/main/cpp/gles/GlesPipeline.{h,cpp}` — grafika-topology
+  EglSession (open/release on the calling thread, safe on partial
+  sessions), capability probe (context, version, compute,
+  EXT_color_buffer_float, max texture size), and the parity harness:
+  CPU stage-1 copy -> SSBO in -> GLSL ES 3.10 compute demosaic -> SSBO
+  out -> glMapBufferRange readback -> CPU stage-5 tail -> uint16-domain
+  comparison against rawedit::developLinear itself (untouched, exported).
+  No glReadPixels anywhere.
+- JNI seam (stateless, like nativeGyroSyncProbe):
+  `nativeGlesProbe` -> [contextOk, major, minor, computeOk, floatFboOk,
+  maxTextureSize]; `nativeGlesParity(fd, computeSource)` -> [ran,
+  maxDiffLsb, mismatchCount, samples]. The device compiles the exact
+  caller-provided Kotlin shader text.
+- Kotlin (JVM-tested):
+  `GlesShaderSources` (the single GLSL source of truth),
+  `GlesShaderValidator` (host syntax + contract check — NOT a compile),
+  `GpuParity` (JNI array contracts, PASS <= 1 LSB and <= 0.01% share,
+  gatesFrom(probe) never claims parity, log-line formats),
+  `PreviewMetrics.measureGles` (Measure leg 4 — the owner's one-tap
+  device entry point; logs under "ritim-pm").
+- Verdict lives ONLY in Kotlin (GpuParityRules); the C++ harness reports
+  raw numbers, never a decision.
+- Status: compiled + host-tested (JVM); EGL/GLSL runtime behavior
+  device-test-pending. Owner device test: run Measure on a clip, read
+  the "ritim-pm" gles block — probe line, then either a parity line +
+  verdict or an honest skip/failure line.

@@ -664,7 +664,10 @@ fun AppNav() {
     // The measurement harness run: opens the FIRST imported clip read-only
     // and hands the fd to PreviewMetrics (which closes it). The summary
     // block lands in logcat under "ritim-pm"; the run is serial (the
-    // button disables itself while measuring).
+    // button disables itself while measuring). After the preview legs, the
+    // GLES leg (deliverable C) opens its OWN fd: capability probe +
+    // single-frame demosaic parity, the owner's one-tap device entry
+    // point for the GPU groundwork (device-test-pending).
     LaunchedEffect(measureKick) {
         if (measureKick == 0) return@LaunchedEffect
         val first = sources.firstOrNull { it.access == Access.OK }
@@ -677,6 +680,10 @@ fun AppNav() {
                 .openFileDescriptor(Uri.parse(first.uri), "r")
                 ?.detachFd() ?: -1
             if (fd >= 0) PreviewMetrics.measure(fd)
+            val glesFd = context.contentResolver
+                .openFileDescriptor(Uri.parse(first.uri), "r")
+                ?.detachFd() ?: -1
+            if (glesFd >= 0) PreviewMetrics.measureGles(glesFd)
         } catch (e: Exception) {
             // The harness logs its own failures; a lost grant degrades to
             // "no run", never a crash.

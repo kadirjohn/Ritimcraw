@@ -23,8 +23,15 @@ add_compile_options(-O2)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../../core ${CMAKE_CURRENT_BINARY_DIR}/rawedit-core)
 
 add_library(rawedit_jni SHARED jni_bridge.cpp)
+# gles/ is the deliverable-C GPU groundwork: the EGL context (grafika
+# EglCore topology), the capability probe and the single-frame demosaic
+# parity harness, reached through the bridge's stateless probes. It is
+# Android-only (EGL/GLES headers exist only in the NDK) — the desktop
+# build never compiles this target.
+target_sources(rawedit_jni PRIVATE gles/GlesPipeline.cpp)
 # log is the Android log library: the bridge's debug-gated "ritim-stab"
 # stabilization measurement line (__android_log_print, audit fix
 # 2026-11-12) needs it. Release builds never call it (the flag stays
-# false), but the symbol must resolve in both build types.
-target_link_libraries(rawedit_jni PRIVATE rawedit log)
+# false), but the symbol must resolve in both build types. EGL + GLESv3
+# carry the deliverable-C probes (EglSession + the compute dispatch).
+target_link_libraries(rawedit_jni PRIVATE rawedit log EGL GLESv3)

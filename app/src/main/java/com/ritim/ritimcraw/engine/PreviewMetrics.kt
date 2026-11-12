@@ -98,7 +98,14 @@ object MetricsSummary {
  *  2. five grade-only re-renders through the cached CFA at the drag tier
  *     (the interactive slider path — decode skipped, only the grade moved),
  *  3. five seconds of pts-paced playback at the playback tier, counting
- *     completed frames for the fps window (drop-late, like the editor).
+ *     completed frames for the fps window (drop-late, like the editor),
+ *  4. GLES capability probe + single-frame demosaic parity (owner request
+ *     2026-11-12, deliverable C): the device entry point for the GPU
+ *     groundwork. The probe always runs (an honest no-context report is
+ *     a result); parity runs only when the probe's compute gate is green,
+ *     on the SAME clip, against the GlesShaderSources shader text. The
+ *     verdict feeds the render-backend gates (BackendGates.parityOk) —
+ *     nothing about the render path changes on its own.
  */
 object PreviewMetrics {
 
@@ -215,5 +222,70 @@ object PreviewMetrics {
         )
         Log.i(TAG, summary)
         return summary
+    }
+
+    /**
+     * GLES leg (deliverable C): capability probe + single-frame demosaic
+     * parity, stateless (no handle, no render-cache touch — the probes
+     * are safe from any thread, so the Measure runner runs them off the
+     * engine thread). The fd is dup'd natively for the parity frame
+     * decode; the caller's copy closes here, always. Returns the logged
+     * block (also logged under [TAG]), or null when the leg is skipped
+     * (disabled, or the clip cannot be opened for parity).
+     *
+     * Device-test-pending: no phone has run this leg; the first real run
+     * IS the owner's device test.
+     */
+    internal suspend fun measureGles(fd: Int): String? {
+        if (!enabled) {
+            PreviewRenderer.closeFdQuietly(fd)
+            return null
+        }
+        val lines = ArrayList<String>()
+        try {
+            // Leg 4a: capability probe (an honest no-context report is a
+            // result, never an error).
+            val probeRaw = NativeSource.jniGlesProbe()
+            if (probeRaw == null) {
+                lines += "probe: jni failure (${NativeSource.previewLastError() ?: "no detail"})"
+                Log.i(TAG, GpuParityRules.block(lines))
+                return GpuParityRules.block(lines)
+            }
+            val probe = GlesProbeResult.fromArray(probeRaw)
+            lines += GpuParityRules.probeLine(probe)
+
+            // Leg 4b: parity — only when the context + compute gates are
+            // green (running the parity shader on a device without compute
+            // would only produce a compile error we can already predict).
+            if (!probe.contextOk || !probe.computeOk) {
+                lines += GpuParityRules.skippedParityLine(
+                    if (!probe.contextOk) "no gles context" else "no compute (gles < 3.1)",
+                )
+                Log.i(TAG, GpuParityRules.block(lines))
+                return GpuParityRules.block(lines)
+            }
+            val parityRaw = NativeSource.jniGlesParity(
+                fd, GlesShaderSources.DEMOSAIC_COMPUTE,
+            )
+            val parity = if (parityRaw != null) {
+                GlesParityResult.fromArray(parityRaw)
+            } else {
+                lines += "parity: jni failure (${NativeSource.previewLastError() ?: "no detail"})"
+                null
+            }
+            if (parity != null) {
+                lines += GpuParityRules.parityLine(parity)
+                lines += GpuParityRules.verdictLine(
+                    GpuParityRules.verdict(parity, NativeSource.previewLastError()),
+                )
+            }
+        } catch (e: IllegalStateException) {
+            lines += "probe: native unavailable (${e.message})"
+        } finally {
+            PreviewRenderer.closeFdQuietly(fd)
+        }
+        val block = GpuParityRules.block(lines)
+        Log.i(TAG, block)
+        return block
     }
 }

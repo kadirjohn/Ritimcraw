@@ -404,8 +404,10 @@ class NativeSource private constructor(
          * Develops frame [frameIndex] of the opened export session
          * ([handle] from nativePreviewOpen) at FULL resolution with the job's
          * grade snapshot: developCpu -> linearToRec709 -> clamp -> 8-bit
-         * RGB888, row-major, 3 bytes per pixel, NOT rotated (orientation
-         * travels as the muxer's orientation hint). Returns w*h*3 bytes or
+         * RGB888, row-major, 3 bytes per pixel, NOT rotated here: the
+         * exporter rotates the pixels upright (RotationState.rotateRgb888)
+         * before crop/YUV, so the muxer's orientation hint stays 0.
+         * Returns w*h*3 bytes or
          * null on failure (read the error accessors from the same thread).
          *
          * lutPath/lutStrength (COL-07): the job snapshot's LUT path (null =
@@ -587,6 +589,39 @@ class NativeSource private constructor(
             stabZoomLimit: Float,
             stabFocalMm: Float,
             stabTrimMs: Float,
+        ): DoubleArray?
+
+        /**
+         * GLES capability probe (owner request 2026-11-12, deliverable C):
+         * statelessly creates a throwaway GLES context, reads what the
+         * device reports, releases the context, and returns
+         * [contextOk, glesMajor, glesMinor, computeOk, floatFboOk,
+         * maxTextureSize] (see the bridge comment). A device with NO
+         * context is an honest report, not an error: the array returns
+         * with contextOk=0 and the failing EGL step in the error detail
+         * (previewLastError from the same thread). Null only on a
+         * JNI-level failure. No handle, no render-cache touch, safe on
+         * any thread. Runtime behavior is device-test-pending.
+         */
+        @JvmStatic private external fun nativeGlesProbe(): DoubleArray?
+
+        /**
+         * Single-frame demosaic parity (deliverable C): statelessly opens
+         * the clip behind [fd] (dup'd — the caller's fd is untouched),
+         * decodes frame 0, compiles [computeSource] — the Kotlin single
+         * source of truth (GlesShaderSources.DEMOSAIC_COMPUTE) — on a
+         * throwaway GLES 3.1 context, and compares the GPU demosaic
+         * against developLinear, the DNG path's own reference, on the
+         * same frame. Returns [ran, maxDiffLsb, mismatchCount, samples]
+         * (see the bridge comment); ran=0 means a GPU stage failed and
+         * the error detail names it. The PASS VERDICT lives in
+         * GpuParityRules — this reports raw numbers only, never a
+         * claim. No handle, no render-cache touch, safe on any thread.
+         * Device-test-pending.
+         */
+        @JvmStatic private external fun nativeGlesParity(
+            fd: Int,
+            computeSource: String,
         ): DoubleArray?
 
         // ---- Cross-module wrappers (external decls stay private; see the
@@ -911,6 +946,32 @@ class NativeSource private constructor(
                 handle, gyroPath, stabMode, stabStrength,
                 stabZoomLimit, stabFocalMm, stabTrimMs,
             )
+        }
+
+        /**
+         * JNI bridge: see nativeGlesProbe. Throws IllegalStateException
+         * when the .so is absent; contextOk=0 otherwise means "no GLES
+         * context on this device" — an honest report, with the failing
+         * EGL step in previewLastError.
+         */
+        internal fun jniGlesProbe(): DoubleArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeGlesProbe()
+        }
+
+        /**
+         * JNI bridge: see nativeGlesParity. Throws IllegalStateException
+         * when the .so is absent; ran=0 otherwise means "the GPU pass
+         * failed at a named stage" (previewLastError) — never a
+         * fabricated verdict.
+         */
+        internal fun jniGlesParity(fd: Int, computeSource: String): DoubleArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeGlesParity(fd, computeSource)
         }
 
         /** JNI bridge: closeSource for export sessions. */
