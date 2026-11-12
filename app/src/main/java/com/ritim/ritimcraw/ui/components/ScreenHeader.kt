@@ -44,7 +44,14 @@ fun ScreenHeader(
         modifier
             .fillMaxWidth()
             .padding(start = 16.dp, top = 12.dp, end = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        // Title top-alignment (owner finding 2026-11-12): the title's top
+        // must sit at the same y on all four browse screens, invariant to
+        // this slot. A 48dp actions child (TextButton minimum touch target,
+        // m3 1.3.0) grows the Row to 48dp; CenterVertically then drops the
+        // 32dp title line ~8dp lower than the no-actions screens. Top pins
+        // the title to Row top + 0 in both cases — identical position, and
+        // the title keeps its own 32sp line-box leading.
+        verticalAlignment = Alignment.Top,
     ) {
         Text(
             text = title,
