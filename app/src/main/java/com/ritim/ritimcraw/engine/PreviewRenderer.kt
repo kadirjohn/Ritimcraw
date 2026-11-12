@@ -87,13 +87,17 @@ object GradeMapping {
      * The gyro stabilization arguments for one render (gyro Phase 5): the
      * six flat JNI params the bridge appends after temporalStrength. This
      * is the ONE testable gate: gyroPath is null — the no-warp default —
-     * when stabilization is off in the grade, when the tier skips the warp
-     * ([PreviewTiers.stabilizationAppliesAt], the temporal NR precedent),
-     * or when no gyro log is attached ([gyroPath] null). When it runs, the
-     * strength maps GradeK's 0..100 percent to rawedit's 0..1 here (the
-     * lutStrength precedent); the mode/zoomLimit/focalMm/trimMs pass
-     * through raw (the C++ side owns mode ints, the focal override 0 =
-     * use-container contract, and the trim composition).
+     * when stabilization is off in the grade or when no gyro log is
+     * attached ([gyroPath] null). The tier gate
+     * ([PreviewTiers.stabilizationAppliesAt], audit fix 2026-11-12) now
+     * passes at EVERY tier — the warp's cost scales with the developed
+     * buffer (~1-5 ms at the preview tiers), so playback, drags and the
+     * full-res follow-up all warp, keeping every tier's frame honest
+     * against the export. When it runs, the strength maps GradeK's
+     * 0..100 percent to rawedit's 0..1 here (the lutStrength precedent);
+     * the mode/zoomLimit/focalMm/trimMs pass through raw (the C++ side
+     * owns mode ints, the focal override 0 = use-container contract, and
+     * the trim composition).
      */
     data class StabilizationArgs(
         val gyroPath: String?,

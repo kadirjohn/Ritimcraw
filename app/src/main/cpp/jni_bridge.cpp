@@ -222,8 +222,10 @@ bool resolveGyro(JNIEnv* env, jstring gyroPath, const GyroArtifacts** out) {
 
 // The stabilization request as the six flat JNI params resolve it (gyro
 // Phase 5). Built only when a gyro log resolved: the Kotlin layer already
-// gated off / tier skip / no-attachment down to a null gyroPath, so the C++
-// side never sees a request it should not run. Mode ints are GradeK's
+// gated off / no-attachment down to a null gyroPath (the tier gate passes
+// at every tier since the 2026-11-12 audit fix — the warp applies at drag,
+// playback, paused and the full-res follow-up alike), so the C++ side
+// never sees a request it should not run. Mode ints are GradeK's
 // 0 = Smooth, 1 = LockFirstFrame, 2 = HorizonLock (the StabilizationMode
 // enum order minus Off); strength is already 0..1 (GradeK percent / 100 at
 // the Kotlin boundary, the lutStrength precedent); focalMm 0 = use the
@@ -338,10 +340,11 @@ void stabilizationFrameFor(const StabRequest& req,
 }
 
 // The warp input for one render (gyro Phase 5). gyro == nullptr is the
-// no-warp default: the Kotlin layer already gated off / tier-skip /
-// no-attachment down to a null gyroPath, and a log that went missing since
-// the attach probe degrades the same way — so a default StabInput warps
-// nothing and costs nothing.
+// no-warp default: the Kotlin layer already gated off / no-attachment down
+// to a null gyroPath (the tier gate passes at every tier since the
+// 2026-11-12 audit fix), and a log that went missing since the attach
+// probe degrades the same way — so a default StabInput warps nothing and
+// costs nothing.
 struct StabInput {
     StabRequest request;
     rawedit::Source* source = nullptr;
@@ -359,10 +362,11 @@ struct StabResolution {
 
 // Resolves the six flat JNI stabilization params into the warp input for
 // this render. The Kotlin boundary already did the gating (stabilization
-// off, tier skip, no attachment -> null gyroPath), so the ONLY decisions
-// left here are the cache lookup and the honest failure. strength arrives
-// already in rawedit's 0..1 scale (GradeK percent / 100 at the Kotlin
-// boundary, the lutStrength precedent).
+// off or no attachment -> null gyroPath; every tier passes the tier gate
+// since the 2026-11-12 audit fix), so the ONLY decisions left here are
+// the cache lookup and the honest failure. strength arrives already in
+// rawedit's 0..1 scale (GradeK percent / 100 at the Kotlin boundary, the
+// lutStrength precedent).
 StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
                                     jint stabMode, jfloat stabStrength,
                                     jfloat stabZoomLimit, jfloat stabFocalMm,

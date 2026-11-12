@@ -42,21 +42,34 @@ object PreviewTiers {
     fun temporalNrAppliesAt(maxDim: Int): Boolean = maxDim >= PAUSED_MAX_DIM
 
     /**
-     * Stabilization warp tier policy (gyro Phase 5): the CPU bilinear warp
-     * runs on the DEVELOPED thumbnail, so its cost scales with maxDim.
-     * Measured 2026-11-11 (commit b's warpFrame doctest, desktop -O2):
-     * 5.01187 ms/frame at 1280x720 — comfortably inside the paused tier's
-     * budget and the ~15 ms/frame playback budget, but the warp is only
-     * MEANINGFUL at the settle/paused tier: during playback and slider
-     * drags the editor shows the unstabilized frame and the effect lands
-     * on the settle render (the temporal NR precedent — one policy, one
-     * place). [SOURCE_MAX_DIM] (0) FAILS the gate, exactly like temporal
-     * NR: the single paused follow-up render at the recorded resolution
-     * skips the warp too. Export is NOT gated here (the temporal NR
-     * precedent): nativeExportFrame always applies the warp at full
-     * resolution when the grade has stabilization on and a gyro log is
-     * attached — that is where the full-quality stabilized frame comes
-     * from.
+     * Stabilization warp tier policy (gyro Phase 5, audit fix 2026-11-12):
+     * the warp applies at EVERY preview tier — drag (480), playback (720),
+     * paused (1280) and the [SOURCE_MAX_DIM] (0) full-res follow-up —
+     * whenever the grade has stabilization on and a gyro log is attached.
+     * The per-render cost is plan + warp, both scaling with the developed
+     * buffer; measured 2026-11-12 on the 004150 fixture through the real
+     * pipeline (test_warp's tier harness, desktop -O2):
+     *   drag 480x270      plan 0.24 + warp 0.72  ≈ 0.96 ms/frame
+     *   playback 640x360  plan 0.22 + warp 1.68  ≈ 1.90 ms/frame
+     *   paused 1280x720   plan 0.18 + warp 5.12  ≈ 5.30 ms/frame
+     *   source 3840x2160  plan 0.20 + warp 45.37  ≈ 45.6 ms/frame
+     * The drag and playback budgets easily absorb ~1-2 ms (the drag tier
+     * targets sub-50 ms and playback ~66 ms/frame), and the paused tier's
+     * ~100 ms budget absorbs 5.3 ms.
+     *
+     * WHY EVERY TIER (the audit finding this reverses): the old gate
+     * (maxDim >= PAUSED) skipped playback, drags AND the full-res
+     * follow-up — so a paused clip showed a STABILIZED 1280 frame that was
+     * then REPLACED by an UNSTABILIZED full-res frame (a visible jump at
+     * the settle), and playback disagreed with the paused frame about
+     * what stabilization does. Unlike temporal NR (whose full-res merge
+     * cost is tier-INDEPENDENT at ~85-107 ms), the warp's cost shrinks
+     * with the buffer, so showing the stabilized frame at every tier is
+     * affordable AND it is the only honest preview: what the user sees at
+     * every tier is what the export will produce (up to resolution).
+     * Temporal NR keeps its own gate ([temporalNrAppliesAt]) — only the
+     * stabilization gate changed. Export is NOT gated here: the export
+     * path has its own on+path gate and always warps at full resolution.
      */
-    fun stabilizationAppliesAt(maxDim: Int): Boolean = maxDim >= PAUSED_MAX_DIM
+    fun stabilizationAppliesAt(maxDim: Int): Boolean = true
 }

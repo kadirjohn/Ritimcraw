@@ -231,14 +231,20 @@ class PreviewRendererTest {
     }
 
     @Test
-    fun stab_gate_tier_skip_is_null() {
-        // Playback (720), drag (480) and the SOURCE_MAX_DIM (0) follow-up
-        // all skip the warp — the temporal NR precedent. The settle/paused
-        // render is the one that warps.
+    fun stab_gate_applies_at_every_tier() {
+        // Audit fix 2026-11-12: stabilization warps at EVERY tier — playback
+        // (720), drag (480) and the SOURCE_MAX_DIM (0) follow-up included.
+        // The old tier skip made playback/drag disagree with the paused
+        // frame and made the full-res follow-up REPLACE the stabilized
+        // paused frame with an unstabilized one (a visible settle jump).
+        // The warp's cost scales with the buffer (~1-5 ms at the preview
+        // tiers, measured in test_warp's tier harness), so every tier can
+        // afford it — unlike temporal NR, which keeps its tier gate.
         val on = GradeK(stabilization = true)
-        assertNull(GradeMapping.stabilizationArgs(on, PreviewTiers.PLAYBACK_MAX_DIM, "/g.gcsv"))
-        assertNull(GradeMapping.stabilizationArgs(on, SliderTiers.DRAG_MAX_DIM, "/g.gcsv"))
-        assertNull(GradeMapping.stabilizationArgs(on, PreviewTiers.SOURCE_MAX_DIM, "/g.gcsv"))
+        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.PLAYBACK_MAX_DIM, "/g.gcsv"))
+        assertNotNull(GradeMapping.stabilizationArgs(on, SliderTiers.DRAG_MAX_DIM, "/g.gcsv"))
+        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.SOURCE_MAX_DIM, "/g.gcsv"))
+        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.PAUSED_MAX_DIM, "/g.gcsv"))
     }
 
     @Test

@@ -189,10 +189,11 @@ internal object NativeMp4Session : Mp4Session {
         // Gyro Phase 5: export is NOT tier-gated (the temporal NR precedent
         // — PreviewTiers gates the PREVIEW, never the export), so this is
         // its own on+path gate rather than GradeMapping.stabilizationArgs
-        // (which applies PreviewTiers.stabilizationAppliesAt and would
-        // wrongly skip the full-res export warp). Strength maps 0..100 ->
-        // 0..1 exactly like lutStrength; mode/zoomLimit/focalMm/trimMs
-        // pass through raw (the C++ side owns their composition).
+        // (which carries PreviewTiers.stabilizationAppliesAt — a preview
+        // policy the export must not depend on, even though the audit fix
+        // of 2026-11-12 made that gate pass at every tier). Strength maps
+        // 0..100 -> 0..1 exactly like lutStrength; mode/zoomLimit/focalMm/
+        // trimMs pass through raw (the C++ side owns their composition).
         val stab = if (grade.stabilization && gyroPath != null) {
             grade.stabilizationStrength / 100f
         } else {

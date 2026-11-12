@@ -13,9 +13,10 @@
 // the REAL pipeline Phase 5's renderer drives — container clocks ->
 // anchored sync -> VQF orientation -> container focal -> the clip API
 // -> computeStabilization at the warped buffer's dims -> warpFrame —
-// at BOTH tiers (developThumbnail strideEvery=3 -> the 1280x720
-// preview tier, strideEvery=1 -> the 3840x2160 export tier) and quotes
-// the measured per-frame cost of each warp.
+// at EVERY tier the preview drives (developThumbnail strideEvery=8 ->
+// the 480x270 drag tier, 6 -> the 640x360 playback tier, 3 -> the
+// 1280x720 paused tier, 1 -> the 3840x2160 export/source tier) and
+// quotes the measured per-frame cost of each warp.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -367,8 +368,18 @@ TEST_CASE("fixture evidence: 261110_004150 warp through the real pipeline") {
         REQUIRE(par.focalLengthPx > 0.0);
         par.width = static_cast<int>(developed.w);
         par.height = static_cast<int>(developed.h);
+        // The plan (computeStabilization) is recomputed PER RENDER on the
+        // bridge (jni_bridge.cpp stabilizationFrameFor), so its cost rides
+        // every tier's budget too — time it alongside the warp for the
+        // honest per-render total.
+        const auto p0 = std::chrono::steady_clock::now();
         const StabilizationResult r = computeStabilization(
             v.series, sync, cc.captureNs, gravity, true, true, par);
+        const auto p1 = std::chrono::steady_clock::now();
+        const double planMs =
+            std::chrono::duration<double, std::milli>(p1 - p0).count();
+        MESSAGE(std::string(name) << ": computeStabilization plan = "
+                << planMs << " ms");
         REQUIRE(!r.frames.empty());
         const StabilizationFrame& f0 = r.frames[0];
         // std::string wraps: doctest stringifies a bare const char* as a
@@ -399,6 +410,8 @@ TEST_CASE("fixture evidence: 261110_004150 warp through the real pipeline") {
         CHECK(ms < 500.0); // sanity bound, far above the expected cost
     };
 
+    runTier(8, "004150 drag-480");
+    runTier(6, "004150 playback-720");
     runTier(3, "004150 preview-1280");
     runTier(1, "004150 export-fullres");
 }
