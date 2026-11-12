@@ -432,6 +432,103 @@ TEST_CASE("occluded_block_gets_zero_weight_background_merges") {
           < 0.8 * variance(c, kTw, 176, 176, 240, 240));
 }
 
+// ---- auto-exposure micro-flicker (source-comparison item #9) ----
+// A uniform level step between adjacent frames (AE convergence) rides on
+// every block residual: it inflates the winner MADs (and so the measured
+// noise floor) and, once it exceeds ~3 sigma of the difference, pushes
+// static content out of the static-path gate. The winner-MAD de-bias —
+// the pair's GLOBAL proxy mean difference, subtracted before |.| —
+// removes exactly that bias, while a LOCAL content change keeps its
+// residual and stays rejected (the next test).
+
+TEST_CASE("ae_flicker_pair_merges_static_content") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // Same texture, the neighbor uniformly +24 DN (~2.5% of range) — an
+    // AE-convergence step inside the mergeable band: under the 4%
+    // mean-luma gate (measured shift 2.50%) and under the 0.30
+    // histogram-TV cut gate (measured 0.26), so the global gates rightly
+    // call it flicker, not a cut or exposure jump. Measured A/B on this
+    // exact content (probe dbg_n9): WITHOUT the de-bias the step rides
+    // every residual — plain winner MADs inflate to 0.025, r0 = 3.4 >
+    // 3, the sigma taper is zero and all 16 blocks reject -> the whole
+    // neighbor is dropped (a static scene loses its noise reduction to
+    // flicker). WITH the global de-bias the residuals are pure noise
+    // again: floor 0.0029 vs the noise model's expected 0.0029, r0 =
+    // 0.40, full confidence. Real AE micro-flicker is smaller (the 4K
+    // fixture measures +-0.0025%); there the de-bias's value is keeping
+    // the floor honest (measured inflation x1.05 plain vs x0.97
+    // de-biased at +0.4%).
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, texture, 121, 5.0f);
+    std::vector<uint16_t> n = makeFrame(kLw, kLw, texture, 122, 5.0f);
+    for (size_t i = 0; i < n.size(); ++i) {
+        const int v = static_cast<int>(n[i]) + 24;
+        n[i] = static_cast<uint16_t>(std::min(v, 1023));
+    }
+    const NoiseProfile prof = constantProfile(5.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.centerNoise = &prof;
+    ts.prevNoise = &prof;
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    // De-biased, the neighbor merges at full confidence.
+    CHECK(rep.prev.eligible);
+    CHECK(rep.prev.acceptRate > 0.9f);
+    CHECK(rep.prev.meanWeight > 0.25f);
+    // The output is pulled toward the neighbor's exposure by the blend
+    // share (0.40/1.40 x 24 DN ~ 6.9 DN at full block weight, shared
+    // with adjacent blocks inside the feather bands): temporal averaging
+    // DAMPS exposure flicker instead of passing it through at full
+    // amplitude — the alternative (a rejected neighbor) leaves 100% of
+    // the step in.
+    const double dMean = meanOf(out, kLw, 128, 128, 256, 256)
+                       - meanOf(c, kLw, 128, 128, 256, 256);
+    CHECK(dMean > 5.0);
+    CHECK(dMean < 12.0);
+}
+
+TEST_CASE("local_content_change_is_not_debiased_away") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // One block (proxy block (1,1) = CFA 128..255 sq) brightens by 0.05 of
+    // range in the neighbor; the other 15 blocks are identical texture.
+    // A PER-BLOCK mean subtraction would erase this residual (measured,
+    // probe_n3b: a 0.30-of-range block change drops from MAD 0.300 to
+    // 0.0035 ~= the noise floor -> merges -> guaranteed ghost); the
+    // GLOBAL de-bias keeps it — the changed block's residual survives
+    // minus its 1/16 share of the global offset — and the block stays
+    // rejected while the rest of the frame merges.
+    auto oneBlockBrighter = [](uint32_t x, uint32_t y) {
+        if (x >= 128 && x < 256 && y >= 128 && y < 256)
+            return texture(x, y) + 0.05f;
+        return texture(x, y);
+    };
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, texture, 131, 5.0f);
+    std::vector<uint16_t> n =
+        makeFrame(kLw, kLw, oneBlockBrighter, 132, 5.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    // The 15 unchanged blocks merge (the 1/16 poisoning share of the
+    // global offset, 0.003 of range, sits inside the noise model).
+    REQUIRE(rep.prev.eligible);
+    CHECK(rep.prev.acceptRate > 0.5f);
+    // The changed block keeps its residual and is rejected. Its interior
+    // — outside the feather bands, where it is the only candidate —
+    // carries weight 0, so those pixels keep the center EXACTLY (the
+    // per-block variant would have blended the brightened content in).
+    for (uint32_t y = 160; y < 224; ++y)
+        for (uint32_t x = 160; x < 224; ++x)
+            CHECK(out[static_cast<size_t>(y) * kLw + x]
+                  == c[static_cast<size_t>(y) * kLw + x]);
+}
+
 // ---- window clamping (DN-09) ----
 
 TEST_CASE("first_and_last_frame_clamp_window_no_crash") {

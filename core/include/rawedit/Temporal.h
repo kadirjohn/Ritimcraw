@@ -94,7 +94,16 @@
 // so the average is CFA-pattern independent). Integer block matching in
 // two passes, search radius +-4 proxy px (= +-32 CFA px, handheld
 // vibration between adjacent frames, not general optical flow), SAD on a
-// 2x2-subsampled lattice during the search, full sampling for winners:
+// 2x2-subsampled lattice during the search, full sampling for winners.
+// Winner MADs are MEAN-NORMALIZED GLOBALLY (source-comparison item #9):
+// the pair's proxy mean difference — what the mean-luma gate already
+// computes — is subtracted before the absolute value, so auto-exposure
+// micro-flicker no longer inflates the floor or the static-path residual.
+// Deliberately global, not per-block: a per-block mean subtraction erases
+// the residual of a local content change (measured: MAD 0.300 -> 0.0035,
+// i.e. a ghost); uniform steps stay bounded by the 4% mean-luma gate, and
+// the search cost stays plain (measured argmin shift under flicker is
+// noise level):
 //   pass 1: plain argmin (matchProxyBlocks, exposed for tests);
 //   pass 2 (internal): re-decide with the measured floor known —
 //     - ZERO-BIAS TIE-BREAK (ginzburg _argmin_zero_biased): candidates
@@ -174,10 +183,15 @@ struct MotionVector {
 // Block matching on the proxy grid: 16x16-px blocks, non-overlapping
 // (stride 16), search radius +-4, SAD on a 2x2-subsampled lattice during
 // the search and full sampling for the winner. Fills out[outW*outH]
-// (outW = proxyW/16, outH = proxyH/16) row-major. Exposed for tests.
+// (outW = proxyW/16, outH = proxyH/16) row-major. meanOffset (default 0)
+// is subtracted from every sample difference before the absolute value in
+// the winner MAD (source-comparison item #9, mean-normalized SAD): pass
+// mean(center) - mean(neighbor) of the proxies to remove an auto-exposure
+// level step from the residuals. The SEARCH cost stays plain SAD —
+// measured argmin shift under flicker is noise level. Exposed for tests.
 void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
                       std::vector<MotionVector>& out, uint32_t& outW,
-                      uint32_t& outH);
+                      uint32_t& outH, float meanOffset = 0.0f);
 
 // Settings + inputs for one merge. strength is the user slider 0..100; the
 // effective per-neighbor weight cap is 0.40 * strength/100, decayed by

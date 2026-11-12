@@ -233,8 +233,22 @@ float blockSadSub(const LumaProxy& a, const LumaProxy& b,
 }
 
 // Full-sampling mean absolute difference for the winner (256 samples).
+// meanOffset (source-comparison item #9, mean-normalized SAD): subtracted
+// from every sample difference before the absolute value. The merge passes
+// the pair's GLOBAL proxy mean difference (what the mean-luma gate already
+// computes), so auto-exposure micro-flicker — a uniform level step between
+// adjacent frames — no longer inflates winner MADs, the measured noise
+// floor, and the static-path residual. Deliberately GLOBAL, not per-block:
+// a per-block mean subtraction zeroes the residual of a local content
+// change (measured: a block brightening by 0.30 of range drops from MAD
+// 0.300 to 0.0035 ~= the noise floor, i.e. a guaranteed ghost), while the
+// global offset keeps it (measured 0.225 >> noise -> rejected). Uniform
+// steps are bounded by the 4% mean-luma gate; the search cost
+// (blockSadSub) stays plain — the measured argmin shift under flicker is
+// +0.15-0.35% p50, noise level.
 float blockMadFull(const LumaProxy& a, const LumaProxy& b,
-                   uint32_t bx, uint32_t by, int dx, int dy) {
+                   uint32_t bx, uint32_t by, int dx, int dy,
+                   float meanOffset) {
     float sad = 0.0f;
     for (int y = 0; y < kBlockSize; ++y) {
         int sy = static_cast<int>(by) + y + dy;
@@ -244,7 +258,7 @@ float blockMadFull(const LumaProxy& a, const LumaProxy& b,
         for (int x = 0; x < kBlockSize; ++x) {
             int sx = static_cast<int>(bx) + x + dx;
             sx = std::min(std::max(sx, 0), static_cast<int>(b.w) - 1);
-            sad += std::fabs(aRow[x] - bRow[sx]);
+            sad += std::fabs((aRow[x] - bRow[sx]) - meanOffset);
         }
     }
     return sad / float(kBlockSize * kBlockSize);
@@ -252,7 +266,11 @@ float blockMadFull(const LumaProxy& a, const LumaProxy& b,
 
 // Global gates on the proxies: mean luma shift + histogram TV distance.
 // Both computed once per neighbor; either failing rejects it.
-bool globalGatesPass(const LumaProxy& c, const LumaProxy& n) {
+// meanDiffOut (optional) receives the pair's proxy mean difference
+// mean(c) - mean(n) — the #9 de-bias offset, already computed for the
+// mean-luma gate, handed to the caller at zero extra cost.
+bool globalGatesPass(const LumaProxy& c, const LumaProxy& n,
+                     float* meanDiffOut = nullptr) {
     // Mean luma shift (sudden exposure jump: not a cut, still unsafe).
     float mc = 0.0f, mn = 0.0f;
     for (size_t i = 0; i < c.v.size(); ++i)
@@ -261,6 +279,8 @@ bool globalGatesPass(const LumaProxy& c, const LumaProxy& n) {
         mn += n.v[i];
     mc /= static_cast<float>(c.v.size());
     mn /= static_cast<float>(n.v.size());
+    if (meanDiffOut)
+        *meanDiffOut = mc - mn;
     if (std::fabs(mc - mn) > kMeanLumaReject)
         return false;
 
@@ -288,7 +308,7 @@ bool globalGatesPass(const LumaProxy& c, const LumaProxy& n) {
 
 void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
                       std::vector<MotionVector>& out, uint32_t& outW,
-                      uint32_t& outH) {
+                      uint32_t& outH, float meanOffset) {
     outW = center.w / kBlockSize;
     outH = center.h / kBlockSize;
     out.assign(static_cast<size_t>(outW) * outH, MotionVector{});
@@ -316,7 +336,8 @@ void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
             MotionVector mv;
             mv.dx = bestDx;
             mv.dy = bestDy;
-            mv.mad = blockMadFull(center, neighbor, ox, oy, bestDx, bestDy);
+            mv.mad = blockMadFull(center, neighbor, ox, oy, bestDx, bestDy,
+                                  meanOffset);
             out[static_cast<size_t>(by) * outW + bx] = mv;
         }
     }
@@ -338,7 +359,7 @@ namespace {
 // the predictors are already decided when read.
 void refineForward(const LumaProxy& c, const LumaProxy& n, float floor,
                    std::vector<MotionVector>& fwd,
-                   uint32_t bw, uint32_t bh) {
+                   uint32_t bw, uint32_t bh, float meanOffset) {
     const float tol = kZeroBias * floor;
     const float reg = kRegScale * floor;
     const float invSub =
@@ -404,7 +425,7 @@ void refineForward(const LumaProxy& c, const LumaProxy& n, float floor,
             MotionVector mv;
             mv.dx = bestDx;
             mv.dy = bestDy;
-            mv.mad = blockMadFull(c, n, ox, oy, bestDx, bestDy);
+            mv.mad = blockMadFull(c, n, ox, oy, bestDx, bestDy, meanOffset);
             fwd[static_cast<size_t>(by) * bw + bx] = mv;
         }
     }
@@ -464,14 +485,18 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
             return;
         if (e.proxy.w != cp.w || e.proxy.h != cp.h)
             return; // dimension mismatch: reject, never blend
-        if (!globalGatesPass(cp, e.proxy))
+        float meanOffset = 0.0f;
+        if (!globalGatesPass(cp, e.proxy, &meanOffset))
             return; // exposure jump / scene cut
 
-        // Forward (center -> neighbor) and backward block matching.
+        // Forward (center -> neighbor) and backward block matching. Winner
+        // MADs are de-biased by the pair's global mean difference (#9):
+        // the floor and every residual gate read the motion content, not
+        // the auto-exposure level step riding on top of it.
         std::vector<MotionVector> bwd;
         uint32_t fwdW = 0, fwdH = 0, bwdW = 0, bwdH = 0;
-        matchProxyBlocks(cp, e.proxy, e.fwd, fwdW, fwdH);
-        matchProxyBlocks(e.proxy, cp, bwd, bwdW, bwdH);
+        matchProxyBlocks(cp, e.proxy, e.fwd, fwdW, fwdH, meanOffset);
+        matchProxyBlocks(e.proxy, cp, bwd, bwdW, bwdH, -meanOffset);
         e.bw = fwdW;
         e.bh = fwdH;
         if (fwdW == 0 || bwdW != fwdW || bwdH != fwdH)
@@ -496,7 +521,7 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
 
         // Pass 2: re-decide the forward vectors with the floor known
         // (zero-bias tie-break + spatial-predictor regularization).
-        refineForward(cp, e.proxy, e.noiseFloor, e.fwd, fwdW, fwdH);
+        refineForward(cp, e.proxy, e.noiseFloor, e.fwd, fwdW, fwdH, meanOffset);
 
         e.blockWeight.assign(static_cast<size_t>(fwdW) * fwdH, 0.0f);
         int accepted = 0;
@@ -527,7 +552,8 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
                 // too: a metadata sigma that is too generous cannot
                 // admit a block whose zero-motion residual far exceeds
                 // the MEASURED floor.
-                const float mad0 = blockMadFull(cp, e.proxy, ox, oy, 0, 0);
+                const float mad0 = blockMadFull(cp, e.proxy, ox, oy, 0, 0,
+                                                meanOffset);
                 const float gate = kFloorGate * e.noiseFloor;
                 MotionVector use{0, 0, mad0};
                 float conf = 0.0f;
