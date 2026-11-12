@@ -195,15 +195,30 @@ name/canonical/hardware/softwareOnly is what actually ran.
   ~126.6 MiB. Texture-filterable and framebuffer-renderable are separate
   properties (RGBA16F filterable, RGBA32F not filterable on many GPUs).
 - highp in shaders; do not early-clamp scene-linear values.
-- NDK gap (verified against NDK 30.0.16248370): glShaderStorageBlockBinding
-  — the only core ES 3.1 mechanism for SSBO block binding, since GLSL ES
-  3.10 has no layout(binding=) for storage blocks — is declared in NO NDK
-  GLES header and exported by NO platform stub libGLESv3.so (checked API
-  31/34/35). The parity harness fetches the driver's implementation via
-  eglGetProcAddress; a null pointer is reported as an honest parity-run
-  failure (the CPU render path stays the default). Later GPU stages must
-  use the same workaround (or move to ES 3.20 layout(binding=), which is
-  NOT guaranteed on ES 3.1-only devices).
+- SSBO binding (CORRECTED 2026-11-13 — the previous "NDK gap" explanation
+  was WRONG): glShaderStorageBlockBinding is not an NDK header gap at all
+  — the command is NOT part of OpenGL ES in any version (it is desktop GL
+  4.2+), so eglGetProcAddress can only ever return null for it on an ES
+  context, and the old parity path that required it stopped there on every
+  device. The ES-native mechanism (GLSL ES 3.10 spec) is explicit
+  layout(std430, binding = N) on the shader storage blocks, matched on the
+  C++ side by the core ES 3.1 glBindBufferBase(GL_SHADER_STORAGE_BUFFER,
+  N, buf). The parity harness now uses exactly that: InBuf at binding 0
+  (readonly), OutBuf at binding 1 (writeonly), both std430 — the packing
+  the C++ side's tight float arrays assume, now declared instead of
+  implied. GLSL ES 3.10 does support layout(binding=) for storage blocks;
+  the earlier claim that it does not was part of the same error.
+- Compute=0 device diagnoses before 2026-11-13 are UNRELIABLE: the probe
+  queried GL_MAX_COMPUTE_WORK_GROUP_COUNT non-indexed (glGetIntegerv) —
+  but that enum is per-axis INDEXED and must be read with
+  glGetIntegeri_v per axis; the non-indexed query can fail and leave the
+  zero-initialized array at 0, reporting compute=0 on hardware that fully
+  supports ES 3.1 compute (the owner's Xiaomi 15 Ultra / Adreno 830 is
+  exactly this shape). The probe now queries all three axes of
+  GL_MAX_COMPUTE_WORK_GROUP_COUNT (and GL_MAX_COMPUTE_WORK_GROUP_SIZE)
+  with glGetIntegeri_v and gates computeOk on all three dispatch-count
+  axes being > 0. The device finding is re-testable: re-run Measure after
+  this fix — a compute-capable device should now report compute=1.
 - glReadPixels is used NOWHERE — not even the single-frame prototype
   parity harness (deliverable C reads back through a MAPPED shader
   storage buffer, glMapBufferRange); production preview/export paths
@@ -240,7 +255,14 @@ parity — device-independent portion complete:
   CPU stage-1 copy -> SSBO in -> GLSL ES 3.10 compute demosaic -> SSBO
   out -> glMapBufferRange readback -> CPU stage-5 tail -> uint16-domain
   comparison against rawedit::developLinear itself (untouched, exported).
-  No glReadPixels anywhere.
+  No glReadPixels anywhere. Audit fix 2026-11-13: the probe reads
+  GL_MAX_COMPUTE_WORK_GROUP_COUNT/SIZE per axis with glGetIntegeri_v
+  (the indexed query the spec requires — the old non-indexed query could
+  fail silently and report compute=0 on compute-capable hardware), and
+  the parity path binds SSBOs the ES-native way (shader-side
+  layout(std430, binding=0/1) + C++ glBindBufferBase — the
+  glShaderStorageBlockBinding lookup is gone: that command is desktop GL
+  only, never ES).
 - JNI seam (stateless, like nativeGyroSyncProbe):
   `nativeGlesProbe` -> [contextOk, major, minor, computeOk, floatFboOk,
   maxTextureSize]; `nativeGlesParity(fd, computeSource)` -> [ran,

@@ -94,21 +94,6 @@ GLenum glErrorAfter(const char* op, std::string* detail) {
     return err;
 }
 
-// glShaderStorageBlockBinding is a CORE ES 3.1 command but a known NDK
-// gap: this NDK's gl31.h does not declare it and the platform stub
-// libGLESv3.so does not export it (verified against NDK 30.0.16248370 —
-// no header declaration at any API level, no stub symbol at 31/34/35).
-// GLSL ES 3.10 has no layout(binding=) for shader storage blocks, so the
-// driver's implementation is fetched through eglGetProcAddress — the
-// standard Android workaround. A null pointer is reported honestly and
-// the parity run stops there (the CPU render path stays the default).
-using ShaderStorageBlockBindingFn = void (*)(GLuint, GLuint, GLuint);
-
-ShaderStorageBlockBindingFn loadShaderStorageBlockBinding() {
-    return reinterpret_cast<ShaderStorageBlockBindingFn>(
-        eglGetProcAddress("glShaderStorageBlockBinding"));
-}
-
 } // namespace
 
 EglSession::~EglSession() { release(); }
@@ -199,12 +184,31 @@ Capabilities probeCapabilities(std::string* detail) {
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
     caps.maxTextureSize = maxTex;
 
-    // Compute availability: an ES 3.1+ context with a nonzero dispatch
-    // limit (GL_MAX_COMPUTE_WORK_GROUP_COUNT is core 3.1; on a 3.0
-    // context the query is invalid and groups stay 0).
+    // Compute availability. GL_MAX_COMPUTE_WORK_GROUP_COUNT is an INDEXED
+    // enum (per-axis): the GL spec requires querying it with
+    // glGetIntegeri_v per axis, NEVER plain glGetIntegerv. The old code
+    // queried it non-indexed — an invalid query on many drivers, which
+    // can fail and leave the zero-initialized array at 0, reporting
+    // compute=0 on hardware that fully supports ES 3.1 compute (the
+    // owner's Xiaomi 15 Ultra / Adreno 830 most likely hit exactly
+    // this). That device diagnosis was UNRELIABLE; the indexed query
+    // re-opens the compute path and makes the probe re-testable.
+    // Rule: computeOk = all three per-axis dispatch counts > 0 —
+    // glDispatchCompute's grid is (ceil(w/8), ceil(h/8), 1), so a zero
+    // limit on ANY axis caps the dispatch on that axis; requiring all
+    // three keeps the flag honest without guessing which axis matters.
+    // (GL_MAX_COMPUTE_WORK_GROUP_SIZE is queried the same indexed way
+    // for the log; the 8x8 local size is tiny, so it is not part of the
+    // gate.)
     GLint groups[3] = {0, 0, 0};
-    glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_COUNT, groups);
-    caps.computeOk = groups[0] > 0;
+    GLint groupSize[3] = {0, 0, 0};
+    for (GLint axis = 0; axis < 3; ++axis) {
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, axis, &groups[axis]);
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, axis, &groupSize[axis]);
+    }
+    caps.computeOk = groups[0] > 0 && groups[1] > 0 && groups[2] > 0;
+    caps.maxWorkGroupCount.assign(groups, groups + 3);
+    caps.maxWorkGroupSize.assign(groupSize, groupSize + 3);
 
     caps.floatFboOk = caps.extensions.find("GL_EXT_color_buffer_float") != std::string::npos;
 
@@ -292,16 +296,6 @@ ParityReport demosaicParity(const std::string& computeSource,
         return rep;
     }
 
-    // The ES 3.1 block-binding command, fetched through the NDK-gap
-    // workaround above. The lookup is driver-global; a null pointer is
-    // a real, reportable device fact, never guessed past.
-    const ShaderStorageBlockBindingFn ssboBind =
-        loadShaderStorageBlockBinding();
-    if (ssboBind == nullptr) {
-        rep.detail = "eglGetProcAddress: glShaderStorageBlockBinding";
-        return rep;
-    }
-
     GlShader shader;
     shader.id = glCreateShader(GL_COMPUTE_SHADER);
     if (shader.id == 0) {
@@ -367,22 +361,21 @@ ParityReport demosaicParity(const std::string& computeSource,
         }
     }
 
-    // GLSL ES 3.10 has no layout(binding=) for shader storage blocks, so
-    // the block indices are bound from here with the core ES 3.1 command
-    // (fetched via eglGetProcAddress — see the NDK-gap note above).
-    const GLuint inIndex = glGetProgramResourceIndex(
-        program.id, GL_SHADER_STORAGE_BLOCK, "InBuf");
-    const GLuint outIndex = glGetProgramResourceIndex(
-        program.id, GL_SHADER_STORAGE_BLOCK, "OutBuf");
+    // SSBO binding: GLSL ES 3.10 supports explicit layout(binding=N) on
+    // shader storage blocks, and the shader declares InBuf at binding 0
+    // and OutBuf at binding 1 (layout(std430, binding=...)). The C++ side
+    // only needs the core ES 3.1 glBindBufferBase to attach the buffers
+    // to those SAME binding points. glShaderStorageBlockBinding is NOT an
+    // ES command at all (it is desktop GL 4.2+), so the old
+    // eglGetProcAddress workaround could only ever return null on ES and
+    // stopped the parity run there — the block-index query it fed is
+    // gone too (the binding points now come from the shader text).
     const GLint sizeLoc = glGetUniformLocation(program.id, "uSize");
     const GLint cellLoc = glGetUniformLocation(program.id, "uCell");
-    if (inIndex == GL_INVALID_INDEX || outIndex == GL_INVALID_INDEX ||
-        sizeLoc < 0 || cellLoc < 0) {
-        rep.detail = "shader-contract: missing InBuf/OutBuf/uSize/uCell";
+    if (sizeLoc < 0 || cellLoc < 0) {
+        rep.detail = "shader-contract: missing uSize/uCell";
         return rep;
     }
-    ssboBind(program.id, inIndex, 0);
-    ssboBind(program.id, outIndex, 1);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, inBuf.id);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, outBuf.id);
 

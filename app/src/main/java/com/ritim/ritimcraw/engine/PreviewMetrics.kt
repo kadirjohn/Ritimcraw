@@ -257,9 +257,13 @@ object PreviewMetrics {
             // Leg 4b: parity — only when the context + compute gates are
             // green (running the parity shader on a device without compute
             // would only produce a compile error we can already predict).
+            // Audit fix 2026-11-13: the probe now reads the per-axis
+            // dispatch limits the indexed way (glGetIntegeri_v), so a
+            // compute=0 here is a REAL device fact, not the old query
+            // artifact that misreported compute-capable hardware.
             if (!probe.contextOk || !probe.computeOk) {
                 lines += GpuParityRules.skippedParityLine(
-                    if (!probe.contextOk) "no gles context" else "no compute (gles < 3.1)",
+                    if (!probe.contextOk) "no gles context" else "no compute (indexed probe)",
                 )
                 Log.i(TAG, GpuParityRules.block(lines))
                 return GpuParityRules.block(lines)

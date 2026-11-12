@@ -17,8 +17,14 @@ package com.ritim.ritimcraw.engine
  *  - the DISPATCH contract: local_size_x/y = 8 — the C++ harness in
  *    gles/GlesPipeline.cpp divides the grid by exactly 8;
  *  - the JNI harness contract: the InBuf/OutBuf shader storage blocks
- *    (bound at indices 0/1 by name) and the uSize/uCell uniforms the
- *    harness sets.
+ *    declared with layout(std430, binding = 0/1) — the ES 3.10 explicit
+ *    binding points the harness's glBindBufferBase(…, 0/1, …) attaches
+ *    the buffers to, and the std430 packing the C++ side's tight float
+ *    arrays assume — plus the uSize/uCell uniforms the harness sets.
+ *    A plain `buffer InBuf { … }` (the old form, no std430/binding) is
+ *    REJECTED: it relies on default packing while the C++ side assumes
+ *    tight arrays, and without binding= the block-to-buffer attachment
+ *    is undefined by this text.
  *
  * The real compile is device-test-pending (the owner's Measure run).
  * Pure JVM: no Android classes, no file IO.
@@ -57,13 +63,15 @@ object GlesShaderValidator {
             out += "missing `layout(local_size_x = 8, local_size_y = 8) in;` " +
                 "(the C++ harness dispatches a grid divided by exactly 8)"
         }
-        if (!stripped.contains("buffer InBuf")) {
-            out += "missing the `InBuf` shader storage block " +
-                "(the C++ harness binds it by name at index 0)"
+        if (!stripped.contains("layout(std430, binding = 0) readonly buffer InBuf")) {
+            out += "missing `layout(std430, binding = 0) readonly buffer InBuf` " +
+                "(the C++ harness attaches the input SSBO to binding point 0 " +
+                "with glBindBufferBase and assumes std430 tight float packing)"
         }
-        if (!stripped.contains("buffer OutBuf")) {
-            out += "missing the `OutBuf` shader storage block " +
-                "(the C++ harness binds it by name at index 1)"
+        if (!stripped.contains("layout(std430, binding = 1) writeonly buffer OutBuf")) {
+            out += "missing `layout(std430, binding = 1) writeonly buffer OutBuf` " +
+                "(the C++ harness attaches the output SSBO to binding point 1 " +
+                "with glBindBufferBase and assumes std430 tight float packing)"
         }
         if (!stripped.contains("uniform ivec2 uSize;")) {
             out += "missing `uniform ivec2 uSize;` (the C++ harness sets it)"
