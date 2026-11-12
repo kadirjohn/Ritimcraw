@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.library
 
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.RelinkMismatchException
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.io.IOException
@@ -55,5 +56,29 @@ class ImportErrorsTest {
             ImportErrors.Kind.UNKNOWN,
             ImportErrors.kindOf(RuntimeException()),
         )
+    }
+
+    // ---- re-link failures (spec IN-16: the honest mismatch error) ----
+
+    @Test
+    fun relink_mismatch_names_both_fingerprints() {
+        // The mismatch message carries expected/actual so the user knows
+        // the pick was a DIFFERENT file — and that nothing changed.
+        val e = RelinkMismatchException(
+            expectedFingerprint = "aaa111",
+            actualFingerprint = "bbb222",
+        )
+        val msg = ImportErrors.fromRelinkException(e)
+        assertEquals(R.string.library_relink_failed_mismatch, msg.messageRes)
+        assertEquals("aaa111 / bbb222", msg.causeArg)
+    }
+
+    @Test
+    fun other_relink_failures_keep_the_cause_detail() {
+        // The pick could not be read at all: same recovery (pick the
+        // original file at its new location), the cause rides along.
+        val msg = ImportErrors.fromRelinkException(IOException("read failed: EBADF"))
+        assertEquals(R.string.library_relink_failed_unknown, msg.messageRes)
+        assertEquals("read failed: EBADF", msg.causeArg)
     }
 }

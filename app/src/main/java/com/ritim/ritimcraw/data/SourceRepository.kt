@@ -6,7 +6,24 @@ import java.security.MessageDigest
 
 enum class SourceKind { MCRAW, ENCODED }
 
-enum class Access { OK, LOST }
+/**
+ * The live status of a cataloged clip's backing document (spec IN-12 /
+ * IN-16), decided by the collection refresh pass:
+ *
+ *  - [OK] — the document resolves and opens.
+ *  - [LOST] — the SAF permission was revoked: the provider answers a
+ *    metadata query with SecurityException. The file is probably still
+ *    there; re-establishing the grant (pick the clip again) fixes it.
+ *  - [GONE] — the document itself no longer resolves (deleted, moved, or
+ *    the SSD it lived on is unplugged): the metadata query fails without
+ *    a permission cause. Only re-linking to the same bytes (fingerprint
+ *    match) or removing the row resolves a GONE clip.
+ *
+ * Persisted by name; records written before GONE existed (or by an older
+ * build encountering the new value) parse through the default in
+ * [SourceRepository.parseSources2] — OK, never a crash.
+ */
+enum class Access { OK, LOST, GONE }
 
 /**
  * One imported clip. URIs are Strings (not android.net.Uri) so the model and
@@ -95,6 +112,98 @@ interface UriResolver {
      * falls back to the id and backfills on the next import/open.
      */
     fun displayName(uri: String): String?
+
+    /**
+     * The collection refresh's CHEAP probe (spec IN-12): does the document
+     * still resolve, and is the app's permission on it still granted?
+     * One metadata query — never an open, never a frame decode.
+     *
+     *  - [DocumentProbe.AVAILABLE]: the provider answered the query — the
+     *    document exists and the grant is intact.
+     *  - [DocumentProbe.PERMISSION]: the provider threw SecurityException
+     *    — the grant was revoked (the file may well still exist).
+     *  - [DocumentProbe.GONE]: the query failed without a permission
+     *    cause — the document was deleted or moved, or its storage is
+     *    unmounted.
+     */
+    fun probe(uri: String): DocumentProbe
+}
+
+/**
+ * The probe outcome for [UriResolver.probe]: AVAILABLE / PERMISSION / GONE,
+ * mapped onto [Access.OK] / [Access.LOST] / [Access.GONE] by the refresh
+ * pass. JVM-testable fakes decide it directly.
+ */
+enum class DocumentProbe { AVAILABLE, PERMISSION, GONE }
+
+/**
+ * The re-link identity check failed (spec IN-16): the picked document's
+ * fingerprint does not match the missing source's. The repository changes
+ * NOTHING in this case — the UI reports the mismatch honestly and the
+ * user can pick again or remove the row.
+ */
+class RelinkMismatchException(
+    val expectedFingerprint: String,
+    val actualFingerprint: String,
+) : Exception(
+    "relink mismatch: expected $expectedFingerprint, picked $actualFingerprint",
+)
+
+/**
+ * Pure cadence rules for the collection refresh pass (spec IN-12),
+ * JVM-testable: WHICH records a Library open probes, so a big library
+ * never pays a full sweep on every composition. Two groups:
+ *
+ *  - DEGRADED rows (LOST/GONE) are probed on EVERY open — they are the
+ *    pass's whole purpose, they are few, and their state is cheap to
+ *    re-check (and recoverable: a re-grant or a plugged-back SSD flips
+ *    them back without any user action).
+ *  - OK rows are probed on a ROTATING slice of [okBatch] per open: a
+ *    clip deleted between visits surfaces within ceil(n / okBatch)
+ *    opens, and the cursor persists across visits (rememberSaveable in
+ *    AppNav) so consecutive opens advance through the list instead of
+ *    re-probing the same head. Pull-to-refresh (the manual affordance)
+ *    sweeps everything at once outside this cadence.
+ */
+object CollectionRefresh {
+
+    /** How many OK records one Library open probes (the thumbnail pass's
+     *  ≤3-per-open precedent, sized up slightly: a probe is one metadata
+     *  query, much cheaper than a thumbnail develop). */
+    const val OK_BATCH = 5
+
+    /**
+     * The ids one bounded pass probes: every degraded record, plus the
+     * next [okBatch] OK records starting at [cursor] (wrapping — the
+     * rotation visits every record eventually).
+     */
+    fun batch(sources: List<MediaSource>, cursor: Int, okBatch: Int = OK_BATCH): List<String> {
+        if (okBatch <= 0) {
+            return sources.filter { it.access != Access.OK }.map { it.id }
+        }
+        val ids = sources.filter { it.access != Access.OK }.map { it.id }.toMutableList()
+        val ok = sources.filter { it.access == Access.OK }
+        if (ok.isNotEmpty()) {
+            val start = ((cursor % ok.size) + ok.size) % ok.size
+            var i = start
+            repeat(minOf(okBatch, ok.size)) {
+                ids.add(ok[i].id)
+                i = (i + 1) % ok.size
+            }
+        }
+        return ids
+    }
+
+    /**
+     * The next pass's cursor: advanced by the number of OK records this
+     * pass probed, wrapping back to 0. Passed through AppNav as plain
+     * rememberSaveable state; any value is safe (batch normalizes).
+     */
+    fun nextCursor(sources: List<MediaSource>, cursor: Int, okBatch: Int = OK_BATCH): Int {
+        val okCount = sources.count { it.access == Access.OK }
+        if (okCount == 0) return 0
+        return (cursor + minOf(okBatch, okCount)) % okCount
+    }
 }
 
 /**
@@ -106,9 +215,12 @@ interface UriResolver {
  * plus the file size), so re-importing the same file keeps the same id and
  * its grade (sprint plan Task 4: reimport_same_file_keeps_id).
  *
- * refreshAccess() catches SecurityException and marks the source Access.LOST
- * without dropping it (spec IN-14 / QA-23: the row stays, with a Grant access
- * action — never a crash).
+ * refreshStatus() probes each record's document cheaply (one metadata
+ * query — never an open) and marks a revoked permission Access.LOST or a
+ * deleted/moved document Access.GONE without dropping the record (spec
+ * IN-12/IN-14 / QA-23: the row stays, with a Grant access / Re-link
+ * action — never a crash). relink() re-binds a degraded record to a
+ * freshly picked document ONLY on a fingerprint match (spec IN-16).
  */
 class SourceRepository(
     private val resolver: UriResolver,
@@ -210,28 +322,78 @@ class SourceRepository(
     }
 
     /**
-     * Re-checks every source. A revoked permission or a moved file marks the
-     * source [Access.LOST]; the id and fingerprint are kept.
+     * Re-checks the live status of the collection (spec IN-12) through the
+     * CHEAP probe — one metadata query per source, never an open or a
+     * frame decode (the thumbnail pass keeps the open-based precedent;
+     * this pass must stay bounded and cheap for big libraries).
+     *
+     * A revoked permission marks [Access.LOST]; a deleted/moved document
+     * marks [Access.GONE] — the two are kept distinct because they have
+     * different recoveries (re-grant vs re-link). Both directions
+     * recover: a re-granted or re-linked clip returns to OK, and a GONE
+     * clip the provider re-resolves (SSD plugged back in) does too.
+     *
+     * [ids] bounds the pass: only the named records are probed (the
+     * Library's per-open batch passes its rotating slice; null = all).
+     * Returns the probed records with their updated status.
      */
-    fun refreshAccess(): List<MediaSource> {
+    fun refreshStatus(ids: List<String>? = null): List<MediaSource> {
         val sources = load().toMutableList()
-        for (i in sources.indices) {
+        val targets = if (ids == null) sources.indices.toList() else
+            sources.indices.filter { sources[it].id in ids }
+        for (i in targets) {
             val s = sources[i]
-            val access = try {
-                resolver.open(s.uri).use { }
-                Access.OK
-            } catch (e: SecurityException) {
-                Access.LOST
-            } catch (e: Exception) {
-                // Moved, deleted or unreadable: same user-facing state.
-                Access.LOST
+            val access = when (resolver.probe(s.uri)) {
+                DocumentProbe.AVAILABLE -> Access.OK
+                DocumentProbe.PERMISSION -> Access.LOST
+                DocumentProbe.GONE -> Access.GONE
             }
             if (access != s.access) {
                 sources[i] = s.copy(access = access)
             }
         }
         write(sources)
-        return sources
+        return targets.map { sources[it] }
+    }
+
+    /**
+     * Re-binds a degraded (LOST/GONE) source to a newly picked document
+     * (spec IN-16): the picked file's fingerprint — the SAME identity the
+     * import path trusts, SHA-256 of the first 1 MiB plus the size — is
+     * compared against the missing source's recorded one. A MATCH rebinds
+     * the uri and returns the updated source: same id, so the grade,
+     * stats, gyro attachment and exports all survive (the whole point of
+     * re-linking rather than re-importing). A MISMATCH throws
+     * [RelinkMismatchException] and changes NOTHING — the catalog never
+     * silently rebinds to a different file.
+     *
+     * Duration/frames are NOT re-verified here beyond the fingerprint:
+     * the record's stats, gyro sync and exports were all derived from
+     * these exact bytes at import time, so byte-identity (prefix hash +
+     * exact size) is the identity contract — anything cheaper would be
+     * weaker, anything more would re-open the clip this pass must not.
+     */
+    fun relink(id: String, uri: String): MediaSource {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) throw IllegalArgumentException("no source $id")
+        val current = sources[index]
+        val fingerprint = fingerprintOf(uri)
+        if (fingerprint != current.fingerprint) {
+            throw RelinkMismatchException(current.fingerprint, fingerprint)
+        }
+        // Same bytes: rebind the uri (the document id differs after a
+        // move), clear the degraded status, and backfill a display name
+        // the old location could not provide — exactly the import path's
+        // existing-record branch.
+        val updated = current.copy(
+            uri = uri,
+            access = Access.OK,
+            displayName = resolver.displayName(uri) ?: current.displayName,
+        )
+        sources[index] = updated
+        write(sources)
+        return updated
     }
 
     fun remove(id: String) {

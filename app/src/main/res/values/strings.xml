@@ -20,6 +20,12 @@
     <string name="library_empty_body">Import an MCRAW clip from your device to start grading.</string>
     <string name="library_row_access_lost">Access lost</string>
     <string name="library_row_grant_access">Grant access</string>
+    <string name="library_row_file_missing">File missing</string>
+    <string name="library_row_relink">Re-link</string>
+    <string name="library_relink_failed_mismatch">Re-link failed: the picked file is not this clip (%1$s). Pick the original file at its new location.</string>
+    <string name="library_relink_failed_unknown">Re-link failed: %1$s. Pick the original file at its new location.</string>
+    <string name="library_relinked">Clip re-linked</string>
+    <string name="library_refreshing">Checking clips…</string>
     <string name="library_row_kind_mcraw">MCRAW · RAW video</string>
     <string name="library_row_kind_encoded">Encoded video</string>
     <string name="library_frames">frames</string>

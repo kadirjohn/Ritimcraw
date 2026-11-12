@@ -42,6 +42,25 @@ object ImportErrors {
         m
     }
 
+    /**
+     * Maps a failure of the re-link flow (spec IN-16) to its message
+     * resource. A [RelinkMismatchException] names BOTH fingerprints — the
+     * honest error: the picked file is not the missing clip, and NOTHING
+     * changed in the catalog. Any other failure (the pick could not be
+     * read at all) keeps the cause detail and the same recovery: pick the
+     * original file at its new location.
+     */
+    fun fromRelinkException(e: Throwable): Message = when (e) {
+        is com.ritim.ritimcraw.data.RelinkMismatchException -> Message(
+            messageRes = com.ritim.ritimcraw.R.string.library_relink_failed_mismatch,
+            causeArg = "${e.expectedFingerprint} / ${e.actualFingerprint}",
+        )
+        else -> Message(
+            messageRes = com.ritim.ritimcraw.R.string.library_relink_failed_unknown,
+            causeArg = e.message,
+        )
+    }
+
     /** Which [Kind] an exception maps to (used by tests and analytics). */
     fun kindOf(e: Throwable): Kind = when (e) {
         is SecurityException -> Kind.ACCESS

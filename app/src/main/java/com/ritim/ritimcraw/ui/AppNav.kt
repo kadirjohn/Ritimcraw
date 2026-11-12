@@ -53,6 +53,7 @@ import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
+import com.ritim.ritimcraw.data.CollectionRefresh
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.GyroFolderStore
 import com.ritim.ritimcraw.data.GyroMatcher
@@ -275,6 +276,19 @@ fun AppNav() {
     // time, kicked from Settings' Measure action.
     var measuring by remember { mutableStateOf(false) }
     var measureKick by remember { mutableStateOf(0) }
+    // Collection refresh (spec IN-12): the rotating cursor for the bounded
+    // per-open pass — every Library open probes ALL degraded rows plus
+    // CollectionRefresh.OK_BATCH healthy ones starting at this position,
+    // so repeated opens sweep the whole catalog without a per-open spike
+    // (ceil(n/5) opens cover it; the cursor wraps). rememberSaveable keeps
+    // the position across config changes; a fresh process starts at 0.
+    // The pull-to-refresh full sweep does NOT advance it (it probes
+    // everything anyway).
+    var refreshCursor by rememberSaveable { mutableStateOf(0) }
+    // The pull-to-refresh indicator: true while the manual full sweep
+    // runs (the pass is synchronous on the main dispatcher like every
+    // other store call, so the flag brackets it for the indicator).
+    var libraryRefreshing by remember { mutableStateOf(false) }
 
     // Library thumbnails + recorded stats (owner request 2026-11-11 §1):
     // one small PNG per clip id under files/thumbnails/, developed ONCE
@@ -1177,10 +1191,50 @@ fun AppNav() {
                                     Result.failure(e)
                                 }
                             },
-                            // Revoked-access rows retry their thumbnail after the
-                            // grant returns: the backfill below picks them up on
-                            // the next Library composition too.
-                            onGrantAccess = { sources = stores.sources.refreshAccess() },
+                            // Re-link (spec IN-16): the degraded row's SAF pick
+                            // lands here — the fingerprint-checked relink
+                            // rebinds the SAME id (grade, gyro, stats and
+                            // export history all survive), and a mismatch is
+                            // the honest error (the record changes nothing).
+                            // The refreshed list state updates the row in
+                            // place; the thumbnail the row never could
+                            // generate while missing retries through the
+                            // backfill on this same composition.
+                            onRelink = { sourceId, uri ->
+                                try {
+                                    val relinked = stores.sources.relink(sourceId, uri)
+                                    sources = stores.sources.all()
+                                    scope.launch { generateThumbnail(relinked) }
+                                    Result.success(relinked)
+                                } catch (e: Exception) {
+                                    Result.failure(e)
+                                }
+                            },
+                            // Manual full sweep (spec IN-12): pull-to-refresh
+                            // re-probes the WHOLE catalog — one cheap metadata
+                            // query per record, never an open. The cursor
+                            // stays put (the sweep covers everything).
+                            onRefresh = {
+                                libraryRefreshing = true
+                                sources = stores.sources.refreshStatus()
+                                libraryRefreshing = false
+                            },
+                            refreshing = libraryRefreshing,
+                            // Bounded per-open pass (spec IN-12): all degraded
+                            // rows (few, cheap, recoverable — a re-granted or
+                            // re-linked clip returns to OK on the next open)
+                            // plus the rotating healthy slice. The cursor
+                            // advances by the slice actually taken.
+                            onOpenRefresh = {
+                                val batch = CollectionRefresh.batch(sources, refreshCursor)
+                                if (batch.isNotEmpty()) {
+                                    stores.sources.refreshStatus(batch)
+                                    sources = stores.sources.all()
+                                    refreshCursor = CollectionRefresh.nextCursor(
+                                        sources, refreshCursor,
+                                    )
+                                }
+                            },
                             thumbnailAt = { id ->
                                 // The persisted PNG's path, or null: the row
                                 // shows the placeholder while missing.

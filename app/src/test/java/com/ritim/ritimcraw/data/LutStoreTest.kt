@@ -28,6 +28,9 @@ private class UriKeyedResolver(
     // LUT imports get their title from the picker-side fallback name, so
     // the resolver never needs to resolve a document name here.
     override fun displayName(uri: String): String? = null
+
+    // The collection refresh never probes cube files: any answer works.
+    override fun probe(uri: String): DocumentProbe = DocumentProbe.AVAILABLE
 }
 
 /**

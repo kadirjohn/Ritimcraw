@@ -13,10 +13,11 @@ object ThumbnailRules {
 
     /**
      * True when [source] still needs a thumbnail generated: no persisted
-     * file ([hasFile]) and access to the clip is OK (a LOST row cannot be
-     * probed — it retries on the next Library open after the grant
-     * returns). A clip that already has its file is never re-developed —
-     * decode ONCE, persist, never redevelop per composition.
+     * file ([hasFile]) and access to the clip is OK (a LOST or GONE row
+     * cannot be probed — it retries on the next Library open after the
+     * grant returns or the re-link lands). A clip that already has its
+     * file is never re-developed — decode ONCE, persist, never redevelop
+     * per composition.
      */
     fun needsThumbnail(source: MediaSource, hasFile: Boolean): Boolean =
         !hasFile && source.access == Access.OK

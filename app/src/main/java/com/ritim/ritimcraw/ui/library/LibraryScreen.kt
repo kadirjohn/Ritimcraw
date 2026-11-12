@@ -30,12 +30,15 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -43,7 +46,6 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
-import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.ThumbnailRules
@@ -77,8 +79,23 @@ enum class LibraryFilter(val labelRes: Int) {
  * auto-match resolves, so ONE combined message can name gyro data when it
  * attached (owner request 2026-11-12 — no tap to dismiss, no layout space).
  *
- * Rows with revoked access show "Access lost" with a "Grant access" action
- * instead of disappearing (QA-23).
+ * Degraded rows stay visible with a DISTINCT line and action per state
+ * (spec IN-12, QA-23): a LOST row (revoked permission) shows "Access lost"
+ * with a Grant access action; a GONE row (deleted/moved document) shows
+ * "File missing" with a Re-link action. Both states recover through the
+ * SAME picker + fingerprint-checked re-link flow (spec IN-16): a revoked
+ * grant also only comes back by picking the file again, so the tap opens
+ * the SAF picker, the picked file is fingerprinted, and a MATCH rebinds
+ * the record (same id — grade and exports survive) while a MISMATCH shows
+ * the honest error and changes nothing. The pure [LibraryRowModel] keeps
+ * the state mapping testable; the row renders through the shared
+ * FileListRow's accessLost slots with per-state strings.
+ *
+ * The collection refresh (spec IN-12) is bounded per open: the caller
+ * (AppNav) probes all degraded rows plus a rotating slice of healthy rows
+ * on every Library composition. Pull-to-refresh is the manual full sweep
+ * (the whole catalog, one probe per record — still cheap: one metadata
+ * query, never an open).
  *
  * Delete (owner finding 2026-11-11 E2: long-press a row, trash the
  * selection): long-press enters selection mode with that row checked,
@@ -107,10 +124,25 @@ fun LibraryScreen(
     sources: List<MediaSource>,
     onOpenClip: (String) -> Unit,
     onImport: (uri: String) -> Result<MediaSource>,
-    onGrantAccess: (MediaSource) -> Unit,
+    // Re-link (spec IN-16): the degraded row's action hands the record to
+    // the caller AFTER the SAF pick returns — AppNav runs the
+    // fingerprint-checked relink and refreshes the list. Returns the
+    // updated record on success; the failure path renders the snackbar
+    // here (the screen owns the message surface).
+    onRelink: (sourceId: String, uri: String) -> Result<MediaSource>,
     thumbnailAt: (id: String) -> String?,
     thumbnailBatchLimit: Int,
     onGenerateThumbnails: (pending: List<String>) -> Unit,
+    // Manual full sweep (spec IN-12): pull-to-refresh hands the whole
+    // catalog to the caller's refresh; the caller drives the refreshing
+    // indicator through [refreshing] and ends it when the pass lands.
+    onRefresh: () -> Unit,
+    refreshing: Boolean,
+    // Bounded refresh-on-open (spec IN-12): fired once per Library
+    // composition (every open, since navigation disposes the screen) —
+    // the caller probes every degraded row plus a rotating slice of
+    // healthy rows through [com.ritim.ritimcraw.data.CollectionRefresh].
+    onOpenRefresh: () -> Unit,
     // E2 delete: the caller (AppNav) composes the store removes through
     // ClipDeletion and refreshes the list. Default keeps previews and any
     // other caller compiling unchanged.
@@ -133,6 +165,12 @@ fun LibraryScreen(
     val selecting = selection.isNotEmpty()
     var confirmDeleteOpen by remember { mutableStateOf(false) }
 
+    // The degraded row whose action opened the SAF picker. The id (not the
+    // record) is remembered: the callback runs after the picker round-trip,
+    // and the caller resolves the CURRENT record from it — a record
+    // refreshed mid-flight (refresh pass landed) is never stale.
+    var relinkTargetId by rememberSaveable { mutableStateOf<String?>(null) }
+
     // E6 (owner finding 2026-11-11): the system back gesture/button while
     // rows are selected must CLOSE SELECTION, not the app. Enabled
     // exactly while selection mode is active (the pure
@@ -154,7 +192,7 @@ fun LibraryScreen(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
         } catch (e: SecurityException) {
-            // Non-fatal: refreshAccess() will surface a lost row if this
+            // Non-fatal: the collection refresh will surface a lost row if this
             // grant really is required; the import attempt still runs.
         }
         val result = runCatching { onImport(uri.toString()) }
@@ -175,6 +213,46 @@ fun LibraryScreen(
             // (stage), so the snackbar shows it as-is — no duplicate title.
             scope.launch { snackbarHostState.showSnackbar(text) }
         }
+    }
+
+    // Re-link picker (spec IN-16): same ACTION_OPEN_DOCUMENT contract as
+    // the import picker (persistable read grant on the pick), but the
+    // result goes through the caller's fingerprint-checked relink instead
+    // of an import. A mismatch is the HONEST error — nothing changed.
+    val relinkPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val targetId = relinkTargetId
+        relinkTargetId = null // consumed either way: success refreshes, failure keeps the row
+        if (uri == null || targetId == null) return@rememberLauncherForActivityResult
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        } catch (e: SecurityException) {
+            // Non-fatal for the same reason as the import path: the
+            // refresh pass will surface the row's real state.
+        }
+        val result = runCatching { onRelink(targetId, uri.toString()) }
+            .getOrElse { e -> Result.failure(e) }
+        result.fold(
+            onSuccess = {
+                // The record is whole again (same id, grade, exports); the
+                // thumbnail it never could generate while missing retries on
+                // the next composition through the backfill pass.
+                val text = context.getString(R.string.library_relinked)
+                scope.launch { snackbarHostState.showSnackbar(text) }
+            },
+            onFailure = { e ->
+                val msg = ImportErrors.fromRelinkException(e)
+                val text = context.getString(
+                    msg.messageRes,
+                    msg.causeArg ?: e.javaClass.simpleName,
+                )
+                scope.launch { snackbarHostState.showSnackbar(text) }
+            },
+        )
     }
 
     // E4 (owner finding 2026-11-11): the title must sit at the SAME height
@@ -262,43 +340,53 @@ fun LibraryScreen(
                 }
             },
         ) { padding ->
-            Column(
-                Modifier
-                    .padding(padding)
-                    .fillMaxSize()
+            val pullState = rememberPullToRefreshState()
+            PullToRefreshBox(
+                isRefreshing = refreshing,
+                onRefresh = onRefresh,
+                state = pullState,
+                modifier = Modifier.padding(padding),
             ) {
-                if (visible.isEmpty()) {
-                    EmptyLibrary(Modifier.weight(1f))
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        // Vertical rhythm (§4.3 consistent spacing) plus bottom
-                        // clearance (§4.4): the last row must scroll fully
-                        // clear of the Import FAB — the button never
-                        // permanently obstructs a row.
-                        contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
-                    ) {
-                        items(visible, key = { it.id }) { source ->
-                            LibraryRow(
-                                source = source,
-                                thumbnailPath = thumbnailAt(source.id),
-                                selected = source.id in selection,
-                                selecting = selecting,
-                                showDivider = source !== visible.lastOrNull(),
-                                onToggleSelected = {
-                                    selectedIds = LibrarySelection.toggle(selectedIds, source.id)
-                                },
-                                onOpen = { onOpenClip(source.id) },
-                                onGrantAccess = { onGrantAccess(source) },
-                            )
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                ) {
+                    if (visible.isEmpty()) {
+                        EmptyLibrary(Modifier.weight(1f))
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.weight(1f),
+                            // Vertical rhythm (§4.3 consistent spacing) plus bottom
+                            // clearance (§4.4): the last row must scroll fully
+                            // clear of the Import FAB — the button never
+                            // permanently obstructs a row.
+                            contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
+                        ) {
+                            items(visible, key = { it.id }) { source ->
+                                LibraryRow(
+                                    source = source,
+                                    thumbnailPath = thumbnailAt(source.id),
+                                    selected = source.id in selection,
+                                    selecting = selecting,
+                                    showDivider = source !== visible.lastOrNull(),
+                                    onToggleSelected = {
+                                        selectedIds = LibrarySelection.toggle(selectedIds, source.id)
+                                    },
+                                    onOpen = { onOpenClip(source.id) },
+                                    onRelink = {
+                                        relinkTargetId = source.id
+                                        relinkPicker.launch(arrayOf("*/*"))
+                                    },
+                                )
+                            }
                         }
+                        LibraryThumbnailBackfill(
+                            sources = visible,
+                            thumbnailAt = thumbnailAt,
+                            batchLimit = thumbnailBatchLimit,
+                            onGenerateThumbnails = onGenerateThumbnails,
+                        )
                     }
-                    LibraryThumbnailBackfill(
-                        sources = visible,
-                        thumbnailAt = thumbnailAt,
-                        batchLimit = thumbnailBatchLimit,
-                        onGenerateThumbnails = onGenerateThumbnails,
-                    )
                 }
             }
             if (confirmDeleteOpen && selecting) {
@@ -339,6 +427,13 @@ fun LibraryScreen(
             }
         }
     }
+    // Bounded refresh-on-open (spec IN-12): fired ONCE per Library
+    // composition — navigation disposes the screen, so every composition
+    // is one open. The caller's pass probes every degraded row plus a
+    // rotating healthy slice (CollectionRefresh), one cheap metadata
+    // query each; a sources change mid-session does NOT re-kick it (the
+    // key is Unit, not the list).
+    LaunchedEffect(Unit) { onOpenRefresh() }
 }
 
 private fun matches(filter: LibraryFilter, s: MediaSource): Boolean = when (filter) {
@@ -359,32 +454,36 @@ private fun LibraryRow(
     showDivider: Boolean,
     onToggleSelected: () -> Unit,
     onOpen: () -> Unit,
-    onGrantAccess: () -> Unit,
+    onRelink: () -> Unit,
 ) {
-    val accessLost = source.access == Access.LOST
-    // The supporting line's parts (owner request §1): recorded resolution,
-    // then duration — each part hides when unknown, never faked. The pure
-    // model keeps the hide rules out of the composable.
-    val durationText = LibraryRowModel.durationText(source)
-    val supporting = LibraryRowModel.supportingLine(source, durationText)
+    // Pure row-state decision (spec IN-12): LOST and GONE render through
+    // the shared FileListRow's degraded slots with DISTINCT strings per
+    // state; a healthy row renders plain. An unexpected future Access
+    // value maps to a healthy row (LibraryRowModel.rowStatus) — the list
+    // never crashes on a catalog a newer build wrote.
+    val status = LibraryRowModel.rowStatus(source)
+    val accessLost = status != null
     FileListRow(
         // The clip's real file name (owner request §2b); the id when the
         // resolver could not name it — displayOrId is never blank.
         fileName = source.displayOrId,
-        supportingLine = supporting,
+        supportingLine = LibraryRowModel.supportingLine(
+            source,
+            LibraryRowModel.durationText(source),
+        ),
         thumbnailPath = thumbnailPath,
         accessLost = accessLost,
-        accessLostLine = if (accessLost) {
-            stringResource(R.string.library_row_access_lost)
-        } else {
-            null
+        accessLostLine = when (status) {
+            LibraryRowModel.RowStatus.LOST -> stringResource(R.string.library_row_access_lost)
+            LibraryRowModel.RowStatus.GONE -> stringResource(R.string.library_row_file_missing)
+            null -> null
         },
         selecting = selecting,
         selected = selected,
         showDivider = showDivider,
         onToggleSelected = onToggleSelected,
         onOpen = onOpen,
-        onGrantAccess = onGrantAccess,
+        onGrantAccess = onRelink,
         onLongClick = onToggleSelected,
         supportingFallback = {
             // The kind line degrades gracefully until the generation pass
@@ -398,16 +497,26 @@ private fun LibraryRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         },
-        trailingContent = if (accessLost) {
-            {
-                Text(
-                    stringResource(R.string.library_row_grant_access),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+        trailingContent = when (status) {
+            LibraryRowModel.RowStatus.LOST -> {
+                {
+                    Text(
+                        stringResource(R.string.library_row_grant_access),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
-        } else {
-            null
+            LibraryRowModel.RowStatus.GONE -> {
+                {
+                    Text(
+                        stringResource(R.string.library_row_relink),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            null -> null
         },
     )
 }

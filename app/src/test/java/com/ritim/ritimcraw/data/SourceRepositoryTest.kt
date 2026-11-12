@@ -9,9 +9,13 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * SourceRepository tests (sprint plan Task 4):
- *  - revoked_uri_marks_source_access_lost: SecurityException during
- *    refreshAccess marks the source Access.LOST without dropping it (QA-23).
+ * SourceRepository tests (sprint plan Task 4, spec IN-12/IN-16):
+ *  - revoked_uri_marks_source_access_lost: SecurityException during the
+ *    refresh pass marks the source Access.LOST without dropping it (QA-23).
+ *  - gone_uri_marks_source_access_gone: a deleted/moved document marks
+ *    the source Access.GONE — distinct from a revoked permission.
+ *  - relink: a fingerprint match rebinds the uri (same id, grade kept);
+ *    a mismatch is rejected and changes nothing.
  *  - reimport_same_file_keeps_id: same bytes + size -> same id (fingerprint).
  */
 class SourceRepositoryTest {
@@ -31,26 +35,303 @@ class SourceRepositoryTest {
 
         assertEquals(Access.OK, imported.access)
 
-        // Permission revoked: open() now throws SecurityException.
+        // Permission revoked: the provider now answers SecurityException.
         resolver.revoked = true
-        val after = repo.refreshAccess().single()
+        val after = repo.refreshStatus().single()
 
         assertEquals(Access.LOST, after.access)
         assertEquals(imported.id, after.id) // row kept, never dropped
     }
 
     @Test
-    fun refresh_access_recovers_when_permission_returns() {
+    fun refresh_status_recovers_when_permission_returns() {
         val file = projectFile()
         val resolver = FakeResolver("clip".toByteArray())
         val repo = SourceRepository(resolver, file)
         repo.import("content://clip/1")
         resolver.revoked = true
-        repo.refreshAccess()
+        repo.refreshStatus()
 
         resolver.revoked = false
-        val after = repo.refreshAccess().single()
+        val after = repo.refreshStatus().single()
         assertEquals(Access.OK, after.access)
+    }
+
+    // ---- gone marking (spec IN-12: deleted/moved clips leave the ghost) ----
+
+    @Test
+    fun gone_uri_marks_source_access_gone_distinct_from_lost() {
+        val file = projectFile()
+        val resolver = FakeResolver("clip".toByteArray())
+        val repo = SourceRepository(resolver, file)
+        val imported = repo.import("content://clip/1")
+
+        // The document was deleted from the provider: the probe answers
+        // GONE (no permission cause) — a DIFFERENT state from LOST, because
+        // the recovery differs (re-link vs re-grant).
+        resolver.gone = setOf("content://clip/1")
+        val after = repo.refreshStatus().single()
+
+        assertEquals(Access.GONE, after.access)
+        assertEquals(imported.id, after.id) // row kept for re-link/remove
+    }
+
+    @Test
+    fun gone_status_persists_across_reload_and_old_values_parse() {
+        val file = projectFile()
+        val resolver = FakeResolver("clip".toByteArray())
+        val repo = SourceRepository(resolver, file)
+        val imported = repo.import("content://clip/1")
+        resolver.gone = setOf("content://clip/1")
+        repo.refreshStatus()
+
+        // The GONE status survives a reload (a fresh process).
+        assertEquals(Access.GONE, SourceRepository(FakeResolver(), file).all().single().access)
+
+        // An unknown access value (an older build meeting "GONE") parses
+        // through the default — OK, never a crash.
+        resolver.gone = emptySet()
+        file.writeText(
+            file.readText().replace("\"access\":\"GONE\"", "\"access\":\"WEIRD-FUTURE\""),
+        )
+        assertEquals(Access.OK, SourceRepository(FakeResolver(), file).all().first().access)
+        assertEquals(imported.id, SourceRepository(FakeResolver(), file).all().first().id)
+    }
+
+    @Test
+    fun refresh_status_recovers_when_the_document_returns() {
+        // The SSD was unplugged (GONE) and plugged back in: the next pass
+        // flips the row back to OK on its own — no user action needed.
+        val file = projectFile()
+        val resolver = FakeResolver("clip".toByteArray())
+        val repo = SourceRepository(resolver, file)
+        repo.import("content://clip/1")
+        resolver.gone = setOf("content://clip/1")
+        repo.refreshStatus()
+        assertEquals(Access.GONE, repo.all().single().access)
+
+        resolver.gone = emptySet()
+        val after = repo.refreshStatus().single()
+        assertEquals(Access.OK, after.access)
+    }
+
+    @Test
+    fun refresh_status_probes_only_the_requested_ids() {
+        // The bounded per-open pass names its slice; records outside it
+        // keep their recorded status (a big library pays only the batch).
+        // Distinct blobs so the two imports make two records.
+        val file = projectFile()
+        val resolver = FakeResolver(
+            blobs = mapOf(
+                "content://clip/a" to "clip-a".toByteArray(),
+                "content://clip/b" to "clip-b".toByteArray(),
+            ),
+        )
+        val repo = SourceRepository(resolver, file)
+        val a = repo.import("content://clip/a")
+        val b = repo.import("content://clip/b")
+        assertEquals(2, repo.all().size)
+        resolver.gone = setOf("content://clip/a", "content://clip/b")
+
+        val probed = repo.refreshStatus(ids = listOf(a.id))
+        assertEquals(listOf(a.id), probed.map { it.id })
+        assertEquals(Access.GONE, probed.single().access)
+        assertEquals(Access.OK, repo.all().first { it.id == b.id }.access)
+    }
+
+    @Test
+    fun refresh_status_no_change_writes_nothing() {
+        // A pass where every probe agrees with the record must not rewrite
+        // project.json (the no-op guard; byte-identical file).
+        val file = projectFile()
+        val resolver = FakeResolver("clip".toByteArray())
+        val repo = SourceRepository(resolver, file)
+        repo.import("content://clip/1")
+        val before = file.readText()
+
+        repo.refreshStatus()
+
+        assertEquals(before, file.readText())
+    }
+
+    // ---- relink (spec IN-16: solve the missing media from identity) ----
+
+    @Test
+    fun relink_rebinds_the_uri_on_a_fingerprint_match_and_keeps_the_id() {
+        val file = projectFile()
+        val resolver = FakeResolver("clip".toByteArray())
+        val repo = SourceRepository(resolver, file)
+        val imported = repo.import("content://clip/old-location")
+        // The clip carried a grade and stats from its first import.
+        GradeStore(file).put(imported.id, GradeK(exposureEv = 1.5f))
+        repo.backfillStats(imported.id, 3840, 2160, 310, "RGGB", 12_500_000L)
+        // Then its document was moved: the refresh marked it GONE.
+        resolver.gone = setOf("content://clip/old-location")
+        repo.refreshStatus()
+        assertEquals(Access.GONE, repo.all().single().access)
+
+        // The user re-links to the SAME bytes at the new location.
+        resolver.gone = emptySet()
+        resolver.names = mapOf("content://clip/new-location" to "Sunset.raw")
+        val relinked = repo.relink(imported.id, "content://clip/new-location")
+
+        assertEquals(imported.id, relinked.id) // SAME source: the grade's anchor
+        assertEquals("content://clip/new-location", relinked.uri)
+        assertEquals(Access.OK, relinked.access)
+        // The grade, stats and display name all survive the rebind.
+        assertEquals(1.5f, GradeStore(file).get(imported.id).exposureEv, 0f)
+        assertEquals(3840, relinked.width)
+        assertEquals(12_500_000L, relinked.durationUs)
+        assertEquals("Sunset.raw", relinked.displayName)
+        // Persisted: a fresh process sees the rebound uri + OK.
+        val reloaded = SourceRepository(FakeResolver(), file).all().single()
+        assertEquals("content://clip/new-location", reloaded.uri)
+        assertEquals(Access.OK, reloaded.access)
+    }
+
+    @Test
+    fun relink_mismatch_is_rejected_and_changes_nothing() {
+        val file = projectFile()
+        val resolver = FakeResolver("clip-bytes".toByteArray())
+        val repo = SourceRepository(resolver, file)
+        val imported = repo.import("content://clip/1")
+        resolver.gone = setOf("content://clip/1")
+        repo.refreshStatus()
+
+        // The user picked a DIFFERENT file: identity (size + first-MiB
+        // hash) does not match — the catalog must never silently rebind.
+        resolver.blobs = mapOf("content://other/file" to "other-clip-entirely".toByteArray())
+        val threw = try {
+            repo.relink(imported.id, "content://other/file")
+            false
+        } catch (e: RelinkMismatchException) {
+            // The mismatch names both fingerprints: honest evidence.
+            assertEquals(imported.fingerprint, e.expectedFingerprint)
+            assertTrue(e.actualFingerprint.isNotBlank())
+            true
+        }
+        assertTrue(threw)
+
+        // Nothing changed: still the old uri, still GONE, still one row.
+        val after = repo.all().single()
+        assertEquals("content://clip/1", after.uri)
+        assertEquals(Access.GONE, after.access)
+    }
+
+    @Test
+    fun relink_missing_record_throws_and_writes_nothing() {
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        repo.import("content://clip/1")
+        val before = file.readText()
+
+        val threw = try {
+            repo.relink("no-such-id", "content://clip/1")
+            false
+        } catch (e: IllegalArgumentException) {
+            true
+        }
+        assertTrue(threw)
+        assertEquals(before, file.readText())
+    }
+
+    @Test
+    fun relink_uses_the_same_identity_as_import_dedupe() {
+        // The fingerprint contract is SHARED: a file that re-imports onto
+        // the same record (dedupe) must also relink onto it. Same bytes at
+        // a moved location = same fingerprint = a valid re-link target.
+        val file = projectFile()
+        val data = ByteArray(2_000_000) { (it % 251).toByte() } // > 1 MiB prefix
+        val repo = SourceRepository(FakeResolver(data), file)
+        val imported = repo.import("content://clip/first")
+        val reimported = repo.import("content://clip/second")
+
+        assertEquals(imported.id, reimported.id)
+        val relinked = repo.relink(imported.id, "content://clip/third")
+        assertEquals(imported.id, relinked.id)
+        assertEquals("content://clip/third", relinked.uri)
+    }
+
+    // ---- collection refresh cadence (spec IN-12: bounded per-open pass) ----
+
+    @Test
+    fun refresh_batch_probes_every_degraded_row_and_a_rotating_ok_slice() {
+        // Degraded rows are the pass's purpose: EVERY open probes them.
+        // OK rows rotate in slices so a big library never pays a full sweep.
+        val degraded = listOf(
+            source(id = "gone", access = Access.GONE),
+            source(id = "lost", access = Access.LOST),
+        )
+        val ok = (0 until 7).map { source(id = "ok$it") }
+
+        val first = CollectionRefresh.batch(degraded + ok, cursor = 0)
+        assertEquals(setOf("gone", "lost", "ok0", "ok1", "ok2", "ok3", "ok4"), first.toSet())
+        assertEquals(7, first.size) // 2 degraded + the 5-record OK slice
+
+        // The cursor advances by the probed OK count; the next open probes
+        // the NEXT slice, not the same head again.
+        val next = CollectionRefresh.nextCursor(ok, 0)
+        assertEquals(5, next)
+        val second = CollectionRefresh.batch(degraded + ok, cursor = next)
+        assertTrue("ok5" in second)
+        assertTrue("ok6" in second)
+        assertTrue("ok0" in second) // wraps: 5,6,0,1,2
+        assertTrue("gone" in second) // degraded rows every time
+        assertTrue("lost" in second)
+    }
+
+    @Test
+    fun refresh_batch_wraps_and_covers_every_record_over_sweeps() {
+        // Rotation guarantee: ceil(n / OK_BATCH) consecutive opens probe
+        // every OK record at least once.
+        val ok = (0 until 12).map { source(id = "ok$it") }
+        val seen = mutableSetOf<String>()
+        var cursor = 0
+        repeat(3) { // ceil(12 / 5) = 3 opens
+            seen += CollectionRefresh.batch(ok, cursor)
+            cursor = CollectionRefresh.nextCursor(ok, cursor)
+        }
+        assertEquals(ok.map { it.id }.toSet(), seen)
+    }
+
+    @Test
+    fun refresh_batch_handles_empty_degraded_empty_ok_and_zero_limit() {
+        // No OK records: only degraded rows (possibly none at all).
+        assertEquals(
+            emptyList<String>(),
+            CollectionRefresh.batch(emptyList(), cursor = 0),
+        )
+        assertEquals(
+            listOf("lost"),
+            CollectionRefresh.batch(listOf(source(id = "lost", access = Access.LOST)), cursor = 3),
+        )
+        // okBatch = 0 disables the OK rotation: degraded rows only.
+        val mixed = listOf(
+            source(id = "gone", access = Access.GONE),
+            source(id = "ok"),
+        )
+        assertEquals(
+            listOf("gone"),
+            CollectionRefresh.batch(mixed, cursor = 0, okBatch = 0),
+        )
+        // Negative cursors normalize (rememberSaveable state is arbitrary):
+        // -1 on a 7-record list starts the slice at index 6.
+        assertEquals(
+            setOf("ok6", "ok0", "ok1", "ok2", "ok3"),
+            CollectionRefresh.batch(
+                (0 until 7).map { source(id = "ok$it") },
+                cursor = -1,
+            ).toSet(),
+        )
+    }
+
+    @Test
+    fun next_cursor_returns_zero_without_ok_records() {
+        assertEquals(0, CollectionRefresh.nextCursor(emptyList(), cursor = 4))
+        assertEquals(
+            0,
+            CollectionRefresh.nextCursor(listOf(source(id = "gone", access = Access.GONE)), cursor = 4),
+        )
     }
 
     // ---- reimport_same_file_keeps_id ----
@@ -513,4 +794,13 @@ class SourceRepositoryTest {
     }
 
     private fun projectFile(): File = File(tmp.root, "project.json")
+
+    /** A minimal record for the cadence tests (only id + status matter). */
+    private fun source(id: String, access: Access = Access.OK) = MediaSource(
+        id = id,
+        uri = "content://clip/$id",
+        fingerprint = "fp-$id",
+        kind = SourceKind.MCRAW,
+        access = access,
+    )
 }

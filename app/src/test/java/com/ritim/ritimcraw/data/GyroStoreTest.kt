@@ -30,6 +30,9 @@ private class KeyedGyroResolver(
     // Gyro imports get their name from the picker-side fallback, so the
     // resolver never needs to resolve a document name here.
     override fun displayName(uri: String): String? = null
+
+    // The collection refresh never probes gyro blobs: any answer works.
+    override fun probe(uri: String): DocumentProbe = DocumentProbe.AVAILABLE
 }
 
 /**

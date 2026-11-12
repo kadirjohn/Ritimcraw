@@ -20,6 +20,12 @@
     <string name="library_empty_body">Renk düzenlemeye başlamak için cihazınızdan bir MCRAW klip içe aktarın.</string>
     <string name="library_row_access_lost">Erişim kaldırıldı</string>
     <string name="library_row_grant_access">Erişim izni ver</string>
+    <string name="library_row_file_missing">Dosya eksik</string>
+    <string name="library_row_relink">Yeniden bağla</string>
+    <string name="library_relink_failed_mismatch">Yeniden bağlama başarısız: seçilen dosya bu klip değil (%1$s). Özgün dosyayı yeni konumundan seçin.</string>
+    <string name="library_relink_failed_unknown">Yeniden bağlama başarısız: %1$s. Özgün dosyayı yeni konumundan seçin.</string>
+    <string name="library_relinked">Klip yeniden bağlandı</string>
+    <string name="library_refreshing">Klipler kontrol ediliyor…</string>
     <string name="library_row_kind_mcraw">MCRAW · RAW video</string>
     <string name="library_row_kind_encoded">Sıkıştırılmış video</string>
     <string name="library_frames">kare</string>
