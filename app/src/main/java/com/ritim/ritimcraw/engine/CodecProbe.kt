@@ -102,9 +102,13 @@ object CodecProbe {
         return CodecReport(
             name = info.name,
             mime = type,
-            // MediaCodecInfo has no isHardware() on every API level; the
-            // canonical heuristic is the OMX.google/c2.android prefix.
-            hardware = !info.name.startsWith("OMX.google.") && !info.name.startsWith("c2.android."),
+            // Real API flags (owner request 2026-11-12 §4), replacing the
+            // OMX.google./c2.android. name-prefix guess: the vendor's
+            // declared hardware flag, read straight off MediaCodecInfo
+            // (API 29+; minSdk 34 so present everywhere this app runs).
+            // Declared, not independently proven silicon — the report
+            // records the vendor's declaration.
+            hardware = info.isHardwareAccelerated,
             profiles = profiles,
             maxSize = if (width > 0 && height > 0) "${width}x$height" else "",
             // Main10 support: HEVC profile 2 (Main10) present.
@@ -113,7 +117,7 @@ object CodecProbe {
             } else {
                 null
             },
-            detail = null,
+            detail = if (info.isSoftwareOnly) "software-only" else null,
         )
     }
 

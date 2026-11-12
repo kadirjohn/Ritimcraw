@@ -5,6 +5,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -92,6 +93,13 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
      * Configures and starts one encoder. A rejected format surfaces as an
      * IllegalStateException naming the stage ("configure") and the codec —
      * the rejected-encoder contract of the pipeline.
+     *
+     * Once the codec is created, the REAL encoder identity is recorded and
+     * logged (owner request 2026-11-12 §4): name, canonical name, the
+     * vendor's declared hardware/software flags, plus the requested MIME —
+     * requested vs actually-created never conflated (see
+     * [EncoderDiagnostics]). The video encoder's line is what the owner
+     * greps to answer "which encoder really ran".
      */
     private fun configure(type: String, format: MediaFormat): MediaCodec {
         val codec = try {
@@ -106,6 +114,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
                 )
             )
         }
+        logEncoderIdentity(codec, type)
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
@@ -122,6 +131,33 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
             )
         }
         return codec
+    }
+
+    /**
+     * Records and logs the created encoder's real identity (owner request
+     * 2026-11-12 §4): the vendor's codecInfo name, the canonical name, the
+     * declared hardware/software flags — the actually-created encoder, not
+     * the MediaCodecList probe. Best-effort: an identity read failure never
+     * fails the export (the encode itself is the contract; the log line is
+     * diagnostics). minSdk 34 makes the API-29 fields readable everywhere
+     * this app runs.
+     */
+    private fun logEncoderIdentity(codec: MediaCodec, requestedMime: String) {
+        try {
+            val info = codec.codecInfo
+            val record = EncoderDiagnostics(
+                name = codec.name,
+                canonicalName = codec.canonicalName,
+                hardwareAccelerated = info.isHardwareAccelerated,
+                softwareOnly = info.isSoftwareOnly,
+            )
+            Log.i(TAG, EncoderDiagnostics.logLine(record, requestedMime))
+        } catch (e: Exception) {
+            // Identity is diagnostics, not the contract: log the miss and
+            // keep encoding (an export must not fail because a vendor
+            // returned an odd codecInfo).
+            Log.w(TAG, "encoder identity unavailable: ${e.message}")
+        }
     }
 
     private fun videoFormat(w: Int, h: Int): MediaFormat =
@@ -397,5 +433,9 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         const val MIME_AAC = "audio/mp4a-latm"
         const val INPUT_TIMEOUT_US = 10_000_000L // 10 s: decode is slow, not stuck
         const val EOS_DEADLINE_NS = 10_000_000_000L // 10 s to drain after EOS
+        // Owner request 2026-11-12 §4: the export diagnostics tag. Same
+        // "ritim-*" style as ritim-pm/ritim-scope; the prompt's "riti-export"
+        // is adapted to the app's tag convention.
+        const val TAG = "ritim-export"
     }
 }

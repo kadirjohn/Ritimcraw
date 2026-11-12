@@ -259,6 +259,13 @@
     <string name="settings_preview_quality_balanced">Balanced</string>
     <string name="settings_preview_quality_high">High</string>
     <string name="settings_preview_quality_dims">%1$d / %2$d px</string>
+
+    <!-- Render backend (owner request 2026-11-12, deliverable B) -->
+    <string name="settings_render_backend">Image processing</string>
+    <string name="settings_render_backend_body">Where the develop pipeline runs. CPU is the reference path; Auto uses the GPU when this device verifies it; GPU is experimental and falls back to CPU when unavailable. The video encoder is chosen separately and is not affected by this setting.</string>
+    <string name="settings_render_backend_cpu">CPU</string>
+    <string name="settings_render_backend_auto">Auto</string>
+    <string name="settings_render_backend_gpu">GPU</string>
     <string name="settings_gyro_folder">Gyro log folder</string>
     <string name="settings_gyro_folder_body">Pick the folder that holds your MotionCam .gcsv gyro logs. New imports matching a log\'s name attach it automatically.</string>
     <string name="settings_gyro_folder_none">Not set — tap to pick the folder holding your .gcsv gyro logs</string>
