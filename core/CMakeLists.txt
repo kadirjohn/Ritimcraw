@@ -34,7 +34,9 @@ set_property(TARGET vqf PROPERTY POSITION_INDEPENDENT_CODE ON)
 # rawedit core library.
 # Thumbnail.cpp + Transfer.cpp are linked by the app's preview path
 # (jni_bridge.cpp: developThumbnail + linearToRec709); DngWriter.cpp is
-# linked by the app's DNG export path (jni_bridge.cpp: writeCfaDng).
+# linked by the app's DNG export path (jni_bridge.cpp: writeCfaDng);
+# RawStats.cpp is linked by the app's RAW histogram scope path
+# (jni_bridge.cpp: nativeRawHistogram → rawHistogramStats).
 # Gyro.cpp stays desktop-only until the app calls it; Orientation.cpp
 # (Phase 2 axis remap, header-only dep on Gyro.h) and
 # OrientationEstimate.cpp (Phase 2 estimation, links vqf) are registered
@@ -54,7 +56,8 @@ add_library(rawedit STATIC
     src/Sync.cpp
     src/Temporal.cpp
     src/Stabilization.cpp
-    src/Warp.cpp)
+    src/Warp.cpp
+    src/RawStats.cpp)
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)
