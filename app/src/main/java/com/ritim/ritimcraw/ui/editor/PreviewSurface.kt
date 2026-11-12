@@ -450,8 +450,15 @@ fun PreviewSurface(
  * minWidth = maxWidth): the overflow painted up over the editor's top
  * bar and hid the ⋮ menu. Measuring with a fixed Constraints never
  * overflows; the caller's Box centers the bounded surface as before.
+ *
+ * INTERNAL (owner note 1, 2026-11-12): the editor's corner-control
+ * anchor Box measures with THIS sizer too — same incoming constraints,
+ * same [PreviewSurfaceRatio.claimedSize] call, so the anchor Box takes
+ * exactly the video rect's size and the wrapper's centering places it at
+ * exactly the video rect's position. The controls' align() then resolves
+ * against the video's REAL corners, not the wrapper's.
  */
-private fun Modifier.previewBounds(ratio: Float): Modifier = layout { measurable, constraints ->
+internal fun Modifier.previewBounds(ratio: Float): Modifier = layout { measurable, constraints ->
     val (width, height) = PreviewSurfaceRatio.claimedSize(
         regionWidth = constraints.maxWidth,
         regionHeight = constraints.maxHeight,

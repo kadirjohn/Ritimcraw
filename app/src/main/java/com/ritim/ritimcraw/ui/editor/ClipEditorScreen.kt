@@ -1934,129 +1934,156 @@ fun ClipEditorScreen(
                             }
                         },
                 )
-                // Small corner refresh control (design review: the manual
-                // render leaves the prime area): status from the existing
-                // PreviewState data, tap = the old Render-preview button's
-                // onClick (full paused tier at the current position).
-                // Hidden with the fullscreen chrome (§16.2: minimal
-                // overlays; the tap toggle brings it back).
-                if (!fullscreen || fullscreenChromeVisible) {
-                    PreviewRefreshControl(
-                        state = previewState,
-                        canRender = canRender,
-                        onRefresh = {
-                            requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(8.dp),
-                    )
-                    // Scope toggle (owner spec PLAY-10, 2026-11-12 §2 + the
-                    // manager's design decision): the mirror of the
-                    // fullscreen TopEnd toggle — the preview's corner icon
-                    // buttons read as one group. Opens/closes the SCOPE
-                    // STRIP below the transport (never an overlay on the
-                    // image); the strip's own selector picks Histogram or
-                    // Waveform. Same 48dp IconButton target, vendored
-                    // waveform-trace glyph (material-icons-core 1.7.3 has
-                    // no waveform icon), same translucent scrim as the
-                    // fullscreen and refresh controls.
-                    ScopeToggleButton(
-                        // The two-state icon keeps one meaning whatever
-                        // the shape: show/hide the scope. The tri-state
-                        // transitions live in the pure rules — this
-                        // button never cycles secretly (MINI -> OFF, not
-                        // MINI -> STRIP: a cycle would hide the third
-                        // state behind a two-state glyph).
-                        visible = scopePresentation != ScopePresentation.OFF,
-                        onToggle = {
-                            scopePresentation =
-                                ScopePresentationRules.onCornerToggle(scopePresentation)
-                        },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(8.dp),
-                    )
-                    // Zebra toggle (owner spec PLAY-11): a peer of the
-                    // scope toggle in the same scrimmed corner group —
-                    // the clip warning belongs beside the analysis tools.
-                    // Same 48dp IconButton target, vendored diagonal-
-                    // stripes glyph, same translucent scrim as every
-                    // preview corner control.
-                    ZebraToggleButton(
-                        on = zebraOn,
-                        onToggle = { zebraOn = !zebraOn },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(start = 8.dp, top = 64.dp),
-                    )
-                    // THE MINI SCOPE OVERLAY (owner request 2026-11-12
-                    // §2): the strip shrunk into the preview's BottomStart
-                    // corner — the only corner no other control owns
-                    // (TopStart = this scope toggle, TopEnd = fullscreen,
-                    // BottomEnd = refresh, CenterEnd = the landscape
-                    // panel-reopen chip). Composed ONLY in MINI, inside
-                    // the same corner-control gate (hidden with the
-                    // fullscreen chrome, like every preview corner
-                    // control), reading the same screen state and the
-                    // same computed results the strip reads — display-
-                    // only by construction. Its tap is the only gesture
-                    // it consumes; the preview's gestures flow around
-                    // its bounds.
-                    if (scopePresentation == ScopePresentation.MINI) {
-                        ScopeMiniOverlay(
-                            content = scopeContent,
-                            histogram = histogram,
-                            rawHistogram = rawHistogram,
-                            histogramModeOrdinal = histogramModeOrdinal,
-                            rawPresentationOrdinal = rawHistogramPresentationOrdinal,
-                            waveform = waveformRendered,
-                            waveformModeOrdinal = waveformModeOrdinal,
-                            midGrayAvailable = grade.tonemap == 0 && grade.lutId == null,
-                            midGrayShown = scopeMidGrayShown,
-                            onMiniTap = {
-                                scopePresentation =
-                                    ScopePresentationRules.onMiniTap(scopePresentation)
+                // Corner controls anchored to the video's REAL rect (owner
+                // notes 1+2, 2026-11-12): this anchor Box measures with the
+                // SAME previewBounds sizer the surface above uses — same
+                // incoming constraints, same
+                // PreviewSurfaceRatio.claimedSize call, same ratio chain —
+                // so it takes exactly the video rect's size and the
+                // wrapper's contentAlignment places it exactly where the
+                // video is. The controls' align() below therefore resolves
+                // against the video's real corners, never the wrapper's: a
+                // height-bounded (narrow) video gets its controls ON its
+                // corners instead of floating in the letterbox (note 1's
+                // histogram-and-two-controls finding), and the refresh
+                // chip rides the video's own BottomEnd corner — the note-2
+                // position re-check: with the section-2 fix the preview is
+                // wider at every panel state, and the chip now covers the
+                // least image possible instead of drifting over the frame
+                // from a wrapper-anchored spot. The anchor Box carries no
+                // pointer handlers, so the preview's gestures (zoom/pan,
+                // before/after hold, the fullscreen chrome tap) flow through
+                // it untouched; only the controls themselves consume,
+                // exactly as before.
+                Box(Modifier.previewBounds(previewDisplayRatio)) {
+                    // Small corner refresh control (design review: the manual
+                    // render leaves the prime area): status from the existing
+                    // PreviewState data, tap = the old Render-preview button's
+                    // onClick (full paused tier at the current position).
+                    // Hidden with the fullscreen chrome (§16.2: minimal
+                    // overlays; the tap toggle brings it back).
+                    if (!fullscreen || fullscreenChromeVisible) {
+                        PreviewRefreshControl(
+                            state = previewState,
+                            canRender = canRender,
+                            onRefresh = {
+                                requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
                             },
                             modifier = Modifier
-                                .align(Alignment.BottomStart)
+                                .align(Alignment.BottomEnd)
                                 .padding(8.dp),
                         )
+                        // Scope toggle (owner spec PLAY-10, 2026-11-12 §2 +
+                        // the manager's design decision): the mirror of the
+                        // fullscreen TopEnd toggle — the preview's corner icon
+                        // buttons read as one group. Opens/closes the SCOPE
+                        // STRIP below the transport (never an overlay on the
+                        // image); the strip's own selector picks Histogram or
+                        // Waveform. Same 48dp IconButton target, vendored
+                        // waveform-trace glyph (material-icons-core 1.7.3 has
+                        // no waveform icon), same translucent scrim as the
+                        // fullscreen and refresh controls.
+                        ScopeToggleButton(
+                            // The two-state icon keeps one meaning whatever
+                            // the shape: show/hide the scope. The tri-state
+                            // transitions live in the pure rules — this
+                            // button never cycles secretly (MINI -> OFF, not
+                            // MINI -> STRIP: a cycle would hide the third
+                            // state behind a two-state glyph).
+                            visible = scopePresentation != ScopePresentation.OFF,
+                            onToggle = {
+                                scopePresentation =
+                                    ScopePresentationRules.onCornerToggle(scopePresentation)
+                            },
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(8.dp),
+                        )
+                        // Zebra toggle (owner spec PLAY-11): a peer of the
+                        // scope toggle in the same scrimmed corner group —
+                        // the clip warning belongs beside the analysis tools.
+                        // Same 48dp IconButton target, vendored diagonal-
+                        // stripes glyph, same translucent scrim as every
+                        // preview corner control.
+                        ZebraToggleButton(
+                            on = zebraOn,
+                            onToggle = { zebraOn = !zebraOn },
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(start = 8.dp, top = 64.dp),
+                        )
+                        // THE MINI SCOPE OVERLAY (owner request 2026-11-12
+                        // §2): the strip shrunk into the preview's BottomStart
+                        // corner — the only VIDEO corner no other control
+                        // owns (TopStart = this scope toggle, TopEnd =
+                        // fullscreen, BottomEnd = refresh; the landscape
+                        // panel-reopen chip is CenterEnd but stays on the
+                        // WRAPPER — it marks the hidden panel's edge, not a
+                        // video corner). Composed ONLY in MINI, inside
+                        // the same corner-control gate (hidden with the
+                        // fullscreen chrome, like every preview corner
+                        // control), reading the same screen state and the
+                        // same computed results the strip reads — display-
+                        // only by construction. Its tap is the only gesture
+                        // it consumes; the preview's gestures flow around
+                        // its bounds.
+                        if (scopePresentation == ScopePresentation.MINI) {
+                            ScopeMiniOverlay(
+                                content = scopeContent,
+                                histogram = histogram,
+                                rawHistogram = rawHistogram,
+                                histogramModeOrdinal = histogramModeOrdinal,
+                                rawPresentationOrdinal = rawHistogramPresentationOrdinal,
+                                waveform = waveformRendered,
+                                waveformModeOrdinal = waveformModeOrdinal,
+                                midGrayAvailable = grade.tonemap == 0 && grade.lutId == null,
+                                midGrayShown = scopeMidGrayShown,
+                                onMiniTap = {
+                                    scopePresentation =
+                                        ScopePresentationRules.onMiniTap(scopePresentation)
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(8.dp),
+                            )
+                        }
                     }
-                }
-                // Fullscreen toggle (owner request 2026-11-11 section 2):
-                // the SAME editor session — the toggle only changes the
-                // layout, so the clip stays open, the transport keeps its
-                // position and playback continues unharmed. Vendored
-                // Material Symbols glyphs (material-icons-core 1.7.3 has
-                // no Fullscreen); the IconButton carries the 48dp target.
-                // Scrim behind the glyph (owner finding 2026-11-11): over
-                // overexposed near-white footage the white icon vanished
-                // into the frame. Every preview corner control carries the
-                // same translucent surfaceContainerLowest scrim (roles,
-                // never hex — DESIGN.md; the histogram overlay's backdrop
-                // is the precedent) at the theme's small shape, so the
-                // glyph reads over any frame. The Surface wraps, not
-                // replaces, the IconButton — the 48dp touch target and
-                // the click path are unchanged.
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
-                    shape = MaterialTheme.shapes.small,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp),
-                ) {
-                    IconButton(
-                        onClick = { fullscreen = !fullscreen },
+                    // Fullscreen toggle (owner request 2026-11-11 section 2):
+                    // the SAME editor session — the toggle only changes the
+                    // layout, so the clip stays open, the transport keeps its
+                    // position and playback continues unharmed. Vendored
+                    // Material Symbols glyphs (material-icons-core 1.7.3 has
+                    // no Fullscreen); the IconButton carries the 48dp target.
+                    // Scrim behind the glyph (owner finding 2026-11-11): over
+                    // overexposed near-white footage the white icon vanished
+                    // into the frame. Every preview corner control carries the
+                    // same translucent surfaceContainerLowest scrim (roles,
+                    // never hex — DESIGN.md; the histogram overlay's backdrop
+                    // is the precedent) at the theme's small shape, so the
+                    // glyph reads over any frame. The Surface wraps, not
+                    // replaces, the IconButton — the 48dp touch target and
+                    // the click path are unchanged. OUTSIDE the chrome gate
+                    // above: it is the exit path from fullscreen, so it can
+                    // never hide with the chrome.
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
                     ) {
-                    Icon(
-                        painter = painterResource(
-                            if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
-                        ),
-                        contentDescription = stringResource(
-                            if (fullscreen) R.string.editor_fullscreen_exit else R.string.editor_fullscreen
-                        ),
-                    )
+                        IconButton(
+                            onClick = { fullscreen = !fullscreen },
+                        ) {
+                            Icon(
+                                painter = painterResource(
+                                    if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
+                                ),
+                                contentDescription = stringResource(
+                                    if (fullscreen) R.string.editor_fullscreen_exit else R.string.editor_fullscreen
+                                ),
+                            )
+                        }
                     }
                 }
                 // Panel reopen affordance (owner request 2026-11-11d section
