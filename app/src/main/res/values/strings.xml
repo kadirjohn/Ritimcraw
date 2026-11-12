@@ -95,6 +95,17 @@
     <string name="editor_stabilization_focal_from_container">From container: %1$s</string>
     <string name="editor_stabilization_intrinsics_assumed">Intrinsics assumed</string>
     <string name="editor_stabilization_gyro_name">Gyro: %1$s</string>
+    <!-- COL-13: color wheel + split tone section in the Color tab. -->
+    <string name="editor_color_wheel">Color wheel</string>
+    <string name="editor_wheel_band_shadows">Shadows</string>
+    <string name="editor_wheel_band_midtones">Midtones</string>
+    <string name="editor_wheel_band_highlights">Highlights</string>
+    <string name="editor_wheel_offset_readout">%1$s / %2$s</string>
+    <string name="editor_wheel_neutral">Neutral</string>
+    <string name="editor_split_tone">Split tone</string>
+    <string name="editor_slider_split_shadow_hue">Shadow hue</string>
+    <string name="editor_slider_split_highlight_hue">Highlight hue</string>
+    <string name="editor_slider_split_balance">Balance</string>
     <!-- RAW-09: crop + straighten group in the Detail tab. -->
     <string name="editor_crop">Crop</string>
     <string name="editor_crop_reset">Reset crop</string>

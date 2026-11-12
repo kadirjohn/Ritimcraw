@@ -693,4 +693,27 @@ class FormatTest {
         assertEquals("100%", Format.formatFractionPercent(1f))
         assertEquals("5%", Format.formatFractionPercent(0.05f))
     }
+
+    // ---- formatHueDeg / formatWheelOffset (COL-13: wheel + split readouts) ----
+
+    @Test
+    fun hue_deg_is_whole_degrees_no_sign() {
+        // The 0..359 hue circle has no zero-crossing, so no sign — the
+        // degree glyph alone keeps it distinct from the signed dial.
+        assertEquals("120°", Format.formatHueDeg(120))
+        assertEquals("0°", Format.formatHueDeg(0))
+        assertEquals("359°", Format.formatHueDeg(359))
+    }
+
+    @Test
+    fun wheel_offset_is_explicit_sign_two_decimals() {
+        // Matching the 0.05 snap grid exactly: every grid value renders
+        // two decimals, so the readout never rounds a stored value into
+        // display; the sign keeps the width stable across the zero
+        // crossing (the formatEv precedent at two decimals).
+        assertEquals("+0.35", Format.formatWheelOffset(0.35f))
+        assertEquals("-0.10", Format.formatWheelOffset(-0.1f))
+        assertEquals("+0.00", Format.formatWheelOffset(0f))
+        assertEquals("-1.00", Format.formatWheelOffset(-1f))
+    }
 }

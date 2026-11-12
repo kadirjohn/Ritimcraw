@@ -64,6 +64,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.CropState
@@ -245,6 +246,18 @@ object EditorPreviewLogic {
     fun showStabilization(path: SourcePath): Boolean = path == SourcePath.MCRAW
 
     /**
+     * True when the color wheel + split tone section (COL-13) belongs in
+     * the Color tab. Both stages (18 wheel, 19 split tone) are MCRAW-only
+     * tone-band color math: the encoded (Mi-Log MP4) path takes the same
+     * Grade but the bridge ignores the color-package fields there (the
+     * encoded grades via its wb/temp/tint/exposure loop), so the section
+     * is hidden rather than showing dead controls. A separate named
+     * decision from [showTemporalNr] so the two can diverge if the
+     * encoded path ever grows its own wheel stages.
+     */
+    fun showColorTools(path: SourcePath): Boolean = path == SourcePath.MCRAW
+
+    /**
      * The sync status line's verdict for the Stabilization group (gyro
      * Phase 5): which of the three states the probe data supports. Pure so
      * a JVM test can lock the mapping — the decision itself reads the
@@ -389,7 +402,10 @@ enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
  * Shadows / Midtones / Contrast, Color tab with Temperature / Tint /
  * Saturation (tone stages COL-11/12/13, end to end) plus the RAW metadata
  * controls (RAW-07/COL-09/RAW-04/RAW-06): As Shot WB reset, Highlight
- * Reconstruction switch, Keep Vignetting switch, Detail tab with Sharpness /
+ * Reconstruction switch, Keep Vignetting switch, and — on MCRAW clips —
+ * the color wheel + split tone section (COL-13: three-band wheel pad with
+ * Shadows / Midtones / Highlights tabs, split shadow/highlight hues and
+ * the Balance slider), Detail tab with Sharpness /
  * Detail sliders (COL-15), the Tonemapping choice Off / ACES / AgX (COL-16)
  * as M3 segmented buttons, and the LUT section (COL-07): the imported .cube
  * library as choice rows plus an Import button and the Strength slider
@@ -2282,6 +2298,13 @@ fun ClipEditorScreen(
                     // clips keep As Shot + every slider (pure decision in
                     // EditorPreviewLogic.showRawStageToggles).
                     showRawStageToggles = EditorPreviewLogic.showRawStageToggles(sourcePath),
+                    // The color wheel + split tone section (COL-13) is
+                    // MCRAW-only too, for the same honesty reason: the
+                    // encoded path takes the same Grade but the bridge
+                    // ignores the color-package fields there, so the
+                    // section would be dead controls (pure decision in
+                    // EditorPreviewLogic.showColorTools).
+                    showColorTools = EditorPreviewLogic.showColorTools(sourcePath),
                     onChange = { g ->
                         // Same slider-path recording as LightPanel: the
                         // machine is shared, so which tab the drag
@@ -2843,9 +2866,12 @@ private fun LightPanel(
 
 /**
  * Color tab: white balance (As Shot reset + Temperature / Tint), the RAW
- * stage toggles, then Saturation. Temperature and Tint moved here from the
- * Light tab when Saturation landed (spec COL-12: white balance and
- * saturation are the color controls; the Light tab is tone).
+ * stage toggles, the color wheel + split tone section (COL-13), then
+ * Saturation. Temperature and Tint moved here from the Light tab when
+ * Saturation landed (spec COL-12: white balance and saturation are the
+ * color controls; the Light tab is tone); the wheel/split section landed
+ * between them and Saturation so the tab reads in native stage order
+ * (temp 16, tint 17, wheel 18, split 19, saturation 20).
  *
  * RAW-07/COL-09/RAW-04/RAW-06 semantics:
  * - As Shot (reset action): tempK -> 5600, tint -> 0, asShot -> true. The
@@ -2859,6 +2885,12 @@ private fun LightPanel(
  *   CFA-stage rows show only when [showRawStageToggles] is true (MCRAW);
  *   encoded (Mi-Log MP4) clips decode YUV with no CFA stage, so they get the
  *   same white balance + saturation controls without the two RAW toggles.
+ * - The color wheel + split tone section ([ColorWheelSection]) shows only
+ *   when [showColorTools] is true (MCRAW): the encoded path takes the same
+ *   Grade but the bridge ignores the color-package fields there, so the
+ *   section would be dead controls. The section's own contract (band tabs,
+ *   disc colors = the stage-18 gain math, split hue on/off derived from
+ *   hue -1) is documented on [ColorWheelSection].
  */
 @Composable
 private fun ColorPanel(
@@ -2870,6 +2902,11 @@ private fun ColorPanel(
     // Double-tap resets ride their own route (feature N7): discrete undo
     // steps, never coalesced into the slider gestures (see LightPanel).
     onReset: (GradeK) -> Unit = {},
+    // ---- Color wheel + split tone section (COL-13) ----
+    // MCRAW only (the pure decision showColorTools): the encoded path
+    // takes the same Grade but ignores the color-package fields, so the
+    // section would be dead controls there.
+    showColorTools: Boolean = false,
 ) {
     Column(
         Modifier
@@ -2962,6 +2999,20 @@ private fun ColorPanel(
                 },
             )
         }
+        // ---- Color wheel + split tone (COL-13) ----
+        // Pipeline order in the panel matches the native stage order:
+        // wheel 18 and split tone 19 run AFTER the WB controls above
+        // (temp 16, tint 17) and BEFORE saturation (20) below, so the
+        // section reads in the order the pixels experience it.
+        if (showColorTools) {
+            ColorWheelSection(
+                grade = grade,
+                onChange = onChange,
+                onDragActiveChange = onDragActiveChange,
+                onToggleChange = onToggleChange,
+                onReset = onReset,
+            )
+        }
         GradeSlider(
             label = stringResource(R.string.editor_slider_saturation),
             value = grade.saturation,
@@ -2979,6 +3030,225 @@ private fun ColorPanel(
 }
 
 /**
+ * The color wheel + split tone section (COL-13): the three-band wheel pad
+ * (Shadows / Midtones / Highlights tabs — stage 18's tonal bands, the same
+ * band anchors the Light tab's sliders use) with the offset readout, then
+ * the split tone group (stage 19: the switch, shadow/highlight hue
+ * sliders, the Balance slider).
+ *
+ * Band tabs: one segmented row above the pad; the pad edits the ACTIVE
+ * band's (x, y) offset. The band choice is UI-only state (which wheel is
+ * "open", like a tool selection) — it never touches the grade, so it is
+ * rememberSaveable, not a GradeK field: reopening the editor restores the
+ * last-open band but the grade is untouched.
+ *
+ * The wheel drag is a slider-path drag ([onChange] + [onDragActiveChange]
+ * — low tier while the finger is down, settle on lift); the double-tap
+ * center reset is a DISCRETE edit ([onReset], its own undo step, feature
+ * N7). The split tone sliders are GradeSlider rows like every other
+ * slider; their track gradient is the engine's own hue-window sweep
+ * ([ColorWheelMath.hueTrackGradient] — the same raised-cosine windows the
+ * stage applies, sampled across the 0..359 track), so the slider's color
+ * story is the math's story, the TEMPERATURE_GRADIENT precedent.
+ *
+ * Split tone on/off is DERIVED from the hue values (hue -1 = off, the
+ * GradeK neutral): one switch for the whole split group mirrors "either
+ * hue >= 0" — the native splitActive is exactly that OR — and the first
+ * enable seeds both hues to 0 (red, the temporal-NR seeding precedent: a
+ * toggle that visibly changed nothing would read as broken). Turning the
+ * switch off writes -1 to BOTH hues (the stored neutral), so the switch
+ * can never disagree with the stored state; the switch settles at the
+ * full tier immediately through [onToggleChange] like every other toggle.
+ * The hue sliders show only while the group is active — the -1 neutral
+ * never reaches a 0..359 track (the M3 Slider cannot render outside its
+ * range, and a thumb parked at 0 would read as a red grade it does not
+ * have). The Balance slider stays visible either way: balance has no off
+ * state in the engine (it only shapes the crossover when a hue is
+ * active), and hiding it would hide where its reset lives.
+ */
+@Composable
+private fun ColorWheelSection(
+    grade: GradeK,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onToggleChange: (GradeK) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
+) {
+    // The active band: UI-only state (see KDoc), saved across
+    // configuration changes but never persisted into the grade.
+    var band by rememberSaveable { mutableStateOf(WheelBand.MIDTONES) }
+    val (bandX, bandY) = when (band) {
+        WheelBand.SHADOWS -> grade.wheelShadowX to grade.wheelShadowY
+        WheelBand.MIDTONES -> grade.wheelMidX to grade.wheelMidY
+        WheelBand.HIGHLIGHTS -> grade.wheelHighX to grade.wheelHighY
+    }
+    Text(
+        stringResource(R.string.editor_color_wheel),
+        style = MaterialTheme.typography.labelLarge,
+    )
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        val bands = listOf(
+            WheelBandOption(R.string.editor_wheel_band_shadows, WheelBand.SHADOWS),
+            WheelBandOption(R.string.editor_wheel_band_midtones, WheelBand.MIDTONES),
+            WheelBandOption(R.string.editor_wheel_band_highlights, WheelBand.HIGHLIGHTS),
+        )
+        bands.forEachIndexed { index, option ->
+            SegmentedButton(
+                selected = band == option.value,
+                onClick = { band = option.value },
+                shape = SegmentedButtonDefaults.itemShape(
+                    index = index,
+                    count = bands.size,
+                ),
+            ) {
+                Text(stringResource(option.labelRes))
+            }
+        }
+    }
+    ColorWheelPad(
+        x = bandX,
+        y = bandY,
+        onDragChange = { nx, ny ->
+            onChange(
+                when (band) {
+                    WheelBand.SHADOWS -> grade.copy(wheelShadowX = nx, wheelShadowY = ny)
+                    WheelBand.MIDTONES -> grade.copy(wheelMidX = nx, wheelMidY = ny)
+                    WheelBand.HIGHLIGHTS -> grade.copy(wheelHighX = nx, wheelHighY = ny)
+                }
+            )
+        },
+        onDragActiveChange = onDragActiveChange,
+        onDoubleTapReset = {
+            // Center reset: the ACTIVE band's offset to (0, 0) — the
+            // spec's "merkez nötrdür" made actionable. One discrete edit,
+            // its own undo step.
+            onReset(
+                when (band) {
+                    WheelBand.SHADOWS ->
+                        grade.copy(wheelShadowX = 0f, wheelShadowY = 0f)
+                    WheelBand.MIDTONES ->
+                        grade.copy(wheelMidX = 0f, wheelMidY = 0f)
+                    WheelBand.HIGHLIGHTS ->
+                        grade.copy(wheelHighX = 0f, wheelHighY = 0f)
+                }
+            )
+        },
+        contentDescription = stringResource(R.string.editor_color_wheel),
+    )
+    // Offset readout: the active band's (x, y) with the neutral word when
+    // centered — "Nötr" reads the spec contract, "+0.35 / -0.10" reads the
+    // engine's actual exponents' inputs. tnum via Format (two decimals,
+    // explicit sign — the formatEv precedent).
+    Text(
+        if (bandX == 0f && bandY == 0f) {
+            stringResource(R.string.editor_wheel_neutral)
+        } else {
+            stringResource(
+                R.string.editor_wheel_offset_readout,
+                Format.formatWheelOffset(bandX),
+                Format.formatWheelOffset(bandY),
+            )
+        },
+        style = MaterialTheme.typography.labelLarge.merge(Tnum),
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center,
+    )
+    // ---- Split tone (stage 19) ----
+    // The switch row carries the group label (the Temporal NR precedent:
+    // no separate header above a switch group).
+    val splitActive = grade.splitShadowHue >= 0f || grade.splitHighlightHue >= 0f
+    RawToggleRow(
+        label = stringResource(R.string.editor_split_tone),
+        checked = splitActive,
+        onCheckedChange = { checked ->
+            if (checked) {
+                // First enable seeds BOTH hues to 0 (red) — the temporal-NR
+                // seeding precedent: a toggle that visibly changed nothing
+                // would read as broken, and 0/0 is the minimal active pair.
+                onToggleChange(grade.copy(splitShadowHue = 0f, splitHighlightHue = 0f))
+            } else {
+                // Off writes the GradeK neutral to both hues — the switch
+                // can never disagree with the stored state.
+                onToggleChange(
+                    grade.copy(
+                        splitShadowHue = GradeK().splitShadowHue,
+                        splitHighlightHue = GradeK().splitHighlightHue,
+                    )
+                )
+            }
+        },
+    )
+    if (splitActive) {
+        // The hue track: the engine's own hue-window sweep, so each track
+        // position reads as the hue it selects (the TEMPERATURE_GRADIENT
+        // precedent; muted pastels by the unit-average windows themselves).
+        val hueTrack = remember { ColorWheelMath.hueTrackGradient() }
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_split_shadow_hue),
+            value = grade.splitShadowHue,
+            valueRange = 0f..359f,
+            step = SliderSteps.SPLIT_HUE_STEP_DEG,
+            valueLabel = Format.formatHueDeg(grade.splitShadowHue.toInt()),
+            onChange = { v ->
+                onChange(grade.copy(splitShadowHue = SliderSteps.snapSplitHue(v)))
+            },
+            onDoubleTapReset = {
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_SHADOW_HUE, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+            trackGradient = hueTrack,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_split_highlight_hue),
+            value = grade.splitHighlightHue,
+            valueRange = 0f..359f,
+            step = SliderSteps.SPLIT_HUE_STEP_DEG,
+            valueLabel = Format.formatHueDeg(grade.splitHighlightHue.toInt()),
+            onChange = { v ->
+                onChange(grade.copy(splitHighlightHue = SliderSteps.snapSplitHue(v)))
+            },
+            onDoubleTapReset = {
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_HIGHLIGHT_HUE, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+            trackGradient = hueTrack,
+        )
+    }
+    // Balance: -100..100, positive widens the SHADOW side (the native
+    // crossover m = 0.18 * 2^(balance/100) grows with balance — the
+    // Lightroom convention; the slider label direction matches). Visible
+    // even when the group is off: balance has no off state in the engine
+    // (it only shapes the crossover when a hue is active) and hiding it
+    // would hide where its reset lives.
+    GradeSlider(
+        label = stringResource(R.string.editor_slider_split_balance),
+        value = grade.splitBalance,
+        valueRange = -100f..100f,
+        step = SliderSteps.SPLIT_BALANCE_STEP,
+        valueLabel = Format.formatSigned(grade.splitBalance.toInt()),
+        onChange = { v ->
+            onChange(grade.copy(splitBalance = SliderSteps.snapSplitBalance(v)))
+        },
+        onDoubleTapReset = {
+            onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_BALANCE, grade))
+        },
+        onDragActiveChange = onDragActiveChange,
+    )
+}
+
+/** The wheel's three tonal bands (COL-13, stage 18): the pad's tabs. */
+private enum class WheelBand { SHADOWS, MIDTONES, HIGHLIGHTS }
+
+/**
+ * One wheel band segmented-button entry (COL-13): label + the band the
+ * pad edits when selected.
+ */
+private data class WheelBandOption(
+    val labelRes: Int,
+    val value: WheelBand,
+)
+
+/**
  * Detail tab (COL-15/COL-16), in order: Noise Reduction and Chroma Denoise
  * (DN-01..08 spatial denoise, percent 0..100, 0 = the stage skipped — the
  * old look), then Sharpness (edge sharpness, unsharp radius 1.5) and Detail
@@ -2986,7 +3256,7 @@ private fun ColorPanel(
  * choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md Inputs:
  * "segmented buttons for codec and scope choice" — the same single choice
  * pattern). The denoise pair leads because native stages 7/8 run BEFORE
- * sharpness/detail (19/20): sliders read in pipeline order, and denoising
+ * sharpness/detail (21/22): sliders read in pipeline order, and denoising
  * first is also what makes the sharpeners amplify signal, not noise. All
  * five controls run on BOTH clip kinds: the native develop pipeline and
  * developEncoded share the same stages, so encoded (Mi-Log MP4) clips get
@@ -3076,7 +3346,7 @@ private fun DetailPanel(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         // DN-01..08: both denoise controls first, in native pipeline order
-        // (stage 7 chroma, stage 8 luma — before sharpness/detail 19/20).
+        // (stage 7 chroma, stage 8 luma — before sharpness/detail 21/22).
         // Percent 0..100 like LUT Strength, whole steps, default 0 = the
         // stage skipped (bit-identical to the pre-DN look).
         GradeSlider(

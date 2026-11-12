@@ -214,6 +214,24 @@ class EditorPreviewLogicTest {
         assertFalse(EditorPreviewLogic.showStabilization(SourcePath.ENCODED))
     }
 
+    // ---- Color tools visibility (COL-13: wheel + split tone, MCRAW only) ----
+
+    @Test
+    fun mcraw_shows_color_tools() {
+        // Wheel (stage 18) and split tone (stage 19) are MCRAW-only
+        // tone-band color math — the section belongs on the Color tab for
+        // RAW clips.
+        assertTrue(EditorPreviewLogic.showColorTools(SourcePath.MCRAW))
+    }
+
+    @Test
+    fun encoded_hides_color_tools() {
+        // The encoded path takes the same Grade but the bridge ignores the
+        // color-package fields there (it grades via wb/temp/tint/exposure):
+        // the section is hidden rather than showing dead controls.
+        assertFalse(EditorPreviewLogic.showColorTools(SourcePath.ENCODED))
+    }
+
     // ---- sync status verdict (gyro Phase 5: the status line's decision) ----
 
     @Test

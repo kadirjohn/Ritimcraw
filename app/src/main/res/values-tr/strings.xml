@@ -95,6 +95,17 @@
     <string name="editor_stabilization_focal_from_container">Konteynerden: %1$s</string>
     <string name="editor_stabilization_intrinsics_assumed">İç parametreler varsayıldı</string>
     <string name="editor_stabilization_gyro_name">Jiro: %1$s</string>
+    <!-- COL-13: renk tekerleği + split tone bölümü, Renk sekmesi. -->
+    <string name="editor_color_wheel">Renk tekerleği</string>
+    <string name="editor_wheel_band_shadows">Gölgeler</string>
+    <string name="editor_wheel_band_midtones">Orta tonlar</string>
+    <string name="editor_wheel_band_highlights">Işıklar</string>
+    <string name="editor_wheel_offset_readout">%1$s / %2$s</string>
+    <string name="editor_wheel_neutral">Nötr</string>
+    <string name="editor_split_tone">Split tone</string>
+    <string name="editor_slider_split_shadow_hue">Gölge tonu</string>
+    <string name="editor_slider_split_highlight_hue">Işık tonu</string>
+    <string name="editor_slider_split_balance">Denge</string>
     <!-- RAW-09: crop + straighten group in the Detail tab. -->
     <string name="editor_crop">Kırpma</string>
     <string name="editor_crop_reset">Kırpma sıfırla</string>
