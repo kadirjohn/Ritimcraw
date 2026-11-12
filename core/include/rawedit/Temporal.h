@@ -32,6 +32,14 @@
 //       fine (|dPTS|).
 //     - Mean luma shift of the 1/8 proxies > 4% of range -> reject (sudden
 //       exposure jump; not a scene cut, but still unsafe to merge).
+//     - MAFD scene score (source-comparison item #8, FFmpeg scdet
+//       get_scene_score): mean |center - neighbor| x100 on the normalized
+//       proxies. Reject when it exceeds 10 (an absolute cut), OR when it
+//       JUMPS from the previous pair-in-time's score by more than 10
+//       (the trend form; the caller supplies the previous score via
+//       TemporalSettings — negative = unknown, delta inactive). Cuts
+//       with near-equal histograms and means are what this catches; it
+//       also exits BEFORE the ~11 ms match cost.
 //     - Total-variation distance of 32-bin luma histograms > 0.30 -> reject
 //       (scene cut).
 //     - Fraction of blocks with an acceptable match < 25% -> reject
@@ -90,8 +98,9 @@
 // being dragged by a neighbor's vector. No Wiener/NLM in this version.
 //
 // MOTION ESTIMATION: 1/8-scale luma proxies (a proxy pixel is the mean
-// normalized signal of its 16x16 CFA block — 64 cells, 16 samples per slot,
-// so the average is CFA-pattern independent). Integer block matching in
+// normalized signal of the 4 stride-2 samples of its 8x8 CFA block — one
+// sample per 2x2 cell slot, so the average is CFA-pattern independent).
+// Integer block matching in
 // two passes, search radius +-4 proxy px (= +-32 CFA px, handheld
 // vibration between adjacent frames, not general optical flow), SAD on a
 // 2x2-subsampled lattice during the search, full sampling for winners.
@@ -159,10 +168,10 @@ inline float temporalFallbackSigma() { return 0.006f; }
 // adjacent frame.
 bool temporalNeighborEligible(int64_t dPts, int64_t frameDurationUs);
 
-// 1/8-scale luma proxy: w = width/16 (2x2 cells x 8), h = height/16, each
-// proxy pixel the mean normalized signal of its 16x16 CFA block. Pattern
-// independent (equal sample count per slot). Empty when the frame is too
-// small (w or h < 32).
+// 1/8-scale luma proxy: w = width/8, h = height/8, each proxy pixel the
+// mean normalized signal of the 4 stride-2 samples of its 8x8 CFA block
+// (one sample per 2x2 cell slot). Pattern independent (equal sample count
+// per slot). Empty when the frame is too small (w or h < 32).
 struct LumaProxy {
     uint32_t w = 0;
     uint32_t h = 0;
@@ -200,6 +209,11 @@ void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
 // any pointer may be null, which selects the fallback sigma. The dPts
 // fields are 0 = "adjacent / unspecified" (no decay); the bridge passes
 // the real PTS deltas after temporalNeighborEligible has filtered them.
+// The pair-MAFD fields (source-comparison item #8, FFmpeg scdet
+// convention) carry the PREVIOUS pair-in-time's scene score for the
+// trend gate: negative = unknown (scrub start, first pair) and leaves
+// only the absolute MAFD gate active. The bridge owns the per-pair
+// cache keyed by frame index (the merge itself stays stateless).
 struct TemporalSettings {
     float strength = 0.0f; // 0..100; <= 0 makes the merge a passthrough
     const NoiseProfile* centerNoise = nullptr;
@@ -208,6 +222,8 @@ struct TemporalSettings {
     int64_t prevDPtsUs = 0;
     int64_t nextDPtsUs = 0;
     int64_t frameDurationUs = 0;
+    float prevPairMafd = -1.0f; // < 0 = unknown: absolute MAFD gate only
+    float nextPairMafd = -1.0f; // < 0 = unknown: absolute MAFD gate only
 };
 
 // Per-neighbor outcome, for tests and the perf report.
@@ -217,6 +233,7 @@ struct NeighborStats {
     float acceptRate = 0.0f; // fraction of blocks that passed local gates
     float meanWeight = 0.0f; // mean per-pixel weight actually applied
     float noiseFloor = 0.0f; // measured 25th-pct winner MAD (diagnostic)
+    float mafd = 0.0f;       // this pair's scene score x100 (diagnostic)
 };
 
 // Measured per-stage costs (research item: report proxy / matching / merge

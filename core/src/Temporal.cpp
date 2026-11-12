@@ -38,6 +38,11 @@ constexpr float kFloorQuantile = 0.25f;  // noise-floor quantile over winner MAD
 constexpr float kFloorGate = 3.0f;       // hard gate: used MAD <= 3x measured floor
 constexpr float kMinConfidence = 0.1f;   // ginzburg threshold: below this a
                                          // "gain" is matching noise, reject
+// Source-comparison item #8 (FFmpeg scdet get_scene_score convention):
+// MAFD = mean absolute frame difference x100 on the normalized proxies,
+// reject > 10. The trend (memory) form uses the PREVIOUS pair's MAFD,
+// supplied by the caller (bridge-owned cache, negative = unknown).
+constexpr float kSceneCutMafd = 10.0f;
 
 double nowMs() {
     return std::chrono::duration<double, std::milli>(
@@ -156,6 +161,7 @@ struct NeighborEval {
     float acceptRate = 0.0f;  // fraction of blocks passing local gates
     float meanWeight = 0.0f;  // mean weight actually applied (post-merge)
     float noiseFloor = 0.0f;  // measured 25th-pct winner MAD (diagnostic)
+    float mafd = 0.0f;        // this pair's scene-score (item #8, diagnostic)
     LumaProxy proxy;          // kept alive for the merge (warp reuse)
     std::vector<MotionVector> fwd;  // center -> neighbor, per block
     std::vector<float> blockWeight; // final per-block weight (0 = rejected)
@@ -270,7 +276,9 @@ float blockMadFull(const LumaProxy& a, const LumaProxy& b,
 // mean(c) - mean(n) — the #9 de-bias offset, already computed for the
 // mean-luma gate, handed to the caller at zero extra cost.
 bool globalGatesPass(const LumaProxy& c, const LumaProxy& n,
-                     float* meanDiffOut = nullptr) {
+                     float* meanDiffOut = nullptr,
+                     float* mafdOut = nullptr,
+                     float prevPairMafd = -1.0f) {
     // Mean luma shift (sudden exposure jump: not a cut, still unsafe).
     float mc = 0.0f, mn = 0.0f;
     for (size_t i = 0; i < c.v.size(); ++i)
@@ -281,7 +289,36 @@ bool globalGatesPass(const LumaProxy& c, const LumaProxy& n,
     mn /= static_cast<float>(n.v.size());
     if (meanDiffOut)
         *meanDiffOut = mc - mn;
+
+    // MAFD scene-cut gate (source-comparison item #8, FFmpeg scdet
+    // get_scene_score convention): mean |center - neighbor| x100 on the
+    // normalized proxies, reject > 10. Memoryless on its own; the TREND
+    // form compares against the caller-supplied MAFD of the PREVIOUS pair
+    // in time (bridge-owned cache; negative = unknown, delta inactive) —
+    // reject when the pair-to-pair MAFD JUMPS by more than the threshold
+    // (a cut inside an otherwise continuous sequence shows up as the
+    // jump). Measured margin on the 4K fixture: quiet pairs 0.37-0.38 vs
+    // the 10 gate; a same-histogram structure cut reads 4.08 (below the
+    // MAFD gate — the accept-rate gate already rejects it), a fence cut
+    // 19.55, a fence slide 39.99 (both already rejected by the histogram
+    // gates today). The value is the pre-match early exit: cuts with
+    // near-equal histograms and means pay the ~11 ms match cost before
+    // the local gates drop them. The score is computed (and reported)
+    // BEFORE the mean-luma gate's early return on purpose: a cut that
+    // also shifts exposure must still leave its true MAFD in the
+    // bridge's trend cache, or the pair after it would compare against a
+    // fake quiet 0 and the trend blast radius would silently vanish.
+    float mad = 0.0f;
+    for (size_t i = 0; i < c.v.size(); ++i)
+        mad += std::fabs(c.v[i] - n.v[i]);
+    mad *= 100.0f / static_cast<float>(c.v.size());
+    if (mafdOut)
+        *mafdOut = mad;
     if (std::fabs(mc - mn) > kMeanLumaReject)
+        return false;
+    if (mad > kSceneCutMafd)
+        return false;
+    if (prevPairMafd >= 0.0f && std::fabs(mad - prevPairMafd) > kSceneCutMafd)
         return false;
 
     // 32-bin histograms on [0, 1] (clamped), TV distance = 0.5*sum|a-b|.
@@ -480,14 +517,15 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
     // callers and tests) and decays nothing.
     const float capPrev = cap * distanceDecay(settings.prevDPtsUs, settings.frameDurationUs);
     const float capNext = cap * distanceDecay(settings.nextDPtsUs, settings.frameDurationUs);
-    auto evaluate = [&](NeighborEval& e, const NoiseProfile* np, float capN) {
+    auto evaluate = [&](NeighborEval& e, const NoiseProfile* np, float capN,
+                        float prevPairMafd) {
         if (!e.present || !centerOk || capN <= 0.0f)
             return;
         if (e.proxy.w != cp.w || e.proxy.h != cp.h)
             return; // dimension mismatch: reject, never blend
         float meanOffset = 0.0f;
-        if (!globalGatesPass(cp, e.proxy, &meanOffset))
-            return; // exposure jump / scene cut
+        if (!globalGatesPass(cp, e.proxy, &meanOffset, &e.mafd, prevPairMafd))
+            return; // exposure jump / scene cut (absolute or MAFD trend)
 
         // Forward (center -> neighbor) and backward block matching. Winner
         // MADs are de-biased by the pair's global mean difference (#9):
@@ -605,8 +643,8 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
         if (!e.eligible)
             std::fill(e.blockWeight.begin(), e.blockWeight.end(), 0.0f);
     };
-    evaluate(ev, settings.prevNoise, capPrev);
-    evaluate(en, settings.nextNoise, capNext);
+    evaluate(ev, settings.prevNoise, capPrev, settings.prevPairMafd);
+    evaluate(en, settings.nextNoise, capNext, settings.nextPairMafd);
     const double t3 = nowMs();
 
     // ---- merge (or exact copy when no neighbor survived) ----
@@ -618,6 +656,19 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
             report->proxyMs = t1 - t0;
             report->matchMs = t3 - t2;
             report->mergeMs = 0.0;
+            // Neighbor stats still matter in the all-rejected case — the
+            // MAFD diagnostic (item #8) is exactly what explains a global
+            // rejection; the merge-loop copy below is unreachable here.
+            report->prev.present = ev.present;
+            report->prev.eligible = ev.eligible;
+            report->prev.acceptRate = ev.acceptRate;
+            report->prev.noiseFloor = ev.noiseFloor;
+            report->prev.mafd = ev.mafd;
+            report->next.present = en.present;
+            report->next.eligible = en.eligible;
+            report->next.acceptRate = en.acceptRate;
+            report->next.noiseFloor = en.noiseFloor;
+            report->next.mafd = en.mafd;
         }
         return;
     }
@@ -756,6 +807,7 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
             ? static_cast<float>(wSumPrev / static_cast<double>(counted))
             : 0.0f;
         report->prev.noiseFloor = ev.noiseFloor;
+        report->prev.mafd = ev.mafd;
         report->next.present = en.present;
         report->next.eligible = en.eligible;
         report->next.acceptRate = en.acceptRate;
@@ -763,6 +815,7 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
             ? static_cast<float>(wSumNext / static_cast<double>(counted))
             : 0.0f;
         report->next.noiseFloor = en.noiseFloor;
+        report->next.mafd = en.mafd;
     }
 }
 

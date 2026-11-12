@@ -595,6 +595,97 @@ TEST_CASE("overclaimed_noise_profile_cannot_admit_content_change") {
                   == c[static_cast<size_t>(y) * kLw + x]);
 }
 
+// ---- scene-cut trend gate (source-comparison item #8) ----
+// FFmpeg scdet get_scene_score convention: MAFD = mean|center - neighbor|
+// x100 on the normalized proxies, threshold 10. Absolute gate (mafd > 10)
+// plus the trend form: reject when the score JUMPS from the previous
+// pair-in-time's score by more than 10 (TemporalSettings::prevPairMafd /
+// nextPairMafd, negative = unknown -> absolute only). Measured margins
+// (probe_n3b S5): quiet fixture pairs 0.37-0.38; slow 1px/frame slide
+// 4.1 (passes — that is motion, not a cut); fence cut 19.55; fence slide
+// 39.99; same-histogram structure cut 4.08 (below the gate — the
+// accept-rate gate already rejects it, so no coverage lost there).
+
+TEST_CASE("mafd_gate_rejects_hard_cut_before_matching") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // A fence cut: stripes of period 4 vs period 6 proxy px (measured
+    // mafd 19.55). Same histogram, same mean — the mean-luma and
+    // histogram-TV gates pass — so only the MAFD gate rejects, and it
+    // does so BEFORE the ~11 ms match cost (the value of the early
+    // exit: pre-item-#8 this pair paid matching to be rejected by the
+    // accept-rate gate).
+    auto stripes = [](int period) {
+        return [period](uint32_t x, uint32_t) {
+            const int xp = static_cast<int>(x) >> 3; // proxy px
+            return ((xp / (period / 2)) % 2 == 0) ? 0.7f : 0.3f;
+        };
+    };
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, stripes(4), 151, 6.0f);
+    std::vector<uint16_t> n = makeFrame(kLw, kLw, stripes(6), 152, 6.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    CHECK_FALSE(rep.prev.eligible); // mafd ~ 19.6 > 10: hard cut
+    CHECK(rep.prev.mafd > 10.0f);
+    // Pre-match early exit: the match cost was never paid.
+    CHECK(rep.matchMs < 0.5);
+    // Rejected neighbor = center bit for bit.
+    CHECK(std::memcmp(out.data(), c.data(), out.size() * sizeof(uint16_t)) == 0);
+}
+
+TEST_CASE("mafd_trend_rejects_post_cut_quiet_pair") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // A QUIET pair (same texture, mafd ~ 0.4) arriving right after a cut
+    // (previous pair's score 25): the absolute gate alone would merge it —
+    // the TREND form rejects it (|0.4 - 25| > 10). This is the 2-frame
+    // blast radius after every cut, the accepted conservative failure.
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, texture, 161, 6.0f);
+    std::vector<uint16_t> n = makeFrame(kLw, kLw, texture, 162, 6.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.prevPairMafd = 25.0f; // the cut that just happened
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    CHECK_FALSE(rep.prev.eligible);
+    CHECK(rep.prev.mafd < 10.0f); // quiet on its own — the TREND rejected it
+    CHECK(std::memcmp(out.data(), c.data(), out.size() * sizeof(uint16_t)) == 0);
+
+    // Unknown previous score (scrub start, first pair): trend inactive,
+    // the same quiet pair merges — the absolute gate is the only judge.
+    std::fill(out.begin(), out.end(), 0);
+    ts.prevPairMafd = -1.0f;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+    CHECK(rep.prev.eligible);
+    CHECK(rep.prev.mafd < 10.0f);
+}
+
+TEST_CASE("mafd_gate_passes_slow_slide_and_quiet_footage") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // A 1-px-per-frame texture slide is MOTION, not a cut: MAFD stays
+    // ~4 (measured), far below 10, and the pair stays eligible (blocks
+    // match on their motion vectors). The quiet same-texture pair
+    // (fixture band 0.37-0.38) passes with room to spare.
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(0, 0), 171, 6.0f);
+    std::vector<uint16_t> n = makeFrame(kLw, kLw, shiftedTexture(1, 0), 172, 6.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.prevPairMafd = 4.2f; // a slide before the slide: no trend jump
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+    CHECK(rep.prev.eligible);
+    CHECK(rep.prev.mafd > 0.5f);   // it IS a real 1-px difference
+    CHECK(rep.prev.mafd < 10.0f);  // but far from a cut
+}
+
 // ---- window clamping (DN-09) ----
 
 TEST_CASE("first_and_last_frame_clamp_window_no_crash") {

@@ -17,7 +17,9 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <rawedit/DngWriter.h>
@@ -459,6 +461,15 @@ struct Entry {
     //                    non-temporal slider — reuses it instead of
     //                    re-merging).
     std::vector<RingFrame> ring;
+    // Per-pair MAFD scene scores (source-comparison item #8, the trend
+    // gate's memory): pair (a, a+1) is keyed by its END index a+1. The
+    // score is a pure function of the PRISTINE decoded pair, so entries
+    // never go stale for a given clip; the map is cleared whenever the
+    // temporal caches are (off toggle, close) so a clip with temporal NR
+    // off never holds temporal memory between renders. Bounded by the
+    // prune in temporalMergedCfa (keys stay within +-2 of the rendered
+    // frame). Same threading contract as the ring: owner engine thread.
+    std::map<int, float> mafdByPairEnd;
     int mergedFrameIndex = -1;
     float mergedStrength = -1.0f;
     CfaBuffer mergedCfa;
@@ -477,6 +488,7 @@ void clearEntryCaches(Entry& e) {
     e.cachedFrameIndex = -1;
     e.ring.clear();
     e.ring.shrink_to_fit();
+    e.mafdByPairEnd.clear();
     e.mergedFrameIndex = -1;
     e.mergedStrength = -1.0f;
     e.mergedCfa = nullptr;
@@ -847,6 +859,32 @@ bool assembleTemporalWindow(rawedit::Source& s, Entry& e, int frameIndex,
     return true;
 }
 
+// Trend-gate cache accessors (source-comparison item #8): the bridge owns
+// the per-pair MAFD memory so the merge stays stateless. Pair (a, a+1) is
+// keyed by END index a+1; a miss (scrub start, first pair, cleared cache)
+// returns negative = "unknown", which leaves only the absolute MAFD gate
+// active — the designed conservative degradation.
+float cachedPairMafd(const Entry& e, int pairEndIndex) {
+    const auto it = e.mafdByPairEnd.find(pairEndIndex);
+    return it == e.mafdByPairEnd.end() ? -1.0f : it->second;
+}
+
+// Records this render's pair scores and prunes the map to pairs adjacent
+// to the rendered frame (the trend gate never reads beyond frameIndex-1 ..
+// frameIndex+1, so keys outside [frameIndex - 2, frameIndex + 2] are dead).
+// rep.*.present is exactly "a buffer was passed"; the merge computes the
+// score (and reports it) even when a gate then rejects the pair.
+void storePairMafds(Entry& e, int frameIndex, const rawedit::TemporalReport& rep) {
+    if (rep.prev.present)
+        e.mafdByPairEnd[frameIndex] = rep.prev.mafd;      // pair (i-1, i)
+    if (rep.next.present)
+        e.mafdByPairEnd[frameIndex + 1] = rep.next.mafd;  // pair (i, i+1)
+    e.mafdByPairEnd.erase(e.mafdByPairEnd.begin(),
+                          e.mafdByPairEnd.lower_bound(frameIndex - 2));
+    e.mafdByPairEnd.erase(e.mafdByPairEnd.upper_bound(frameIndex + 2),
+                          e.mafdByPairEnd.end());
+}
+
 // Produces the CFA for developCpu with temporal NR applied when enabled:
 //   strength <= 0 or temporalNr off  -> the pristine center, untouched, and
 //   the temporal caches are emptied (an off->on toggle starts clean);
@@ -874,6 +912,7 @@ CfaBuffer temporalMergedCfa(
         e.mergedCfa = nullptr;
         e.ring.clear();
         e.ring.shrink_to_fit();
+        e.mafdByPairEnd.clear();
         return centerCfa;
     }
     if (e.mergedFrameIndex == frameIndex && e.mergedStrength == strength &&
@@ -904,11 +943,18 @@ CfaBuffer temporalMergedCfa(
     ts.prevDPtsUs = w.prevDPtsUs;
     ts.nextDPtsUs = w.nextDPtsUs;
     ts.frameDurationUs = w.frameDurationUs;
+    // Trend gate (item #8): the PREVIOUS pair-in-time's score for each
+    // side. Prev side's pair is (i-2, i-1) -> key i-1; next side's pair is
+    // (i-1, i) -> key i. A miss passes negative (absolute gate only).
+    ts.prevPairMafd = cachedPairMafd(e, frameIndex - 1);
+    ts.nextPairMafd = cachedPairMafd(e, frameIndex);
     auto merged = std::make_shared<std::vector<uint16_t>>(centerCfa->size(), 0);
+    rawedit::TemporalReport rep;
     rawedit::temporalMergeCfa(centerCfa->data(), centerInfo,
                               w.prev ? w.prev->data() : nullptr,
                               w.next ? w.next->data() : nullptr,
-                              s.rawMeta(), ts, merged->data(), nullptr);
+                              s.rawMeta(), ts, merged->data(), &rep);
+    storePairMafds(e, frameIndex, rep);
     e.mergedFrameIndex = frameIndex;
     e.mergedStrength = strength;
     e.mergedCfa = CfaBuffer(std::move(merged));
