@@ -63,9 +63,13 @@ struct Capabilities {
     std::string extensions = "";  // glGetString(GL_EXTENSIONS)
     int glesMajor = 0;            // parsed from the version string
     int glesMinor = 0;
-    bool computeOk = false;       // ES 3.1+ context with compute work groups
+    bool computeOk = false;       // ES 3.1+ context, all 3 indexed dispatch-count axes > 0
     bool floatFboOk = false;      // GL_EXT_color_buffer_float advertised
     int maxTextureSize = 0;       // GL_MAX_TEXTURE_SIZE
+    // Per-axis compute limits (glGetIntegeri_v, the ONLY correct query —
+    // see the probe). 0 = the axis query failed or the context is pre-3.1.
+    std::vector<int> maxWorkGroupCount = {0, 0, 0};  // GL_MAX_COMPUTE_WORK_GROUP_COUNT[x/y/z]
+    std::vector<int> maxWorkGroupSize = {0, 0, 0};   // GL_MAX_COMPUTE_WORK_GROUP_SIZE[x/y/z]
 };
 
 // One-shot probe on the calling thread: creates the context, reads the

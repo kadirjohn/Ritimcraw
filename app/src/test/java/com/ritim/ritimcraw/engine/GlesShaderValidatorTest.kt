@@ -99,7 +99,8 @@ class GlesShaderValidatorTest {
     fun missing_ssbo_blocks_and_uniforms_are_reported() {
         // Renames pick names that do NOT contain the originals, so the
         // check fires on the genuinely missing block (a superset rename
-        // like InBufX would still contain "buffer InBuf" as a substring).
+        // like InBufX would still contain the full layout string as a
+        // substring only if the layout survived — here it does not).
         val renamed = GlesShaderSources.DEMOSAIC_COMPUTE
             .replace("buffer InBuf", "buffer InputBuf")
             .replace("buffer OutBuf", "buffer OutputBuf")
@@ -110,6 +111,77 @@ class GlesShaderValidatorTest {
         assertTrue(problems.any { it.contains("OutBuf") })
         assertTrue(problems.any { it.contains("uSize") })
         assertTrue(problems.any { it.contains("uCell") })
+    }
+
+    // ---- the SSBO binding contract (audit fix 2026-11-13) ----
+    // GLSL ES 3.10 layout(std430, binding=N) is the ONLY binding
+    // mechanism the harness relies on: glShaderStorageBlockBinding is
+    // desktop GL 4.2+, not an ES command, so the old eglGetProcAddress
+    // lookup could only ever return null. These tests lock the new
+    // declarations in and reject the old plain-buffer form.
+
+    @Test
+    fun shipped_source_declares_std430_and_explicit_bindings() {
+        val src = GlesShaderSources.DEMOSAIC_COMPUTE
+        assertTrue(
+            "InBuf must declare std430 + binding 0",
+            src.contains("layout(std430, binding = 0) readonly buffer InBuf"),
+        )
+        assertTrue(
+            "OutBuf must declare std430 + binding 1",
+            src.contains("layout(std430, binding = 1) writeonly buffer OutBuf"),
+        )
+    }
+
+    @Test
+    fun plain_buffer_declarations_are_rejected() {
+        // The OLD form (pre-audit): plain `buffer` with no std430 and no
+        // binding — relies on default packing while the C++ side assumes
+        // tight float arrays, and leaves the block-to-buffer attachment
+        // undefined. The validator must reject it.
+        val oldForm = GlesShaderSources.DEMOSAIC_COMPUTE
+            .replace(
+                "layout(std430, binding = 0) readonly buffer InBuf",
+                "buffer InBuf",
+            )
+            .replace(
+                "layout(std430, binding = 1) writeonly buffer OutBuf",
+                "buffer OutBuf",
+            )
+        val problems = GlesShaderValidator.problems(oldForm)
+        assertTrue(
+            "the plain InBuf declaration must be reported",
+            problems.any { it.contains("layout(std430, binding = 0) readonly buffer InBuf") },
+        )
+        assertTrue(
+            "the plain OutBuf declaration must be reported",
+            problems.any { it.contains("layout(std430, binding = 1) writeonly buffer OutBuf") },
+        )
+    }
+
+    @Test
+    fun missing_std430_is_rejected_even_with_binding() {
+        // binding without std430: the attachment point is right but the
+        // packing guarantee is gone — still a contract violation.
+        val noStd430 = GlesShaderSources.DEMOSAIC_COMPUTE
+            .replace("layout(std430, binding = 0)", "layout(binding = 0)")
+            .replace("layout(std430, binding = 1)", "layout(binding = 1)")
+        assertTrue(
+            GlesShaderValidator.problems(noStd430).any { it.contains("std430") },
+        )
+    }
+
+    @Test
+    fun swapped_bindings_are_rejected() {
+        // InBuf at 1 / OutBuf at 0 would attach the buffers the wrong way
+        // round at the harness's glBindBufferBase calls — the validator
+        // must catch the swap, not just the absence.
+        val swapped = GlesShaderSources.DEMOSAIC_COMPUTE
+            .replace("layout(std430, binding = 0) readonly buffer InBuf", "layout(std430, binding = 1) readonly buffer InBuf")
+            .replace("layout(std430, binding = 1) writeonly buffer OutBuf", "layout(std430, binding = 0) writeonly buffer OutBuf")
+        val problems = GlesShaderValidator.problems(swapped)
+        assertTrue(problems.any { it.contains("binding = 0) readonly buffer InBuf") })
+        assertTrue(problems.any { it.contains("binding = 1) writeonly buffer OutBuf") })
     }
 
     @Test

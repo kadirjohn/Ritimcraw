@@ -386,6 +386,131 @@ class Mp4ExporterTest {
         assertEquals("retry the export", recovery)
     }
 
+    // ---- ExportStageTiming: pure formatting rules (owner request 2026-11-13) ----
+
+    @Test
+    fun timing_sample_lines_land_at_the_checkpoint_frames_only() {
+        val lines = ArrayList<String>()
+        val t = ExportStageTiming(lines::add)
+        repeat(95) {
+            t.startFrame()
+            t.mark(ExportStageTiming.STAGE_NATIVE, 1_000_000)
+            t.endFrame()
+        }
+        // Exactly the 4 checkpoint frames (1, 30, 60, 90) log a sample
+        // line — never one line per frame.
+        assertEquals(4, lines.size)
+        assertTrue(lines[0].startsWith("export frame 1: "))
+        assertTrue(lines[1].startsWith("export frame 30: "))
+        assertTrue(lines[2].startsWith("export frame 60: "))
+        assertTrue(lines[3].startsWith("export frame 90: "))
+        // Every sample line carries all 7 stages in order with the tag.
+        for (line in lines) {
+            for (s in 0 until ExportStageTiming.STAGE_COUNT) {
+                assertTrue(line.contains("${ExportStageTiming.stageName(s)}="))
+            }
+        }
+    }
+
+    @Test
+    fun timing_close_emits_average_and_summary_lines() {
+        val lines = ArrayList<String>()
+        val t = ExportStageTiming(lines::add)
+        repeat(3) {
+            t.startFrame()
+            t.mark(ExportStageTiming.STAGE_NATIVE, 3_000_000L)
+            t.mark(ExportStageTiming.STAGE_YUV, 1_000_000L)
+            t.endFrame()
+        }
+        t.close(
+            sourceW = 3840, sourceH = 2160,
+            rotatedW = 2160, rotatedH = 3840,
+            encodedW = 1920, encodedH = 1080,
+            grade = GradeK(),
+            gyroActive = false,
+            encodeNanos = 30_000_000L,
+        )
+        // Frame 1 is a checkpoint, so the sample line precedes the close
+        // pair: sample + averages + summary = 3 lines.
+        assertEquals(3, lines.size)
+        assertTrue(lines[0].startsWith("export frame 1: "))
+        // Averages over 3 frames: native=3.0ms yuv=1.0ms, others 0.0ms.
+        assertTrue(lines[1].startsWith("export stages avg over 3 frames: "))
+        assertTrue(lines[1].contains("native=3.0ms"))
+        assertTrue(lines[1].contains("yuv=1.0ms"))
+        assertTrue(lines[1].contains("rotate=0.0ms"))
+        // The summary line: three dim pairs, neutral effects, frames, total.
+        val summary = lines[2]
+        assertTrue(summary.startsWith("EXPORT SUMMARY: "))
+        assertTrue(summary.contains("source 3840x2160 -> upright 2160x3840 -> encoded 1920x1080"))
+        assertTrue(summary.contains("effects none"))
+        assertTrue(summary.contains("3 frames"))
+        assertTrue(summary.contains("30.0 ms"))
+    }
+
+    @Test
+    fun timing_effects_tokens_follow_the_grade() {
+        // Each active effect group adds its token; neutral = "none".
+        assertEquals("none", ExportStageTiming.effects(GradeK(), gyroActive = false))
+        assertEquals(
+            "nr+temporal+gyro+tonemap+lut",
+            ExportStageTiming.effects(
+                GradeK(
+                    noiseReduction = 40f,
+                    temporalNr = true,
+                    stabilization = true,
+                    tonemap = 2,
+                    lutId = "cube1",
+                ),
+                gyroActive = true,
+            ),
+        )
+        // Stabilization ON but no gyro log attached: the pipeline's gate
+        // (stabilization && gyroPath != null) is what gyroActive carries,
+        // so the honest token is absent.
+        assertEquals(
+            "nr",
+            ExportStageTiming.effects(
+                GradeK(noiseReduction = 10f, stabilization = true),
+                gyroActive = false,
+            ),
+        )
+        // Chroma-only NR still counts as "nr" (the same native stage group).
+        assertEquals("nr", ExportStageTiming.effects(GradeK(chromaDenoise = 25f), gyroActive = false))
+        // LUT selected but lutId null = no LUT — "lut" absent.
+        assertEquals("none", ExportStageTiming.effects(GradeK(lutStrength = 50f), gyroActive = false))
+    }
+
+    @Test
+    fun timing_null_sink_collects_nothing_and_never_throws() {
+        // Timing off: the pipeline never constructs the object, but the
+        // contract of a null sink is "no crash, no lines" — the writer's
+        // markWriterStages path with a null-log timing stays safe too.
+        val t = ExportStageTiming(null)
+        t.startFrame()
+        t.mark(ExportStageTiming.STAGE_NATIVE, 5_000_000)
+        t.markWriterStages(1_000_000, 2_000_000, 3_000_000)
+        t.endFrame()
+        t.close(4, 4, 4, 4, 4, 4, GradeK(), false, 8_000_000)
+        // No assertion to fail — reaching here is the contract.
+    }
+
+    @Test
+    fun pipeline_stage_timing_feeds_the_sink_per_export() {
+        val session = FakeSession(frames = 2, audio = false)
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(session, writer, lines::add).run(7, GradeK(), "/tmp/out.partial")
+        // 2 frames: frame 1 is a checkpoint -> one sample line, then the
+        // close() pair (averages + summary). The fake writer never calls
+        // attachTiming's sink (default no-op), so its stages read 0.0ms —
+        // honest zeros, not fabricated numbers.
+        assertEquals(3, lines.size)
+        assertTrue(lines[0].startsWith("export frame 1: "))
+        assertTrue(lines[1].startsWith("export stages avg over 2 frames: "))
+        assertTrue(lines[2].startsWith("EXPORT SUMMARY: "))
+    }
+
     // ---- ExportPipeline + Mp4Exporter flow (fakes) ----
 
     /** A fake session: N frames of solid color, optional audio. */

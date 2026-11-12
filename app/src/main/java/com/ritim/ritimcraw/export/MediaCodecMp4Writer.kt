@@ -49,6 +49,18 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
     /** Encoded packets that arrived before the muxer could start. */
     private val pending = ArrayList<PendingSample>()
 
+    /**
+     * Per-export stage-timing sink (owner request 2026-11-13): attached by
+     * the pipeline right before the encode loop, same thread. Null (the
+     * default) = timing off — writeVideoFrame then runs its two extra
+     * System.nanoTime reads per frame and nothing else changes.
+     */
+    private var timing: ExportStageTiming? = null
+
+    override fun attachTiming(timing: ExportStageTiming?) {
+        this.timing = timing
+    }
+
     private class PendingSample(
         val track: Int,
         val bytes: ByteArray,
@@ -186,10 +198,13 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
         val codec = videoCodec ?: throw notStarted()
+        val timing = this.timing
+        val tWait0 = System.nanoTime()
         val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
         if (index < 0) {
             throw encodeFailure("$MIME_AVC returned no input buffer")
         }
+        val tCopy0 = System.nanoTime()
         try {
             val image = codec.getInputImage(index)
                 ?: throw encodeFailure("$MIME_AVC gave no input Image for this frame")
@@ -211,7 +226,17 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         } catch (e: IllegalStateException) {
             throw e
         }
+        val tDrain0 = System.nanoTime()
         drain(codec, isVideo = true, timeoutUs = 0)
+        // Stage timing (owner request 2026-11-13): the three writer
+        // internals of this frame, reported into the pipeline's per-frame
+        // slots (same thread — this call runs inside the pipeline's frame
+        // iteration, before its endFrame reads the slots).
+        timing?.markWriterStages(
+            encWaitNanos = tCopy0 - tWait0,
+            planeCopyNanos = tDrain0 - tCopy0,
+            drainNanos = System.nanoTime() - tDrain0,
+        )
     }
 
     override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {

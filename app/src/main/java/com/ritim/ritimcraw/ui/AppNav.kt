@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -78,6 +79,7 @@ import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.ExportOpen
 import com.ritim.ritimcraw.export.ExportQueue
+import com.ritim.ritimcraw.export.ExportStageTiming
 import com.ritim.ritimcraw.export.ExportStore
 import com.ritim.ritimcraw.export.MediaPublish
 import com.ritim.ritimcraw.export.MediaStorePublisher
@@ -195,6 +197,16 @@ fun AppNav() {
             mp4 = Mp4Exporter(
                 lutPathFor = { id -> stores.luts.pathFor(id) },
                 gyroPathFor = { sourceId -> stores.gyros.pathFor(stores.sources.get(sourceId)?.gyroId) },
+                // Export stage timing (owner request 2026-11-13): one
+                // sample/average/summary line set per export under the
+                // app's export-diagnostics tag, DEBUG builds only — the
+                // release build never constructs the sink, so timing is
+                // fully off there (byte-identical output, zero cost).
+                stageLog = if (BuildConfig.DEBUG) {
+                    { line -> Log.i(ExportStageTiming.TAG, line) }
+                } else {
+                    null
+                },
             ),
             // RAW-11 Frame Picker: the photo arm — a picked frame developed
             // at full resolution into a PNG. Same LUT resolution as the MP4

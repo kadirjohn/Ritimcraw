@@ -37,6 +37,18 @@ object GlesShaderSources {
      * NOT applied (the harness applies the developLinear stage-5 tail on
      * the readback, isolating stage 4). No textures, no samplers, no
      * image units, no float framebuffers — GLES 3.1 core only.
+     *
+     * SSBO BINDING (audit fix 2026-11-13): GLSL ES 3.10 supports explicit
+     * layout(binding=N) on shader storage blocks — the ES-native
+     * mechanism, replacing the old glShaderStorageBlockBinding lookup
+     * (that function is desktop GL 4.2+ ONLY, not an ES command at all,
+     * so eglGetProcAddress could only ever return null on ES and the
+     * parity run stopped there). The blocks also declare std430
+     * explicitly: the C++ side assumes tightly packed scalar float
+     * arrays, and std430 guarantees exactly that packing (a plain
+     * `buffer` declaration would rely on the default). The C++ harness
+     * attaches the buffers to the SAME binding points with the core
+     * glBindBufferBase(…, 0, inBuf) / (…, 1, outBuf).
      */
     const val DEMOSAIC_COMPUTE: String = """#version 310 es
 
@@ -51,8 +63,12 @@ layout(local_size_x = 8, local_size_y = 8) in;
 uniform ivec2 uSize;   // CFA width/height in pixels
 uniform ivec4 uCell;   // layoutFor cell: (cell[0][0], cell[0][1], cell[1][0], cell[1][1])
 
-buffer InBuf { float cfa[]; };   // stage-1-normalized CFA, row-major, w*h
-buffer OutBuf { float rgb[]; };  // demosaiced scene-linear RGB, row-major, 3 per pixel
+// std430 = tightly packed scalar float arrays (what the C++ side assumes);
+// binding = the ES 3.10 explicit binding point, matched by the harness's
+// glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, inBuf) and (..., 1, outBuf).
+// readonly/writeonly state the access each side gets.
+layout(std430, binding = 0) readonly buffer InBuf { float cfa[]; };   // stage-1-normalized CFA, row-major, w*h
+layout(std430, binding = 1) writeonly buffer OutBuf { float rgb[]; };  // demosaiced scene-linear RGB, row-major, 3 per pixel
 
 // The CPU kernel's 8-neighborhood offsets, same order (kDx, kDy).
 const int kDx[8] = int[8](-1, 1, 0, 0, -1, -1, 1, 1);
