@@ -465,7 +465,7 @@ class GradeStoreTest {
         // ...and stabilization is off with its defaults.
         assertEquals(false, g.stabilization)
         assertEquals(0, g.stabilizationMode)
-        assertEquals(70f, g.stabilizationStrength, 0f)
+        assertEquals(50f, g.stabilizationStrength, 0f)
         assertEquals(1.1f, g.stabilizationZoomLimit, 0f)
         assertEquals(0f, g.stabilizationTrimMs, 0f)
         assertEquals(0f, g.stabilizationFocalMm, 0f)
@@ -510,7 +510,7 @@ class GradeStoreTest {
         val on = GradeStore.renderGrade(GradeK(stabilization = true))
         assertEquals(true, on.contains("\"stabilization\":true"))
         assertEquals(true, on.contains("\"stabilizationMode\":0"))
-        assertEquals(true, on.contains("\"stabilizationStrength\":70.0"))
+        assertEquals(true, on.contains("\"stabilizationStrength\":50.0"))
         assertEquals(true, on.contains("\"stabilizationZoomLimit\":1.1"))
         assertEquals(true, on.contains("\"stabilizationTrimMs\":0.0"))
         assertEquals(true, on.contains("\"stabilizationFocalMm\":0.0"))

@@ -3,11 +3,14 @@
 // CONTRACTS PINNED HERE (hand-derived; Stabilization.h documents them —
 // these doctests are the executable proof):
 //   - smoothOrientationSeries: strength 0 is EXACTLY the raw series
-//     (tau = 1 ns makes alpha = 1 - exp(-dt/1ns) = 1.0 to double
-//     precision on every real grid — both passes copy through); the
-//     strength clamps to [0, 1]; empty/one-sample/dt=0 edges stay
-//     total; strength 1 measurably damps a 1 Hz handheld wobble; the
-//     forward+reverse pair is time-symmetric, so a symmetric sweep
+//     (explicit pass-through since the 2026-11-12 audit fix; the
+//     pre-fix map reached it via tau = 1 ns, alpha = 1 at every real
+//     dt); the strength clamps to [0, 1]; empty/one-sample/dt=0 edges
+//     stay total; the redesigned tau map (tauMax·(tauMin/tauMax)^(1-s),
+//     tauMin = 1/60 s, tauMax = 1 s) makes the mid strengths smooth for
+//     real — 0.5 is tau ≈ 129 ms, a visibly corrected target on the
+//     frame grid; strength 1 measurably damps a 1 Hz handheld wobble;
+//     the forward+reverse pair is time-symmetric, so a symmetric sweep
 //     keeps its apex at the same sample (zero group delay).
 //   - relativeRotation: q_rel = conj(q_target) * q_actual maps
 //     ACTUAL-camera vectors into the TARGET frame, checked functionally
@@ -39,6 +42,8 @@
 //     intrinsics -> NoImu, no frames -> empty); LowOverlap flags
 //     frames outside the gyro span (finite H still); Smooth at the
 //     default strength on the 30 fps frame grid is a near no-op;
+//     Smooth at the default strength on the 30 fps frame grid is a
+//     real (visible) correction since the 2026-11-12 tau redesign;
 //     LockFirstFrame pins frame 0; HorizonLock levels a rolled
 //     camera and degrades to plain Smooth (flagged) without gravity;
 //     the zoom-limit clamp keeps requiredZoom honest.
@@ -143,10 +148,12 @@ std::vector<double> quatVec(const double q[4]) {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("smoothing: strength 0 is exactly the raw series") {
-    // tau(0) = 1 ns: alpha = 1 - exp(-dt/1ns) = 1.0 EXACTLY in double
-    // for every real dt (exp underflows to +0 below ~-745), so both
-    // passes copy the input through — the smoothed series IS the raw
-    // series up to the final re-normalization (last-bit level).
+    // Audit fix 2026-11-12: strength 0 is an EXPLICIT pass-through of
+    // the normalized copy — the same doctest pin as before the fix
+    // (the old map reached it via tau = 1 ns, alpha = 1 - exp(-dt/1ns)
+    // = 1.0 EXACTLY in double for every real dt; the redesigned
+    // tauMin = 1/60 s would leave a residue at 0, so the raw output is
+    // now explicit rather than a floating-point accident).
     const std::vector<double> angles = {0, 5, -3, 12, -8, 2, 0, -1, 7, -4};
     const OrientationSeries raw = seriesFromAngles(angles, 1000, 2114165, 2);
     const OrientationSeries out = smoothOrientationSeries(raw, 0.0);
@@ -684,12 +691,14 @@ TEST_CASE("computeStabilization: LowOverlap flags frames outside the gyro span")
     CHECK(r.relativeAngleDeg[3] == doctest::Approx(30.0).epsilon(1e-9));
 }
 
-TEST_CASE("computeStabilization: Smooth strength 0.5 is a near no-op on the frame grid") {
-    // tau(0.5) = 31.6 us; the frame grid is 33.3 ms — alpha = 1
-    // EXACTLY in double (exp(-3ms/31.6us)... rather exp(-33333333/31623)
-    // = exp(-1054) underflows), so the smoothed target IS the actual:
-    // angles ~0, no crop needed. This pins the honest default: the
-    // slider's midpoint does not over-smooth a 30 fps clip.
+TEST_CASE("computeStabilization: Smooth strength 0.5 corrects for real on the frame grid") {
+    // Audit fix 2026-11-12: the redesigned tau map puts 0.5 at tau ≈
+    // 129 ms; the frame grid is 33.3 ms, so alpha ≈ 0.23 per interval —
+    // the two-pass response measurably separates the smoothed target
+    // from the actual on a 0.5 Hz wobble. The OLD map put 0.5 at
+    // tau = 31.6 µs (a near no-op, exp underflow) — the pin this test
+    // replaces. The new pin: the midpoint is a REAL correction, and
+    // the crop it needs stays modest (the honest default).
     const int n = 90; // 3 s at 30 fps
     std::vector<double> angles(n);
     for (int i = 0; i < n; ++i)
@@ -709,15 +718,18 @@ TEST_CASE("computeStabilization: Smooth strength 0.5 is a near no-op on the fram
         maxAngle = std::fmax(maxAngle, a);
     MESSAGE("smooth-0.5 on frame grid: maxAngle=" << maxAngle
             << " requiredZoom=" << r.requiredZoom);
-    CHECK(maxAngle < 1e-9);
-    CHECK(r.requiredZoom < 1.0001);
+    CHECK(maxAngle > 0.05);  // the target really moved relative to actual
+    CHECK(maxAngle < 10.0);  // ...but never diverges absurdly
+    CHECK(r.requiredZoom > 1.0);
+    CHECK(r.requiredZoom < 1.5);
     CHECK(r.appliedZoom == r.requiredZoom);
     for (const auto& f : r.frames)
         CHECK(f.status == StabilizationStatus::Ok);
 }
 
 TEST_CASE("computeStabilization: Smooth strength 0.95 stabilizes for real") {
-    // tau(0.95) = 0.355 s over a 3 s 0.5 Hz sweep: the target lags the
+    // tau(0.95) ≈ 0.815 s (the redesigned map; the pre-2026-11-12 map
+    // put it at 0.355 s) over a 3 s 0.5 Hz sweep: the target lags the
     // actual motion, so q_rel is non-trivial and the crop engages.
     const int n = 90;
     std::vector<double> angles(n);
@@ -1116,16 +1128,46 @@ TEST_CASE("fixture evidence: 261110_004150 stabilization numbers") {
     par.width = p.width;
     par.height = p.height;
 
-    // Smooth 0.5 on the frame grid: alpha = 1 exactly -> near no-op.
+    // The audit fix 2026-11-12 strength sweep: the same real pipeline at
+    // 0.3/0.5/0.7/0.9/1.0. The numbers are the deliverable — quoted per
+    // strength, pinned within honest bounds. The old map measured 0.00
+    // deg at 0.70 here; the redesigned map must make EVERY mid strength
+    // a visible correction, and 1.0 stays near the strongest.
     par.mode = StabilizationMode::Smooth;
+    static const double kSweep[] = {0.3, 0.5, 0.7, 0.9, 1.0};
+    double prevAngle = -1.0;
+    for (double s : kSweep) {
+        par.strength = s;
+        StabilizationResult rs = computeStabilization(p.orientation, p.sync,
+                                                      p.frameTs, p.gravityCamera,
+                                                      true, true, par);
+        MESSAGE("004150 smooth-" << s << ": maxAngle=" << stMaxAngle(rs)
+                << " requiredZoom=" << rs.requiredZoom
+                << " appliedZoom=" << rs.appliedZoom);
+        CHECK(stMaxAngle(rs) > 0.05);  // visible correction at every strength
+        CHECK(stMaxAngle(rs) < 10.0);  // ...but never diverges absurdly
+        CHECK(rs.requiredZoom > 1.0);
+        CHECK(rs.requiredZoom < 1.5);
+        CHECK(rs.appliedZoom == std::fmin(rs.requiredZoom, par.zoomLimit));
+        // Monotone: stronger smooths at least as much (the sweep's
+        // ordering contract; 1.0 is near the strongest).
+        if (prevAngle >= 0.0)
+            CHECK(stMaxAngle(rs) >= prevAngle - 1e-9);
+        prevAngle = stMaxAngle(rs);
+    }
+    CHECK(prevAngle > 0.05); // the strongest strength corrected for real
+
+    // Smooth 0.5 (the new default): the visible midpoint — pinned tight.
     par.strength = 0.5;
     StabilizationResult r = computeStabilization(p.orientation, p.sync,
                                                  p.frameTs, p.gravityCamera,
                                                  true, true, par);
     MESSAGE("004150 smooth-0.5: maxAngle=" << stMaxAngle(r)
             << " requiredZoom=" << r.requiredZoom);
-    CHECK(stMaxAngle(r) < 1e-6);
-    CHECK(r.requiredZoom < 1.0001);
+    CHECK(stMaxAngle(r) > 0.05);
+    CHECK(stMaxAngle(r) < 10.0);
+    CHECK(r.requiredZoom > 1.0);
+    CHECK(r.requiredZoom < 1.5);
     CHECK(r.intrinsicsAssumed);
     for (const auto& fr : r.frames)
         CHECK(fr.status == StabilizationStatus::IntrinsicsAssumed);
@@ -1204,15 +1246,39 @@ TEST_CASE("fixture evidence: 261110_004208 stabilization numbers") {
     par.width = p.width;
     par.height = p.height;
 
+    // The audit fix 2026-11-12 strength sweep (same contract as 004150:
+    // every mid strength a visible correction, monotone up to 1.0).
     par.mode = StabilizationMode::Smooth;
+    static const double kSweep[] = {0.3, 0.5, 0.7, 0.9, 1.0};
+    double prevAngle = -1.0;
+    for (double s : kSweep) {
+        par.strength = s;
+        StabilizationResult rs = computeStabilization(p.orientation, p.sync,
+                                                      p.frameTs, p.gravityCamera,
+                                                      true, true, par);
+        MESSAGE("004208 smooth-" << s << ": maxAngle=" << stMaxAngle(rs)
+                << " requiredZoom=" << rs.requiredZoom
+                << " appliedZoom=" << rs.appliedZoom);
+        CHECK(stMaxAngle(rs) > 0.05);
+        CHECK(stMaxAngle(rs) < 10.0);
+        CHECK(rs.requiredZoom > 1.0);
+        CHECK(rs.requiredZoom < 1.5);
+        CHECK(rs.appliedZoom == std::fmin(rs.requiredZoom, par.zoomLimit));
+        if (prevAngle >= 0.0)
+            CHECK(stMaxAngle(rs) >= prevAngle - 1e-9);
+        prevAngle = stMaxAngle(rs);
+    }
+
     par.strength = 0.5;
     StabilizationResult r = computeStabilization(p.orientation, p.sync,
                                                  p.frameTs, p.gravityCamera,
                                                  true, true, par);
     MESSAGE("004208 smooth-0.5: maxAngle=" << stMaxAngle(r)
             << " requiredZoom=" << r.requiredZoom);
-    CHECK(stMaxAngle(r) < 1e-6);
-    CHECK(r.requiredZoom < 1.0001);
+    CHECK(stMaxAngle(r) > 0.05);
+    CHECK(stMaxAngle(r) < 10.0);
+    CHECK(r.requiredZoom > 1.0);
+    CHECK(r.requiredZoom < 1.5);
 
     par.strength = 0.95;
     r = computeStabilization(p.orientation, p.sync, p.frameTs, p.gravityCamera,

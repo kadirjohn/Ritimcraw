@@ -358,7 +358,7 @@ TEST_CASE("fixture evidence: 261110_004150 warp through the real pipeline") {
         REQUIRE(developed.h > 0);
         StabilizationParams par;
         par.mode = StabilizationMode::Smooth;
-        par.strength = 0.7; // the documented default: tau ≈ 2 ms
+        par.strength = 0.5; // the documented default (audit fix 2026-11-12): tau ≈ 129 ms
         par.zoomLimit = 1.1;
         // The plan is computed at the warped buffer's dims (the binding
         // placement decision): focal px from the 35mm-equivalent

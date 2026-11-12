@@ -296,7 +296,7 @@ class ExportStore(private val file: File) {
                 // preserved exactly.
                 stabilization = m["stabilization"] as? Boolean ?: false,
                 stabilizationMode = (m["stabilizationMode"] as? Double)?.toInt() ?: 0,
-                stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 70f,
+                stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 50f,
                 stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
                 stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                 stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,

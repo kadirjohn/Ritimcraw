@@ -2969,7 +2969,7 @@ private fun DetailPanel(
                         }
                     }
                 }
-                // Strength 0..100 (default 70): the smoothing amount.
+                // Strength 0..100 (default 50, audit fix 2026-11-12): the smoothing amount.
                 GradeSlider(
                     label = stringResource(R.string.editor_slider_stabilization_strength),
                     value = grade.stabilizationStrength,
