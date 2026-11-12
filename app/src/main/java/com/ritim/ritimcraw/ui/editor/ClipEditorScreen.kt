@@ -70,6 +70,7 @@ import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.GradePreset
 import com.ritim.ritimcraw.data.LutInfo
+import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
@@ -707,6 +708,17 @@ fun ClipEditorScreen(
 
         // ---- Preview + transport bookkeeping (all keyed to the clip) ----
         var frame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
+        // RAW-09: the UNCROPPED effective-upright dims (container dims
+        // turned by the manual rotation). The publish fold sets `frame`
+        // to the CROPPED buffer, so its dims shrink once a crop is
+        // active — the aspect presets must math against THIS pair or
+        // "16:9" would be computed off the already-cropped rect. Set in
+        // the publish onSuccess BEFORE the crop fold; 0x0 before the
+        // first publish (CropState.aspectRect guards to the full rect,
+        // the documented degradation).
+        var effectiveDims by remember(sourceId) {
+            mutableStateOf(RotationState.Dims(0, 0))
+        }
         // The index of the frame LAST PUBLISHED by the render pump
         // (feature N6): the pump's publish swaps `frame` and this
         // index together, so the scope compute's RAW fetch asks for
@@ -1272,6 +1284,14 @@ fun ClipEditorScreen(
                     if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
                         result.fold(
                             onSuccess = { f ->
+                                // The uncropped effective dims, captured
+                                // BEFORE the crop fold (see the state
+                                // declaration): the aspect presets math
+                                // against this pair, never the cropped
+                                // `frame` dims.
+                                effectiveDims = RotationState.rotatedDims(
+                                    f.width, f.height, manualRotationDeg,
+                                )
                                 // Crop + straighten (RAW-09): the
                                 // published preview is the GRADED frame
                                 // cut to the crop rect, in the same
@@ -2357,6 +2377,19 @@ fun ClipEditorScreen(
                     gyroImportError = gyroImportError,
                     onAttachGyro = { gyroPicker.launch(arrayOf("*/*")) },
                     onRemoveGyro = onRemoveGyro,
+                    // ---- Crop + straighten wiring (RAW-09) ----
+                    // The UNCROPPED effective dims from the publish fold:
+                    // presets and honest W/H ranges math against this
+                    // pair, never the cropped `frame` dims.
+                    cropFrameW = effectiveDims.width,
+                    cropFrameH = effectiveDims.height,
+                    // The aspect choice and the group reset are not
+                    // drags: they settle IMMEDIATELY at the full tier,
+                    // like the tonemap choice — discrete history steps
+                    // (null cause, feature N7).
+                    onCropEdit = { g ->
+                        applyGradeEdit(g)
+                    },
                 )
             }
         }
@@ -2964,7 +2997,7 @@ private fun ColorPanel(
  * the used transform version travels with the saved grade (COL-16's
  * versioning requirement at this package's scope).
  *
- * The LUT section (COL-07) closes the tab: the imported cube library as
+ * The LUT section (COL-07): the imported cube library as
  * radio rows (None + one per imported cube), an Import button, the Strength
  * slider under the selected cube and a Remove action. Selection and
  * Strength are grade edits (onLutSelect, the immediate settle path like
@@ -2982,6 +3015,16 @@ private fun ColorPanel(
  * sliders, the sync status line with the gyro attach/remove actions, the
  * ±500 ms sync trim and the focal-length control — the honest no-data
  * state when no .gcsv is attached, never a fabricated verdict.
+ * Crop + straighten (RAW-09) closes the tab: the Aspect choice (Free /
+ * 16:9 / 9:16 / 4:3 / 1:1 — a preset replaces the rect with the largest
+ * centered on-ratio rect, FREE keeps it), the Straighten dial (±15°,
+ * half-degree ticks, edge-preserving auto zoom), the four rect sliders
+ * (Left/Top translate, Width/Height resize — under a preset the
+ * perpendicular axis follows through the lock chain, position giving way
+ * before the ratio), and the group reset. All rect math runs through the
+ * pure SliderSteps.applyCropAxis against the UNCROPPED effective dims
+ * ([cropFrameW]/[cropFrameH] from the publish fold), so the panel and
+ * the render pump can never disagree about which region is selected.
  */
 @Composable
 private fun DetailPanel(
@@ -3014,6 +3057,17 @@ private fun DetailPanel(
     gyroImportError: String? = null,
     onAttachGyro: () -> Unit = {},
     onRemoveGyro: () -> Unit = {},
+    // ---- Crop + straighten group (RAW-09) ----
+    // The UNCROPPED effective-upright dims (the publish fold's capture):
+    // aspect presets and the honest W/H slider ranges math against this
+    // pair. 0x0 before the first publish — CropState guards to the full
+    // rect, the documented degradation.
+    cropFrameW: Int = 0,
+    cropFrameH: Int = 0,
+    // Aspect choice and the group reset are discrete edits (like the
+    // tonemap choice): they settle IMMEDIATELY at the full tier and record
+    // as their own undo step, never coalesced into a slider gesture.
+    onCropEdit: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -3486,6 +3540,212 @@ private fun DetailPanel(
                 )
             }
         }
+        // ---- Crop + straighten group (RAW-09) ----
+        // The group closes the tab. The aspect choice and the group reset
+        // are DISCRETE edits ([onCropEdit]: immediate full-tier settle,
+        // their own undo step — the tonemap precedent); the five sliders
+        // below are drags ([onChange] + [onDragActiveChange]) like every
+        // other slider. All rect math runs through SliderSteps.applyCropAxis
+        // (the pure chain: snap, clamp, lock) against the UNCROPPED
+        // effective dims, so the panel and the render pump can never
+        // disagree about which region is selected.
+        Text(
+            stringResource(R.string.editor_crop),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        // Aspect: one choice row (Free / 16:9 / 9:16 / 4:3 / 1:1). A preset
+        // REPLACES the rect with the largest centered on-ratio rect
+        // (CropState.aspectRect); FREE keeps the rect as it is.
+        Text(
+            stringResource(R.string.editor_crop_aspect),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            val aspects = listOf(
+                CropAspectOption(R.string.editor_crop_aspect_free, CropState.ASPECT_FREE),
+                CropAspectOption(R.string.editor_crop_aspect_16_9, CropState.ASPECT_16_9),
+                CropAspectOption(R.string.editor_crop_aspect_9_16, CropState.ASPECT_9_16),
+                CropAspectOption(R.string.editor_crop_aspect_4_3, CropState.ASPECT_4_3),
+                CropAspectOption(R.string.editor_crop_aspect_1_1, CropState.ASPECT_1_1),
+            )
+            aspects.forEachIndexed { index, option ->
+                SegmentedButton(
+                    selected = grade.cropAspect == option.value,
+                    onClick = {
+                        if (option.value == CropState.ASPECT_FREE) {
+                            onCropEdit(grade.copy(cropAspect = option.value))
+                        } else {
+                            val rect = CropState.aspectRect(
+                                CropState.aspectRatio(option.value)!!,
+                                cropFrameW,
+                                cropFrameH,
+                            )
+                            onCropEdit(
+                                grade.copy(
+                                    cropAspect = option.value,
+                                    cropX = rect.x,
+                                    cropY = rect.y,
+                                    cropW = rect.w,
+                                    cropH = rect.h,
+                                )
+                            )
+                        }
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = aspects.size,
+                    ),
+                ) {
+                    Text(stringResource(option.labelRes))
+                }
+            }
+        }
+        // Straighten ±15° (half-degree ticks): the small-angle horizon
+        // correction with the edge-preserving auto zoom (CropState's
+        // sampler). A drag; the double-tap reset is a discrete step.
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_straighten),
+            value = grade.straightenDeg.coerceIn(
+                -CropState.STRAIGHTEN_MAX_DEG, CropState.STRAIGHTEN_MAX_DEG,
+            ),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.STRAIGHTEN, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.STRAIGHTEN_STEP_DEG,
+            valueLabel = Format.formatDeg(grade.straightenDeg),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.STRAIGHTEN, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.STRAIGHTEN, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        // The four rect sliders, each with its honest range (the thumb
+        // never offers a position the applyCropAxis policy would clamp
+        // away — X/Y translate up to the opposite edge, W/H grow up to
+        // the preset's own extent). The displayed value is coerced into
+        // that range: a stale stored grade (hand-edited JSON) or the
+        // 0x0-dims degradation can hold an out-of-range value, and a
+        // M3 Slider with value outside valueRange would throw.
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_crop_left),
+            value = grade.cropX.coerceIn(
+                0f, (1f - grade.cropW).coerceAtLeast(0f),
+            ),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.CROP_X, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.CROP_FRACTION_STEP,
+            valueLabel = Format.formatFractionPercent(grade.cropX),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.CROP_X, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.CROP_X, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_crop_top),
+            value = grade.cropY.coerceIn(
+                0f, (1f - grade.cropH).coerceAtLeast(0f),
+            ),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.CROP_Y, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.CROP_FRACTION_STEP,
+            valueLabel = Format.formatFractionPercent(grade.cropY),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.CROP_Y, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.CROP_Y, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_crop_width),
+            value = grade.cropW.coerceIn(CropState.MIN_FRACTION, 1f),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.CROP_W, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.CROP_FRACTION_STEP,
+            valueLabel = Format.formatFractionPercent(grade.cropW),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.CROP_W, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.CROP_W, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_crop_height),
+            value = grade.cropH.coerceIn(CropState.MIN_FRACTION, 1f),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.CROP_H, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.CROP_FRACTION_STEP,
+            valueLabel = Format.formatFractionPercent(grade.cropH),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.CROP_H, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.CROP_H, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        // The group reset: the full rect, FREE aspect, zero straighten —
+        // one discrete edit, its own undo step (GradeK's neutral crop
+        // group; the DNG export dims return to the source orientation).
+        FilledTonalButton(
+            onClick = {
+                onCropEdit(
+                    grade.copy(
+                        cropAspect = GradeK().cropAspect,
+                        cropX = GradeK().cropX,
+                        cropY = GradeK().cropY,
+                        cropW = GradeK().cropW,
+                        cropH = GradeK().cropH,
+                        straightenDeg = GradeK().straightenDeg,
+                    )
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.editor_crop_reset))
+        }
     }
 }
 
@@ -3500,6 +3760,15 @@ private data class TonemapOption(
  * the GradeK mode int (0 Smooth, 1 Lock First Frame, 2 Horizon Lock).
  */
 private data class StabModeOption(
+    val labelRes: Int,
+    val value: Int,
+)
+
+/**
+ * One aspect preset segmented-button entry (RAW-09): label + the GradeK
+ * aspect int (0 Free, 1 16:9, 2 9:16, 3 4:3, 4 1:1 — CropState.ASPECT_*).
+ */
+private data class CropAspectOption(
     val labelRes: Int,
     val value: Int,
 )

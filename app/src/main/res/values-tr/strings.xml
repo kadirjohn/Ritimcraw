@@ -95,6 +95,20 @@
     <string name="editor_stabilization_focal_from_container">Konteynerden: %1$s</string>
     <string name="editor_stabilization_intrinsics_assumed">İç parametreler varsayıldı</string>
     <string name="editor_stabilization_gyro_name">Jiro: %1$s</string>
+    <!-- RAW-09: crop + straighten group in the Detail tab. -->
+    <string name="editor_crop">Kırpma</string>
+    <string name="editor_crop_reset">Kırpma sıfırla</string>
+    <string name="editor_crop_aspect">En boy oranı</string>
+    <string name="editor_crop_aspect_free">Serbest</string>
+    <string name="editor_crop_aspect_16_9">16:9</string>
+    <string name="editor_crop_aspect_9_16">9:16</string>
+    <string name="editor_crop_aspect_4_3">4:3</string>
+    <string name="editor_crop_aspect_1_1">1:1</string>
+    <string name="editor_slider_straighten">Döndür</string>
+    <string name="editor_slider_crop_left">Sol</string>
+    <string name="editor_slider_crop_top">Üst</string>
+    <string name="editor_slider_crop_width">Genişlik</string>
+    <string name="editor_slider_crop_height">Yükseklik</string>
     <string name="editor_render_preview">Önizlemeyi oluştur</string>
     <string name="editor_refresh_preview">Önizlemeyi yenile</string>
     <string name="editor_refresh_preview_state">Önizleme: %1$s</string>

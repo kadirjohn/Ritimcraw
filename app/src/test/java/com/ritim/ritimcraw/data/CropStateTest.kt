@@ -69,6 +69,49 @@ class CropStateTest {
         assertEquals(0.5f, r.h, 1e-6f)
     }
 
+    @Test
+    fun `lockAspect shifts position instead of breaking the ratio at the bottom edge`() {
+        // 9:16 preset on a 1920x1080 frame, width full: the derived
+        // height is 3 * 16/9 > 1 — the cap branch runs (full height,
+        // derived width). But a rect low in the frame with a derived
+        // height that overflows the BOTTOM must slide up, not shrink:
+        // y = 0.8 with h = 0.3 would end at 1.1 — the shift pins y at
+        // 1 - h = 0.7 with the ratio intact.
+        val r = CropState.lockAspect(
+            CropState.RectF(0.3f, 0.8f, 0.5f, 0.2f),
+            CropState.ASPECT_16_9, 1920, 1080,
+        )
+        // h = w * frameRatio / ratio = 0.5 * (16/9)/(16/9) = 0.5.
+        assertEquals(0.5f, r.h, 1e-6f)
+        assertEquals(0.5f, r.w, 1e-6f)
+        // The shift: y gives way so the rect stays inside the frame.
+        assertEquals(0.5f, r.y, 1e-6f)
+        assertEquals(0.3f, r.x, 1e-6f)
+    }
+
+    @Test
+    fun `lockAspectHeight derives width from height and shifts at the right edge`() {
+        // The height-axis twin: 16:9 on 1920x1080, height dragged to
+        // half the frame -> pixel h = 540, ratio 16/9 -> pixel w = 960
+        // = half the frame width.
+        val r = CropState.lockAspectHeight(
+            CropState.RectF(0.25f, 0.25f, 0.9f, 0.5f),
+            CropState.ASPECT_16_9, 1920, 1080,
+        )
+        assertEquals(0.5f, r.h, 1e-6f)
+        assertEquals(0.5f, r.w, 1e-6f)
+        // A derived width that overflows the right edge at the current
+        // x shifts the rect LEFT, position giving way before the ratio:
+        // x = 0.8, w = 0.5 would end at 1.3 — the shift pins x at 0.5.
+        val shifted = CropState.lockAspectHeight(
+            CropState.RectF(0.8f, 0.2f, 0.1f, 0.5f),
+            CropState.ASPECT_16_9, 1920, 1080,
+        )
+        assertEquals(0.5f, shifted.w, 1e-6f)
+        assertEquals(0.5f, shifted.x, 1e-6f)
+        assertEquals(0.2f, shifted.y, 1e-6f)
+    }
+
     // ---- clamping ----
 
     @Test

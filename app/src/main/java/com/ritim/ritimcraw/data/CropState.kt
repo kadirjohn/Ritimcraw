@@ -53,6 +53,13 @@ object CropState {
     const val FRACTION_STEP = 0.01f
 
     /**
+     * The 5 percent floor clampRect enforces per axis: the UI's slider
+     * ranges and the lock chain must agree with it, so it is a public
+     * constant, not a buried local.
+     */
+    const val MIN_FRACTION = 0.05f
+
+    /**
      * Auto-zoom ceiling: a crop rect hugging the frame edge needs an
      * unbounded zoom for any nonzero angle (its rotated corner leaves
      * the frame immediately). The zoom clamps here and the sampler's
@@ -131,24 +138,56 @@ object CropState {
     }
 
     /**
-     * Keeps a rect on its preset's ratio after a slider moved one
-     * axis: height follows width (both converted through the frame's
-     * own aspect, since the rect lives in fraction space). FREE
-     * returns the rect clamped only.
+     * Keeps a rect on its preset's ratio after a slider moved the WIDTH
+     * axis: height follows width (both converted through the frame's own
+     * aspect, since the rect lives in fraction space). The derived height
+     * may overflow the bottom edge at the current y — the rect SHIFTS UP
+     * (position gives way, never the ratio), then clamps. FREE returns the
+     * rect clamped only.
      */
     fun lockAspect(rect: RectF, preset: Int, frameW: Int, frameH: Int): RectF {
         val ratio = aspectRatio(preset) ?: return clampRect(rect)
         if (frameW <= 0 || frameH <= 0) return clampRect(rect)
         val frameRatio = frameW.toFloat() / frameH.toFloat()
         // pixel aspect = (rect.w * frameW) / (rect.h * frameH) == ratio
-        var h = rect.w * frameRatio / ratio
+        val h = rect.w * frameRatio / ratio
         if (h > 1f) {
             // Width cannot cover a height over the frame: cap at the
             // full height and derive the width that keeps the ratio.
             val w = ratio / frameRatio
-            return clampRect(RectF(rect.x, rect.y, w, 1f))
+            return clampRect(RectF(min(rect.x, 1f - w), 0f, w, 1f))
         }
-        return clampRect(RectF(rect.x, rect.y, rect.w, h))
+        // Position gives way before the ratio: a derived height that
+        // would overflow the bottom edge slides the rect up, a width
+        // past the right edge slides it left — never a silent shrink
+        // that breaks the preset.
+        return clampRect(
+            RectF(min(rect.x, 1f - rect.w), min(rect.y, 1f - h), rect.w, h)
+        )
+    }
+
+    /**
+     * The height-axis twin of [lockAspect] (RAW-09): after the HEIGHT
+     * slider moved, width follows height — w = h * ratio / frameRatio —
+     * and a width that overflows the right edge at the current x SHIFTS
+     * the rect LEFT, position giving way before the ratio does. FREE and
+     * unknown-frame callers get the rect clamped only.
+     */
+    fun lockAspectHeight(rect: RectF, preset: Int, frameW: Int, frameH: Int): RectF {
+        val ratio = aspectRatio(preset) ?: return clampRect(rect)
+        if (frameW <= 0 || frameH <= 0) return clampRect(rect)
+        val frameRatio = frameW.toFloat() / frameH.toFloat()
+        // pixel aspect = (rect.w * frameW) / (rect.h * frameH) == ratio
+        val w = rect.h * ratio / frameRatio
+        if (w > 1f) {
+            // Height cannot cover a width over the frame: cap at the
+            // full width and derive the height that keeps the ratio.
+            val h = frameRatio / ratio
+            return clampRect(RectF(0f, min(rect.y, 1f - h), 1f, h))
+        }
+        return clampRect(
+            RectF(min(rect.x, 1f - w), min(rect.y, 1f - rect.h), w, rect.h)
+        )
     }
 
     /**

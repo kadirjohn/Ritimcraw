@@ -673,4 +673,24 @@ class FormatTest {
         assertEquals("23.5 mm", Format.formatMm(23.5f))
         assertEquals("24.0 mm", Format.formatMm(24f))
     }
+
+    // ---- formatDeg / formatFractionPercent (RAW-09: crop group readouts) ----
+
+    @Test
+    fun deg_explicit_sign_one_decimal() {
+        // The ±15° dial with 0 as the default: the sign keeps the width
+        // stable across the range, exactly the formatEv situation.
+        assertEquals("+3.5°", Format.formatDeg(3.5f))
+        assertEquals("-2.0°", Format.formatDeg(-2f))
+        assertEquals("+0.0°", Format.formatDeg(0f))
+    }
+
+    @Test
+    fun fraction_percent_rounds_not_truncates() {
+        // A value on the 1 percent grid never displays one off: 0.29f
+        // as a float is 0.28999999, a truncating Int cast would say 28.
+        assertEquals("29%", Format.formatFractionPercent(0.29f))
+        assertEquals("100%", Format.formatFractionPercent(1f))
+        assertEquals("5%", Format.formatFractionPercent(0.05f))
+    }
 }
