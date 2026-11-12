@@ -27,6 +27,8 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.contentColorFor
 import androidx.compose.runtime.Composable
@@ -118,6 +120,74 @@ fun EditorBottomNav(
             label = { Text(stringResource(R.string.editor_tab_color)) },
         )
         NavigationBarItem(
+            selected = selected == 2,
+            onClick = { onCategoryTap(2) },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_editor_nav_detail),
+                    contentDescription = null,
+                )
+            },
+            label = { Text(stringResource(R.string.editor_tab_detail)) },
+        )
+    }
+}
+
+/**
+ * The landscape category rail (owner layout-refactor spec 2026-11-12
+ * section 5): the SAME three categories, icons, labels, selected state
+ * and callback contract as [EditorBottomNav] — moved to a compact
+ * vertical rail on the editor's FAR RIGHT edge in the two-column
+ * workspace, so landscape stops spending the bottom bar's 80dp of
+ * vertical space on navigation. The bottom bar stays for portrait
+ * (section 5 keeps it there); BOTH read the same shared category Int,
+ * so the selection survives every rotation and never forks.
+ *
+ * Stock M3 [NavigationRail]/[NavigationRailItem] (DESIGN.md: stock
+ * components, color roles): the items stack the compact label under the
+ * icon (readable, not truncated), the selected item carries the rail's
+ * own pill+indicator treatment, and each item's touch target meets the
+ * 48dp minimum. windowInsets are ZEROED for the same reason as
+ * [EditorBottomNav]: AppNav's Scaffold already applies the system bar
+ * insets around the editor, so the default rail insets would double-pad
+ * the right edge. The rail fills the height it is given (the screen's
+ * Row column) and centers its items top-aligned per the M3 convention —
+ * the screen constrains the WIDTH from [OrientationLayout.railWidthDp],
+ * never a hardcoded dp.
+ */
+@Composable
+fun EditorCategoryRail(
+    selected: Int,
+    onCategoryTap: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    NavigationRail(
+        modifier = modifier,
+        windowInsets = WindowInsets(0, 0, 0, 0),
+    ) {
+        NavigationRailItem(
+            selected = selected == 0,
+            onClick = { onCategoryTap(0) },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_editor_nav_light),
+                    contentDescription = null,
+                )
+            },
+            label = { Text(stringResource(R.string.editor_tab_light)) },
+        )
+        NavigationRailItem(
+            selected = selected == 1,
+            onClick = { onCategoryTap(1) },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_editor_nav_color),
+                    contentDescription = null,
+                )
+            },
+            label = { Text(stringResource(R.string.editor_tab_color)) },
+        )
+        NavigationRailItem(
             selected = selected == 2,
             onClick = { onCategoryTap(2) },
             icon = {

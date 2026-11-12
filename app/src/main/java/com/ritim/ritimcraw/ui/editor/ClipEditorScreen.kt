@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -2596,17 +2597,20 @@ fun ClipEditorScreen(
                 )
             }
             // ---- Workspace branch (owner request 2026-11-11d sections 11
-            // vs 17.1-17.2) ----
+            // vs 17.1-17.2, category rail owner layout-refactor spec
+            // 2026-11-12 section 5) ----
             // Portrait — and every fullscreen (section 16), whatever the
             // orientation — keeps the single column: the flexing preview
             // over the transport, the draggable sheet below (section 11).
             // Landscape two-column: the preview + transport stack in the
             // LEFT column (section 17.2: the transport sits under the
-            // preview), the adjustment panel becomes the full-height RIGHT
+            // preview), the adjustment panel becomes the full-height middle
             // column (section 17.1's responsive 30-40% band, independently
-            // scrollable), and the Light/Color/Detail navigation stays the
-            // FULL-WIDTH bottom row in both layouts — a bottom navigation,
-            // never a landscape side rail (section 17.1).
+            // scrollable), and the Light/Color/Detail navigation moves to
+            // the compact vertical FAR-RIGHT rail (layout-refactor spec
+            // section 5 — it REVERSES the old section 17.1 note: the
+            // bottom bar is portrait-only now, never a wide landscape
+            // bottom row). Both navs read the same shared `tab`.
             if (landscapeTwoColumn) {
                 Row(
                     Modifier
@@ -2671,6 +2675,38 @@ fun ClipEditorScreen(
                             panelRegion()
                         }
                     }
+                    // FAR-RIGHT column: the compact vertical category
+                    // rail (layout-refactor spec 2026-11-12 section 5 —
+                    // it REVERSES the old section 17.1 note that kept
+                    // the bottom bar in landscape). The rail is the
+                    // ONLY navigation in the two-column workspace, so
+                    // it composes in EVERY panel state — including
+                    // while the panel is hidden — exactly like the
+                    // portrait bar it replaces (navigation stays
+                    // reachable, section 10.1's contract carried into
+                    // landscape). A tap while the panel is hidden
+                    // reopens it: the landscape analog of section 10.3's
+                    // collapsed-tap rule (selecting a category reveals
+                    // the controls). The width is OrientationLayout's
+                    // measured band value — NEVER a hardcoded dp — and
+                    // it is a FIXED column, so the weighted preview and
+                    // panel columns to its left keep sharing the
+                    // remaining space in the same 60-70/30-40 band.
+                    EditorCategoryRail(
+                        selected = tab,
+                        onCategoryTap = { category ->
+                            tab = category
+                            panelVisible = true
+                        },
+                        modifier = Modifier
+                            .width(
+                                OrientationLayout.railWidthDp(
+                                    configuration.screenWidthDp,
+                                    configuration.screenHeightDp,
+                                ).dp,
+                            )
+                            .fillMaxHeight(),
+                    )
                 }
             } else {
                 previewRegion()
@@ -2728,8 +2764,20 @@ fun ClipEditorScreen(
             // moves on a category switch. The pure decisions live in
             // PanelSheet (panelAfterCategoryTap) and EditorPreviewLogic
             // nothing here re-derives. Hidden in fullscreen (owner
-            // request section 2).
-            if (!fullscreen) {
+            // request section 2). PORTRAIT-ONLY since the layout-refactor
+            // spec (2026-11-12 section 5): in the two-column workspace
+            // the same categories moved to the FAR-RIGHT vertical rail,
+            // and BOTH navs read this same shared `tab` (section 6) so
+            // the selection survives every rotation. navHeight goes
+            // stale in landscape (the bar leaves the composition, so
+            // onSizeChanged never fires there) — harmless: the ONLY
+            // consumer of navHeight is the portrait anchor math for the
+            // draggable sheet, which never composes in the two-column
+            // workspace. The retained value is already correct anyway:
+            // the M3 bar's height is a fixed token (80dp), so it does
+            // not depend on orientation, and the bar's onSizeChanged
+            // re-fires on re-entry into the composition.
+            if (!fullscreen && !landscapeTwoColumn) {
                 EditorBottomNav(
                     selected = tab,
                     onCategoryTap = { category ->
