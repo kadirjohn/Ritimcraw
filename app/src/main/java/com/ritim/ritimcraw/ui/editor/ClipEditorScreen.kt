@@ -40,8 +40,10 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -148,9 +150,9 @@ private class ScopeRateMeter {
  * panel segmentation plan), JVM-testable without Compose: the four
  * category indices the bottom navigation, the landscape rail and the
  * panel region dispatch all key on — ONE definition so the three can
- * never fork. The per-category sub-tab rules (Color's Balance/Wheels/
- * Look, Frame's Crop/Stabilize) extend this object in the follow-up
- * commits of the plan.
+ * never fork. The Color sub-tab rules (Balance/Wheels/Look) live here
+ * too; Frame's Crop/Stabilize pair extends this object in the follow-up
+ * commit of the plan.
  *
  * The panel's category Int is UI state, not data: the indices are the
  * nav's item order, and the panel region's `when (tab)` uses the same
@@ -183,6 +185,46 @@ object EditorCategories {
      * anything) validate through this instead of repeating the range.
      */
     fun isMainCategory(category: Int): Boolean = category in ALL
+
+    // ---- Color sub-tabs (plan: SecondaryTabRow, text-first) ----
+
+    /** Balance: WB (As Shot, temp, tint) + saturation. */
+    const val COLOR_BALANCE = 0
+
+    /** Wheels: the 3-band color wheel + split tone (MCRAW only). */
+    const val COLOR_WHEELS = 1
+
+    /** Look: Tone Mapping (+ AgX Look) and the LUT section. */
+    const val COLOR_LOOK = 2
+
+    /** The Color sub-tabs in row order; the SecondaryTabRow counts this. */
+    val COLOR_SUBTABS = listOf(COLOR_BALANCE, COLOR_WHEELS, COLOR_LOOK)
+
+    /**
+     * The Color sub-tabs that exist for THIS clip: Wheels is MCRAW-only
+     * (the showColorTools gate — the encoded path takes the same Grade
+     * but ignores the color-package fields, so the wheel would be dead
+     * controls), Balance and Look run on both clip kinds. The row
+     * composes from this list so the visible tabs are exactly the
+     * usable ones, and [sanitizeColorSubTab] keeps the saved selection
+     * inside it.
+     */
+    fun visibleColorSubTabs(showColorTools: Boolean): List<Int> =
+        if (showColorTools) COLOR_SUBTABS else listOf(COLOR_BALANCE, COLOR_LOOK)
+
+    /**
+     * The sub-tab a restored/persisted Color selection resolves to:
+     * itself when it is one of the visible sub-tabs, else the first
+     * visible one. A saveable Int can be anything after a version
+     * change (or a clip-kind switch that gates Wheels out from under a
+     * Wheels selection), and the row's selected index must stay a valid
+     * member of the visible list — never an IndexOutOfBounds, never a
+     * selected tab the row did not compose.
+     */
+    fun sanitizeColorSubTab(subTab: Int, showColorTools: Boolean): Int {
+        val visible = visibleColorSubTabs(showColorTools)
+        return if (subTab in visible) subTab else visible.first()
+    }
 }
 
 /**
@@ -617,6 +659,27 @@ fun ClipEditorScreen(
             EditorCategories.COLOR to colorScroll,
             EditorCategories.DETAIL to detailScroll,
             EditorCategories.FRAME to frameScroll,
+        )
+        // ---- Per-main-tab sub-tab state (2026-11-13 segmentation plan) ----
+        // Each main tab remembers its last sub-tab (plan: "each main tab
+        // remembers its last sub-tab, rememberSaveable, category-keyed"),
+        // and each sub-tab BODY gets its own scroll state — the
+        // per-category rule carried one level down: switching sub-tab
+        // restores that sub-tab's own offset, and switching back to the
+        // main tab later preserves it (panel close/open included — the
+        // states live at screen level, so the landscape panel-hide,
+        // which removes the sheet from composition entirely, keeps them
+        // too). Lived at SCREEN level, not inside the panels: only one
+        // panel composes at a time, so a rememberSaveable inside
+        // ColorPanel would reset on every main-tab switch.
+        var colorSubTab by rememberSaveable { mutableStateOf(EditorCategories.COLOR_BALANCE) }
+        val balanceScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val wheelsScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val lookScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val colorSubTabScrollStates = mapOf(
+            EditorCategories.COLOR_BALANCE to balanceScroll,
+            EditorCategories.COLOR_WHEELS to wheelsScroll,
+            EditorCategories.COLOR_LOOK to lookScroll,
         )
         val density = LocalDensity.current
         val scope = rememberCoroutineScope()
@@ -2429,6 +2492,27 @@ fun ClipEditorScreen(
             }
         }
 
+        // The scroll state of the body the panel is CURRENTLY showing
+        // (2026-11-13 segmentation plan): the main category's own state
+        // on a plain tab, or the ACTIVE SUB-TAB's state when the
+        // category has segments — only the selected body scrolls, so
+        // Balance/Wheels/Look each keep their own offset. Resolved HERE
+        // (not inside EditorPanelSheet) because both the landscape and
+        // the portrait call sites need it and the sanitizer needs the
+        // screen's showColorTools decision; the sheet stays
+        // segment-agnostic and just scrolls the state it is handed.
+        val activePanelScrollState =
+            if (tab == EditorCategories.COLOR) {
+                colorSubTabScrollStates.getValue(
+                    EditorCategories.sanitizeColorSubTab(
+                        colorSubTab,
+                        EditorPreviewLogic.showColorTools(sourcePath),
+                    ),
+                )
+            } else {
+                categoryScrollStates.getValue(tab)
+            }
+
         val panelRegion: @Composable () -> Unit = {
             when (tab) {
                 EditorCategories.LIGHT -> LightPanel(
@@ -2461,6 +2545,17 @@ fun ClipEditorScreen(
                 )
                 EditorCategories.COLOR -> ColorPanel(
                     grade = grade,
+                    // The sanitized saved sub-tab (plan: each main tab
+                    // remembers its last sub-tab): the pinned row and this
+                    // body read the same value, so they can never disagree
+                    // about which segment is open — and a Wheels selection
+                    // saved on an MCRAW clip falls back to Balance when the
+                    // same editor opens an encoded clip (the gate is pure,
+                    // JVM-tested in EditorCategoriesTest).
+                    subTab = EditorCategories.sanitizeColorSubTab(
+                        colorSubTab,
+                        EditorPreviewLogic.showColorTools(sourcePath),
+                    ),
                     // The CFA-stage toggles (Highlight Reconstruction, Keep
                     // Vignetting) exist only on the MCRAW path; encoded
                     // clips keep As Shot + every slider (pure decision in
@@ -2498,6 +2593,24 @@ fun ClipEditorScreen(
                     onReset = { g ->
                         applyGradeEdit(g)
                     },
+                    // ---- Look body wiring (COL-16/COL-07, moved from
+                    // DetailPanel with the routes untouched) ----
+                    lutEntries = lutEntries,
+                    lutImportError = lutImportError,
+                    onImportLut = { lutPicker.launch(arrayOf("*/*")) },
+                    onRemoveLut = onRemoveLut,
+                    onLutSelect = { g ->
+                        // A LUT selection is a discrete history step (null
+                        // cause, feature N7).
+                        applyGradeEdit(g)
+                    },
+                    onTonemapChange = { g ->
+                        // The tonemapping choice is not a drag: it settles
+                        // IMMEDIATELY at the full tier (GradeEdited with no
+                        // drag active), like the RAW toggles — a discrete
+                        // history step (null cause, feature N7).
+                        applyGradeEdit(g)
+                    },
                 )
                 EditorCategories.DETAIL -> DetailPanel(
                     grade = grade,
@@ -2518,30 +2631,9 @@ fun ClipEditorScreen(
                         )
                         if (!active) gradeHistory.settle()
                     },
-                    // The tonemapping choice is not a drag: it settles
-                    // IMMEDIATELY at the full tier (GradeEdited with no
-                    // drag active), like the RAW toggles — a discrete
-                    // history step (null cause, feature N7).
-                    onTonemapChange = { g ->
-                        applyGradeEdit(g)
-                    },
-                    // ---- LUT section wiring (COL-07) ----
-                    // Selection/Strength are grade edits like the
-                    // tonemap choice: not drags, so they settle
-                    // IMMEDIATELY at the full tier. The import picker
-                    // and the library rows are not grade edits at all.
-                    lutEntries = lutEntries,
-                    lutImportError = lutImportError,
-                    onImportLut = { lutPicker.launch(arrayOf("*/*")) },
-                    onRemoveLut = onRemoveLut,
-                    onLutSelect = { g ->
-                        // A LUT selection is a discrete history step (null
-                        // cause, feature N7).
-                        applyGradeEdit(g)
-                    },
                     // The Temporal NR switch is not a drag either: it
                     // settles IMMEDIATELY at the full tier, like the
-                    // RAW toggles and the tonemapping choice — a discrete
+                    // RAW toggles — a discrete
                     // history step (null cause, feature N7).
                     onToggleChange = { g ->
                         applyGradeEdit(g)
@@ -2576,7 +2668,7 @@ fun ClipEditorScreen(
                     cropFrameH = effectiveDims.height,
                     // The aspect choice and the group reset are not
                     // drags: they settle IMMEDIATELY at the full tier,
-                    // like the tonemap choice — discrete history steps
+                    // like the RAW toggles — discrete history steps
                     // (null cause, feature N7).
                     onCropEdit = { g ->
                         applyGradeEdit(g)
@@ -2718,14 +2810,13 @@ fun ClipEditorScreen(
                     // independently scrollable (section 17.2) — the same
                     // sheet composable in landscape mode: no drag handle
                     // (section 17.3 does not force the portrait's vertical
-                    // panel dragging here), the same per-category scroll
-                    // states, the same panel content. The header row
+                    // panel dragging here), the same resolved scroll state,
+                    // the same panel content. The header row
                     // carries section 17.3's hide affordance.
                     if (panelVisible) {
                         EditorPanelSheet(
                             dragState = panelDrag,
-                            category = tab,
-                            scrollStates = categoryScrollStates,
+                            scrollState = activePanelScrollState,
                             modifier = Modifier
                                 .weight(
                                     OrientationLayout.panelWidthFraction(
@@ -2743,6 +2834,24 @@ fun ClipEditorScreen(
                                         contentDescription = stringResource(R.string.editor_panel_hide),
                                     )
                                 }
+                            },
+                            // The Color tab's pinned sub-tab row (segmentation
+                            // plan): fixed at the panel top in the landscape
+                            // column too — the row is layout-agnostic, only
+                            // the sheet's own chrome differs.
+                            pinnedContent = if (tab == EditorCategories.COLOR) {
+                                {
+                                    ColorSubTabRow(
+                                        subTab = EditorCategories.sanitizeColorSubTab(
+                                            colorSubTab,
+                                            EditorPreviewLogic.showColorTools(sourcePath),
+                                        ),
+                                        showColorTools = EditorPreviewLogic.showColorTools(sourcePath),
+                                        onSubTabChange = { colorSubTab = it },
+                                    )
+                                }
+                            } else {
+                                null
                             },
                         ) {
                             panelRegion()
@@ -2807,8 +2916,7 @@ fun ClipEditorScreen(
             if (!fullscreen && !landscapeTwoColumn) {
                 EditorPanelSheet(
                     dragState = panelDrag,
-                    category = tab,
-                    scrollStates = categoryScrollStates,
+                    scrollState = activePanelScrollState,
                     // NaN guard: the offset is uninitialized until the
                     // first updateAnchors lands (getOffset returns NaN
                     // before then), so the first frame composes the
@@ -2823,6 +2931,28 @@ fun ClipEditorScreen(
                             if (panelDrag.anchors.size == 0) PanelCollapsedHeight
                             else with(density) { panelDrag.offset.toDp() },
                         ),
+                    // The Color tab's pinned sub-tab row (segmentation
+                    // plan): fixed at the panel top, above the scrolling
+                    // body — the row's natural height comes out of the
+                    // scroll region's share inside the sheet, NEVER out of
+                    // the panel's, so switching between main tabs with and
+                    // without a sub-tab row cannot move the panel height
+                    // (the stable-geometry invariant). Clipped away in the
+                    // collapsed strip together with the body below it.
+                    pinnedContent = if (tab == EditorCategories.COLOR) {
+                        {
+                            ColorSubTabRow(
+                                subTab = EditorCategories.sanitizeColorSubTab(
+                                    colorSubTab,
+                                    EditorPreviewLogic.showColorTools(sourcePath),
+                                ),
+                                showColorTools = EditorPreviewLogic.showColorTools(sourcePath),
+                                onSubTabChange = { colorSubTab = it },
+                            )
+                        }
+                    } else {
+                        null
+                    },
                 ) {
                     panelRegion()
                 }
@@ -3082,15 +3212,23 @@ private fun LightPanel(
 }
 
 /**
- * Color tab: white balance (As Shot reset + Temperature / Tint), the RAW
- * stage toggles, the color wheel + split tone section (COL-13), then
- * Saturation. Temperature and Tint moved here from the Light tab when
- * Saturation landed (spec COL-12: white balance and saturation are the
- * color controls; the Light tab is tone); the wheel/split section landed
- * between them and Saturation so the tab reads in native stage order
- * (temp 16, tint 17, wheel 18, split 19, saturation 20).
+ * Color tab (2026-11-13 editor panel segmentation plan): three sub-tab
+ * bodies — Balance (white balance: As Shot reset + Temperature / Tint +
+ * Saturation, with the CFA-stage toggles in an advanced RAW / Source
+ * section at the BOTTOM), Wheels (the color wheel + split tone section,
+ * COL-13), Look (Tone Mapping + LUT, moved from the Detail tab). The
+ * sub-tab ROW itself is NOT composed here: the screen supplies it through
+ * EditorPanelSheet's pinnedContent slot (plan: "sub-tab row fixed at
+ * panel top; only the selected body scrolls"), so this panel only renders
+ * the SELECTED body. [subTab] is the screen's saved selection, already
+ * sanitized through [EditorCategories.sanitizeColorSubTab] — the row and
+ * the body can never disagree about which segment is open.
  *
- * RAW-07/COL-09/RAW-04/RAW-06 semantics:
+ * Temperature and Tint landed here from the Light tab when Saturation
+ * arrived (spec COL-12: white balance and saturation are the color
+ * controls; the Light tab is tone).
+ *
+ * RAW-07/COL-09/RAW-04/RAW-06 semantics (unchanged by the regrouping):
  * - As Shot (reset action): tempK -> 5600, tint -> 0, asShot -> true. The
  *   manual values stay stored in tempK/tint whenever asShot is toggled off
  *   again, so nothing is ever lost.
@@ -3099,19 +3237,26 @@ private fun LightPanel(
  * - Highlight Reconstruction and Keep Vignetting are M3 Switch rows (48dp
  *   touch targets, DESIGN.md Inputs): they toggle native develop stages, not
  *   tone — the Highlights TONE slider stays independent (stage 13 vs stage 3).
- *   CFA-stage rows show only when [showRawStageToggles] is true (MCRAW);
- *   encoded (Mi-Log MP4) clips decode YUV with no CFA stage, so they get the
- *   same white balance + saturation controls without the two RAW toggles.
- * - The color wheel + split tone section ([ColorWheelSection]) shows only
- *   when [showColorTools] is true (MCRAW): the encoded path takes the same
- *   Grade but the bridge ignores the color-package fields there, so the
- *   section would be dead controls. The section's own contract (band tabs,
- *   disc colors = the stage-18 gain math, split hue on/off derived from
+ *   The plan moves them OUT of the main flow into the RAW / Source section
+ *   at the bottom of Balance: CFA is source-decode config, not a WB-family
+ *   control. CFA-stage rows still show only when [showRawStageToggles] is
+ *   true (MCRAW); encoded (Mi-Log MP4) clips decode YUV with no CFA stage,
+ *   so they get the same Balance body without the section.
+ * - The Wheels body shows only when [showColorTools] is true (MCRAW): the
+ *   encoded path takes the same Grade but the bridge ignores the
+ *   color-package fields there, so the wheel would be dead controls —
+ *   the screen's visibleColorSubTabs keeps the Wheels tab itself out of
+ *   the row on that path. The section's own contract (band tabs, disc
+ *   colors = the stage-18 gain math, split hue on/off derived from
  *   hue -1) is documented on [ColorWheelSection].
+ * - The Look body (Tone Mapping + LUT) is plain regrouping: the tonemap
+ *   choice, AgX look, LUT selection and LUT Strength keep the exact
+ *   semantics and settle paths they had in [DetailPanel] (COL-16/COL-07).
  */
 @Composable
 private fun ColorPanel(
     grade: GradeK,
+    subTab: Int,
     showRawStageToggles: Boolean,
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
@@ -3124,6 +3269,83 @@ private fun ColorPanel(
     // takes the same Grade but ignores the color-package fields, so the
     // section would be dead controls there.
     showColorTools: Boolean = false,
+    // ---- Look body: LUT section (COL-07), moved from DetailPanel ----
+    lutEntries: List<LutInfo> = emptyList(),
+    lutImportError: String? = null,
+    onImportLut: () -> Unit = {},
+    onRemoveLut: (LutInfo) -> Unit = {},
+    // LUT selection and the tonemap/AgX choices are grade edits on the
+    // DISCRETE settle path (immediate full tier, their own undo step) —
+    // the exact routes they had in DetailPanel.
+    onLutSelect: (GradeK) -> Unit = {},
+    onTonemapChange: (GradeK) -> Unit = {},
+) {
+    when (subTab) {
+        // Balance: the WB family (plan: "Balance: WB, temp, tint,
+        // saturation") plus the advanced RAW / Source section at the
+        // bottom (plan: CFA is source-decode config, not a WB-family
+        // control — moved out of the main flow).
+        EditorCategories.COLOR_BALANCE -> ColorBalanceBody(
+            grade = grade,
+            showRawStageToggles = showRawStageToggles,
+            onChange = onChange,
+            onDragActiveChange = onDragActiveChange,
+            onToggleChange = onToggleChange,
+            onReset = onReset,
+        )
+        // Wheels: the wheel + split tone section as its own body. The
+        // gate is double-armed (the row hides the tab on the encoded
+        // path AND the body guards) — the guard keeps the panel honest
+        // even if a stale saved sub-tab ever reached it unsanitized.
+        EditorCategories.COLOR_WHEELS -> if (showColorTools) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ColorWheelSection(
+                    grade = grade,
+                    onChange = onChange,
+                    onDragActiveChange = onDragActiveChange,
+                    onToggleChange = onToggleChange,
+                    onReset = onReset,
+                )
+            }
+        }
+        // Look: Tone Mapping (+ AgX Look) and the LUT section as two
+        // SEPARATE sections (plan) — both moved from DetailPanel with
+        // semantics untouched.
+        EditorCategories.COLOR_LOOK -> ColorLookBody(
+            grade = grade,
+            onChange = onChange,
+            onDragActiveChange = onDragActiveChange,
+            onTonemapChange = onTonemapChange,
+            onReset = onReset,
+            lutEntries = lutEntries,
+            lutImportError = lutImportError,
+            onImportLut = onImportLut,
+            onRemoveLut = onRemoveLut,
+            onLutSelect = onLutSelect,
+        )
+    }
+}
+
+/**
+ * The Balance sub-tab body (2026-11-13 segmentation plan): the WB family —
+ * As Shot reset + Temperature / Tint + Saturation — with the CFA-stage
+ * toggles demoted to an advanced RAW / Source section at the BOTTOM (plan:
+ * CFA is source-decode config, not a WB-family control). The section header
+ * separates them from the WB controls so the main flow reads as one family.
+ */
+@Composable
+private fun ColorBalanceBody(
+    grade: GradeK,
+    showRawStageToggles: Boolean,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onToggleChange: (GradeK) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -3197,10 +3419,31 @@ private fun ColorPanel(
             onDragActiveChange = onDragActiveChange,
             trackGradient = CompactSliderDefaults.TINT_GRADIENT,
         )
-        // CFA-stage toggles: MCRAW only (encoded clips decode YUV — there is
-        // no CFA stage to reconstruct or vignette; the decision is pure and
-        // JVM-tested).
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_saturation),
+            value = grade.saturation,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.saturation.toInt()),
+            onChange = { v -> onChange(grade.copy(saturation = SliderSteps.snapSaturation(v))) },
+            onDoubleTapReset = {
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+            trackGradient = CompactSliderDefaults.SATURATION_GRADIENT,
+        )
+        // ---- Advanced RAW / Source section (segmentation plan) ----
+        // The CFA-stage toggles demoted out of the main flow (plan: CFA
+        // is source-decode config, not a WB-family control), kept at the
+        // BOTTOM of Balance under their own header so they stay findable
+        // without leading the color work. MCRAW only (encoded clips
+        // decode YUV — there is no CFA stage to reconstruct or vignette;
+        // the decision is pure and JVM-tested).
         if (showRawStageToggles) {
+            Text(
+                stringResource(R.string.editor_color_raw_source),
+                style = MaterialTheme.typography.labelLarge,
+            )
             RawToggleRow(
                 label = stringResource(R.string.editor_highlight_reconstruction),
                 checked = grade.highlightReconstruction,
@@ -3216,33 +3459,221 @@ private fun ColorPanel(
                 },
             )
         }
-        // ---- Color wheel + split tone (COL-13) ----
-        // Pipeline order in the panel matches the native stage order:
-        // wheel 18 and split tone 19 run AFTER the WB controls above
-        // (temp 16, tint 17) and BEFORE saturation (20) below, so the
-        // section reads in the order the pixels experience it.
-        if (showColorTools) {
-            ColorWheelSection(
-                grade = grade,
-                onChange = onChange,
-                onDragActiveChange = onDragActiveChange,
-                onToggleChange = onToggleChange,
-                onReset = onReset,
+    }
+}
+
+/**
+ * The Look sub-tab body (2026-11-13 segmentation plan): Tone Mapping and
+ * the LUT as two SEPARATE sections, moved from [DetailPanel] with their
+ * semantics and settle paths untouched (COL-16/COL-07). The tonemap
+ * choice and the LUT selection are DISCRETE edits (immediate full-tier
+ * settle, their own undo steps); LUT Strength is a drag like every other
+ * slider.
+ */
+@Composable
+private fun ColorLookBody(
+    grade: GradeK,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onTonemapChange: (GradeK) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
+    lutEntries: List<LutInfo> = emptyList(),
+    lutImportError: String? = null,
+    onImportLut: () -> Unit = {},
+    onRemoveLut: (LutInfo) -> Unit = {},
+    onLutSelect: (GradeK) -> Unit = {},
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // ---- Tone Mapping section (moved from DetailPanel) ----
+        // Tonemapping: one row, one choice (Off / ACES / AgX). The label
+        // row mirrors the slider rows so the sections read as one panel.
+        Text(
+            stringResource(R.string.editor_tonemapping),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            val options = listOf(
+                TonemapOption(R.string.editor_tonemap_off, 0),
+                TonemapOption(R.string.editor_tonemap_aces, 1),
+                TonemapOption(R.string.editor_tonemap_agx, 2),
+            )
+            options.forEachIndexed { index, option ->
+                SegmentedButton(
+                    // The AgX tab (2) is selected for ANY AgX look (2-5);
+                    // re-tapping it keeps the chosen variant instead of
+                    // snapping back to Punchy.
+                    selected = if (option.value >= 2) grade.tonemap >= 2
+                               else grade.tonemap == option.value,
+                    onClick = {
+                        val value = if (option.value >= 2 && grade.tonemap >= 2) grade.tonemap
+                                    else option.value
+                        if (value != grade.tonemap)
+                            onTonemapChange(grade.copy(tonemap = value))
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = options.size,
+                    ),
+                ) {
+                    Text(stringResource(option.labelRes))
+                }
+            }
+        }
+        // AgX look (COL-16 follow-up): a second row ONLY while AgX is
+        // active — Punchy (2) / Golden (3) / Greyscale (4) / Base (5), the
+        // rawedit::Grade Ints from the core look table. Same discrete
+        // settle path as the row above (not a drag). Look names stay
+        // untranslated everywhere: they are the upstream AgX look names,
+        // like ACES/AgX themselves.
+        if (grade.tonemap >= 2) {
+            Text(
+                stringResource(R.string.editor_tonemap_agx_look),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                val looks = listOf(
+                    TonemapOption(R.string.editor_tonemap_agx_punchy, 2),
+                    TonemapOption(R.string.editor_tonemap_agx_golden, 3),
+                    TonemapOption(R.string.editor_tonemap_agx_greyscale, 4),
+                    TonemapOption(R.string.editor_tonemap_agx_base, 5),
+                )
+                looks.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = grade.tonemap == option.value,
+                        onClick = {
+                            onTonemapChange(grade.copy(tonemap = option.value))
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = looks.size,
+                        ),
+                    ) {
+                        Text(stringResource(option.labelRes))
+                    }
+                }
+            }
+        }
+        // ---- LUT section (COL-07, moved from DetailPanel) ----
+        // One choice row per cube plus None: the grade stores the id, the
+        // store resolves the path at render time, so a removed cube degrades
+        // to no-LUT (pathFor returns null) instead of breaking the render.
+        Text(
+            stringResource(R.string.editor_lut),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        if (lutEntries.isEmpty()) {
+            // No cubes yet: one hint line instead of a bare None row.
+            Text(
+                stringResource(R.string.editor_lut_none),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            // None row first: deselecting is the removal of the selection
+            // (lutId = null), not a grade reset — Strength keeps its value
+            // so re-selecting a cube restores the blend the user set.
+            LutRow(
+                label = stringResource(R.string.editor_lut_none),
+                selected = grade.lutId == null,
+                onClick = { onLutSelect(grade.copy(lutId = null)) },
+            )
+            lutEntries.forEach { lut ->
+                LutRow(
+                    label = lut.name,
+                    selected = grade.lutId == lut.id,
+                    onClick = { onLutSelect(grade.copy(lutId = lut.id)) },
+                    onRemove = { onRemoveLut(lut) },
+                )
+            }
+        }
+        // Import: tonal button (secondary action, DESIGN.md), full-width so
+        // the row reads as part of the section, not a floating chip.
+        FilledTonalButton(
+            onClick = onImportLut,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.editor_lut_import))
+        }
+        // Import failure lands here — local to the section, never in the
+        // preview's error surface (lutImportError is its own state).
+        if (lutImportError != null) {
+            Text(
+                lutImportError ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
             )
         }
-        GradeSlider(
-            label = stringResource(R.string.editor_slider_saturation),
-            value = grade.saturation,
-            valueRange = -100f..100f,
-            step = SliderSteps.UNIT_STEP,
-            valueLabel = Format.formatSigned(grade.saturation.toInt()),
-            onChange = { v -> onChange(grade.copy(saturation = SliderSteps.snapSaturation(v))) },
-            onDoubleTapReset = {
-                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
-            },
-            onDragActiveChange = onDragActiveChange,
-            trackGradient = CompactSliderDefaults.SATURATION_GRADIENT,
-        )
+        // Strength only under a selected cube (COL-07: "Seçim ve Strength
+        // ayrı kaydedilsin" — the two controls, one visible at a time the
+        // selection makes it meaningful). Percent 0..100, whole steps, the
+        // GradeK default 100 = full LUT.
+        if (grade.lutId != null) {
+            GradeSlider(
+                label = stringResource(R.string.editor_lut_strength),
+                value = grade.lutStrength,
+                valueRange = 0f..100f,
+                step = SliderSteps.UNIT_STEP,
+                valueLabel = Format.formatPercent(grade.lutStrength.toInt()),
+                onChange = { v ->
+                    onChange(grade.copy(lutStrength = SliderSteps.snapLutStrength(v)))
+                },
+                onDoubleTapReset = {
+                    onReset(SliderSteps.resetToDefault(SliderSteps.Axis.LUT_STRENGTH, grade))
+                },
+                onDragActiveChange = onDragActiveChange,
+            )
+        }
+    }
+}
+
+/**
+ * The Color tab's pinned sub-tab row (2026-11-13 editor panel segmentation
+ * plan): a text-first M3 [SecondaryTabRow] — Balance / Wheels / Look —
+ * composed through EditorPanelSheet's pinnedContent slot, so it stays at
+ * the panel top while the selected body scrolls under it (plan: "sub-tab
+ * row fixed at panel top; only the selected body scrolls vertically").
+ *
+ * [subTab] is the screen's saved selection, SANITIZED against the gate
+ * before the call: the row's selected index is a member of the composed
+ * list by construction ([EditorCategories.visibleColorSubTabs] drops
+ * Wheels on the encoded path), so the row, the body and the saved state
+ * can never disagree. A tap writes the choice back through
+ * [onSubTabChange] — UI-only state, never a grade edit.
+ *
+ * Text-only M3 [Tab]s (plan: "text-first labels") are 48dp tall — the
+ * DESIGN.md touch-target floor holds without extra padding. The row keeps
+ * SecondaryTabRow's stock colors: the secondary token container reads as
+ * part of the sheet's surface, and the 3dp primary underline marks the
+ * open segment.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ColorSubTabRow(
+    subTab: Int,
+    showColorTools: Boolean,
+    onSubTabChange: (Int) -> Unit,
+) {
+    val visible = EditorCategories.visibleColorSubTabs(showColorTools)
+    SecondaryTabRow(
+        selectedTabIndex = visible.indexOf(subTab),
+    ) {
+        visible.forEach { candidate ->
+            val labelRes = when (candidate) {
+                EditorCategories.COLOR_BALANCE -> R.string.editor_color_subtab_balance
+                EditorCategories.COLOR_WHEELS -> R.string.editor_color_subtab_wheels
+                else -> R.string.editor_color_subtab_look
+            }
+            Tab(
+                selected = candidate == subTab,
+                onClick = { onSubTabChange(candidate) },
+                text = { Text(stringResource(labelRes)) },
+            )
+        }
     }
 }
 
@@ -3469,27 +3900,19 @@ private data class WheelBandOption(
  * Detail tab (COL-15/COL-16), in order: Noise Reduction and Chroma Denoise
  * (DN-01..08 spatial denoise, percent 0..100, 0 = the stage skipped — the
  * old look), then Sharpness (edge sharpness, unsharp radius 1.5) and Detail
- * (fine-texture contrast, unsharp radius 0.75) sliders, then the Tonemapping
- * choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md Inputs:
- * "segmented buttons for codec and scope choice" — the same single choice
- * pattern). The denoise pair leads because native stages 7/8 run BEFORE
- * sharpness/detail (21/22): sliders read in pipeline order, and denoising
- * first is also what makes the sharpeners amplify signal, not noise. All
- * five controls run on BOTH clip kinds: the native develop pipeline and
- * developEncoded share the same stages, so encoded (Mi-Log MP4) clips get
- * the same Detail tab with nothing hidden.
+ * (fine-texture contrast, unsharp radius 0.75) sliders. The denoise pair
+ * leads because native stages 7/8 run BEFORE sharpness/detail (21/22):
+ * sliders read in pipeline order, and denoising first is also what makes
+ * the sharpeners amplify signal, not noise. All four controls run on BOTH
+ * clip kinds: the native develop pipeline and developEncoded share the same
+ * stages, so encoded (Mi-Log MP4) clips get the same Detail tab with
+ * nothing hidden.
  *
- * Tonemap values (rawedit::Grade): 0 = off, 1 = ACES (Narkowicz 2015 fit),
- * 2 = AgX (2022 Filmic AgX essential fit). The grade stores the choice, so
- * the used transform version travels with the saved grade (COL-16's
- * versioning requirement at this package's scope).
- *
- * The LUT section (COL-07): the imported cube library as
- * radio rows (None + one per imported cube), an Import button, the Strength
- * slider under the selected cube and a Remove action. Selection and
- * Strength are grade edits (onLutSelect, the immediate settle path like
- * the tonemap choice); import/remove are library operations (the screen's
- * AppNav wiring owns the store).
+ * The 2026-11-13 editor panel segmentation plan moved the Tonemapping
+ * choice, the AgX look row and the LUT section to the Color tab's Look
+ * sub-tab ([ColorLookBody]) — they are look/color controls, not detail.
+ * Their semantics are unchanged there (COL-16's tonemap ints, COL-07's
+ * selection/Strength split).
  * Temporal NR (DN-05..DN-09): an M3 Switch row plus a 0..100 Strength
  * slider, shown only when [showTemporalNr] is true (MCRAW). The temporal
  * stage merges the neighboring CFA frames into the center frame before
@@ -3502,7 +3925,8 @@ private data class WheelBandOption(
  * sliders, the sync status line with the gyro attach/remove actions, the
  * ±500 ms sync trim and the focal-length control — the honest no-data
  * state when no .gcsv is attached, never a fabricated verdict.
- * Crop + straighten (RAW-09) closes the tab: the Aspect choice (Free /
+ * Crop + straighten (RAW-09) closes the tab (until the plan's commit c
+ * moves it to the Frame tab): the Aspect choice (Free /
  * 16:9 / 9:16 / 4:3 / 1:1 — a preset replaces the rect with the largest
  * centered on-ratio rect, FREE keeps it), the Straighten dial (±15°,
  * half-degree ticks, edge-preserving auto zoom), the four rect sliders
@@ -3519,12 +3943,6 @@ private fun DetailPanel(
     showTemporalNr: Boolean,
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
-    onTonemapChange: (GradeK) -> Unit = {},
-    lutEntries: List<LutInfo> = emptyList(),
-    lutImportError: String? = null,
-    onImportLut: () -> Unit = {},
-    onRemoveLut: (LutInfo) -> Unit = {},
-    onLutSelect: (GradeK) -> Unit = {},
     onToggleChange: (GradeK) -> Unit = {},
     // Double-tap resets ride their own route (feature N7): discrete undo
     // steps, never coalesced into the slider gestures (see LightPanel).
@@ -3552,7 +3970,7 @@ private fun DetailPanel(
     cropFrameW: Int = 0,
     cropFrameH: Int = 0,
     // Aspect choice and the group reset are discrete edits (like the
-    // tonemap choice): they settle IMMEDIATELY at the full tier and record
+    // RAW toggles): they settle IMMEDIATELY at the full tier and record
     // as their own undo step, never coalesced into a slider gesture.
     onCropEdit: (GradeK) -> Unit = {},
 ) {
@@ -3618,144 +4036,6 @@ private fun DetailPanel(
             },
             onDragActiveChange = onDragActiveChange,
         )
-        // Tonemapping: one row, one choice (Off / ACES / AgX). The label
-        // row mirrors the slider rows so the three tabs read as one panel.
-        Text(
-            stringResource(R.string.editor_tonemapping),
-            style = MaterialTheme.typography.labelLarge,
-        )
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            val options = listOf(
-                TonemapOption(R.string.editor_tonemap_off, 0),
-                TonemapOption(R.string.editor_tonemap_aces, 1),
-                TonemapOption(R.string.editor_tonemap_agx, 2),
-            )
-            options.forEachIndexed { index, option ->
-                SegmentedButton(
-                    // The AgX tab (2) is selected for ANY AgX look (2-5);
-                    // re-tapping it keeps the chosen variant instead of
-                    // snapping back to Punchy.
-                    selected = if (option.value >= 2) grade.tonemap >= 2
-                               else grade.tonemap == option.value,
-                    onClick = {
-                        val value = if (option.value >= 2 && grade.tonemap >= 2) grade.tonemap
-                                    else option.value
-                        if (value != grade.tonemap)
-                            onTonemapChange(grade.copy(tonemap = value))
-                    },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = options.size,
-                    ),
-                ) {
-                    Text(stringResource(option.labelRes))
-                }
-            }
-        }
-        // AgX look (COL-16 follow-up): a second row ONLY while AgX is
-        // active — Punchy (2) / Golden (3) / Greyscale (4) / Base (5), the
-        // rawedit::Grade Ints from the core look table. Same discrete
-        // settle path as the row above (not a drag). Look names stay
-        // untranslated everywhere: they are the upstream AgX look names,
-        // like ACES/AgX themselves.
-        if (grade.tonemap >= 2) {
-            Text(
-                stringResource(R.string.editor_tonemap_agx_look),
-                style = MaterialTheme.typography.labelLarge,
-            )
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                val looks = listOf(
-                    TonemapOption(R.string.editor_tonemap_agx_punchy, 2),
-                    TonemapOption(R.string.editor_tonemap_agx_golden, 3),
-                    TonemapOption(R.string.editor_tonemap_agx_greyscale, 4),
-                    TonemapOption(R.string.editor_tonemap_agx_base, 5),
-                )
-                looks.forEachIndexed { index, option ->
-                    SegmentedButton(
-                        selected = grade.tonemap == option.value,
-                        onClick = {
-                            onTonemapChange(grade.copy(tonemap = option.value))
-                        },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = looks.size,
-                        ),
-                    ) {
-                        Text(stringResource(option.labelRes))
-                    }
-                }
-            }
-        }
-        // ---- LUT section (COL-07) ----
-        // One choice row per cube plus None: the grade stores the id, the
-        // store resolves the path at render time, so a removed cube degrades
-        // to no-LUT (pathFor returns null) instead of breaking the render.
-        Text(
-            stringResource(R.string.editor_lut),
-            style = MaterialTheme.typography.labelLarge,
-        )
-        if (lutEntries.isEmpty()) {
-            // No cubes yet: one hint line instead of a bare None row.
-            Text(
-                stringResource(R.string.editor_lut_none),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            // None row first: deselecting is the removal of the selection
-            // (lutId = null), not a grade reset — Strength keeps its value
-            // so re-selecting a cube restores the blend the user set.
-            LutRow(
-                label = stringResource(R.string.editor_lut_none),
-                selected = grade.lutId == null,
-                onClick = { onLutSelect(grade.copy(lutId = null)) },
-            )
-            lutEntries.forEach { lut ->
-                LutRow(
-                    label = lut.name,
-                    selected = grade.lutId == lut.id,
-                    onClick = { onLutSelect(grade.copy(lutId = lut.id)) },
-                    onRemove = { onRemoveLut(lut) },
-                )
-            }
-        }
-        // Import: tonal button (secondary action, DESIGN.md), full-width so
-        // the row reads as part of the section, not a floating chip.
-        FilledTonalButton(
-            onClick = onImportLut,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(stringResource(R.string.editor_lut_import))
-        }
-        // Import failure lands here — local to the section, never in the
-        // preview's error surface (lutImportError is its own state).
-        if (lutImportError != null) {
-            Text(
-                lutImportError ?: "",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-        // Strength only under a selected cube (COL-07: "Seçim ve Strength
-        // ayrı kaydedilsin" — the two controls, one visible at a time the
-        // selection makes it meaningful). Percent 0..100, whole steps, the
-        // GradeK default 100 = full LUT.
-        if (grade.lutId != null) {
-            GradeSlider(
-                label = stringResource(R.string.editor_lut_strength),
-                value = grade.lutStrength,
-                valueRange = 0f..100f,
-                step = SliderSteps.UNIT_STEP,
-                valueLabel = Format.formatPercent(grade.lutStrength.toInt()),
-                onChange = { v ->
-                    onChange(grade.copy(lutStrength = SliderSteps.snapLutStrength(v)))
-                },
-                onDoubleTapReset = {
-                    onReset(SliderSteps.resetToDefault(SliderSteps.Axis.LUT_STRENGTH, grade))
-                },
-                onDragActiveChange = onDragActiveChange,
-            )
-        }
         // Temporal NR: MCRAW only. The switch settles immediately at the
         // full tier ([onToggleChange]); the strength slider below it is a
         // drag like every other slider ([onChange] + [onDragActiveChange]).
@@ -3859,7 +4139,7 @@ private fun DetailPanel(
             )
             if (grade.stabilization) {
                 // Mode: Smooth (0) / Lock First Frame (1) / Horizon Lock
-                // (2) — the GradeK ints, segmented like the tonemap choice.
+                // (2) — the GradeK ints, segmented like the aspect choice.
                 // Not a drag: settles immediately at the full tier.
                 Text(
                     stringResource(R.string.editor_stabilization_mode),
@@ -4073,7 +4353,7 @@ private fun DetailPanel(
         // ---- Crop + straighten group (RAW-09) ----
         // The group closes the tab. The aspect choice and the group reset
         // are DISCRETE edits ([onCropEdit]: immediate full-tier settle,
-        // their own undo step — the tonemap precedent); the five sliders
+        // their own undo step — like the RAW toggles); the five sliders
         // below are drags ([onChange] + [onDragActiveChange]) like every
         // other slider. All rect math runs through SliderSteps.applyCropAxis
         // (the pure chain: snap, clamp, lock) against the UNCROPPED

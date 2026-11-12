@@ -49,6 +49,14 @@
     <string name="editor_tab_color">Renk</string>
     <string name="editor_tab_detail">Detay</string>
     <string name="editor_tab_frame">Kare</string>
+    <!-- 2026-11-13 editor panel segmentation plan: the Color tab's
+         Balance | Wheels | Look sub-tabs (text-first SecondaryTabRow). -->
+    <string name="editor_color_subtab_balance">Denge</string>
+    <string name="editor_color_subtab_wheels">Tekerlekler</string>
+    <string name="editor_color_subtab_look">Görünüm</string>
+    <!-- The advanced RAW/Source section at the bottom of Balance: the CFA
+         toggles are source-decode config, not a WB-family control (plan). -->
+    <string name="editor_color_raw_source">RAW / Kaynak</string>
     <string name="editor_panel_handle">Ayar paneli tutamacı</string>
     <string name="editor_panel_hide">Ayar panelini gizle</string>
     <string name="editor_panel_show">Ayar panelini göster</string>
