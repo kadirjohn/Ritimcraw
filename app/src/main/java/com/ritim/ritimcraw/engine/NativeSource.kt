@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.engine
 
 import android.graphics.Rect
+import com.ritim.ritimcraw.BuildConfig
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -102,6 +103,12 @@ class NativeSource private constructor(
             try {
                 System.loadLibrary("rawedit_jni")
                 nativeAvailable = true
+                // Debug measurement logging (audit fix 2026-11-12): debug
+                // builds get the "ritim-stab" per-settle-render stabilization
+                // line (mode, strength, angle, zooms, IMU overlap, or the
+                // skip reason); release keeps the native default (off) and
+                // never logs.
+                if (BuildConfig.DEBUG) nativeSetStabDebugLog(true)
             } catch (e: UnsatisfiedLinkError) {
                 nativeAvailable = false
             } catch (e: SecurityException) {
@@ -165,6 +172,17 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeReadAudio(handle: Long): ShortArray?
         @JvmStatic private external fun nativeCloseSource(handle: Long): Long
         @JvmStatic private external fun nativeLastError(): String?
+
+        /**
+         * Toggles the debug stabilization measurement line (audit fix
+         * 2026-11-12): when on, every settle-class render logs one line
+         * under the "ritim-stab" logcat tag — the applied mode/strength,
+         * per-frame and max angles, requiredZoom vs appliedZoom, IMU
+         * overlap, or the skip reason (off / no-imu / unsynced) when the
+         * warp did not apply. Called once from the companion init with
+         * BuildConfig.DEBUG, so release builds stay silent.
+         */
+        @JvmStatic private external fun nativeSetStabDebugLog(enabled: Boolean)
 
         // ---- Preview JNI (decoder -> developThumbnail -> Rec709 -> ARGB) ----
         // Every call must run on the renderer's single engine thread

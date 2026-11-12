@@ -23,4 +23,8 @@ add_compile_options(-O2)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../../core ${CMAKE_CURRENT_BINARY_DIR}/rawedit-core)
 
 add_library(rawedit_jni SHARED jni_bridge.cpp)
-target_link_libraries(rawedit_jni PRIVATE rawedit)
+# log is the Android log library: the bridge's debug-gated "ritim-stab"
+# stabilization measurement line (__android_log_print, audit fix
+# 2026-11-12) needs it. Release builds never call it (the flag stays
+# false), but the symbol must resolve in both build types.
+target_link_libraries(rawedit_jni PRIVATE rawedit log)
