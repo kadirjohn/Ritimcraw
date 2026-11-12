@@ -249,6 +249,9 @@
     <string name="settings_device_report">Device report</string>
     <string name="settings_device_report_body">Codec capabilities of this device appear here once the codec probe lands.</string>
     <string name="settings_device_report_count">%1$d codecs</string>
+    <string name="settings_codec_hw">HW</string>
+    <string name="settings_codec_sw">SW</string>
+    <string name="settings_report_close">Close</string>
     <string name="settings_measure">Measure preview performance</string>
     <string name="settings_measuring">Measuring…</string>
     <string name="settings_version">Version %1$s</string>

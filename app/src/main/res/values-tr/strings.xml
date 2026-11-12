@@ -249,6 +249,9 @@
     <string name="settings_device_report">Cihaz raporu</string>
     <string name="settings_device_report_body">Codec yoklaması geldiğinde bu cihazın codec yetenekleri burada görünür.</string>
     <string name="settings_device_report_count">%1$d codec</string>
+    <string name="settings_codec_hw">Donanım</string>
+    <string name="settings_codec_sw">Yazılım</string>
+    <string name="settings_report_close">Kapat</string>
     <string name="settings_measure">Önizleme performansını ölç</string>
     <string name="settings_measuring">Ölçülüyor…</string>
     <string name="settings_version">Sürüm %1$s</string>
