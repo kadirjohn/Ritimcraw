@@ -1,0 +1,26 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Material Symbols right_panel_open shape: the mirrored seam pair —
+         the arrow points left, the direction the panel re-enters from.
+         The landscape reopen affordance (owner request 2026-11-11d section
+         17.3: the hide must stay "discoverable and easy to restore"). 48dp
+         touch target comes from the IconButton; Compose's Icon tints it
+         via LocalContentColor. Vendored because material-icons-core 1.7.3
+         has no RightPanelOpen glyph. -->
+    <path
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineJoin="round"
+        android:pathData="M3,5 h18 v14 h-18 z" />
+    <path
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M15,5 v14" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M13.5,12 l-3,-3 v6 z" />
+</vector>

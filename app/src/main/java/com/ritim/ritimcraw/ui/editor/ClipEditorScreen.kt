@@ -14,9 +14,11 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -54,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -154,6 +157,22 @@ object EditorPreviewLogic {
     fun onBack(fullscreen: Boolean): EditorBackDestination =
         if (fullscreen) EditorBackDestination.EXIT_FULLSCREEN
         else EditorBackDestination.LEAVE_EDITOR
+
+    /**
+     * Fullscreen chrome tap-toggle (owner request 2026-11-11d §16.2: "A
+     * preview tap may toggle control visibility if this can be
+     * implemented safely without interfering with current gestures"): a
+     * CLEAN quick tap on the preview — lift inside the long-press
+     * window, no slop movement, nothing consumed, so it can never fire
+     * during the before/after hold (which needs the window to ELAPSE)
+     * or a zoom/pan (which moves or consumes) — toggles the fullscreen
+     * overlay chrome (transport row, corner chips, histogram overlay).
+     * ONLY in fullscreen: outside it a preview tap does nothing — the
+     * panel and navigation are structural layout, not overlay chrome,
+     * and §16.1's hide affordance is the fullscreen toggle itself. Pure
+     * so a JVM test locks the gating.
+     */
+    fun togglesFullscreenChrome(inFullscreen: Boolean): Boolean = inFullscreen
 
     /**
      * True when the Temporal NR group (toggle + strength slider) belongs in
@@ -510,6 +529,36 @@ fun ClipEditorScreen(
         // the system back chain pops fullscreen FIRST, then the editor —
         // never a double-back to leave the clip.
         var fullscreen by rememberSaveable { mutableStateOf(false) }
+        // Fullscreen overlay chrome (§16.2): the transport row, the corner
+        // chips (refresh, histogram toggle) and the histogram overlay hide
+        // behind a clean quick tap on the preview — §16.2's optional "A
+        // preview tap may toggle control visibility", classified inside the
+        // SAME gesture window as the before/after hold (a clean tap lifts
+        // BEFORE the long-press window elapses; the hold needs it to elapse
+        // — the two can never both fire on one gesture). Saveable so a
+        // rotation keeps the chrome where it was; re-entering fullscreen
+        // always shows the chrome again (a fresh entry never inherits a
+        // hidden state). The exit toggle itself stays visible while hidden
+        // chrome is on (the scrimmed TopEnd button is §16.2's retained
+        // Exit-fullscreen control; hiding it would strand the user).
+        var fullscreenChromeVisible by rememberSaveable { mutableStateOf(true) }
+        LaunchedEffect(fullscreen) {
+            if (fullscreen) fullscreenChromeVisible = true
+        }
+        // Landscape panel hide/reopen (owner request 2026-11-11d section
+        // 17.3: "an obvious affordance for hiding the adjustment area" +
+        // "collapsing the adjustment area may expand the preview
+        // horizontally"): in the two-column workspace the right column
+        // carries a hide button; hidden, the preview column widens to the
+        // FULL width (OrientationLayout.previewWidthFraction) and a reopen
+        // chip appears on the preview's right edge — the affordance stays
+        // discoverable and easy to restore (the same scrimmed IconButton
+        // group as the fullscreen/histogram corner controls). Saveable so a
+        // rotation keeps the panel where the user left it (section 18: no
+        // reset on orientation switch); the PORTRAIT sheet has its own
+        // collapse affordance (the drag handle) and never reads this
+        // state — the two layouts' panel states are independent.
+        var panelVisible by rememberSaveable { mutableStateOf(true) }
         // The system back chain (owner finding 2026-11-11: back exited the
         // app from the normal editor): the editor's BackHandler is ALWAYS
         // active while the editor is open — enabled-only-in-fullscreen let
@@ -1063,65 +1112,31 @@ fun ClipEditorScreen(
             manualRotationDeg = manualRotationDeg,
         )
 
-        // Neutral root surface (design review 2026-11-10, maroon bug): the
-        // editor's own Column painted NO background, so AppNav's Scaffold
-        // surface (dynamic wallpaper color) showed through. The editor now
-        // paints its own fixed-neutral surface INSIDE RitimTheme(editor =
-        // true); inset ownership stays in AppNav.
-        Surface(
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                // The panel anchor math measures THIS column (the free
-                // region is what remains after the fixed rows; see the
-                // wiring block above). onSizeChanged — not a layout
-                // callback into composition — so the measurement can
-                // never feed back into the same frame's layout.
-                .onSizeChanged { editorColumnHeight = it.height },
-        ) {
-            // Fixed top bar (design review "Onerilen ilk yerlesim"): back +
-            // single-line name + one Export icon (opens the export sheet)
-            // + "..." (opens the clip-info sheet). The name shown is the
-            // clip's display name (§2b), id fallback — resolved by the
-            // caller, never blank. Hidden in fullscreen (owner request
-            // section 2): the preview owns the screen; the system back
-            // chain (BackHandler) leaves fullscreen first.
-            if (!fullscreen) {
-                EditorTopBar(
-                    sourceId = sourceName ?: sourceId,
-                    onBack = onBack,
-                    onExport = onExport,
-                    exportEnabled = sourceFd >= 0,
-                    clipInfo = clipInfo,
-                    // The info sheet's "Develop frame" row opens the
-                    // screen's own picker sheet (RAW-11): the transport
-                    // position lives here, not in the top bar.
-                    onDevelopFrame = { framePickerOpen = true },
-                    // ---- Copy/Paste settings + Presets (§4) ----
-                    // The sheet reads the CURRENT grade (what Copy copies
-                    // and Save-as-preset snapshots) and applies grades
-                    // through the screen's own grade-write path — the
-                    // same onGradeChange a slider move uses, so the
-                    // sliders, preview and persistence all behave
-                    // identically. The clipboard itself is GradeClipboard
-                    // (app-wide, in-memory); canPaste gates the row.
-                    grade = grade,
-                    canPaste = GradeClipboard.hasContent(),
-                    onCopySettings = { GradeClipboard.copy(grade) },
-                    onApplyGrade = { g ->
-                        grade = g
-                        onGradeChange(g)
-                    },
-                    presets = presets,
-                    onSavePreset = onSavePreset,
-                    onRemovePreset = onRemovePreset,
-                    // Manual rotation (§5): the sheet's rotate rows.
-                    onRotate = onRotate,
-                )
-            }
+        // ---- Landscape workspace decision (owner request 2026-11-11d
+        // sections 17.1-17.2) ----
+        // The pure decisions live in OrientationLayout (JVM-tested):
+        // landscape + wide enough engages the two-column workspace, and the
+        // split is the responsive 30-40% panel band — never one hardcoded
+        // fraction. LocalConfiguration's dp values track the window, and
+        // the editor consults them on every recomposition, so the workspace
+        // re-splits responsively at any rotation or resize. Fullscreen
+        // (section 16) is always the single immersive column, portrait or
+        // landscape.
+        val configuration = LocalConfiguration.current
+        val landscapeTwoColumn = !fullscreen && OrientationLayout.isTwoColumn(
+            configuration.screenWidthDp,
+            configuration.screenHeightDp,
+        )
+
+        // ---- Shared workspace regions ----
+        // The preview, transport and panel content compose through these
+        // shared lambdas so the portrait single column (section 11) and
+        // the landscape two-column Row (section 17.1) lay out the very same
+        // composables: a rotation re-lays-out, it never re-creates — the
+        // frame, playback position, grade, per-category scroll states and
+        // the render session all live in the remember blocks these lambdas
+        // capture (section 18).
+        val previewRegion: @Composable ColumnScope.() -> Unit = {
             // Flexing preview region (owner request 2026-11-11d §11.7):
             // the preview takes whatever the panel leaves — collapsed
             // panel gives it the most space, expanded the least — and
@@ -1176,7 +1191,7 @@ fun ClipEditorScreen(
                     // get the feature through this one call site.
                     modifier = Modifier
                         .fillMaxWidth()
-                        .pointerInput(Unit) {
+                        .pointerInput(fullscreen) {
                             val longPressTimeout = viewConfiguration.longPressTimeoutMillis
                             val slop = viewConfiguration.touchSlop
                             awaitEachGesture {
@@ -1184,15 +1199,29 @@ fun ClipEditorScreen(
                                 // The long-press window: true when the press
                                 // ended early (lift, drag, or consumed),
                                 // null when the window elapsed with the
-                                // finger still down.
+                                // finger still down. The early-end REASON is
+                                // kept: a CLEAN lift (still pressed at lift,
+                                // no slop, nothing consumed) is a quick tap
+                                // — §16.2's preview-tap chrome toggle in
+                                // fullscreen; anything else (slop, a
+                                // consumed stream — zoom/pan, a chip) is a
+                                // drag or a control touch and never toggles.
+                                var cleanTap = false
                                 val endedEarly = withTimeoutOrNull(longPressTimeout) {
                                     var lifted = false
                                     while (!lifted) {
                                         val event = awaitPointerEvent()
                                         val change =
                                             event.changes.firstOrNull { it.id == down.id }
-                                        if (change == null || !change.pressed ||
-                                            event.changes.any { it.isConsumed } ||
+                                        if (change == null || !change.pressed) {
+                                            // Lift inside the window: a tap
+                                            // only if nothing moved or was
+                                            // consumed on the way.
+                                            cleanTap = change != null &&
+                                                !event.changes.any { it.isConsumed } &&
+                                                (change.position - down.position).getDistance() <= slop
+                                            lifted = true
+                                        } else if (event.changes.any { it.isConsumed } ||
                                             (change.position - down.position).getDistance() > slop
                                         ) {
                                             lifted = true
@@ -1203,8 +1232,15 @@ fun ClipEditorScreen(
                                 // Null = the window elapsed with the finger
                                 // still down (long press confirmed); non-null
                                 // = the press ended early, so this gesture is
-                                // a tap/drag, not a hold.
-                                if (endedEarly != null) return@awaitEachGesture
+                                // a tap/drag, not a hold. A clean tap in
+                                // fullscreen toggles the overlay chrome
+                                // (pure gate in EditorPreviewLogic).
+                                if (endedEarly != null) {
+                                    if (cleanTap && EditorPreviewLogic.togglesFullscreenChrome(fullscreen)) {
+                                        fullscreenChromeVisible = !fullscreenChromeVisible
+                                    }
+                                    return@awaitEachGesture
+                                }
                                 // Long press confirmed: show the original.
                                 startHold(true)
                                 // The hold ends when the finger lifts, the
@@ -1235,40 +1271,44 @@ fun ClipEditorScreen(
                 // render leaves the prime area): status from the existing
                 // PreviewState data, tap = the old Render-preview button's
                 // onClick (full paused tier at the current position).
-                PreviewRefreshControl(
-                    state = previewState,
-                    canRender = canRender,
-                    onRefresh = {
-                        requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp),
-                )
-                // Histogram toggle (owner feature list W5): the mirror of
-                // the fullscreen TopEnd toggle — the preview's corner icon
-                // buttons read as one group, and the bar_chart glyph says
-                // what it does. Same 48dp IconButton target, vendored
-                // Material Symbols glyph (material-icons-core 1.7.3 has
-                // no BarChart).
-                HistogramToggleButton(
-                    visible = histogramVisible,
-                    onToggle = { histogramVisible = !histogramVisible },
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(8.dp),
-                )
-                // The overlay itself (BottomStart, mirroring the refresh
-                // chip's BottomEnd): visible only when toggled on, drawn
-                // from the recompute above — the same frame the preview
-                // shows, so the histogram and the picture never disagree.
-                if (histogramVisible) {
-                    HistogramOverlay(
-                        result = histogram,
+                // Hidden with the fullscreen chrome (§16.2: minimal
+                // overlays; the tap toggle brings it back).
+                if (!fullscreen || fullscreenChromeVisible) {
+                    PreviewRefreshControl(
+                        state = previewState,
+                        canRender = canRender,
+                        onRefresh = {
+                            requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
+                        },
                         modifier = Modifier
-                            .align(Alignment.BottomStart)
+                            .align(Alignment.BottomEnd)
                             .padding(8.dp),
                     )
+                    // Histogram toggle (owner feature list W5): the mirror of
+                    // the fullscreen TopEnd toggle — the preview's corner icon
+                    // buttons read as one group, and the bar_chart glyph says
+                    // what it does. Same 48dp IconButton target, vendored
+                    // Material Symbols glyph (material-icons-core 1.7.3 has
+                    // no BarChart).
+                    HistogramToggleButton(
+                        visible = histogramVisible,
+                        onToggle = { histogramVisible = !histogramVisible },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp),
+                    )
+                    // The overlay itself (BottomStart, mirroring the refresh
+                    // chip's BottomEnd): visible only when toggled on, drawn
+                    // from the recompute above — the same frame the preview
+                    // shows, so the histogram and the picture never disagree.
+                    if (histogramVisible) {
+                        HistogramOverlay(
+                            result = histogram,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(8.dp),
+                        )
+                    }
                 }
                 // Fullscreen toggle (owner request 2026-11-11 section 2):
                 // the SAME editor session — the toggle only changes the
@@ -1305,7 +1345,35 @@ fun ClipEditorScreen(
                     )
                     }
                 }
+                // Panel reopen affordance (owner request 2026-11-11d section
+                // 17.3: the hide must stay "discoverable and easy to
+                // restore"): in the landscape two-column workspace with the
+                // right column hidden, a scrimmed chip on the preview's right
+                // edge brings the adjustment panel back. Same scrimmed
+                // IconButton group as the corner controls — one control
+                // language; CenterEnd so it sits where the panel's edge was.
+                if (landscapeTwoColumn && !panelVisible) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(8.dp),
+                    ) {
+                        IconButton(
+                            onClick = { panelVisible = true },
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_panel_show),
+                                contentDescription = stringResource(R.string.editor_panel_show),
+                            )
+                        }
+                    }
+                }
             }
+        }
+
+        val transportRegion: @Composable () -> Unit = {
             // Transport row (owner request 2026-11-10 §1, MotionCam Pro
             // reference): compact Play/Pause + draggable time bar + elapsed /
             // total timecode directly under the preview. Loading and error
@@ -1314,6 +1382,12 @@ fun ClipEditorScreen(
             // The modifier measures the row for the panel anchor math
             // (§11.3) — its height varies with font scale and the
             // precision-mode readout, so it is measured, not assumed.
+            // Fullscreen keeps the transport (§16.2 retains play/pause and
+            // seeking) but hides it with the overlay chrome on a preview
+            // tap; a hidden transport never contributes to the anchor math
+            // (transportHeight stays at its last measured value only while
+            // the panel is hidden too — both are outside this branch).
+            if (!fullscreen || fullscreenChromeVisible) {
             TransportRow(
                 modifier = Modifier
                     .onSizeChanged { transportHeight = it.height },
@@ -1470,6 +1544,280 @@ fun ClipEditorScreen(
                     }
                 },
             )
+            }
+        }
+
+        val panelRegion: @Composable () -> Unit = {
+            when (tab) {
+                0 -> LightPanel(
+                    grade = grade,
+                    onChange = { g ->
+                        grade = g
+                        onGradeChange(g)
+                        // Mid-drag grade steps render IMMEDIATELY at the
+                        // low tier through the cached path (the debounce
+                        // effect restarts on every step, so its trailing
+                        // edge only covers a finger PAUSE mid-drag; a
+                        // settled edit — double-tap reset, tap on the
+                        // track — settles through the debounce alone).
+                        if (dragActive) {
+                            applyTierEvent(SliderTiers.Event.GradeEdited)
+                        }
+                    },
+                    onDragActiveChange = { active ->
+                        applyTierEvent(
+                            if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
+                        )
+                    },
+                )
+                1 -> ColorPanel(
+                    grade = grade,
+                    // The CFA-stage toggles (Highlight Reconstruction, Keep
+                    // Vignetting) exist only on the MCRAW path; encoded
+                    // clips keep As Shot + every slider (pure decision in
+                    // EditorPreviewLogic.showRawStageToggles).
+                    showRawStageToggles = EditorPreviewLogic.showRawStageToggles(sourcePath),
+                    onChange = { g ->
+                        grade = g
+                        onGradeChange(g)
+                        // Same tier wiring as LightPanel: the machine is
+                        // shared, so which tab the drag started on does
+                        // not matter.
+                        if (dragActive) {
+                            applyTierEvent(SliderTiers.Event.GradeEdited)
+                        }
+                    },
+                    onDragActiveChange = { active ->
+                        applyTierEvent(
+                            if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
+                        )
+                    },
+                    // RAW toggles (As Shot, the reconstruction/vignetting
+                    // switches) are not drags: they settle IMMEDIATELY at
+                    // the full tier (SliderTiers.GradeEdited with no drag
+                    // active), not through the debounce.
+                    onToggleChange = { g ->
+                        grade = g
+                        onGradeChange(g)
+                        applyTierEvent(SliderTiers.Event.GradeEdited)
+                    },
+                )
+                else -> DetailPanel(
+                    grade = grade,
+                    // Temporal NR merges neighboring CFA frames, so the
+                    // group shows only on MCRAW clips (pure decision in
+                    // EditorPreviewLogic.showTemporalNr; the encoded path
+                    // takes-and-ignores the temporal fields).
+                    showTemporalNr = EditorPreviewLogic.showTemporalNr(sourcePath),
+                    onChange = { g ->
+                        grade = g
+                        onGradeChange(g)
+                        // Same tier wiring as the other tabs: mid-drag
+                        // grade steps render immediately at the low tier
+                        // through the cached path.
+                        if (dragActive) {
+                            applyTierEvent(SliderTiers.Event.GradeEdited)
+                        }
+                    },
+                    onDragActiveChange = { active ->
+                        applyTierEvent(
+                            if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
+                        )
+                    },
+                    // The tonemapping choice is not a drag: it settles
+                    // IMMEDIATELY at the full tier (GradeEdited with no
+                    // drag active), like the RAW toggles.
+                    onTonemapChange = { g ->
+                        grade = g
+                        onGradeChange(g)
+                        applyTierEvent(SliderTiers.Event.GradeEdited)
+                    },
+                    // ---- LUT section wiring (COL-07) ----
+                    // Selection/Strength are grade edits like the
+                    // tonemap choice: not drags, so they settle
+                    // IMMEDIATELY at the full tier. The import picker
+                    // and the library rows are not grade edits at all.
+                    lutEntries = lutEntries,
+                    lutImportError = lutImportError,
+                    onImportLut = { lutPicker.launch(arrayOf("*/*")) },
+                    onRemoveLut = onRemoveLut,
+                    onLutSelect = { g ->
+                        grade = g
+                        onGradeChange(g)
+                        applyTierEvent(SliderTiers.Event.GradeEdited)
+                    },
+                    // The Temporal NR switch is not a drag either: it
+                    // settles IMMEDIATELY at the full tier, like the
+                    // RAW toggles and the tonemapping choice.
+                    onToggleChange = { g ->
+                        grade = g
+                        onGradeChange(g)
+                        applyTierEvent(SliderTiers.Event.GradeEdited)
+                    },
+                    // ---- Stabilization wiring (gyro Phase 5) ----
+                    // The group shows on MCRAW only (pure decision in
+                    // EditorPreviewLogic.showStabilization). The switch
+                    // and the mode choice settle IMMEDIATELY at the full
+                    // tier (not drags), like every other toggle; the
+                    // strength/zoom/trim/focal sliders are drags through
+                    // onChange/onDragActiveChange like every other
+                    // slider.
+                    showStabilization = EditorPreviewLogic.showStabilization(sourcePath),
+                    gyroAttached = gyroId.isNotBlank(),
+                    gyroSync = gyroSync,
+                    gyroName = gyroNameFor(gyroId),
+                    containerFocalMm = containerFocalMm,
+                    gyroImportError = gyroImportError,
+                    onAttachGyro = { gyroPicker.launch(arrayOf("*/*")) },
+                    onRemoveGyro = onRemoveGyro,
+                )
+            }
+        }
+
+        // Neutral root surface (design review 2026-11-10, maroon bug): the
+        // editor's own Column painted NO background, so AppNav's Scaffold
+        // surface (dynamic wallpaper color) showed through. The editor now
+        // paints its own fixed-neutral surface INSIDE RitimTheme(editor =
+        // true); inset ownership stays in AppNav. Fullscreen darkens the
+        // root to surfaceDim (§16.2 "Use a neutral near-black background"):
+        // the same 0e0e0e the preview surface itself paints, so the
+        // letterbox around a centered frame reads as one seamless near-
+        // black stage (roles, never hex — DESIGN.md).
+        Surface(
+            color = if (fullscreen) {
+                MaterialTheme.colorScheme.surfaceDim
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
+            modifier = Modifier.fillMaxSize(),
+        ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                // The panel anchor math measures THIS column (the free
+                // region is what remains after the fixed rows; see the
+                // wiring block above). onSizeChanged — not a layout
+                // callback into composition — so the measurement can
+                // never feed back into the same frame's layout.
+                .onSizeChanged { editorColumnHeight = it.height },
+        ) {
+            // Fixed top bar (design review "Onerilen ilk yerlesim"): back +
+            // single-line name + one Export icon (opens the export sheet)
+            // + "..." (opens the clip-info sheet). The name shown is the
+            // clip's display name (§2b), id fallback — resolved by the
+            // caller, never blank. Hidden in fullscreen (owner request
+            // section 2): the preview owns the screen; the system back
+            // chain (BackHandler) leaves fullscreen first.
+            if (!fullscreen) {
+                EditorTopBar(
+                    sourceId = sourceName ?: sourceId,
+                    onBack = onBack,
+                    onExport = onExport,
+                    exportEnabled = sourceFd >= 0,
+                    clipInfo = clipInfo,
+                    // The info sheet's "Develop frame" row opens the
+                    // screen's own picker sheet (RAW-11): the transport
+                    // position lives here, not in the top bar.
+                    onDevelopFrame = { framePickerOpen = true },
+                    // ---- Copy/Paste settings + Presets (§4) ----
+                    // The sheet reads the CURRENT grade (what Copy copies
+                    // and Save-as-preset snapshots) and applies grades
+                    // through the screen's own grade-write path — the
+                    // same onGradeChange a slider move uses, so the
+                    // sliders, preview and persistence all behave
+                    // identically. The clipboard itself is GradeClipboard
+                    // (app-wide, in-memory); canPaste gates the row.
+                    grade = grade,
+                    canPaste = GradeClipboard.hasContent(),
+                    onCopySettings = { GradeClipboard.copy(grade) },
+                    onApplyGrade = { g ->
+                        grade = g
+                        onGradeChange(g)
+                    },
+                    presets = presets,
+                    onSavePreset = onSavePreset,
+                    onRemovePreset = onRemovePreset,
+                    // Manual rotation (§5): the sheet's rotate rows.
+                    onRotate = onRotate,
+                )
+            }
+            // ---- Workspace branch (owner request 2026-11-11d sections 11
+            // vs 17.1-17.2) ----
+            // Portrait — and every fullscreen (section 16), whatever the
+            // orientation — keeps the single column: the flexing preview
+            // over the transport, the draggable sheet below (section 11).
+            // Landscape two-column: the preview + transport stack in the
+            // LEFT column (section 17.2: the transport sits under the
+            // preview), the adjustment panel becomes the full-height RIGHT
+            // column (section 17.1's responsive 30-40% band, independently
+            // scrollable), and the Light/Color/Detail navigation stays the
+            // FULL-WIDTH bottom row in both layouts — a bottom navigation,
+            // never a landscape side rail (section 17.1).
+            if (landscapeTwoColumn) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                ) {
+                    // LEFT column: preview over transport. The width is
+                    // OrientationLayout's responsive preview share — the
+                    // complement of the panel band (60-70%), or the FULL
+                    // width while the panel is hidden (section 17.3: the
+                    // preview expands horizontally, never vertically, in
+                    // the landscape workspace).
+                    Column(
+                        Modifier
+                            .weight(
+                                OrientationLayout.previewWidthFraction(
+                                    panelVisible = panelVisible,
+                                    widthDp = configuration.screenWidthDp,
+                                    heightDp = configuration.screenHeightDp,
+                                ),
+                            )
+                            .fillMaxHeight(),
+                    ) {
+                        previewRegion()
+                        transportRegion()
+                    }
+                    // RIGHT column: the adjustment panel, full height and
+                    // independently scrollable (section 17.2) — the same
+                    // sheet composable in landscape mode: no drag handle
+                    // (section 17.3 does not force the portrait's vertical
+                    // panel dragging here), the same per-category scroll
+                    // states, the same panel content. The header row
+                    // carries section 17.3's hide affordance.
+                    if (panelVisible) {
+                        EditorPanelSheet(
+                            dragState = panelDrag,
+                            category = tab,
+                            scrollStates = categoryScrollStates,
+                            modifier = Modifier
+                                .weight(
+                                    OrientationLayout.panelWidthFraction(
+                                        configuration.screenWidthDp,
+                                    ),
+                                )
+                                .fillMaxHeight(),
+                            landscape = true,
+                            header = {
+                                IconButton(
+                                    onClick = { panelVisible = false },
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_panel_hide),
+                                        contentDescription = stringResource(R.string.editor_panel_hide),
+                                    )
+                                }
+                            },
+                        ) {
+                            panelRegion()
+                        }
+                    }
+                }
+            } else {
+                previewRegion()
+                transportRegion()
+            }
             // Draggable, collapsible adjustment panel (owner request
             // 2026-11-11d §11): the bottom-anchored sheet whose height IS
             // the drag offset, settling between the three PanelSheet
@@ -1482,8 +1830,11 @@ fun ClipEditorScreen(
             // position, playback and the render session all survive
             // collapse/expand by construction (§10.3, §11.6, §18).
             // Hidden in fullscreen (owner request section 2): the preview
-            // takes the flex space instead.
-            if (!fullscreen) {
+            // takes the flex space instead. In the landscape two-column
+            // workspace (sections 17.1-17.2) the panel is the RIGHT column
+            // composed in the Row above, so this draggable sheet only
+            // composes in the single column.
+            if (!fullscreen && !landscapeTwoColumn) {
                 EditorPanelSheet(
                     dragState = panelDrag,
                     category = tab,
@@ -1501,130 +1852,7 @@ fun ClipEditorScreen(
                             else with(density) { panelDrag.offset.toDp() },
                         ),
                 ) {
-                when (tab) {
-                    0 -> LightPanel(
-                        grade = grade,
-                        onChange = { g ->
-                            grade = g
-                            onGradeChange(g)
-                            // Mid-drag grade steps render IMMEDIATELY at the
-                            // low tier through the cached path (the debounce
-                            // effect restarts on every step, so its trailing
-                            // edge only covers a finger PAUSE mid-drag; a
-                            // settled edit — double-tap reset, tap on the
-                            // track — settles through the debounce alone).
-                            if (dragActive) {
-                                applyTierEvent(SliderTiers.Event.GradeEdited)
-                            }
-                        },
-                        onDragActiveChange = { active ->
-                            applyTierEvent(
-                                if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
-                            )
-                        },
-                    )
-                    1 -> ColorPanel(
-                        grade = grade,
-                        // The CFA-stage toggles (Highlight Reconstruction, Keep
-                        // Vignetting) exist only on the MCRAW path; encoded
-                        // clips keep As Shot + every slider (pure decision in
-                        // EditorPreviewLogic.showRawStageToggles).
-                        showRawStageToggles = EditorPreviewLogic.showRawStageToggles(sourcePath),
-                        onChange = { g ->
-                            grade = g
-                            onGradeChange(g)
-                            // Same tier wiring as LightPanel: the machine is
-                            // shared, so which tab the drag started on does
-                            // not matter.
-                            if (dragActive) {
-                                applyTierEvent(SliderTiers.Event.GradeEdited)
-                            }
-                        },
-                        onDragActiveChange = { active ->
-                            applyTierEvent(
-                                if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
-                            )
-                        },
-                        // RAW toggles (As Shot, the reconstruction/vignetting
-                        // switches) are not drags: they settle IMMEDIATELY at
-                        // the full tier (SliderTiers.GradeEdited with no drag
-                        // active), not through the debounce.
-                        onToggleChange = { g ->
-                            grade = g
-                            onGradeChange(g)
-                            applyTierEvent(SliderTiers.Event.GradeEdited)
-                        },
-                    )
-                    else -> DetailPanel(
-                        grade = grade,
-                        // Temporal NR merges neighboring CFA frames, so the
-                        // group shows only on MCRAW clips (pure decision in
-                        // EditorPreviewLogic.showTemporalNr; the encoded path
-                        // takes-and-ignores the temporal fields).
-                        showTemporalNr = EditorPreviewLogic.showTemporalNr(sourcePath),
-                        onChange = { g ->
-                            grade = g
-                            onGradeChange(g)
-                            // Same tier wiring as the other tabs: mid-drag
-                            // grade steps render immediately at the low tier
-                            // through the cached path.
-                            if (dragActive) {
-                                applyTierEvent(SliderTiers.Event.GradeEdited)
-                            }
-                        },
-                        onDragActiveChange = { active ->
-                            applyTierEvent(
-                                if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
-                            )
-                        },
-                        // The tonemapping choice is not a drag: it settles
-                        // IMMEDIATELY at the full tier (GradeEdited with no
-                        // drag active), like the RAW toggles.
-                        onTonemapChange = { g ->
-                            grade = g
-                            onGradeChange(g)
-                            applyTierEvent(SliderTiers.Event.GradeEdited)
-                        },
-                        // ---- LUT section wiring (COL-07) ----
-                        // Selection/Strength are grade edits like the
-                        // tonemap choice: not drags, so they settle
-                        // IMMEDIATELY at the full tier. The import picker
-                        // and the library rows are not grade edits at all.
-                        lutEntries = lutEntries,
-                        lutImportError = lutImportError,
-                        onImportLut = { lutPicker.launch(arrayOf("*/*")) },
-                        onRemoveLut = onRemoveLut,
-                        onLutSelect = { g ->
-                            grade = g
-                            onGradeChange(g)
-                            applyTierEvent(SliderTiers.Event.GradeEdited)
-                        },
-                        // The Temporal NR switch is not a drag either: it
-                        // settles IMMEDIATELY at the full tier, like the
-                        // RAW toggles and the tonemapping choice.
-                        onToggleChange = { g ->
-                            grade = g
-                            onGradeChange(g)
-                            applyTierEvent(SliderTiers.Event.GradeEdited)
-                        },
-                        // ---- Stabilization wiring (gyro Phase 5) ----
-                        // The group shows on MCRAW only (pure decision in
-                        // EditorPreviewLogic.showStabilization). The switch
-                        // and the mode choice settle IMMEDIATELY at the full
-                        // tier (not drags), like every other toggle; the
-                        // strength/zoom/trim/focal sliders are drags through
-                        // onChange/onDragActiveChange like every other
-                        // slider.
-                        showStabilization = EditorPreviewLogic.showStabilization(sourcePath),
-                        gyroAttached = gyroId.isNotBlank(),
-                        gyroSync = gyroSync,
-                        gyroName = gyroNameFor(gyroId),
-                        containerFocalMm = containerFocalMm,
-                        gyroImportError = gyroImportError,
-                        onAttachGyro = { gyroPicker.launch(arrayOf("*/*")) },
-                        onRemoveGyro = onRemoveGyro,
-                    )
-                }
+                    panelRegion()
                 }
             }
             // Fixed Light/Color/Detail bottom navigation (owner request

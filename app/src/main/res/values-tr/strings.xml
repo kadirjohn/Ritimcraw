@@ -41,6 +41,9 @@
     <string name="editor_tab_light">Işık</string>
     <string name="editor_tab_color">Renk</string>
     <string name="editor_tab_detail">Detay</string>
+    <string name="editor_panel_handle">Ayar paneli tutamacı</string>
+    <string name="editor_panel_hide">Ayar panelini gizle</string>
+    <string name="editor_panel_show">Ayar panelini göster</string>
     <string name="editor_slider_exposure">Gain (EV)</string>
     <string name="editor_slider_highlights">Işıklar</string>
     <string name="editor_slider_black_point">Siyah nokta</string>

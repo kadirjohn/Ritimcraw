@@ -42,6 +42,8 @@
     <string name="editor_tab_color">Color</string>
     <string name="editor_tab_detail">Detail</string>
     <string name="editor_panel_handle">Adjustment panel handle</string>
+    <string name="editor_panel_hide">Hide adjustment panel</string>
+    <string name="editor_panel_show">Show adjustment panel</string>
     <string name="editor_slider_exposure">Gain (EV)</string>
     <string name="editor_slider_highlights">Highlights</string>
     <string name="editor_slider_black_point">Black Point</string>

@@ -162,6 +162,24 @@ class EditorPreviewLogicTest {
         )
     }
 
+    // ---- fullscreen chrome tap toggle (owner request 2026-11-11d section 16.2) ----
+
+    @Test
+    fun clean_tap_toggles_chrome_only_in_fullscreen() {
+        // Section 16.2: "A preview tap may toggle control visibility if
+        // this can be implemented safely without interfering with current
+        // gestures." Only in fullscreen: outside it a preview tap has no
+        // job (the panel and nav are structural, not overlays).
+        assertTrue(EditorPreviewLogic.togglesFullscreenChrome(inFullscreen = true))
+    }
+
+    @Test
+    fun preview_tap_outside_fullscreen_does_nothing() {
+        // The normal editor keeps its chrome permanently — a stray tap on
+        // the footage must not hide the adjustment panel or the nav bar.
+        assertFalse(EditorPreviewLogic.togglesFullscreenChrome(inFullscreen = false))
+    }
+
     // ---- Temporal NR group visibility (MCRAW only; DN-05..DN-09) ----
 
     @Test
