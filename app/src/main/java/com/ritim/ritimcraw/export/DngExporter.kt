@@ -17,7 +17,8 @@ import kotlin.coroutines.suspendCoroutine
  * Contract with app/src/main/cpp/jni_bridge.cpp:
  *   code  = rawedit::ErrorCode (0 ok, 1 truncated, 2 badHeader, 3 ioError,
  *           4 unsupported)
- *   stage = pipeline stage token (0 open, 1 frame read, 3 dng write)
+ *   stage = pipeline stage token (0 open, 1 frame read, 2 develop — the
+ *           linear path only, 3 dng write)
  */
 object DngExportErrors {
 
@@ -28,15 +29,18 @@ object DngExportErrors {
     const val CODE_IO = 3
     const val CODE_UNSUPPORTED = 4
 
-    // Stage tokens (jni_bridge.cpp kStageOpen/kStageFrameRead/kStageDngWrite).
+    // Stage tokens (jni_bridge.cpp kStageOpen/kStageFrameRead/kStageDevelop/
+    // kStageDngWrite).
     const val STAGE_OPEN = 0
     const val STAGE_FRAME_READ = 1
+    const val STAGE_DEVELOP = 2
     const val STAGE_DNG_WRITE = 3
 
     /** Stage name shown in the message ("open", "frame read", "dng write"). */
     fun stageName(stage: Int): String = when (stage) {
         STAGE_OPEN -> "open"
         STAGE_FRAME_READ -> "frame read"
+        STAGE_DEVELOP -> "develop"
         STAGE_DNG_WRITE -> "dng write"
         else -> "unknown"
     }
@@ -91,10 +95,24 @@ interface DngRender {
      */
     fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean
 
+    /**
+     * Decodes frame [frameIndex] from fd and writes a LINEAR DNG at [outPath]
+     * (RAW-13): the demosaiced, scene-referred 16-bit RGB in a
+     * PhotometricInterpretation 34892 (LinearRaw) DNG — a separate file
+     * contract from [render]'s raw mosaic. The native side runs exactly
+     * developLinear's three stages (black/white normalization, bilinear
+     * demosaic, as-shot WB) and records the list in the file's
+     * ImageDescription tag; the display tone map is NOT part of this path.
+     * [manualRotationDeg] carries the job's effective-rotation snapshot
+     * exactly like [render]. Returns null on failure; [code]/[stage]/[detail]
+     * then say why (stage 2 = develop exists only on this path).
+     */
+    fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean
+
     /** rawedit::ErrorCode of the last failed call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
     fun code(): Int
 
-    /** Pipeline stage of the last failed call (0 open, 1 frame read, 3 dng write). */
+    /** Pipeline stage of the last failed call (0 open, 1 frame read, 2 develop, 3 dng write). */
     fun stage(): Int
 
     /** Bridge detail of the last failed call. */
@@ -111,6 +129,15 @@ internal object NativeDngRender : DngRender {
             throw IllegalStateException(NativeSource.nativeUnavailableMessage)
         }
         return NativeSource.jniDngExport(fd, frameIndex, manualRotationDeg, outPath)
+    }
+
+    override fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+        if (!NativeSource.nativeAvailable) {
+            // Same unavailable guard as render (the lib is absent): fail
+            // cleanly instead of UnsatisfiedLinkError.
+            throw IllegalStateException(NativeSource.nativeUnavailableMessage)
+        }
+        return NativeSource.jniLinearDngExport(fd, frameIndex, manualRotationDeg, outPath)
     }
 
     override fun code(): Int = NativeSource.jniPreviewErrorCode()
@@ -150,15 +177,22 @@ object ExportStaging {
 }
 
 /**
- * Exports one frame of a clip as a CFA DNG through the native path
- * (decode frame -> writeCfaDng to the staging path -> rename into place).
+ * Exports one frame of a clip as a DNG through the native path (decode
+ * frame -> write to the staging path -> rename into place). Which DNG file
+ * contract is written follows the JOB'S OWN [Target] (RAW-13):
+ *   Target.DNG    -> the raw CFA mosaic (writeCfaDng, [DngRender.render]).
+ *   Target.LINEAR -> the demosaiced, scene-referred Linear DNG
+ *                    (writeLinearDng, [DngRender.renderLinear]) — the
+ *                    minimal develop (normalization, demosaic, as-shot WB)
+ *                    runs natively and NO grade is applied: the linear data
+ *                    output and the display tone map are separate paths.
  *
  * The [export] call runs on the shared engine executor thread ([engine]) —
  * one motioncam decoder is not concurrency-safe and the bridge's error
  * state is thread-local, so the whole native sequence is confined there,
- * like the preview path. The grade snapshot of the job is NOT applied: a
- * CFA DNG is the raw mosaic (the DNG carries the raw data; grading belongs
- * to the DNG reader).
+ * like the preview path. The grade snapshot of the job is NOT applied in
+ * either arm: a CFA DNG is the raw mosaic and a Linear DNG is the linear
+ * data deliverable — grading belongs to the reader of the exported file.
  *
  * Staging per the spec: everything writes to `out.partial` (app cache);
  * only a successful render is renamed to [out], so a successful file is
@@ -188,12 +222,20 @@ class DngExporter(
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
     ): ExportJob {
         val partial = ExportStaging.partial(out)
+        // RAW-13: the render call follows the job's own target — the same
+        // staging/finalize/error mapping wraps either file contract.
+        val doRender: () -> Boolean =
+            if (job.target == Target.LINEAR) {
+                { render.renderLinear(sourceFd, frameIndex, job.manualRotationDeg, partial.absolutePath) }
+            } else {
+                { render.render(sourceFd, frameIndex, job.manualRotationDeg, partial.absolutePath) }
+            }
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val res = try {
                         onProgress?.invoke(0, 1)
-                        if (render.render(sourceFd, frameIndex, job.manualRotationDeg, partial.absolutePath)) {
+                        if (doRender()) {
                             if (ExportStaging.finalize(partial, out)) {
                                 onProgress?.invoke(1, 1)
                                 Result.success(Unit)

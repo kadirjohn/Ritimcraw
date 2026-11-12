@@ -173,9 +173,12 @@ class ExportQueue(
                 // The DNG arm now passes the job's frame index (RAW-11): a
                 // picker-queued DNG develops the picked frame, and every
                 // pre-picker job carries 0 — the exact frame it always
-                // exported, so nothing changes for old rows.
-                Target.DNG ->
-                    dng.export(job, fd, io.outputFile(job, Target.DNG), job.frameIndex) { done, total ->
+                // exported, so nothing changes for old rows. RAW-13: the
+                // LINEAR target rides the SAME arm — DngExporter branches on
+                // job.target to pick the linear render, so the queue keeps
+                // one DNG-shaped pipeline (staging, engine, error mapping).
+                Target.DNG, Target.LINEAR ->
+                    dng.export(job, fd, io.outputFile(job, job.target), job.frameIndex) { done, total ->
                         progress.report(done, total)
                     }
                 Target.MP4 ->
@@ -271,6 +274,9 @@ class ExportQueue(
                 Target.DNG -> "dng"
                 Target.MP4 -> "mp4"
                 Target.PHOTO -> "png"
+                // RAW-13: a Linear DNG is still a .dng file — the target
+                // name ("clip1-linear") disambiguates the legacy name.
+                Target.LINEAR -> "dng"
             }
 
         /**
@@ -347,6 +353,9 @@ class ExportQueue(
                 Target.DNG -> "dng"
                 Target.MP4 -> "mp4"
                 Target.PHOTO -> "png"
+                // RAW-13: the display-derived Linear DNG name wears the .dng
+                // extension it is written in (the format, not the pipeline).
+                Target.LINEAR -> "dng"
             }
         }
     }

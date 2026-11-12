@@ -312,6 +312,27 @@ class NativeSource private constructor(
             outPath: String,
         ): Boolean
 
+        /**
+         * Decodes frame [frameIndex] from the clip at [fd] and writes it as a
+         * LINEAR DNG (RAW-13) at [outPath]: the demosaiced, scene-referred
+         * 16-bit RGB in a PhotometricInterpretation 34892 (LinearRaw) DNG —
+         * a separate file contract from the CFA DNG above. The exact develop
+         * stages applied (black/white normalization, bilinear demosaic,
+         * as-shot WB — nothing else; the display tone map is NOT part of
+         * this path) are recorded in the file's ImageDescription tag.
+         * [manualRotationDeg] carries the job's effective-rotation snapshot
+         * exactly like nativeDngExport. True on success; on false read
+         * [previewErrorCode] / [previewErrorStage] / [previewLastError] from
+         * the same thread. Stages: 0 open, 1 frame read, 2 develop,
+         * 3 dng write.
+         */
+        @JvmStatic private external fun nativeLinearDngExport(
+            fd: Int,
+            frameIndex: Int,
+            manualRotationDeg: Int,
+            outPath: String,
+        ): Boolean
+
         // ---- MP4 export JNI (full-res developCpu -> Rec709 -> RGB888) ----
 
         /**
@@ -565,6 +586,10 @@ class NativeSource private constructor(
         /** JNI bridge: see nativeDngExport. */
         internal fun jniDngExport(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean =
             nativeDngExport(fd, frameIndex, manualRotationDeg, outPath)
+
+        /** JNI bridge: see nativeLinearDngExport (RAW-13 Linear DNG). */
+        internal fun jniLinearDngExport(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean =
+            nativeLinearDngExport(fd, frameIndex, manualRotationDeg, outPath)
 
         /** JNI bridge: see nativeExportFrame. */
         internal fun jniExportFrame(

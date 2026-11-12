@@ -57,16 +57,20 @@ object MediaPublish {
                 Target.MP4 -> Collection.VIDEO
                 Target.DNG -> Collection.IMAGES
                 Target.PHOTO -> Collection.IMAGES
+                // RAW-13: a Linear DNG is an image file like the CFA DNG.
+                Target.LINEAR -> Collection.IMAGES
             },
             relativePath = when (target) {
                 Target.MP4 -> "Movies/ritiMCRAW"
                 Target.DNG -> "Pictures/ritiMCRAW"
                 Target.PHOTO -> "Pictures/ritiMCRAW"
+                Target.LINEAR -> "Pictures/ritiMCRAW"
             },
             mime = when (target) {
                 Target.MP4 -> "video/mp4"
                 Target.DNG -> "image/x-adobe-dng"
                 Target.PHOTO -> "image/png"
+                Target.LINEAR -> "image/x-adobe-dng"
             },
             name = outputName ?: ExportQueue.outputName(sourceId, target),
         )

@@ -193,6 +193,7 @@ private fun ExportJobCard(
                         Target.DNG -> R.string.exports_format_dng
                         Target.PHOTO -> R.string.exports_format_photo
                         Target.MP4 -> R.string.exports_format_mp4
+                        Target.LINEAR -> R.string.exports_format_dng_linear
                     }
                 ),
                 style = MaterialTheme.typography.bodySmall,

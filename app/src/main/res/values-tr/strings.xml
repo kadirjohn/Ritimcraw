@@ -104,6 +104,7 @@
     <string name="editor_export">Dışa aktar</string>
     <string name="editor_export_sheet_title">Klibi dışa aktar</string>
     <string name="editor_export_choice_dng">DNG kare</string>
+    <string name="editor_export_choice_dng_linear">Lineer DNG</string>
     <string name="editor_export_choice_mp4">MP4 video</string>
     <string name="editor_export_dng">DNG aktar</string>
     <string name="editor_export_mp4">MP4 aktar</string>
@@ -170,6 +171,8 @@
     <string name="exports_empty_body">Dışa aktarılan klipler ilerleme durumu ve sonuçlarıyla burada görünür.</string>
     <string name="exports_format_dng">CFA DNG</string>
     <string name="exports_format_dng_detail">16 bit CFA yazılır</string>
+    <string name="exports_format_dng_linear">Lineer DNG</string>
+    <string name="exports_format_dng_linear_detail">Demosaiced lineer RGB</string>
     <string name="exports_format_mp4">H.264 MP4</string>
     <string name="exports_format_photo">PNG fotoğraf</string>
     <string name="exports_job_queued">Sırada</string>

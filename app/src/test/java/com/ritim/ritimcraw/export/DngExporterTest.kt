@@ -48,6 +48,7 @@ class DngExporterTest {
     fun every_stage_token_has_a_name() {
         assertEquals("open", DngExportErrors.stageName(DngExportErrors.STAGE_OPEN))
         assertEquals("frame read", DngExportErrors.stageName(DngExportErrors.STAGE_FRAME_READ))
+        assertEquals("develop", DngExportErrors.stageName(DngExportErrors.STAGE_DEVELOP))
         assertEquals("dng write", DngExportErrors.stageName(DngExportErrors.STAGE_DNG_WRITE))
         assertEquals("unknown", DngExportErrors.stageName(99))
     }
@@ -140,14 +141,32 @@ class DngExporterTest {
         var lastOutPath: String? = null
         var lastFrameIndex: Int = -1
         var lastManualRotationDeg: Int = Int.MIN_VALUE
+        var renderCalls = 0
+        var renderLinearCalls = 0
 
         override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+            renderCalls++
             lastOutPath = outPath
             lastFrameIndex = frameIndex
             lastManualRotationDeg = manualRotationDeg
             return when (behavior) {
                 Behavior.OK -> {
                     File(outPath).writeText("dng-bytes")
+                    true
+                }
+                Behavior.NATIVE_FAIL -> false
+                Behavior.THROW -> throw IllegalStateException("decoder blew up")
+            }
+        }
+
+        override fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+            renderLinearCalls++
+            lastOutPath = outPath
+            lastFrameIndex = frameIndex
+            lastManualRotationDeg = manualRotationDeg
+            return when (behavior) {
+                Behavior.OK -> {
+                    File(outPath).writeText("linear-dng-bytes")
                     true
                 }
                 Behavior.NATIVE_FAIL -> false
@@ -215,6 +234,28 @@ class DngExporterTest {
     }
 
     @Test
+    fun linear_job_routes_to_render_linear_not_render() {
+        val e = engine()
+        try {
+            val out = File(tmp.root, "clip-1-linear.dng")
+            val fake = FakeDngRender(FakeDngRender.Behavior.OK)
+            val exporter = DngExporter(render = fake, engine = e)
+            val linear = job().copy(target = Target.LINEAR)
+            val result = runBlocking { exporter.export(linear, 7, out, frameIndex = 3) }
+            // RAW-13: the linear target takes the renderLinear arm — the CFA
+            // render is never called — and still finalizes to the given name.
+            assertEquals(State.DONE, result.state)
+            assertEquals(1, fake.renderLinearCalls)
+            assertEquals(0, fake.renderCalls)
+            assertEquals(out.absolutePath + ".partial", fake.lastOutPath)
+            assertEquals(3, fake.lastFrameIndex)
+            assertEquals("linear-dng-bytes", out.readText())
+        } finally {
+            e.shutdown()
+        }
+    }
+
+    @Test
     fun native_failure_maps_code_stage_detail_and_cleans_up() {
         val e = engine()
         try {
@@ -263,6 +304,10 @@ class DngExporterTest {
                 render = object : DngRender {
                     override fun render(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
                         File(outPath).writeText("dng")
+                        return true
+                    }
+                    override fun renderLinear(fd: Int, frameIndex: Int, manualRotationDeg: Int, outPath: String): Boolean {
+                        File(outPath).writeText("linear-dng")
                         return true
                     }
                     override fun code(): Int = 0

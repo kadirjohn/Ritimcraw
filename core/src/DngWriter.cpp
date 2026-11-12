@@ -1,10 +1,10 @@
-// Minimal little-endian TIFF/DNG writer for CFA frames. See
+// Minimal little-endian TIFF/DNG writers for CFA and Linear DNG frames. See
 // rawedit/DngWriter.h for the interface contract.
 //
 // Layout: 8-byte TIFF header, one IFD (tags ascending), the external-value
-// payload, then the CFA strip. Values that fit in 4 bytes are inline; the
-// rest (BlackLevel, ColorMatrix1, AsShotNeutral, ActiveArea) live in the
-// payload with offsets computed up front, so nothing is back-patched.
+// payload, then the pixel strip. Values that fit in 4 bytes are inline; the
+// rest live in the payload with offsets computed up front, so nothing is
+// back-patched.
 
 #include <rawedit/DngWriter.h>
 
@@ -19,6 +19,7 @@ namespace {
 
 // TIFF data types used here.
 constexpr uint16_t kTypeByte = 1;
+constexpr uint16_t kTypeAscii = 2;
 constexpr uint16_t kTypeShort = 3;
 constexpr uint16_t kTypeLong = 4;
 constexpr uint16_t kTypeRational = 5;
@@ -46,10 +47,16 @@ constexpr uint16_t kTagWhiteLevel = 50717;
 constexpr uint16_t kTagColorMatrix1 = 50721;
 constexpr uint16_t kTagAsShotNeutral = 50728;
 constexpr uint16_t kTagActiveArea = 50829;
+constexpr uint16_t kTagImageDescription = 270;
+constexpr uint16_t kTagCFAPlaneColor = 50710;
+// PhotometricInterpretation VALUES (the tag itself is 262).
+constexpr uint16_t kPhotometricCfa = 32803;
+constexpr uint16_t kPhotometricLinearRaw = 34892;
 
 size_t typeSize(uint16_t type) {
     switch (type) {
         case kTypeByte:      return 1;
+        case kTypeAscii:     return 1;
         case kTypeShort:     return 2;
         case kTypeLong:      return 4;
         case kTypeRational:  return 8;
@@ -252,7 +259,7 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
 
     e = Entry{};
     e.tag = kTagPhotometric; e.type = kTypeShort; e.count = 1;
-    setInlineShorts(e, {32803}); entries.push_back(e); // CFA
+    setInlineShorts(e, {kPhotometricCfa}); entries.push_back(e); // CFA
 
     e = Entry{};
     e.tag = kTagStripOffsets; e.type = kTypeLong; e.count = 1;
@@ -336,6 +343,248 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
         return Result<void>::fail(ErrorCode::IoError, "internal layout error");
 
     const uint8_t* strip = reinterpret_cast<const uint8_t*>(cfa);
+    file.insert(file.end(), strip, strip + stripBytes);
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+        return Result<void>::fail(ErrorCode::IoError,
+                                  "cannot open " + path);
+    out.write(reinterpret_cast<const char*>(file.data()),
+              static_cast<std::streamsize>(file.size()));
+    out.close();
+    if (!out) {
+        std::remove(path.c_str());
+        return Result<void>::fail(ErrorCode::IoError, "writing " + path +
+                                   " failed (removed partial file)");
+    }
+    return Result<void>::ok();
+}
+
+// The processing stages baked into a Linear DNG's pixels (RAW-13: "Lineer
+// çıktıya hangi aşamaların işlendiğini kaydet" — record which stages were
+// processed into the linear output). Written verbatim into ImageDescription
+// (270) so a reader can tell exactly what this file is. The develop itself
+// lives in Develop.cpp developLinear (the JNI export calls it); this
+// constant is the single source of the recorded list — the develop and the
+// tag must never drift apart, so the string names the develop function and
+// the test pins its presence.
+const char* const kLinearDngStages =
+    "ritiMCRAW linear DNG: stages = black/white normalization "
+    "(frame-preferred levels), bilinear demosaic, as-shot white balance "
+    "(divide by AsShotNeutral); no shading, no highlight reconstruction, "
+    "no camera-to-Rec.709, no tone controls, no LUT, no denoise. "
+    "developed by developLinear.";
+
+Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
+                            const FrameInfo& frame, const RawMeta& meta) {
+    if (rgb == nullptr)
+        return Result<void>::fail(ErrorCode::Unsupported, "rgb buffer is null");
+    if (frame.width == 0 || frame.height == 0)
+        return Result<void>::fail(ErrorCode::Unsupported, "empty frame");
+    if (frame.bitDepth != 16)
+        return Result<void>::fail(ErrorCode::Unsupported,
+                                  "only 16-bit linear supported");
+
+    const uint32_t w = frame.width;
+    const uint32_t h = frame.height;
+    const uint64_t stripBytes64 = static_cast<uint64_t>(w) * h * 3 * 2;
+    if (stripBytes64 > 0xffffffffull)
+        return Result<void>::fail(ErrorCode::Unsupported, "strip too large");
+    const uint32_t stripBytes = static_cast<uint32_t>(stripBytes64);
+
+    const std::string description(kLinearDngStages);
+    const uint32_t descriptionBytes =
+        static_cast<uint32_t>(description.size() + 1); // NUL-terminated
+
+    // External payload, laid out in tag order: BitsPerSample (6B),
+    // ImageDescription (N bytes), BlackLevel (6B), ColorMatrix1 (72B),
+    // AsShotNeutral (24B), ActiveArea (16B). WhiteLevel is a constant
+    // (65535) and travels inline; CFAPlaneColor (3 bytes) fits inline at
+    // the tag site.
+    std::vector<uint8_t> payload;
+    payload.reserve(128 + descriptionBytes);
+
+    Entry bitsPerSample;
+    bitsPerSample.tag = kTagBitsPerSample;
+    bitsPerSample.type = kTypeShort;
+    bitsPerSample.count = 3;
+
+    Entry imageDescription;
+    imageDescription.tag = kTagImageDescription;
+    imageDescription.type = kTypeAscii;
+    imageDescription.count = descriptionBytes;
+
+    Entry blackLevel;
+    blackLevel.tag = kTagBlackLevel;
+    blackLevel.type = kTypeShort;
+    blackLevel.count = 3;
+
+    Entry colorMatrix;
+    colorMatrix.tag = kTagColorMatrix1;
+    colorMatrix.type = kTypeSRational;
+    colorMatrix.count = 9;
+
+    Entry asShotNeutral;
+    asShotNeutral.tag = kTagAsShotNeutral;
+    asShotNeutral.type = kTypeRational;
+    asShotNeutral.count = 3;
+
+    Entry activeArea;
+    activeArea.tag = kTagActiveArea;
+    activeArea.type = kTypeLong;
+    activeArea.count = 4;
+
+    const uint32_t ifdOffset = 8;
+    const size_t entryCount = 21;
+    const uint32_t payloadOffset =
+        ifdOffset + static_cast<uint32_t>(2 + 12 * entryCount + 4);
+
+    uint32_t cursor = payloadOffset;
+    auto place = [&](Entry& e) {
+        const size_t bytes = e.count * typeSize(e.type);
+        setInlineLong(e, cursor);
+        cursor += static_cast<uint32_t>(bytes);
+    };
+
+    place(bitsPerSample);
+    put16(payload, 16); put16(payload, 16); put16(payload, 16);
+
+    place(imageDescription);
+    payload.insert(payload.end(), description.begin(), description.end());
+    payload.push_back(0); // ASCII values are NUL-terminated
+
+    place(blackLevel);
+    // Stage-1 normalization already mapped the sensor range to 0..1 and the
+    // pixels were scaled to 16 bits, so the stored samples' black is 0 —
+    // a reader must not subtract a sensor black again.
+    put16(payload, 0); put16(payload, 0); put16(payload, 0);
+
+    place(colorMatrix);
+    for (int i = 0; i < 9; ++i)
+        putRational(payload, meta.colorMatrix[i], /*signedNum=*/true);
+
+    place(asShotNeutral);
+    // AsShotNeutral = (1,1,1): the WB is already baked into the pixels by
+    // developLinear, so a reader must NOT re-apply it (double WB would
+    // shift neutrals). The identity neutral is the DNG contract for
+    // "already white-balanced data".
+    putRational(payload, 1.0, /*signedNum=*/false);
+    putRational(payload, 1.0, /*signedNum=*/false);
+    putRational(payload, 1.0, /*signedNum=*/false);
+
+    place(activeArea);
+    const Rect& a = frame.activeArea;
+    const uint32_t top = a.h > 0 ? static_cast<uint32_t>(a.y) : 0;
+    const uint32_t left = a.w > 0 ? static_cast<uint32_t>(a.x) : 0;
+    const uint32_t bottom = a.h > 0 ? static_cast<uint32_t>(a.y + a.h) : h;
+    const uint32_t right = a.w > 0 ? static_cast<uint32_t>(a.x + a.w) : w;
+    put32(payload, top);
+    put32(payload, left);
+    put32(payload, bottom);
+    put32(payload, right);
+
+    const uint32_t stripOffset = cursor;
+
+    // IFD entries, ascending by tag (21 entries — the CFA set minus
+    // CFARepeatPatternDim/CFAPattern, plus ImageDescription/CFAPlaneColor).
+    std::vector<Entry> entries;
+
+    Entry e;
+    e.tag = kTagNewSubfileType; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, 0); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagImageWidth; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, w); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagImageLength; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, h); entries.push_back(e);
+
+    entries.push_back(bitsPerSample); // 258, external, placed above
+
+    e = Entry{};
+    e.tag = kTagCompression; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {1}); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagPhotometric; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {kPhotometricLinearRaw}); entries.push_back(e); // LinearRaw
+
+    entries.push_back(imageDescription); // 270, external, placed above
+
+    e = Entry{};
+    e.tag = kTagStripOffsets; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, stripOffset); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagOrientation; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {tiffOrientation(frame.orientationDeg)});
+    entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagSamplesPerPixel; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {3}); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagRowsPerStrip; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, h); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagStripByteCounts; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, stripBytes); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagDNGVersion; e.type = kTypeByte; e.count = 4;
+    e.value[0] = 1; e.value[1] = 4; e.value[2] = 0; e.value[3] = 0;
+    entries.push_back(e); // DNG 1.4.0.0
+
+    e = Entry{};
+    e.tag = kTagCFAPlaneColor; e.type = kTypeByte; e.count = 3;
+    e.value[0] = 0; e.value[1] = 1; e.value[2] = 2; // RGB
+    entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagCFALayout; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {1}); entries.push_back(e); // Rectangular
+
+    e = Entry{};
+    e.tag = kTagBlackLevelRepeatDim; e.type = kTypeShort; e.count = 2;
+    setInlineShorts(e, {1, 1}); entries.push_back(e);
+
+    entries.push_back(blackLevel); // 50714, external, placed above
+
+    e = Entry{};
+    e.tag = kTagWhiteLevel; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, 65535); entries.push_back(e);
+
+    entries.push_back(colorMatrix);
+    entries.push_back(asShotNeutral);
+    entries.push_back(activeArea);
+
+    // Serialize.
+    std::vector<uint8_t> file;
+    file.reserve(static_cast<size_t>(stripOffset) + stripBytes);
+
+    // TIFF header: little-endian, magic 42, IFD at 8.
+    file.push_back('I'); file.push_back('I');
+    put16(file, 42);
+    put32(file, ifdOffset);
+
+    put16(file, static_cast<uint16_t>(entries.size()));
+    for (const Entry& ent : entries) {
+        put16(file, ent.tag);
+        put16(file, ent.type);
+        put32(file, ent.count);
+        file.insert(file.end(), ent.value, ent.value + 4);
+    }
+    put32(file, 0); // no next IFD
+
+    file.insert(file.end(), payload.begin(), payload.end());
+    if (file.size() != stripOffset)
+        return Result<void>::fail(ErrorCode::IoError, "internal layout error");
+
+    const uint8_t* strip = reinterpret_cast<const uint8_t*>(rgb);
     file.insert(file.end(), strip, strip + stripBytes);
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);

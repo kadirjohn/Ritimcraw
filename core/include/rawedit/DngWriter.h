@@ -25,4 +25,18 @@ namespace rawedit {
 Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
                          const FrameInfo& frame, const RawMeta& meta);
 
+// Linear DNG (owner spec RAW-13): the demosaiced, scene-referred linear
+// frame as a DNG 1.4 file — PhotometricInterpretation 34892 (LinearRaw),
+// SamplesPerPixel 3, BitsPerSample 16 per sample, the pixels in the
+// camera-native RGB primaries (ColorMatrix1 kept; only the stage-1
+// normalization and the as-shot white balance are baked in). The exact
+// processing stages applied to the pixels are recorded in the
+// ImageDescription tag (270) so a reader can tell what this file is.
+// rgb must hold width*height*3 uint16 samples (row-major, r-g-b order);
+// the writer never re-develops — it serializes what it is given.
+// On failure returns IoError/Unsupported with detail; a partially written
+// file is removed.
+Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
+                            const FrameInfo& frame, const RawMeta& meta);
+
 } // namespace rawedit

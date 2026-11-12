@@ -522,7 +522,9 @@ fun AppNav() {
         try {
             context.startActivity(view)
         } catch (e: ActivityNotFoundException) {
-            if (job.target == Target.DNG) {
+            // RAW-13: a Linear DNG is a DNG file for the viewer question too
+            // — no raw-DNG reader on the device gets the same Share option.
+            if (job.target == Target.DNG || job.target == Target.LINEAR) {
                 // No DNG viewer on the device (owner request §1): an
                 // understandable message plus a Share option.
                 scope.launch {
