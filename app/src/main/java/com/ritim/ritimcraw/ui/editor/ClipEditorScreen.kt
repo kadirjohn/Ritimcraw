@@ -254,9 +254,11 @@ object EditorPreviewLogic {
      * transient between the failure and the removal.
      *
      * [anchored] true = both wall-clock anchors were present (the clip's
-     * recvd anchor vs the log's header timestamp): Anchored, with the
-     * probe's [errorBoundMs] shown as the ± bound. false = the anchors
-     * were absent: Manual — the trim slider is the user's offset.
+     * recvd anchor vs the log's header timestamp): Anchored, rendered
+     * honestly as an APPROXIMATE estimate with the probe's [errorBoundMs]
+     * as the ± bound (the anchor method is coarse; the receive lag is
+     * unobservable — Sync.h). false = the anchors were absent: Manual —
+     * the trim slider is the user's offset.
      */
     fun syncStatus(
         gyroAttached: Boolean,
@@ -305,7 +307,8 @@ object EditorPreviewLogic {
 /**
  * The Stabilization group's sync-status verdict (gyro Phase 5): the pure
  * result of [EditorPreviewLogic.syncStatus], rendered by the group as the
- * localized status line (Anchored ±N ms / Manual offset / No gyro data).
+ * localized status line (Approximate (anchored ±N ms) / Manual offset /
+ * No gyro data).
  */
 enum class GyroSyncStatus { ANCHORED, MANUAL, NO_DATA }
 
@@ -2897,8 +2900,11 @@ private fun DetailPanel(
         // verdict — the warp itself stays a no-op until a log exists.
         if (showStabilization) {
             // The probe's numbers drive the status line (pure decision in
-            // EditorPreviewLogic.syncStatus): Anchored ±bound / Manual
-            // offset / No gyro data. gyroSync holds [anchored, offsetMs,
+            // EditorPreviewLogic.syncStatus): Approximate (anchored ±bound)
+            // / Manual offset / No gyro data — "approximate" because the
+            // anchor offset is a coarse wall-clock estimate (Sync.h: the
+            // receive lag is unobservable; optical-flow refinement is a
+            // later mission). gyroSync holds [anchored, offsetMs,
             // boundMs, focalMm, samples] from the attach-time probe.
             val sync = EditorPreviewLogic.syncStatus(
                 gyroAttached = gyroAttached,

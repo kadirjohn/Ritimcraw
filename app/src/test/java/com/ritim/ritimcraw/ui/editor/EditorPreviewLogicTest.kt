@@ -243,7 +243,9 @@ class EditorPreviewLogicTest {
     @Test
     fun attached_and_anchored_is_anchored() {
         // Both wall-clock anchors present (clip recvd vs log header):
-        // Anchored, with the probe's error bound shown as the ± value.
+        // Anchored — rendered as an approximate estimate with the probe's
+        // error bound as the ± value (the label says so since the
+        // 2026-11-12 honesty fix; the verdict enum is unchanged).
         assertEquals(
             GyroSyncStatus.ANCHORED,
             EditorPreviewLogic.syncStatus(

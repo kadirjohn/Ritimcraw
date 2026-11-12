@@ -81,7 +81,7 @@
     <string name="editor_slider_stabilization_strength">Strength</string>
     <string name="editor_slider_stabilization_zoom_limit">Zoom limit</string>
     <string name="editor_stabilization_sync_status">Sync: %1$s</string>
-    <string name="editor_stabilization_sync_anchored">Anchored ±%1$d ms</string>
+    <string name="editor_stabilization_sync_anchored">Approximate (anchored ±%1$d ms)</string>
     <string name="editor_stabilization_sync_manual">Manual offset</string>
     <string name="editor_stabilization_sync_no_data">No gyro data</string>
     <string name="editor_stabilization_attach_gyro">Attach gyro log</string>
