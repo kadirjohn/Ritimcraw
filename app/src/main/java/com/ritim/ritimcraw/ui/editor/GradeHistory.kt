@@ -68,15 +68,20 @@ class GradeHistory(initial: GradeK) {
         val SLIDER_GESTURE = Any()
 
         /**
-         * Capacity: 50 entries INCLUDING the bottom. A deliberate grading
-         * session on one clip is a few dozen whole-gesture steps; 50 covers
-         * it with headroom while bounding memory to ~50 GradeK snapshots —
-         * tens of KB, trivial next to one decoded preview frame. Overflow
-         * drops the OLDEST entry: undo is about recent context, and the
-         * deepest states of a long session are the least likely to be
-         * wanted back.
+         * Capacity: 101 entries INCLUDING the initial bottom state — the
+         * convention the owner flagged and this constant states precisely:
+         * [MAX_ENTRIES] counts STATES, not undo STEPS. 101 states = the
+         * seed plus 100 recorded steps = 100 servable undos (the owner-
+         * requested budget). Undo bottoms out one short of the bottom's
+         * neighbor: undo returns the grade to APPLY, and the initial state
+         * is a state to BE, not a step to take — so 101 states serve
+         * exactly 100 undos, never 101. Memory stays trivial: 101 GradeK
+         * snapshots is tens of KB, next to one decoded preview frame.
+         * Overflow drops the OLDEST entry (the bottom): undo is about
+         * recent context, and the deepest states of a long session are the
+         * least likely to be wanted back.
          */
-        const val MAX_ENTRIES = 50
+        const val MAX_ENTRIES = 101
     }
 
     /**

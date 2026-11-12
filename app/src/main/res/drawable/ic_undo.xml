@@ -1,21 +1,30 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <!-- Material Symbols undo style shape: a left-pointing arrowhead at
-         the top left, the stroke diving down and sweeping right into an
-         upward hook (the classic counterclockwise undo arrow). The
-         editor's grade undo affordance (feature N7). 48dp touch target
-         comes from the IconButton; Compose's Icon tints it via
-         LocalContentColor. Vendored because material-icons-core 1.7.3
-         has no Undo glyph. -->
-    <path
-        android:strokeColor="@android:color/white"
-        android:strokeWidth="2"
-        android:strokeLineCap="round"
-        android:pathData="M10,7.5 C10,12.8 13,15.7 17,15.7 C19.5,15.7 21.3,14.3 22,12.4" />
-    <path
-        android:fillColor="@android:color/white"
-        android:pathData="M7,7.5 l3,-2.7 v5.4 z" />
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <!-- OFFICIAL Material Symbols glyph "undo", ROUNDED style, default
+         (filled) weight, 24px — pathdata verbatim from Google Fonts:
+         https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/undo/default/24px.svg
+         (viewBox="0 -960 960 960"; the group's translateY remaps the
+         font's negative-Y coordinates onto Android's downward viewport).
+
+         Why ROUNDED and why vendored: the owner asked for a prettier
+         undo/redo pair ("biraz daha güzel bir geri al ileri al butonu
+         lütfen"); the previous hand-drawn stroke+arrowhead sat next to
+         the top bar's FILLED material-icons-core glyphs (ArrowBack,
+         ExitToApp, MoreVert) and read as a different family. Material
+         Symbols Rounded filled is Google's softer, friendlier M3 take
+         on the same filled family — the rounded terminals match the
+         app's squircle panel language, and the filled weight sits at
+         the same optical weight as the neighboring filled glyphs.
+         Vendored as a local drawable because material-icons-core 1.7.3
+         ships no Undo glyph (checked the AAR). The editor's grade undo
+         affordance (feature N7); the 48dp touch target comes from the
+         IconButton, and Compose's Icon tints it via LocalContentColor. -->
+    <group android:translateY="960">
+        <path
+            android:fillColor="@android:color/white"
+            android:pathData="M320-200q-17 0-28.5-11.5T280-240q0-17 11.5-28.5T320-280h244q63 0 109.5-40T720-420q0-60-46.5-100T564-560H312l76 76q11 11 11 28t-11 28q-11 11-28 11t-28-11L188-572q-6-6-8.5-13t-2.5-15q0-8 2.5-15t8.5-13l144-144q11-11 28-11t28 11q11 11 11 28t-11 28l-76 76h252q97 0 166.5 63T800-420q0 94-69.5 157T564-200H320Z" />
+    </group>
 </vector>
