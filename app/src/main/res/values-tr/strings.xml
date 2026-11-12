@@ -150,6 +150,11 @@
     <string name="editor_fullscreen_exit">Tam ekrandan çık</string>
     <string name="editor_histogram">Histogram</string>
     <string name="editor_histogram_clipped">Kırpıldı</string>
+    <string name="editor_histogram_raw_clip">RAW kırpma</string>
+    <string name="editor_histogram_raw_unavailable">RAW: sensör verisi yok</string>
+    <string name="editor_histogram_raw_parade">RAW Geçit</string>
+    <string name="editor_histogram_raw_parade_show">RAW geçidi göster</string>
+    <string name="editor_histogram_raw_parade_hide">RAW geçidi gizle</string>
     <string name="editor_scope_waveform">Waveform</string>
     <string name="editor_scope_show">Scope\'u göster</string>
     <string name="editor_scope_hide">Scope\'u gizle</string>

@@ -595,6 +595,14 @@ fun ClipEditorScreen(
         var histogramModeOrdinal by rememberSaveable {
             mutableStateOf(HistogramMode.RGB.ordinal)
         }
+        // The RAW mode's presentation (owner answer #6): COMBINED or
+        // PARADE. Saveable like the mode; the scope compute effect
+        // deliberately does NOT key on it — both shapes draw the SAME
+        // fetched rawHistogram (display-only, no new decode), so a
+        // toggle re-renders instantly without re-fetching.
+        var rawHistogramPresentationOrdinal by rememberSaveable {
+            mutableStateOf(RawHistogramPresentation.COMBINED.ordinal)
+        }
         var rawHistogram by remember(sourceId) { mutableStateOf<RawHistogram?>(null) }
         // Sampling quality (spec §6): scope-ONLY resolution — it changes
         // how many pixels each waveform pass samples, never the source /
@@ -1879,6 +1887,7 @@ fun ClipEditorScreen(
                             histogram = histogram,
                             rawHistogram = rawHistogram,
                             histogramModeOrdinal = histogramModeOrdinal,
+                            rawPresentationOrdinal = rawHistogramPresentationOrdinal,
                             waveform = waveformRendered,
                             waveformModeOrdinal = waveformModeOrdinal,
                             midGrayAvailable = grade.tonemap == 0 && grade.lutId == null,
@@ -2173,6 +2182,8 @@ fun ClipEditorScreen(
                     rawHistogram = rawHistogram,
                     histogramModeOrdinal = histogramModeOrdinal,
                     onHistogramModeChange = { histogramModeOrdinal = it },
+                    rawPresentationOrdinal = rawHistogramPresentationOrdinal,
+                    onRawPresentationChange = { rawHistogramPresentationOrdinal = it },
                     waveform = waveformRendered,
                     waveformModeOrdinal = waveformModeOrdinal,
                     onWaveformModeChange = { waveformModeOrdinal = it },

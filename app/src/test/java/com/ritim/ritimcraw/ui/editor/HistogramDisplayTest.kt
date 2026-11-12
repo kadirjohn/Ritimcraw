@@ -308,4 +308,139 @@ class HistogramDisplayTest {
             }
         }
     }
+
+    // ---- the RAW parade's per-site-density normalization (owner answer #6) ----
+
+    /**
+     * A RawHistogram that models the Bayer geometry faithfully: green
+     * carries 2x the counts AND 2x the samples of red in the same bin
+     * (both green sites of the 2x2 CFA cell pool there), red and blue
+     * one site each — the exact shape RawStats.cpp produces.
+     */
+    private fun bayerDoubledGreenRaw(): RawHistogram {
+        val red = IntArray(RawHistogram.BINS)
+        val green = IntArray(RawHistogram.BINS)
+        val blue = IntArray(RawHistogram.BINS)
+        red[200] = 100
+        green[200] = 200
+        blue[200] = 25
+        return RawHistogram(
+            frameIndex = 0, width = 4032, height = 3024,
+            redBins = red, greenBins = green, blueBins = blue,
+            whiteClips = IntArray(3), blackClips = IntArray(3),
+            samples = intArrayOf(100, 200, 25),
+            blackUsed = IntArray(4), whiteUsed = 1023,
+        )
+    }
+
+    @Test
+    fun raw_parade_divides_out_the_bayer_green_doublet() {
+        // THE parade normalization rule (owner answer #6): the Bayer CFA
+        // has TWO green sites per 2x2 cell, so the RAW stats pool ~2x
+        // the samples into GREEN — geometry, not content. Give green
+        // exactly 2x the counts AND 2x the samples of red in the same
+        // bin (a faithful doubled green site): the per-site-density
+        // parade must draw green at the SAME height as red, while the
+        // combined RAW view (count-based common scale) honestly keeps
+        // the 2x ratio — the artifact the parade exists to remove.
+        val raw = bayerDoubledGreenRaw()
+        val parade = HistogramDisplay.computeRawParade(raw)
+        val red = parade.getValue(RawHistogram.Channel.RED)
+        val green = parade.getValue(RawHistogram.Channel.GREEN)
+        val blue = parade.getValue(RawHistogram.Channel.BLUE)
+        // Equal per-site densities: the drawn red and green arrays are
+        // element-wise equal — green does NOT tower over red.
+        for (i in red.indices) {
+            assertEquals(red[i], green[i], 0.0001f)
+        }
+        // The tallest density still touches the top of its cell.
+        assertEquals(1f, green.max(), 0.001f)
+        // Blue keeps its honest quarter-density shape (25 counts on
+        // 25 sites = the same density as red, so it draws equal too —
+        // every channel here has the same per-site distribution).
+        assertEquals(red[203], blue[203], 0.0001f)
+        // Contrast: the combined view keeps the raw count ratio — the
+        // two views answer different questions, both honestly.
+        val combined = HistogramDisplay.computeRaw(raw)
+        assertEquals(
+            combined.getValue(RawHistogram.Channel.RED)[203] * 2f,
+            combined.getValue(RawHistogram.Channel.GREEN)[203],
+            0.001f,
+        )
+    }
+
+    @Test
+    fun raw_parade_smoothing_never_touches_the_sensor_counts() {
+        // The raw-counts-stay-raw rule, parade edition: computeRawParade
+        // smooths a COPY; the sensor bins must be bitwise unchanged, so
+        // the RAW clip dots (which read the exact counts) can never be
+        // created or hidden by the display pipeline.
+        val raw = bayerDoubledGreenRaw()
+        val binsBefore = raw.bins(RawHistogram.Channel.GREEN).copyOf()
+        HistogramDisplay.computeRawParade(raw)
+        assertArrayEquals(binsBefore, raw.bins(RawHistogram.Channel.GREEN))
+    }
+
+    @Test
+    fun raw_parade_null_is_an_empty_map_never_a_fabricated_curve() {
+        // No sensor data (an encoded clip, or the fetch failed): the
+        // parade maps to an EMPTY display — the unavailability notice
+        // shows; the pipeline never invents a shape.
+        assertTrue(HistogramDisplay.computeRawParade(null).isEmpty())
+    }
+
+    @Test
+    fun raw_parade_zero_samples_draw_flat_zero_no_nan() {
+        // A channel with zero sampled sites (a degenerate fetch) must
+        // draw flat zero — never NaN from 0/0 — and all three sensor
+        // channels are always present in the parade map.
+        val zero = RawHistogram(
+            frameIndex = 0, width = 4032, height = 3024,
+            redBins = IntArray(RawHistogram.BINS),
+            greenBins = IntArray(RawHistogram.BINS),
+            blueBins = IntArray(RawHistogram.BINS),
+            whiteClips = IntArray(3), blackClips = IntArray(3),
+            samples = IntArray(3), blackUsed = IntArray(4), whiteUsed = 1023,
+        )
+        val display = HistogramDisplay.computeRawParade(zero)
+        assertEquals(3, display.size)
+        assertTrue(display.containsKey(RawHistogram.Channel.RED))
+        assertTrue(display.containsKey(RawHistogram.Channel.GREEN))
+        assertTrue(display.containsKey(RawHistogram.Channel.BLUE))
+        for (values in display.values) {
+            for (v in values) {
+                assertEquals(0f, v, 0f)
+                assertFalse(v.isNaN())
+            }
+        }
+    }
+
+    // ---- the RAW mode's presentation rules (owner answer #6) ----
+
+    @Test
+    fun raw_presentation_toggle_flips_both_ways() {
+        // The chip cycles exactly between the two shapes.
+        assertEquals(
+            RawHistogramPresentation.PARADE,
+            RawHistogramModeRules.onToggle(RawHistogramPresentation.COMBINED),
+        )
+        assertEquals(
+            RawHistogramPresentation.COMBINED,
+            RawHistogramModeRules.onToggle(RawHistogramPresentation.PARADE),
+        )
+    }
+
+    @Test
+    fun raw_presentation_from_ordinal_coerces_any_restored_int() {
+        // The saveable ordinal round trip: any restored Int — including
+        // a stale or out-of-range one — coerces into a valid
+        // presentation, so process restore can never crash the chip.
+        assertEquals(RawHistogramPresentation.COMBINED, RawHistogramModeRules.fromOrdinal(0))
+        assertEquals(RawHistogramPresentation.PARADE, RawHistogramModeRules.fromOrdinal(1))
+        assertEquals(RawHistogramPresentation.COMBINED, RawHistogramModeRules.fromOrdinal(-1))
+        assertEquals(
+            RawHistogramPresentation.PARADE,
+            RawHistogramModeRules.fromOrdinal(Int.MAX_VALUE),
+        )
+    }
 }

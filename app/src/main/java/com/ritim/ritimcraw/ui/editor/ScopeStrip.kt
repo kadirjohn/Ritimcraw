@@ -141,6 +141,12 @@ fun ScopeStrip(
     rawHistogram: RawHistogram?,
     histogramModeOrdinal: Int,
     onHistogramModeChange: (Int) -> Unit,
+    // The RAW mode's presentation (owner answer #6): COMBINED or
+    // PARADE — screen saveable state exactly like the mode ordinal,
+    // display-only (both shapes draw the SAME fetched stats; the
+    // compute effect does not key on it).
+    rawPresentationOrdinal: Int,
+    onRawPresentationChange: (Int) -> Unit,
     waveform: WaveformDisplay.Rendered?,
     waveformModeOrdinal: Int,
     onWaveformModeChange: (Int) -> Unit,
@@ -228,6 +234,8 @@ fun ScopeStrip(
                     modeOrdinal = histogramModeOrdinal,
                     onModeChange = onHistogramModeChange,
                     raw = rawHistogram,
+                    rawPresentationOrdinal = rawPresentationOrdinal,
+                    onRawPresentationChange = onRawPresentationChange,
                     onGraphTap = onGraphTap,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -570,6 +578,10 @@ fun ScopeMiniOverlay(
     histogram: FrameHistogram.Result,
     rawHistogram: RawHistogram?,
     histogramModeOrdinal: Int,
+    // The RAW presentation rides along (owner answer #6): the mini
+    // shows the SAME shape the strip shows — same screen state, the
+    // shared graph draws it; display-only by construction.
+    rawPresentationOrdinal: Int,
     waveform: WaveformDisplay.Rendered?,
     waveformModeOrdinal: Int,
     midGrayAvailable: Boolean,
@@ -609,6 +621,7 @@ fun ScopeMiniOverlay(
                 mode = HistogramMode.entries[
                     histogramModeOrdinal.coerceIn(0, HistogramMode.entries.lastIndex)
                 ],
+                rawPresentation = RawHistogramModeRules.fromOrdinal(rawPresentationOrdinal),
                 onGraphTap = null,
                 modifier = Modifier.fillMaxSize().padding(2.dp),
             )
