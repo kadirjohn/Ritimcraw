@@ -108,6 +108,8 @@
     <string name="editor_export_dng">DNG aktar</string>
     <string name="editor_export_mp4">MP4 aktar</string>
     <string name="editor_more">Diğer seçenekler</string>
+    <string name="editor_undo">Geri al</string>
+    <string name="editor_redo">Yinele</string>
     <string name="editor_clip_info">Klip bilgisi</string>
     <string name="editor_clip_info_name">Dosya</string>
     <string name="editor_clip_info_resolution">Çözünürlük</string>

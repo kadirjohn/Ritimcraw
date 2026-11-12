@@ -35,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -120,6 +121,16 @@ fun EditorTopBar(
     // container-upright pixels, so the display never double-rotates.
     // Default no-op keeps call sites without rotation working.
     onRotate: (byDeg: Int) -> Unit = {},
+    // ---- Grade undo/redo (feature N7) ----
+    // The screen's history gates the buttons: canUndo/canRedo are the
+    // GradeHistory snapshot reads (reactive), and the callbacks apply the
+    // popped grade through the screen's own grade-write path — the same
+    // one a slider move uses — WITHOUT recording, so undo never clears
+    // the redo stack. Defaults keep call sites without history working.
+    canUndo: Boolean = false,
+    canRedo: Boolean = false,
+    onUndo: () -> Unit = {},
+    onRedo: () -> Unit = {},
 ) {
     var exportSheetOpen by remember { mutableStateOf(false) }
     var infoSheetOpen by remember { mutableStateOf(false) }
@@ -151,6 +162,23 @@ fun EditorTopBar(
                 .weight(1f)
                 .padding(start = 4.dp, end = 8.dp),
         )
+        // Grade undo/redo (feature N7): two always-composed IconButtons
+        // after the name, disabled at the history's bounds — the same
+        // 48dp IconButton convention as Export, vendored glyphs (see
+        // ic_undo). The name keeps weight(1f) + ellipsis, so the five
+        // buttons can never push each other off-screen.
+        IconButton(onClick = onUndo, enabled = canUndo) {
+            Icon(
+                painterResource(R.drawable.ic_undo),
+                contentDescription = stringResource(R.string.editor_undo),
+            )
+        }
+        IconButton(onClick = onRedo, enabled = canRedo) {
+            Icon(
+                painterResource(R.drawable.ic_redo),
+                contentDescription = stringResource(R.string.editor_redo),
+            )
+        }
         IconButton(
             onClick = { exportSheetOpen = true },
             enabled = exportEnabled,
