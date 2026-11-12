@@ -4,10 +4,13 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -30,6 +33,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.engine.RawHistogram
@@ -130,6 +135,13 @@ fun HistogramScopeView(
     modeOrdinal: Int,
     onModeChange: (Int) -> Unit,
     raw: RawHistogram?,
+    // The RAW mode's presentation (owner answer #6): COMBINED (the
+    // overlaid shape) or PARADE (three side-by-side sensor cells).
+    // Screen saveable state like the mode ordinal — display-only, the
+    // compute effect does NOT key on it (both shapes draw the SAME
+    // fetched stats; no new decode, no new fetch).
+    rawPresentationOrdinal: Int,
+    onRawPresentationChange: (Int) -> Unit,
     // Tapping the graph itself shrinks the strip to the mini overlay
     // (owner request 2026-11-12 §2): only the GRAPH area answers — the
     // mode row above stays mode-switching, the label band stays
@@ -143,23 +155,56 @@ fun HistogramScopeView(
     // crosses process-death save/restore; a stale value must select
     // the nearest real mode.
     val mode = HistogramMode.entries[modeOrdinal.coerceIn(0, HistogramMode.entries.lastIndex)]
+    val rawPresentation = RawHistogramModeRules.fromOrdinal(rawPresentationOrdinal)
 
     Column(modifier) {
-        // Mode switch: RGB / Luma / Parade / RAW. The labels are
-        // literal codes in every locale (owner spec: mode names stay
+        // Mode switch row: RGB / Luma / Parade / RAW segmented buttons —
+        // and in the RAW mode, the parade chip as a PEER of the mode
+        // buttons (the waveform's sampling-chip pattern: one row, no
+        // height change — HEIGHT STABILITY). The labels are literal
+        // codes in every locale (owner spec: mode names stay
         // untranslated), like ACES/AgX do.
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            HistogramMode.entries.forEachIndexed { index, m ->
-                SegmentedButton(
-                    selected = m == mode,
-                    onClick = { onModeChange(m.ordinal) },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = HistogramMode.entries.size,
-                    ),
-                ) {
-                    Text(m.label)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
+                HistogramMode.entries.forEachIndexed { index, m ->
+                    SegmentedButton(
+                        selected = m == mode,
+                        onClick = { onModeChange(m.ordinal) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = HistogramMode.entries.size,
+                        ),
+                    ) {
+                        Text(m.label)
+                    }
                 }
+            }
+            if (mode == HistogramMode.RAW) {
+                // The RAW parade toggle (owner answer #6): a compact
+                // chip, present ONLY in the RAW mode — a display-only
+                // choice over the already-fetched stats. The
+                // description names show/hide for accessibility; the
+                // visible label is the distinct "RAW Parade" name
+                // (never the processed Parade's).
+                val chipLabel = stringResource(R.string.editor_histogram_raw_parade)
+                val chipDescription = stringResource(
+                    if (rawPresentation == RawHistogramPresentation.PARADE) {
+                        R.string.editor_histogram_raw_parade_hide
+                    } else {
+                        R.string.editor_histogram_raw_parade_show
+                    }
+                )
+                Spacer(Modifier.width(8.dp))
+                FilterChip(
+                    selected = rawPresentation == RawHistogramPresentation.PARADE,
+                    onClick = {
+                        onRawPresentationChange(
+                            RawHistogramModeRules.onToggle(rawPresentation).ordinal
+                        )
+                    },
+                    label = { Text(chipLabel, maxLines = 1) },
+                    modifier = Modifier.semantics { contentDescription = chipDescription },
+                )
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -169,6 +214,7 @@ fun HistogramScopeView(
             result = result,
             raw = raw,
             mode = mode,
+            rawPresentation = rawPresentation,
             onGraphTap = onGraphTap,
             modifier = Modifier
                 .fillMaxWidth()
@@ -256,6 +302,7 @@ internal fun HistogramGraph(
     result: FrameHistogram.Result,
     raw: RawHistogram?,
     mode: HistogramMode,
+    rawPresentation: RawHistogramPresentation,
     onGraphTap: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
@@ -289,8 +336,19 @@ internal fun HistogramGraph(
     val display = remember(result, mode) {
         HistogramDisplay.compute(result, mode)
     }
-    val rawDisplay = remember(raw, mode) {
-        if (mode == HistogramMode.RAW) HistogramDisplay.computeRaw(raw) else null
+    // The RAW pipeline is presentation-dependent (owner answer #6):
+    // COMBINED keeps computeRaw's count-based common denominator
+    // (relative CFA levels across channels are the point of the
+    // overlay); PARADE uses computeRawParade's per-site density (the
+    // Bayer 2x green geometry is divided out — see its KDoc). Both are
+    // display-only over the SAME fetched stats.
+    val rawDisplay = remember(raw, mode, rawPresentation) {
+        when {
+            mode != HistogramMode.RAW -> null
+            rawPresentation == RawHistogramPresentation.PARADE ->
+                HistogramDisplay.computeRawParade(raw)
+            else -> HistogramDisplay.computeRaw(raw)
+        }
     }
     // Clip indicators read the RAW counts (not the smoothed display).
     val shadowClipSlots = FrameHistogram.Channel.entries.filter { result.isBlackClipped(it) }
@@ -319,20 +377,34 @@ internal fun HistogramGraph(
             // PRE-DEVELOP sensor domain: the RAW curves over the
             // develop-normalized CFA bins, with the RAW domain's
             // OWN clip dots. No processed indicator is drawn here,
-            // ever (the owner's mandate).
-            drawGrid(gridColor)
-            if (rawDisplay != null) {
-                // Same draw order as the processed RGB mode: blue
-                // -> green -> red, SrcOver fills mix, red reads on
-                // top.
-                drawRawCurve(rawDisplay, RawHistogram.Channel.BLUE, BlueChannelColor)
-                drawRawCurve(rawDisplay, RawHistogram.Channel.GREEN, GreenChannelColor)
-                drawRawCurve(rawDisplay, RawHistogram.Channel.RED, RedChannelColor)
+            // ever (the owner's mandate). The presentation picks the
+            // shape: COMBINED (the overlaid channels) or PARADE
+            // (three side-by-side cells, owner answer #6) — both over
+            // the SAME fetched stats.
+            if (rawPresentation == RawHistogramPresentation.PARADE) {
+                drawRawParade(
+                    rawDisplay ?: emptyMap(),
+                    rawChannelColors,
+                    gridColor,
+                    dotBackingColor,
+                    rawShadowClipSlots,
+                    rawHighlightClipSlots,
+                )
+            } else {
+                drawGrid(gridColor)
+                if (rawDisplay != null) {
+                    // Same draw order as the processed RGB mode: blue
+                    // -> green -> red, SrcOver fills mix, red reads on
+                    // top.
+                    drawRawCurve(rawDisplay, RawHistogram.Channel.BLUE, BlueChannelColor)
+                    drawRawCurve(rawDisplay, RawHistogram.Channel.GREEN, GreenChannelColor)
+                    drawRawCurve(rawDisplay, RawHistogram.Channel.RED, RedChannelColor)
+                }
+                drawRawClipDots(rawShadowClipSlots, rawChannelColors, dotBackingColor,
+                    anchorStart = true, boundsWidth = size.width)
+                drawRawClipDots(rawHighlightClipSlots, rawChannelColors, dotBackingColor,
+                    anchorStart = false, boundsWidth = size.width)
             }
-            drawRawClipDots(rawShadowClipSlots, rawChannelColors, dotBackingColor,
-                anchorStart = true, boundsWidth = size.width)
-            drawRawClipDots(rawHighlightClipSlots, rawChannelColors, dotBackingColor,
-                anchorStart = false, boundsWidth = size.width)
         } else if (mode == HistogramMode.PARADE) {
             drawParade(display, channelColors, gridColor, dotBackingColor,
                 shadowClipSlots, highlightClipSlots)
@@ -487,6 +559,61 @@ private fun DrawScope.drawParade(
 }
 
 /**
+ * The RAW PARADE (owner answer #6): the sensor-domain mirror of
+ * [drawParade] — three side-by-side CFA channel cells over the
+ * per-site-density display values ([HistogramDisplay.computeRawParade],
+ * which divides out the Bayer 2x green geometry), with the RAW domain's
+ * OWN clip dots per cell. A separate function for the same reason as
+ * [drawRawCurve]: the RAW draw path never calls a processed-channel
+ * helper and vice versa — a slot of one domain can never be looked up
+ * in the other's color map.
+ */
+private fun DrawScope.drawRawParade(
+    display: Map<RawHistogram.Channel, FloatArray>,
+    channelColors: Map<RawHistogram.Channel, Color>,
+    gridColor: Color,
+    dotBackingColor: Color,
+    shadowClipSlots: List<RawHistogram.Channel>,
+    highlightClipSlots: List<RawHistogram.Channel>,
+) {
+    val w = size.width
+    val h = size.height
+    val cellW = w / 3f
+    // Cell boundaries as the gridlines (the processed parade's layout).
+    for (x in listOf(cellW, cellW * 2f)) {
+        drawLine(gridColor, Offset(x, 0f), Offset(x, h), strokeWidth = 1f)
+    }
+    val paradeOrder = listOf(
+        RawHistogram.Channel.RED,
+        RawHistogram.Channel.GREEN,
+        RawHistogram.Channel.BLUE,
+    )
+    paradeOrder.forEachIndexed { index, channel ->
+        val left = index * cellW
+        clipRect(left = left, right = left + cellW) {
+            val values = display[channel] ?: return@clipRect
+            val fill = Path()
+            val outline = Path()
+            buildCurvePaths(values, left, cellW, h, fill, outline)
+            drawPath(fill, channelColors.getValue(channel).copy(alpha = 0.5f))
+            drawPath(
+                outline, channelColors.getValue(channel),
+                style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+            // This cell reports only ITS channel's sensor-domain clips.
+            if (channel in shadowClipSlots) {
+                drawRawClipDots(listOf(channel), channelColors, dotBackingColor,
+                    anchorStart = true, boundsLeft = left, boundsWidth = cellW)
+            }
+            if (channel in highlightClipSlots) {
+                drawRawClipDots(listOf(channel), channelColors, dotBackingColor,
+                    anchorStart = false, boundsLeft = left, boundsWidth = cellW)
+            }
+        }
+    }
+}
+
+/**
  * Builds the fill path (curve closed along the bottom) and the outline
  * path (the curve alone) for [values] (0..1) inside the horizontal
  * span [left, left+width]. 256 samples across the span: the Gaussian
@@ -608,6 +735,43 @@ internal enum class HistogramMode(val label: String) {
 }
 
 /**
+ * The RAW mode's own presentation choice (owner answer #6, the RAW
+ * parade): COMBINED — the existing three-channel-overlaid shape over
+ * the sensor bins — or PARADE — three side-by-side per-channel cells,
+ * the sensor-domain mirror of the processed Parade mode's layout.
+ * A SEPARATE axis from [HistogramMode] (not a fifth entry): every RAW
+ * shape needs the SAME fetched [RawHistogram] (no new decode, no new
+ * fetch — display-only), so the choice must not re-key the screen's
+ * scope compute effect the way the mode itself does. The chip state
+ * is screen saveable exactly like the mode ordinal; the pure decision
+ * rules below are JVM-tested.
+ */
+internal enum class RawHistogramPresentation {
+    COMBINED,
+    PARADE,
+}
+
+/**
+ * The pure mode-decision rules for the RAW parade toggle (the same
+ * pattern as [ScopePresentationRules]): the screen stores the enum and
+ * calls these — no transition logic in the composables.
+ */
+internal object RawHistogramModeRules {
+
+    /** The chip toggle: flip between the two RAW presentations. */
+    fun onToggle(state: RawHistogramPresentation): RawHistogramPresentation =
+        if (state == RawHistogramPresentation.COMBINED) {
+            RawHistogramPresentation.PARADE
+        } else {
+            RawHistogramPresentation.COMBINED
+        }
+
+    /** The ordinal is saveable state: a stale value coerces to a real one. */
+    fun fromOrdinal(ordinal: Int): RawHistogramPresentation =
+        RawHistogramPresentation.entries[ordinal.coerceIn(0, RawHistogramPresentation.entries.lastIndex)]
+}
+
+/**
  * The display pipeline for one mode — PURE, no Compose (JVM-testable
  * like FrameHistogram and EditorLayout): Gaussian-smooth a COPY of each
  * drawn channel's raw bins (sigma 2, radius 6, 13 taps, edge-replicate
@@ -706,6 +870,77 @@ internal object HistogramDisplay {
         val out = HashMap<RawHistogram.Channel, FloatArray>(drawn.size)
         for (channel in drawn) {
             val values = smoothed.getValue(channel)
+            out[channel] = FloatArray(values.size) { (values[it] / denominator).coerceIn(0f, 1f) }
+        }
+        return out
+    }
+
+    /**
+     * The RAW PARADE's display pipeline (owner answer #6) — the same
+     * display-only discipline, but a DIFFERENT normalization than the
+     * combined RAW view, because the sensor domain has a geometry
+     * artifact the processed domain does not: the Bayer 2x2 cell has
+     * TWO green sites and one red, one blue (RawStats counts each site
+     * into its channel's bins, so green's ~2x sample count is CFA
+     * GEOMETRY, not signal content). Normalizing raw counts by one
+     * denominator — [computeRaw]'s discipline, correct for the combined
+     * view where relative CFA levels are the point — would draw green
+     * ~2x taller than the same content in R/B in a per-cell parade.
+     *
+     * THE NORMALIZATION (per-site density, the owner's approved option):
+     * each channel's smoothed counts are divided by ITS OWN sample count
+     * (the sites that fed the channel), giving a per-bin density — the
+     * fraction of that channel's sites in that bin — then all three are
+     * scaled by ONE common denominator (the largest 99th-percentile
+     * density). The count-based 2x green artifact is divided out exactly
+     * (G's samples ≈ 2x R's, per the native stats layout), relative
+     * densities still read across cells through the common scale, and
+     * the top-1% spike ignore is preserved (percentile99 over densities).
+     * A channel with zero samples (an impossible sensor state, but the
+     * honest floor) draws flat zero — its density is defined as zero,
+     * never a division by zero.
+     *
+     * The raw counts, clip counts and sample counts in [raw] are
+     * untouched (the owner's raw-counts-stay-raw rule — the RAW clip
+     * indicators keep reading the exact sensor clips); the division
+     * happens on the smoothed COPY. Reuses the SAME fetched stats —
+     * display-only, no new decode or fetch.
+     */
+    fun computeRawParade(raw: RawHistogram?): Map<RawHistogram.Channel, FloatArray> {
+        if (raw == null) return emptyMap()
+        val drawn = listOf(
+            RawHistogram.Channel.RED,
+            RawHistogram.Channel.GREEN,
+            RawHistogram.Channel.BLUE,
+        )
+        val smoothed = HashMap<RawHistogram.Channel, FloatArray>(drawn.size)
+        for (channel in drawn) {
+            smoothed[channel] = smooth(raw.bins(channel))
+        }
+        // Per-site density: the smoothed count divided by the channel's
+        // OWN site count — the CFA geometry's 2x green is divided out
+        // exactly, so a cell's curve reads the channel's tonal
+        // DISTRIBUTION, not its site count.
+        val densities = HashMap<RawHistogram.Channel, FloatArray>(drawn.size)
+        for (channel in drawn) {
+            val values = smoothed.getValue(channel)
+            val samples = raw.samples[channel.ordinal].toFloat()
+            densities[channel] = if (samples <= 0f) {
+                FloatArray(values.size)
+            } else {
+                FloatArray(values.size) { values[it] / samples }
+            }
+        }
+        // ONE common denominator over the densities (the same common-
+        // scale discipline: per-cell scaling would equalize the curves
+        // and lie about relative densities).
+        var denominator = 1e-12f
+        for (channel in drawn) {
+            denominator = max(denominator, percentile99(densities.getValue(channel)))
+        }
+        val out = HashMap<RawHistogram.Channel, FloatArray>(drawn.size)
+        for (channel in drawn) {
+            val values = densities.getValue(channel)
             out[channel] = FloatArray(values.size) { (values[it] / denominator).coerceIn(0f, 1f) }
         }
         return out

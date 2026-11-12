@@ -143,13 +143,60 @@ class GradeHistoryTest {
         val history = GradeHistory(initial)
         val over = GradeHistory.MAX_ENTRIES + 5
         repeat(over) { step -> history.record(gradeAt(step + 1)) }
-        // The stack kept the newest 50: undo bottoms out at the OLDEST
-        // SURVIVING grade, not the initial one.
+        // The stack kept the newest MAX_ENTRIES states: undo bottoms out
+        // at the OLDEST SURVIVING grade, not the initial one.
         var last: GradeK? = null
         repeat(GradeHistory.MAX_ENTRIES - 1) { last = history.undo() }
         assertEquals(gradeAt(over - GradeHistory.MAX_ENTRIES + 1), last)
         assertNull(history.undo())
         assertFalse(history.canUndo)
+    }
+
+    @Test
+    fun the_capacity_serves_exactly_100_undos_and_no_more() {
+        // The owner's 100-undo budget, pinned at the boundary: 101 states
+        // (the initial bottom + 100 recorded steps) serve EXACTLY 100
+        // undos — the 100th lands on the initial grade itself, and the
+        // 101st returns null: the initial state is a state to BE, not a
+        // step to take past. Each undo returns the grade to APPLY (one
+        // step back from the current one).
+        val history = GradeHistory(initial)
+        repeat(100) { step -> history.record(gradeAt(step + 1)) }
+        assertTrue(history.canUndo)
+        // Undos 1..99 land on g99 down to g1.
+        repeat(99) { undone ->
+            assertEquals(gradeAt(99 - undone), history.undo())
+        }
+        // The 100th and final served undo lands on the initial state.
+        assertEquals(initial, history.undo())
+        // Nothing deeper to serve.
+        assertNull(history.undo())
+        assertFalse(history.canUndo)
+    }
+
+    @Test
+    fun the_boundary_step_itself_makes_the_oldest_state_fall_off() {
+        // Drop-oldest boundary, pinned exactly AT the capacity: the record
+        // that FILLS the stack to MAX_ENTRIES keeps the initial state;
+        // the very NEXT record pushes it off, and undo bottoms out one
+        // step shallower — the honest edge the overflow must show.
+        val history = GradeHistory(initial)
+        repeat(GradeHistory.MAX_ENTRIES - 1) { step ->
+            history.record(gradeAt(step + 1))
+        }
+        // Stack holds exactly MAX_ENTRIES states, initial still the bottom.
+        var last: GradeK? = null
+        repeat(GradeHistory.MAX_ENTRIES - 1) { last = history.undo() }
+        assertEquals(initial, last)
+        assertNull(history.undo())
+        // Refill to full, then ONE more record: the initial state falls off.
+        repeat(GradeHistory.MAX_ENTRIES - 1) { step ->
+            history.record(gradeAt(step + 1))
+        }
+        history.record(gradeAt(GradeHistory.MAX_ENTRIES))
+        repeat(GradeHistory.MAX_ENTRIES - 1) { last = history.undo() }
+        assertEquals(gradeAt(1), last)
+        assertNull(history.undo())
     }
 
     @Test
