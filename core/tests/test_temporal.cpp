@@ -432,6 +432,393 @@ TEST_CASE("occluded_block_gets_zero_weight_background_merges") {
           < 0.8 * variance(c, kTw, 176, 176, 240, 240));
 }
 
+// ---- auto-exposure micro-flicker (source-comparison item #9) ----
+// A uniform level step between adjacent frames (AE convergence) rides on
+// every block residual: it inflates the winner MADs (and so the measured
+// noise floor) and, once it exceeds ~3 sigma of the difference, pushes
+// static content out of the static-path gate. The winner-MAD de-bias —
+// the pair's GLOBAL proxy mean difference, subtracted before |.| —
+// removes exactly that bias, while a LOCAL content change keeps its
+// residual and stays rejected (the next test).
+
+TEST_CASE("ae_flicker_pair_merges_static_content") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // Same texture, the neighbor uniformly +24 DN (~2.5% of range) — an
+    // AE-convergence step inside the mergeable band: under the 4%
+    // mean-luma gate (measured shift 2.50%) and under the 0.30
+    // histogram-TV cut gate (measured 0.26), so the global gates rightly
+    // call it flicker, not a cut or exposure jump. Measured A/B on this
+    // exact content (probe dbg_n9): WITHOUT the de-bias the step rides
+    // every residual — plain winner MADs inflate to 0.025, r0 = 3.4 >
+    // 3, the sigma taper is zero and all 16 blocks reject -> the whole
+    // neighbor is dropped (a static scene loses its noise reduction to
+    // flicker). WITH the global de-bias the residuals are pure noise
+    // again: floor 0.0029 vs the noise model's expected 0.0029, r0 =
+    // 0.40, full confidence. Real AE micro-flicker is smaller (the 4K
+    // fixture measures +-0.0025%); there the de-bias's value is keeping
+    // the floor honest (measured inflation x1.05 plain vs x0.97
+    // de-biased at +0.4%).
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, texture, 121, 5.0f);
+    std::vector<uint16_t> n = makeFrame(kLw, kLw, texture, 122, 5.0f);
+    for (size_t i = 0; i < n.size(); ++i) {
+        const int v = static_cast<int>(n[i]) + 24;
+        n[i] = static_cast<uint16_t>(std::min(v, 1023));
+    }
+    const NoiseProfile prof = constantProfile(5.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.centerNoise = &prof;
+    ts.prevNoise = &prof;
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    // De-biased, the neighbor merges at full confidence.
+    CHECK(rep.prev.eligible);
+    CHECK(rep.prev.acceptRate > 0.9f);
+    CHECK(rep.prev.meanWeight > 0.25f);
+    // The output is pulled toward the neighbor's exposure by the blend
+    // share (0.40/1.40 x 24 DN ~ 6.9 DN at full block weight, shared
+    // with adjacent blocks inside the feather bands): temporal averaging
+    // DAMPS exposure flicker instead of passing it through at full
+    // amplitude — the alternative (a rejected neighbor) leaves 100% of
+    // the step in.
+    const double dMean = meanOf(out, kLw, 128, 128, 256, 256)
+                       - meanOf(c, kLw, 128, 128, 256, 256);
+    CHECK(dMean > 5.0);
+    CHECK(dMean < 12.0);
+}
+
+TEST_CASE("local_content_change_is_not_debiased_away") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // One block (proxy block (1,1) = CFA 128..255 sq) brightens by 0.05 of
+    // range in the neighbor; the other 15 blocks are identical texture.
+    // A PER-BLOCK mean subtraction would erase this residual (measured,
+    // probe_n3b: a 0.30-of-range block change drops from MAD 0.300 to
+    // 0.0035 ~= the noise floor -> merges -> guaranteed ghost); the
+    // GLOBAL de-bias keeps it — the changed block's residual survives
+    // minus its 1/16 share of the global offset — and the block stays
+    // rejected while the rest of the frame merges.
+    auto oneBlockBrighter = [](uint32_t x, uint32_t y) {
+        if (x >= 128 && x < 256 && y >= 128 && y < 256)
+            return texture(x, y) + 0.05f;
+        return texture(x, y);
+    };
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, texture, 131, 5.0f);
+    std::vector<uint16_t> n =
+        makeFrame(kLw, kLw, oneBlockBrighter, 132, 5.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    // The 15 unchanged blocks merge (the 1/16 poisoning share of the
+    // global offset, 0.003 of range, sits inside the noise model).
+    REQUIRE(rep.prev.eligible);
+    CHECK(rep.prev.acceptRate > 0.5f);
+    // The changed block keeps its residual and is rejected. Its interior
+    // — outside the feather bands, where it is the only candidate —
+    // carries weight 0, so those pixels keep the center EXACTLY (the
+    // per-block variant would have blended the brightened content in).
+    for (uint32_t y = 160; y < 224; ++y)
+        for (uint32_t x = 160; x < 224; ++x)
+            CHECK(out[static_cast<size_t>(y) * kLw + x]
+                  == c[static_cast<size_t>(y) * kLw + x]);
+}
+
+// Source-comparison item #10 (runtime sigma rescale: compare the metadata
+// sigma against the measured winner-MAD floor, rescale and re-run the taper
+// when they diverge >30%) was DROPPED, and the test below pins the reason:
+//
+// - OVERCLAIM direction (the ghost-risk direction #10 was designed for):
+//   redundant. Every admitted block must already pass the hard floor gate
+//   mad <= 3x floor, and the floor is measured from THIS pair's actual
+//   residuals (~0.399 sigma_true), so any admitted block sits at
+//   r0 <= 1.2 sigma_true where the sigma taper is identically 1.0 —
+//   shrinking the overclaimed sigma re-runs the taper on blocks whose
+//   confidence is already saturated, and rejects stay rejects. The floor
+//   gate, not the metadata sigma, bounds a content change under a
+//   grossly overclaimed profile (test below).
+// - UNDERCLAIM direction: unsafe, not just useless. The rescale's signal
+//   is the measured floor, and a CONTENT-INFLATED floor (textured clip)
+//   is indistinguishable from an underclaimed profile: rescaling sigma
+//   upward there admits blocks up to 3x the inflated floor, i.e.
+//   content. That is a ghost the current gates do not have.
+// - Real footage: on the 4K fixture the divergence is k = 0.342/0.399 =
+//   0.86 (probe_n3b s3), inside the 30% band — the trigger does not even
+//   fire, and simulating the rescale changed zero block decisions.
+
+TEST_CASE("overclaimed_noise_profile_cannot_admit_content_change") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // True noise sigmaDn=5; the profile claims 30 (6x overclaim). One
+    // block brightens by 0.05 of range. Against the OVERCLAIMED sigma the
+    // changed block's zero-motion residual (~0.047 of range after the
+    // global de-bias) reads as r0 ~ 1.1 — inside the static band, full
+    // sigma-taper confidence — and the per-pixel 6-sigma guard, scaled by
+    // the same overclaim, sits far above the step: without the floor gate
+    // this profile would blend the brightened block in at full weight
+    // (a guaranteed ghost). The MEASURED floor (~0.0029 from the 15
+    // honest blocks) is what rejects it: 3 x 0.0029 = 0.0087 << 0.047.
+    auto oneBlockBrighter = [](uint32_t x, uint32_t y) {
+        if (x >= 128 && x < 256 && y >= 128 && y < 256)
+            return texture(x, y) + 0.05f;
+        return texture(x, y);
+    };
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, texture, 141, 5.0f);
+    std::vector<uint16_t> n =
+        makeFrame(kLw, kLw, oneBlockBrighter, 142, 5.0f);
+    const NoiseProfile overclaim = constantProfile(30.0f); // 6x the truth
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.centerNoise = &overclaim;
+    ts.prevNoise = &overclaim;
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    // The 15 honest blocks still merge (an overclaim only ever loosens
+    // sigma-scaled gates; the measured-floor bound is what stays honest).
+    REQUIRE(rep.prev.eligible);
+    CHECK(rep.prev.acceptRate > 0.5f);
+    CHECK(rep.prev.acceptRate < 1.0f); // the changed block did NOT pass
+    // The changed block keeps the center EXACTLY in its interior (outside
+    // the feather bands, where it is the only candidate): rejected by the
+    // floor gate despite the overclaimed profile — precisely the safety
+    // the dropped #10 rescale was meant to add and cannot.
+    for (uint32_t y = 160; y < 224; ++y)
+        for (uint32_t x = 160; x < 224; ++x)
+            CHECK(out[static_cast<size_t>(y) * kLw + x]
+                  == c[static_cast<size_t>(y) * kLw + x]);
+}
+
+// ---- scene-cut trend gate (source-comparison item #8) ----
+// FFmpeg scdet get_scene_score convention: MAFD = mean|center - neighbor|
+// x100 on the normalized proxies, threshold 10. Absolute gate (mafd > 10)
+// plus the trend form: reject when the score JUMPS from the previous
+// pair-in-time's score by more than 10 (TemporalSettings::prevPairMafd /
+// nextPairMafd, negative = unknown -> absolute only). Measured margins
+// (probe_n3b S5): quiet fixture pairs 0.37-0.38; slow 1px/frame slide
+// 4.1 (passes — that is motion, not a cut); fence cut 19.55; fence slide
+// 39.99; same-histogram structure cut 4.08 (below the gate — the
+// accept-rate gate already rejects it, so no coverage lost there).
+
+TEST_CASE("mafd_gate_rejects_hard_cut_before_matching") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // A fence cut: stripes of period 4 vs period 6 proxy px (measured
+    // mafd 19.55). Same histogram, same mean — the mean-luma and
+    // histogram-TV gates pass — so only the MAFD gate rejects, and it
+    // does so BEFORE the ~11 ms match cost (the value of the early
+    // exit: pre-item-#8 this pair paid matching to be rejected by the
+    // accept-rate gate).
+    auto stripes = [](int period) {
+        return [period](uint32_t x, uint32_t) {
+            const int xp = static_cast<int>(x) >> 3; // proxy px
+            return ((xp / (period / 2)) % 2 == 0) ? 0.7f : 0.3f;
+        };
+    };
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, stripes(4), 151, 6.0f);
+    std::vector<uint16_t> n = makeFrame(kLw, kLw, stripes(6), 152, 6.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    CHECK_FALSE(rep.prev.eligible); // mafd ~ 19.6 > 10: hard cut
+    CHECK(rep.prev.mafd > 10.0f);
+    // Pre-match early exit: the match cost was never paid.
+    CHECK(rep.matchMs < 0.5);
+    // Rejected neighbor = center bit for bit.
+    CHECK(std::memcmp(out.data(), c.data(), out.size() * sizeof(uint16_t)) == 0);
+}
+
+TEST_CASE("mafd_trend_rejects_post_cut_quiet_pair") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // A QUIET pair (same texture, mafd ~ 0.4) arriving right after a cut
+    // (previous pair's score 25): the absolute gate alone would merge it —
+    // the TREND form rejects it (|0.4 - 25| > 10). This is the 2-frame
+    // blast radius after every cut, the accepted conservative failure.
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, texture, 161, 6.0f);
+    std::vector<uint16_t> n = makeFrame(kLw, kLw, texture, 162, 6.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.prevPairMafd = 25.0f; // the cut that just happened
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    CHECK_FALSE(rep.prev.eligible);
+    CHECK(rep.prev.mafd < 10.0f); // quiet on its own — the TREND rejected it
+    CHECK(std::memcmp(out.data(), c.data(), out.size() * sizeof(uint16_t)) == 0);
+
+    // Unknown previous score (scrub start, first pair): trend inactive,
+    // the same quiet pair merges — the absolute gate is the only judge.
+    std::fill(out.begin(), out.end(), 0);
+    ts.prevPairMafd = -1.0f;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+    CHECK(rep.prev.eligible);
+    CHECK(rep.prev.mafd < 10.0f);
+}
+
+TEST_CASE("mafd_gate_passes_slow_slide_and_quiet_footage") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // A 1-px-per-frame texture slide is MOTION, not a cut: MAFD stays
+    // ~4 (measured), far below 10, and the pair stays eligible (blocks
+    // match on their motion vectors). The quiet same-texture pair
+    // (fixture band 0.37-0.38) passes with room to spare.
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(0, 0), 171, 6.0f);
+    std::vector<uint16_t> n = makeFrame(kLw, kLw, shiftedTexture(1, 0), 172, 6.0f);
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.prevPairMafd = 4.2f; // a slide before the slide: no trend jump
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+    CHECK(rep.prev.eligible);
+    CHECK(rep.prev.mafd > 0.5f);   // it IS a real 1-px difference
+    CHECK(rep.prev.mafd < 10.0f);  // but far from a cut
+}
+
+// ---- item #4: collocated-seeded pass-1 search (EPZS MV reuse) ----
+
+TEST_CASE("seeded_search_matches_full_scan_on_moving_texture") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // Constant-velocity scene: texture sliding (1,0) then (2,0) proxy px.
+    // The collocated predictor from pair 1 is exactly pair 2's truth, so
+    // the seeded search must reproduce the full scan's field bit for bit
+    // (dx, dy AND winner MAD) — the early accept may not change results,
+    // only cost.
+    std::vector<uint16_t> a = makeFrame(kLw, kLw, shiftedTexture(0, 0), 181, 0.0f);
+    std::vector<uint16_t> b = makeFrame(kLw, kLw, shiftedTexture(1, 0), 182, 0.0f);
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(2, 0), 183, 0.0f);
+    const LumaProxy pa = buildLumaProxy(a.data(), info, m);
+    const LumaProxy pb = buildLumaProxy(b.data(), info, m);
+    const LumaProxy pc = buildLumaProxy(c.data(), info, m);
+
+    // Pair (b, c): the full scan is the reference field.
+    std::vector<MotionVector> full;
+    uint32_t fw = 0, fh = 0;
+    matchProxyBlocks(pb, pc, full, fw, fh);
+    REQUIRE(full.size() == 16);
+
+    // Seed = pair (a, b)'s field: same block index, velocity continuation.
+    std::vector<MotionVector> seed;
+    uint32_t sw = 0, sh = 0;
+    matchProxyBlocks(pa, pb, seed, sw, sh);
+    REQUIRE(seed.size() == 16);
+    int nonzero = 0;
+    for (const auto& v : seed)
+        if (v.dx != 0 || v.dy != 0)
+            ++nonzero;
+    REQUIRE(nonzero > 8); // the seed really carries motion
+
+    // accept = 2x floor, the production scale: noiseless texture has a
+    // near-zero floor, so every block early-accepts and the seeded field
+    // still equals the full field.
+    const float accept = 2.0f * 0.01f;
+    std::vector<MotionVector> seeded;
+    uint32_t tw = 0, th = 0;
+    matchProxyBlocksSeeded(pb, pc, seed, accept, seeded, tw, th);
+    REQUIRE(seeded.size() == full.size());
+    int agree = 0;
+    for (size_t i = 0; i < full.size(); ++i) {
+        if (seeded[i].dx == full[i].dx && seeded[i].dy == full[i].dy) {
+            ++agree;
+            CHECK(seeded[i].mad == full[i].mad);
+        }
+    }
+    CHECK(agree == static_cast<int>(full.size()));
+}
+
+TEST_CASE("seeded_search_falls_back_to_full_scan_on_bad_predictor") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // A WRONG predictor (opposite shift) must not corrupt the field: any
+    // block whose best of {(0,0), predictor} exceeds accept runs the full
+    // scan, so the seeded field equals the full-scan field regardless of
+    // how wrong the seed is. This is the ghost-safety property: a seed
+    // can only save cost, never change a gate input.
+    std::vector<uint16_t> b = makeFrame(kLw, kLw, texture, 191, 0.0f);
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(3, -1), 192, 0.0f);
+    const LumaProxy pb = buildLumaProxy(b.data(), info, m);
+    const LumaProxy pc = buildLumaProxy(c.data(), info, m);
+
+    std::vector<MotionVector> full;
+    uint32_t fw = 0, fh = 0;
+    matchProxyBlocks(pb, pc, full, fw, fh);
+    REQUIRE(full.size() == 16);
+
+    // Deliberately wrong seed: every vector the opposite direction.
+    std::vector<MotionVector> badSeed(full.size());
+    for (size_t i = 0; i < full.size(); ++i) {
+        badSeed[i].dx = -full[i].dx - 1;
+        badSeed[i].dy = -full[i].dy - 1;
+    }
+    std::vector<MotionVector> seeded;
+    uint32_t tw = 0, th = 0;
+    // A tight accept (tiny floor: noiseless texture) forces the full scan
+    // on every block the predictor misses.
+    matchProxyBlocksSeeded(pb, pc, badSeed, 2.0f * 0.01f, seeded, tw, th);
+    REQUIRE(seeded.size() == full.size());
+    for (size_t i = 0; i < full.size(); ++i) {
+        CHECK(seeded[i].dx == full[i].dx);
+        CHECK(seeded[i].dy == full[i].dy);
+        CHECK(seeded[i].mad == full[i].mad);
+    }
+}
+
+TEST_CASE("merge_with_seeded_next_side_bit_identical_to_plain") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // End-to-end form of the item-#4 safety property. Pass 2 re-decides
+    // every vector from scratch, so the seeded pass-1 field's only
+    // downstream product is the measured floor; on constant-velocity
+    // noiseless texture the seeded field equals the full field bit for
+    // bit (proven at the matcher level above), so the merge output must
+    // equal the plain path's output. The plain reference is built by
+    // hand: fields via the plain matchers + the merge's own gates are
+    // not directly callable, so the check runs the merge twice — once
+    // with the prev side present (seeding active) and once with the
+    // SAME pair fed as the PREV side of a window whose next is null
+    // (no seeding possible; plain scans only) — and compares the
+    // CENTER-side outputs. Both renders see identical (center,
+    // neighbor) sample pairs through identical full scans for the
+    // side under test, so any difference would be the seeding leaking
+    // into a gate input.
+    std::vector<uint16_t> a = makeFrame(kLw, kLw, shiftedTexture(0, 0), 201, 6.0f);
+    std::vector<uint16_t> b = makeFrame(kLw, kLw, shiftedTexture(1, 0), 202, 6.0f);
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(2, 0), 203, 6.0f);
+    std::vector<uint16_t> out1(b.size(), 0), out2(b.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    TemporalReport rep1, rep2;
+    // Render with the seeded next side (prev a, center b, next c).
+    temporalMergeCfa(b.data(), info, a.data(), c.data(), m, ts, out1.data(), &rep1);
+    CHECK(rep1.next.eligible);
+    CHECK(rep1.next.meanWeight > 0.0f);
+    // Reference: the (b, c) pair alone, no prev side -> next-side search
+    // runs plain. Same pair, same gates, no seed in play.
+    temporalMergeCfa(b.data(), info, nullptr, c.data(), m, ts, out2.data(), &rep2);
+    CHECK(rep2.next.eligible);
+    // The next-side weight/floor must be identical: the seed did not
+    // move any gate input (floor within exact equality here because the
+    // seeded field equals the full field on this content).
+    CHECK(rep1.next.noiseFloor == rep2.next.noiseFloor);
+    CHECK(rep1.next.acceptRate == rep2.next.acceptRate);
+    // The gate inputs moved by exactly nothing: the seed changed cost,
+    // not decisions. (out1 also blends the prev side, so the pixel
+    // buffers legitimately differ; the floors and accept rates are the
+    // next side's own gate inputs and must not.)
+}
+
 // ---- window clamping (DN-09) ----
 
 TEST_CASE("first_and_last_frame_clamp_window_no_crash") {

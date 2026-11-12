@@ -32,6 +32,14 @@
 //       fine (|dPTS|).
 //     - Mean luma shift of the 1/8 proxies > 4% of range -> reject (sudden
 //       exposure jump; not a scene cut, but still unsafe to merge).
+//     - MAFD scene score (source-comparison item #8, FFmpeg scdet
+//       get_scene_score): mean |center - neighbor| x100 on the normalized
+//       proxies. Reject when it exceeds 10 (an absolute cut), OR when it
+//       JUMPS from the previous pair-in-time's score by more than 10
+//       (the trend form; the caller supplies the previous score via
+//       TemporalSettings — negative = unknown, delta inactive). Cuts
+//       with near-equal histograms and means are what this catches; it
+//       also exits BEFORE the ~11 ms match cost.
 //     - Total-variation distance of 32-bin luma histograms > 0.30 -> reject
 //       (scene cut).
 //     - Fraction of blocks with an acceptable match < 25% -> reject
@@ -90,12 +98,38 @@
 // being dragged by a neighbor's vector. No Wiener/NLM in this version.
 //
 // MOTION ESTIMATION: 1/8-scale luma proxies (a proxy pixel is the mean
-// normalized signal of its 16x16 CFA block — 64 cells, 16 samples per slot,
-// so the average is CFA-pattern independent). Integer block matching in
+// normalized signal of the 4 stride-2 samples of its 8x8 CFA block — one
+// sample per 2x2 cell slot, so the average is CFA-pattern independent).
+// Integer block matching in
 // two passes, search radius +-4 proxy px (= +-32 CFA px, handheld
 // vibration between adjacent frames, not general optical flow), SAD on a
-// 2x2-subsampled lattice during the search, full sampling for winners:
-//   pass 1: plain argmin (matchProxyBlocks, exposed for tests);
+// 2x2-subsampled lattice during the search, full sampling for winners.
+// Winner MADs are MEAN-NORMALIZED GLOBALLY (source-comparison item #9):
+// the pair's proxy mean difference — what the mean-luma gate already
+// computes — is subtracted before the absolute value, so auto-exposure
+// micro-flicker no longer inflates the floor or the static-path residual.
+// Deliberately global, not per-block: a per-block mean subtraction erases
+// the residual of a local content change (measured: MAD 0.300 -> 0.0035,
+// i.e. a ghost); uniform steps stay bounded by the 4% mean-luma gate, and
+// the search cost stays plain (measured argmin shift under flicker is
+// noise level):
+//   pass 1: plain argmin (matchProxyBlocks, exposed for tests). For the
+//     NEXT neighbor only, when the prev side's matching already ran, pass 1
+//     is SEEDED with the prev side's backward field as the collocated
+//     predictor (source-comparison item #4, EPZS MV reuse — velocity
+//     continuation within the window; the merge itself stays stateless):
+//     per block, (0,0) and the same-index predictor are evaluated first
+//     and accepted without the 81-scan when the better one is already
+//     <= 2x the PREV pair's measured floor (the only floor in hand
+//     before this pair's search); a block that misses runs the full
+//     scan, so the field stays a true argmin exactly where the
+//     predictor failed. Fixture: 98.1% of blocks early-accept, search
+//     0.05 ms vs 1.04 ms, and the seeded field's own floor measures
+//     -1.6% vs the full scan — NOT inflated (the conservative
+//     direction). Never applied to a BACKWARD field (the F/B consistency
+//     anchor) and never to the PREV side (no earlier field exists in
+//     this window): a predictor can only save search cost, never loosen
+//     a gate.
 //   pass 2 (internal): re-decide with the measured floor known —
 //     - ZERO-BIAS TIE-BREAK (ginzburg _argmin_zero_biased): candidates
 //       within 0.5x floor of the best cost are ties; ties go to the
@@ -150,10 +184,10 @@ inline float temporalFallbackSigma() { return 0.006f; }
 // adjacent frame.
 bool temporalNeighborEligible(int64_t dPts, int64_t frameDurationUs);
 
-// 1/8-scale luma proxy: w = width/16 (2x2 cells x 8), h = height/16, each
-// proxy pixel the mean normalized signal of its 16x16 CFA block. Pattern
-// independent (equal sample count per slot). Empty when the frame is too
-// small (w or h < 32).
+// 1/8-scale luma proxy: w = width/8, h = height/8, each proxy pixel the
+// mean normalized signal of the 4 stride-2 samples of its 8x8 CFA block
+// (one sample per 2x2 cell slot). Pattern independent (equal sample count
+// per slot). Empty when the frame is too small (w or h < 32).
 struct LumaProxy {
     uint32_t w = 0;
     uint32_t h = 0;
@@ -174,10 +208,33 @@ struct MotionVector {
 // Block matching on the proxy grid: 16x16-px blocks, non-overlapping
 // (stride 16), search radius +-4, SAD on a 2x2-subsampled lattice during
 // the search and full sampling for the winner. Fills out[outW*outH]
-// (outW = proxyW/16, outH = proxyH/16) row-major. Exposed for tests.
+// (outW = proxyW/16, outH = proxyH/16) row-major. meanOffset (default 0)
+// is subtracted from every sample difference before the absolute value in
+// the winner MAD (source-comparison item #9, mean-normalized SAD): pass
+// mean(center) - mean(neighbor) of the proxies to remove an auto-exposure
+// level step from the residuals. The SEARCH cost stays plain SAD —
+// measured argmin shift under flicker is noise level. Exposed for tests.
 void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
                       std::vector<MotionVector>& out, uint32_t& outW,
-                      uint32_t& outH);
+                      uint32_t& outH, float meanOffset = 0.0f);
+
+// Pass-1 block matching with an EPZS-style collocated predictor
+// (source-comparison item #4, MV reuse): per block the search evaluates
+// (0,0) and the same-index vector seed[bi] FIRST and accepts the better
+// of the two WITHOUT the 81-candidate scan when its mean subsampled SAD
+// is already <= accept; only a block whose best-of-two still exceeds
+// accept runs the exhaustive scan, so the field stays a true argmin
+// everywhere the predictor failed and an early-accept everywhere it held
+// (fixture: 98.1% early-accept at accept = 2x the PREVIOUS pair-in-time's
+// floor, the only floor available before this pair's search; the seeded
+// field's own floor measured -1.6% vs the full scan — NOT inflated, i.e.
+// the conservative direction). seed holds the previous pair-in-time's
+// same-index motion field (velocity continuation); an empty or
+// wrong-size seed disables seeding (plain full scan). Exposed for tests.
+void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
+                           const std::vector<MotionVector>& seed, float accept,
+                           std::vector<MotionVector>& out, uint32_t& outW,
+                           uint32_t& outH, float meanOffset = 0.0f);
 
 // Settings + inputs for one merge. strength is the user slider 0..100; the
 // effective per-neighbor weight cap is 0.40 * strength/100, decayed by
@@ -186,6 +243,11 @@ void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
 // any pointer may be null, which selects the fallback sigma. The dPts
 // fields are 0 = "adjacent / unspecified" (no decay); the bridge passes
 // the real PTS deltas after temporalNeighborEligible has filtered them.
+// The pair-MAFD fields (source-comparison item #8, FFmpeg scdet
+// convention) carry the PREVIOUS pair-in-time's scene score for the
+// trend gate: negative = unknown (scrub start, first pair) and leaves
+// only the absolute MAFD gate active. The bridge owns the per-pair
+// cache keyed by frame index (the merge itself stays stateless).
 struct TemporalSettings {
     float strength = 0.0f; // 0..100; <= 0 makes the merge a passthrough
     const NoiseProfile* centerNoise = nullptr;
@@ -194,6 +256,8 @@ struct TemporalSettings {
     int64_t prevDPtsUs = 0;
     int64_t nextDPtsUs = 0;
     int64_t frameDurationUs = 0;
+    float prevPairMafd = -1.0f; // < 0 = unknown: absolute MAFD gate only
+    float nextPairMafd = -1.0f; // < 0 = unknown: absolute MAFD gate only
 };
 
 // Per-neighbor outcome, for tests and the perf report.
@@ -203,6 +267,7 @@ struct NeighborStats {
     float acceptRate = 0.0f; // fraction of blocks that passed local gates
     float meanWeight = 0.0f; // mean per-pixel weight actually applied
     float noiseFloor = 0.0f; // measured 25th-pct winner MAD (diagnostic)
+    float mafd = 0.0f;       // this pair's scene score x100 (diagnostic)
 };
 
 // Measured per-stage costs (research item: report proxy / matching / merge
