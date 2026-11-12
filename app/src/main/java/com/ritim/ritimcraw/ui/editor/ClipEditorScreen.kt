@@ -578,6 +578,12 @@ fun ClipEditorScreen(
         var editorColumnHeight by remember { mutableStateOf(0) }
         var transportHeight by remember { mutableStateOf(0) }
         var navHeight by remember { mutableStateOf(0) }
+        // The preview region's measured width (owner spec 2026-11-12
+        // section 2, the preview-claim math): the width a width-bound
+        // video would fill. The preview Box is fillMaxWidth inside the
+        // fixed-width editor column, so the value never depends on the
+        // panel's own offset — the claim can never churn mid-drag.
+        var previewRegionWidth by remember { mutableStateOf(0) }
         // ---- Scope strip state (owner spec PLAY-10, 2026-11-12 §1-2) ----
         // The ONE scope area is a strip below the transport, above the
         // panel (never an overlay on the image), carrying a Histogram |
@@ -695,23 +701,11 @@ fun ClipEditorScreen(
         // ever bounds the portrait sheet's anchors.)
         val freeRegionPx = (editorColumnHeight - topBarHeightPx.toInt() -
             transportHeight - navHeight - scopeStripHeightPx).coerceAtLeast(0)
-        // Anchors update whenever the measured region changes (first
-        // composition, rotation, font-scale change). updateAnchors snaps
-        // synchronously to the CURRENT target, so the offset lands on the
-        // restored state's height on the first frame and follows the
-        // region on re-measures — never a re-animation from zero.
-        LaunchedEffect(freeRegionPx, collapsedHeightPx) {
-            if (freeRegionPx > 0) {
-                panelDrag.updateAnchors(
-                    DraggableAnchors {
-                        PanelSheet.anchorHeights(freeRegionPx, collapsedHeightPx).forEach { (state, h) ->
-                            state.at(h)
-                        }
-                    },
-                    panelState,
-                )
-            }
-        }
+        // The panel anchors update one block below the frame declaration:
+        // the 2026-11-12 preview-claim cap (owner layout-refactor spec
+        // section 2) needs the clip's display ratio — the rendered frame's
+        // dims — which is declared further down with the render
+        // bookkeeping.
         // The saveable mirror: settledValue is the state the panel has
         // settled on (drag end / animation end), so the saveable keeps
         // exactly what the user last saw (§11.6).
@@ -750,6 +744,63 @@ fun ClipEditorScreen(
         // publish (no RAW fetch before a frame exists). Keyed to the
         // clip like `frame` — a switch resets both.
         var renderedFrameIndex by remember(sourceId) { mutableStateOf(-1) }
+        // ---- Preview claim (owner layout-refactor spec 2026-11-12, §2) ----
+        // The root-cause fix's input: the display ratio the preview surface
+        // will shape itself by — the SAME chain the surface uses
+        // (rendered frame dims > persisted import stats > 16:9), then the
+        // manual-rotation swap — so the claim and the surface always
+        // agree on the clip's shape. Computed from the same values the
+        // surface reads, never from a separate measurement of the surface
+        // itself (that would race the first frame).
+        val previewDisplayRatio = PreviewSurfaceRatio.withManualRotation(
+            PreviewSurfaceRatio.of(
+                frameWidth = frame?.width ?: 0,
+                frameHeight = frame?.height ?: 0,
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
+            ),
+            manualRotationDeg,
+        )
+        // The height a width-bound clip needs in the free region: the full
+        // width's aspect height when it fits (landscape footage), else 0
+        // (a taller-than-region clip can never be width-bound, so there is
+        // no width to preserve — the legacy flex behavior applies).
+        val previewClaimPx = PanelSheet.previewClaimPx(
+            regionWidthPx = previewRegionWidth,
+            regionHeightPx = freeRegionPx,
+            ratio = previewDisplayRatio,
+        )
+        // The minimum usable panel height in px (three 48dp slider rows +
+        // the 48dp handle target): the claim cap may never squeeze the
+        // panel below it.
+        val minPanelHeightPx = with(density) { PanelSheet.MIN_PANEL_HEIGHT.roundToPx() }
+        // Anchors update whenever the measured region, the claim or the
+        // floor changes (first composition, rotation, font-scale change, a
+        // taller/shorter clip's first frame, opening/closing the scope
+        // strip). updateAnchors snaps synchronously to the CURRENT target,
+        // so the offset lands on the restored state's height on the first
+        // frame and follows the region on re-measures — never a
+        // re-animation from zero. The claim keys the effect so a clip
+        // whose first frame reveals a different shape than the persisted
+        // stats adapts the anchors ONCE (a single predictable resize, the
+        // spec's allowed reason), not continuously.
+        LaunchedEffect(freeRegionPx, collapsedHeightPx, previewClaimPx, minPanelHeightPx) {
+            if (freeRegionPx > 0) {
+                panelDrag.updateAnchors(
+                    DraggableAnchors {
+                        PanelSheet.anchorHeights(
+                            freeRegionPx,
+                            collapsedHeightPx,
+                            previewClaimPx,
+                            minPanelHeightPx,
+                        ).forEach { (state, h) ->
+                            state.at(h)
+                        }
+                    },
+                    panelState,
+                )
+            }
+        }
         var lastRenderFailed by remember(sourceId) { mutableStateOf(false) }
         var errorText by remember(sourceId) { mutableStateOf<String?>(null) }
         var renderInFlight by remember(sourceId) { mutableStateOf(false) }
@@ -1729,7 +1780,13 @@ fun ClipEditorScreen(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    // The claim math's width input (owner layout-refactor
+                    // spec 2026-11-12 §2): the full width a width-bound
+                    // video would fill. Measured here — not read from the
+                    // surface — so the claim is available before the first
+                    // frame and never races the surface's own sizing.
+                    .onSizeChanged { previewRegionWidth = it.width },
                 contentAlignment = Alignment.Center,
             ) {
                 // PLAY-11 zebra: the display swaps to the striped copy

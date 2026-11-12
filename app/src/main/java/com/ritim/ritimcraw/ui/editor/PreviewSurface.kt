@@ -131,6 +131,30 @@ object PreviewSurfaceRatio {
             boundedWidth to regionHeight
         }
     }
+
+    /**
+     * The video rect's top-left offset inside its centered wrapper (owner
+     * note 1, 2026-11-12: "Kontrollerin konumu video yüzeyinin gerçek
+     * sınırlarına göre hesaplanmalı" — the corner controls must anchor to
+     * the video's REAL bounds, not the wrapper's). The wrapper centers the
+     * claimed size ([claimedSize]), so the offset per axis is the half
+     * difference of the sides. Floor division, so the offset never places
+     * the rect outside the region (offset + size <= region on both axes);
+     * the wrapper's own centering rounds the same half-difference — at
+     * most a 1px disagreement under a control's 8dp inset, imperceptible.
+     *
+     * Degenerate inputs center at zero: an empty region has no offset to
+     * give, and the controls fall back to the wrapper's corners.
+     */
+    fun centeredOffset(
+        regionWidth: Int,
+        regionHeight: Int,
+        ratio: Float,
+    ): Pair<Int, Int> {
+        val (width, height) = claimedSize(regionWidth, regionHeight, ratio)
+        if (width <= 0 || height <= 0) return 0 to 0
+        return ((regionWidth - width) / 2) to ((regionHeight - height) / 2)
+    }
 }
 
 /**
