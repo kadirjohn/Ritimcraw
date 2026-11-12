@@ -19,12 +19,13 @@ class LibraryRowModelTest {
         width: Int = 0,
         height: Int = 0,
         durationUs: Long = 0L,
+        access: Access = Access.OK,
     ) = MediaSource(
         id = "abc123",
         uri = "content://clip/1",
         fingerprint = "f",
         kind = SourceKind.MCRAW,
-        access = Access.OK,
+        access = access,
         width = width,
         height = height,
         durationUs = durationUs,
@@ -90,5 +91,25 @@ class LibraryRowModelTest {
         // "3840×0").
         val s = source(width = 3840, height = 0, durationUs = 12_000_000L)
         assertEquals("0:12", LibraryRowModel.supportingLine(s, LibraryRowModel.durationText(s)))
+    }
+
+    // ---- rowStatus (spec IN-12/IN-16: degraded rows render distinctly) ----
+
+    @Test
+    fun healthy_row_has_no_degraded_status() {
+        assertNull(LibraryRowModel.rowStatus(source(access = Access.OK)))
+    }
+
+    @Test
+    fun lost_row_maps_to_the_lost_status() {
+        // A revoked permission keeps its own line + Grant access action.
+        assertEquals(LibraryRowModel.RowStatus.LOST, LibraryRowModel.rowStatus(source(access = Access.LOST)))
+    }
+
+    @Test
+    fun gone_row_maps_to_the_gone_status_distinctly() {
+        // A deleted/moved document is NOT a lost permission: different
+        // line (File missing), different action (Re-link).
+        assertEquals(LibraryRowModel.RowStatus.GONE, LibraryRowModel.rowStatus(source(access = Access.GONE)))
     }
 }
