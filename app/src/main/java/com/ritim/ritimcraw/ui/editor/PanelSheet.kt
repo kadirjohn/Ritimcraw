@@ -69,6 +69,21 @@ val PanelHandleHeight = 48.dp
  *    Column stacks the regions — and the preview "should remain visible
  *    whenever practical").
  *
+ * PREVIEW CLAIM (owner spec 2026-11-12 section 2 — the root-cause fix).
+ * The fractions alone caused the regression the owner photographed: at
+ * NORMAL/EXPANDED the preview Box's leftover height dropped below the
+ * video's full-width aspect height, PreviewSurfaceRatio.claimedSize then
+ * bounded the video by HEIGHT and its WIDTH collapsed — "horizontally
+ * centered with large unused areas on both sides". The fix is a CAP, not
+ * a restructure: the screen computes the preview's width-bound height
+ * claim ([previewClaimPx]) and the NORMAL/EXPANDED anchors are capped at
+ * the region minus that claim (never below the collapsed strip or
+ * [MIN_PANEL_HEIGHT], never above the region), so a width-bound clip
+ * keeps the full width at every panel state. On common devices the cap
+ * never engages at NORMAL (0.44 share + 16:9 claim both fit), so the
+ * familiar geometry is byte-identical; it binds exactly where the owner
+ * saw the shrink — tall claims, scope strip open, large font scale.
+ *
  * The three heights are always ordered collapsed <= normal <= expanded and
  * never exceed the region, for every input including degenerate tiny ones.
  *
@@ -112,9 +127,21 @@ object PanelSheet {
      * Expanded state: the taller share (section 11.3 state C). 0.72 keeps
      * 28% of the region for the preview — "visible whenever practical"
      * holds for landscape clips (still width-bound, so complete) and gives
-     * portrait clips a small but real strip.
+     * portrait clips a small but real strip. The 2026-11-12 preview claim
+     * caps this share where it would otherwise push a width-bound clip's
+     * leftover below its full-width height (the owner's shrink).
      */
     const val EXPANDED_FRACTION = 0.72f
+
+    /**
+     * The minimum panel height the anchors guarantee even when the
+     * preview's claim eats the whole region (owner spec 2026-11-12 section
+     * 3: the panel states stay usable on every device). Three 48dp slider
+     * rows + the 48dp handle target (CompactSliderDefaults.ROW_HEIGHT) —
+     * dp so the screen converts it with density; the rule below coerces it
+     * into the region, so a degenerate tiny region never breaks ordering.
+     */
+    val MIN_PANEL_HEIGHT = 192.dp
 
     /**
      * Settle/snap animation duration in ms (section 11.4: "approximately
@@ -144,11 +171,67 @@ object PanelSheet {
         totalDistancePx * POSITIONAL_THRESHOLD_FRACTION
 
     /**
-     * The expanded anchor height in px: [EXPANDED_FRACTION] of the free
-     * region, never below the collapsed strip and never above the region.
+     * The preview's height claim in px (owner spec 2026-11-12 section 2,
+     * the root-cause fix): the height a width-bound clip needs inside the
+     * free region so the video keeps the FULL WIDTH at every panel state.
+     *
+     * Rule: the full-width aspect height when it FITS the region (landscape
+     * footage — the common .mcraw case), else 0. A clip taller than the
+     * region can never be width-bound (PreviewSurfaceRatio.claimedSize
+     * bounds it by the region's height instead), so its claim is nothing
+     * and the panel anchors keep their legacy flex behavior — the spec's
+     * allowed resize reasons (panel state change) still apply, but there
+     * is no width to preserve.
+     *
+     * Degenerate inputs (non-positive region or ratio) claim nothing.
+     * Pure so the cap is JVM-testable.
      */
-    fun expandedHeightPx(availableHeightPx: Int, collapsedHeightPx: Int): Int {
-        val expanded = (availableHeightPx * EXPANDED_FRACTION).roundToInt()
+    fun previewClaimPx(
+        regionWidthPx: Int,
+        regionHeightPx: Int,
+        ratio: Float,
+    ): Int {
+        if (regionWidthPx <= 0 || regionHeightPx <= 0 || ratio <= 0f) return 0
+        val fullWidthHeight = (regionWidthPx / ratio).toInt()
+        return if (fullWidthHeight <= regionHeightPx) fullWidthHeight else 0
+    }
+
+    /**
+     * The cap for the NORMAL/EXPANDED anchors in px: the free region minus
+     * the preview's width-bound claim ([previewClaimPx]), floored at
+     * [minPanelHeightPx] (coerced into the region) so the panel states stay
+     * usable even when the claim eats nearly the whole region — a
+     * three-slider-row panel ([MIN_PANEL_HEIGHT]) is worth more than the
+     * last few px of an already huge preview. Ordering wins over the cap in
+     * the fully degenerate case: if even the floor exceeds the region the
+     * anchors fall back to the collapsed strip, never out of order.
+     */
+    fun panelCapPx(
+        regionHeightPx: Int,
+        previewClaimPx: Int,
+        minPanelHeightPx: Int,
+    ): Int {
+        if (regionHeightPx <= 0) return 0
+        val floor = minPanelHeightPx.coerceIn(0, regionHeightPx)
+        return (regionHeightPx - previewClaimPx).coerceIn(floor, regionHeightPx)
+    }
+
+    /**
+     * The expanded anchor height in px: [EXPANDED_FRACTION] of the free
+     * region, CAPPED at the region minus the preview's width-bound claim
+     * ([previewClaimPx] — owner spec 2026-11-12 section 2), never below
+     * the collapsed strip and never above the region.
+     */
+    fun expandedHeightPx(
+        availableHeightPx: Int,
+        collapsedHeightPx: Int,
+        previewClaimPx: Int = 0,
+        minPanelHeightPx: Int = 0,
+    ): Int {
+        val cap = panelCapPx(availableHeightPx, previewClaimPx, minPanelHeightPx)
+        val expanded = (availableHeightPx * EXPANDED_FRACTION)
+            .roundToInt()
+            .coerceAtMost(cap)
         return expanded.coerceIn(
             collapsedHeightPx.coerceAtMost(availableHeightPx),
             availableHeightPx,
@@ -156,13 +239,24 @@ object PanelSheet {
     }
 
     /**
-     * The normal anchor height in px: [NORMAL_FRACTION] of the free region,
-     * never below the collapsed strip and never above the expanded anchor
-     * (so the three anchors stay ordered on every device).
+     * The normal anchor height in px: [NORMAL_FRACTION] of the free
+     * region, capped by the same preview claim, never below the collapsed
+     * strip and never above the expanded anchor (so the three anchors stay
+     * ordered on every device).
      */
-    fun normalHeightPx(availableHeightPx: Int, collapsedHeightPx: Int): Int {
-        val expanded = expandedHeightPx(availableHeightPx, collapsedHeightPx)
-        val normal = (availableHeightPx * NORMAL_FRACTION).roundToInt()
+    fun normalHeightPx(
+        availableHeightPx: Int,
+        collapsedHeightPx: Int,
+        previewClaimPx: Int = 0,
+        minPanelHeightPx: Int = 0,
+    ): Int {
+        val expanded = expandedHeightPx(
+            availableHeightPx, collapsedHeightPx, previewClaimPx, minPanelHeightPx,
+        )
+        val cap = panelCapPx(availableHeightPx, previewClaimPx, minPanelHeightPx)
+        val normal = (availableHeightPx * NORMAL_FRACTION)
+            .roundToInt()
+            .coerceAtMost(cap)
         return normal.coerceIn(
             collapsedHeightPx.coerceAtMost(availableHeightPx),
             expanded,
@@ -176,22 +270,41 @@ object PanelSheet {
      * collapsed anchor is the handle-strip height, coerced into the region
      * so a degenerate tiny region still yields ordered anchors.
      *
+     * The NORMAL/EXPANDED anchors are the same fractions of the region,
+     * CAPPED at the region minus the preview's width-bound claim
+     * ([previewClaimPx], owner spec 2026-11-12 section 2) — so a
+     * width-bound clip keeps the full width at every panel state. A zero
+     * claim (tall clips, or the default) keeps the legacy region-fraction
+     * anchors byte-identical.
+     *
      * @param availableHeightPx the measured free region height (preview +
      *   panel together, below the top bar and transport, above the bottom
      *   navigation) — the device-adaptive reference of section 11.3.
      * @param collapsedHeightPx the handle-strip height in px.
+     * @param previewClaimPx the preview's width-bound height claim in px
+     *   (0 = uncapped legacy behavior).
+     * @param minPanelHeightPx the minimum usable panel height in px
+     *   (0 = no floor; the wiring passes [MIN_PANEL_HEIGHT] in px).
      */
     fun anchorHeights(
         availableHeightPx: Int,
         collapsedHeightPx: Int,
+        previewClaimPx: Int = 0,
+        minPanelHeightPx: Int = 0,
     ): Map<PanelState, Float> {
         require(availableHeightPx >= 0) { "availableHeightPx must be >= 0" }
         require(collapsedHeightPx >= 0) { "collapsedHeightPx must be >= 0" }
+        require(previewClaimPx >= 0) { "previewClaimPx must be >= 0" }
+        require(minPanelHeightPx >= 0) { "minPanelHeightPx must be >= 0" }
         val collapsed = collapsedHeightPx.coerceAtMost(availableHeightPx)
         return mapOf(
             PanelState.COLLAPSED to collapsed.toFloat(),
-            PanelState.NORMAL to normalHeightPx(availableHeightPx, collapsedHeightPx).toFloat(),
-            PanelState.EXPANDED to expandedHeightPx(availableHeightPx, collapsedHeightPx).toFloat(),
+            PanelState.NORMAL to normalHeightPx(
+                availableHeightPx, collapsedHeightPx, previewClaimPx, minPanelHeightPx,
+            ).toFloat(),
+            PanelState.EXPANDED to expandedHeightPx(
+                availableHeightPx, collapsedHeightPx, previewClaimPx, minPanelHeightPx,
+            ).toFloat(),
         )
     }
 

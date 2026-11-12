@@ -19,6 +19,14 @@ package com.ritim.ritimcraw.ui.editor
  * horizontal expansion (the preview Box is width-weighted in the
  * landscape Row; see ClipEditorScreen).
  *
+ * CATEGORY RAIL (owner layout-refactor spec 2026-11-12 section 5 — it
+ * REVERSES the old section 17.1 note that the bottom bar was final): in
+ * the two-column workspace the Light/Color/Detail navigation moves to a
+ * compact vertical rail on the FAR RIGHT edge, the adjustment panel
+ * sits immediately to its left, and the bottom bar becomes
+ * portrait-only. [railWidthDp] is the rail's measured width — the same
+ * target-and-clamp shape as the panel split, never one hardcoded dp.
+ *
  * Everything here is dp-domain arithmetic on the CURRENT configuration
  * (LocalConfiguration's screenWidthDp/screenHeightDp track rotation
  * in place); the editor consults it on every recomposition, so the
@@ -96,4 +104,41 @@ object OrientationLayout {
             !panelVisible -> 1f
             else -> 1f - panelWidthFraction(widthDp)
         }
+
+    /**
+     * The category rail's width band (owner layout-refactor spec 2026-11-12
+     * section 5): "A width in the approximate range of 56-72 dp may be a
+     * reasonable starting point on suitable landscape phone screens, but
+     * measure against actual constraints. Do not hardcode a value that
+     * breaks smaller or larger displays."
+     */
+    const val RAIL_WIDTH_MIN_DP = 56
+    const val RAIL_WIDTH_MAX_DP = 72
+
+    /**
+     * The category rail's target share of the workspace width — the
+     * measured input of [railWidthDp], the analog of [PANEL_TARGET_DP].
+     * 8%: the M3 NavigationRail's own default content is 80dp wide, so
+     * a hair under 10% of a phone's landscape width keeps the rail a
+     * compact sliver while the stock component's icon+label stack stays
+     * legible; the band clamps it at both ends.
+     */
+    const val RAIL_TARGET_FRACTION = 0.08f
+
+    /**
+     * The landscape category rail's width in dp (owner layout-refactor
+     * spec 2026-11-12 section 5): 0 when the workspace is not two-column
+     * (the rail never composes — the bottom bar carries the categories
+     * there), else [RAIL_TARGET_FRACTION] of the workspace width clamped
+     * into the spec's 56-72dp band. The same target-and-clamp shape as
+     * the panel split: the narrowest phones (640dp) get the band's floor
+     * (56dp — every pixel saved matters there), wide ones cap at the
+     * band's ceiling (72dp — the rail must not grow into a wide column
+     * exactly because the display is wide).
+     */
+    fun railWidthDp(widthDp: Int, heightDp: Int): Int {
+        if (!isTwoColumn(widthDp, heightDp)) return 0
+        val target = (widthDp * RAIL_TARGET_FRACTION).toInt()
+        return target.coerceIn(RAIL_WIDTH_MIN_DP, RAIL_WIDTH_MAX_DP)
+    }
 }

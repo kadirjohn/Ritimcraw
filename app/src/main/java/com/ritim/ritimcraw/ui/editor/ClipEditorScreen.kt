@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -578,6 +579,12 @@ fun ClipEditorScreen(
         var editorColumnHeight by remember { mutableStateOf(0) }
         var transportHeight by remember { mutableStateOf(0) }
         var navHeight by remember { mutableStateOf(0) }
+        // The preview region's measured width (owner spec 2026-11-12
+        // section 2, the preview-claim math): the width a width-bound
+        // video would fill. The preview Box is fillMaxWidth inside the
+        // fixed-width editor column, so the value never depends on the
+        // panel's own offset — the claim can never churn mid-drag.
+        var previewRegionWidth by remember { mutableStateOf(0) }
         // ---- Scope strip state (owner spec PLAY-10, 2026-11-12 §1-2) ----
         // The ONE scope area is a strip below the transport, above the
         // panel (never an overlay on the image), carrying a Histogram |
@@ -695,23 +702,11 @@ fun ClipEditorScreen(
         // ever bounds the portrait sheet's anchors.)
         val freeRegionPx = (editorColumnHeight - topBarHeightPx.toInt() -
             transportHeight - navHeight - scopeStripHeightPx).coerceAtLeast(0)
-        // Anchors update whenever the measured region changes (first
-        // composition, rotation, font-scale change). updateAnchors snaps
-        // synchronously to the CURRENT target, so the offset lands on the
-        // restored state's height on the first frame and follows the
-        // region on re-measures — never a re-animation from zero.
-        LaunchedEffect(freeRegionPx, collapsedHeightPx) {
-            if (freeRegionPx > 0) {
-                panelDrag.updateAnchors(
-                    DraggableAnchors {
-                        PanelSheet.anchorHeights(freeRegionPx, collapsedHeightPx).forEach { (state, h) ->
-                            state.at(h)
-                        }
-                    },
-                    panelState,
-                )
-            }
-        }
+        // The panel anchors update one block below the frame declaration:
+        // the 2026-11-12 preview-claim cap (owner layout-refactor spec
+        // section 2) needs the clip's display ratio — the rendered frame's
+        // dims — which is declared further down with the render
+        // bookkeeping.
         // The saveable mirror: settledValue is the state the panel has
         // settled on (drag end / animation end), so the saveable keeps
         // exactly what the user last saw (§11.6).
@@ -750,6 +745,63 @@ fun ClipEditorScreen(
         // publish (no RAW fetch before a frame exists). Keyed to the
         // clip like `frame` — a switch resets both.
         var renderedFrameIndex by remember(sourceId) { mutableStateOf(-1) }
+        // ---- Preview claim (owner layout-refactor spec 2026-11-12, §2) ----
+        // The root-cause fix's input: the display ratio the preview surface
+        // will shape itself by — the SAME chain the surface uses
+        // (rendered frame dims > persisted import stats > 16:9), then the
+        // manual-rotation swap — so the claim and the surface always
+        // agree on the clip's shape. Computed from the same values the
+        // surface reads, never from a separate measurement of the surface
+        // itself (that would race the first frame).
+        val previewDisplayRatio = PreviewSurfaceRatio.withManualRotation(
+            PreviewSurfaceRatio.of(
+                frameWidth = frame?.width ?: 0,
+                frameHeight = frame?.height ?: 0,
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
+            ),
+            manualRotationDeg,
+        )
+        // The height a width-bound clip needs in the free region: the full
+        // width's aspect height when it fits (landscape footage), else 0
+        // (a taller-than-region clip can never be width-bound, so there is
+        // no width to preserve — the legacy flex behavior applies).
+        val previewClaimPx = PanelSheet.previewClaimPx(
+            regionWidthPx = previewRegionWidth,
+            regionHeightPx = freeRegionPx,
+            ratio = previewDisplayRatio,
+        )
+        // The minimum usable panel height in px (three 48dp slider rows +
+        // the 48dp handle target): the claim cap may never squeeze the
+        // panel below it.
+        val minPanelHeightPx = with(density) { PanelSheet.MIN_PANEL_HEIGHT.roundToPx() }
+        // Anchors update whenever the measured region, the claim or the
+        // floor changes (first composition, rotation, font-scale change, a
+        // taller/shorter clip's first frame, opening/closing the scope
+        // strip). updateAnchors snaps synchronously to the CURRENT target,
+        // so the offset lands on the restored state's height on the first
+        // frame and follows the region on re-measures — never a
+        // re-animation from zero. The claim keys the effect so a clip
+        // whose first frame reveals a different shape than the persisted
+        // stats adapts the anchors ONCE (a single predictable resize, the
+        // spec's allowed reason), not continuously.
+        LaunchedEffect(freeRegionPx, collapsedHeightPx, previewClaimPx, minPanelHeightPx) {
+            if (freeRegionPx > 0) {
+                panelDrag.updateAnchors(
+                    DraggableAnchors {
+                        PanelSheet.anchorHeights(
+                            freeRegionPx,
+                            collapsedHeightPx,
+                            previewClaimPx,
+                            minPanelHeightPx,
+                        ).forEach { (state, h) ->
+                            state.at(h)
+                        }
+                    },
+                    panelState,
+                )
+            }
+        }
         var lastRenderFailed by remember(sourceId) { mutableStateOf(false) }
         var errorText by remember(sourceId) { mutableStateOf<String?>(null) }
         var renderInFlight by remember(sourceId) { mutableStateOf(false) }
@@ -1729,7 +1781,13 @@ fun ClipEditorScreen(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    // The claim math's width input (owner layout-refactor
+                    // spec 2026-11-12 §2): the full width a width-bound
+                    // video would fill. Measured here — not read from the
+                    // surface — so the claim is available before the first
+                    // frame and never races the surface's own sizing.
+                    .onSizeChanged { previewRegionWidth = it.width },
                 contentAlignment = Alignment.Center,
             ) {
                 // PLAY-11 zebra: the display swaps to the striped copy
@@ -1877,129 +1935,172 @@ fun ClipEditorScreen(
                             }
                         },
                 )
-                // Small corner refresh control (design review: the manual
-                // render leaves the prime area): status from the existing
-                // PreviewState data, tap = the old Render-preview button's
-                // onClick (full paused tier at the current position).
-                // Hidden with the fullscreen chrome (§16.2: minimal
-                // overlays; the tap toggle brings it back).
-                if (!fullscreen || fullscreenChromeVisible) {
-                    PreviewRefreshControl(
-                        state = previewState,
-                        canRender = canRender,
-                        onRefresh = {
-                            requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(8.dp),
-                    )
-                    // Scope toggle (owner spec PLAY-10, 2026-11-12 §2 + the
-                    // manager's design decision): the mirror of the
-                    // fullscreen TopEnd toggle — the preview's corner icon
-                    // buttons read as one group. Opens/closes the SCOPE
-                    // STRIP below the transport (never an overlay on the
-                    // image); the strip's own selector picks Histogram or
-                    // Waveform. Same 48dp IconButton target, vendored
-                    // waveform-trace glyph (material-icons-core 1.7.3 has
-                    // no waveform icon), same translucent scrim as the
-                    // fullscreen and refresh controls.
-                    ScopeToggleButton(
-                        // The two-state icon keeps one meaning whatever
-                        // the shape: show/hide the scope. The tri-state
-                        // transitions live in the pure rules — this
-                        // button never cycles secretly (MINI -> OFF, not
-                        // MINI -> STRIP: a cycle would hide the third
-                        // state behind a two-state glyph).
-                        visible = scopePresentation != ScopePresentation.OFF,
-                        onToggle = {
-                            scopePresentation =
-                                ScopePresentationRules.onCornerToggle(scopePresentation)
-                        },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(8.dp),
-                    )
-                    // Zebra toggle (owner spec PLAY-11): a peer of the
-                    // scope toggle in the same scrimmed corner group —
-                    // the clip warning belongs beside the analysis tools.
-                    // Same 48dp IconButton target, vendored diagonal-
-                    // stripes glyph, same translucent scrim as every
-                    // preview corner control.
-                    ZebraToggleButton(
-                        on = zebraOn,
-                        onToggle = { zebraOn = !zebraOn },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(start = 8.dp, top = 64.dp),
-                    )
-                    // THE MINI SCOPE OVERLAY (owner request 2026-11-12
-                    // §2): the strip shrunk into the preview's BottomStart
-                    // corner — the only corner no other control owns
-                    // (TopStart = this scope toggle, TopEnd = fullscreen,
-                    // BottomEnd = refresh, CenterEnd = the landscape
-                    // panel-reopen chip). Composed ONLY in MINI, inside
-                    // the same corner-control gate (hidden with the
-                    // fullscreen chrome, like every preview corner
-                    // control), reading the same screen state and the
-                    // same computed results the strip reads — display-
-                    // only by construction. Its tap is the only gesture
-                    // it consumes; the preview's gestures flow around
-                    // its bounds.
-                    if (scopePresentation == ScopePresentation.MINI) {
-                        ScopeMiniOverlay(
-                            content = scopeContent,
-                            histogram = histogram,
-                            rawHistogram = rawHistogram,
-                            histogramModeOrdinal = histogramModeOrdinal,
-                            rawPresentationOrdinal = rawHistogramPresentationOrdinal,
-                            waveform = waveformRendered,
-                            waveformModeOrdinal = waveformModeOrdinal,
-                            midGrayAvailable = grade.tonemap == 0 && grade.lutId == null,
-                            midGrayShown = scopeMidGrayShown,
-                            onMiniTap = {
-                                scopePresentation =
-                                    ScopePresentationRules.onMiniTap(scopePresentation)
+                // Corner controls anchored to the video's REAL rect (owner
+                // notes 1+2, 2026-11-12): this anchor Box measures with the
+                // SAME previewBounds sizer the surface above uses — same
+                // incoming constraints, same
+                // PreviewSurfaceRatio.claimedSize call, same ratio chain —
+                // so it takes exactly the video rect's size and the
+                // wrapper's contentAlignment places it exactly where the
+                // video is. The controls' align() below therefore resolves
+                // against the video's real corners, never the wrapper's: a
+                // height-bounded (narrow) video gets its controls ON its
+                // corners instead of floating in the letterbox (note 1's
+                // histogram-and-two-controls finding), and the refresh
+                // chip rides the video's own BottomEnd corner — the note-2
+                // position re-check: with the section-2 fix the preview is
+                // wider at every panel state, and the chip now covers the
+                // least image possible instead of drifting over the frame
+                // from a wrapper-anchored spot. The anchor Box carries no
+                // pointer handlers, so the preview's gestures (zoom/pan,
+                // before/after hold, the fullscreen chrome tap) flow through
+                // it untouched; only the controls themselves consume,
+                // exactly as before.
+                Box(Modifier.previewBounds(previewDisplayRatio)) {
+                    // Small corner refresh control (design review: the manual
+                    // render leaves the prime area): status from the existing
+                    // PreviewState data, tap = the old Render-preview button's
+                    // onClick (full paused tier at the current position).
+                    // Hidden with the fullscreen chrome (§16.2: minimal
+                    // overlays; the tap toggle brings it back).
+                    if (!fullscreen || fullscreenChromeVisible) {
+                        PreviewRefreshControl(
+                            state = previewState,
+                            canRender = canRender,
+                            onRefresh = {
+                                requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
                             },
                             modifier = Modifier
-                                .align(Alignment.BottomStart)
+                                .align(Alignment.BottomEnd)
                                 .padding(8.dp),
                         )
+                        // Scope toggle (owner spec PLAY-10, 2026-11-12 §2 +
+                        // the manager's design decision): the mirror of the
+                        // fullscreen TopEnd toggle — the preview's corner icon
+                        // buttons read as one group. Opens/closes the SCOPE
+                        // STRIP below the transport (never an overlay on the
+                        // image); the strip's own selector picks Histogram or
+                        // Waveform. Same 48dp IconButton target, vendored
+                        // waveform-trace glyph (material-icons-core 1.7.3 has
+                        // no waveform icon), same translucent scrim as the
+                        // fullscreen and refresh controls.
+                        // TopStart corner stack (spec 2026-11-12 §9-J, no
+                        // hardcoded positional dims): the scope and zebra
+                        // toggles compose in ONE vertically-stacked column
+                        // at the video's real TopStart corner — the zebra
+                        // toggle sits BELOW the scope toggle by the stack's
+                        // own geometry (the toggle's measured height + the
+                        // 8dp gap), never a magic 64dp offset that assumed
+                        // the toggle above it was exactly 48dp tall. Both
+                        // keep their 48dp IconButton targets and the same
+                        // 8dp corner inset as every preview corner control.
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(8.dp),
+                        ) {
+                            ScopeToggleButton(
+                                // The two-state icon keeps one meaning
+                                // whatever the shape: show/hide the scope.
+                                // The tri-state transitions live in the
+                                // pure rules — this button never cycles
+                                // secretly (MINI -> OFF, not MINI ->
+                                // STRIP: a cycle would hide the third
+                                // state behind a two-state glyph).
+                                visible = scopePresentation != ScopePresentation.OFF,
+                                onToggle = {
+                                    scopePresentation =
+                                        ScopePresentationRules.onCornerToggle(scopePresentation)
+                                },
+                            )
+                            // Zebra toggle (owner spec PLAY-11): a peer of
+                            // the scope toggle in the same scrimmed corner
+                            // group — the clip warning belongs beside the
+                            // analysis tools. Same 48dp IconButton target,
+                            // vendored diagonal-stripes glyph, same
+                            // translucent scrim as every preview corner
+                            // control. The 8dp gap is Arrangement-agnostic
+                            // (a plain Column stacks edge to edge; the
+                            // spacer keeps the two 48dp targets from
+                            // touching without hardcoding any position).
+                            Spacer(Modifier.height(8.dp))
+                            ZebraToggleButton(
+                                on = zebraOn,
+                                onToggle = { zebraOn = !zebraOn },
+                            )
+                        }
+                        // THE MINI SCOPE OVERLAY (owner request 2026-11-12
+                        // §2): the strip shrunk into the preview's BottomStart
+                        // corner — the only VIDEO corner no other control
+                        // owns (TopStart = this scope toggle, TopEnd =
+                        // fullscreen, BottomEnd = refresh; the landscape
+                        // panel-reopen chip is CenterEnd but stays on the
+                        // WRAPPER — it marks the hidden panel's edge, not a
+                        // video corner). Composed ONLY in MINI, inside
+                        // the same corner-control gate (hidden with the
+                        // fullscreen chrome, like every preview corner
+                        // control), reading the same screen state and the
+                        // same computed results the strip reads — display-
+                        // only by construction. Its tap is the only gesture
+                        // it consumes; the preview's gestures flow around
+                        // its bounds.
+                        if (scopePresentation == ScopePresentation.MINI) {
+                            ScopeMiniOverlay(
+                                content = scopeContent,
+                                histogram = histogram,
+                                rawHistogram = rawHistogram,
+                                histogramModeOrdinal = histogramModeOrdinal,
+                                rawPresentationOrdinal = rawHistogramPresentationOrdinal,
+                                waveform = waveformRendered,
+                                waveformModeOrdinal = waveformModeOrdinal,
+                                midGrayAvailable = grade.tonemap == 0 && grade.lutId == null,
+                                midGrayShown = scopeMidGrayShown,
+                                onMiniTap = {
+                                    scopePresentation =
+                                        ScopePresentationRules.onMiniTap(scopePresentation)
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(8.dp),
+                            )
+                        }
                     }
-                }
-                // Fullscreen toggle (owner request 2026-11-11 section 2):
-                // the SAME editor session — the toggle only changes the
-                // layout, so the clip stays open, the transport keeps its
-                // position and playback continues unharmed. Vendored
-                // Material Symbols glyphs (material-icons-core 1.7.3 has
-                // no Fullscreen); the IconButton carries the 48dp target.
-                // Scrim behind the glyph (owner finding 2026-11-11): over
-                // overexposed near-white footage the white icon vanished
-                // into the frame. Every preview corner control carries the
-                // same translucent surfaceContainerLowest scrim (roles,
-                // never hex — DESIGN.md; the histogram overlay's backdrop
-                // is the precedent) at the theme's small shape, so the
-                // glyph reads over any frame. The Surface wraps, not
-                // replaces, the IconButton — the 48dp touch target and
-                // the click path are unchanged.
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
-                    shape = MaterialTheme.shapes.small,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp),
-                ) {
-                    IconButton(
-                        onClick = { fullscreen = !fullscreen },
+                    // Fullscreen toggle (owner request 2026-11-11 section 2):
+                    // the SAME editor session — the toggle only changes the
+                    // layout, so the clip stays open, the transport keeps its
+                    // position and playback continues unharmed. Vendored
+                    // Material Symbols glyphs (material-icons-core 1.7.3 has
+                    // no Fullscreen); the IconButton carries the 48dp target.
+                    // Scrim behind the glyph (owner finding 2026-11-11): over
+                    // overexposed near-white footage the white icon vanished
+                    // into the frame. Every preview corner control carries the
+                    // same translucent surfaceContainerLowest scrim (roles,
+                    // never hex — DESIGN.md; the histogram overlay's backdrop
+                    // is the precedent) at the theme's small shape, so the
+                    // glyph reads over any frame. The Surface wraps, not
+                    // replaces, the IconButton — the 48dp touch target and
+                    // the click path are unchanged. OUTSIDE the chrome gate
+                    // above: it is the exit path from fullscreen, so it can
+                    // never hide with the chrome.
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
                     ) {
-                    Icon(
-                        painter = painterResource(
-                            if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
-                        ),
-                        contentDescription = stringResource(
-                            if (fullscreen) R.string.editor_fullscreen_exit else R.string.editor_fullscreen
-                        ),
-                    )
+                        IconButton(
+                            onClick = { fullscreen = !fullscreen },
+                        ) {
+                            Icon(
+                                painter = painterResource(
+                                    if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
+                                ),
+                                contentDescription = stringResource(
+                                    if (fullscreen) R.string.editor_fullscreen_exit else R.string.editor_fullscreen
+                                ),
+                            )
+                        }
                     }
                 }
                 // Panel reopen affordance (owner request 2026-11-11d section
@@ -2512,17 +2613,20 @@ fun ClipEditorScreen(
                 )
             }
             // ---- Workspace branch (owner request 2026-11-11d sections 11
-            // vs 17.1-17.2) ----
+            // vs 17.1-17.2, category rail owner layout-refactor spec
+            // 2026-11-12 section 5) ----
             // Portrait — and every fullscreen (section 16), whatever the
             // orientation — keeps the single column: the flexing preview
             // over the transport, the draggable sheet below (section 11).
             // Landscape two-column: the preview + transport stack in the
             // LEFT column (section 17.2: the transport sits under the
-            // preview), the adjustment panel becomes the full-height RIGHT
+            // preview), the adjustment panel becomes the full-height middle
             // column (section 17.1's responsive 30-40% band, independently
-            // scrollable), and the Light/Color/Detail navigation stays the
-            // FULL-WIDTH bottom row in both layouts — a bottom navigation,
-            // never a landscape side rail (section 17.1).
+            // scrollable), and the Light/Color/Detail navigation moves to
+            // the compact vertical FAR-RIGHT rail (layout-refactor spec
+            // section 5 — it REVERSES the old section 17.1 note: the
+            // bottom bar is portrait-only now, never a wide landscape
+            // bottom row). Both navs read the same shared `tab`.
             if (landscapeTwoColumn) {
                 Row(
                     Modifier
@@ -2587,6 +2691,38 @@ fun ClipEditorScreen(
                             panelRegion()
                         }
                     }
+                    // FAR-RIGHT column: the compact vertical category
+                    // rail (layout-refactor spec 2026-11-12 section 5 —
+                    // it REVERSES the old section 17.1 note that kept
+                    // the bottom bar in landscape). The rail is the
+                    // ONLY navigation in the two-column workspace, so
+                    // it composes in EVERY panel state — including
+                    // while the panel is hidden — exactly like the
+                    // portrait bar it replaces (navigation stays
+                    // reachable, section 10.1's contract carried into
+                    // landscape). A tap while the panel is hidden
+                    // reopens it: the landscape analog of section 10.3's
+                    // collapsed-tap rule (selecting a category reveals
+                    // the controls). The width is OrientationLayout's
+                    // measured band value — NEVER a hardcoded dp — and
+                    // it is a FIXED column, so the weighted preview and
+                    // panel columns to its left keep sharing the
+                    // remaining space in the same 60-70/30-40 band.
+                    EditorCategoryRail(
+                        selected = tab,
+                        onCategoryTap = { category ->
+                            tab = category
+                            panelVisible = true
+                        },
+                        modifier = Modifier
+                            .width(
+                                OrientationLayout.railWidthDp(
+                                    configuration.screenWidthDp,
+                                    configuration.screenHeightDp,
+                                ).dp,
+                            )
+                            .fillMaxHeight(),
+                    )
                 }
             } else {
                 previewRegion()
@@ -2644,8 +2780,20 @@ fun ClipEditorScreen(
             // moves on a category switch. The pure decisions live in
             // PanelSheet (panelAfterCategoryTap) and EditorPreviewLogic
             // nothing here re-derives. Hidden in fullscreen (owner
-            // request section 2).
-            if (!fullscreen) {
+            // request section 2). PORTRAIT-ONLY since the layout-refactor
+            // spec (2026-11-12 section 5): in the two-column workspace
+            // the same categories moved to the FAR-RIGHT vertical rail,
+            // and BOTH navs read this same shared `tab` (section 6) so
+            // the selection survives every rotation. navHeight goes
+            // stale in landscape (the bar leaves the composition, so
+            // onSizeChanged never fires there) — harmless: the ONLY
+            // consumer of navHeight is the portrait anchor math for the
+            // draggable sheet, which never composes in the two-column
+            // workspace. The retained value is already correct anyway:
+            // the M3 bar's height is a fixed token (80dp), so it does
+            // not depend on orientation, and the bar's onSizeChanged
+            // re-fires on re-entry into the composition.
+            if (!fullscreen && !landscapeTwoColumn) {
                 EditorBottomNav(
                     selected = tab,
                     onCategoryTap = { category ->

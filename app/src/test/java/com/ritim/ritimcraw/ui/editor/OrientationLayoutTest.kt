@@ -142,4 +142,56 @@ class OrientationLayoutTest {
             0f,
         )
     }
+
+    // ---- category rail width (owner layout-refactor spec 2026-11-12
+    // section 5: the Light/Color/Detail nav moves to a compact vertical
+    // FAR-RIGHT rail in the two-column workspace; the bottom bar becomes
+    // portrait-only) ----
+
+    @Test
+    fun no_rail_outside_the_two_column_workspace() {
+        // Portrait, square, fullscreen-narrow: the rail never composes —
+        // the bottom bar carries the categories there.
+        assertEquals(0, OrientationLayout.railWidthDp(widthDp = 400, heightDp = 800))
+        assertEquals(0, OrientationLayout.railWidthDp(widthDp = 600, heightDp = 600))
+        assertEquals(0, OrientationLayout.railWidthDp(widthDp = 500, heightDp = 300))
+    }
+
+    @Test
+    fun rail_width_stays_in_the_spec_band_at_every_two_column_width() {
+        // Section 5: "A width in the approximate range of 56-72 dp may be
+        // a reasonable starting point... Do not hardcode a value that
+        // breaks smaller or larger displays." The measured target is
+        // clamped into the band at every real-phone landscape width.
+        for (width in 600..2000 step 50) {
+            val rail = OrientationLayout.railWidthDp(width, 400)
+            assertTrue(
+                "width ${width}dp rail $rail",
+                rail in OrientationLayout.RAIL_WIDTH_MIN_DP..OrientationLayout.RAIL_WIDTH_MAX_DP,
+            )
+        }
+    }
+
+    @Test
+    fun narrowest_phones_get_the_band_floor() {
+        // 640dp (the narrowest real-phone landscape): 8% = 51dp clamps UP
+        // to 56 — the rail keeps its readable icon+label stack even where
+        // every pixel matters most.
+        assertEquals(56, OrientationLayout.railWidthDp(widthDp = 640, heightDp = 360))
+    }
+
+    @Test
+    fun wide_displays_cap_at_the_band_ceiling() {
+        // 8% of 1200dp = 96dp would eat the preview; the band caps the
+        // rail at 72dp — it must not grow into a wide column exactly
+        // because the display is wide.
+        assertEquals(72, OrientationLayout.railWidthDp(widthDp = 1200, heightDp = 500))
+    }
+
+    @Test
+    fun mid_width_lands_on_the_measured_target_inside_the_band() {
+        // 800dp: 8% = 64dp, inside the band untouched — the measured
+        // value, not a hardcoded one.
+        assertEquals(64, OrientationLayout.railWidthDp(widthDp = 800, heightDp = 400))
+    }
 }

@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -202,5 +203,64 @@ class PreviewSurfaceRatioTest {
         assertEquals(0 to 0, PreviewSurfaceRatio.claimedSize(regionWidth = 500, regionHeight = 0, ratio = 1f))
         assertEquals(0 to 0, PreviewSurfaceRatio.claimedSize(regionWidth = 500, regionHeight = 500, ratio = 0f))
         assertEquals(0 to 0, PreviewSurfaceRatio.claimedSize(regionWidth = 500, regionHeight = 500, ratio = -1f))
+    }
+
+    // ---- centeredOffset (owner note 1, 2026-11-12: the corner controls
+    // must anchor to the video's REAL bounds — the histogram and the two
+    // controls used to sit outside the video, on the wrapper's edges) ----
+
+    @Test
+    fun height_bounded_video_offsets_in_from_the_wrapper_edge() {
+        // The owner's photographed geometry: a 9:16 clip height-bounded in
+        // a 393x324 region claims 182x324, so the video's left edge sits
+        // 105px in from the wrapper's — the controls anchored to the
+        // WRAPPER sat outside the video; anchored to this offset they
+        // sit on it.
+        assertEquals(
+            105 to 0,
+            PreviewSurfaceRatio.centeredOffset(regionWidth = 393, regionHeight = 324, ratio = 9f / 16f),
+        )
+    }
+
+    @Test
+    fun width_bound_video_offsets_only_vertically() {
+        // A 16:9 clip fills the width (393x221 in the 324-tall region), so
+        // the horizontal offset is zero and the video floats 51px below
+        // the wrapper's top — the refresh chip anchored to the wrapper's
+        // corner sits that far off the video's corner.
+        assertEquals(
+            0 to 51,
+            PreviewSurfaceRatio.centeredOffset(regionWidth = 393, regionHeight = 324, ratio = 16f / 9f),
+        )
+    }
+
+    @Test
+    fun exact_fit_video_is_flush_with_the_wrapper() {
+        assertEquals(
+            0 to 0,
+            PreviewSurfaceRatio.centeredOffset(regionWidth = 400, regionHeight = 400, ratio = 1f),
+        )
+    }
+
+    @Test
+    fun floor_division_never_places_the_rect_outside_the_region() {
+        // 100x21 region, 3:1 clip: the claim bounds to 63x21; the half
+        // difference 18.5 floors to 18, so offset + size = 81 <= 100 —
+        // the rect never exceeds the wrapper on either axis (the
+        // wrapper's own centering rounds 18.5 up: at most 1px under a
+        // control's 8dp inset, imperceptible).
+        val (offsetX, _) = PreviewSurfaceRatio.centeredOffset(regionWidth = 100, regionHeight = 21, ratio = 3f)
+        assertEquals(18, offsetX)
+        assertTrue(offsetX + 63 <= 100)
+    }
+
+    @Test
+    fun degenerate_inputs_center_at_zero() {
+        // An empty region or unknown ratio has no offset to give: the
+        // controls fall back to the wrapper's corners.
+        assertEquals(0 to 0, PreviewSurfaceRatio.centeredOffset(regionWidth = 0, regionHeight = 500, ratio = 1f))
+        assertEquals(0 to 0, PreviewSurfaceRatio.centeredOffset(regionWidth = 500, regionHeight = 0, ratio = 1f))
+        assertEquals(0 to 0, PreviewSurfaceRatio.centeredOffset(regionWidth = 500, regionHeight = 500, ratio = 0f))
+        assertEquals(0 to 0, PreviewSurfaceRatio.centeredOffset(regionWidth = 500, regionHeight = 500, ratio = -1f))
     }
 }
