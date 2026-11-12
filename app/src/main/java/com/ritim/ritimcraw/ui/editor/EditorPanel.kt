@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
@@ -37,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -74,8 +74,9 @@ fun rememberPanelDragState(initial: PanelState): AnchoredDraggableState<PanelSta
 }
 
 /**
- * The fixed Light/Color/Detail bottom navigation (owner request
- * 2026-11-11d section 10): three evenly spaced categories with vector
+ * The fixed Light/Color/Detail/Frame bottom navigation (owner request
+ * 2026-11-11d section 10; the fourth category is the 2026-11-13 editor
+ * panel segmentation plan): evenly spaced categories with vector
  * icons and short labels, anchored at the editor's bottom above the
  * system navigation inset, OUTSIDE the draggable panel — it stays
  * visible and accessible in every panel state (section 10.1). The
@@ -98,8 +99,8 @@ fun EditorBottomNav(
         windowInsets = WindowInsets(0, 0, 0, 0),
     ) {
         NavigationBarItem(
-            selected = selected == 0,
-            onClick = { onCategoryTap(0) },
+            selected = selected == EditorCategories.LIGHT,
+            onClick = { onCategoryTap(EditorCategories.LIGHT) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_light),
@@ -109,8 +110,8 @@ fun EditorBottomNav(
             label = { Text(stringResource(R.string.editor_tab_light)) },
         )
         NavigationBarItem(
-            selected = selected == 1,
-            onClick = { onCategoryTap(1) },
+            selected = selected == EditorCategories.COLOR,
+            onClick = { onCategoryTap(EditorCategories.COLOR) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_color),
@@ -120,8 +121,8 @@ fun EditorBottomNav(
             label = { Text(stringResource(R.string.editor_tab_color)) },
         )
         NavigationBarItem(
-            selected = selected == 2,
-            onClick = { onCategoryTap(2) },
+            selected = selected == EditorCategories.DETAIL,
+            onClick = { onCategoryTap(EditorCategories.DETAIL) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_detail),
@@ -130,12 +131,23 @@ fun EditorBottomNav(
             },
             label = { Text(stringResource(R.string.editor_tab_detail)) },
         )
+        NavigationBarItem(
+            selected = selected == EditorCategories.FRAME,
+            onClick = { onCategoryTap(EditorCategories.FRAME) },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_editor_nav_frame),
+                    contentDescription = null,
+                )
+            },
+            label = { Text(stringResource(R.string.editor_tab_frame)) },
+        )
     }
 }
 
 /**
  * The landscape category rail (owner layout-refactor spec 2026-11-12
- * section 5): the SAME three categories, icons, labels, selected state
+ * section 5): the SAME four categories, icons, labels, selected state
  * and callback contract as [EditorBottomNav] — moved to a compact
  * vertical rail on the editor's FAR RIGHT edge in the two-column
  * workspace, so landscape stops spending the bottom bar's 80dp of
@@ -166,8 +178,8 @@ fun EditorCategoryRail(
         windowInsets = WindowInsets(0, 0, 0, 0),
     ) {
         NavigationRailItem(
-            selected = selected == 0,
-            onClick = { onCategoryTap(0) },
+            selected = selected == EditorCategories.LIGHT,
+            onClick = { onCategoryTap(EditorCategories.LIGHT) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_light),
@@ -177,8 +189,8 @@ fun EditorCategoryRail(
             label = { Text(stringResource(R.string.editor_tab_light)) },
         )
         NavigationRailItem(
-            selected = selected == 1,
-            onClick = { onCategoryTap(1) },
+            selected = selected == EditorCategories.COLOR,
+            onClick = { onCategoryTap(EditorCategories.COLOR) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_color),
@@ -188,8 +200,8 @@ fun EditorCategoryRail(
             label = { Text(stringResource(R.string.editor_tab_color)) },
         )
         NavigationRailItem(
-            selected = selected == 2,
-            onClick = { onCategoryTap(2) },
+            selected = selected == EditorCategories.DETAIL,
+            onClick = { onCategoryTap(EditorCategories.DETAIL) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_detail),
@@ -197,6 +209,17 @@ fun EditorCategoryRail(
                 )
             },
             label = { Text(stringResource(R.string.editor_tab_detail)) },
+        )
+        NavigationRailItem(
+            selected = selected == EditorCategories.FRAME,
+            onClick = { onCategoryTap(EditorCategories.FRAME) },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_editor_nav_frame),
+                    contentDescription = null,
+                )
+            },
+            label = { Text(stringResource(R.string.editor_tab_frame)) },
         )
     }
 }
@@ -268,13 +291,14 @@ fun EditorPanelHandle(
  * position, playback and the render session all survive
  * collapse/expand by construction (sections 10.3, 11.6 and 18).
  *
- * [scrollStates] carries ONE ScrollState PER CATEGORY (the screen owns
- * them rememberSaveable, section 11.6 "relevant scroll position"): the
- * list restores its own category's offset on a switch instead of
- * inheriting the previous category's, and each category keeps its
- * position while the user is elsewhere. [category] is the same Int the
- * navigation passes; a missing entry falls back to a throwaway local
- * state so the sheet still composes.
+ * [scrollState] is the scroll state of the body the sheet is currently
+ * showing — the screen owns them rememberSaveable (section 11.6
+ * "relevant scroll position") and RESOLVES which one applies before the
+ * call: the main category's own state on a switch (each category keeps
+ * its position while the user is elsewhere), or the ACTIVE SUB-TAB's
+ * state when the category has segments (the 2026-11-13 plan: only the
+ * selected body scrolls, so Balance/Wheels/Look each keep their own
+ * offset). The sheet itself is segment-agnostic.
  *
  * The screen sizes this sheet by the drag offset (height modifier) and
  * subtracts the fixed rows around it for the anchor math; the sheet
@@ -283,8 +307,8 @@ fun EditorPanelHandle(
  * Landscape two-column workspace (owner request 2026-11-11d sections
  * 17.1-17.2): [landscape] = true composes the SAME sheet as the full-height
  * RIGHT column — no drag handle (section 17.3 does not force the portrait's
- * vertical panel dragging in landscape), the same per-category scroll
- * states, the same content slot. The screen weights the columns from
+ * vertical panel dragging in landscape), the same resolved scroll state,
+ * the same content slot. The screen weights the columns from
  * OrientationLayout's responsive 30-40% band; the sheet itself stays
  * layout-agnostic (it just fills the height it is given and scrolls
  * inside, section 17.2: "independently scrollable").
@@ -293,15 +317,31 @@ fun EditorPanelHandle(
  * sheet's affordance is its drag handle): the screen supplies the section
  * 17.3 hide button there — the visibility state is the screen's, the
  * sheet just provides the slot.
+ *
+ * [pinnedContent] (2026-11-13 editor panel segmentation plan: "sub-tab
+ * row fixed at panel top; only the selected body scrolls") composes
+ * between the handle/header and the scrolling body, NOT inside the
+ * scroll Column: the Color tab's Balance/Wheels/Look row stays put
+ * while the selected sub-tab's body scrolls under it. The slot sits
+ * inside the weighted, clipping BODY region: the sheet's height is the
+ * drag offset (the anchors never measure content), so the pinned row
+ * takes its natural
+ * height out of the scroll region's share and the panel NEVER changes
+ * height when a main tab gains or loses its sub-tab row — the
+ * stable-geometry invariant of the layout refactor carried onto
+ * segments. In the portrait collapsed strip the wrapper is clipped
+ * away (the 36dp strip shows only the handle; the row cannot leak into
+ * the navigation bar below), and a mid-drag offset reveals it
+ * progressively exactly like the scroll content does.
  */
 @Composable
 fun EditorPanelSheet(
     dragState: AnchoredDraggableState<PanelState>,
-    category: Int,
-    scrollStates: Map<Int, ScrollState>,
+    scrollState: ScrollState,
     modifier: Modifier = Modifier,
     landscape: Boolean = false,
     header: (@Composable () -> Unit)? = null,
+    pinnedContent: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     // SQUIRCLE SHEET EDGES (owner add-on 2026-11-12): the portrait sheet
@@ -354,19 +394,46 @@ fun EditorPanelSheet(
                 if (landscape && header != null) {
                     header()
                 }
-                // weight(1f): the scroll region takes whatever the sheet's
-                // height constraint leaves below the handle, so the content
-                // SCROLLS INSIDE the panel instead of expanding it (section
-                // 11.3 states B/C are scrollable; the screen fixes the height
-                // via the drag offset — or the full column height, in
-                // landscape).
+                // The body region (2026-11-13 segmentation plan): ONE
+                // weighted, clipping Column holding the pinned sub-tab row
+                // above the scrolling content. Weighted so it takes exactly
+                // what the handle/header leave — 0dp in the portrait
+                // collapsed strip (the row can neither draw nor hit-test
+                // into the navigation bar below) and the full remainder in
+                // every open state; clipping so the pinned row is bounded
+                // by the panel's real height and reveals progressively
+                // with the drag offset exactly like the scroll content
+                // does (the handle keeps its own 12dp overhang: it
+                // composes ABOVE this region, outside the clip). The sheet's
+                // height stays the drag offset's alone — the row's natural
+                // height comes out of the scroll region's share, never out
+                // of the panel's, so a main tab gaining or losing its
+                // sub-tab row never moves the panel height (the layout
+                // refactor's stable-geometry invariant, carried onto
+                // segments).
                 Column(
                     Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .verticalScroll(scrollStates[category] ?: rememberScrollState()),
+                        .clipToBounds(),
                 ) {
-                    content()
+                    if (pinnedContent != null) {
+                        pinnedContent()
+                    }
+                    // weight(1f): the scroll region takes whatever the
+                    // body region leaves below the pinned row, so the
+                    // content SCROLLS INSIDE the panel instead of expanding
+                    // it (section 11.3 states B/C are scrollable; the screen
+                    // fixes the height via the drag offset — or the full
+                    // column height, in landscape).
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .verticalScroll(scrollState),
+                    ) {
+                        content()
+                    }
                 }
             }
         }

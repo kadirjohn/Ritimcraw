@@ -48,6 +48,28 @@
     <string name="editor_tab_light">Işık</string>
     <string name="editor_tab_color">Renk</string>
     <string name="editor_tab_detail">Detay</string>
+    <string name="editor_tab_frame">Kare</string>
+    <!-- 2026-11-13 editor panel segmentation plan: the Color tab's
+         Balance | Wheels | Look sub-tabs (text-first SecondaryTabRow). -->
+    <string name="editor_color_subtab_balance">Denge</string>
+    <string name="editor_color_subtab_wheels">Tekerlekler</string>
+    <string name="editor_color_subtab_look">Görünüm</string>
+    <!-- The advanced RAW/Source section at the bottom of Balance: the CFA
+         toggles are source-decode config, not a WB-family control (plan). -->
+    <string name="editor_color_raw_source">RAW / Kaynak</string>
+    <!-- 2026-11-13 editor panel segmentation plan: the Frame tab's
+         Crop | Stabilize sub-tabs. -->
+    <string name="editor_frame_subtab_crop">Kırpma</string>
+    <string name="editor_frame_subtab_stabilize">Stabilize</string>
+    <!-- The Stabilize body's expandable gyro/sync/probe section (plan);
+         the Show/Hide pair follows the scope/zebra affordance idiom. -->
+    <string name="editor_stabilization_advanced_show">Jiro ve senkronizasyon ayrıntılarını göster</string>
+    <string name="editor_stabilization_advanced_hide">Jiro ve senkronizasyon ayrıntılarını gizle</string>
+    <!-- The Detail tab's two section headers (plan): the tab keeps no
+         sub-tabs yet — the headers group its sliders until temporal NR
+         controls grow. -->
+    <string name="editor_detail_section_noise_reduction">Gürültü Azaltma</string>
+    <string name="editor_detail_section_texture">Doku</string>
     <string name="editor_panel_handle">Ayar paneli tutamacı</string>
     <string name="editor_panel_hide">Ayar panelini gizle</string>
     <string name="editor_panel_show">Ayar panelini göster</string>

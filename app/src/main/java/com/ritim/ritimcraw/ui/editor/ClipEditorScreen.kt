@@ -40,8 +40,10 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -140,6 +142,132 @@ private class ScopeRateMeter {
             computeAt.removeFirst()
         }
         return computeAt.size
+    }
+}
+
+/**
+ * Pure main-category structure of the editor panel (2026-11-13 editor
+ * panel segmentation plan), JVM-testable without Compose: the four
+ * category indices the bottom navigation, the landscape rail and the
+ * panel region dispatch all key on — ONE definition so the three can
+ * never fork. The Color sub-tab rules (Balance/Wheels/Look) live here
+ * too; Frame's Crop/Stabilize pair extends this object in the follow-up
+ * commit of the plan.
+ *
+ * The panel's category Int is UI state, not data: the indices are the
+ * nav's item order, and the panel region's `when (tab)` uses the same
+ * constants. Keeping them here (with a test locking the count and the
+ * order) means a future fifth category must touch this object — the
+ * nav, the rail and the scroll-state map are then compiler-driven to
+ * follow.
+ */
+object EditorCategories {
+
+    /** Light: exposure and tone sliders. */
+    const val LIGHT = 0
+
+    /** Color: WB, wheels, look (sub-tabs arrive with commit b). */
+    const val COLOR = 1
+
+    /** Detail: noise reduction and texture. */
+    const val DETAIL = 2
+
+    /** Frame: crop and stabilization (sub-tabs arrive with commit c). */
+    const val FRAME = 3
+
+    /** The main categories in navigation order; the nav/rail count this. */
+    val ALL = listOf(LIGHT, COLOR, DETAIL, FRAME)
+
+    /**
+     * True when [category] is one of the four main categories — the
+     * panel region's exhaustive dispatch and any future category-source
+     * guard (a saveable Int restored after a version change could be
+     * anything) validate through this instead of repeating the range.
+     */
+    fun isMainCategory(category: Int): Boolean = category in ALL
+
+    // ---- Color sub-tabs (plan: SecondaryTabRow, text-first) ----
+
+    /** Balance: WB (As Shot, temp, tint) + saturation. */
+    const val COLOR_BALANCE = 0
+
+    /** Wheels: the 3-band color wheel + split tone (MCRAW only). */
+    const val COLOR_WHEELS = 1
+
+    /** Look: Tone Mapping (+ AgX Look) and the LUT section. */
+    const val COLOR_LOOK = 2
+
+    /** The Color sub-tabs in row order; the SecondaryTabRow counts this. */
+    val COLOR_SUBTABS = listOf(COLOR_BALANCE, COLOR_WHEELS, COLOR_LOOK)
+
+    /**
+     * The Color sub-tabs that exist for THIS clip: Wheels is MCRAW-only
+     * (the showColorTools gate — the encoded path takes the same Grade
+     * but ignores the color-package fields, so the wheel would be dead
+     * controls), Balance and Look run on both clip kinds. The row
+     * composes from this list so the visible tabs are exactly the
+     * usable ones, and [sanitizeColorSubTab] keeps the saved selection
+     * inside it.
+     */
+    fun visibleColorSubTabs(showColorTools: Boolean): List<Int> =
+        if (showColorTools) COLOR_SUBTABS else listOf(COLOR_BALANCE, COLOR_LOOK)
+
+    /**
+     * The sub-tab a restored/persisted Color selection resolves to:
+     * itself when it is one of the visible sub-tabs, else the first
+     * visible one. A saveable Int can be anything after a version
+     * change (or a clip-kind switch that gates Wheels out from under a
+     * Wheels selection), and the row's selected index must stay a valid
+     * member of the visible list — never an IndexOutOfBounds, never a
+     * selected tab the row did not compose.
+     */
+    fun sanitizeColorSubTab(subTab: Int, showColorTools: Boolean): Int {
+        val visible = visibleColorSubTabs(showColorTools)
+        return if (subTab in visible) subTab else visible.first()
+    }
+
+    // ---- Frame sub-tabs (plan: SecondaryTabRow, text-first) ----
+
+    /** Crop: aspect, straighten, crop fractions (future: rotation). */
+    const val FRAME_CROP = 0
+
+    /**
+     * Stabilize: toggle, mode, strength, zoom limit, with the
+     * gyro/sync/probe details expandable (plan). MCRAW-only — the
+     * stabilization group keeps the showStabilization gate it carries
+     * today in Detail; the tab follows the group, not the other way
+     * around.
+     */
+    const val FRAME_STABILIZE = 1
+
+    /** The Frame sub-tabs in row order; the SecondaryTabRow counts this. */
+    val FRAME_SUBTABS = listOf(FRAME_CROP, FRAME_STABILIZE)
+
+    /**
+     * The Frame sub-tabs a clip kind can use: stabilization needs the
+     * gyro track only an MCRAW source carries (showStabilization), so
+     * the encoded path sees Crop alone — the same drop-the-dead-segment
+     * rule as the Color row's Wheels. The screen goes one step further
+     * and skips the pinned row entirely when this list has a single
+     * entry: a one-tab row is chrome with nothing to choose (the row
+     * exists to switch between segments, and there is no switch to
+     * make).
+     */
+    fun visibleFrameSubTabs(showStabilization: Boolean): List<Int> =
+        if (showStabilization) FRAME_SUBTABS else listOf(FRAME_CROP)
+
+    /**
+     * The sub-tab a restored/persisted Frame selection resolves to:
+     * itself when the clip kind still shows it, else the first visible
+     * (Crop on the encoded path). A saveable Int can be anything after
+     * a version change; the row's selected index must stay a valid
+     * member of the composed list — never an IndexOutOfBounds, never a
+     * selected tab the row did not compose. The Color sanitizer's rule
+     * with Frame's gate.
+     */
+    fun sanitizeFrameSubTab(subTab: Int, showStabilization: Boolean): Int {
+        val visible = visibleFrameSubTabs(showStabilization)
+        return if (subTab in visible) subTab else visible.first()
     }
 }
 
@@ -398,21 +526,27 @@ enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
 
 /**
  * Clip editor (DESIGN.md Editor): preview frame on
- * surface-container-lowest with a subtle outline border, Light/Color/Detail
- * tabs, Light tab with Exposure / Highlights / Black Point / White Point /
- * Shadows / Midtones / Contrast, Color tab with Temperature / Tint /
- * Saturation (tone stages COL-11/12/13, end to end) plus the RAW metadata
- * controls (RAW-07/COL-09/RAW-04/RAW-06): As Shot WB reset, Highlight
- * Reconstruction switch, Keep Vignetting switch, and — on MCRAW clips —
- * the color wheel + split tone section (COL-13: three-band wheel pad with
- * Shadows / Midtones / Highlights tabs, split shadow/highlight hues and
- * the Balance slider), Detail tab with Sharpness /
- * Detail sliders (COL-15), the Tonemapping choice Off / ACES / AgX (COL-16)
- * as M3 segmented buttons, and the LUT section (COL-07): the imported .cube
+ * surface-container-lowest with a subtle outline border, Light/Color/
+ * Detail/Frame main tabs (the four-category structure of the 2026-11-13
+ * editor panel segmentation plan) — Light tab with Exposure / Highlights /
+ * Black Point / White Point / Shadows / Midtones / Contrast, Color tab
+ * behind its Balance | Wheels | Look sub-tab row (Balance: Temperature /
+ * Tint / Saturation (tone stages COL-11/12/13, end to end) plus the RAW
+ * metadata controls (RAW-07/COL-09/RAW-04/RAW-06): As Shot WB reset,
+ * Highlight Reconstruction switch, Keep Vignetting switch; Wheels —
+ * MCRAW-only, the encoded path drops the tab: the three-band wheel pad
+ * with Shadows / Midtones / Highlights tabs, split shadow/highlight hues
+ * and the Balance slider (COL-13); Look: the Tonemapping choice Off /
+ * ACES / AgX (COL-16) as M3 segmented buttons plus the AgX look, and the
+ * LUT section (COL-07) as its own separate section: the imported .cube
  * library as choice rows plus an Import button and the Strength slider
- * under the selected cube.
- * as M3 segmented buttons, and — on MCRAW clips — the Temporal NR toggle
- * with its Strength slider (DN-05..DN-09).
+ * under the selected cube), Detail tab with two section headers — Noise
+ * Reduction (luma NR, chroma denoise, and on MCRAW clips the Temporal NR
+ * toggle with its Strength slider (DN-05..DN-09)) and Texture (Sharpness
+ * / Detail sliders (COL-15)), and the Frame tab behind its Crop |
+ * Stabilize sub-tab row (Crop: aspect, straighten and the rect sliders
+ * (RAW-09); Stabilize — MCRAW-only: the gyro warp group with its
+ * expandable gyro/sync/probe details section).
  *
  * Preview: the screen renders the CURRENT transport position through the
  * native preview pipeline — the first frame once on open, then after the
@@ -561,7 +695,53 @@ fun ClipEditorScreen(
         val lightScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
         val colorScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
         val detailScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
-        val categoryScrollStates = mapOf(0 to lightScroll, 1 to colorScroll, 2 to detailScroll)
+        // The Frame tab's own scroll state (2026-11-13 segmentation plan):
+        // the category-level fallback the tab uses when it has NO sub-tab
+        // row (the encoded path's Crop-only body) — on the MCRAW path the
+        // activePanelScrollState resolution prefers the ACTIVE sub-tab's
+        // state (frameSubTabScrollStates below), so Crop and Stabilize each
+        // keep their own offset like Balance/Wheels/Look do.
+        val frameScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val categoryScrollStates = mapOf(
+            EditorCategories.LIGHT to lightScroll,
+            EditorCategories.COLOR to colorScroll,
+            EditorCategories.DETAIL to detailScroll,
+            EditorCategories.FRAME to frameScroll,
+        )
+        // ---- Per-main-tab sub-tab state (2026-11-13 segmentation plan) ----
+        // Each main tab remembers its last sub-tab (plan: "each main tab
+        // remembers its last sub-tab, rememberSaveable, category-keyed"),
+        // and each sub-tab BODY gets its own scroll state — the
+        // per-category rule carried one level down: switching sub-tab
+        // restores that sub-tab's own offset, and switching back to the
+        // main tab later preserves it (panel close/open included — the
+        // states live at screen level, so the landscape panel-hide,
+        // which removes the sheet from composition entirely, keeps them
+        // too). Lived at SCREEN level, not inside the panels: only one
+        // panel composes at a time, so a rememberSaveable inside
+        // ColorPanel would reset on every main-tab switch.
+        var colorSubTab by rememberSaveable { mutableStateOf(EditorCategories.COLOR_BALANCE) }
+        val balanceScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val wheelsScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val lookScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val colorSubTabScrollStates = mapOf(
+            EditorCategories.COLOR_BALANCE to balanceScroll,
+            EditorCategories.COLOR_WHEELS to wheelsScroll,
+            EditorCategories.COLOR_LOOK to lookScroll,
+        )
+        // The Frame tab's own sub-tab state, same shape as Color's: the
+        // tab remembers its last segment (Crop | Stabilize) and each body
+        // keeps its own scroll offset. frameScroll above stays the
+        // category entry for symmetry with colorScroll — it is what a
+        // hypothetical sub-tab-less Frame would scroll with, and the map
+        // never throws on the FRAME key.
+        var frameSubTab by rememberSaveable { mutableStateOf(EditorCategories.FRAME_CROP) }
+        val frameCropScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val frameStabilizeScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val frameSubTabScrollStates = mapOf(
+            EditorCategories.FRAME_CROP to frameCropScroll,
+            EditorCategories.FRAME_STABILIZE to frameStabilizeScroll,
+        )
         val density = LocalDensity.current
         val scope = rememberCoroutineScope()
         // The measured heights the anchor math needs (§11.3: "adapt to
@@ -2373,9 +2553,77 @@ fun ClipEditorScreen(
             }
         }
 
+        // The scroll state of the body the panel is CURRENTLY showing
+        // (2026-11-13 segmentation plan): the main category's own state
+        // on a plain tab, or the ACTIVE SUB-TAB's state when the
+        // category has segments — only the selected body scrolls, so
+        // Balance/Wheels/Look and Crop/Stabilize each keep their own
+        // offset. Resolved HERE (not inside EditorPanelSheet) because
+        // both the landscape and the portrait call sites need it and
+        // the sanitizers need the screen's showColorTools /
+        // showStabilization decisions; the sheet stays segment-agnostic
+        // and just scrolls the state it is handed.
+        val activePanelScrollState =
+            if (tab == EditorCategories.COLOR) {
+                colorSubTabScrollStates.getValue(
+                    EditorCategories.sanitizeColorSubTab(
+                        colorSubTab,
+                        EditorPreviewLogic.showColorTools(sourcePath),
+                    ),
+                )
+            } else if (tab == EditorCategories.FRAME) {
+                frameSubTabScrollStates.getValue(
+                    EditorCategories.sanitizeFrameSubTab(
+                        frameSubTab,
+                        EditorPreviewLogic.showStabilization(sourcePath),
+                    ),
+                )
+            } else {
+                categoryScrollStates.getValue(tab)
+            }
+
+        // The pinned sub-tab row of the main tab the panel is CURRENTLY
+        // showing (segmentation plan: "sub-tab row fixed at panel top;
+        // only the selected body scrolls"), or null when the tab has no
+        // segments (Light, Detail). Resolved HERE — like the scroll
+        // state — so the portrait and the landscape call sites hand the
+        // sheet the SAME slot and the sheet stays segment-agnostic; both
+        // read the sanitized selection, so the row and the body can
+        // never disagree about which segment is open. The Frame row
+        // composes nothing on the encoded path (Crop is the only
+        // segment there — see FrameSubTabRow), so the body stands alone
+        // exactly like Detail's.
+        val pinnedSubTabRow: (@Composable () -> Unit)? = when (tab) {
+            EditorCategories.COLOR -> {
+                {
+                    ColorSubTabRow(
+                        subTab = EditorCategories.sanitizeColorSubTab(
+                            colorSubTab,
+                            EditorPreviewLogic.showColorTools(sourcePath),
+                        ),
+                        showColorTools = EditorPreviewLogic.showColorTools(sourcePath),
+                        onSubTabChange = { colorSubTab = it },
+                    )
+                }
+            }
+            EditorCategories.FRAME -> {
+                {
+                    FrameSubTabRow(
+                        subTab = EditorCategories.sanitizeFrameSubTab(
+                            frameSubTab,
+                            EditorPreviewLogic.showStabilization(sourcePath),
+                        ),
+                        showStabilization = EditorPreviewLogic.showStabilization(sourcePath),
+                        onSubTabChange = { frameSubTab = it },
+                    )
+                }
+            }
+            else -> null
+        }
+
         val panelRegion: @Composable () -> Unit = {
             when (tab) {
-                0 -> LightPanel(
+                EditorCategories.LIGHT -> LightPanel(
                     grade = grade,
                     onChange = { g ->
                         // Slider-path edit: records with the drag cause so
@@ -2403,8 +2651,19 @@ fun ClipEditorScreen(
                         applyGradeEdit(g)
                     },
                 )
-                1 -> ColorPanel(
+                EditorCategories.COLOR -> ColorPanel(
                     grade = grade,
+                    // The sanitized saved sub-tab (plan: each main tab
+                    // remembers its last sub-tab): the pinned row and this
+                    // body read the same value, so they can never disagree
+                    // about which segment is open — and a Wheels selection
+                    // saved on an MCRAW clip falls back to Balance when the
+                    // same editor opens an encoded clip (the gate is pure,
+                    // JVM-tested in EditorCategoriesTest).
+                    subTab = EditorCategories.sanitizeColorSubTab(
+                        colorSubTab,
+                        EditorPreviewLogic.showColorTools(sourcePath),
+                    ),
                     // The CFA-stage toggles (Highlight Reconstruction, Keep
                     // Vignetting) exist only on the MCRAW path; encoded
                     // clips keep As Shot + every slider (pure decision in
@@ -2442,8 +2701,26 @@ fun ClipEditorScreen(
                     onReset = { g ->
                         applyGradeEdit(g)
                     },
+                    // ---- Look body wiring (COL-16/COL-07, moved from
+                    // DetailPanel with the routes untouched) ----
+                    lutEntries = lutEntries,
+                    lutImportError = lutImportError,
+                    onImportLut = { lutPicker.launch(arrayOf("*/*")) },
+                    onRemoveLut = onRemoveLut,
+                    onLutSelect = { g ->
+                        // A LUT selection is a discrete history step (null
+                        // cause, feature N7).
+                        applyGradeEdit(g)
+                    },
+                    onTonemapChange = { g ->
+                        // The tonemapping choice is not a drag: it settles
+                        // IMMEDIATELY at the full tier (GradeEdited with no
+                        // drag active), like the RAW toggles — a discrete
+                        // history step (null cause, feature N7).
+                        applyGradeEdit(g)
+                    },
                 )
-                else -> DetailPanel(
+                EditorCategories.DETAIL -> DetailPanel(
                     grade = grade,
                     // Temporal NR merges neighboring CFA frames, so the
                     // group shows only on MCRAW clips (pure decision in
@@ -2462,30 +2739,9 @@ fun ClipEditorScreen(
                         )
                         if (!active) gradeHistory.settle()
                     },
-                    // The tonemapping choice is not a drag: it settles
-                    // IMMEDIATELY at the full tier (GradeEdited with no
-                    // drag active), like the RAW toggles — a discrete
-                    // history step (null cause, feature N7).
-                    onTonemapChange = { g ->
-                        applyGradeEdit(g)
-                    },
-                    // ---- LUT section wiring (COL-07) ----
-                    // Selection/Strength are grade edits like the
-                    // tonemap choice: not drags, so they settle
-                    // IMMEDIATELY at the full tier. The import picker
-                    // and the library rows are not grade edits at all.
-                    lutEntries = lutEntries,
-                    lutImportError = lutImportError,
-                    onImportLut = { lutPicker.launch(arrayOf("*/*")) },
-                    onRemoveLut = onRemoveLut,
-                    onLutSelect = { g ->
-                        // A LUT selection is a discrete history step (null
-                        // cause, feature N7).
-                        applyGradeEdit(g)
-                    },
                     // The Temporal NR switch is not a drag either: it
                     // settles IMMEDIATELY at the full tier, like the
-                    // RAW toggles and the tonemapping choice — a discrete
+                    // RAW toggles — a discrete
                     // history step (null cause, feature N7).
                     onToggleChange = { g ->
                         applyGradeEdit(g)
@@ -2495,7 +2751,23 @@ fun ClipEditorScreen(
                     onReset = { g ->
                         applyGradeEdit(g)
                     },
-                    // ---- Stabilization wiring (gyro Phase 5) ----
+                )
+                EditorCategories.FRAME -> FramePanel(
+                    grade = grade,
+                    // The sanitized saved sub-tab (plan: each main tab
+                    // remembers its last sub-tab): the pinned row and
+                    // this body read the same value, so they can never
+                    // disagree about which segment is open — and a
+                    // Stabilize selection saved on an MCRAW clip falls
+                    // back to Crop when the same editor opens an encoded
+                    // clip (the gate is pure, JVM-tested in
+                    // EditorCategoriesTest).
+                    subTab = EditorCategories.sanitizeFrameSubTab(
+                        frameSubTab,
+                        EditorPreviewLogic.showStabilization(sourcePath),
+                    ),
+                    // ---- Stabilization wiring (gyro Phase 5, moved from
+                    // DetailPanel with the routes untouched) ----
                     // The group shows on MCRAW only (pure decision in
                     // EditorPreviewLogic.showStabilization). The switch
                     // and the mode choice settle IMMEDIATELY at the full
@@ -2512,16 +2784,37 @@ fun ClipEditorScreen(
                     gyroImportError = gyroImportError,
                     onAttachGyro = { gyroPicker.launch(arrayOf("*/*")) },
                     onRemoveGyro = onRemoveGyro,
-                    // ---- Crop + straighten wiring (RAW-09) ----
+                    // ---- Crop + straighten wiring (RAW-09, moved from
+                    // DetailPanel with the routes untouched) ----
                     // The UNCROPPED effective dims from the publish fold:
                     // presets and honest W/H ranges math against this
                     // pair, never the cropped `frame` dims.
                     cropFrameW = effectiveDims.width,
                     cropFrameH = effectiveDims.height,
-                    // The aspect choice and the group reset are not
+                    onChange = { g ->
+                        // Same slider-path recording as the other tabs:
+                        // mid-drag grade steps render immediately at the
+                        // low tier through the cached path.
+                        applyGradeEdit(g, GradeHistory.SLIDER_GESTURE)
+                    },
+                    onDragActiveChange = { active ->
+                        applyTierEvent(
+                            if (active) SliderTiers.Event.DragStarted else SliderTiers.Event.DragEnded
+                        )
+                        if (!active) gradeHistory.settle()
+                    },
+                    // The strength/zoom/trim/focal sliders drag through
+                    // onChange/onDragActiveChange above; the switch, the
+                    // mode and the gyro attach/remove choices are not
                     // drags: they settle IMMEDIATELY at the full tier,
-                    // like the tonemap choice — discrete history steps
+                    // like the RAW toggles — discrete history steps
                     // (null cause, feature N7).
+                    onToggleChange = { g ->
+                        applyGradeEdit(g)
+                    },
+                    // The aspect choice and the group reset are not
+                    // drags either: same immediate full-tier settle,
+                    // discrete history steps (null cause, feature N7).
                     onCropEdit = { g ->
                         applyGradeEdit(g)
                     },
@@ -2622,8 +2915,8 @@ fun ClipEditorScreen(
             // LEFT column (section 17.2: the transport sits under the
             // preview), the adjustment panel becomes the full-height middle
             // column (section 17.1's responsive 30-40% band, independently
-            // scrollable), and the Light/Color/Detail navigation moves to
-            // the compact vertical FAR-RIGHT rail (layout-refactor spec
+            // scrollable), and the Light/Color/Detail/Frame navigation
+            // moves to the compact vertical FAR-RIGHT rail (layout-refactor spec
             // section 5 — it REVERSES the old section 17.1 note: the
             // bottom bar is portrait-only now, never a wide landscape
             // bottom row). Both navs read the same shared `tab`.
@@ -2661,14 +2954,13 @@ fun ClipEditorScreen(
                     // independently scrollable (section 17.2) — the same
                     // sheet composable in landscape mode: no drag handle
                     // (section 17.3 does not force the portrait's vertical
-                    // panel dragging here), the same per-category scroll
-                    // states, the same panel content. The header row
+                    // panel dragging here), the same resolved scroll state,
+                    // the same panel content. The header row
                     // carries section 17.3's hide affordance.
                     if (panelVisible) {
                         EditorPanelSheet(
                             dragState = panelDrag,
-                            category = tab,
-                            scrollStates = categoryScrollStates,
+                            scrollState = activePanelScrollState,
                             modifier = Modifier
                                 .weight(
                                     OrientationLayout.panelWidthFraction(
@@ -2687,6 +2979,14 @@ fun ClipEditorScreen(
                                     )
                                 }
                             },
+                            // The active tab's pinned sub-tab row
+                            // (segmentation plan): fixed at the panel top
+                            // in the landscape column too — the row is
+                            // layout-agnostic, only the sheet's own
+                            // chrome differs. The slot is resolved once
+                            // (with the scroll state) so both call sites
+                            // hand the sheet the same row.
+                            pinnedContent = pinnedSubTabRow,
                         ) {
                             panelRegion()
                         }
@@ -2750,8 +3050,7 @@ fun ClipEditorScreen(
             if (!fullscreen && !landscapeTwoColumn) {
                 EditorPanelSheet(
                     dragState = panelDrag,
-                    category = tab,
-                    scrollStates = categoryScrollStates,
+                    scrollState = activePanelScrollState,
                     // NaN guard: the offset is uninitialized until the
                     // first updateAnchors lands (getOffset returns NaN
                     // before then), so the first frame composes the
@@ -2766,12 +3065,24 @@ fun ClipEditorScreen(
                             if (panelDrag.anchors.size == 0) PanelCollapsedHeight
                             else with(density) { panelDrag.offset.toDp() },
                         ),
+                    // The active tab's pinned sub-tab row (segmentation
+                    // plan): fixed at the panel top, above the scrolling
+                    // body — the row's natural height comes out of the
+                    // scroll region's share inside the sheet, NEVER out of
+                    // the panel's, so switching between main tabs with and
+                    // without a sub-tab row cannot move the panel height
+                    // (the stable-geometry invariant). Clipped away in the
+                    // collapsed strip together with the body below it. The
+                    // slot is resolved once (with the scroll state) so
+                    // both call sites hand the sheet the same row.
+                    pinnedContent = pinnedSubTabRow,
                 ) {
                     panelRegion()
                 }
             }
-            // Fixed Light/Color/Detail bottom navigation (owner request
-            // 2026-11-11d §10): OUTSIDE the draggable panel, always the
+            // Fixed Light/Color/Detail/Frame bottom navigation (owner
+            // request 2026-11-11d §10 + the 2026-11-13 segmentation
+            // plan): OUTSIDE the draggable panel, always the
             // editor's LAST row, so it stays visible and tappable in
             // every panel state. The current category stays selected
             // while collapsed (§10.3); a tap while collapsed opens the
@@ -3024,15 +3335,23 @@ private fun LightPanel(
 }
 
 /**
- * Color tab: white balance (As Shot reset + Temperature / Tint), the RAW
- * stage toggles, the color wheel + split tone section (COL-13), then
- * Saturation. Temperature and Tint moved here from the Light tab when
- * Saturation landed (spec COL-12: white balance and saturation are the
- * color controls; the Light tab is tone); the wheel/split section landed
- * between them and Saturation so the tab reads in native stage order
- * (temp 16, tint 17, wheel 18, split 19, saturation 20).
+ * Color tab (2026-11-13 editor panel segmentation plan): three sub-tab
+ * bodies — Balance (white balance: As Shot reset + Temperature / Tint +
+ * Saturation, with the CFA-stage toggles in an advanced RAW / Source
+ * section at the BOTTOM), Wheels (the color wheel + split tone section,
+ * COL-13), Look (Tone Mapping + LUT, moved from the Detail tab). The
+ * sub-tab ROW itself is NOT composed here: the screen supplies it through
+ * EditorPanelSheet's pinnedContent slot (plan: "sub-tab row fixed at
+ * panel top; only the selected body scrolls"), so this panel only renders
+ * the SELECTED body. [subTab] is the screen's saved selection, already
+ * sanitized through [EditorCategories.sanitizeColorSubTab] — the row and
+ * the body can never disagree about which segment is open.
  *
- * RAW-07/COL-09/RAW-04/RAW-06 semantics:
+ * Temperature and Tint landed here from the Light tab when Saturation
+ * arrived (spec COL-12: white balance and saturation are the color
+ * controls; the Light tab is tone).
+ *
+ * RAW-07/COL-09/RAW-04/RAW-06 semantics (unchanged by the regrouping):
  * - As Shot (reset action): tempK -> 5600, tint -> 0, asShot -> true. The
  *   manual values stay stored in tempK/tint whenever asShot is toggled off
  *   again, so nothing is ever lost.
@@ -3041,19 +3360,26 @@ private fun LightPanel(
  * - Highlight Reconstruction and Keep Vignetting are M3 Switch rows (48dp
  *   touch targets, DESIGN.md Inputs): they toggle native develop stages, not
  *   tone — the Highlights TONE slider stays independent (stage 13 vs stage 3).
- *   CFA-stage rows show only when [showRawStageToggles] is true (MCRAW);
- *   encoded (Mi-Log MP4) clips decode YUV with no CFA stage, so they get the
- *   same white balance + saturation controls without the two RAW toggles.
- * - The color wheel + split tone section ([ColorWheelSection]) shows only
- *   when [showColorTools] is true (MCRAW): the encoded path takes the same
- *   Grade but the bridge ignores the color-package fields there, so the
- *   section would be dead controls. The section's own contract (band tabs,
- *   disc colors = the stage-18 gain math, split hue on/off derived from
+ *   The plan moves them OUT of the main flow into the RAW / Source section
+ *   at the bottom of Balance: CFA is source-decode config, not a WB-family
+ *   control. CFA-stage rows still show only when [showRawStageToggles] is
+ *   true (MCRAW); encoded (Mi-Log MP4) clips decode YUV with no CFA stage,
+ *   so they get the same Balance body without the section.
+ * - The Wheels body shows only when [showColorTools] is true (MCRAW): the
+ *   encoded path takes the same Grade but the bridge ignores the
+ *   color-package fields there, so the wheel would be dead controls —
+ *   the screen's visibleColorSubTabs keeps the Wheels tab itself out of
+ *   the row on that path. The section's own contract (band tabs, disc
+ *   colors = the stage-18 gain math, split hue on/off derived from
  *   hue -1) is documented on [ColorWheelSection].
+ * - The Look body (Tone Mapping + LUT) is plain regrouping: the tonemap
+ *   choice, AgX look, LUT selection and LUT Strength keep the exact
+ *   semantics and settle paths they had in [DetailPanel] (COL-16/COL-07).
  */
 @Composable
 private fun ColorPanel(
     grade: GradeK,
+    subTab: Int,
     showRawStageToggles: Boolean,
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
@@ -3066,6 +3392,83 @@ private fun ColorPanel(
     // takes the same Grade but ignores the color-package fields, so the
     // section would be dead controls there.
     showColorTools: Boolean = false,
+    // ---- Look body: LUT section (COL-07), moved from DetailPanel ----
+    lutEntries: List<LutInfo> = emptyList(),
+    lutImportError: String? = null,
+    onImportLut: () -> Unit = {},
+    onRemoveLut: (LutInfo) -> Unit = {},
+    // LUT selection and the tonemap/AgX choices are grade edits on the
+    // DISCRETE settle path (immediate full tier, their own undo step) —
+    // the exact routes they had in DetailPanel.
+    onLutSelect: (GradeK) -> Unit = {},
+    onTonemapChange: (GradeK) -> Unit = {},
+) {
+    when (subTab) {
+        // Balance: the WB family (plan: "Balance: WB, temp, tint,
+        // saturation") plus the advanced RAW / Source section at the
+        // bottom (plan: CFA is source-decode config, not a WB-family
+        // control — moved out of the main flow).
+        EditorCategories.COLOR_BALANCE -> ColorBalanceBody(
+            grade = grade,
+            showRawStageToggles = showRawStageToggles,
+            onChange = onChange,
+            onDragActiveChange = onDragActiveChange,
+            onToggleChange = onToggleChange,
+            onReset = onReset,
+        )
+        // Wheels: the wheel + split tone section as its own body. The
+        // gate is double-armed (the row hides the tab on the encoded
+        // path AND the body guards) — the guard keeps the panel honest
+        // even if a stale saved sub-tab ever reached it unsanitized.
+        EditorCategories.COLOR_WHEELS -> if (showColorTools) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ColorWheelSection(
+                    grade = grade,
+                    onChange = onChange,
+                    onDragActiveChange = onDragActiveChange,
+                    onToggleChange = onToggleChange,
+                    onReset = onReset,
+                )
+            }
+        }
+        // Look: Tone Mapping (+ AgX Look) and the LUT section as two
+        // SEPARATE sections (plan) — both moved from DetailPanel with
+        // semantics untouched.
+        EditorCategories.COLOR_LOOK -> ColorLookBody(
+            grade = grade,
+            onChange = onChange,
+            onDragActiveChange = onDragActiveChange,
+            onTonemapChange = onTonemapChange,
+            onReset = onReset,
+            lutEntries = lutEntries,
+            lutImportError = lutImportError,
+            onImportLut = onImportLut,
+            onRemoveLut = onRemoveLut,
+            onLutSelect = onLutSelect,
+        )
+    }
+}
+
+/**
+ * The Balance sub-tab body (2026-11-13 segmentation plan): the WB family —
+ * As Shot reset + Temperature / Tint + Saturation — with the CFA-stage
+ * toggles demoted to an advanced RAW / Source section at the BOTTOM (plan:
+ * CFA is source-decode config, not a WB-family control). The section header
+ * separates them from the WB controls so the main flow reads as one family.
+ */
+@Composable
+private fun ColorBalanceBody(
+    grade: GradeK,
+    showRawStageToggles: Boolean,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onToggleChange: (GradeK) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -3139,10 +3542,31 @@ private fun ColorPanel(
             onDragActiveChange = onDragActiveChange,
             trackGradient = CompactSliderDefaults.TINT_GRADIENT,
         )
-        // CFA-stage toggles: MCRAW only (encoded clips decode YUV — there is
-        // no CFA stage to reconstruct or vignette; the decision is pure and
-        // JVM-tested).
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_saturation),
+            value = grade.saturation,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.saturation.toInt()),
+            onChange = { v -> onChange(grade.copy(saturation = SliderSteps.snapSaturation(v))) },
+            onDoubleTapReset = {
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+            trackGradient = CompactSliderDefaults.SATURATION_GRADIENT,
+        )
+        // ---- Advanced RAW / Source section (segmentation plan) ----
+        // The CFA-stage toggles demoted out of the main flow (plan: CFA
+        // is source-decode config, not a WB-family control), kept at the
+        // BOTTOM of Balance under their own header so they stay findable
+        // without leading the color work. MCRAW only (encoded clips
+        // decode YUV — there is no CFA stage to reconstruct or vignette;
+        // the decision is pure and JVM-tested).
         if (showRawStageToggles) {
+            Text(
+                stringResource(R.string.editor_color_raw_source),
+                style = MaterialTheme.typography.labelLarge,
+            )
             RawToggleRow(
                 label = stringResource(R.string.editor_highlight_reconstruction),
                 checked = grade.highlightReconstruction,
@@ -3158,33 +3582,221 @@ private fun ColorPanel(
                 },
             )
         }
-        // ---- Color wheel + split tone (COL-13) ----
-        // Pipeline order in the panel matches the native stage order:
-        // wheel 18 and split tone 19 run AFTER the WB controls above
-        // (temp 16, tint 17) and BEFORE saturation (20) below, so the
-        // section reads in the order the pixels experience it.
-        if (showColorTools) {
-            ColorWheelSection(
-                grade = grade,
-                onChange = onChange,
-                onDragActiveChange = onDragActiveChange,
-                onToggleChange = onToggleChange,
-                onReset = onReset,
+    }
+}
+
+/**
+ * The Look sub-tab body (2026-11-13 segmentation plan): Tone Mapping and
+ * the LUT as two SEPARATE sections, moved from [DetailPanel] with their
+ * semantics and settle paths untouched (COL-16/COL-07). The tonemap
+ * choice and the LUT selection are DISCRETE edits (immediate full-tier
+ * settle, their own undo steps); LUT Strength is a drag like every other
+ * slider.
+ */
+@Composable
+private fun ColorLookBody(
+    grade: GradeK,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onTonemapChange: (GradeK) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
+    lutEntries: List<LutInfo> = emptyList(),
+    lutImportError: String? = null,
+    onImportLut: () -> Unit = {},
+    onRemoveLut: (LutInfo) -> Unit = {},
+    onLutSelect: (GradeK) -> Unit = {},
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // ---- Tone Mapping section (moved from DetailPanel) ----
+        // Tonemapping: one row, one choice (Off / ACES / AgX). The label
+        // row mirrors the slider rows so the sections read as one panel.
+        Text(
+            stringResource(R.string.editor_tonemapping),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            val options = listOf(
+                TonemapOption(R.string.editor_tonemap_off, 0),
+                TonemapOption(R.string.editor_tonemap_aces, 1),
+                TonemapOption(R.string.editor_tonemap_agx, 2),
+            )
+            options.forEachIndexed { index, option ->
+                SegmentedButton(
+                    // The AgX tab (2) is selected for ANY AgX look (2-5);
+                    // re-tapping it keeps the chosen variant instead of
+                    // snapping back to Punchy.
+                    selected = if (option.value >= 2) grade.tonemap >= 2
+                               else grade.tonemap == option.value,
+                    onClick = {
+                        val value = if (option.value >= 2 && grade.tonemap >= 2) grade.tonemap
+                                    else option.value
+                        if (value != grade.tonemap)
+                            onTonemapChange(grade.copy(tonemap = value))
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = options.size,
+                    ),
+                ) {
+                    Text(stringResource(option.labelRes))
+                }
+            }
+        }
+        // AgX look (COL-16 follow-up): a second row ONLY while AgX is
+        // active — Punchy (2) / Golden (3) / Greyscale (4) / Base (5), the
+        // rawedit::Grade Ints from the core look table. Same discrete
+        // settle path as the row above (not a drag). Look names stay
+        // untranslated everywhere: they are the upstream AgX look names,
+        // like ACES/AgX themselves.
+        if (grade.tonemap >= 2) {
+            Text(
+                stringResource(R.string.editor_tonemap_agx_look),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                val looks = listOf(
+                    TonemapOption(R.string.editor_tonemap_agx_punchy, 2),
+                    TonemapOption(R.string.editor_tonemap_agx_golden, 3),
+                    TonemapOption(R.string.editor_tonemap_agx_greyscale, 4),
+                    TonemapOption(R.string.editor_tonemap_agx_base, 5),
+                )
+                looks.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = grade.tonemap == option.value,
+                        onClick = {
+                            onTonemapChange(grade.copy(tonemap = option.value))
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = looks.size,
+                        ),
+                    ) {
+                        Text(stringResource(option.labelRes))
+                    }
+                }
+            }
+        }
+        // ---- LUT section (COL-07, moved from DetailPanel) ----
+        // One choice row per cube plus None: the grade stores the id, the
+        // store resolves the path at render time, so a removed cube degrades
+        // to no-LUT (pathFor returns null) instead of breaking the render.
+        Text(
+            stringResource(R.string.editor_lut),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        if (lutEntries.isEmpty()) {
+            // No cubes yet: one hint line instead of a bare None row.
+            Text(
+                stringResource(R.string.editor_lut_none),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            // None row first: deselecting is the removal of the selection
+            // (lutId = null), not a grade reset — Strength keeps its value
+            // so re-selecting a cube restores the blend the user set.
+            LutRow(
+                label = stringResource(R.string.editor_lut_none),
+                selected = grade.lutId == null,
+                onClick = { onLutSelect(grade.copy(lutId = null)) },
+            )
+            lutEntries.forEach { lut ->
+                LutRow(
+                    label = lut.name,
+                    selected = grade.lutId == lut.id,
+                    onClick = { onLutSelect(grade.copy(lutId = lut.id)) },
+                    onRemove = { onRemoveLut(lut) },
+                )
+            }
+        }
+        // Import: tonal button (secondary action, DESIGN.md), full-width so
+        // the row reads as part of the section, not a floating chip.
+        FilledTonalButton(
+            onClick = onImportLut,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.editor_lut_import))
+        }
+        // Import failure lands here — local to the section, never in the
+        // preview's error surface (lutImportError is its own state).
+        if (lutImportError != null) {
+            Text(
+                lutImportError ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
             )
         }
-        GradeSlider(
-            label = stringResource(R.string.editor_slider_saturation),
-            value = grade.saturation,
-            valueRange = -100f..100f,
-            step = SliderSteps.UNIT_STEP,
-            valueLabel = Format.formatSigned(grade.saturation.toInt()),
-            onChange = { v -> onChange(grade.copy(saturation = SliderSteps.snapSaturation(v))) },
-            onDoubleTapReset = {
-                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SATURATION, grade))
-            },
-            onDragActiveChange = onDragActiveChange,
-            trackGradient = CompactSliderDefaults.SATURATION_GRADIENT,
-        )
+        // Strength only under a selected cube (COL-07: "Seçim ve Strength
+        // ayrı kaydedilsin" — the two controls, one visible at a time the
+        // selection makes it meaningful). Percent 0..100, whole steps, the
+        // GradeK default 100 = full LUT.
+        if (grade.lutId != null) {
+            GradeSlider(
+                label = stringResource(R.string.editor_lut_strength),
+                value = grade.lutStrength,
+                valueRange = 0f..100f,
+                step = SliderSteps.UNIT_STEP,
+                valueLabel = Format.formatPercent(grade.lutStrength.toInt()),
+                onChange = { v ->
+                    onChange(grade.copy(lutStrength = SliderSteps.snapLutStrength(v)))
+                },
+                onDoubleTapReset = {
+                    onReset(SliderSteps.resetToDefault(SliderSteps.Axis.LUT_STRENGTH, grade))
+                },
+                onDragActiveChange = onDragActiveChange,
+            )
+        }
+    }
+}
+
+/**
+ * The Color tab's pinned sub-tab row (2026-11-13 editor panel segmentation
+ * plan): a text-first M3 [SecondaryTabRow] — Balance / Wheels / Look —
+ * composed through EditorPanelSheet's pinnedContent slot, so it stays at
+ * the panel top while the selected body scrolls under it (plan: "sub-tab
+ * row fixed at panel top; only the selected body scrolls vertically").
+ *
+ * [subTab] is the screen's saved selection, SANITIZED against the gate
+ * before the call: the row's selected index is a member of the composed
+ * list by construction ([EditorCategories.visibleColorSubTabs] drops
+ * Wheels on the encoded path), so the row, the body and the saved state
+ * can never disagree. A tap writes the choice back through
+ * [onSubTabChange] — UI-only state, never a grade edit.
+ *
+ * Text-only M3 [Tab]s (plan: "text-first labels") are 48dp tall — the
+ * DESIGN.md touch-target floor holds without extra padding. The row keeps
+ * SecondaryTabRow's stock colors: the secondary token container reads as
+ * part of the sheet's surface, and the 3dp primary underline marks the
+ * open segment.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ColorSubTabRow(
+    subTab: Int,
+    showColorTools: Boolean,
+    onSubTabChange: (Int) -> Unit,
+) {
+    val visible = EditorCategories.visibleColorSubTabs(showColorTools)
+    SecondaryTabRow(
+        selectedTabIndex = visible.indexOf(subTab),
+    ) {
+        visible.forEach { candidate ->
+            val labelRes = when (candidate) {
+                EditorCategories.COLOR_BALANCE -> R.string.editor_color_subtab_balance
+                EditorCategories.COLOR_WHEELS -> R.string.editor_color_subtab_wheels
+                else -> R.string.editor_color_subtab_look
+            }
+            Tab(
+                selected = candidate == subTab,
+                onClick = { onSubTabChange(candidate) },
+                text = { Text(stringResource(labelRes)) },
+            )
+        }
     }
 }
 
@@ -3408,52 +4020,36 @@ private data class WheelBandOption(
 )
 
 /**
- * Detail tab (COL-15/COL-16), in order: Noise Reduction and Chroma Denoise
- * (DN-01..08 spatial denoise, percent 0..100, 0 = the stage skipped — the
- * old look), then Sharpness (edge sharpness, unsharp radius 1.5) and Detail
- * (fine-texture contrast, unsharp radius 0.75) sliders, then the Tonemapping
- * choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md Inputs:
- * "segmented buttons for codec and scope choice" — the same single choice
- * pattern). The denoise pair leads because native stages 7/8 run BEFORE
- * sharpness/detail (21/22): sliders read in pipeline order, and denoising
- * first is also what makes the sharpeners amplify signal, not noise. All
- * five controls run on BOTH clip kinds: the native develop pipeline and
- * developEncoded share the same stages, so encoded (Mi-Log MP4) clips get
- * the same Detail tab with nothing hidden.
+ * Detail tab (COL-15/COL-16) under the plan's two section headers
+ * (2026-11-13 editor panel segmentation plan: "NO sub-tabs yet — two
+ * section headers"): Noise Reduction over the denoise family — Noise
+ * Reduction and Chroma Denoise (DN-01..08 spatial denoise, percent
+ * 0..100, 0 = the stage skipped — the old look) plus the Temporal NR
+ * group (DN-05..DN-09, same header: temporal is the third denoise
+ * control) — and Texture over Sharpness (edge sharpness, unsharp radius
+ * 1.5) and Detail (fine-texture contrast, unsharp radius 0.75). The
+ * denoise pair leads because native stages 7/8 run BEFORE
+ * sharpness/detail (21/22): sliders read in pipeline order, and
+ * denoising first is also what makes the sharpeners amplify signal,
+ * not noise. All four spatial controls run on BOTH clip kinds: the
+ * native develop pipeline and developEncoded share the same stages, so
+ * encoded (Mi-Log MP4) clips get the same Detail tab with nothing
+ * hidden.
  *
- * Tonemap values (rawedit::Grade): 0 = off, 1 = ACES (Narkowicz 2015 fit),
- * 2 = AgX (2022 Filmic AgX essential fit). The grade stores the choice, so
- * the used transform version travels with the saved grade (COL-16's
- * versioning requirement at this package's scope).
+ * Temporal NR: an M3 Switch row plus a 0..100 Strength slider, shown
+ * only when [showTemporalNr] is true (MCRAW). The temporal stage merges
+ * the neighboring CFA frames into the center frame before develop,
+ * motion-compensated and confidence-weighted; the toggle settles at
+ * the full tier immediately (not a drag), the strength slider is a drag
+ * like every other slider. Encoded (Mi-Log MP4) clips never see the
+ * group — the bridge takes-and-ignores the temporal fields on that
+ * path.
  *
- * The LUT section (COL-07): the imported cube library as
- * radio rows (None + one per imported cube), an Import button, the Strength
- * slider under the selected cube and a Remove action. Selection and
- * Strength are grade edits (onLutSelect, the immediate settle path like
- * the tonemap choice); import/remove are library operations (the screen's
- * AppNav wiring owns the store).
- * Temporal NR (DN-05..DN-09): an M3 Switch row plus a 0..100 Strength
- * slider, shown only when [showTemporalNr] is true (MCRAW). The temporal
- * stage merges the neighboring CFA frames into the center frame before
- * develop, motion-compensated and confidence-weighted; the toggle settles
- * at the full tier immediately (not a drag), the strength slider is a drag
- * like every other slider. Encoded (Mi-Log MP4) clips never see the group —
- * the bridge takes-and-ignores the temporal fields on that path.
- * Stabilization (gyro Phase 5): on MCRAW clips an Off/On switch, the Mode
- * choice (Smooth / Lock First Frame / Horizon Lock), Strength and Zoom limit
- * sliders, the sync status line with the gyro attach/remove actions, the
- * ±500 ms sync trim and the focal-length control — the honest no-data
- * state when no .gcsv is attached, never a fabricated verdict.
- * Crop + straighten (RAW-09) closes the tab: the Aspect choice (Free /
- * 16:9 / 9:16 / 4:3 / 1:1 — a preset replaces the rect with the largest
- * centered on-ratio rect, FREE keeps it), the Straighten dial (±15°,
- * half-degree ticks, edge-preserving auto zoom), the four rect sliders
- * (Left/Top translate, Width/Height resize — under a preset the
- * perpendicular axis follows through the lock chain, position giving way
- * before the ratio), and the group reset. All rect math runs through the
- * pure SliderSteps.applyCropAxis against the UNCROPPED effective dims
- * ([cropFrameW]/[cropFrameH] from the publish fold), so the panel and
- * the render pump can never disagree about which region is selected.
+ * The 2026-11-13 plan moved the Tonemapping choice, the AgX look row
+ * and the LUT section to the Color tab's Look sub-tab
+ * ([ColorLookBody]) and the stabilization + crop groups to the Frame
+ * tab's sub-tabs ([FramePanel]) — semantics unchanged in both homes.
+ * This tab grows sub-tabs only when temporal NR controls grow (plan).
  */
 @Composable
 private fun DetailPanel(
@@ -3461,42 +4057,10 @@ private fun DetailPanel(
     showTemporalNr: Boolean,
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
-    onTonemapChange: (GradeK) -> Unit = {},
-    lutEntries: List<LutInfo> = emptyList(),
-    lutImportError: String? = null,
-    onImportLut: () -> Unit = {},
-    onRemoveLut: (LutInfo) -> Unit = {},
-    onLutSelect: (GradeK) -> Unit = {},
     onToggleChange: (GradeK) -> Unit = {},
     // Double-tap resets ride their own route (feature N7): discrete undo
     // steps, never coalesced into the slider gestures (see LightPanel).
     onReset: (GradeK) -> Unit = {},
-    // ---- Stabilization group (gyro Phase 5) ----
-    showStabilization: Boolean = false,
-    gyroAttached: Boolean = false,
-    gyroSync: DoubleArray? = null,
-    // The zoom-limit honesty readout (audit fix 2026-11-12, Fix 5): the
-    // native probe's [requiredZoom, appliedZoom, statusInt] over the
-    // CURRENT grade + attached log, or null = no verdict (the group
-    // renders no readout rather than fabricating a zoom — the pure
-    // EditorPreviewLogic.stabZoomVerdict decides what shows).
-    stabZoom: DoubleArray? = null,
-    gyroName: String? = null,
-    containerFocalMm: Float = 0f,
-    gyroImportError: String? = null,
-    onAttachGyro: () -> Unit = {},
-    onRemoveGyro: () -> Unit = {},
-    // ---- Crop + straighten group (RAW-09) ----
-    // The UNCROPPED effective-upright dims (the publish fold's capture):
-    // aspect presets and the honest W/H slider ranges math against this
-    // pair. 0x0 before the first publish — CropState guards to the full
-    // rect, the documented degradation.
-    cropFrameW: Int = 0,
-    cropFrameH: Int = 0,
-    // Aspect choice and the group reset are discrete edits (like the
-    // tonemap choice): they settle IMMEDIATELY at the full tier and record
-    // as their own undo step, never coalesced into a slider gesture.
-    onCropEdit: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -3504,6 +4068,13 @@ private fun DetailPanel(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // The plan's first section header: the denoise family (spatial
+        // pair + temporal group) under one label, so the tab reads as two
+        // families instead of one flat slider list.
+        Text(
+            stringResource(R.string.editor_detail_section_noise_reduction),
+            style = MaterialTheme.typography.labelLarge,
+        )
         // DN-01..08: both denoise controls first, in native pipeline order
         // (stage 7 chroma, stage 8 luma — before sharpness/detail 21/22).
         // Percent 0..100 like LUT Strength, whole steps, default 0 = the
@@ -3536,169 +4107,9 @@ private fun DetailPanel(
             },
             onDragActiveChange = onDragActiveChange,
         )
-        GradeSlider(
-            label = stringResource(R.string.editor_slider_sharpness),
-            value = grade.sharpness,
-            valueRange = -100f..100f,
-            step = SliderSteps.UNIT_STEP,
-            valueLabel = Format.formatSigned(grade.sharpness.toInt()),
-            onChange = { v -> onChange(grade.copy(sharpness = SliderSteps.snapSharpness(v))) },
-            onDoubleTapReset = {
-                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SHARPNESS, grade))
-            },
-            onDragActiveChange = onDragActiveChange,
-        )
-        GradeSlider(
-            label = stringResource(R.string.editor_slider_detail),
-            value = grade.detail,
-            valueRange = -100f..100f,
-            step = SliderSteps.UNIT_STEP,
-            valueLabel = Format.formatSigned(grade.detail.toInt()),
-            onChange = { v -> onChange(grade.copy(detail = SliderSteps.snapDetail(v))) },
-            onDoubleTapReset = {
-                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.DETAIL, grade))
-            },
-            onDragActiveChange = onDragActiveChange,
-        )
-        // Tonemapping: one row, one choice (Off / ACES / AgX). The label
-        // row mirrors the slider rows so the three tabs read as one panel.
-        Text(
-            stringResource(R.string.editor_tonemapping),
-            style = MaterialTheme.typography.labelLarge,
-        )
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            val options = listOf(
-                TonemapOption(R.string.editor_tonemap_off, 0),
-                TonemapOption(R.string.editor_tonemap_aces, 1),
-                TonemapOption(R.string.editor_tonemap_agx, 2),
-            )
-            options.forEachIndexed { index, option ->
-                SegmentedButton(
-                    // The AgX tab (2) is selected for ANY AgX look (2-5);
-                    // re-tapping it keeps the chosen variant instead of
-                    // snapping back to Punchy.
-                    selected = if (option.value >= 2) grade.tonemap >= 2
-                               else grade.tonemap == option.value,
-                    onClick = {
-                        val value = if (option.value >= 2 && grade.tonemap >= 2) grade.tonemap
-                                    else option.value
-                        if (value != grade.tonemap)
-                            onTonemapChange(grade.copy(tonemap = value))
-                    },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = options.size,
-                    ),
-                ) {
-                    Text(stringResource(option.labelRes))
-                }
-            }
-        }
-        // AgX look (COL-16 follow-up): a second row ONLY while AgX is
-        // active — Punchy (2) / Golden (3) / Greyscale (4) / Base (5), the
-        // rawedit::Grade Ints from the core look table. Same discrete
-        // settle path as the row above (not a drag). Look names stay
-        // untranslated everywhere: they are the upstream AgX look names,
-        // like ACES/AgX themselves.
-        if (grade.tonemap >= 2) {
-            Text(
-                stringResource(R.string.editor_tonemap_agx_look),
-                style = MaterialTheme.typography.labelLarge,
-            )
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                val looks = listOf(
-                    TonemapOption(R.string.editor_tonemap_agx_punchy, 2),
-                    TonemapOption(R.string.editor_tonemap_agx_golden, 3),
-                    TonemapOption(R.string.editor_tonemap_agx_greyscale, 4),
-                    TonemapOption(R.string.editor_tonemap_agx_base, 5),
-                )
-                looks.forEachIndexed { index, option ->
-                    SegmentedButton(
-                        selected = grade.tonemap == option.value,
-                        onClick = {
-                            onTonemapChange(grade.copy(tonemap = option.value))
-                        },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = looks.size,
-                        ),
-                    ) {
-                        Text(stringResource(option.labelRes))
-                    }
-                }
-            }
-        }
-        // ---- LUT section (COL-07) ----
-        // One choice row per cube plus None: the grade stores the id, the
-        // store resolves the path at render time, so a removed cube degrades
-        // to no-LUT (pathFor returns null) instead of breaking the render.
-        Text(
-            stringResource(R.string.editor_lut),
-            style = MaterialTheme.typography.labelLarge,
-        )
-        if (lutEntries.isEmpty()) {
-            // No cubes yet: one hint line instead of a bare None row.
-            Text(
-                stringResource(R.string.editor_lut_none),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            // None row first: deselecting is the removal of the selection
-            // (lutId = null), not a grade reset — Strength keeps its value
-            // so re-selecting a cube restores the blend the user set.
-            LutRow(
-                label = stringResource(R.string.editor_lut_none),
-                selected = grade.lutId == null,
-                onClick = { onLutSelect(grade.copy(lutId = null)) },
-            )
-            lutEntries.forEach { lut ->
-                LutRow(
-                    label = lut.name,
-                    selected = grade.lutId == lut.id,
-                    onClick = { onLutSelect(grade.copy(lutId = lut.id)) },
-                    onRemove = { onRemoveLut(lut) },
-                )
-            }
-        }
-        // Import: tonal button (secondary action, DESIGN.md), full-width so
-        // the row reads as part of the section, not a floating chip.
-        FilledTonalButton(
-            onClick = onImportLut,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(stringResource(R.string.editor_lut_import))
-        }
-        // Import failure lands here — local to the section, never in the
-        // preview's error surface (lutImportError is its own state).
-        if (lutImportError != null) {
-            Text(
-                lutImportError ?: "",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-        // Strength only under a selected cube (COL-07: "Seçim ve Strength
-        // ayrı kaydedilsin" — the two controls, one visible at a time the
-        // selection makes it meaningful). Percent 0..100, whole steps, the
-        // GradeK default 100 = full LUT.
-        if (grade.lutId != null) {
-            GradeSlider(
-                label = stringResource(R.string.editor_lut_strength),
-                value = grade.lutStrength,
-                valueRange = 0f..100f,
-                step = SliderSteps.UNIT_STEP,
-                valueLabel = Format.formatPercent(grade.lutStrength.toInt()),
-                onChange = { v ->
-                    onChange(grade.copy(lutStrength = SliderSteps.snapLutStrength(v)))
-                },
-                onDoubleTapReset = {
-                    onReset(SliderSteps.resetToDefault(SliderSteps.Axis.LUT_STRENGTH, grade))
-                },
-                onDragActiveChange = onDragActiveChange,
-            )
-        }
-        // Temporal NR: MCRAW only. The switch settles immediately at the
+        // Temporal NR: MCRAW only, and part of the Noise Reduction family
+        // (the plan's first header groups it with the spatial pair — it is
+        // the third denoise control). The switch settles immediately at the
         // full tier ([onToggleChange]); the strength slider below it is a
         // drag like every other slider ([onChange] + [onDragActiveChange]).
         if (showTemporalNr) {
@@ -3743,288 +4154,202 @@ private fun DetailPanel(
                 )
             }
         }
-        // ---- Stabilization group (gyro Phase 5) ----
-        // MCRAW only (showStabilization): the warp consumes the gyro log
-        // against the clip's CFA frames. The switch settles immediately at
-        // the full tier ([onToggleChange]); every slider below is a drag
-        // ([onChange] + [onDragActiveChange]) like the rest of the panel.
-        // The group ALWAYS shows its honest state: no log attached = the
-        // no-data status line and an attach action, never a fabricated
-        // verdict — the warp itself stays a no-op until a log exists.
-        if (showStabilization) {
-            // The probe's numbers drive the status line (pure decision in
-            // EditorPreviewLogic.syncStatus): Approximate (anchored ±bound)
-            // / Manual offset / No gyro data — "approximate" because the
-            // anchor offset is a coarse wall-clock estimate (Sync.h: the
-            // receive lag is unobservable; optical-flow refinement is a
-            // later mission). gyroSync holds [anchored, offsetMs,
-            // boundMs, focalMm, samples] from the attach-time probe.
-            val sync = EditorPreviewLogic.syncStatus(
-                gyroAttached = gyroAttached,
-                probeFailed = gyroSync == null,
-                anchored = gyroSync != null && gyroSync[0] > 0.0,
-            )
-            val statusText = when (sync) {
-                GyroSyncStatus.ANCHORED -> stringResource(
-                    R.string.editor_stabilization_sync_anchored,
-                    gyroSync?.get(2)?.toInt() ?: 0,
-                )
-                GyroSyncStatus.MANUAL ->
-                    stringResource(R.string.editor_stabilization_sync_manual)
-                GyroSyncStatus.NO_DATA ->
-                    stringResource(R.string.editor_stabilization_sync_no_data)
-            }
-            Text(
-                stringResource(R.string.editor_stabilization),
-                style = MaterialTheme.typography.labelLarge,
-            )
-            RawToggleRow(
-                label = stringResource(R.string.editor_stabilization),
-                checked = grade.stabilization,
-                onCheckedChange = { checked ->
-                    // First enable seeds the default strength, same
-                    // reasoning as temporal NR: the stage is a no-op at 0,
-                    // so a toggle that visibly changes nothing would read
-                    // as broken. A remembered strength survives the
-                    // off/on cycle untouched.
-                    onToggleChange(
-                        grade.copy(
-                            stabilization = checked,
-                            stabilizationStrength = if (checked && grade.stabilizationStrength <= 0f) {
-                                SliderSteps.STABILIZATION_STRENGTH_DEFAULT
-                            } else {
-                                grade.stabilizationStrength
-                            },
-                        )
-                    )
-                },
-            )
-            if (grade.stabilization) {
-                // Mode: Smooth (0) / Lock First Frame (1) / Horizon Lock
-                // (2) — the GradeK ints, segmented like the tonemap choice.
-                // Not a drag: settles immediately at the full tier.
-                Text(
-                    stringResource(R.string.editor_stabilization_mode),
-                    style = MaterialTheme.typography.labelLarge,
-                )
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    val modes = listOf(
-                        StabModeOption(R.string.editor_stabilization_mode_smooth, 0),
-                        StabModeOption(R.string.editor_stabilization_mode_lock_first_frame, 1),
-                        StabModeOption(R.string.editor_stabilization_mode_horizon_lock, 2),
-                    )
-                    modes.forEachIndexed { index, option ->
-                        SegmentedButton(
-                            selected = grade.stabilizationMode == option.value,
-                            onClick = {
-                                onToggleChange(grade.copy(stabilizationMode = option.value))
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = modes.size,
-                            ),
-                        ) {
-                            Text(stringResource(option.labelRes))
-                        }
-                    }
-                }
-                // Strength 0..100 (default 50, audit fix 2026-11-12): the smoothing amount.
-                GradeSlider(
-                    label = stringResource(R.string.editor_slider_stabilization_strength),
-                    value = grade.stabilizationStrength,
-                    valueRange = 0f..100f,
-                    step = SliderSteps.UNIT_STEP,
-                    valueLabel = Format.formatPercent(grade.stabilizationStrength.toInt()),
-                    onChange = { v ->
-                        onChange(
-                            grade.copy(
-                                stabilizationStrength = SliderSteps.snapStabilizationStrength(v),
-                            )
-                        )
-                    },
-                    onDoubleTapReset = {
-                        onReset(
-                            SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_STRENGTH, grade)
-                        )
-                    },
-                    onDragActiveChange = onDragActiveChange,
-                )
-                // Zoom limit 1.0..1.5 (default 1.1): the auto-crop ceiling
-                // that hides the warped-in border.
-                GradeSlider(
-                    label = stringResource(R.string.editor_slider_stabilization_zoom_limit),
-                    value = grade.stabilizationZoomLimit,
-                    valueRange = 1.0f..1.5f,
-                    step = SliderSteps.STABILIZATION_ZOOM_STEP,
-                    valueLabel = Format.formatZoom(grade.stabilizationZoomLimit),
-                    onChange = { v ->
-                        onChange(
-                            grade.copy(
-                                stabilizationZoomLimit = SliderSteps.snapStabilizationZoomLimit(v),
-                            )
-                        )
-                    },
-                    onDoubleTapReset = {
-                        onReset(
-                            SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_ZOOM_LIMIT, grade)
-                        )
-                    },
-                    onDragActiveChange = onDragActiveChange,
-                )
-                // Sync status line + the gyro log row: the honest verdict
-                // (never fabricated) with the attach/remove actions.
-                Text(
-                    stringResource(R.string.editor_stabilization_sync_status, statusText),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                // The zoom-limit honesty readout (audit fix 2026-11-12, Fix
-                // 5): the probe's clip-wide numbers under the slider they
-                // describe — APPLIED shows the effective crop the frames
-                // actually pay ("Crop 1.05x"), LIMITED shows the limit-
-                // clamped crop ("Limited to 1.10x") so the user SEES when
-                // the limit cuts the warp's reach. Both show the APPLIED
-                // zoom (probe[1]): that is the crop the frames pay. Null
-                // (refusal statuses / no verdict / short probe) renders
-                // nothing — never a fabricated zoom.
-                val zoomReadout: Pair<StabZoomVerdict, Float>? =
-                    stabZoom?.takeIf { it.size >= 3 }?.let { probe ->
-                        EditorPreviewLogic.stabZoomVerdict(
-                            statusInt = probe[2].toInt(),
-                            requiredZoom = probe[0],
-                            appliedZoom = probe[1],
-                        )?.let { verdict -> verdict to probe[1].toFloat() }
-                    }
-                when (val readout = zoomReadout) {
-                    null -> Unit
-                    else -> Text(
-                        stringResource(
-                            if (readout.first == StabZoomVerdict.APPLIED) {
-                                R.string.editor_stabilization_zoom_applied
-                            } else {
-                                R.string.editor_stabilization_zoom_limited
-                            },
-                            Format.formatZoom(readout.second),
-                        ),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (gyroAttached) {
-                    if (gyroName != null) {
-                        Text(
-                            stringResource(R.string.editor_stabilization_gyro_name, gyroName),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    TextButton(onClick = onRemoveGyro) {
-                        Text(stringResource(R.string.editor_stabilization_remove_gyro))
-                    }
-                } else {
-                    FilledTonalButton(
-                        onClick = onAttachGyro,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(stringResource(R.string.editor_stabilization_attach_gyro))
-                    }
-                }
-                if (gyroImportError != null) {
-                    Text(
-                        gyroImportError ?: "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                // Sync offset trim ±500 ms (10 ms steps): the manual sync
-                // control. The trim ADDS to the probe's offset (keeps the
-                // Anchored verdict, widens the bound by |trim| — the core's
-                // trimOffsetMs). Shown once a log is attached: without a
-                // log there is no offset to trim.
-                if (gyroAttached) {
-                    GradeSlider(
-                        label = stringResource(R.string.editor_slider_stabilization_trim),
-                        value = grade.stabilizationTrimMs,
-                        valueRange = -500f..500f,
-                        step = SliderSteps.STABILIZATION_TRIM_STEP_MS,
-                        valueLabel = Format.formatSignedMs(grade.stabilizationTrimMs.toInt()),
-                        onChange = { v ->
-                            onChange(
-                                grade.copy(stabilizationTrimMs = SliderSteps.snapStabilizationTrimMs(v))
-                            )
-                        },
-                        onDoubleTapReset = {
-                            onReset(
-                                SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_TRIM_MS, grade)
-                            )
-                        },
-                        onDragActiveChange = onDragActiveChange,
-                    )
-                }
-                // Focal length (35mm equiv): the container's readout as the
-                // reference line, the editable override below it. The pixel
-                // focal is NOT derivable from the container alone (no
-                // sensor pitch), so the honest "intrinsics assumed" status
-                // shows whenever the warp runs on this conversion.
-                if (containerFocalMm > 0f) {
-                    Text(
-                        stringResource(
-                            R.string.editor_stabilization_focal_from_container,
-                            Format.formatMm(containerFocalMm),
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                GradeSlider(
-                    label = stringResource(R.string.editor_slider_stabilization_focal),
-                    // 0 = use the container: the slider shows the effective
-                    // value (container when unset), so the row never reads
-                    // as a dead 0.
-                    value = EditorPreviewLogic.effectiveFocalMm(
-                        grade.stabilizationFocalMm, containerFocalMm,
-                    ).coerceIn(10f, 200f),
-                    valueRange = 10f..200f,
-                    step = SliderSteps.STABILIZATION_FOCAL_STEP_MM,
-                    valueLabel = Format.formatMm(
-                        EditorPreviewLogic.effectiveFocalMm(
-                            grade.stabilizationFocalMm, containerFocalMm,
-                        ).coerceIn(10f, 200f),
-                    ),
-                    onChange = { v ->
-                        onChange(
-                            grade.copy(
-                                stabilizationFocalMm = SliderSteps.snapStabilizationFocalMm(v),
-                            )
-                        )
-                    },
-                    onDoubleTapReset = {
-                        onReset(
-                            SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_FOCAL_MM, grade)
-                        )
-                    },
-                    onDragActiveChange = onDragActiveChange,
-                )
-                Text(
-                    stringResource(R.string.editor_stabilization_intrinsics_assumed),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        // ---- Crop + straighten group (RAW-09) ----
-        // The group closes the tab. The aspect choice and the group reset
-        // are DISCRETE edits ([onCropEdit]: immediate full-tier settle,
-        // their own undo step — the tonemap precedent); the five sliders
-        // below are drags ([onChange] + [onDragActiveChange]) like every
-        // other slider. All rect math runs through SliderSteps.applyCropAxis
-        // (the pure chain: snap, clamp, lock) against the UNCROPPED
-        // effective dims, so the panel and the render pump can never
-        // disagree about which region is selected.
+        // The plan's second section header: the sharpeners. The temporal
+        // group above stays under Noise Reduction — it is the third
+        // denoise control, not a texture control.
         Text(
-            stringResource(R.string.editor_crop),
+            stringResource(R.string.editor_detail_section_texture),
             style = MaterialTheme.typography.labelLarge,
         )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_sharpness),
+            value = grade.sharpness,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.sharpness.toInt()),
+            onChange = { v -> onChange(grade.copy(sharpness = SliderSteps.snapSharpness(v))) },
+            onDoubleTapReset = {
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SHARPNESS, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_detail),
+            value = grade.detail,
+            valueRange = -100f..100f,
+            step = SliderSteps.UNIT_STEP,
+            valueLabel = Format.formatSigned(grade.detail.toInt()),
+            onChange = { v -> onChange(grade.copy(detail = SliderSteps.snapDetail(v))) },
+            onDoubleTapReset = {
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.DETAIL, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+    }
+}
+
+/**
+ * The Frame tab's body (2026-11-13 editor panel segmentation plan): the
+ * crop/straighten and stabilization groups moved here from
+ * [DetailPanel] — frame controls, not detail controls — behind the
+ * tab's Crop | Stabilize sub-tabs ([FrameSubTabRow], pinned by the
+ * screen). Semantics are UNCHANGED from their DetailPanel home: the
+ * same GradeK fields, the same pure SliderSteps/CropState math, the
+ * same settle routes (sliders drag through [onChange] +
+ * [onDragActiveChange]; the toggle, the mode choice, the aspect choice
+ * and the group resets are discrete edits through [onToggleChange] /
+ * [onCropEdit]; double-tap resets ride [onReset]).
+ *
+ * The Stabilize gate is double-armed exactly like the Color row's
+ * Wheels: the row drops the tab on the encoded path
+ * ([EditorCategories.visibleFrameSubTabs]) AND this dispatch guards
+ * with [showStabilization], so a stale unsanitized sub-tab can never
+ * compose a dead body. Crop runs on BOTH clip kinds — the rect is
+ * grade state the export path applies to any clip.
+ */
+@Composable
+private fun FramePanel(
+    grade: GradeK,
+    subTab: Int,
+    // ---- Stabilization body (gyro Phase 5, moved from DetailPanel) ----
+    showStabilization: Boolean,
+    gyroAttached: Boolean,
+    // The attach-time probe's [anchored, offsetMs, boundMs, focalMm,
+    // samples] — drives the sync status line (pure
+    // EditorPreviewLogic.syncStatus).
+    gyroSync: DoubleArray?,
+    // The zoom-limit honesty readout (audit fix 2026-11-12, Fix 5): the
+    // native probe's [requiredZoom, appliedZoom, statusInt] over the
+    // CURRENT grade + attached log, or null = no verdict (the body
+    // renders no readout rather than fabricating a zoom — the pure
+    // EditorPreviewLogic.stabZoomVerdict decides what shows).
+    stabZoom: DoubleArray?,
+    gyroName: String?,
+    containerFocalMm: Float,
+    gyroImportError: String?,
+    onAttachGyro: () -> Unit,
+    onRemoveGyro: () -> Unit,
+    // ---- Crop body (RAW-09, moved from DetailPanel) ----
+    // The UNCROPPED effective-upright dims (the publish fold's capture):
+    // aspect presets and the honest W/H slider ranges math against this
+    // pair. 0x0 before the first publish — CropState guards to the full
+    // rect, the documented degradation.
+    cropFrameW: Int,
+    cropFrameH: Int,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onToggleChange: (GradeK) -> Unit = {},
+    // Double-tap resets ride their own route (feature N7): discrete undo
+    // steps, never coalesced into the slider gestures (see LightPanel).
+    onReset: (GradeK) -> Unit = {},
+    // Aspect choice and the group reset are discrete edits (like the
+    // RAW toggles): they settle IMMEDIATELY at the full tier and record
+    // as their own undo step, never coalesced into a slider gesture.
+    onCropEdit: (GradeK) -> Unit = {},
+) {
+    when (subTab) {
+        EditorCategories.FRAME_CROP -> FrameCropBody(
+            grade = grade,
+            cropFrameW = cropFrameW,
+            cropFrameH = cropFrameH,
+            onChange = onChange,
+            onDragActiveChange = onDragActiveChange,
+            onReset = onReset,
+            onCropEdit = onCropEdit,
+        )
+        // The gate is double-armed (row + this guard — see KDoc): the
+        // body keeps the panel honest even if a stale saved sub-tab
+        // ever reached it unsanitized.
+        EditorCategories.FRAME_STABILIZE -> if (showStabilization) {
+            FrameStabilizeBody(
+                grade = grade,
+                gyroAttached = gyroAttached,
+                gyroSync = gyroSync,
+                stabZoom = stabZoom,
+                gyroName = gyroName,
+                containerFocalMm = containerFocalMm,
+                gyroImportError = gyroImportError,
+                onAttachGyro = onAttachGyro,
+                onRemoveGyro = onRemoveGyro,
+                onChange = onChange,
+                onDragActiveChange = onDragActiveChange,
+                onToggleChange = onToggleChange,
+                onReset = onReset,
+            )
+        }
+    }
+}
+
+/**
+ * The Frame tab's pinned sub-tab row (2026-11-13 segmentation plan):
+ * stock M3 [SecondaryTabRow] with text-only tabs (plan: "text-first
+ * labels; icons optional support"), the same construction as
+ * [ColorSubTabRow]. The row composes ONLY when the clip kind offers a
+ * real choice: on the encoded path [showStabilization] is false, Crop
+ * is the only segment, and a one-tab row is chrome with nothing to
+ * choose — the row composes nothing and the Crop body stands alone
+ * exactly like Detail's (the screen's pinned slot stays non-null; an
+ * empty composable takes no height).
+ */
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun FrameSubTabRow(
+    subTab: Int,
+    showStabilization: Boolean,
+    onSubTabChange: (Int) -> Unit,
+) {
+    val visible = EditorCategories.visibleFrameSubTabs(showStabilization)
+    if (visible.size < 2) {
+        return
+    }
+    SecondaryTabRow(
+        selectedTabIndex = visible.indexOf(subTab),
+    ) {
+        visible.forEach { candidate ->
+            val labelRes = when (candidate) {
+                EditorCategories.FRAME_CROP -> R.string.editor_frame_subtab_crop
+                else -> R.string.editor_frame_subtab_stabilize
+            }
+            Tab(
+                selected = candidate == subTab,
+                onClick = { onSubTabChange(candidate) },
+                text = { Text(stringResource(labelRes)) },
+            )
+        }
+    }
+}
+
+/**
+ * The Crop sub-tab body (RAW-09, moved from DetailPanel verbatim): the
+ * Aspect choice (Free / 16:9 / 9:16 / 4:3 / 1:1 — a preset replaces the
+ * rect with the largest centered on-ratio rect, FREE keeps it), the
+ * Straighten dial (±15°, half-degree ticks, edge-preserving auto zoom),
+ * the four rect sliders (Left/Top translate, Width/Height resize —
+ * under a preset the perpendicular axis follows through the lock chain,
+ * position giving way before the ratio), and the group reset. The old
+ * group's "Crop" header is GONE here: the sub-tab labels the body (the
+ * Balance/Wheels/Look bodies do not repeat their names either); the
+ * Aspect label stays — it names the choice row inside the body. All
+ * rect math runs through the pure SliderSteps.applyCropAxis against the
+ * UNCROPPED effective dims, so the panel and the render pump can never
+ * disagree about which region is selected.
+ */
+@Composable
+private fun FrameCropBody(
+    grade: GradeK,
+    cropFrameW: Int,
+    cropFrameH: Int,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
+    onCropEdit: (GradeK) -> Unit = {},
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         // Aspect: one choice row (Free / 16:9 / 9:16 / 4:3 / 1:1). A preset
         // REPLACES the rect with the largest centered on-ratio rect
         // (CropState.aspectRect); FREE keeps the rect as it is.
@@ -4217,6 +4542,332 @@ private fun DetailPanel(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(stringResource(R.string.editor_crop_reset))
+        }
+    }
+}
+
+/**
+ * The Stabilize sub-tab body (gyro Phase 5, moved from DetailPanel):
+ * the main flow carries the controls that shape the warp — the Off/On
+ * switch (first enable seeds the default strength, the temporal-NR
+ * precedent), the Mode choice (Smooth / Lock First Frame / Horizon
+ * Lock), Strength and Zoom limit — plus the group's HONEST state per
+ * its standing contract: the sync status line (the probe's verdict,
+ * never fabricated — no log attached shows the no-data line and the
+ * attach action) and the gyro attach/remove actions with the import
+ * error line. The old group's standalone "Stabilization" header is GONE
+ * here for the same reason as Crop's: the sub-tab labels the body, and
+ * the toggle row already carries the name.
+ *
+ * The probe/gyro DETAILS collapse behind the plan's expandable advanced
+ * section (plan: "gyro/sync/probe details as an expandable advanced
+ * section"): the zoom-limit honesty readout (the probe's clip-wide
+ * numbers — it moved out from under the slider it describes because the
+ * plan classifies it a probe detail), the attached log's file name, the
+ * ±500 ms sync trim (attached only) and the focal-length control with
+ * the container reference line and the "intrinsics assumed" status. The
+ * affordance is the scope/zebra "Show X / Hide X" text idiom; the open
+ * state is UI-only rememberSaveable (which details are revealed, never
+ * a grade value — the wheel band choice precedent) and starts collapsed
+ * on every fresh visit of the body.
+ */
+@Composable
+private fun FrameStabilizeBody(
+    grade: GradeK,
+    gyroAttached: Boolean,
+    gyroSync: DoubleArray?,
+    stabZoom: DoubleArray?,
+    gyroName: String?,
+    containerFocalMm: Float,
+    gyroImportError: String?,
+    onAttachGyro: () -> Unit,
+    onRemoveGyro: () -> Unit,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onToggleChange: (GradeK) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // The probe's numbers drive the status line (pure decision in
+        // EditorPreviewLogic.syncStatus): Approximate (anchored ±bound)
+        // / Manual offset / No gyro data — "approximate" because the
+        // anchor offset is a coarse wall-clock estimate (Sync.h: the
+        // receive lag is unobservable; optical-flow refinement is a
+        // later mission). gyroSync holds [anchored, offsetMs,
+        // boundMs, focalMm, samples] from the attach-time probe.
+        val sync = EditorPreviewLogic.syncStatus(
+            gyroAttached = gyroAttached,
+            probeFailed = gyroSync == null,
+            anchored = gyroSync != null && gyroSync[0] > 0.0,
+        )
+        val statusText = when (sync) {
+            GyroSyncStatus.ANCHORED -> stringResource(
+                R.string.editor_stabilization_sync_anchored,
+                gyroSync?.get(2)?.toInt() ?: 0,
+            )
+            GyroSyncStatus.MANUAL ->
+                stringResource(R.string.editor_stabilization_sync_manual)
+            GyroSyncStatus.NO_DATA ->
+                stringResource(R.string.editor_stabilization_sync_no_data)
+        }
+        RawToggleRow(
+            label = stringResource(R.string.editor_stabilization),
+            checked = grade.stabilization,
+            onCheckedChange = { checked ->
+                // First enable seeds the default strength, same
+                // reasoning as temporal NR: the stage is a no-op at 0,
+                // so a toggle that visibly changes nothing would read
+                // as broken. A remembered strength survives the
+                // off/on cycle untouched.
+                onToggleChange(
+                    grade.copy(
+                        stabilization = checked,
+                        stabilizationStrength = if (checked && grade.stabilizationStrength <= 0f) {
+                            SliderSteps.STABILIZATION_STRENGTH_DEFAULT
+                        } else {
+                            grade.stabilizationStrength
+                        },
+                    )
+                )
+            },
+        )
+        if (grade.stabilization) {
+            // Mode: Smooth (0) / Lock First Frame (1) / Horizon Lock
+            // (2) — the GradeK ints, segmented like the aspect choice.
+            // Not a drag: settles immediately at the full tier.
+            Text(
+                stringResource(R.string.editor_stabilization_mode),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                val modes = listOf(
+                    StabModeOption(R.string.editor_stabilization_mode_smooth, 0),
+                    StabModeOption(R.string.editor_stabilization_mode_lock_first_frame, 1),
+                    StabModeOption(R.string.editor_stabilization_mode_horizon_lock, 2),
+                )
+                modes.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = grade.stabilizationMode == option.value,
+                        onClick = {
+                            onToggleChange(grade.copy(stabilizationMode = option.value))
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = modes.size,
+                        ),
+                    ) {
+                        Text(stringResource(option.labelRes))
+                    }
+                }
+            }
+            // Strength 0..100 (default 50, audit fix 2026-11-12): the smoothing amount.
+            GradeSlider(
+                label = stringResource(R.string.editor_slider_stabilization_strength),
+                value = grade.stabilizationStrength,
+                valueRange = 0f..100f,
+                step = SliderSteps.UNIT_STEP,
+                valueLabel = Format.formatPercent(grade.stabilizationStrength.toInt()),
+                onChange = { v ->
+                    onChange(
+                        grade.copy(
+                            stabilizationStrength = SliderSteps.snapStabilizationStrength(v),
+                        )
+                    )
+                },
+                onDoubleTapReset = {
+                    onReset(
+                        SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_STRENGTH, grade)
+                    )
+                },
+                onDragActiveChange = onDragActiveChange,
+            )
+            // Zoom limit 1.0..1.5 (default 1.1): the auto-crop ceiling
+            // that hides the warped-in border.
+            GradeSlider(
+                label = stringResource(R.string.editor_slider_stabilization_zoom_limit),
+                value = grade.stabilizationZoomLimit,
+                valueRange = 1.0f..1.5f,
+                step = SliderSteps.STABILIZATION_ZOOM_STEP,
+                valueLabel = Format.formatZoom(grade.stabilizationZoomLimit),
+                onChange = { v ->
+                    onChange(
+                        grade.copy(
+                            stabilizationZoomLimit = SliderSteps.snapStabilizationZoomLimit(v),
+                        )
+                    )
+                },
+                onDoubleTapReset = {
+                    onReset(
+                        SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_ZOOM_LIMIT, grade)
+                    )
+                },
+                onDragActiveChange = onDragActiveChange,
+            )
+            // Sync status line + the gyro log row: the honest verdict
+            // (never fabricated) with the attach/remove actions.
+            Text(
+                stringResource(R.string.editor_stabilization_sync_status, statusText),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (gyroAttached) {
+                TextButton(onClick = onRemoveGyro) {
+                    Text(stringResource(R.string.editor_stabilization_remove_gyro))
+                }
+            } else {
+                FilledTonalButton(
+                    onClick = onAttachGyro,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.editor_stabilization_attach_gyro))
+                }
+            }
+            if (gyroImportError != null) {
+                Text(
+                    gyroImportError ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            // ---- The expandable gyro/sync/probe section (plan) ----
+            // UI-only state (the wheel band choice precedent): which
+            // details are revealed, never a grade value. Collapsed by
+            // default on every fresh visit of the body.
+            var advancedOpen by rememberSaveable { mutableStateOf(false) }
+            TextButton(
+                onClick = { advancedOpen = !advancedOpen },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    stringResource(
+                        if (advancedOpen) {
+                            R.string.editor_stabilization_advanced_hide
+                        } else {
+                            R.string.editor_stabilization_advanced_show
+                        }
+                    )
+                )
+            }
+            if (advancedOpen) {
+                // The zoom-limit honesty readout (audit fix 2026-11-12,
+                // Fix 5): the probe's clip-wide numbers — APPLIED shows
+                // the effective crop the frames actually pay ("Crop
+                // 1.05x"), LIMITED shows the limit-clamped crop ("Limited
+                // to 1.10x") so the user SEES when the limit cuts the
+                // warp's reach. Both show the APPLIED zoom (probe[1]):
+                // that is the crop the frames pay. Null (refusal
+                // statuses / no verdict / short probe) renders nothing —
+                // never a fabricated zoom.
+                val zoomReadout: Pair<StabZoomVerdict, Float>? =
+                    stabZoom?.takeIf { it.size >= 3 }?.let { probe ->
+                        EditorPreviewLogic.stabZoomVerdict(
+                            statusInt = probe[2].toInt(),
+                            requiredZoom = probe[0],
+                            appliedZoom = probe[1],
+                        )?.let { verdict -> verdict to probe[1].toFloat() }
+                    }
+                when (val readout = zoomReadout) {
+                    null -> Unit
+                    else -> Text(
+                        stringResource(
+                            if (readout.first == StabZoomVerdict.APPLIED) {
+                                R.string.editor_stabilization_zoom_applied
+                            } else {
+                                R.string.editor_stabilization_zoom_limited
+                            },
+                            Format.formatZoom(readout.second),
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (gyroAttached && gyroName != null) {
+                    Text(
+                        stringResource(R.string.editor_stabilization_gyro_name, gyroName),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // Sync offset trim ±500 ms (10 ms steps): the manual sync
+                // control. The trim ADDS to the probe's offset (keeps the
+                // Anchored verdict, widens the bound by |trim| — the core's
+                // trimOffsetMs). Shown once a log is attached: without a
+                // log there is no offset to trim.
+                if (gyroAttached) {
+                    GradeSlider(
+                        label = stringResource(R.string.editor_slider_stabilization_trim),
+                        value = grade.stabilizationTrimMs,
+                        valueRange = -500f..500f,
+                        step = SliderSteps.STABILIZATION_TRIM_STEP_MS,
+                        valueLabel = Format.formatSignedMs(grade.stabilizationTrimMs.toInt()),
+                        onChange = { v ->
+                            onChange(
+                                grade.copy(stabilizationTrimMs = SliderSteps.snapStabilizationTrimMs(v))
+                            )
+                        },
+                        onDoubleTapReset = {
+                            onReset(
+                                SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_TRIM_MS, grade)
+                            )
+                        },
+                        onDragActiveChange = onDragActiveChange,
+                    )
+                }
+                // Focal length (35mm equiv): the container's readout as the
+                // reference line, the editable override below it. The pixel
+                // focal is NOT derivable from the container alone (no
+                // sensor pitch), so the honest "intrinsics assumed" status
+                // shows whenever the warp runs on this conversion.
+                if (containerFocalMm > 0f) {
+                    Text(
+                        stringResource(
+                            R.string.editor_stabilization_focal_from_container,
+                            Format.formatMm(containerFocalMm),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                GradeSlider(
+                    label = stringResource(R.string.editor_slider_stabilization_focal),
+                    // 0 = use the container: the slider shows the effective
+                    // value (container when unset), so the row never reads
+                    // as a dead 0.
+                    value = EditorPreviewLogic.effectiveFocalMm(
+                        grade.stabilizationFocalMm, containerFocalMm,
+                    ).coerceIn(10f, 200f),
+                    valueRange = 10f..200f,
+                    step = SliderSteps.STABILIZATION_FOCAL_STEP_MM,
+                    valueLabel = Format.formatMm(
+                        EditorPreviewLogic.effectiveFocalMm(
+                            grade.stabilizationFocalMm, containerFocalMm,
+                        ).coerceIn(10f, 200f),
+                    ),
+                    onChange = { v ->
+                        onChange(
+                            grade.copy(
+                                stabilizationFocalMm = SliderSteps.snapStabilizationFocalMm(v),
+                            )
+                        )
+                    },
+                    onDoubleTapReset = {
+                        onReset(
+                            SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_FOCAL_MM, grade)
+                        )
+                    },
+                    onDragActiveChange = onDragActiveChange,
+                )
+                Text(
+                    stringResource(R.string.editor_stabilization_intrinsics_assumed),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

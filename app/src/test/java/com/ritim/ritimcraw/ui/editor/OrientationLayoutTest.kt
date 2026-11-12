@@ -144,9 +144,9 @@ class OrientationLayoutTest {
     }
 
     // ---- category rail width (owner layout-refactor spec 2026-11-12
-    // section 5: the Light/Color/Detail nav moves to a compact vertical
-    // FAR-RIGHT rail in the two-column workspace; the bottom bar becomes
-    // portrait-only) ----
+    // section 5: the Light/Color/Detail/Frame nav moves to a compact
+    // vertical FAR-RIGHT rail in the two-column workspace; the bottom bar
+    // becomes portrait-only) ----
 
     @Test
     fun no_rail_outside_the_two_column_workspace() {

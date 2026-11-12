@@ -21,7 +21,7 @@ package com.ritim.ritimcraw.ui.editor
  *
  * CATEGORY RAIL (owner layout-refactor spec 2026-11-12 section 5 — it
  * REVERSES the old section 17.1 note that the bottom bar was final): in
- * the two-column workspace the Light/Color/Detail navigation moves to a
+ * the two-column workspace the Light/Color/Detail/Frame navigation moves to a
  * compact vertical rail on the FAR RIGHT edge, the adjustment panel
  * sits immediately to its left, and the bottom bar becomes
  * portrait-only. [railWidthDp] is the rail's measured width — the same
