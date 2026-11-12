@@ -1,0 +1,25 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- The mid-gray reference toggle (owner spec PLAY-10, 2026-11-12
+         §8): a short value axis with a dashed level line at ~41% of its
+         height — the glyph says what the toggle does: draw where 18%
+         scene linear lands AFTER the Rec.709 OETF (~41% coded signal),
+         never at 18% screen level. 48dp touch target comes from the
+         IconButton; Compose's Icon tints it via LocalContentColor.
+         Vendored stroke path (material-icons-core has no such glyph). -->
+    <path
+        android:pathData="M6,5.5 L6,18.5"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M10,13.2 L12.5,13.2 M15,13.2 L17.5,13.2 M20,13.2 L21.5,13.2"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
 import com.ritim.ritimcraw.ui.editor.FrameHistogram.Channel
+import kotlin.math.roundToInt
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -329,6 +330,22 @@ class WaveformScopeTest {
             if (rendered.pixels[row * rendered.width + j] != 0) found = true
         }
         assertTrue(found)
+    }
+
+    // ---- spec §8: reference derivation ----
+
+    /**
+     * The mid-gray reference is DERIVED, never hardcoded: 18% scene
+     * linear through the Rec.709 camera OETF lands near 40.9% coded
+     * signal (8-bit bin 104) — not at 18% screen level, the spec §8
+     * trap.
+     */
+    @Test
+    fun mid_gray_reference_is_derived_not_linear() {
+        val v = WaveformScope.midGraySignal()
+        assertEquals(0.409f, v, 0.005f)
+        assertFalse(v in 0.17f..0.19f)
+        assertEquals(104, (v * 255f).roundToInt())
     }
 
     // ---- mode channel sets ----

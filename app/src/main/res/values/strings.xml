@@ -153,6 +153,8 @@
     <string name="editor_scope_sampling_medium">Medium</string>
     <string name="editor_scope_sampling_high">High</string>
     <string name="editor_scope_sampling_value">Sampling: %1$s</string>
+    <string name="editor_scope_midgray_show">Show mid-gray reference</string>
+    <string name="editor_scope_midgray_hide">Hide mid-gray reference</string>
     <string name="editor_scope_hz">%1$d Hz</string>
     <string name="export_queued_snackbar">Export queued — see Exports</string>
     <string name="editor_not_loaded_title">Clip not open</string>

@@ -153,6 +153,8 @@
     <string name="editor_scope_sampling_medium">Orta</string>
     <string name="editor_scope_sampling_high">Yüksek</string>
     <string name="editor_scope_sampling_value">Örnekleme: %1$s</string>
+    <string name="editor_scope_midgray_show">Orta gri referansını göster</string>
+    <string name="editor_scope_midgray_hide">Orta gri referansını gizle</string>
     <string name="editor_scope_hz">%1$d Hz</string>
     <string name="export_queued_snackbar">Dışa aktarım sıraya alındı — Dışa aktarımlar sekmesine bakın</string>
     <string name="editor_not_loaded_title">Klip açılamadı</string>

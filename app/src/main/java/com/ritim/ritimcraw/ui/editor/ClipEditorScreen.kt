@@ -517,6 +517,20 @@ fun ClipEditorScreen(
         var scopeSamplingOrdinal by rememberSaveable {
             mutableStateOf(WaveformScope.Sampling.MEDIUM.ordinal)
         }
+        // The mid-gray reference toggle (spec §8): saveable like the
+        // other strip choices. The AVAILABILITY gate is derived live at
+        // the call site from the grade (see the scopeRegion): the
+        // reference's derivation (18% scene linear through the Rec.709
+        // OETF ≈ 41% coded signal) is valid only while the analyzed
+        // signal's luma path is the bare OETF — a tonemap curve
+        // (ACES/AgX) or a LUT rewrites the transform and the line would
+        // lie, so the toggle disappears instead (no fabricated fixed
+        // line over a signal it does not describe). The contrast-pivot
+        // reference (spec §8's other half) is kept absent: its
+        // application lives in the prebuilt native engine, invisible
+        // source — no reliable mapping exists, and the spec says keep
+        // it off and record the gap.
+        var scopeMidGrayShown by rememberSaveable { mutableStateOf(false) }
         var histogram by remember(sourceId) { mutableStateOf(FrameHistogram.of(null)) }
         var waveformRendered by remember(sourceId) {
             mutableStateOf<WaveformDisplay.Rendered?>(null)
@@ -1729,6 +1743,12 @@ fun ClipEditorScreen(
         // grows back.
         val scopeRegion: @Composable () -> Unit = {
             if (scopeOpen && !fullscreen) {
+                // The honesty gate, derived LIVE from the grade: the
+                // mid-gray line is drawable only while the transform is
+                // the bare Rec.709 OETF (tonemap off, no LUT) — the
+                // moment a curve or cube rewrites it, the reference
+                // vanishes instead of lying.
+                val midGrayAvailable = grade.tonemap == 0 && grade.lutId == null
                 ScopeStrip(
                     content = scopeContent,
                     onContentChange = { scopeContent = it },
@@ -1740,6 +1760,9 @@ fun ClipEditorScreen(
                     samplingOrdinal = scopeSamplingOrdinal,
                     onSamplingChange = { scopeSamplingOrdinal = it },
                     hz = scopeHz,
+                    midGrayAvailable = midGrayAvailable,
+                    midGrayShown = scopeMidGrayShown,
+                    onMidGrayChange = { scopeMidGrayShown = it },
                     modifier = Modifier.onSizeChanged { scopeStripHeight = it.height },
                 )
             }

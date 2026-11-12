@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.editor
 
+import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
@@ -83,6 +84,27 @@ object WaveformScope {
         MEDIUM(32_768),
         HIGH(65_536),
     }
+
+    /**
+     * The mid-gray reference's coded signal level (owner spec PLAY-10,
+     * 2026-11-12 §8): 18% SCENE LINEAR pushed through the monitoring
+     * transform the analyzed signal already carries — the Rec.709 camera
+     * OETF's power branch (18% sits above the 0.018 linear toe)
+     *     V = 1.099 * L^0.45 - 0.099
+     * which lands mid-gray at ~40.9% coded signal (8-bit bin 104) — NOT
+     * at 18% screen level, the spec's explicit trap ("18% lineer griyi
+     * doğrudan 18% ekran seviyesi olarak çizme"). Pure: the caller gates
+     * WHEN the line is honest (the strip draws it only while the grade's
+     * luma path is the bare OETF — see the strip's KDoc); this function
+     * only derives WHERE.
+     *
+     * The contrast-pivot reference (spec §8's other half) has NO
+     * counterpart here: its application lives in the prebuilt native
+     * engine, invisible to this repo, so no reliable mapping exists —
+     * per the spec it is kept absent and the gap is recorded in the
+     * mission report, never a fabricated fixed line.
+     */
+    fun midGraySignal(): Float = 1.099f * 0.18f.pow(0.45f) - 0.099f
 
     /**
      * One pass's density grids. Only the drawn channels are non-null

@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -72,6 +73,17 @@ import com.ritim.ritimcraw.ui.theme.Tnum
  * close/open); the histogram's own mode stays inside
  * [HistogramScopeView] like the overlay kept it. First open shows
  * Waveform · Luma (spec §1: "ilk açılışta Luma seçilsin").
+ *
+ * REFERENCES (spec §8): the mid-gray guide line is TOGGLEABLE from the
+ * header and drawn only while the derivation is honest — [midGraySignal]
+ * is valid only when the analyzed signal's luma path is the bare Rec.709
+ * OETF, so the screen passes [midGrayAvailable] false (and the toggle
+ * disappears) whenever a tonemap curve or a LUT rewrites the transform;
+ * no fabricated fixed line ever draws over a signal it does not
+ * describe. The contrast-pivot reference has no reliable mapping (its
+ * application lives in the prebuilt native engine, invisible source) —
+ * per the spec it is kept absent and the gap recorded in the mission
+ * report, not drawn as an invented constant.
  */
 
 /**
@@ -98,7 +110,10 @@ internal val ScopeLabelBandHeight = 26.dp
  * until the first frame publishes. The sampling params carry the
  * waveform pass's quality choice (spec §6) and [hz] its measured compute
  * rate (spec §7 pacing validation) — screen state, keyed where the
- * compute is keyed.
+ * compute is keyed. [midGrayAvailable]/[midGrayShown]/[onMidGrayChange]
+ * carry the spec §8 reference: the toggle shows only while the
+ * derivation is honest (the screen's gate), and the line draws only
+ * when the user has it on.
  */
 @Composable
 fun ScopeStrip(
@@ -112,6 +127,9 @@ fun ScopeStrip(
     samplingOrdinal: Int,
     onSamplingChange: (Int) -> Unit,
     hz: Int,
+    midGrayAvailable: Boolean,
+    midGrayShown: Boolean,
+    onMidGrayChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -140,6 +158,23 @@ fun ScopeStrip(
                     }
                 }
                 Spacer(Modifier.width(8.dp))
+                // The mid-gray reference toggle (spec §8): present only
+                // while the derivation is honest (the screen's gate —
+                // a tonemap or LUT rewrites the transform and the line
+                // would lie). The icon is a value axis with a dashed
+                // level line; the description names show/hide. Same
+                // IconButton pattern as the close button.
+                if (midGrayAvailable) {
+                    IconButton(onClick = { onMidGrayChange(!midGrayShown) }) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_scope_midgray),
+                            contentDescription = stringResource(
+                                if (midGrayShown) R.string.editor_scope_midgray_hide
+                                else R.string.editor_scope_midgray_show
+                            ),
+                        )
+                    }
+                }
                 IconButton(onClick = onClose) {
                     Icon(
                         painter = painterResource(R.drawable.ic_scope_close),
@@ -155,6 +190,11 @@ fun ScopeStrip(
                     samplingOrdinal = samplingOrdinal,
                     onSamplingChange = onSamplingChange,
                     hz = hz,
+                    midGrayLine = if (midGrayAvailable && midGrayShown) {
+                        WaveformScope.midGraySignal()
+                    } else {
+                        null
+                    },
                 )
             } else {
                 HistogramScopeView(
@@ -183,7 +223,10 @@ fun ScopeStrip(
  * compute is keyed. The same holds for the sampling quality chip (spec
  * §6: [ScopeSamplingChip]) and the Hz readout (spec §7's measurement
  * tooling, in the fixed label band in Tnum so the ticking digits do not
- * jog).
+ * jog). [midGrayLine] is the spec §8 reference's DERIVED signal level
+ * (or null = not drawn): a dashed guide line under the trace, valid
+ * only when the analyzed signal's luma path is the bare Rec.709 OETF
+ * (the strip's gate — see the ScopeStrip KDoc).
  */
 @Composable
 fun WaveformScopeView(
@@ -193,12 +236,17 @@ fun WaveformScopeView(
     samplingOrdinal: Int,
     onSamplingChange: (Int) -> Unit,
     hz: Int,
+    midGrayLine: Float?,
     modifier: Modifier = Modifier,
 ) {
     // Coerced: the ordinal crosses process-death save/restore; a stale
     // value must select the nearest real mode, never crash the strip.
     val mode = WaveformMode.entries[modeOrdinal.coerceIn(0, WaveformMode.entries.lastIndex)]
     val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)
+    // The mid-gray guide reads as a REFERENCE, not grid furniture: the
+    // theme's primary, distinct from the neutral grid lines and from the
+    // white trace.
+    val referenceColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
     val signalLabel = stringResource(R.string.editor_scope_signal)
     // The density bitmap, wrapped once per published frame. The pixels
     // are PREMULTIPLIED ARGB (WaveformDisplay's contract) — exactly what
@@ -257,6 +305,23 @@ fun WaveformScopeView(
                 drawLine(gridColor, Offset(0f, 0.5f), Offset(w, 0.5f), strokeWidth = 1f)
                 drawLine(gridColor, Offset(0f, h / 2f), Offset(w, h / 2f), strokeWidth = 1f)
                 drawLine(gridColor, Offset(0f, h - 0.5f), Offset(w, h - 0.5f), strokeWidth = 1f)
+                // The mid-gray reference (spec §8): a DASHED guide at
+                // the DERIVED level (18% scene linear through the
+                // Rec.709 OETF ≈ 41% coded signal — never 18% screen
+                // level), drawn under the trace so the density reads
+                // through it. Y maps like the trace: signal rises
+                // upward, level 0 at the bottom.
+                midGrayLine?.let { level ->
+                    val y = h * (1f - level)
+                    val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 6f))
+                    drawLine(
+                        color = referenceColor,
+                        start = Offset(0f, y),
+                        end = Offset(w, y),
+                        strokeWidth = 1f,
+                        pathEffect = dash,
+                    )
+                }
                 val b = bitmap
                 if (b != null) {
                     // One scaled draw of the full bitmap: X stretches
