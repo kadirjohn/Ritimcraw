@@ -1984,35 +1984,51 @@ fun ClipEditorScreen(
                         // waveform-trace glyph (material-icons-core 1.7.3 has
                         // no waveform icon), same translucent scrim as the
                         // fullscreen and refresh controls.
-                        ScopeToggleButton(
-                            // The two-state icon keeps one meaning whatever
-                            // the shape: show/hide the scope. The tri-state
-                            // transitions live in the pure rules — this
-                            // button never cycles secretly (MINI -> OFF, not
-                            // MINI -> STRIP: a cycle would hide the third
-                            // state behind a two-state glyph).
-                            visible = scopePresentation != ScopePresentation.OFF,
-                            onToggle = {
-                                scopePresentation =
-                                    ScopePresentationRules.onCornerToggle(scopePresentation)
-                            },
+                        // TopStart corner stack (spec 2026-11-12 §9-J, no
+                        // hardcoded positional dims): the scope and zebra
+                        // toggles compose in ONE vertically-stacked column
+                        // at the video's real TopStart corner — the zebra
+                        // toggle sits BELOW the scope toggle by the stack's
+                        // own geometry (the toggle's measured height + the
+                        // 8dp gap), never a magic 64dp offset that assumed
+                        // the toggle above it was exactly 48dp tall. Both
+                        // keep their 48dp IconButton targets and the same
+                        // 8dp corner inset as every preview corner control.
+                        Column(
                             modifier = Modifier
                                 .align(Alignment.TopStart)
                                 .padding(8.dp),
-                        )
-                        // Zebra toggle (owner spec PLAY-11): a peer of the
-                        // scope toggle in the same scrimmed corner group —
-                        // the clip warning belongs beside the analysis tools.
-                        // Same 48dp IconButton target, vendored diagonal-
-                        // stripes glyph, same translucent scrim as every
-                        // preview corner control.
-                        ZebraToggleButton(
-                            on = zebraOn,
-                            onToggle = { zebraOn = !zebraOn },
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(start = 8.dp, top = 64.dp),
-                        )
+                        ) {
+                            ScopeToggleButton(
+                                // The two-state icon keeps one meaning
+                                // whatever the shape: show/hide the scope.
+                                // The tri-state transitions live in the
+                                // pure rules — this button never cycles
+                                // secretly (MINI -> OFF, not MINI ->
+                                // STRIP: a cycle would hide the third
+                                // state behind a two-state glyph).
+                                visible = scopePresentation != ScopePresentation.OFF,
+                                onToggle = {
+                                    scopePresentation =
+                                        ScopePresentationRules.onCornerToggle(scopePresentation)
+                                },
+                            )
+                            // Zebra toggle (owner spec PLAY-11): a peer of
+                            // the scope toggle in the same scrimmed corner
+                            // group — the clip warning belongs beside the
+                            // analysis tools. Same 48dp IconButton target,
+                            // vendored diagonal-stripes glyph, same
+                            // translucent scrim as every preview corner
+                            // control. The 8dp gap is Arrangement-agnostic
+                            // (a plain Column stacks edge to edge; the
+                            // spacer keeps the two 48dp targets from
+                            // touching without hardcoding any position).
+                            Spacer(Modifier.height(8.dp))
+                            ZebraToggleButton(
+                                on = zebraOn,
+                                onToggle = { zebraOn = !zebraOn },
+                            )
+                        }
                         // THE MINI SCOPE OVERLAY (owner request 2026-11-12
                         // §2): the strip shrunk into the preview's BottomStart
                         // corner — the only VIDEO corner no other control
