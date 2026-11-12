@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -61,6 +62,12 @@ fun SettingsScreen(
     // keep every existing caller and preview working.
     previewQuality: PreviewQuality = PreviewQuality.DEFAULT,
     onPreviewQualityChange: (PreviewQuality) -> Unit = {},
+    // ---- Gyro folder grant (owner request 2026-11-12, G1) ----
+    // The granted tree's friendly label (Documents/MotionCam), or null
+    // when no folder is granted. The row re-picks on tap; AppNav owns
+    // the store + the SAF launcher, the screen only renders + forwards.
+    gyroFolderLabel: String? = null,
+    onPickGyroFolder: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // Canonical header call site (title consistency, owner finding
@@ -134,6 +141,25 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.labelMedium.merge(Tnum),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 4.dp),
+            )
+            // Gyro folder grant (G1): the durable home of the grant. The row
+            // states what the folder is for and shows the current folder (or
+            // the not-set wording); a tap opens the SAF tree picker. The
+            // supporting text doubles as the recovery line — the auto-match
+            // does nothing until the owner picks the MotionCam folder here
+            // (or through the one-time import hint).
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_gyro_folder)) },
+                supportingContent = {
+                    Text(
+                        if (gyroFolderLabel == null) {
+                            stringResource(R.string.settings_gyro_folder_none)
+                        } else {
+                            stringResource(R.string.settings_gyro_folder_set, gyroFolderLabel)
+                        }
+                    )
+                },
+                modifier = Modifier.clickable(onClick = onPickGyroFolder),
             )
             ListItem(
                 headlineContent = { Text(stringResource(R.string.settings_device_report)) },

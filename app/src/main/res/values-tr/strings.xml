@@ -196,6 +196,16 @@
     <string name="settings_preview_quality_balanced">Dengeli</string>
     <string name="settings_preview_quality_high">Yüksek</string>
     <string name="settings_preview_quality_dims">%1$d / %2$d px</string>
+    <string name="settings_gyro_folder">Jiro kayıt klasörü</string>
+    <string name="settings_gyro_folder_body">MotionCam .gcsv jiro kayıtlarınızın bulunduğu klasörü seçin. Bir kayıtla aynı adlı yeni içe aktarımlar kaydı otomatik olarak ekler.</string>
+    <string name="settings_gyro_folder_none">Ayarlanmadı — .gcsv jiro kayıtlarınızın bulunduğu klasörü seçmek için dokunun</string>
+    <string name="settings_gyro_folder_set">Geçerli: %1$s — değiştirmek için dokunun</string>
+    <string name="gyro_auto_attached_snackbar">Jiro verisi eklendi</string>
+    <string name="gyro_folder_hint_snackbar">Bir MotionCam klibi içe aktarın; aynı adlı .gcsv jiro kaydı otomatik olarak eklenebilir. Jiro klasörünü seçelim mi?</string>
+    <string name="gyro_folder_hint_action">Klasör seç</string>
+    <string name="gyro_ambiguous_title">Birden çok jiro kaydı eşleşiyor</string>
+    <string name="gyro_ambiguous_body">Jiro klasöründe bu klibin adını taşıyan birden fazla .gcsv jiro kaydı var. Eklemek için doğru olanı seçin.</string>
+    <string name="gyro_ambiguous_cancel">Vazgeç</string>
 
     <!-- E2 Library delete: how many clips the confirm dialog removes. -->
     <plurals name="library_delete_message">
