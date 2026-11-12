@@ -54,20 +54,30 @@
 //   correction) = +367 ms (004150) and +351 ms (004208). Cross-clip check:
 //   frame-0 wall-minus-monotonic agrees to 3.76 ms between the two clips
 //   recorded 18 s apart on the same boot — the first-frame receive lag is
-//   stable, so the anchor method is repeatable. Error budget: header ms
-//   quantization (±0.5 ms) + recvd ms quantization (±0.5 ms) + first-frame
-//   receive lag (unknown constant; within-clip receive jitter measured at
-//   −13.2..+3.5 ms and −7.2..+7.7 ms, so the constant lag plausibly sits
-//   inside a ±20 ms band) → documented bound ±25 ms unless a tighter one
-//   is measured. ±25 ms at 30 fps is ±0.75 frame — fine for a coarse
-//   default, refined by the manual offset (Phase 4 UI) or later optical
-//   sync. When either anchor is missing the verdict is MANUAL-REQUIRED and
+//   stable, so the anchor method is repeatable.
+//
+//   HONESTY NOTE (audit fix 2026-11-12): this is a COARSE anchor estimate,
+//   not a precision sync. The sensor-capture → app-receive lag of the
+//   first frame is UNOBSERVABLE from the files alone, and it enters the
+//   offset at full weight. Error budget: header ms quantization (±0.5 ms)
+//   + recvd ms quantization (±0.5 ms) are measured; the receive-lag term
+//   is NOT. The within-clip receive jitter measured on the fixtures
+//   (−13.2..+3.5 ms and −7.2..+7.7 ms) shows the JITTER but cannot bound
+//   the CONSTANT lag — a slow constant pipeline delay would hide from it.
+//   So ±25 ms is a CONSERVATIVE SHIPPED BOUND (an engineering judgment
+//   sized so the jitter envelope fits with margin), NOT a measurement. A
+//   real bound arrives only with optical-flow refinement (planned, GY-04)
+//   or an owner on-device measurement. ±25 ms at 30 fps is ±0.75 frame —
+//   fine for a coarse default, refined by the manual offset (Phase 4 UI).
+//   The UI says "Approximate (anchored ±N ms)" for exactly this reason.
+//   When either anchor is missing the verdict is MANUAL-REQUIRED and
 //   NO offset is fabricated.
 //
-// WHAT IS NOT HERE: optical sync (needs decoded frames; Phase 5+) and any
-// JNI/UI exposure (Phase 4). Embedded-MCRAW IMU needs no bridge at all —
-// it shares the frame clock by construction (Gyro.h) — so this model is
-// for the SIDE-CAR GCSV case.
+// WHAT IS NOT HERE: optical-flow sync refinement (planned follow-up
+// GY-04; needs decoded frames to match image motion against the gyro) and
+// any JNI/UI exposure (Phase 4). Embedded-MCRAW IMU needs no bridge at
+// all — it shares the frame clock by construction (Gyro.h) — so this
+// model is for the SIDE-CAR GCSV case.
 
 #pragma once
 
@@ -114,7 +124,7 @@ struct SyncModel {
 // returns candidates with confidence; UNKNOWN -> manual required).
 // ---------------------------------------------------------------------------
 enum class SyncConfidence {
-    Anchored,      // wall-clock anchors on both sides; ±tens-of-ms class
+    Anchored,      // coarse wall-clock-anchor estimate; ±tens-of-ms class
     ManualRequired // no anchor (or anchors unusable); user must set offset
 };
 

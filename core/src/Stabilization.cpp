@@ -186,16 +186,31 @@ OrientationSeries smoothOrientationSeries(const OrientationSeries& series,
         return out;
     }
 
-    // tau(strength) = tauMin * (tauMax/tauMin)^strength, clamped 0..1.
-    // tauMin = 1 ns (not 1 us): at strength 0 alpha = 1 - exp(-dt/1ns)
-    // = 1.0 to double precision for every real dt (>= 1 ns grid),
-    // i.e. strength 0 is EXACTLY the raw series (doctest-pinned); 1 us
-    // would leave a 1e-3..1e-4 residue on a 473 Hz grid. tauMax = 1 s
-    // (the reference's low-velocity time constant).
+    // tau(strength), audit fix 2026-11-12: the OLD geometric map
+    // tau = 1 ns * (1e9)^strength put every usable strength UNDER one
+    // frame interval (the shipped 0.7 -> ~2 ms against ~33 ms frames) —
+    // near-raw: measured 0.00 deg correction on the 4K fixtures at 0.70.
+    // The redesigned map is geometric over the USEFUL range instead:
+    //   tau(s) = tauMax * (tauMin/tauMax)^(1-s)
+    //   tauMin = 1/60 s (one frame at 60 fps — below one frame interval
+    //   smoothing is meaningless), tauMax = 1 s (the reference's
+    //   low-velocity time constant), so 0.3 -> ~57 ms, 0.5 -> ~129 ms,
+    //   0.7 -> ~293 ms, 0.9 -> ~664 ms, 1.0 -> 1 s. strength 0 is an
+    //   EXACT pass-through of the raw series: the old map reached it via
+    //   tau = 1 ns (alpha = 1 - exp(-dt/1ns) = 1.0 to double precision,
+    //   both passes copied through); tauMin = 16.7 ms would leave a
+    //   residue, so the raw output is explicit — the doctest pin
+    //   survives either way.
     strength = std::fmax(0.0, std::fmin(1.0, strength));
-    const double tauMin = 1.0;                       // ns
+    if (strength <= 0.0) {
+        for (size_t i = 0; i < n; ++i)
+            for (int k = 0; k < 4; ++k)
+                out.quats[4 * i + k] = q[4 * i + k];
+        return out;
+    }
+    const double tauMin = 1e9 / 60.0;                // ns (one 60 fps frame)
     const double tauMax = 1e9;                        // ns
-    const double tau = tauMin * std::pow(tauMax / tauMin, strength);
+    const double tau = tauMax * std::pow(tauMin / tauMax, 1.0 - strength);
 
     // Per-interval alpha from the ACTUAL stamps (grid-independent).
     std::vector<double> alpha(n, 1.0);

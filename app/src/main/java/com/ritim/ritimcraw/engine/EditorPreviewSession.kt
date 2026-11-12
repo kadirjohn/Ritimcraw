@@ -110,6 +110,31 @@ interface EditorPreviewSession : AutoCloseable {
     suspend fun framePtsUs(index: Int): Long
 
     /**
+     * The stabilization zoom verdict for the Stabilization group's readout
+     * (audit fix 2026-11-12, Fix 5): evaluates the clip-wide plan for the
+     * six flat request params — the IDENTICAL mapping the renders use
+     * (GradeMapping.stabilizationArgs built them) — and returns
+     * [requiredZoom, appliedZoom, statusInt] without warping anything.
+     * Null = no verdict to show (the caller renders no readout, never a
+     * fabricated zoom): no native session behind the seam, no gyro log,
+     * a parse failure, or a dead handle. Runs on the engine thread like
+     * every native call.
+     *
+     * The DEFAULT is null, the rawHistogram precedent: an encoded clip has
+     * no gyro stabilization at all (the group itself is hidden there), so
+     * [EncodedPreviewSession] needs no override — the seam stays honest
+     * without inventing a verdict.
+     */
+    suspend fun stabZoomProbe(
+        gyroPath: String,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        stabFocalMm: Float,
+        stabTrimMs: Float,
+    ): DoubleArray? = null
+
+    /**
      * Opens the clip's AUDIO for editor playback (owner request 2026-11-11
      * section 4) as a positionable PCM stream for [EditorAudioPlayback].
      * Null = the clip has no audio (silent playback — the previous

@@ -13,7 +13,9 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -21,6 +23,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <android/log.h>
 
 #include <rawedit/Develop.h>
 #include <rawedit/DngWriter.h>
@@ -58,6 +62,22 @@ constexpr int kStageDevelop = 2;
 constexpr int kStageDngWrite = 3;
 
 thread_local int gLastErrorStage = kStageOpen;
+
+// Debug measurement logging (audit fix 2026-11-12, stabilization round 2):
+// one logcat line per settle-class render describing the stabilization
+// actually applied — mode, strength, per-frame max angle, requiredZoom vs
+// appliedZoom, IMU overlap, or the skip reason when nothing was applied.
+// Tag "ritim-stab" (the "ritim-pm" / "ritim-scope" precedent):
+//
+//   adb logcat -s ritim-stab        (live)
+//   adb logcat -d -s ritim-stab     (dump after a run)
+//
+// gStabDebugLog defaults OFF; NativeSource's companion init sets it from
+// BuildConfig.DEBUG at library load, so release builds compile the checks
+// away to a single relaxed load and never write a line. The per-render cost
+// when on is one snprintf + one __android_log_print — the plan is already
+// computed at that point, nothing is re-run for the log.
+std::atomic<bool> gStabDebugLog{false};
 
 void setError(const std::string& message) {
     gLastError = message;
@@ -223,8 +243,10 @@ bool resolveGyro(JNIEnv* env, jstring gyroPath, const GyroArtifacts** out) {
 
 // The stabilization request as the six flat JNI params resolve it (gyro
 // Phase 5). Built only when a gyro log resolved: the Kotlin layer already
-// gated off / tier skip / no-attachment down to a null gyroPath, so the C++
-// side never sees a request it should not run. Mode ints are GradeK's
+// gated off / no-attachment down to a null gyroPath (the tier gate passes
+// at every tier since the 2026-11-12 audit fix — the warp applies at drag,
+// playback, paused and the full-res follow-up alike), so the C++ side
+// never sees a request it should not run. Mode ints are GradeK's
 // 0 = Smooth, 1 = LockFirstFrame, 2 = HorizonLock (the StabilizationMode
 // enum order minus Off); strength is already 0..1 (GradeK percent / 100 at
 // the Kotlin boundary, the lutStrength precedent); focalMm 0 = use the
@@ -263,6 +285,23 @@ inline bool stabWarps(const rawedit::StabilizationFrame& f) {
            f.status == rawedit::StabilizationStatus::LowOverlap;
 }
 
+// What one render's measurement line reports (audit fix 2026-11-12):
+// the request as logged, the plan's clip-wide numbers, the overlap, and
+// the per-frame slice at the rendered index. Filled by
+// stabilizationFrameFor next to the frame it returns; logged by
+// applyStabilization when gStabDebugLog is on.
+struct StabMeasure {
+    rawedit::StabilizationStatus status =
+        rawedit::StabilizationStatus::Unsynced; // the frame's own status
+    double requiredZoom = 1.0;
+    double appliedZoom = 1.0;
+    double frameAngleDeg = 0.0;  // |q_rel| at the rendered frame
+    double maxAngleDeg = 0.0;    // worst |q_rel| over the clip plan
+    size_t framesInside = 0;     // frames whose imuTs is inside the gyro span
+    size_t framesTotal = 0;
+    bool anchored = false;       // the sync estimate carried real anchors
+};
+
 // The clip-wide stabilization plan evaluated at [frameIndex], for the
 // buffer being warped ([bufW] x [bufH] — thumbnail dims on the preview
 // path, full dims on the export path; the homography scales with the
@@ -275,13 +314,18 @@ inline bool stabWarps(const rawedit::StabilizationFrame& f) {
 // unanchored one with no trim stays honestly Unsynced — offsetKnown false,
 // computeStabilization returns Unsynced identity frames and the caller
 // skips the warp. Never a fabricated zero offset.
+// [measure], when non-null, receives the debug line's numbers (Fix 4 of the
+// 2026-11-12 audit): status/zooms/overlap as computed for THIS render —
+// no extra work, the plan is already in hand.
 void stabilizationFrameFor(const StabRequest& req,
                           rawedit::Source& src,
                           int frameIndex,
                           int bufW, int bufH,
                           const GyroArtifacts* gyro,
-                          rawedit::StabilizationFrame* out) {
+                          rawedit::StabilizationFrame* out,
+                          StabMeasure* measure = nullptr) {
     *out = rawedit::StabilizationFrame(); // identity + Off until proven
+    if (measure != nullptr) measure->anchored = false;
     if (gyro == nullptr || bufW <= 0 || bufH <= 0) return;
 
     // Sync: frame-0 anchors from the Source itself.
@@ -300,6 +344,7 @@ void stabilizationFrameFor(const StabRequest& req,
         model = rawedit::manualOffsetMs(req.trimMs).model;
     }
     // else: unanchored + no trim -> offsetKnown stays false (Unsynced).
+    if (measure != nullptr) measure->anchored = est.isAnchored();
 
     // Focal: the grade's override wins; 0 = the container's 35mm-equiv
     // value. focalLengthPxFromEquivalent is the one documented, FLAGGED
@@ -336,13 +381,34 @@ void stabilizationFrameFor(const StabRequest& req,
         static_cast<size_t>(frameIndex) < result.frames.size()) {
         *out = result.frames[static_cast<size_t>(frameIndex)];
     }
+    if (measure != nullptr) {
+        measure->status = out->status;
+        measure->requiredZoom = result.requiredZoom;
+        measure->appliedZoom = result.appliedZoom;
+        measure->framesTotal = result.frames.size();
+        if (static_cast<size_t>(frameIndex) < result.relativeAngleDeg.size()) {
+            measure->frameAngleDeg = result.relativeAngleDeg[
+                static_cast<size_t>(std::max(0, frameIndex))];
+        }
+        for (double a : result.relativeAngleDeg)
+            measure->maxAngleDeg = std::fmax(measure->maxAngleDeg, a);
+        // IMU overlap: the same framesToImu the plan's LowOverlap flags
+        // come from — frames mapped inside the gyro span (samples in the
+        // window). Cheap: one pass over the already-mapped timestamps.
+        const rawedit::FrameSync overlap = rawedit::framesToImu(
+            frameTs, model, gyro->orientation.series.firstTs(),
+            gyro->orientation.series.lastTs());
+        measure->framesInside = overlap.frameCount -
+                                overlap.beforeGyroStart - overlap.afterGyroEnd;
+    }
 }
 
 // The warp input for one render (gyro Phase 5). gyro == nullptr is the
-// no-warp default: the Kotlin layer already gated off / tier-skip /
-// no-attachment down to a null gyroPath, and a log that went missing since
-// the attach probe degrades the same way — so a default StabInput warps
-// nothing and costs nothing.
+// no-warp default: the Kotlin layer already gated off / no-attachment down
+// to a null gyroPath (the tier gate passes at every tier since the
+// 2026-11-12 audit fix), and a log that went missing since the attach
+// probe degrades the same way — so a default StabInput warps nothing and
+// costs nothing.
 struct StabInput {
     StabRequest request;
     rawedit::Source* source = nullptr;
@@ -360,10 +426,11 @@ struct StabResolution {
 
 // Resolves the six flat JNI stabilization params into the warp input for
 // this render. The Kotlin boundary already did the gating (stabilization
-// off, tier skip, no attachment -> null gyroPath), so the ONLY decisions
-// left here are the cache lookup and the honest failure. strength arrives
-// already in rawedit's 0..1 scale (GradeK percent / 100 at the Kotlin
-// boundary, the lutStrength precedent).
+// off or no attachment -> null gyroPath; every tier passes the tier gate
+// since the 2026-11-12 audit fix), so the ONLY decisions left here are
+// the cache lookup and the honest failure. strength arrives already in
+// rawedit's 0..1 scale (GradeK percent / 100 at the Kotlin boundary, the
+// lutStrength precedent).
 StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
                                     jint stabMode, jfloat stabStrength,
                                     jfloat stabZoomLimit, jfloat stabFocalMm,
@@ -393,13 +460,51 @@ StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
 // (RotationState.rotateRgb888), so the warp composes with the rotation
 // either way. No-op on the default input or a refusing status (Off / NoImu
 // / Unsynced carry identity H and MUST NOT pay the warp cost).
-void applyStabilization(const StabInput& in, rawedit::ImageF& img) {
+//
+// [maxDim] is the render's preview tier (0 = full res, the export path and
+// the full-res follow-up). It gates ONLY the debug measurement line (audit
+// fix 2026-11-12): the warp itself applies at EVERY tier (the Fix 1 rule),
+// but the log fires on settle-class renders only — the paused/settle tier
+// (>= 1280) and full res — so a slider drag or playback does not spam one
+// line per frame. One line per settle render, tag "ritim-stab".
+void applyStabilization(const StabInput& in, rawedit::ImageF& img,
+                        int maxDim = 0) {
     if (in.gyro == nullptr || in.source == nullptr) return;
     if (img.w == 0 || img.h == 0) return;
+    const bool wantLog = gStabDebugLog.load(std::memory_order_relaxed) &&
+                         maxDim != 480 && maxDim != 720;
     rawedit::StabilizationFrame frame;
+    StabMeasure measure;
     stabilizationFrameFor(in.request, *in.source, in.frameIndex,
                           static_cast<int>(img.w), static_cast<int>(img.h),
-                          in.gyro, &frame);
+                          in.gyro, &frame, wantLog ? &measure : nullptr);
+    if (wantLog) {
+        char line[256];
+        // Skip reasons read honestly: off/no-imu/unsynced say WHY nothing
+        // was applied; the warp statuses carry the numbers that were.
+        if (in.request.mode == rawedit::StabilizationMode::Off) {
+            std::snprintf(line, sizeof line,
+                "skip: mode off (frame %d, %dx%d)", in.frameIndex,
+                static_cast<int>(img.w), static_cast<int>(img.h));
+        } else if (!stabWarps(frame)) {
+            std::snprintf(line, sizeof line,
+                "skip: %s (frame %d, %dx%d)",
+                rawedit::stabilizationStatusName(frame.status), in.frameIndex,
+                static_cast<int>(img.w), static_cast<int>(img.h));
+        } else {
+            std::snprintf(line, sizeof line,
+                "applied: mode=%d strength=%.2f frame=%d angle=%.3fdeg "
+                "maxAngle=%.3fdeg requiredZoom=%.4f appliedZoom=%.4f "
+                "imuOverlap=%zu/%zu status=%s %s",
+                static_cast<int>(in.request.mode), in.request.strength,
+                in.frameIndex, measure.frameAngleDeg, measure.maxAngleDeg,
+                measure.requiredZoom, measure.appliedZoom,
+                measure.framesInside, measure.framesTotal,
+                rawedit::stabilizationStatusName(frame.status),
+                measure.anchored ? "anchored" : "manual-trim");
+        }
+        __android_log_print(ANDROID_LOG_INFO, "ritim-stab", "%s", line);
+    }
     if (!stabWarps(frame)) return;
     // cx/cy resolve the principalPoint sentinel exactly the way the core
     // plan resolves it ({0,0} sentinel -> the buffer center): the warp and
@@ -656,8 +761,10 @@ jintArray developToArgb(JNIEnv* env,
     }
 
     // Gyro warp on the stored-orientation thumbnail (no-op without a
-    // resolved log; identity/Unsynced frames cost nothing).
-    applyStabilization(stab, img);
+    // resolved log; identity/Unsynced frames cost nothing). maxDim rides
+    // along only for the debug log's settle-tier gate (audit fix
+    // 2026-11-12): the warp itself applies at every tier.
+    applyStabilization(stab, img, maxDim);
 
     const jsize w = static_cast<jsize>(img.w);
     const jsize h = static_cast<jsize>(img.h);
@@ -1097,6 +1204,16 @@ JNIEXPORT jstring JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeLastError(JNIEnv* env, jclass) {
     if (gLastError.empty()) return nullptr;
     return toJavaString(env, gLastError);
+}
+
+// Debug measurement logging toggle (audit fix 2026-11-12): NativeSource's
+// companion init calls this once at library load with BuildConfig.DEBUG, so
+// the "ritim-stab" per-settle-render line exists only in debug builds —
+// release keeps the flag's default false and stays silent.
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetStabDebugLog(
+        JNIEnv*, jclass, jboolean enabled) {
+    gStabDebugLog.store(enabled == JNI_TRUE, std::memory_order_relaxed);
 }
 
 // Preview pipeline -------------------------------------------------------------
@@ -1694,8 +1811,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         //     the N4 follow-up). The upright rotation happens in Kotlin
         //     AFTER this return (RotationState.rotateRgb888), so warping
         //     the non-rotated buffer composes with it exactly like the
-        //     preview path's pre-rotation placement.
-        applyStabilization(stab.input, img);
+        //     preview path's pre-rotation placement. maxDim 0 = full res:
+        //     the debug log line fires per export frame (settle-class).
+        applyStabilization(stab.input, img, /*maxDim=*/0);
 
         // 3. linearToRec709 -> clamp -> 8-bit RGB888, row-major, 3 bytes
         //    per pixel. Not rotated: the exporter passes orientationDeg to
@@ -1736,6 +1854,87 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
     // frameInfo returns a zeroed FrameInfo for out-of-range indices (no
     // throw), so this is always safe; the exporter only walks 0..frameCount.
     return static_cast<jlong>(s->frameInfo(static_cast<size_t>(index)).ptsUs);
+}
+
+// Stabilization zoom probe (audit fix 2026-11-12, Fix 5) -----------------------
+//
+// The zoom-limit honesty readout behind the Stabilization group's status
+// line: evaluates the CLIP-WIDE plan for the six flat request params —
+// the identical stabilizationFrameFor the renders run — and returns the
+// plan's numbers WITHOUT warping anything:
+//
+//   [0] requiredZoom  (unclamped static-crop need, >= 1.0)
+//   [1] appliedZoom   (after the user's zoomLimit clamp)
+//   [2] statusInt     (frame 0's StabilizationStatus: Ok=0, Off=1, NoImu=2,
+//                      Unsynced=3, LowOverlap=4, IntrinsicsAssumed=5 — the
+//                      core Stabilization.h enum order; the Kotlin mirror
+//                      documents the same list)
+//
+// or nullptr when there is no verdict to show: a bad handle (the
+// nativeFramePtsUs silent-null precedent), no gyro log attached (null/empty
+// path — resolveGyro's honest no-op), or a .gcsv parse failure (error state
+// set, like a failing render — the next native call resets it per the
+// entry-point convention). The UI shows NO readout on null — never a
+// fabricated zoom.
+//
+// WHY THE PROBE IS CHEAP AND TIER-FREE: the plan evaluation is the same
+// one the renders pay (~0.2 ms on the 4K fixture, PreviewTiers' measured
+// table) and the zooms are BUFFER-INDEPENDENT — focalLengthPxFromEquivalent
+// scales the pixel focal linearly with the buffer width and staticCropZoom
+// is a dimensionless corner-coverage ratio, so evaluating at the clip's
+// RECORDED CFA dims (frameInfo(0).width/height) yields the same
+// required/applied zooms any preview tier or the full-res export would.
+// One probe per settle covers every tier.
+//
+// THREADING (binding): like every session native call this MUST run on the
+// session's engine thread — resolveGyro's gyro cache and the error state
+// are thread_local. The Kotlin seam (PreviewSession.stabZoomProbe) confines
+// it via engine.execute exactly like framePtsUs; the probe never runs from
+// any other thread.
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabZoomProbe(
+        JNIEnv* env, jclass, jlong handle, jstring gyroPath,
+        jint stabMode, jfloat stabStrength, jfloat stabZoomLimit,
+        jfloat stabFocalMm, jfloat stabTrimMs) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) return nullptr; // dead session: no verdict, silently
+
+    // The gyro resolves exactly like a render's: the thread-local cache
+    // (warm after the first render), false only on a parse failure.
+    const GyroArtifacts* gyro = nullptr;
+    if (!resolveGyro(env, gyroPath, &gyro)) return nullptr; // error set
+    if (gyro == nullptr) return nullptr; // no log attached: no verdict
+
+    // The clip's recorded CFA dims as the evaluation buffer: any dims give
+    // the same zooms (the scale invariant above), so the source's own
+    // dimensions are the honest choice. frameInfo is metadata-only — no
+    // decode, no cache touch.
+    const rawedit::FrameInfo info0 = s->frameInfo(0);
+    const int bufW = info0.width;
+    const int bufH = info0.height;
+
+    // The full plan evaluation the renders run, frame 0, measure filled:
+    // requiredZoom/appliedZoom are clip-wide (the static crop is one
+    // number over the whole q_rel list), status is frame 0's own verdict.
+    const StabRequest req = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
+                                          stabFocalMm, stabTrimMs);
+    rawedit::StabilizationFrame frame;
+    StabMeasure measure;
+    stabilizationFrameFor(req, *s, /*frameIndex=*/0, bufW, bufH, gyro,
+                          &frame, &measure);
+
+    const double out[3] = {
+        measure.requiredZoom,
+        measure.appliedZoom,
+        static_cast<double>(static_cast<int>(measure.status)),
+    };
+    jdoubleArray result = env->NewDoubleArray(3);
+    if (result == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(result, 0, 3, out);
+    return result;
 }
 
 JNIEXPORT jintArray JNICALL

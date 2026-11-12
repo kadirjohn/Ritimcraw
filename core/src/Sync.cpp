@@ -23,10 +23,15 @@ double SyncModel::offsetMs() const {
     return static_cast<double>(offsetNs) / static_cast<double>(nsPerMs);
 }
 
-// Documented in Sync.h: header ±0.5 ms (gcsv epoch ms) + anchor ±0.5 ms
-// (recvd epoch ms) + the unobservable first-frame receive lag, bounded by
-// the measured within-clip receive jitter envelope (see Sync.h for the
-// fixture numbers) -> ±25 ms shipped as the honest conservative bound.
+// ±25 ms is a CONSERVATIVE SHIPPED BOUND, not a measurement (audit fix
+// 2026-11-12). The measured parts of the budget are the two ms
+// quantizations (header ±0.5 ms, recvd ±0.5 ms — Sync.h); the dominant
+// term, the first-frame sensor→receive lag, is UNOBSERVABLE from the
+// files, and the within-clip receive jitter measured on the fixtures
+// (−13.2..+3.5 ms, −7.2..+7.7 ms) bounds only the JITTER, not the
+// constant lag. 25 ms is an engineering judgment sized so that envelope
+// fits with margin; a real bound needs optical-flow refinement (planned,
+// GY-04) or an owner measurement.
 static constexpr double kAnchorErrorBoundMs = 25.0;
 
 SyncEstimate estimateOffsetFromAnchors(int64_t frame0WallMs,

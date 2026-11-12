@@ -195,23 +195,29 @@ const char* stabilizationStatusName(StabilizationStatus s);
 // Time-weighted exponential smoothing of the quaternion series on the
 // SLERP path, forward + reverse pass (zero group delay):
 //
-//   tau(strength) = tauMin * pow(tauMax / tauMin, strength)
-//   alpha_i       = 1 - exp(-dt_i / tau),  dt_i = t_i - t_{i-1}
+//   tau(s)         = tauMax * pow(tauMin / tauMax, 1 - s)      (s > 0)
+//   alpha_i        = 1 - exp(-dt_i / tau),  dt_i = t_i - t_{i-1}
 //   forward pass:  q~_i = slerp_toward(q~_{i-1}, q_i, alpha_i)
 //   reverse pass:  q'_i = slerp_toward(q'_{i+1}, q~_i, alpha_{i+1})
 //
-// STRENGTH SEMANTICS (the user's dial, 0..1, clamped):
-//   0.0 -> tau = tauMin (1 ns): alpha = 1 at every real dt -> q' == q
-//           EXACTLY (the raw orientation, zero smoothing; doctest-pinned)
+// STRENGTH SEMANTICS (the user's dial, 0..1, clamped; audit fix
+// 2026-11-12 — the old map tau = 1 ns·(1e9)^s put every usable strength
+// under one frame interval: the shipped 0.7 was tau ≈ 2 ms against ~33 ms
+// frames, measured 0.00 deg correction on the 4K fixtures):
+//   0.0 -> EXACT pass-through of the raw series (zero smoothing; the
+//           strength-0 doctest pins the output series). The old map
+//           reached this via tau = 1 ns (alpha = 1 at every real dt);
+//           the redesigned tauMin is one frame at 60 fps, which would
+//           leave a residue at 0, so the raw output is explicit.
+//   0.3 -> tau ≈ 57 ms, 0.5 -> ≈ 129 ms, 0.7 -> ≈ 293 ms,
+//   0.9 -> ≈ 664 ms — geometric over the USEFUL range: tauMin = 1/60 s
+//           (below one frame interval smoothing is meaningless) up to
 //   1.0 -> tau = tauMax (1 s): maximally smooth for this phase (the
 //           reference's low-velocity time constant; a ~12 s handheld
-//           clip's target all but stops moving)
-// Geometric interpolation tauMin·(tauMax/tauMin)^s puts the default
-// 0.5 at tau = 31.6 us — near-raw, per the fixture numbers (the clips
-// move ~13 deg over 10 s; stronger defaults over-crop). The exponential
-// alpha (not a naive lerp alpha) makes the response independent of the
-// sample grid: the same tau on a 473 Hz or 200 Hz grid smooths the same
-// physical motion the same amount.
+//           clip's target all but stops moving).
+// The exponential alpha (not a naive lerp alpha) keeps the response
+// independent of the sample grid: the same tau on a 473 Hz or 200 Hz
+// grid smooths the same physical motion the same amount.
 //
 // slerp_toward(q, x, a) advances q a fraction a of the way to x along
 // the shortest arc (a = 1 -> x exactly; a = 0 -> q exactly — defined

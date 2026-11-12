@@ -305,7 +305,8 @@ class SliderStepsTest {
     @Test
     fun double_tap_resets_each_stabilization_slider_only() {
         // Gyro Phase 5: each stabilization slider resets independently to
-        // its GradeK default (70 / 1.1 / 0 / 0) — the tapped control goes to
+        // its GradeK default (50 / 1.1 / 0 / 0 — strength default 50 since
+        // the 2026-11-12 tau redesign) — the tapped control goes to
         // its default, the OTHER stabilization controls, the toggle and
         // the mode stay put.
         val current = GradeK(
@@ -316,7 +317,7 @@ class SliderStepsTest {
         )
 
         val strength = SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_STRENGTH, current)
-        assertEquals(70f, strength.stabilizationStrength, 0f)
+        assertEquals(50f, strength.stabilizationStrength, 0f)
         assertEquals(1.4f, strength.stabilizationZoomLimit, 0f)
         assertEquals(2, strength.stabilizationMode)
 

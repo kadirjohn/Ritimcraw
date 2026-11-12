@@ -30,13 +30,14 @@ object SliderSteps {
 
     /**
      * Strength the Stabilization switch seeds on first enable (gyro Phase 5):
-     * the core's smoothing time constant is tau = (1 s)^strength over the
-     * 0..1 exponent (Stabilization.h), so on the fixtures' ~473 Hz gyro grid
-     * 0.5 gives tau ≈ 31.6 µs (near-raw — a toggle that visibly changes
-     * nothing would read as broken, same reasoning as temporal NR) while 0.7
-     * gives tau ≈ 2 ms (visible smoothing). 70% is the documented default.
+     * the core's smoothing time constant is tau = 1 s · (1/60)^(1-strength)
+     * over the 0..1 dial (Stabilization.h, audit fix 2026-11-12), so the
+     * midpoint 0.5 gives tau ≈ 129 ms — visibly corrected on the fixtures
+     * (the old map's 0.5 was ≈ 31.6 µs, near-raw: a toggle that visibly
+     * changed nothing would read as broken, same reasoning as temporal NR).
+     * 50% is the documented default.
      */
-    const val STABILIZATION_STRENGTH_DEFAULT = 70f
+    const val STABILIZATION_STRENGTH_DEFAULT = 50f
 
     /** Zoom limit the Stabilization switch seeds: 1.1x auto-crop ceiling. */
     const val STABILIZATION_ZOOM_DEFAULT = 1.1f

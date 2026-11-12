@@ -82,9 +82,11 @@
     <string name="editor_slider_stabilization_strength">Güç</string>
     <string name="editor_slider_stabilization_zoom_limit">Zoom sınırı</string>
     <string name="editor_stabilization_sync_status">Senk: %1$s</string>
-    <string name="editor_stabilization_sync_anchored">Demirli ±%1$d ms</string>
+    <string name="editor_stabilization_sync_anchored">Yaklaşık (demirli ±%1$d ms)</string>
     <string name="editor_stabilization_sync_manual">Manuel ofset</string>
     <string name="editor_stabilization_sync_no_data">Jiro verisi yok</string>
+    <string name="editor_stabilization_zoom_applied">Kırpma %1$s</string>
+    <string name="editor_stabilization_zoom_limited">Şu sınıra kadar: %1$s</string>
     <string name="editor_stabilization_attach_gyro">Jiro kaydı ekle</string>
     <string name="editor_stabilization_gyro_import_failed">Jiro kaydı eklenemedi. Çözüm: klibin yan dosyası olan .gcsv dosyasını seçin.</string>
     <string name="editor_stabilization_remove_gyro">Jiro kaydını kaldır</string>

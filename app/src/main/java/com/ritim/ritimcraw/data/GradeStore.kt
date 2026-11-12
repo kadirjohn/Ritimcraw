@@ -62,10 +62,13 @@ import java.nio.charset.StandardCharsets
  * toggling off forgets any tweak, toggling on starts from the defaults.
  * stabilizationMode: 0 = Smooth, 1 = Lock First Frame, 2 = Horizon Lock (the
  * tonemap Int precedent). stabilizationStrength is the 0..100 smoothing
- * percent, default 70 — documented basis: the core's smoothing time constant
- * is tau = (1 s)^strength (Stabilization.h), so 0.7 gives tau ≈ 2 ms on the
- * fixtures' ~473 Hz gyro grid (visible smoothing) while 0.5 gives ≈ 31.6 µs
- * (near-raw, no visible effect); the UI maps the percent onto 0..1.
+ * percent, default 50 — documented basis: the core's smoothing time
+ * constant is tau = 1 s · (1/60)^(1-strength) over the 0..1 dial
+ * (Stabilization.h, audit fix 2026-11-12), so the midpoint 0.5 gives
+ * tau ≈ 129 ms — a visibly corrected target on the fixtures (the OLD
+ * map put 0.5 at ≈ 31.6 µs, near-raw: no visible effect); the UI maps
+ * the percent onto 0..1. Old saved grades keep their stored value —
+ * the default only seeds grades that never set one.
  * stabilizationZoomLimit caps the auto crop, 1.0..1.5, default 1.1.
  * stabilizationTrimMs is the manual sync trim ±500 ms (trimOffsetMs over the
  * anchored estimate; 0 = no trim). stabilizationFocalMm is the
@@ -111,8 +114,8 @@ data class GradeK(
     val stabilization: Boolean = false,
     /** 0 = Smooth, 1 = Lock First Frame, 2 = Horizon Lock (tonemap Int precedent). */
     val stabilizationMode: Int = 0,
-    /** Smoothing percent 0..100 (maps onto the core's tau exponent 0..1); default 70. */
-    val stabilizationStrength: Float = 70f,
+    /** Smoothing percent 0..100 (maps onto the core's tau dial 0..1); default 50 (audit fix 2026-11-12). */
+    val stabilizationStrength: Float = 50f,
     /** Max auto-crop zoom 1.0..1.5; the core clamps appliedZoom to min(required, this). */
     val stabilizationZoomLimit: Float = 1.1f,
     /** Manual sync trim in ms, ±500 (trimOffsetMs over the anchored estimate). */
@@ -429,7 +432,7 @@ class GradeStore(private val file: File) {
                     // back, and the old look (no warp) is preserved exactly.
                     stabilization = m["stabilization"] as? Boolean ?: false,
                     stabilizationMode = (m["stabilizationMode"] as? Double)?.toInt() ?: 0,
-                    stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 70f,
+                    stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 50f,
                     stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
                     stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                     stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
