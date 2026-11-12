@@ -45,7 +45,7 @@ val PanelHandleHeight = 48.dp
 
 /**
  * Pure decisions for the draggable, collapsible adjustment panel and the
- * fixed Light/Color/Detail bottom navigation (owner request 2026-11-11d
+ * fixed Light/Color/Detail/Frame bottom navigation (owner request 2026-11-11d
  * sections 10-11). Every rule here is JVM-testable without Compose; the
  * composable half (commit that wires this in) only measures, converts dp to
  * px and feeds an [androidx.compose.foundation.gestures.AnchoredDraggableState].

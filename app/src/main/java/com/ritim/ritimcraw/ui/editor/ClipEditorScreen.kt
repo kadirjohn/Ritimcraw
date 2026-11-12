@@ -144,6 +144,48 @@ private class ScopeRateMeter {
 }
 
 /**
+ * Pure main-category structure of the editor panel (2026-11-13 editor
+ * panel segmentation plan), JVM-testable without Compose: the four
+ * category indices the bottom navigation, the landscape rail and the
+ * panel region dispatch all key on — ONE definition so the three can
+ * never fork. The per-category sub-tab rules (Color's Balance/Wheels/
+ * Look, Frame's Crop/Stabilize) extend this object in the follow-up
+ * commits of the plan.
+ *
+ * The panel's category Int is UI state, not data: the indices are the
+ * nav's item order, and the panel region's `when (tab)` uses the same
+ * constants. Keeping them here (with a test locking the count and the
+ * order) means a future fifth category must touch this object — the
+ * nav, the rail and the scroll-state map are then compiler-driven to
+ * follow.
+ */
+object EditorCategories {
+
+    /** Light: exposure and tone sliders. */
+    const val LIGHT = 0
+
+    /** Color: WB, wheels, look (sub-tabs arrive with commit b). */
+    const val COLOR = 1
+
+    /** Detail: noise reduction and texture. */
+    const val DETAIL = 2
+
+    /** Frame: crop and stabilization (sub-tabs arrive with commit c). */
+    const val FRAME = 3
+
+    /** The main categories in navigation order; the nav/rail count this. */
+    val ALL = listOf(LIGHT, COLOR, DETAIL, FRAME)
+
+    /**
+     * True when [category] is one of the four main categories — the
+     * panel region's exhaustive dispatch and any future category-source
+     * guard (a saveable Int restored after a version change could be
+     * anything) validate through this instead of repeating the range.
+     */
+    fun isMainCategory(category: Int): Boolean = category in ALL
+}
+
+/**
  * Pure preview-area decision logic (JVM-testable without Compose): which
  * state the preview area shows, and whether rendering is possible at all.
  */
@@ -398,8 +440,11 @@ enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
 
 /**
  * Clip editor (DESIGN.md Editor): preview frame on
- * surface-container-lowest with a subtle outline border, Light/Color/Detail
- * tabs, Light tab with Exposure / Highlights / Black Point / White Point /
+ * surface-container-lowest with a subtle outline border, Light/Color/
+ * Detail/Frame tabs (the fourth category is the 2026-11-13 editor panel
+ * segmentation plan; the Frame body's crop + stabilization groups land
+ * with its sub-tabs in the follow-up commit), Light tab with Exposure /
+ * Highlights / Black Point / White Point /
  * Shadows / Midtones / Contrast, Color tab with Temperature / Tint /
  * Saturation (tone stages COL-11/12/13, end to end) plus the RAW metadata
  * controls (RAW-07/COL-09/RAW-04/RAW-06): As Shot WB reset, Highlight
@@ -561,7 +606,18 @@ fun ClipEditorScreen(
         val lightScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
         val colorScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
         val detailScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
-        val categoryScrollStates = mapOf(0 to lightScroll, 1 to colorScroll, 2 to detailScroll)
+        // The Frame tab's scroll state (2026-11-13 segmentation plan): the
+        // crop + stabilization groups move here from Detail in the follow-up
+        // commit; the state joins the per-category map NOW so the fourth
+        // nav item lands with its scroll memory intact from the first
+        // moment it exists.
+        val frameScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val categoryScrollStates = mapOf(
+            EditorCategories.LIGHT to lightScroll,
+            EditorCategories.COLOR to colorScroll,
+            EditorCategories.DETAIL to detailScroll,
+            EditorCategories.FRAME to frameScroll,
+        )
         val density = LocalDensity.current
         val scope = rememberCoroutineScope()
         // The measured heights the anchor math needs (§11.3: "adapt to
@@ -2375,7 +2431,7 @@ fun ClipEditorScreen(
 
         val panelRegion: @Composable () -> Unit = {
             when (tab) {
-                0 -> LightPanel(
+                EditorCategories.LIGHT -> LightPanel(
                     grade = grade,
                     onChange = { g ->
                         // Slider-path edit: records with the drag cause so
@@ -2403,7 +2459,7 @@ fun ClipEditorScreen(
                         applyGradeEdit(g)
                     },
                 )
-                1 -> ColorPanel(
+                EditorCategories.COLOR -> ColorPanel(
                     grade = grade,
                     // The CFA-stage toggles (Highlight Reconstruction, Keep
                     // Vignetting) exist only on the MCRAW path; encoded
@@ -2443,7 +2499,7 @@ fun ClipEditorScreen(
                         applyGradeEdit(g)
                     },
                 )
-                else -> DetailPanel(
+                EditorCategories.DETAIL -> DetailPanel(
                     grade = grade,
                     // Temporal NR merges neighboring CFA frames, so the
                     // group shows only on MCRAW clips (pure decision in
@@ -2526,6 +2582,7 @@ fun ClipEditorScreen(
                         applyGradeEdit(g)
                     },
                 )
+                EditorCategories.FRAME -> FramePanel()
             }
         }
 
@@ -2622,8 +2679,8 @@ fun ClipEditorScreen(
             // LEFT column (section 17.2: the transport sits under the
             // preview), the adjustment panel becomes the full-height middle
             // column (section 17.1's responsive 30-40% band, independently
-            // scrollable), and the Light/Color/Detail navigation moves to
-            // the compact vertical FAR-RIGHT rail (layout-refactor spec
+            // scrollable), and the Light/Color/Detail/Frame navigation
+            // moves to the compact vertical FAR-RIGHT rail (layout-refactor spec
             // section 5 — it REVERSES the old section 17.1 note: the
             // bottom bar is portrait-only now, never a wide landscape
             // bottom row). Both navs read the same shared `tab`.
@@ -2770,8 +2827,9 @@ fun ClipEditorScreen(
                     panelRegion()
                 }
             }
-            // Fixed Light/Color/Detail bottom navigation (owner request
-            // 2026-11-11d §10): OUTSIDE the draggable panel, always the
+            // Fixed Light/Color/Detail/Frame bottom navigation (owner
+            // request 2026-11-11d §10 + the 2026-11-13 segmentation
+            // plan): OUTSIDE the draggable panel, always the
             // editor's LAST row, so it stays visible and tappable in
             // every panel state. The current category stays selected
             // while collapsed (§10.3); a tap while collapsed opens the
@@ -4219,6 +4277,22 @@ private fun DetailPanel(
             Text(stringResource(R.string.editor_crop_reset))
         }
     }
+}
+
+/**
+ * The Frame tab's body (2026-11-13 editor panel segmentation plan): the
+ * crop/straighten and stabilization groups move here from
+ * [DetailPanel] — with Crop | Stabilize sub-tabs — in the follow-up
+ * commit. This placeholder keeps the fourth category landable on its
+ * own: the tab exists in both navigations, its scroll state is wired
+ * into the per-category map, and the panel geometry is identical to
+ * every other category's (an empty body scrolls like an empty list —
+ * no height jump, no layout surprise).
+ */
+@Composable
+private fun FramePanel() {
+    // Intentionally empty in this commit: the crop + stabilization
+    // groups arrive with the Frame sub-tabs (commit c of the plan).
 }
 
 /** One tonemapping segmented-button entry: label + rawedit::Grade value. */

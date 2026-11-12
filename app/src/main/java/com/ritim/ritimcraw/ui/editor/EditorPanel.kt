@@ -74,8 +74,9 @@ fun rememberPanelDragState(initial: PanelState): AnchoredDraggableState<PanelSta
 }
 
 /**
- * The fixed Light/Color/Detail bottom navigation (owner request
- * 2026-11-11d section 10): three evenly spaced categories with vector
+ * The fixed Light/Color/Detail/Frame bottom navigation (owner request
+ * 2026-11-11d section 10; the fourth category is the 2026-11-13 editor
+ * panel segmentation plan): evenly spaced categories with vector
  * icons and short labels, anchored at the editor's bottom above the
  * system navigation inset, OUTSIDE the draggable panel — it stays
  * visible and accessible in every panel state (section 10.1). The
@@ -98,8 +99,8 @@ fun EditorBottomNav(
         windowInsets = WindowInsets(0, 0, 0, 0),
     ) {
         NavigationBarItem(
-            selected = selected == 0,
-            onClick = { onCategoryTap(0) },
+            selected = selected == EditorCategories.LIGHT,
+            onClick = { onCategoryTap(EditorCategories.LIGHT) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_light),
@@ -109,8 +110,8 @@ fun EditorBottomNav(
             label = { Text(stringResource(R.string.editor_tab_light)) },
         )
         NavigationBarItem(
-            selected = selected == 1,
-            onClick = { onCategoryTap(1) },
+            selected = selected == EditorCategories.COLOR,
+            onClick = { onCategoryTap(EditorCategories.COLOR) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_color),
@@ -120,8 +121,8 @@ fun EditorBottomNav(
             label = { Text(stringResource(R.string.editor_tab_color)) },
         )
         NavigationBarItem(
-            selected = selected == 2,
-            onClick = { onCategoryTap(2) },
+            selected = selected == EditorCategories.DETAIL,
+            onClick = { onCategoryTap(EditorCategories.DETAIL) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_detail),
@@ -130,12 +131,23 @@ fun EditorBottomNav(
             },
             label = { Text(stringResource(R.string.editor_tab_detail)) },
         )
+        NavigationBarItem(
+            selected = selected == EditorCategories.FRAME,
+            onClick = { onCategoryTap(EditorCategories.FRAME) },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_editor_nav_frame),
+                    contentDescription = null,
+                )
+            },
+            label = { Text(stringResource(R.string.editor_tab_frame)) },
+        )
     }
 }
 
 /**
  * The landscape category rail (owner layout-refactor spec 2026-11-12
- * section 5): the SAME three categories, icons, labels, selected state
+ * section 5): the SAME four categories, icons, labels, selected state
  * and callback contract as [EditorBottomNav] — moved to a compact
  * vertical rail on the editor's FAR RIGHT edge in the two-column
  * workspace, so landscape stops spending the bottom bar's 80dp of
@@ -166,8 +178,8 @@ fun EditorCategoryRail(
         windowInsets = WindowInsets(0, 0, 0, 0),
     ) {
         NavigationRailItem(
-            selected = selected == 0,
-            onClick = { onCategoryTap(0) },
+            selected = selected == EditorCategories.LIGHT,
+            onClick = { onCategoryTap(EditorCategories.LIGHT) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_light),
@@ -177,8 +189,8 @@ fun EditorCategoryRail(
             label = { Text(stringResource(R.string.editor_tab_light)) },
         )
         NavigationRailItem(
-            selected = selected == 1,
-            onClick = { onCategoryTap(1) },
+            selected = selected == EditorCategories.COLOR,
+            onClick = { onCategoryTap(EditorCategories.COLOR) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_color),
@@ -188,8 +200,8 @@ fun EditorCategoryRail(
             label = { Text(stringResource(R.string.editor_tab_color)) },
         )
         NavigationRailItem(
-            selected = selected == 2,
-            onClick = { onCategoryTap(2) },
+            selected = selected == EditorCategories.DETAIL,
+            onClick = { onCategoryTap(EditorCategories.DETAIL) },
             icon = {
                 Icon(
                     painter = painterResource(R.drawable.ic_editor_nav_detail),
@@ -197,6 +209,17 @@ fun EditorCategoryRail(
                 )
             },
             label = { Text(stringResource(R.string.editor_tab_detail)) },
+        )
+        NavigationRailItem(
+            selected = selected == EditorCategories.FRAME,
+            onClick = { onCategoryTap(EditorCategories.FRAME) },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_editor_nav_frame),
+                    contentDescription = null,
+                )
+            },
+            label = { Text(stringResource(R.string.editor_tab_frame)) },
         )
     }
 }
