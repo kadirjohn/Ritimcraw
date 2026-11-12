@@ -160,6 +160,8 @@
     <string name="editor_scope_midgray_show">Show mid-gray reference</string>
     <string name="editor_scope_midgray_hide">Hide mid-gray reference</string>
     <string name="editor_scope_hz">%1$d Hz</string>
+    <string name="editor_zebra_show">Show clipping</string>
+    <string name="editor_zebra_hide">Hide clipping</string>
     <string name="export_queued_snackbar">Export queued — see Exports</string>
     <string name="editor_not_loaded_title">Clip not open</string>
     <string name="editor_not_loaded_body">The clip could not be opened by the native engine in this build. Recovery: reopen the clip from the library once the engine build is enabled.</string>

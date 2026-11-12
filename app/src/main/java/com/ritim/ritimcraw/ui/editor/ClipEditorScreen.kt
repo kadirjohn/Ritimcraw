@@ -551,6 +551,16 @@ fun ClipEditorScreen(
         var waveformRendered by remember(sourceId) {
             mutableStateOf<WaveformDisplay.Rendered?>(null)
         }
+        // ---- Zebra state (owner spec PLAY-11) ----
+        // The toggle flag is saveable like the scope's (a rotation or
+        // process death keeps the user's choice), OFF by default (a
+        // preview-affecting tool is opt-in). The striped DISPLAY frame is
+        // keyed to the clip like `frame` — a switch starts clean. The
+        // paint effect below derives it off the UI thread from the
+        // published frame; the scope compute keeps analyzing the CLEAN
+        // frame either way (the zebra never contaminates the scope).
+        var zebraOn by rememberSaveable { mutableStateOf(false) }
+        var zebraFrame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
         // Measurement (spec §7: "~10 scope updates/sec during playback,
         // tuned with measured cost"): every compute records into the
         // clip's ScopeRateMeter and logs one line to logcat tag
@@ -1314,6 +1324,33 @@ fun ClipEditorScreen(
             }
         }
 
+        // ZEBRA PAINT (owner spec PLAY-11): derives the striped DISPLAY
+        // copy of the published frame, OFF the UI thread (the scope
+        // compute's pattern). Gated on the toggle — OFF does ZERO
+        // per-frame work (the same rule as a closed scope). Keyed to
+        // (zebraOn, clip): collectLatest = latest-wins, so a frame
+        // published while a paint still runs cancels it; paints are never
+        // queued and a striped copy never lands out of publication order.
+        // The paint reads the CLEAN published frame and never touches it
+        // (ZebraOverlay.paint copies), so the scope compute — which
+        // observes the same snapshotFlow — is unaffected either way.
+        LaunchedEffect(zebraOn, sourceId) {
+            if (!zebraOn) {
+                zebraFrame = null
+                return@LaunchedEffect
+            }
+            snapshotFlow { frame }.collectLatest { f ->
+                zebraFrame = if (f == null) {
+                    null
+                } else {
+                    withContext(Dispatchers.Default) {
+                        val painted = ZebraOverlay.paint(f.argb, f.width, f.height)
+                        if (painted == null) null else PreviewFrame(f.width, f.height, painted)
+                    }
+                }
+            }
+        }
+
         // PLAYBACK LOOP: paced by the clip's REAL MCRAW timestamps. Each
         // tick picks the frame whose pts is closest to the wall-clock
         // elapsed time (drop-late: never a backlog — the wall clock decides
@@ -1466,8 +1503,13 @@ fun ClipEditorScreen(
                     .weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
+                // PLAY-11 zebra: the display swaps to the striped copy
+                // while the toggle is on (the paint effect derives it
+                // from this same `frame`); the scope compute keeps the
+                // clean frame. One swap line — the whole feature lives in
+                // ZebraOverlay + the paint effect + the corner toggle.
                 PreviewSurface(
-                    frame = frame,
+                    frame = if (zebraOn) zebraFrame ?: frame else frame,
                     state = previewState,
                     errorText = errorText,
                     accessLost = accessLost,
@@ -1614,6 +1656,19 @@ fun ClipEditorScreen(
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(8.dp),
+                    )
+                    // Zebra toggle (owner spec PLAY-11): a peer of the
+                    // scope toggle in the same scrimmed corner group —
+                    // the clip warning belongs beside the analysis tools.
+                    // Same 48dp IconButton target, vendored diagonal-
+                    // stripes glyph, same translucent scrim as every
+                    // preview corner control.
+                    ZebraToggleButton(
+                        on = zebraOn,
+                        onToggle = { zebraOn = !zebraOn },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(start = 8.dp, top = 64.dp),
                     )
                 }
                 // Fullscreen toggle (owner request 2026-11-11 section 2):
