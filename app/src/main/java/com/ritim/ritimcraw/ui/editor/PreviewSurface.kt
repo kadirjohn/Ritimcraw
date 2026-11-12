@@ -178,6 +178,17 @@ fun PreviewSurface(
     // (play/pause preserves it). Default "" keeps existing call sites
     // working unchanged.
     clipKey: String = "",
+    // Zoom settle (owner request 2026-11-12 section 3): fired ONCE when a
+    // zoom-CHANGING pinch gesture ends (the gesture settles) — including
+    // a pinch that settled back at 1x, so the screen can drop its zoomed
+    // flag and restore the normal tier policy. NOT fired for a pan-only
+    // gesture or a two-finger tap that never crossed the slop gate; NOT
+    // fired during the pinch (the gesture is still moving). Receives the
+    // final transform. Which gestures owe the full-quality re-render is
+    // the screen's pure decision (SliderTiers.owesZoomSettle). Default
+    // null keeps PreviewSurface's own tests and any other call site
+    // working unchanged.
+    onZoomSettled: ((ZoomPan.State) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     // §6 zoom/pan state: keyed on the CLIP (a fresh clip starts at 1x
@@ -308,6 +319,22 @@ fun PreviewSurface(
                                     drag.positionChange().y / size.height,
                                 )
                             }
+                        }
+
+                        // Zoom settle (owner request 2026-11-12 section 3):
+                        // the gesture ended. The callback fires for ANY
+                        // zoom-changing pinch (pinchZooming) — including
+                        // one that settled back at 1x, so the screen can
+                        // return its zoomed flag to false and restore the
+                        // normal tier policy. A pan-only gesture or a
+                        // two-finger tap under slop fires nothing (no zoom
+                        // changed). WHICH gestures owe the full-quality
+                        // re-render is SliderTiers.owesZoomSettle's pure
+                        // decision, applied by the screen (it owns the
+                        // render pipeline); this callback is the display
+                        // layer's whole obligation.
+                        if (pinchZooming) {
+                            onZoomSettled?.invoke(zoomPan)
                         }
                     }
                 },

@@ -72,7 +72,10 @@ enum class LibraryFilter(val labelRes: Int) {
  * The picked document is imported through [SourceRepository.import] with
  * takePersistableUriPermission so the clip survives reboots. Failures show
  * an error snackbar naming stage + cause + recovery (DESIGN.md Error states)
- * via the pure [ImportErrors] mapping.
+ * via the pure [ImportErrors] mapping. Import SUCCESS is not shown here at
+ * all: the caller (AppNav) announces it as a system toast after the gyro
+ * auto-match resolves, so ONE combined message can name gyro data when it
+ * attached (owner request 2026-11-12 — no tap to dismiss, no layout space).
  *
  * Rows with revoked access show "Access lost" with a "Grant access" action
  * instead of disappearing (QA-23).
@@ -119,7 +122,6 @@ fun LibraryScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val importDone = stringResource(R.string.library_import_done)
 
     // Selection mode (E2): active exactly while the set is non-empty —
     // every transition is a pure LibrarySelection rule. Stale ids (rows
@@ -157,19 +159,22 @@ fun LibraryScreen(
         }
         val result = runCatching { onImport(uri.toString()) }
             .getOrElse { e -> Result.failure(e) }
-        result.fold(
-            onSuccess = { scope.launch { snackbarHostState.showSnackbar(importDone) } },
-            onFailure = { e ->
-                val msg = ImportErrors.fromException("import", e)
-                val text = context.getString(
-                    msg.messageRes,
-                    msg.causeArg ?: e.javaClass.simpleName,
-                )
-                // The message resource already begins with "Import failed:"
-                // (stage), so the snackbar shows it as-is — no duplicate title.
-                scope.launch { snackbarHostState.showSnackbar(text) }
-            },
-        )
+        // Success is NOT announced here: the caller (AppNav) fires the
+        // system toast AFTER the gyro auto-match resolves, so the ONE
+        // message can name gyro data when it attached (owner request
+        // 2026-11-12 — no tap to dismiss, no layout space). Only the
+        // FAILURE keeps this screen's snackbar: an error the user must
+        // read and dismiss, per DESIGN.md Error states.
+        result.onFailure { e ->
+            val msg = ImportErrors.fromException("import", e)
+            val text = context.getString(
+                msg.messageRes,
+                msg.causeArg ?: e.javaClass.simpleName,
+            )
+            // The message resource already begins with "Import failed:"
+            // (stage), so the snackbar shows it as-is — no duplicate title.
+            scope.launch { snackbarHostState.showSnackbar(text) }
+        }
     }
 
     // E4 (owner finding 2026-11-11): the title must sit at the SAME height

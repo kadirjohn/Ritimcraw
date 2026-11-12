@@ -18,6 +18,23 @@ package com.ritim.ritimcraw.engine
  * - A grade edit outside a drag renders at the full tier (the debounced
  *   editor render); during a drag at the low tier.
  * - Playback stands the drag tier down: play renders at the playback tier.
+ * - While the preview is ZOOMED (owner request 2026-11-12 section 3)
+ *   every render this object prices stays at the full settle tier
+ *   instead of the drag tier: a zoomed preview magnifies the rendered
+ *   bitmap, so the 480px drag tier reads soft under the transform. The
+ *   screen feeds the flag (isZoomed on the settled pinch transform);
+ *   back at 1x the normal policy returns.
+ *
+ * Tier table (long-edge caps; who renders what):
+ *   slider drag (1x)          -> scrubMaxDim (default 480)
+ *   slider settle (1x)        -> SETTLE_MAX_DIM (1280)
+ *   ANY SliderTiers render
+ *   while zoomed              -> SETTLE_MAX_DIM (1280)
+ *   playback                  -> PLAYBACK_MAX_DIM (720, outside this object)
+ *   pause / clip end          -> PAUSED_MAX_DIM, then SOURCE follow-up
+ *   pinch zoom settle         -> PAUSED_MAX_DIM, then SOURCE follow-up
+ *                                (the pause path exactly; [owesZoomSettle]
+ *                                gates which gestures owe it)
  */
 object SliderTiers {
 
@@ -66,34 +83,62 @@ object SliderTiers {
      * drag-tier cap (owner request 2026-11-11b section 3: the user picks
      * the scrub resolution); the default is [DRAG_MAX_DIM], which keeps the
      * no-preference behavior bit-identical to the pre-picker tiers.
+     *
+     * [zoomed] (owner request 2026-11-12 section 3): while the preview is
+     * zoomed every render this prices stays at the settle tier — the
+     * magnified bitmap would read soft at the drag tier. It dominates
+     * [dragActive] (a mid-drag seek under zoom is still settle-tier) but
+     * never the tier of a render OUTSIDE this pricing (pause, playback
+     * and the zoom settle itself keep their own tiers). Default false
+     * keeps every existing call site bit-identical.
      */
-    fun tierFor(dragActive: Boolean, scrubMaxDim: Int = DRAG_MAX_DIM): Int =
-        if (dragActive) scrubMaxDim else SETTLE_MAX_DIM
+    fun tierFor(
+        dragActive: Boolean,
+        scrubMaxDim: Int = DRAG_MAX_DIM,
+        zoomed: Boolean = false,
+    ): Int =
+        if (zoomed || !dragActive) SETTLE_MAX_DIM else scrubMaxDim
 
     /**
      * Transition for one event given whether a drag is active. Pure: the
      * screen owns the boolean and feeds it back as the next call's state.
      * [scrubMaxDim] overrides the drag-tier cap of any drag-tier decision
      * (the user's preview-quality choice); the default keeps the
-     * no-preference behavior bit-identical.
+     * no-preference behavior bit-identical. [zoomed] substitutes the
+     * settle tier for every drag-tier decision ([tierFor]'s zoom rule).
      */
     fun onEvent(
         event: Event,
         dragActive: Boolean,
         scrubMaxDim: Int = DRAG_MAX_DIM,
-    ): Transition = when (event) {
-        Event.DragStarted -> Transition(
-            Decision.RenderAtDragTier(scrubMaxDim), dragActive = true,
-        )
-        Event.DragEnded -> Transition(Decision.RenderAtSettleTier(), dragActive = false)
-        Event.PlaybackStarted -> Transition(Decision.NoRender, dragActive = false)
-        Event.GradeEdited -> Transition(
-            if (dragActive) {
-                Decision.RenderAtDragTier(scrubMaxDim)
-            } else {
-                Decision.RenderAtSettleTier()
-            },
-            dragActive,
-        )
+        zoomed: Boolean = false,
+    ): Transition {
+        val dragTier = if (zoomed) SETTLE_MAX_DIM else scrubMaxDim
+        return when (event) {
+            Event.DragStarted -> Transition(
+                Decision.RenderAtDragTier(dragTier), dragActive = true,
+            )
+            Event.DragEnded -> Transition(Decision.RenderAtSettleTier(), dragActive = false)
+            Event.PlaybackStarted -> Transition(Decision.NoRender, dragActive = false)
+            Event.GradeEdited -> Transition(
+                if (dragActive) {
+                    Decision.RenderAtDragTier(dragTier)
+                } else {
+                    Decision.RenderAtSettleTier()
+                },
+                dragActive,
+            )
+        }
     }
+
+    /**
+     * Whether a finished pinch gesture owes the full-quality settle
+     * render (owner request 2026-11-12 section 3): ONLY a zoom-CHANGING
+     * pinch does — a pan-only gesture (one finger, no zoom change) never
+     * re-renders, and neither does a pinch that never crossed the slop
+     * gate (a tap with two fingers jittering under slop). Pure: the
+     * gesture handler owns the flag and asks on gesture end.
+     */
+    fun owesZoomSettle(pinchZooming: Boolean, zoomed: Boolean): Boolean =
+        pinchZooming && zoomed
 }

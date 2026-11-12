@@ -501,16 +501,25 @@ fun ClipEditorScreen(
         // ---- Scope strip state (owner spec PLAY-10, 2026-11-12 §1-2) ----
         // The ONE scope area is a strip below the transport, above the
         // panel (never an overlay on the image), carrying a Histogram |
-        // Waveform content selector. The open flag, the content and the
-        // waveform mode are saveable like the tab and fullscreen flags,
-        // so a rotation or process death keeps the user's scope exactly
-        // as they left it; the results are keyed to the clip (a switch
-        // starts empty). First open shows Waveform · Luma (spec §1:
-        // "ilk açılışta Luma seçilsin"); the histogram content's mode
-        // (RGB / Luma / Parade / RAW, feature N6) is saveable here too
-        // — the RAW fetch is keyed to it. The compute itself lives
-        // in the scope compute effect below the render pump (spec §7).
-        var scopeOpen by rememberSaveable { mutableStateOf(false) }
+        // Waveform content selector. The presentation is now a TRI-STATE
+        // (owner request 2026-11-12 §2): OFF / STRIP / MINI — the open
+        // flag became ScopePresentation, and every transition runs
+        // through the pure ScopePresentationRules (JVM-tested): tap the
+        // graph -> MINI, tap the mini -> STRIP, corner toggle OFF ->
+        // STRIP and STRIP/MINI -> OFF. The presentation, the content
+        // and the waveform mode are saveable like the tab and fullscreen
+        // flags, so a rotation or process death keeps the user's scope
+        // exactly as they left it; the results are keyed to the clip (a
+        // switch starts empty). The presentation is NOT clip-keyed —
+        // the strip's precedent (content/modes/sampling survive a clip
+        // switch), while the RESULTS are clip-keyed, so a persisted MINI
+        // never draws a previous clip's data. First open shows
+        // Waveform · Luma (spec §1: "ilk açılışta Luma seçilsin"); the
+        // histogram content's mode (RGB / Luma / Parade / RAW, feature
+        // N6) is saveable here too — the RAW fetch is keyed to it. The
+        // compute itself lives in the scope compute effect below the
+        // render pump (spec §7).
+        var scopePresentation by rememberSaveable { mutableStateOf(ScopePresentation.OFF) }
         var scopeContent by rememberSaveable { mutableStateOf(ScopeContent.WAVEFORM) }
         var waveformModeOrdinal by rememberSaveable { mutableStateOf(WaveformMode.LUMA.ordinal) }
         // The histogram content's own mode (feature N6): RGB / Luma /
@@ -580,10 +589,15 @@ fun ClipEditorScreen(
         // kapladığı alan geri kazanılsın") — the anchors re-measure and
         // the panel grows back.
         var scopeStripHeight by remember { mutableStateOf(0) }
-        val scopeStripHeightPx = if (scopeOpen) scopeStripHeight else 0
+        // MINI contributes no strip row (it lives inside the preview),
+        // so the height counts ONLY while the full strip composes.
+        val scopeStripHeightPx =
+            if (scopePresentation == ScopePresentation.STRIP) scopeStripHeight else 0
         val topBarHeightPx = with(density) { EditorTopBarHeight.toPx() }
-        // The collapsed anchor: the handle strip's height (§11.3 state A).
-        val collapsedHeightPx = with(density) { PanelHandleHeight.roundToPx() }
+        // The collapsed anchor: the trimmed handle strip's height
+        // (§11.3 state A; owner add-on 2026-11-12: the visible strip is
+        // 36dp now, the 48dp touch target overhangs below it).
+        val collapsedHeightPx = with(density) { PanelCollapsedHeight.roundToPx() }
         // The free region for the panel + preview together (§11.3): the
         // column minus the fixed rows above and below the flex area —
         // the open scope strip is one of those fixed rows in the
@@ -672,6 +686,17 @@ fun ClipEditorScreen(
         // down, renders use the low drag tier through the session's CACHED
         // path; the drag end emits exactly one full-quality settle render.
         var dragActive by remember(sourceId) { mutableStateOf(false) }
+        // Zoomed-preview tier policy (owner request 2026-11-12 section 3):
+        // while the pinch transform is zoomed, every SliderTiers-priced
+        // render stays at the full settle tier (the magnified bitmap
+        // would read soft at the 480px drag tier). SAVEABLE and keyed on
+        // the clip — the exact lifecycle of the transform it mirrors
+        // (PreviewSurface's zoomPan is rememberSaveable(clipKey)): a
+        // fresh clip starts at 1x (the transform resets on clipKey
+        // change and no settle callback fires, so this resets with it),
+        // and a configuration change mid-zoom keeps BOTH the transform
+        // and this flag, so the tier policy survives rotation intact.
+        var previewZoomed by rememberSaveable(sourceId) { mutableStateOf(false) }
         // Fullscreen preview (owner request 2026-11-11 section 2): the SAME
         // editor session — only the layout changes (top bar / tabs / panel
         // hidden, the preview takes the flex space, the transport stays).
@@ -850,7 +875,10 @@ fun ClipEditorScreen(
          * stays the fixed full preview tier.
          */
         fun applyTierEvent(event: SliderTiers.Event) {
-            val t = SliderTiers.onEvent(event, dragActive, previewQuality.scrubMaxDim)
+            val t = SliderTiers.onEvent(
+                event, dragActive, previewQuality.scrubMaxDim,
+                zoomed = previewZoomed,
+            )
             dragActive = t.dragActive
             when (val d = t.decision) {
                 is SliderTiers.Decision.RenderAtDragTier ->
@@ -1027,7 +1055,10 @@ fun ClipEditorScreen(
             delay(RenderDebounce.WINDOW_MS)
             requestRender(
                 positionFrame, grade,
-                SliderTiers.tierFor(dragActive, previewQuality.scrubMaxDim),
+                SliderTiers.tierFor(
+                    dragActive, previewQuality.scrubMaxDim,
+                    zoomed = previewZoomed,
+                ),
                 cached = dragActive,
             )
         }
@@ -1214,10 +1245,12 @@ fun ClipEditorScreen(
         // computes stop). The device pass confirms the pacing and the
         // per-compute cost from either.
         LaunchedEffect(
-            scopeOpen, scopeContent, histogramModeOrdinal,
+            scopePresentation, scopeContent, histogramModeOrdinal,
             waveformModeOrdinal, scopeSamplingOrdinal, sourceId,
         ) {
-            if (!scopeOpen) return@LaunchedEffect
+            // MINI computes too (owner request §2: the mini shows live
+            // data) — only OFF stops the work.
+            if (scopePresentation == ScopePresentation.OFF) return@LaunchedEffect
             val content = scopeContent
             val histMode = HistogramMode.entries[
                 histogramModeOrdinal.coerceIn(0, HistogramMode.entries.lastIndex)
@@ -1316,8 +1349,8 @@ fun ClipEditorScreen(
         // strip or leaving the screen cancels the delay, and the loop
         // with it (the strip is not composed while closed, so the
         // frozen value is never shown).
-        LaunchedEffect(scopeOpen) {
-            if (!scopeOpen) return@LaunchedEffect
+        LaunchedEffect(scopePresentation) {
+            if (scopePresentation == ScopePresentation.OFF) return@LaunchedEffect
             while (true) {
                 scopeHz = scopeMeter.rate(SystemClock.elapsedRealtime())
                 delay(500)
@@ -1525,6 +1558,31 @@ fun ClipEditorScreen(
                     // configuration changes) — one pass-through line,
                     // the whole feature lives in PreviewSurface/ZoomPan.
                     clipKey = sourceId,
+                    // Zoom settle (owner request 2026-11-12 section 3):
+                    // a zoom-changing pinch just ended. The flag follows
+                    // the settled transform (back at 1x it drops and the
+                    // normal tier policy returns); a gesture that ends
+                    // ZOOMED additionally owes the full-quality re-render
+                    // — the PAUSE path exactly (SliderTiers.owesZoomSettle
+                    // is the pure decision; the callback's own firing
+                    // condition supplies its pinchZooming=true premise).
+                    // cached: the frame on screen is the same index (the
+                    // pinch never moved the position), so the decode is
+                    // reused and the settle costs one develop, like pause.
+                    onZoomSettled = { settled ->
+                        previewZoomed = ZoomPan.isZoomed(settled.zoom)
+                        if (SliderTiers.owesZoomSettle(
+                                pinchZooming = true,
+                                zoomed = previewZoomed,
+                            )
+                        ) {
+                            requestRender(
+                                positionFrame, grade,
+                                PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                                followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                            )
+                        }
+                    },
                     // The before/after press-hold gesture rides the surface's
                     // modifier (owner feature list W5): press-and-hold on the
                     // frame area swaps to the neutral grade, release returns
@@ -1651,8 +1709,17 @@ fun ClipEditorScreen(
                     // no waveform icon), same translucent scrim as the
                     // fullscreen and refresh controls.
                     ScopeToggleButton(
-                        visible = scopeOpen,
-                        onToggle = { scopeOpen = !scopeOpen },
+                        // The two-state icon keeps one meaning whatever
+                        // the shape: show/hide the scope. The tri-state
+                        // transitions live in the pure rules — this
+                        // button never cycles secretly (MINI -> OFF, not
+                        // MINI -> STRIP: a cycle would hide the third
+                        // state behind a two-state glyph).
+                        visible = scopePresentation != ScopePresentation.OFF,
+                        onToggle = {
+                            scopePresentation =
+                                ScopePresentationRules.onCornerToggle(scopePresentation)
+                        },
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(8.dp),
@@ -1670,6 +1737,38 @@ fun ClipEditorScreen(
                             .align(Alignment.TopStart)
                             .padding(start = 8.dp, top = 64.dp),
                     )
+                    // THE MINI SCOPE OVERLAY (owner request 2026-11-12
+                    // §2): the strip shrunk into the preview's BottomStart
+                    // corner — the only corner no other control owns
+                    // (TopStart = this scope toggle, TopEnd = fullscreen,
+                    // BottomEnd = refresh, CenterEnd = the landscape
+                    // panel-reopen chip). Composed ONLY in MINI, inside
+                    // the same corner-control gate (hidden with the
+                    // fullscreen chrome, like every preview corner
+                    // control), reading the same screen state and the
+                    // same computed results the strip reads — display-
+                    // only by construction. Its tap is the only gesture
+                    // it consumes; the preview's gestures flow around
+                    // its bounds.
+                    if (scopePresentation == ScopePresentation.MINI) {
+                        ScopeMiniOverlay(
+                            content = scopeContent,
+                            histogram = histogram,
+                            rawHistogram = rawHistogram,
+                            histogramModeOrdinal = histogramModeOrdinal,
+                            waveform = waveformRendered,
+                            waveformModeOrdinal = waveformModeOrdinal,
+                            midGrayAvailable = grade.tonemap == 0 && grade.lutId == null,
+                            midGrayShown = scopeMidGrayShown,
+                            onMiniTap = {
+                                scopePresentation =
+                                    ScopePresentationRules.onMiniTap(scopePresentation)
+                            },
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(8.dp),
+                        )
+                    }
                 }
                 // Fullscreen toggle (owner request 2026-11-11 section 2):
                 // the SAME editor session — the toggle only changes the
@@ -1793,7 +1892,10 @@ fun ClipEditorScreen(
                         isPlaying = false
                         requestRender(
                             idx, grade,
-                            SliderTiers.tierFor(dragActive, previewQuality.scrubMaxDim),
+                            SliderTiers.tierFor(
+                                dragActive, previewQuality.scrubMaxDim,
+                                zoomed = previewZoomed,
+                            ),
                             cached = true,
                         )
                     }
@@ -1925,17 +2027,25 @@ fun ClipEditorScreen(
         // the anchors re-measure to the taller free region and the panel
         // grows back.
         val scopeRegion: @Composable () -> Unit = {
-            if (scopeOpen && !fullscreen) {
-                // The honesty gate, derived LIVE from the grade: the
-                // mid-gray line is drawable only while the transform is
-                // the bare Rec.709 OETF (tonemap off, no LUT) — the
-                // moment a curve or cube rewrites it, the reference
-                // vanishes instead of lying.
-                val midGrayAvailable = grade.tonemap == 0 && grade.lutId == null
+            // The honesty gate, derived LIVE from the grade: the mid-gray
+            // line is drawable only while the transform is the bare
+            // Rec.709 OETF (tonemap off, no LUT) — the moment a curve or
+            // cube rewrites it, the reference vanishes instead of lying.
+            // Derived ONCE for both scope shapes (the strip below and
+            // the mini inside the preview both read it).
+            val midGrayAvailable = grade.tonemap == 0 && grade.lutId == null
+            // THE STRIP: only in STRIP and never in fullscreen (the
+            // immersive preview owns the screen; the strip returns with
+            // the workspace — the state survives, so exiting fullscreen
+            // restores it). The graph-tap shrink rides the strip's own
+            // graph node via the pure rules.
+            if (scopePresentation == ScopePresentation.STRIP && !fullscreen) {
                 ScopeStrip(
                     content = scopeContent,
                     onContentChange = { scopeContent = it },
-                    onClose = { scopeOpen = false },
+                    onClose = {
+                        scopePresentation = ScopePresentationRules.onClose(scopePresentation)
+                    },
                     histogram = histogram,
                     rawHistogram = rawHistogram,
                     histogramModeOrdinal = histogramModeOrdinal,
@@ -1949,12 +2059,16 @@ fun ClipEditorScreen(
                     midGrayAvailable = midGrayAvailable,
                     midGrayShown = scopeMidGrayShown,
                     onMidGrayChange = { scopeMidGrayShown = it },
+                    onGraphTap = {
+                        scopePresentation =
+                            ScopePresentationRules.onGraphTap(scopePresentation)
+                    },
                     modifier = Modifier.onSizeChanged { scopeStripHeight = it.height },
                 )
             }
         }
-        LaunchedEffect(scopeOpen, fullscreen) {
-            if (!scopeOpen || fullscreen) {
+        LaunchedEffect(scopePresentation, fullscreen) {
+            if (scopePresentation != ScopePresentation.STRIP || fullscreen) {
                 scopeStripHeight = 0
             }
         }
@@ -2287,11 +2401,13 @@ fun ClipEditorScreen(
                     // before then), so the first frame composes the
                     // sheet at the collapsed-strip height and the
                     // anchors effect snaps it to the restored state
-                    // synchronously on the same first layout pass.
+                    // synchronously on the same first layout pass
+                    // (the trimmed 36dp strip, owner add-on
+                    // 2026-11-12).
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(
-                            if (panelDrag.anchors.size == 0) PanelHandleHeight
+                            if (panelDrag.anchors.size == 0) PanelCollapsedHeight
                             else with(density) { panelDrag.offset.toDp() },
                         ),
                 ) {

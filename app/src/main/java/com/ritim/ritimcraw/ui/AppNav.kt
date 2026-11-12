@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
@@ -357,7 +358,9 @@ fun AppNav() {
     // keeps the dismissal across config changes; a fresh app start may
     // ask again (deliberate — the feature is invisible until granted).
     var gyroFolderHintShown by rememberSaveable { mutableStateOf(false) }
-    val gyroAttachedText = stringResource(R.string.gyro_auto_attached_snackbar)
+    val gyroAttachedText = stringResource(R.string.gyro_auto_attached)
+    val importDoneText = stringResource(R.string.library_import_done)
+    val gyroImportedWithText = stringResource(R.string.library_import_done_with_gyro)
     val gyroFolderHintText = stringResource(R.string.gyro_folder_hint_snackbar)
     val gyroFolderPickText = stringResource(R.string.gyro_folder_hint_action)
 
@@ -438,18 +441,22 @@ fun AppNav() {
      * the hint not yet shown -> offer the folder pick once (a
      * dismissible snackbar action, never a blocking dialog); folder
      * granted -> query its .gcsv children and match. One match
-     * auto-attaches with the "Gyro data attached" snackbar; two or
-     * more open the ambiguity dialog; zero stays silent (the rule is
-     * exact-or-nothing — a wrong .gcsv silently stabilizes with wrong
-     * data, so attaching nothing is the right outcome).
+     * auto-attaches (the caller folds the outcome into the import
+     * toast); two or more open the ambiguity dialog; zero stays
+     * silent (the rule is exact-or-nothing — a wrong .gcsv silently
+     * stabilizes with wrong data, so attaching nothing is the right
+     * outcome).
      *
-     * A clip that ALREADY has a gyro attached (a re-import of a clip
-     * the editor attached one to) is left untouched: the auto-match
-     * never overwrites an existing attachment, and the hint never
-     * fires for it.
+     * Returns whether a gyro log ended up attached — the import
+     * announcement (owner request 2026-11-12: system toasts, ONE
+     * combined message) reads it to pick "Video imported · with gyro
+     * data" over the plain "Video imported". An ALREADY-attached clip
+     * (a re-import of a clip the editor attached one to) reports
+     * true: the auto-match never overwrites an existing attachment
+     * and the hint never fires for it, but the data IS on the clip.
      */
-    fun autoMatchGyro(source: MediaSource) {
-        if (source.gyroId.isNotBlank()) return
+    fun autoMatchGyro(source: MediaSource): Boolean {
+        if (source.gyroId.isNotBlank()) return true
         val folder = gyroFolder
         if (folder == null) {
             if (!gyroFolderHintShown) {
@@ -466,29 +473,28 @@ fun AppNav() {
                     }
                 }
             }
-            return
+            return false
         }
         val logs = try {
             GyroTree.listGcsv(context, folder)
         } catch (e: Exception) {
             // Dropped grant or unreachable provider: degrade to silent
             // no-attach (the same contract as a lost clip grant).
-            return
+            return false
         }
         when (val m = GyroMatcher.match(source.displayName, logs.map { it.displayName })) {
             is GyroMatcher.Match.One -> {
                 val doc = logs.first { it.displayName == m.name }
                 if (autoAttachGyro(source, doc.uri, doc.displayName)) {
                     sources = stores.sources.all()
-                    scope.launch {
-                        exportSnackbar.showSnackbar(gyroAttachedText, duration = SnackbarDuration.Short)
-                    }
+                    return true
                 }
             }
             is GyroMatcher.Match.Ambiguous ->
                 gyroAmbiguous = source to logs.filter { it.displayName in m.names }
             GyroMatcher.Match.None -> Unit // silent: no log matches this clip
         }
+        return false
     }
 
     // DONE rows open on tap (owner request 2026-11-11 §1). The DECISION is
@@ -1142,13 +1148,30 @@ fun AppNav() {
                                     sources = stores.sources.all()
                                     scope.launch { generateThumbnail(imported) }
                                     // The auto-match runs AFTER the import
-                                    // returns: the Library's "Imported"
-                                    // snackbar never waits on the tree
-                                    // query + copy + probe. The scope is
-                                    // the main dispatcher, so the store
-                                    // access stays single-threaded like
-                                    // every other store call.
-                                    scope.launch { autoMatchGyro(imported) }
+                                    // returns: the import announcement never
+                                    // waits on the tree query + copy + probe.
+                                    // The scope is the main dispatcher, so
+                                    // the store access stays single-threaded
+                                    // like every other store call.
+                                    //
+                                    // Import success is a system TOAST, not
+                                    // a snackbar (owner request 2026-11-12):
+                                    // a plain confirmation needs no tap and
+                                    // no layout space, and firing it HERE —
+                                    // after the auto-match resolves — lets
+                                    // ONE combined message name the gyro
+                                    // data when it attached. The attach
+                                    // state is known at toast time in this
+                                    // flow; it is threaded out of
+                                    // autoMatchGyro's return.
+                                    scope.launch {
+                                        val withGyro = autoMatchGyro(imported)
+                                        Toast.makeText(
+                                            context,
+                                            if (withGyro) gyroImportedWithText else importDoneText,
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
                                     Result.success(imported)
                                 } catch (e: Exception) {
                                     Result.failure(e)
@@ -1268,12 +1291,17 @@ fun AppNav() {
                                         gyroAmbiguous = null
                                         if (autoAttachGyro(source, doc.uri, doc.displayName)) {
                                             sources = stores.sources.all()
-                                            scope.launch {
-                                                exportSnackbar.showSnackbar(
-                                                    gyroAttachedText,
-                                                    duration = SnackbarDuration.Short,
-                                                )
-                                            }
+                                            // A plain confirmation toast, not a
+                                            // snackbar (owner request 2026-11-12):
+                                            // the dialog already carried the
+                                            // decision; this only announces the
+                                            // outcome — no tap needed, no layout
+                                            // space taken.
+                                            Toast.makeText(
+                                                context,
+                                                gyroAttachedText,
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
                                         }
                                     },
                                 )

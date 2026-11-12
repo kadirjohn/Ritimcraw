@@ -151,4 +151,99 @@ class SliderTiersTest {
             (ended.decision as SliderTiers.Decision.RenderAtSettleTier).maxDim,
         )
     }
+
+    // ---- zoomed preview: settle tier for everything this prices ----
+    // (owner request 2026-11-12 section 3: the magnified bitmap would
+    // read soft at the drag tier, so while zoomed every SliderTiers
+    // render stays at the full settle tier)
+
+    @Test
+    fun tier_for_zoomed_stays_at_settle_even_mid_drag() {
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            SliderTiers.tierFor(dragActive = true, zoomed = true),
+        )
+        // The user's scrub dim does NOT buy the drag tier back while
+        // zoomed — the zoom rule dominates the drag branch.
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            SliderTiers.tierFor(dragActive = true, scrubMaxDim = 720, zoomed = true),
+        )
+        // Settled renders were already settle-tier; zoom changes nothing.
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            SliderTiers.tierFor(dragActive = false, zoomed = true),
+        )
+    }
+
+    @Test
+    fun tier_for_zoomed_false_keeps_the_existing_policy() {
+        // Default false: bit-identical to the pre-zoom behavior, scrub
+        // dim and all.
+        assertEquals(
+            SliderTiers.DRAG_MAX_DIM,
+            SliderTiers.tierFor(dragActive = true, zoomed = false),
+        )
+        assertEquals(
+            720,
+            SliderTiers.tierFor(dragActive = true, scrubMaxDim = 720, zoomed = false),
+        )
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            SliderTiers.tierFor(dragActive = false, zoomed = false),
+        )
+    }
+
+    @Test
+    fun on_event_zoomed_marks_drag_decisions_with_the_settle_cap() {
+        // A seek-grab WHILE zoomed: the decision type is still the
+        // drag-tier path (the cached immediate render) but the cap is
+        // the settle tier.
+        val started = SliderTiers.onEvent(
+            SliderTiers.Event.DragStarted, dragActive = false, zoomed = true,
+        )
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            (started.decision as SliderTiers.Decision.RenderAtDragTier).maxDim,
+        )
+        // A grade edit mid-drag while zoomed: same substitution.
+        val edited = SliderTiers.onEvent(
+            SliderTiers.Event.GradeEdited, dragActive = true, zoomed = true,
+        )
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            (edited.decision as SliderTiers.Decision.RenderAtDragTier).maxDim,
+        )
+        // The drag-end settle decision is unchanged by zoom (it was
+        // already the settle tier).
+        val ended = SliderTiers.onEvent(
+            SliderTiers.Event.DragEnded, dragActive = true, zoomed = true,
+        )
+        assertEquals(
+            SliderTiers.SETTLE_MAX_DIM,
+            (ended.decision as SliderTiers.Decision.RenderAtSettleTier).maxDim,
+        )
+        // Playback still stands the machine down; zoom never revives it.
+        val played = SliderTiers.onEvent(
+            SliderTiers.Event.PlaybackStarted, dragActive = true, zoomed = true,
+        )
+        assertTrue(played.decision is SliderTiers.Decision.NoRender)
+    }
+
+    // ---- the zoom settle: which gestures owe the full-quality render ----
+
+    @Test
+    fun zoom_settle_owed_only_by_a_zooming_gesture_that_ends_zoomed() {
+        // A real pinch (zoom crossed the slop gate) that settles zoomed:
+        // owes the pause-exact settle render.
+        assertTrue(SliderTiers.owesZoomSettle(pinchZooming = true, zoomed = true))
+        // A pinch that ends back at 1x: normal tier policy returns, no
+        // re-render owed (the on-screen frame is already settle-tier —
+        // every render during zoom was).
+        assertFalse(SliderTiers.owesZoomSettle(pinchZooming = true, zoomed = false))
+        // A pan-only gesture while zoomed never re-renders.
+        assertFalse(SliderTiers.owesZoomSettle(pinchZooming = false, zoomed = true))
+        // A two-finger tap under slop: neither zoomed nor zooming.
+        assertFalse(SliderTiers.owesZoomSettle(pinchZooming = false, zoomed = false))
+    }
 }

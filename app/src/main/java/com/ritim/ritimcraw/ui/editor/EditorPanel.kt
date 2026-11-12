@@ -15,22 +15,27 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.contentColorFor
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -38,14 +43,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
-
-/**
- * The handle strip's height — also the panel's COLLAPSED anchor height
- * (owner request 2026-11-11d section 11.3 state A: collapsed leaves only
- * the affordance strip). dp so the screen converts it with density for
- * [PanelSheet.anchorHeights]; the visible bar inside is much smaller.
- */
-val PanelHandleHeight = 48.dp
 
 /**
  * The drag state for the adjustment panel, wired to the pure constants
@@ -135,14 +132,28 @@ fun EditorBottomNav(
 }
 
 /**
- * The panel's drag handle (owner request 2026-11-11d section 11.2): a
- * visible 36x4dp rounded bar, muted gray, centered inside a
+ * The panel's drag handle (owner request 2026-11-11d section 11.2, trim
+ * 2026-11-12): a visible 36x4dp rounded bar, muted gray, inside a
  * [PanelHandleHeight]-tall full-width touch target — "significantly
  * larger" than the visible bar. This is the ONLY node in the editor
  * that carries the panel drag modifier: sliders, the scrollable list,
  * the timeline and the navigation sit on other nodes, so none of them
  * can ever resize the panel (the gesture arbitration contract of
  * section 11.5, recorded in [PanelSheet]).
+ *
+ * TRIM (owner add-on 2026-11-12): the target measures itself with
+ * requiredHeight — it IGNORES the incoming max-height constraint and
+ * stays 48dp even when the collapsed sheet is [PanelCollapsedHeight]
+ * (36dp) tall, overhanging the 12dp difference DOWNWARD into the
+ * navigation bar's empty top chrome (the M3 bar is 80dp with its items'
+ * content centered; a drag there is a natural panel-open, a tap still
+ * reaches the item below — both open the panel). The overhang is
+ * hit-testable because [EditorPanelSheet] draws its shape with
+ * Modifier.background instead of a clipping Surface. The VISIBLE bar
+ * is biased TopCenter with 16dp top padding so it sits centered in the
+ * 36dp visible strip (16..20dp from the sheet top) instead of following
+ * the enlarged target's center; open states place it 6dp higher than
+ * before the trim, which reads as the same affordance.
  */
 @Composable
 fun EditorPanelHandle(
@@ -153,7 +164,7 @@ fun EditorPanelHandle(
     Box(
         modifier
             .fillMaxWidth()
-            .height(PanelHandleHeight)
+            .requiredHeight(PanelHandleHeight)
             .anchoredDraggable(
                 state = dragState,
                 orientation = Orientation.Vertical,
@@ -164,10 +175,11 @@ fun EditorPanelHandle(
                 reverseDirection = true,
             )
             .semantics { contentDescription = handleDescription },
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.TopCenter,
     ) {
         Box(
             Modifier
+                .padding(top = 16.dp)
                 .width(36.dp)
                 .height(4.dp)
                 .clip(RoundedCornerShape(2.dp))
@@ -222,40 +234,70 @@ fun EditorPanelSheet(
     header: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = modifier.fillMaxWidth(),
+    // SQUIRCLE SHEET EDGES (owner add-on 2026-11-12): the portrait sheet
+    // gets 28dp top corners — the DESIGN.md M3 shape scale ("bottom
+    // sheets 28dp top corners"); the radius equals the stock M3
+    // shapes.extraLarge (28dp), built top-only because the sheet's
+    // bottom sits flush against the navigation bar, and applied ONLY in
+    // portrait (the landscape sheet is a full-height pane, not a bottom
+    // sheet). ContinuousCornerRoundedShape is not in this Compose
+    // version, so the token is a plain RoundedCornerShape at the same
+    // radius the shape scale names.
+    val sheetColor = MaterialTheme.colorScheme.surfaceContainer
+    val sheetShape = if (landscape) RectangleShape else {
+        RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    }
+    // The shape is DRAWN with Modifier.background, NOT applied through a
+    // Surface shape param: Surface(shape) clips its content AND bounds
+    // its children's pointer hit-testing to the shape, which would kill
+    // the handle's collapsed-state overhang (the 12dp of the 48dp touch
+    // target that extends below the 36dp collapsed sheet — see
+    // [EditorPanelHandle]). background paints the same shape without
+    // clipping; content never paints outside the rounded top corners
+    // anyway (the transparent handle band covers them, the sheet's
+    // bottom is flush against the navigation bar). The Box + explicit
+    // LocalContentColor provider replicates Surface's contentColor
+    // contract (contentColorFor) so text and icons keep their default
+    // on-surface colors exactly as before.
+    Box(
+        modifier
+            .fillMaxWidth()
+            .background(sheetColor, sheetShape),
     ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                // Landscape: the sheet IS the full-height right column
-                // (the Row child's fillMaxHeight constraint).
-                .then(if (landscape) Modifier.fillMaxHeight() else Modifier),
+        CompositionLocalProvider(
+            LocalContentColor provides contentColorFor(sheetColor),
         ) {
-            if (!landscape) {
-                EditorPanelHandle(dragState)
-            }
-            // Landscape header (owner request 2026-11-11d section 17.3): the
-            // full-height column has no drag handle, so the hide affordance
-            // lives in this header row instead — the screen supplies it
-            // (the state is the screen's, not the sheet's).
-            if (landscape && header != null) {
-                header()
-            }
-            // weight(1f): the scroll region takes whatever the sheet's
-            // height constraint leaves below the handle, so the content
-            // SCROLLS INSIDE the panel instead of expanding it (section
-            // 11.3 states B/C are scrollable; the screen fixes the height
-            // via the drag offset — or the full column height, in
-            // landscape).
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .verticalScroll(scrollStates[category] ?: rememberScrollState()),
+                    // Landscape: the sheet IS the full-height right column
+                    // (the Row child's fillMaxHeight constraint).
+                    .then(if (landscape) Modifier.fillMaxHeight() else Modifier),
             ) {
-                content()
+                if (!landscape) {
+                    EditorPanelHandle(dragState)
+                }
+                // Landscape header (owner request 2026-11-11d section 17.3):
+                // the full-height column has no drag handle, so the hide
+                // affordance lives in this header row instead — the screen
+                // supplies it (the state is the screen's, not the sheet's).
+                if (landscape && header != null) {
+                    header()
+                }
+                // weight(1f): the scroll region takes whatever the sheet's
+                // height constraint leaves below the handle, so the content
+                // SCROLLS INSIDE the panel instead of expanding it (section
+                // 11.3 states B/C are scrollable; the screen fixes the height
+                // via the drag offset — or the full column height, in
+                // landscape).
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .verticalScroll(scrollStates[category] ?: rememberScrollState()),
+                ) {
+                    content()
+                }
             }
         }
     }

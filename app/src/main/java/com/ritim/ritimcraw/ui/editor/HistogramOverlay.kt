@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -27,6 +28,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
@@ -128,6 +130,12 @@ fun HistogramScopeView(
     modeOrdinal: Int,
     onModeChange: (Int) -> Unit,
     raw: RawHistogram?,
+    // Tapping the graph itself shrinks the strip to the mini overlay
+    // (owner request 2026-11-12 §2): only the GRAPH area answers — the
+    // mode row above stays mode-switching, the label band stays
+    // informational. Default {} keeps the view compiling unchanged for
+    // any caller that does not opt into the shrink gesture.
+    onGraphTap: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // The mode now arrives from the screen (see the KDoc): the RAW
@@ -135,51 +143,6 @@ fun HistogramScopeView(
     // crosses process-death save/restore; a stale value must select
     // the nearest real mode.
     val mode = HistogramMode.entries[modeOrdinal.coerceIn(0, HistogramMode.entries.lastIndex)]
-
-    // Resolved OUTSIDE the Canvas draw lambda (draw lambdas are not
-    // composables). Roles for everything except the channel identity
-    // colors (see the KDoc: the documented domain exception).
-    val lumaColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)
-    val dotBackingColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f)
-    val channelColors = mapOf(
-        FrameHistogram.Channel.RED to RedChannelColor,
-        FrameHistogram.Channel.GREEN to GreenChannelColor,
-        FrameHistogram.Channel.BLUE to BlueChannelColor,
-        FrameHistogram.Channel.LUMA to lumaColor,
-    )
-    // The RAW channel colors: the same three site colors (a CFA site's
-    // color IS its meaning, the same documented exception), keyed by
-    // the RAW domain's own Channel type — the two enums never share a
-    // map, so a processed-slot lookup can never answer a RAW question.
-    val rawChannelColors = mapOf(
-        RawHistogram.Channel.RED to RedChannelColor,
-        RawHistogram.Channel.GREEN to GreenChannelColor,
-        RawHistogram.Channel.BLUE to BlueChannelColor,
-    )
-
-    // Display-only smoothing + normalization, remembered per result so
-    // it recomputes once per published frame, not per draw. The raw
-    // counts are never touched. RAW has its own pipeline (computeRaw)
-    // over the sensor-domain bins — the two domains never share a
-    // compute path.
-    val display = remember(result, mode) {
-        HistogramDisplay.compute(result, mode)
-    }
-    val rawDisplay = remember(raw, mode) {
-        if (mode == HistogramMode.RAW) HistogramDisplay.computeRaw(raw) else null
-    }
-    // Clip indicators read the RAW counts (not the smoothed display).
-    val shadowClipSlots = FrameHistogram.Channel.entries.filter { result.isBlackClipped(it) }
-    val highlightClipSlots = FrameHistogram.Channel.entries.filter { result.isWhiteClipped(it) }
-    // The RAW indicators read the SENSOR-domain counts — never the
-    // processed result's (see the KDoc: the domains never mix).
-    val rawShadowClipSlots = raw?.let { r ->
-        RawHistogram.Channel.entries.filter { r.isBlackClipped(it) }
-    } ?: emptyList()
-    val rawHighlightClipSlots = raw?.let { r ->
-        RawHistogram.Channel.entries.filter { r.isWhiteClipped(it) }
-    } ?: emptyList()
 
     Column(modifier) {
         // Mode switch: RGB / Luma / Parade / RAW. The labels are
@@ -200,51 +163,17 @@ fun HistogramScopeView(
             }
         }
         Spacer(Modifier.height(6.dp))
-        Canvas(Modifier.fillMaxWidth().height(ScopeGraphHeight)) {
-            if (mode == HistogramMode.RAW) {
-                // PRE-DEVELOP sensor domain: the RAW curves over the
-                // develop-normalized CFA bins, with the RAW domain's
-                // OWN clip dots. No processed indicator is drawn here,
-                // ever (the owner's mandate).
-                drawGrid(gridColor)
-                if (rawDisplay != null) {
-                    // Same draw order as the processed RGB mode: blue
-                    // -> green -> red, SrcOver fills mix, red reads on
-                    // top.
-                    drawRawCurve(rawDisplay, RawHistogram.Channel.BLUE, BlueChannelColor)
-                    drawRawCurve(rawDisplay, RawHistogram.Channel.GREEN, GreenChannelColor)
-                    drawRawCurve(rawDisplay, RawHistogram.Channel.RED, RedChannelColor)
-                }
-                drawRawClipDots(rawShadowClipSlots, rawChannelColors, dotBackingColor,
-                    anchorStart = true, boundsWidth = size.width)
-                drawRawClipDots(rawHighlightClipSlots, rawChannelColors, dotBackingColor,
-                    anchorStart = false, boundsWidth = size.width)
-            } else if (mode == HistogramMode.PARADE) {
-                drawParade(display, channelColors, gridColor, dotBackingColor,
-                    shadowClipSlots, highlightClipSlots)
-            } else {
-                drawGrid(gridColor)
-                // Draw order blue -> green -> red: with SrcOver fills
-                // the overlap mixes like Lightroom's, and the red
-                // channel reads on top.
-                if (mode == HistogramMode.RGB) {
-                    drawCurve(display, FrameHistogram.Channel.BLUE, BlueChannelColor)
-                    drawCurve(display, FrameHistogram.Channel.GREEN, GreenChannelColor)
-                    drawCurve(display, FrameHistogram.Channel.RED, RedChannelColor)
-                    // The subtle grey luma outline ON TOP of the RGB
-                    // fills (owner's improvement over the RapidRAW
-                    // reference): outline only, no fill, so it never
-                    // obscures the channels.
-                    drawOutline(display, FrameHistogram.Channel.LUMA, lumaColor)
-                } else {
-                    drawCurve(display, FrameHistogram.Channel.LUMA, lumaColor)
-                }
-                drawClipDots(shadowClipSlots, channelColors, dotBackingColor,
-                    anchorStart = true, boundsWidth = size.width)
-                drawClipDots(highlightClipSlots, channelColors, dotBackingColor,
-                    anchorStart = false, boundsWidth = size.width)
-            }
-        }
+        // The graph itself is [HistogramGraph] — the ONE draw path,
+        // shared with the mini overlay (see its KDoc).
+        HistogramGraph(
+            result = result,
+            raw = raw,
+            mode = mode,
+            onGraphTap = onGraphTap,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(ScopeGraphHeight),
+        )
         // The fixed label band (HEIGHT STABILITY): the clipped badge —
         // the existing string, reused — at the Start side, where the
         // waveform's signal label also sits. The band is reserved even
@@ -298,6 +227,136 @@ fun HistogramScopeView(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * THE HISTOGRAM GRAPH ITSELF — the one draw path, extracted (owner
+ * request 2026-11-12 §2) so the strip's view and the strip's MINI
+ * overlay draw the exact same picture from the exact same inputs:
+ * same display pipeline ([HistogramDisplay] — smoothed, normalized),
+ * same channel colors, same clip indicators. The mini is display-only
+ * BY CONSTRUCTION: it composes this, it does not re-derive anything.
+ *
+ * [onGraphTap]: the strip's graph-tap shrink gesture — when non-null
+ * the graph carries tap detection (tap the graph itself -> the strip
+ * collapses to the mini). The mini passes NULL: the mini's whole
+ * container is the tap target (tap anywhere -> the strip expands
+ * again), and a second tap node inside it would compete with the
+ * container's own clickable.
+ *
+ * The graph fills the width and height its modifier gives it — the
+ * strip gives it [ScopeGraphHeight] at full width; the mini gives it a
+ * smaller box. All drawing is resolution-relative (paths built from
+ * size.*), so the same code draws both sizes.
+ */
+@Composable
+internal fun HistogramGraph(
+    result: FrameHistogram.Result,
+    raw: RawHistogram?,
+    mode: HistogramMode,
+    onGraphTap: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    // Resolved OUTSIDE the Canvas draw lambda (draw lambdas are not
+    // composables). Roles for everything except the channel identity
+    // colors (see the file KDoc: the documented domain exception).
+    val lumaColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)
+    val dotBackingColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f)
+    val channelColors = mapOf(
+        FrameHistogram.Channel.RED to RedChannelColor,
+        FrameHistogram.Channel.GREEN to GreenChannelColor,
+        FrameHistogram.Channel.BLUE to BlueChannelColor,
+        FrameHistogram.Channel.LUMA to lumaColor,
+    )
+    // The RAW channel colors: the same three site colors (a CFA site's
+    // color IS its meaning, the same documented exception), keyed by
+    // the RAW domain's own Channel type — the two enums never share a
+    // map, so a processed-slot lookup can never answer a RAW question.
+    val rawChannelColors = mapOf(
+        RawHistogram.Channel.RED to RedChannelColor,
+        RawHistogram.Channel.GREEN to GreenChannelColor,
+        RawHistogram.Channel.BLUE to BlueChannelColor,
+    )
+
+    // Display-only smoothing + normalization, remembered per result so
+    // it recomputes once per published frame, not per draw. The raw
+    // counts are never touched. RAW has its own pipeline (computeRaw)
+    // over the sensor-domain bins — the two domains never share a
+    // compute path.
+    val display = remember(result, mode) {
+        HistogramDisplay.compute(result, mode)
+    }
+    val rawDisplay = remember(raw, mode) {
+        if (mode == HistogramMode.RAW) HistogramDisplay.computeRaw(raw) else null
+    }
+    // Clip indicators read the RAW counts (not the smoothed display).
+    val shadowClipSlots = FrameHistogram.Channel.entries.filter { result.isBlackClipped(it) }
+    val highlightClipSlots = FrameHistogram.Channel.entries.filter { result.isWhiteClipped(it) }
+    // The RAW indicators read the SENSOR-domain counts — never the
+    // processed result's (see the KDoc: the domains never mix).
+    val rawShadowClipSlots = raw?.let { r ->
+        RawHistogram.Channel.entries.filter { r.isBlackClipped(it) }
+    } ?: emptyList()
+    val rawHighlightClipSlots = raw?.let { r ->
+        RawHistogram.Channel.entries.filter { r.isWhiteClipped(it) }
+    } ?: emptyList()
+
+    val tapModifier = if (onGraphTap != null) {
+        // The graph-tap shrink (owner request 2026-11-12 §2): tap
+        // detection rides the graph's own node — the mode row and the
+        // label band never fire it.
+        Modifier.pointerInput(Unit) {
+            detectTapGestures { onGraphTap() }
+        }
+    } else {
+        Modifier
+    }
+    Canvas(modifier.then(tapModifier)) {
+        if (mode == HistogramMode.RAW) {
+            // PRE-DEVELOP sensor domain: the RAW curves over the
+            // develop-normalized CFA bins, with the RAW domain's
+            // OWN clip dots. No processed indicator is drawn here,
+            // ever (the owner's mandate).
+            drawGrid(gridColor)
+            if (rawDisplay != null) {
+                // Same draw order as the processed RGB mode: blue
+                // -> green -> red, SrcOver fills mix, red reads on
+                // top.
+                drawRawCurve(rawDisplay, RawHistogram.Channel.BLUE, BlueChannelColor)
+                drawRawCurve(rawDisplay, RawHistogram.Channel.GREEN, GreenChannelColor)
+                drawRawCurve(rawDisplay, RawHistogram.Channel.RED, RedChannelColor)
+            }
+            drawRawClipDots(rawShadowClipSlots, rawChannelColors, dotBackingColor,
+                anchorStart = true, boundsWidth = size.width)
+            drawRawClipDots(rawHighlightClipSlots, rawChannelColors, dotBackingColor,
+                anchorStart = false, boundsWidth = size.width)
+        } else if (mode == HistogramMode.PARADE) {
+            drawParade(display, channelColors, gridColor, dotBackingColor,
+                shadowClipSlots, highlightClipSlots)
+        } else {
+            drawGrid(gridColor)
+            // Draw order blue -> green -> red: with SrcOver fills
+            // the overlap mixes like Lightroom's, and the red
+            // channel reads on top.
+            if (mode == HistogramMode.RGB) {
+                drawCurve(display, FrameHistogram.Channel.BLUE, BlueChannelColor)
+                drawCurve(display, FrameHistogram.Channel.GREEN, GreenChannelColor)
+                drawCurve(display, FrameHistogram.Channel.RED, RedChannelColor)
+                // The subtle grey luma outline ON TOP of the RGB
+                // fills (owner's improvement over the RapidRAW
+                // reference): outline only, no fill, so it never
+                // obscures the channels.
+                drawOutline(display, FrameHistogram.Channel.LUMA, lumaColor)
+            } else {
+                drawCurve(display, FrameHistogram.Channel.LUMA, lumaColor)
+            }
+            drawClipDots(shadowClipSlots, channelColors, dotBackingColor,
+                anchorStart = true, boundsWidth = size.width)
+            drawClipDots(highlightClipSlots, channelColors, dotBackingColor,
+                anchorStart = false, boundsWidth = size.width)
         }
     }
 }

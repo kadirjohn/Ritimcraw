@@ -17,6 +17,33 @@ import kotlin.math.roundToInt
 enum class PanelState { COLLAPSED, NORMAL, EXPANDED }
 
 /**
+ * The panel's COLLAPSED anchor height (owner add-on 2026-11-12: trim the
+ * collapsed strip). Before the trim this was [PanelHandleHeight] (48dp —
+ * the strip was exactly the touch target); after it the visible collapsed
+ * strip is 36dp, a 25% reduction. dp so the screen converts it with
+ * density for [PanelSheet.anchorHeights]; the handle's touch target is
+ * NOT shrunk — see [PanelHandleHeight].
+ */
+val PanelCollapsedHeight = 36.dp
+
+/**
+ * The handle strip's TOUCH TARGET height (owner request 2026-11-11d
+ * section 11.3 state A + the 2026-11-12 trim): the 48dp minimum touch
+ * target is preserved while the collapsed ANCHOR shrank to
+ * [PanelCollapsedHeight] — the handle measures itself with
+ * requiredHeight, so in the collapsed strip it overhangs
+ * (PanelHandleHeight - PanelCollapsedHeight) = 12dp DOWNWARD into the
+ * navigation bar's top chrome. That band is empty space (the M3
+ * NavigationBar is 80dp tall with its items' content centered), and a
+ * drag starting there is a natural panel-open; a TAP there still reaches
+ * the navigation item below (both open the panel —
+ * [PanelSheet.panelAfterCategoryTap] — so nothing is stolen). The
+ * overhang is hit-testable because the sheet draws its shape with
+ * Modifier.background instead of a clipping Surface.
+ */
+val PanelHandleHeight = 48.dp
+
+/**
  * Pure decisions for the draggable, collapsible adjustment panel and the
  * fixed Light/Color/Detail bottom navigation (owner request 2026-11-11d
  * sections 10-11). Every rule here is JVM-testable without Compose; the
