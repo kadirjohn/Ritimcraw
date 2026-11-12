@@ -275,7 +275,7 @@ class ExportStore(private val file: File) {
                 detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
                 tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
                 // LUT fields (COL-07) postdate older snapshots: absent or
-                // JSON-null lutId parses as null (no LUT = stage 22
+                // JSON-null lutId parses as null (no LUT = stage 24
                 // bypassed), absent lutStrength as 100 — the old look is
                 // preserved exactly.
                 lutId = m["lutId"] as? String,

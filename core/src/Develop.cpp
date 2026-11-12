@@ -1,6 +1,7 @@
 #include <rawedit/Develop.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <rawedit/Lut.h>
 
@@ -117,7 +118,7 @@ inline float smoothstepf(float e0, float e1, float x) {
 }
 
 // ---- Detail controls (COL-15): luminance-only unsharp mask. ----
-// Both Sharpness (stage 19) and Detail (stage 20) run the same operator at
+// Both Sharpness (stage 21) and Detail (stage 22) run the same operator at
 // different scales: compute the Rec.709 luma plane, blur it with a separable
 // Gaussian of the given radius (px), then add `amount * (luma - blur)` to
 // EVERY channel equally — chroma and hue are preserved (no chroma halos).
@@ -1037,9 +1038,104 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
             img.rgb[i + 1] *= greenGain;
     }
 
-    // ---- Stage 18: saturation (grade.saturation in [-100, 100], 0 = neutral). ----
-    // Chroma scaling around luma, LAST so it scales the final chroma after
-    // every per-channel gain: r' = luma + (r - luma) * f, same for g/b, with
+    // ---- Stage 18: color wheel (COL-13). ----
+    // Three tonal-band color offsets, one (x, y) unit-disc pair per band,
+    // (0, 0) = neutral. The band weights REUSE the tone-slider bands —
+    // shadows smoothstepf(0.18, 0, mx), midtones the 0.18-peaked tent,
+    // highlights smoothstepf(0.18, 0.72, mx) — which form an exact partition
+    // of unity, so the three wheels tile the tonal range with no
+    // double-counting and their anchors match the sliders. Because the
+    // weights sum to 1, the per-pixel offset is the WEIGHTED AVERAGE of the
+    // three band offsets; each axis then becomes one exponent, i.e. one
+    // diagonal gain per channel — the temp idiom for x (red up / blue down,
+    // green untouched, riding the geometric mean) and the tint idiom for y
+    // (green up/down, red/blue untouched). Full deflection (|x| or |y| = 1
+    // in the dominant band) is half a stop on its axis: smooth, bounded,
+    // never a cross-channel mix, so hue never twists; saturation (20) still
+    // runs after to scale the final chroma. The wheel center being the only
+    // neutral point is the spec contract ("merkez nötrdür"): an offset from
+    // center is a color cast by design, on grays too.
+    const bool wheelActive = grade.wheelShadowX != 0.0f || grade.wheelShadowY != 0.0f
+                          || grade.wheelMidX != 0.0f    || grade.wheelMidY != 0.0f
+                          || grade.wheelHighX != 0.0f   || grade.wheelHighY != 0.0f;
+    if (wheelActive) {
+        for (size_t i = 0; i < img.rgb.size(); i += 3) {
+            const float mx = std::max(img.rgb[i + 0],
+                          std::max(img.rgb[i + 1], img.rgb[i + 2]));
+            const float wDark = smoothstepf(0.18f, 0.0f, mx);
+            const float wMid = smoothstepf(0.0f, 0.18f, mx)
+                             * (1.0f - smoothstepf(0.18f, 0.72f, mx));
+            const float wHigh = smoothstepf(0.18f, 0.72f, mx);
+            const float xBlend = wDark * grade.wheelShadowX
+                              + wMid  * grade.wheelMidX
+                              + wHigh * grade.wheelHighX;
+            const float yBlend = wDark * grade.wheelShadowY
+                              + wMid  * grade.wheelMidY
+                              + wHigh * grade.wheelHighY;
+            img.rgb[i + 0] *= std::pow(2.0f,  0.5f * xBlend); // red: warm axis
+            img.rgb[i + 1] *= std::pow(2.0f,  0.5f * yBlend); // green: tint axis
+            img.rgb[i + 2] *= std::pow(2.0f, -0.5f * xBlend); // blue: cool axis
+        }
+    }
+
+    // ---- Stage 19: split tone (COL-13). ----
+    // Independent hue tints for the shadow and highlight bands with a
+    // balance-controlled crossover: the midpoint m = 0.18 * 2^(balance/100)
+    // is midgray at balance 0 (the wheel-band anchor); the shadow tint
+    // ramps in over [0, m] (smoothstepf(m, 0, mx): 1 at black, 0 at m), the
+    // highlight tint over [m, 1] (smoothstepf(m, 1, mx)). Hue angle ->
+    // per-channel gains via raised-cosine windows 120 degrees apart (red
+    // peaks at 0, green 120, blue 240, half-width 120), normalized so the
+    // window average is 1: the tint is then a bounded push around unity
+    // scaled by tintAmount stops at full weight — a tint, not a recolor.
+    // The gain is DIAGONAL per channel (weight-scaled), so the stage never
+    // mixes channels; saturation (20) still runs after. -1 = off is the
+    // neutral default for each hue.
+    const bool splitActive = grade.splitShadowHue >= 0.0f
+                          || grade.splitHighlightHue >= 0.0f;
+    if (splitActive) {
+        const float m = 0.18f * std::pow(2.0f, grade.splitBalance / 100.0f);
+        // Hue (degrees) -> per-channel unit-average raised-cosine windows,
+        // channels 120 degrees apart: red peaks at 0, green 120, blue 240.
+        // Each window is 0.5 + 0.5*cos(d) rescaled by 2 so its average over
+        // the circle is 1 (mean of 0.5 + 0.5cos is 0.5): the tint pushes
+        // around unity instead of lifting the whole band.
+        auto hueGains = [](float hueDeg) {
+            std::array<float, 3> gains{};
+            for (int c = 0; c < 3; ++c) {
+                const float center = 120.0f * c; // r, g, b peaks
+                float d = std::abs(hueDeg - center);
+                if (d > 180.0f)
+                    d = 360.0f - d; // circular distance
+                gains[c] = 2.0f * (0.5f + 0.5f * std::cos(d * 3.14159265f / 180.0f));
+            }
+            return gains;
+        };
+        const std::array<float, 3> sh =
+            grade.splitShadowHue >= 0.0f ? hueGains(grade.splitShadowHue)
+                                         : std::array<float, 3>{1.0f, 1.0f, 1.0f};
+        const std::array<float, 3> hl =
+            grade.splitHighlightHue >= 0.0f ? hueGains(grade.splitHighlightHue)
+                                            : std::array<float, 3>{1.0f, 1.0f, 1.0f};
+        const float tintAmount = 0.35f; // stops at full weight
+        for (size_t i = 0; i < img.rgb.size(); i += 3) {
+            const float r = img.rgb[i + 0], g = img.rgb[i + 1], b = img.rgb[i + 2];
+            const float mx = std::max(r, std::max(g, b));
+            const float wShadow = smoothstepf(m, 0.0f, mx); // 1 at black, 0 at m
+            const float wHighlight = smoothstepf(m, 1.0f, mx); // 0 at m, 1 at white
+            for (int c = 0; c < 3; ++c) {
+                const float gain = std::pow(
+                    2.0f, tintAmount * (wShadow * (sh[c] - 1.0f)
+                                      + wHighlight * (hl[c] - 1.0f)));
+                img.rgb[i + c] *= gain;
+            }
+        }
+    }
+
+    // ---- Stage 20: saturation (grade.saturation in [-100, 100], 0 = neutral). ----
+    // Chroma scaling around luma, LAST of the color stages so it scales the
+    // final chroma after every per-channel gain (wheel 18, split tone 19
+    // included): r' = luma + (r - luma) * f, same for g/b, with
     // luma = 0.2126r + 0.7152g + 0.0722b (Rec.709). f = 2^(0.75 * sat/100):
     // +100 scales chroma by 2^0.75 ~= 1.68, -100 by 2^-0.75 ~= 0.59 —
     // symmetric in stops, never clamped to 0 chroma, so hue is preserved
@@ -1057,8 +1153,8 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // ---- Stage 19: sharpness (grade.sharpness in [-100, 100], 0 = neutral). ----
-    // ---- Stage 20: detail    (grade.detail    in [-100, 100], 0 = neutral). ----
+    // ---- Stage 21: sharpness (grade.sharpness in [-100, 100], 0 = neutral). ----
+    // ---- Stage 22: detail    (grade.detail    in [-100, 100], 0 = neutral). ----
     // COL-15: edge sharpness and fine-texture contrast on separate scales.
     // Both are luminance-only unsharp masks (see unsharpLuma): Sharpness at
     // radius 1.5 px (edge scale), Detail at radius 0.75 px (fine texture).
@@ -1078,7 +1174,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     }
 
-    // ---- Stage 21: tonemapping (grade.tonemap, 0 = off, 1 = ACES, 2 = AgX). ----
+    // ---- Stage 23: tonemapping (grade.tonemap, 0 = off, 1 = ACES, 2 = AgX). ----
     // COL-16: optional display tone compression, LAST, after all grade
     // stages. Input/output is the linear working space (linear Rec.709
     // primaries); the Rec.709 OETF stays in the JNI bridge tail. The ACES and
@@ -1088,7 +1184,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     if (grade.tonemap != 0)
         tonemapFrame(img, grade.tonemap);
 
-    // ---- Stage 22: LUT (lut + grade.lutStrength in [0, 1], 0 = bypass). ----
+    // ---- Stage 24: LUT (lut + grade.lutStrength in [0, 1], 0 = bypass). ----
     // COL-07: optional .cube 3D LUT, LAST, after tonemapping. Input/output
     // is the linear working space (linear Rec.709 primaries); the Rec.709
     // OETF stays in the JNI bridge tail. The table is per-clip user data
@@ -1111,8 +1207,9 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
 //   stage 4  — bilinear demosaic (demosaicBilinear, the shared code)
 //   stage 5  — as-shot white balance: multiply by 1/asShotNeutral
 // Deliberately NOT run: lens shading (2), highlight reconstruction (3),
-// camera->Rec.709 (6), denoise (7-8), the tone controls (9-18), the detail
-// stages (19-20), tonemapping (21) and the LUT (22). The output stays in
+// camera->Rec.709 (6), denoise (7-8), the tone controls (9-20, color wheel
+// and split tone included), the detail stages (21-22), tonemapping (23) and
+// the LUT (24). The output stays in
 // the camera-native RGB primaries, scene-referred, linear — "Görüntüleme
 // ton eşlemesi ile lineer veri çıkışı ayrı yollar" (the display tone map
 // and the linear data output are separate paths; owner spec RAW-13). The

@@ -106,6 +106,31 @@
     <string name="editor_stabilization_focal_from_container">From container: %1$s</string>
     <string name="editor_stabilization_intrinsics_assumed">Intrinsics assumed</string>
     <string name="editor_stabilization_gyro_name">Gyro: %1$s</string>
+    <!-- COL-13: color wheel + split tone section in the Color tab. -->
+    <string name="editor_color_wheel">Color wheel</string>
+    <string name="editor_wheel_band_shadows">Shadows</string>
+    <string name="editor_wheel_band_midtones">Midtones</string>
+    <string name="editor_wheel_band_highlights">Highlights</string>
+    <string name="editor_wheel_offset_readout">%1$s / %2$s</string>
+    <string name="editor_wheel_neutral">Neutral</string>
+    <string name="editor_split_tone">Split tone</string>
+    <string name="editor_slider_split_shadow_hue">Shadow hue</string>
+    <string name="editor_slider_split_highlight_hue">Highlight hue</string>
+    <string name="editor_slider_split_balance">Balance</string>
+    <!-- RAW-09: crop + straighten group in the Detail tab. -->
+    <string name="editor_crop">Crop</string>
+    <string name="editor_crop_reset">Reset crop</string>
+    <string name="editor_crop_aspect">Aspect</string>
+    <string name="editor_crop_aspect_free">Free</string>
+    <string name="editor_crop_aspect_16_9">16:9</string>
+    <string name="editor_crop_aspect_9_16">9:16</string>
+    <string name="editor_crop_aspect_4_3">4:3</string>
+    <string name="editor_crop_aspect_1_1">1:1</string>
+    <string name="editor_slider_straighten">Straighten</string>
+    <string name="editor_slider_crop_left">Left</string>
+    <string name="editor_slider_crop_top">Top</string>
+    <string name="editor_slider_crop_width">Width</string>
+    <string name="editor_slider_crop_height">Height</string>
     <string name="editor_render_preview">Render preview</string>
     <string name="editor_refresh_preview">Refresh preview</string>
     <string name="editor_refresh_preview_state">Preview: %1$s</string>

@@ -27,15 +27,16 @@ import java.nio.charset.StandardCharsets
  * The detail/tonemap fields (owner request 2026-11-10 section 3, COL-15/
  * COL-16) also default to neutral (sharpness 0, detail 0, tonemap 0 = off),
  * so old schema-1 files that predate them load with the new fields neutral
- * and keep their exact old look. tonemap: 0 = off, 1 = ACES, 2 = AgX (the
- * native stage records the selected transform's version, working space and
- * target display; see Grade in core/include/rawedit/Develop.h).
+ * and keep their exact old look. tonemap: 0 = off, 1 = ACES, 2 = AgX Punchy,
+ * 3 = AgX Golden, 4 = AgX Greyscale, 5 = AgX Base (the native stage records
+ * the selected transform's version, working space and target display; see
+ * Grade in core/include/rawedit/Develop.h).
  *
  * The LUT fields (owner request 2026-11-10 section 3, COL-07) are saved
  * SEPARATELY, per the request: lutId is the selected .cube's id in the
  * project-wide LutStore ("luts" section of this same file, the library of
  * imported cubes), lutStrength is the per-clip Strength percent. lutId null
- * = no LUT selected = native stage 22 bypassed = bit-identical to the
+ * = no LUT selected = native stage 24 bypassed = bit-identical to the
  * pre-LUT look; old schema-1 files that predate the fields parse lutId as
  * null and lutStrength as 100, keeping their exact old look. lutStrength is
  * a UI percent 0..100 (100 = the pure table); GradeMapping.toNative maps it
@@ -76,6 +77,19 @@ import java.nio.charset.StandardCharsets
  * container carries no sensor pitch, so the pixel focal is NOT derivable —
  * the flagged width*mm/36 conversion lives in the core, Stabilization.h).
  *
+ * The color wheel + split-tone fields (COL-13) are appended LAST and
+ * rendered OMIT-WHEN-NEUTRAL: a grade whose nine fields are all neutral
+ * (wheel offsets 0, hues -1, balance 0) writes NONE of the keys, so files
+ * this build writes for an untouched clip stay byte-identical to the
+ * pre-wheel format. The six wheel offsets are unit-disc [-1,1] pairs per
+ * band (shadows/midtones/highlights; (0,0) neutral, the wheel's center).
+ * The split-tone hues are degrees 0..360 with -1 = off; balance shifts the
+ * shadow/highlight crossover -100..100 around midgray. All nine default
+ * neutral, so old schema-1 files that predate them load with the new
+ * stages (18/19) skipped — the old look is preserved exactly — and the
+ * fields are MCRAW-only: the encoded path carries them for signature
+ * parity but ignores them (see Transfer.cpp).
+ *
  * A grade set on clip A must never appear on clip B, including after closing
  * and reopening the app (QA-05) — GradeStoreTest.grades_do_not_leak_between_clips.
  */
@@ -97,7 +111,7 @@ data class GradeK(
     val sharpness: Float = 0f,
     val detail: Float = 0f,
     val tonemap: Int = 0,
-    /** Selected .cube id in the LutStore, or null = no LUT (stage 22 off). */
+    /** Selected .cube id in the LutStore, or null = no LUT (stage 24 off). */
     val lutId: String? = null,
     /** Strength percent 0..100; 100 = the pure table. Irrelevant while lutId is null. */
     val lutStrength: Float = 100f,
@@ -122,6 +136,45 @@ data class GradeK(
     val stabilizationTrimMs: Float = 0f,
     /** 35mm-equivalent focal override in mm; 0 = use the container's value. */
     val stabilizationFocalMm: Float = 0f,
+    // Crop + straighten (RAW-09) — appended LAST, rendered
+    // omit-when-neutral (see the class KDoc): a full-rect FREE crop
+    // with 0-deg straighten writes NONE of the six keys, so files this
+    // build writes for an untouched clip stay byte-identical to the
+    // pre-crop format.
+    /** Aspect preset 0..4: Free / 16:9 / 9:16 / 4:3 / 1:1 (CropState). */
+    val cropAspect: Int = 0,
+    /** Crop rect x fraction (left edge), EFFECTIVE-upright space. */
+    val cropX: Float = 0f,
+    /** Crop rect y fraction (top edge), EFFECTIVE-upright space. */
+    val cropY: Float = 0f,
+    /** Crop rect width fraction. */
+    val cropW: Float = 1f,
+    /** Crop rect height fraction. */
+    val cropH: Float = 1f,
+    /** Straighten angle in degrees, -15..+15 (positive = CW). */
+    val straightenDeg: Float = 0f,
+    // Color wheel + split tone (COL-13) — appended LAST, rendered
+    // omit-when-neutral (see the class KDoc): a grade whose nine fields
+    // are all neutral writes NONE of the keys, keeping files this build
+    // writes for an untouched clip byte-identical to the pre-wheel format.
+    /** Shadows wheel x offset, unit disc [-1,1]; (0,0) neutral. */
+    val wheelShadowX: Float = 0f,
+    /** Shadows wheel y offset, unit disc [-1,1]. */
+    val wheelShadowY: Float = 0f,
+    /** Midtones wheel x offset, unit disc [-1,1]. */
+    val wheelMidX: Float = 0f,
+    /** Midtones wheel y offset, unit disc [-1,1]. */
+    val wheelMidY: Float = 0f,
+    /** Highlights wheel x offset, unit disc [-1,1]. */
+    val wheelHighX: Float = 0f,
+    /** Highlights wheel y offset, unit disc [-1,1]. */
+    val wheelHighY: Float = 0f,
+    /** Split-tone shadow hue in degrees 0..360; -1 = off. */
+    val splitShadowHue: Float = -1f,
+    /** Split-tone highlight hue in degrees 0..360; -1 = off. */
+    val splitHighlightHue: Float = -1f,
+    /** Split-tone balance -100..100; shifts the crossover around midgray. */
+    val splitBalance: Float = 0f,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -302,6 +355,60 @@ class GradeStore(private val file: File) {
                     .append(',')
                     .append("\"stabilizationFocalMm\":").append(num(g.stabilizationFocalMm))
             }
+            // Crop + straighten (RAW-09): omit-when-neutral — a grade
+            // whose crop group is neutral (full rect, FREE, 0 straighten)
+            // writes NONE of the six keys, keeping files this build
+            // writes for an untouched clip byte-identical to the
+            // pre-crop format.
+            if (!CropState.isNeutral(
+                    CropState.RectF(g.cropX, g.cropY, g.cropW, g.cropH),
+                    g.cropAspect,
+                    g.straightenDeg,
+                )
+            ) {
+                sb.append(',')
+                    .append("\"cropAspect\":").append(g.cropAspect)
+                    .append(',')
+                    .append("\"cropX\":").append(num(g.cropX))
+                    .append(',')
+                    .append("\"cropY\":").append(num(g.cropY))
+                    .append(',')
+                    .append("\"cropW\":").append(num(g.cropW))
+                    .append(',')
+                    .append("\"cropH\":").append(num(g.cropH))
+                    .append(',')
+                    .append("\"straightenDeg\":").append(num(g.straightenDeg))
+            }
+            // Color wheel + split tone (COL-13): omit-when-neutral — a
+            // grade whose nine fields are all neutral (offsets 0, hues
+            // -1, balance 0) writes NONE of the keys, keeping files this
+            // build writes for an untouched clip byte-identical to the
+            // pre-wheel format.
+            val wheelSplitNeutral = g.wheelShadowX == 0f && g.wheelShadowY == 0f &&
+                g.wheelMidX == 0f && g.wheelMidY == 0f &&
+                g.wheelHighX == 0f && g.wheelHighY == 0f &&
+                g.splitShadowHue == -1f && g.splitHighlightHue == -1f &&
+                g.splitBalance == 0f
+            if (!wheelSplitNeutral) {
+                sb.append(',')
+                    .append("\"wheelShadowX\":").append(num(g.wheelShadowX))
+                    .append(',')
+                    .append("\"wheelShadowY\":").append(num(g.wheelShadowY))
+                    .append(',')
+                    .append("\"wheelMidX\":").append(num(g.wheelMidX))
+                    .append(',')
+                    .append("\"wheelMidY\":").append(num(g.wheelMidY))
+                    .append(',')
+                    .append("\"wheelHighX\":").append(num(g.wheelHighX))
+                    .append(',')
+                    .append("\"wheelHighY\":").append(num(g.wheelHighY))
+                    .append(',')
+                    .append("\"splitShadowHue\":").append(num(g.splitShadowHue))
+                    .append(',')
+                    .append("\"splitHighlightHue\":").append(num(g.splitHighlightHue))
+                    .append(',')
+                    .append("\"splitBalance\":").append(num(g.splitBalance))
+            }
             sb.append('}')
             return sb.toString()
         }
@@ -411,7 +518,7 @@ class GradeStore(private val file: File) {
                     tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
                     // LUT fields (COL-07) postdate older schema-1 files:
                     // absent or JSON-null lutId parses as null (no LUT =
-                    // stage 22 bypassed) and absent lutStrength as 100 —
+                    // stage 24 bypassed) and absent lutStrength as 100 —
                     // the old look is preserved exactly.
                     lutId = m["lutId"] as? String,
                     lutStrength = (m["lutStrength"] as? Double)?.toFloat() ?: 100f,
@@ -436,6 +543,29 @@ class GradeStore(private val file: File) {
                     stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
                     stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                     stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
+                    // Crop + straighten fields (RAW-09) postdate older
+                    // schema-1 files: absent parses as the neutral
+                    // defaults (full rect, FREE, 0 deg) — the old look
+                    // is preserved exactly.
+                    cropAspect = (m["cropAspect"] as? Double)?.toInt() ?: 0,
+                    cropX = (m["cropX"] as? Double)?.toFloat() ?: 0f,
+                    cropY = (m["cropY"] as? Double)?.toFloat() ?: 0f,
+                    cropW = (m["cropW"] as? Double)?.toFloat() ?: 1f,
+                    cropH = (m["cropH"] as? Double)?.toFloat() ?: 1f,
+                    straightenDeg = (m["straightenDeg"] as? Double)?.toFloat() ?: 0f,
+                    // Color wheel + split-tone fields (COL-13) postdate
+                    // older schema-1 files: absent parses as the neutral
+                    // defaults (offsets 0, hues -1, balance 0) — stages
+                    // 18/19 skip, the old look is preserved exactly.
+                    wheelShadowX = (m["wheelShadowX"] as? Double)?.toFloat() ?: 0f,
+                    wheelShadowY = (m["wheelShadowY"] as? Double)?.toFloat() ?: 0f,
+                    wheelMidX = (m["wheelMidX"] as? Double)?.toFloat() ?: 0f,
+                    wheelMidY = (m["wheelMidY"] as? Double)?.toFloat() ?: 0f,
+                    wheelHighX = (m["wheelHighX"] as? Double)?.toFloat() ?: 0f,
+                    wheelHighY = (m["wheelHighY"] as? Double)?.toFloat() ?: 0f,
+                    splitShadowHue = (m["splitShadowHue"] as? Double)?.toFloat() ?: -1f,
+                    splitHighlightHue = (m["splitHighlightHue"] as? Double)?.toFloat() ?: -1f,
+                    splitBalance = (m["splitBalance"] as? Double)?.toFloat() ?: 0f,
                 )
             }
             return out

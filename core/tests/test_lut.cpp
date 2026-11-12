@@ -484,7 +484,7 @@ TEST_CASE("developCpu_golden_hashes_unchanged_without_lut") {
 }
 
 TEST_CASE("developCpu_lut_stage_runs_after_tonemap") {
-    // The double cube doubles whatever value stage 20 receives, so the
+    // The double cube doubles whatever value stage 24 receives, so the
     // expectations are DERIVED from the actual pipeline outputs instead
     // of hardcoded constants. The flat patch is uniform after develop
     // (bilinear demosaic of a flat CFA); the center pixel avoids edge
@@ -517,8 +517,8 @@ TEST_CASE("developCpu_lut_stage_runs_after_tonemap") {
     auto tmOnly = developCpu(s.cfa.data(), s.info, s.meta, tm, nullptr);
     const float c = centerOf(tmOnly);
 
-    // Tonemap + LUT: the LUT must see the TONEMAPPED value (stage 20
-    // after 19), so the result is 2*c. Had the stage run before the
+    // Tonemap + LUT: the LUT must see the TONEMAPPED value (stage 24
+    // after 23), so the result is 2*c. Had the stage run before the
     // tonemap it would be ACES(2v), which differs from 2*ACES(v) — ACES
     // is not linear — so this check pins the order.
     Grade tmLut;

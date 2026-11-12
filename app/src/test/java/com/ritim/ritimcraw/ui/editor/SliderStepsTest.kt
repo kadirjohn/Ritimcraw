@@ -337,6 +337,296 @@ class SliderStepsTest {
         assertEquals(1f, focal.exposureEv, 0f)
     }
 
+    // ---- Crop + straighten (RAW-09) ----
+
+    @Test
+    fun crop_axes_snap_to_the_grid_in_snap() {
+        // The whole-grade snap covers the crop fields: fractions to the
+        // 1 percent grid, straighten to the half-degree grid.
+        val g = SliderSteps.snap(
+            GradeK(cropX = 0.123f, cropY = 0.456f, cropW = 0.789f, cropH = 0.654f, straightenDeg = 3.24f)
+        )
+        assertEquals(0.12f, g.cropX, 1e-4f)
+        assertEquals(0.46f, g.cropY, 1e-4f)
+        assertEquals(0.79f, g.cropW, 1e-4f)
+        assertEquals(0.65f, g.cropH, 1e-4f)
+        // 3.24 is nearer 3.0 than 3.5 on the half-degree grid.
+        assertEquals(3.0f, g.straightenDeg, 1e-4f)
+    }
+
+    @Test
+    fun double_tap_resets_each_crop_slider_only() {
+        // RAW-09: the tapped crop slider goes to its GradeK default
+        // (0/0/1/1, 0 deg), every other axis stays. The W/H resets also
+        // zero the matching origin — w = 1 with x = 0.3 would be an
+        // invalid rect (x + w = 1.3), so "full width" pins the left
+        // edge to the frame's.
+        val current = GradeK(
+            exposureEv = 1f, sharpness = 55f, tonemap = 2,
+            cropAspect = 3,
+            cropX = 0.3f, cropY = 0.2f, cropW = 0.5f, cropH = 0.6f,
+            straightenDeg = 4.5f,
+        )
+
+        val x = SliderSteps.resetToDefault(SliderSteps.Axis.CROP_X, current)
+        assertEquals(0f, x.cropX, 0f)
+        assertEquals(0.5f, x.cropW, 0f)
+        assertEquals(4.5f, x.straightenDeg, 0f)
+        assertEquals(3, x.cropAspect)
+
+        val y = SliderSteps.resetToDefault(SliderSteps.Axis.CROP_Y, current)
+        assertEquals(0f, y.cropY, 0f)
+        // cropX keeps its stored 0.3 — the Y reset touches only cropY.
+        assertEquals(0.3f, y.cropX, 0f)
+        assertEquals(0.6f, y.cropH, 0f)
+
+        val w = SliderSteps.resetToDefault(SliderSteps.Axis.CROP_W, current)
+        assertEquals(1f, w.cropW, 0f)
+        assertEquals(0f, w.cropX, 0f)
+        assertEquals(0.6f, w.cropH, 0f)
+        assertEquals(0.2f, w.cropY, 0f)
+
+        val h = SliderSteps.resetToDefault(SliderSteps.Axis.CROP_H, current)
+        assertEquals(1f, h.cropH, 0f)
+        assertEquals(0f, h.cropY, 0f)
+        assertEquals(0.5f, h.cropW, 0f)
+        assertEquals(0.3f, h.cropX, 0f)
+
+        val straighten = SliderSteps.resetToDefault(SliderSteps.Axis.STRAIGHTEN, current)
+        assertEquals(0f, straighten.straightenDeg, 0f)
+        assertEquals(0.3f, straighten.cropX, 0f)
+        assertEquals(3, straighten.cropAspect)
+    }
+
+    @Test
+    fun applyCropAxis_translates_x_without_resizing() {
+        // X is TRANSLATION: the position moves, the size never does —
+        // a plain clampRect on the moved rect would shrink W when X
+        // pushes past the right edge.
+        val grade = GradeK(cropX = 0.1f, cropY = 0.1f, cropW = 0.5f, cropH = 0.5f)
+        val moved = SliderSteps.applyCropAxis(
+            SliderSteps.Axis.CROP_X, 0.9f, grade, 1920, 1080,
+        )
+        // Snapped to 0.9, then coerced into the honest range 0..1 - w:
+        // the thumb never offers a position the policy clamps away.
+        assertEquals(0.5f, moved.cropW, 1e-6f)
+        assertEquals(0.5f, moved.cropH, 1e-6f)
+        assertEquals(0.5f, moved.cropX, 1e-6f)
+        assertEquals(0.1f, moved.cropY, 1e-6f)
+    }
+
+    @Test
+    fun applyCropAxis_locks_height_under_a_preset_when_width_moves() {
+        // 16:9 on 1920x1080: width to half the frame -> height follows
+        // through the lock chain (pixel h = 540 = half the frame).
+        val grade = GradeK(cropAspect = 1, cropX = 0.25f, cropY = 0.25f, cropW = 0.5f, cropH = 0.9f)
+        val moved = SliderSteps.applyCropAxis(
+            SliderSteps.Axis.CROP_W, 0.5f, grade, 1920, 1080,
+        )
+        assertEquals(0.5f, moved.cropW, 1e-6f)
+        assertEquals(0.5f, moved.cropH, 1e-6f)
+    }
+
+    @Test
+    fun applyCropAxis_locks_width_under_a_preset_when_height_moves() {
+        // The height-axis twin: 16:9 on 1920x1080, height to half ->
+        // width follows (pixel w = 960 = half the frame width).
+        val grade = GradeK(cropAspect = 1, cropX = 0.25f, cropY = 0.25f, cropW = 0.9f, cropH = 0.5f)
+        val moved = SliderSteps.applyCropAxis(
+            SliderSteps.Axis.CROP_H, 0.5f, grade, 1920, 1080,
+        )
+        assertEquals(0.5f, moved.cropH, 1e-6f)
+        assertEquals(0.5f, moved.cropW, 1e-6f)
+    }
+
+    @Test
+    fun applyCropAxis_clamps_width_in_free_aspect() {
+        // FREE: no lock runs; W grows only to the remaining extent at
+        // the origin (x = 0.3 -> w <= 0.7).
+        val grade = GradeK(cropX = 0.3f, cropY = 0.2f, cropW = 0.5f, cropH = 0.5f)
+        val moved = SliderSteps.applyCropAxis(
+            SliderSteps.Axis.CROP_W, 0.95f, grade, 1920, 1080,
+        )
+        assertEquals(0.7f, moved.cropW, 1e-6f)
+        assertEquals(0.3f, moved.cropX, 1e-6f)
+        assertEquals(0.5f, moved.cropH, 1e-6f)
+    }
+
+    @Test
+    fun applyCropAxis_snaps_and_clamps_straighten() {
+        // The dial snaps to half-degrees and clamps to ±15.
+        val grade = GradeK(straightenDeg = 0f)
+        val up = SliderSteps.applyCropAxis(
+            SliderSteps.Axis.STRAIGHTEN, 16.2f, grade, 1920, 1080,
+        )
+        assertEquals(15f, up.straightenDeg, 1e-6f)
+        val down = SliderSteps.applyCropAxis(
+            SliderSteps.Axis.STRAIGHTEN, -16.2f, grade, 1920, 1080,
+        )
+        assertEquals(-15f, down.straightenDeg, 1e-6f)
+        val mid = SliderSteps.applyCropAxis(
+            SliderSteps.Axis.STRAIGHTEN, 3.24f, grade, 1920, 1080,
+        )
+        // 3.24 is nearer 3.0 than 3.5 on the half-degree grid.
+        assertEquals(3.0f, mid.straightenDeg, 1e-6f)
+    }
+
+    @Test
+    fun applyCropAxis_normalizes_an_invalid_stored_rect() {
+        // A hand-edited JSON grade can hold an invalid rect; the chain
+        // normalizes it through clampRect first. clampRect is
+        // ORIGIN-PRIORITY: x keeps its clamped 0.9 and the width
+        // shrinks to the remaining extent (w = 1 - x = 0.1), the
+        // committed clampRect semantics — then the Y drag moves in
+        // the normalized rect's honest range.
+        val grade = GradeK(cropX = 0.9f, cropY = 0.1f, cropW = 0.5f, cropH = 0.5f)
+        val moved = SliderSteps.applyCropAxis(
+            SliderSteps.Axis.CROP_Y, 0.2f, grade, 1920, 1080,
+        )
+        assertEquals(0.9f, moved.cropX, 1e-6f)
+        assertEquals(0.1f, moved.cropW, 1e-6f)
+        assertEquals(0.2f, moved.cropY, 1e-6f)
+        assertEquals(0.5f, moved.cropH, 1e-6f)
+    }
+
+    @Test
+    fun cropAxisRange_spans_the_honest_translation_room() {
+        // X spans 0 .. 1 - w (the thumb never offers an off-frame
+        // position), floored at one tick for the full rect.
+        val grade = GradeK(cropX = 0.2f, cropY = 0.1f, cropW = 0.5f, cropH = 0.6f)
+        val x = SliderSteps.cropAxisRange(
+            SliderSteps.Axis.CROP_X, grade, 1920, 1080,
+        )
+        assertEquals(0f, x.start, 1e-6f)
+        assertEquals(0.5f, x.endInclusive, 1e-6f)
+    }
+
+    @Test
+    fun cropAxisRange_w_under_preset_spans_the_preset_extent() {
+        // 16:9 on 1920x1080: the widest on-ratio rect is the full width,
+        // so W spans 0.05..1 — beyond it the lock would cap anyway.
+        val grade = GradeK(cropAspect = 1, cropX = 0f, cropY = 0f, cropW = 1f, cropH = 1f)
+        val w = SliderSteps.cropAxisRange(
+            SliderSteps.Axis.CROP_W, grade, 1920, 1080,
+        )
+        assertEquals(0.05f, w.start, 1e-6f)
+        assertEquals(1f, w.endInclusive, 1e-6f)
+    }
+
+    @Test
+    fun cropAxisRange_h_under_preset_spans_the_preset_extent() {
+        // 16:9 on a SQUARE frame: the tallest on-ratio rect is
+        // h = 9/16 of the frame (aspectRect's centered full-width
+        // rect). On a 16:9 frame the preset IS the full frame — the
+        // W test above covers that case.
+        val grade = GradeK(cropAspect = 1, cropX = 0f, cropY = 0f, cropW = 1f, cropH = 1f)
+        val h = SliderSteps.cropAxisRange(
+            SliderSteps.Axis.CROP_H, grade, 1000, 1000,
+        )
+        assertEquals(0.05f, h.start, 1e-6f)
+        assertEquals(0.5625f, h.endInclusive, 1e-6f)
+    }
+
+    @Test
+    fun cropAxisRange_unknown_dims_degrade_to_free_extent() {
+        // 0x0 before the first publish: the W/H ranges degrade to the
+        // FREE extents, matching the locks' own guard.
+        val grade = GradeK(cropAspect = 1, cropX = 0.2f, cropY = 0.1f, cropW = 0.5f, cropH = 0.6f)
+        val w = SliderSteps.cropAxisRange(
+            SliderSteps.Axis.CROP_W, grade, 0, 0,
+        )
+        assertEquals(0.05f, w.start, 1e-6f)
+        assertEquals(0.8f, w.endInclusive, 1e-6f)
+    }
+
+    @Test
+    fun cropAxisRange_straighten_is_the_constant_band() {
+        val grade = GradeK()
+        val r = SliderSteps.cropAxisRange(
+            SliderSteps.Axis.STRAIGHTEN, grade, 1920, 1080,
+        )
+        assertEquals(-15f, r.start, 1e-6f)
+        assertEquals(15f, r.endInclusive, 1e-6f)
+    }
+
+    // ---- Color wheel + split tone (COL-13) ----
+
+    @Test
+    fun wheel_offsets_snap_to_the_0_05_grid() {
+        // The wheel is a pad, not sliders, but the whole-grade snap still
+        // quantizes its offsets: 20 intervals per axis, the straighten
+        // half-degree precedent.
+        val g = SliderSteps.snap(
+            GradeK(
+                wheelShadowX = 0.123f, wheelShadowY = -0.22f,
+                wheelMidX = 0.77f, wheelMidY = 0.06f,
+                wheelHighX = -0.99f, wheelHighY = 0.48f,
+            )
+        )
+        assertEquals(0.1f, g.wheelShadowX, 1e-4f)
+        assertEquals(-0.2f, g.wheelShadowY, 1e-4f)
+        assertEquals(0.75f, g.wheelMidX, 1e-4f)
+        assertEquals(0.05f, g.wheelMidY, 1e-4f)
+        assertEquals(-1.0f, g.wheelHighX, 1e-4f)
+        assertEquals(0.5f, g.wheelHighY, 1e-4f)
+    }
+
+    @Test
+    fun split_tone_axes_snap_to_their_grids() {
+        // Hues are degrees 0..360 (1-degree grid), balance is -100..100
+        // (whole numbers) — the slider-like controls of the package.
+        val g = SliderSteps.snap(
+            GradeK(splitShadowHue = 210.6f, splitHighlightHue = 45.4f, splitBalance = -29.5f)
+        )
+        assertEquals(211f, g.splitShadowHue, 1e-4f)
+        // 45.4 is nearer 45 than 46 on the whole-degree grid.
+        assertEquals(45f, g.splitHighlightHue, 1e-4f)
+        // -29.5 is EXACTLY between -29 and -30: round half up -> -29.
+        assertEquals(-29f, g.splitBalance, 1e-4f)
+    }
+
+    @Test
+    fun snap_keeps_a_neutral_color_package_neutral() {
+        // A neutral grade stays neutral under the snap (0, -1 and 0 are
+        // all grid values), so the omit-when-neutral store contract
+        // survives a snap — the binding back-compat rule.
+        val g = SliderSteps.snap(GradeK())
+        assertEquals(0f, g.wheelShadowX, 0f)
+        assertEquals(0f, g.wheelMidY, 0f)
+        assertEquals(-1f, g.splitShadowHue, 0f)
+        assertEquals(-1f, g.splitHighlightHue, 0f)
+        assertEquals(0f, g.splitBalance, 0f)
+    }
+
+    @Test
+    fun double_tap_resets_each_split_tone_axis_only() {
+        // COL-13: each split-tone slider resets independently to its
+        // GradeK default (hue -1 = off, balance 0 = midgray crossover) —
+        // the tapped control goes neutral, the OTHER hue, the wheel
+        // offsets and every other axis stay put.
+        val current = GradeK(
+            exposureEv = 1f, wheelShadowX = 0.4f, wheelMidY = -0.6f,
+            splitShadowHue = 210f, splitHighlightHue = 45f, splitBalance = -30f,
+        )
+
+        val shadowHue = SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_SHADOW_HUE, current)
+        assertEquals(-1f, shadowHue.splitShadowHue, 0f)
+        assertEquals(45f, shadowHue.splitHighlightHue, 0f)
+        assertEquals(-30f, shadowHue.splitBalance, 0f)
+        assertEquals(0.4f, shadowHue.wheelShadowX, 0f)
+        assertEquals(1f, shadowHue.exposureEv, 0f)
+
+        val highlightHue = SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_HIGHLIGHT_HUE, current)
+        assertEquals(-1f, highlightHue.splitHighlightHue, 0f)
+        assertEquals(210f, highlightHue.splitShadowHue, 0f)
+        assertEquals(-0.6f, highlightHue.wheelMidY, 0f)
+
+        val balance = SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_BALANCE, current)
+        assertEquals(0f, balance.splitBalance, 0f)
+        assertEquals(210f, balance.splitShadowHue, 0f)
+        assertEquals(45f, balance.splitHighlightHue, 0f)
+    }
+
     // ---- Compose steps argument ----
 
     @Test

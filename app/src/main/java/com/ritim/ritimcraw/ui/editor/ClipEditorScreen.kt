@@ -64,11 +64,14 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.GradePreset
 import com.ritim.ritimcraw.data.LutInfo
+import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
@@ -243,6 +246,18 @@ object EditorPreviewLogic {
     fun showStabilization(path: SourcePath): Boolean = path == SourcePath.MCRAW
 
     /**
+     * True when the color wheel + split tone section (COL-13) belongs in
+     * the Color tab. Both stages (18 wheel, 19 split tone) are MCRAW-only
+     * tone-band color math: the encoded (Mi-Log MP4) path takes the same
+     * Grade but the bridge ignores the color-package fields there (the
+     * encoded grades via its wb/temp/tint/exposure loop), so the section
+     * is hidden rather than showing dead controls. A separate named
+     * decision from [showTemporalNr] so the two can diverge if the
+     * encoded path ever grows its own wheel stages.
+     */
+    fun showColorTools(path: SourcePath): Boolean = path == SourcePath.MCRAW
+
+    /**
      * The sync status line's verdict for the Stabilization group (gyro
      * Phase 5): which of the three states the probe data supports. Pure so
      * a JVM test can lock the mapping — the decision itself reads the
@@ -387,7 +402,10 @@ enum class EditorBackDestination { EXIT_FULLSCREEN, LEAVE_EDITOR }
  * Shadows / Midtones / Contrast, Color tab with Temperature / Tint /
  * Saturation (tone stages COL-11/12/13, end to end) plus the RAW metadata
  * controls (RAW-07/COL-09/RAW-04/RAW-06): As Shot WB reset, Highlight
- * Reconstruction switch, Keep Vignetting switch, Detail tab with Sharpness /
+ * Reconstruction switch, Keep Vignetting switch, and — on MCRAW clips —
+ * the color wheel + split tone section (COL-13: three-band wheel pad with
+ * Shadows / Midtones / Highlights tabs, split shadow/highlight hues and
+ * the Balance slider), Detail tab with Sharpness /
  * Detail sliders (COL-15), the Tonemapping choice Off / ACES / AgX (COL-16)
  * as M3 segmented buttons, and the LUT section (COL-07): the imported .cube
  * library as choice rows plus an Import button and the Strength slider
@@ -454,7 +472,7 @@ fun ClipEditorScreen(
     // Removes a cube from the library (AppNav: LutStore.remove + refresh).
     onRemoveLut: (LutInfo) -> Unit = {},
     // The grade's lutId -> the copied cube's path (AppNav: LutStore.pathFor).
-    // Null = no LUT: stage 20 is bypassed and the old look is preserved.
+    // Null = no LUT: stage 24 is bypassed and the old look is preserved.
     lutPathFor: (String?) -> String? = { null },
     // ---- Frame Picker (RAW-11) ----
     // Develops the transport's CURRENT frame as a photo. The screen owns
@@ -714,6 +732,17 @@ fun ClipEditorScreen(
 
         // ---- Preview + transport bookkeeping (all keyed to the clip) ----
         var frame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
+        // RAW-09: the UNCROPPED effective-upright dims (container dims
+        // turned by the manual rotation). The publish fold sets `frame`
+        // to the CROPPED buffer, so its dims shrink once a crop is
+        // active — the aspect presets must math against THIS pair or
+        // "16:9" would be computed off the already-cropped rect. Set in
+        // the publish onSuccess BEFORE the crop fold; 0x0 before the
+        // first publish (CropState.aspectRect guards to the full rect,
+        // the documented degradation).
+        var effectiveDims by remember(sourceId) {
+            mutableStateOf(RotationState.Dims(0, 0))
+        }
         // The index of the frame LAST PUBLISHED by the render pump
         // (feature N6): the pump's publish swaps `frame` and this
         // index together, so the scope compute's RAW fetch asks for
@@ -1279,7 +1308,43 @@ fun ClipEditorScreen(
                     if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
                         result.fold(
                             onSuccess = { f ->
-                                frame = f
+                                // The uncropped effective dims, captured
+                                // BEFORE the crop fold (see the state
+                                // declaration): the aspect presets math
+                                // against this pair, never the cropped
+                                // `frame` dims.
+                                effectiveDims = RotationState.rotatedDims(
+                                    f.width, f.height, manualRotationDeg,
+                                )
+                                // Crop + straighten (RAW-09): the
+                                // published preview is the GRADED frame
+                                // cut to the crop rect, in the same
+                                // effective space the user sees. The
+                                // native develop renders
+                                // CONTAINER-upright pixels and the
+                                // surface turns only the manual delta,
+                                // so the rect is mapped through the
+                                // delta first (CropState.applyToArgb
+                                // returns the input buffer untouched
+                                // while the crop group is neutral).
+                                val cropped = CropState.applyToArgb(
+                                    argb = f.argb,
+                                    width = f.width,
+                                    height = f.height,
+                                    rect = CropState.RectF(
+                                        req.grade.cropX,
+                                        req.grade.cropY,
+                                        req.grade.cropW,
+                                        req.grade.cropH,
+                                    ),
+                                    straightenDeg = req.grade.straightenDeg,
+                                    spaceDeltaDeg = manualRotationDeg,
+                                )
+                                frame = PreviewFrame(
+                                    width = cropped.width,
+                                    height = cropped.height,
+                                    argb = cropped.argb,
+                                )
                                 // The rendered frame's index, published
                                 // beside the frame (feature N6): the
                                 // scope compute's RAW fetch asks for
@@ -2244,6 +2309,13 @@ fun ClipEditorScreen(
                     // clips keep As Shot + every slider (pure decision in
                     // EditorPreviewLogic.showRawStageToggles).
                     showRawStageToggles = EditorPreviewLogic.showRawStageToggles(sourcePath),
+                    // The color wheel + split tone section (COL-13) is
+                    // MCRAW-only too, for the same honesty reason: the
+                    // encoded path takes the same Grade but the bridge
+                    // ignores the color-package fields there, so the
+                    // section would be dead controls (pure decision in
+                    // EditorPreviewLogic.showColorTools).
+                    showColorTools = EditorPreviewLogic.showColorTools(sourcePath),
                     onChange = { g ->
                         // Same slider-path recording as LightPanel: the
                         // machine is shared, so which tab the drag
@@ -2339,6 +2411,19 @@ fun ClipEditorScreen(
                     gyroImportError = gyroImportError,
                     onAttachGyro = { gyroPicker.launch(arrayOf("*/*")) },
                     onRemoveGyro = onRemoveGyro,
+                    // ---- Crop + straighten wiring (RAW-09) ----
+                    // The UNCROPPED effective dims from the publish fold:
+                    // presets and honest W/H ranges math against this
+                    // pair, never the cropped `frame` dims.
+                    cropFrameW = effectiveDims.width,
+                    cropFrameH = effectiveDims.height,
+                    // The aspect choice and the group reset are not
+                    // drags: they settle IMMEDIATELY at the full tier,
+                    // like the tonemap choice — discrete history steps
+                    // (null cause, feature N7).
+                    onCropEdit = { g ->
+                        applyGradeEdit(g)
+                    },
                 )
             }
         }
@@ -2792,9 +2877,12 @@ private fun LightPanel(
 
 /**
  * Color tab: white balance (As Shot reset + Temperature / Tint), the RAW
- * stage toggles, then Saturation. Temperature and Tint moved here from the
- * Light tab when Saturation landed (spec COL-12: white balance and
- * saturation are the color controls; the Light tab is tone).
+ * stage toggles, the color wheel + split tone section (COL-13), then
+ * Saturation. Temperature and Tint moved here from the Light tab when
+ * Saturation landed (spec COL-12: white balance and saturation are the
+ * color controls; the Light tab is tone); the wheel/split section landed
+ * between them and Saturation so the tab reads in native stage order
+ * (temp 16, tint 17, wheel 18, split 19, saturation 20).
  *
  * RAW-07/COL-09/RAW-04/RAW-06 semantics:
  * - As Shot (reset action): tempK -> 5600, tint -> 0, asShot -> true. The
@@ -2808,6 +2896,12 @@ private fun LightPanel(
  *   CFA-stage rows show only when [showRawStageToggles] is true (MCRAW);
  *   encoded (Mi-Log MP4) clips decode YUV with no CFA stage, so they get the
  *   same white balance + saturation controls without the two RAW toggles.
+ * - The color wheel + split tone section ([ColorWheelSection]) shows only
+ *   when [showColorTools] is true (MCRAW): the encoded path takes the same
+ *   Grade but the bridge ignores the color-package fields there, so the
+ *   section would be dead controls. The section's own contract (band tabs,
+ *   disc colors = the stage-18 gain math, split hue on/off derived from
+ *   hue -1) is documented on [ColorWheelSection].
  */
 @Composable
 private fun ColorPanel(
@@ -2819,6 +2913,11 @@ private fun ColorPanel(
     // Double-tap resets ride their own route (feature N7): discrete undo
     // steps, never coalesced into the slider gestures (see LightPanel).
     onReset: (GradeK) -> Unit = {},
+    // ---- Color wheel + split tone section (COL-13) ----
+    // MCRAW only (the pure decision showColorTools): the encoded path
+    // takes the same Grade but ignores the color-package fields, so the
+    // section would be dead controls there.
+    showColorTools: Boolean = false,
 ) {
     Column(
         Modifier
@@ -2911,6 +3010,20 @@ private fun ColorPanel(
                 },
             )
         }
+        // ---- Color wheel + split tone (COL-13) ----
+        // Pipeline order in the panel matches the native stage order:
+        // wheel 18 and split tone 19 run AFTER the WB controls above
+        // (temp 16, tint 17) and BEFORE saturation (20) below, so the
+        // section reads in the order the pixels experience it.
+        if (showColorTools) {
+            ColorWheelSection(
+                grade = grade,
+                onChange = onChange,
+                onDragActiveChange = onDragActiveChange,
+                onToggleChange = onToggleChange,
+                onReset = onReset,
+            )
+        }
         GradeSlider(
             label = stringResource(R.string.editor_slider_saturation),
             value = grade.saturation,
@@ -2928,6 +3041,225 @@ private fun ColorPanel(
 }
 
 /**
+ * The color wheel + split tone section (COL-13): the three-band wheel pad
+ * (Shadows / Midtones / Highlights tabs — stage 18's tonal bands, the same
+ * band anchors the Light tab's sliders use) with the offset readout, then
+ * the split tone group (stage 19: the switch, shadow/highlight hue
+ * sliders, the Balance slider).
+ *
+ * Band tabs: one segmented row above the pad; the pad edits the ACTIVE
+ * band's (x, y) offset. The band choice is UI-only state (which wheel is
+ * "open", like a tool selection) — it never touches the grade, so it is
+ * rememberSaveable, not a GradeK field: reopening the editor restores the
+ * last-open band but the grade is untouched.
+ *
+ * The wheel drag is a slider-path drag ([onChange] + [onDragActiveChange]
+ * — low tier while the finger is down, settle on lift); the double-tap
+ * center reset is a DISCRETE edit ([onReset], its own undo step, feature
+ * N7). The split tone sliders are GradeSlider rows like every other
+ * slider; their track gradient is the engine's own hue-window sweep
+ * ([ColorWheelMath.hueTrackGradient] — the same raised-cosine windows the
+ * stage applies, sampled across the 0..359 track), so the slider's color
+ * story is the math's story, the TEMPERATURE_GRADIENT precedent.
+ *
+ * Split tone on/off is DERIVED from the hue values (hue -1 = off, the
+ * GradeK neutral): one switch for the whole split group mirrors "either
+ * hue >= 0" — the native splitActive is exactly that OR — and the first
+ * enable seeds both hues to 0 (red, the temporal-NR seeding precedent: a
+ * toggle that visibly changed nothing would read as broken). Turning the
+ * switch off writes -1 to BOTH hues (the stored neutral), so the switch
+ * can never disagree with the stored state; the switch settles at the
+ * full tier immediately through [onToggleChange] like every other toggle.
+ * The hue sliders show only while the group is active — the -1 neutral
+ * never reaches a 0..359 track (the M3 Slider cannot render outside its
+ * range, and a thumb parked at 0 would read as a red grade it does not
+ * have). The Balance slider stays visible either way: balance has no off
+ * state in the engine (it only shapes the crossover when a hue is
+ * active), and hiding it would hide where its reset lives.
+ */
+@Composable
+private fun ColorWheelSection(
+    grade: GradeK,
+    onChange: (GradeK) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit = {},
+    onToggleChange: (GradeK) -> Unit = {},
+    onReset: (GradeK) -> Unit = {},
+) {
+    // The active band: UI-only state (see KDoc), saved across
+    // configuration changes but never persisted into the grade.
+    var band by rememberSaveable { mutableStateOf(WheelBand.MIDTONES) }
+    val (bandX, bandY) = when (band) {
+        WheelBand.SHADOWS -> grade.wheelShadowX to grade.wheelShadowY
+        WheelBand.MIDTONES -> grade.wheelMidX to grade.wheelMidY
+        WheelBand.HIGHLIGHTS -> grade.wheelHighX to grade.wheelHighY
+    }
+    Text(
+        stringResource(R.string.editor_color_wheel),
+        style = MaterialTheme.typography.labelLarge,
+    )
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        val bands = listOf(
+            WheelBandOption(R.string.editor_wheel_band_shadows, WheelBand.SHADOWS),
+            WheelBandOption(R.string.editor_wheel_band_midtones, WheelBand.MIDTONES),
+            WheelBandOption(R.string.editor_wheel_band_highlights, WheelBand.HIGHLIGHTS),
+        )
+        bands.forEachIndexed { index, option ->
+            SegmentedButton(
+                selected = band == option.value,
+                onClick = { band = option.value },
+                shape = SegmentedButtonDefaults.itemShape(
+                    index = index,
+                    count = bands.size,
+                ),
+            ) {
+                Text(stringResource(option.labelRes))
+            }
+        }
+    }
+    ColorWheelPad(
+        x = bandX,
+        y = bandY,
+        onDragChange = { nx, ny ->
+            onChange(
+                when (band) {
+                    WheelBand.SHADOWS -> grade.copy(wheelShadowX = nx, wheelShadowY = ny)
+                    WheelBand.MIDTONES -> grade.copy(wheelMidX = nx, wheelMidY = ny)
+                    WheelBand.HIGHLIGHTS -> grade.copy(wheelHighX = nx, wheelHighY = ny)
+                }
+            )
+        },
+        onDragActiveChange = onDragActiveChange,
+        onDoubleTapReset = {
+            // Center reset: the ACTIVE band's offset to (0, 0) — the
+            // spec's "merkez nötrdür" made actionable. One discrete edit,
+            // its own undo step.
+            onReset(
+                when (band) {
+                    WheelBand.SHADOWS ->
+                        grade.copy(wheelShadowX = 0f, wheelShadowY = 0f)
+                    WheelBand.MIDTONES ->
+                        grade.copy(wheelMidX = 0f, wheelMidY = 0f)
+                    WheelBand.HIGHLIGHTS ->
+                        grade.copy(wheelHighX = 0f, wheelHighY = 0f)
+                }
+            )
+        },
+        contentDescription = stringResource(R.string.editor_color_wheel),
+    )
+    // Offset readout: the active band's (x, y) with the neutral word when
+    // centered — "Nötr" reads the spec contract, "+0.35 / -0.10" reads the
+    // engine's actual exponents' inputs. tnum via Format (two decimals,
+    // explicit sign — the formatEv precedent).
+    Text(
+        if (bandX == 0f && bandY == 0f) {
+            stringResource(R.string.editor_wheel_neutral)
+        } else {
+            stringResource(
+                R.string.editor_wheel_offset_readout,
+                Format.formatWheelOffset(bandX),
+                Format.formatWheelOffset(bandY),
+            )
+        },
+        style = MaterialTheme.typography.labelLarge.merge(Tnum),
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center,
+    )
+    // ---- Split tone (stage 19) ----
+    // The switch row carries the group label (the Temporal NR precedent:
+    // no separate header above a switch group).
+    val splitActive = grade.splitShadowHue >= 0f || grade.splitHighlightHue >= 0f
+    RawToggleRow(
+        label = stringResource(R.string.editor_split_tone),
+        checked = splitActive,
+        onCheckedChange = { checked ->
+            if (checked) {
+                // First enable seeds BOTH hues to 0 (red) — the temporal-NR
+                // seeding precedent: a toggle that visibly changed nothing
+                // would read as broken, and 0/0 is the minimal active pair.
+                onToggleChange(grade.copy(splitShadowHue = 0f, splitHighlightHue = 0f))
+            } else {
+                // Off writes the GradeK neutral to both hues — the switch
+                // can never disagree with the stored state.
+                onToggleChange(
+                    grade.copy(
+                        splitShadowHue = GradeK().splitShadowHue,
+                        splitHighlightHue = GradeK().splitHighlightHue,
+                    )
+                )
+            }
+        },
+    )
+    if (splitActive) {
+        // The hue track: the engine's own hue-window sweep, so each track
+        // position reads as the hue it selects (the TEMPERATURE_GRADIENT
+        // precedent; muted pastels by the unit-average windows themselves).
+        val hueTrack = remember { ColorWheelMath.hueTrackGradient() }
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_split_shadow_hue),
+            value = grade.splitShadowHue,
+            valueRange = 0f..359f,
+            step = SliderSteps.SPLIT_HUE_STEP_DEG,
+            valueLabel = Format.formatHueDeg(grade.splitShadowHue.toInt()),
+            onChange = { v ->
+                onChange(grade.copy(splitShadowHue = SliderSteps.snapSplitHue(v)))
+            },
+            onDoubleTapReset = {
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_SHADOW_HUE, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+            trackGradient = hueTrack,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_split_highlight_hue),
+            value = grade.splitHighlightHue,
+            valueRange = 0f..359f,
+            step = SliderSteps.SPLIT_HUE_STEP_DEG,
+            valueLabel = Format.formatHueDeg(grade.splitHighlightHue.toInt()),
+            onChange = { v ->
+                onChange(grade.copy(splitHighlightHue = SliderSteps.snapSplitHue(v)))
+            },
+            onDoubleTapReset = {
+                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_HIGHLIGHT_HUE, grade))
+            },
+            onDragActiveChange = onDragActiveChange,
+            trackGradient = hueTrack,
+        )
+    }
+    // Balance: -100..100, positive widens the SHADOW side (the native
+    // crossover m = 0.18 * 2^(balance/100) grows with balance — the
+    // Lightroom convention; the slider label direction matches). Visible
+    // even when the group is off: balance has no off state in the engine
+    // (it only shapes the crossover when a hue is active) and hiding it
+    // would hide where its reset lives.
+    GradeSlider(
+        label = stringResource(R.string.editor_slider_split_balance),
+        value = grade.splitBalance,
+        valueRange = -100f..100f,
+        step = SliderSteps.SPLIT_BALANCE_STEP,
+        valueLabel = Format.formatSigned(grade.splitBalance.toInt()),
+        onChange = { v ->
+            onChange(grade.copy(splitBalance = SliderSteps.snapSplitBalance(v)))
+        },
+        onDoubleTapReset = {
+            onReset(SliderSteps.resetToDefault(SliderSteps.Axis.SPLIT_BALANCE, grade))
+        },
+        onDragActiveChange = onDragActiveChange,
+    )
+}
+
+/** The wheel's three tonal bands (COL-13, stage 18): the pad's tabs. */
+private enum class WheelBand { SHADOWS, MIDTONES, HIGHLIGHTS }
+
+/**
+ * One wheel band segmented-button entry (COL-13): label + the band the
+ * pad edits when selected.
+ */
+private data class WheelBandOption(
+    val labelRes: Int,
+    val value: WheelBand,
+)
+
+/**
  * Detail tab (COL-15/COL-16), in order: Noise Reduction and Chroma Denoise
  * (DN-01..08 spatial denoise, percent 0..100, 0 = the stage skipped — the
  * old look), then Sharpness (edge sharpness, unsharp radius 1.5) and Detail
@@ -2935,7 +3267,7 @@ private fun ColorPanel(
  * choice — Off / ACES / AgX M3 segmented buttons (DESIGN.md Inputs:
  * "segmented buttons for codec and scope choice" — the same single choice
  * pattern). The denoise pair leads because native stages 7/8 run BEFORE
- * sharpness/detail (19/20): sliders read in pipeline order, and denoising
+ * sharpness/detail (21/22): sliders read in pipeline order, and denoising
  * first is also what makes the sharpeners amplify signal, not noise. All
  * five controls run on BOTH clip kinds: the native develop pipeline and
  * developEncoded share the same stages, so encoded (Mi-Log MP4) clips get
@@ -2946,7 +3278,7 @@ private fun ColorPanel(
  * the used transform version travels with the saved grade (COL-16's
  * versioning requirement at this package's scope).
  *
- * The LUT section (COL-07) closes the tab: the imported cube library as
+ * The LUT section (COL-07): the imported cube library as
  * radio rows (None + one per imported cube), an Import button, the Strength
  * slider under the selected cube and a Remove action. Selection and
  * Strength are grade edits (onLutSelect, the immediate settle path like
@@ -2964,6 +3296,16 @@ private fun ColorPanel(
  * sliders, the sync status line with the gyro attach/remove actions, the
  * ±500 ms sync trim and the focal-length control — the honest no-data
  * state when no .gcsv is attached, never a fabricated verdict.
+ * Crop + straighten (RAW-09) closes the tab: the Aspect choice (Free /
+ * 16:9 / 9:16 / 4:3 / 1:1 — a preset replaces the rect with the largest
+ * centered on-ratio rect, FREE keeps it), the Straighten dial (±15°,
+ * half-degree ticks, edge-preserving auto zoom), the four rect sliders
+ * (Left/Top translate, Width/Height resize — under a preset the
+ * perpendicular axis follows through the lock chain, position giving way
+ * before the ratio), and the group reset. All rect math runs through the
+ * pure SliderSteps.applyCropAxis against the UNCROPPED effective dims
+ * ([cropFrameW]/[cropFrameH] from the publish fold), so the panel and
+ * the render pump can never disagree about which region is selected.
  */
 @Composable
 private fun DetailPanel(
@@ -2996,6 +3338,17 @@ private fun DetailPanel(
     gyroImportError: String? = null,
     onAttachGyro: () -> Unit = {},
     onRemoveGyro: () -> Unit = {},
+    // ---- Crop + straighten group (RAW-09) ----
+    // The UNCROPPED effective-upright dims (the publish fold's capture):
+    // aspect presets and the honest W/H slider ranges math against this
+    // pair. 0x0 before the first publish — CropState guards to the full
+    // rect, the documented degradation.
+    cropFrameW: Int = 0,
+    cropFrameH: Int = 0,
+    // Aspect choice and the group reset are discrete edits (like the
+    // tonemap choice): they settle IMMEDIATELY at the full tier and record
+    // as their own undo step, never coalesced into a slider gesture.
+    onCropEdit: (GradeK) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -3004,7 +3357,7 @@ private fun DetailPanel(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         // DN-01..08: both denoise controls first, in native pipeline order
-        // (stage 7 chroma, stage 8 luma — before sharpness/detail 19/20).
+        // (stage 7 chroma, stage 8 luma — before sharpness/detail 21/22).
         // Percent 0..100 like LUT Strength, whole steps, default 0 = the
         // stage skipped (bit-identical to the pre-DN look).
         GradeSlider(
@@ -3511,6 +3864,212 @@ private fun DetailPanel(
                 )
             }
         }
+        // ---- Crop + straighten group (RAW-09) ----
+        // The group closes the tab. The aspect choice and the group reset
+        // are DISCRETE edits ([onCropEdit]: immediate full-tier settle,
+        // their own undo step — the tonemap precedent); the five sliders
+        // below are drags ([onChange] + [onDragActiveChange]) like every
+        // other slider. All rect math runs through SliderSteps.applyCropAxis
+        // (the pure chain: snap, clamp, lock) against the UNCROPPED
+        // effective dims, so the panel and the render pump can never
+        // disagree about which region is selected.
+        Text(
+            stringResource(R.string.editor_crop),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        // Aspect: one choice row (Free / 16:9 / 9:16 / 4:3 / 1:1). A preset
+        // REPLACES the rect with the largest centered on-ratio rect
+        // (CropState.aspectRect); FREE keeps the rect as it is.
+        Text(
+            stringResource(R.string.editor_crop_aspect),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            val aspects = listOf(
+                CropAspectOption(R.string.editor_crop_aspect_free, CropState.ASPECT_FREE),
+                CropAspectOption(R.string.editor_crop_aspect_16_9, CropState.ASPECT_16_9),
+                CropAspectOption(R.string.editor_crop_aspect_9_16, CropState.ASPECT_9_16),
+                CropAspectOption(R.string.editor_crop_aspect_4_3, CropState.ASPECT_4_3),
+                CropAspectOption(R.string.editor_crop_aspect_1_1, CropState.ASPECT_1_1),
+            )
+            aspects.forEachIndexed { index, option ->
+                SegmentedButton(
+                    selected = grade.cropAspect == option.value,
+                    onClick = {
+                        if (option.value == CropState.ASPECT_FREE) {
+                            onCropEdit(grade.copy(cropAspect = option.value))
+                        } else {
+                            val rect = CropState.aspectRect(
+                                CropState.aspectRatio(option.value)!!,
+                                cropFrameW,
+                                cropFrameH,
+                            )
+                            onCropEdit(
+                                grade.copy(
+                                    cropAspect = option.value,
+                                    cropX = rect.x,
+                                    cropY = rect.y,
+                                    cropW = rect.w,
+                                    cropH = rect.h,
+                                )
+                            )
+                        }
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = aspects.size,
+                    ),
+                ) {
+                    Text(stringResource(option.labelRes))
+                }
+            }
+        }
+        // Straighten ±15° (half-degree ticks): the small-angle horizon
+        // correction with the edge-preserving auto zoom (CropState's
+        // sampler). A drag; the double-tap reset is a discrete step.
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_straighten),
+            value = grade.straightenDeg.coerceIn(
+                -CropState.STRAIGHTEN_MAX_DEG, CropState.STRAIGHTEN_MAX_DEG,
+            ),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.STRAIGHTEN, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.STRAIGHTEN_STEP_DEG,
+            valueLabel = Format.formatDeg(grade.straightenDeg),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.STRAIGHTEN, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.STRAIGHTEN, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        // The four rect sliders, each with its honest range (the thumb
+        // never offers a position the applyCropAxis policy would clamp
+        // away — X/Y translate up to the opposite edge, W/H grow up to
+        // the preset's own extent). The displayed value is coerced into
+        // that range: a stale stored grade (hand-edited JSON) or the
+        // 0x0-dims degradation can hold an out-of-range value, and a
+        // M3 Slider with value outside valueRange would throw.
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_crop_left),
+            value = grade.cropX.coerceIn(
+                0f, (1f - grade.cropW).coerceAtLeast(0f),
+            ),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.CROP_X, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.CROP_FRACTION_STEP,
+            valueLabel = Format.formatFractionPercent(grade.cropX),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.CROP_X, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.CROP_X, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_crop_top),
+            value = grade.cropY.coerceIn(
+                0f, (1f - grade.cropH).coerceAtLeast(0f),
+            ),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.CROP_Y, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.CROP_FRACTION_STEP,
+            valueLabel = Format.formatFractionPercent(grade.cropY),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.CROP_Y, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.CROP_Y, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_crop_width),
+            value = grade.cropW.coerceIn(CropState.MIN_FRACTION, 1f),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.CROP_W, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.CROP_FRACTION_STEP,
+            valueLabel = Format.formatFractionPercent(grade.cropW),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.CROP_W, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.CROP_W, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        GradeSlider(
+            label = stringResource(R.string.editor_slider_crop_height),
+            value = grade.cropH.coerceIn(CropState.MIN_FRACTION, 1f),
+            valueRange = SliderSteps.cropAxisRange(
+                SliderSteps.Axis.CROP_H, grade, cropFrameW, cropFrameH,
+            ),
+            step = SliderSteps.CROP_FRACTION_STEP,
+            valueLabel = Format.formatFractionPercent(grade.cropH),
+            onChange = { v ->
+                onChange(
+                    SliderSteps.applyCropAxis(
+                        SliderSteps.Axis.CROP_H, v, grade, cropFrameW, cropFrameH,
+                    )
+                )
+            },
+            onDoubleTapReset = {
+                onReset(
+                    SliderSteps.resetToDefault(SliderSteps.Axis.CROP_H, grade)
+                )
+            },
+            onDragActiveChange = onDragActiveChange,
+        )
+        // The group reset: the full rect, FREE aspect, zero straighten —
+        // one discrete edit, its own undo step (GradeK's neutral crop
+        // group; the DNG export dims return to the source orientation).
+        FilledTonalButton(
+            onClick = {
+                onCropEdit(
+                    grade.copy(
+                        cropAspect = GradeK().cropAspect,
+                        cropX = GradeK().cropX,
+                        cropY = GradeK().cropY,
+                        cropW = GradeK().cropW,
+                        cropH = GradeK().cropH,
+                        straightenDeg = GradeK().straightenDeg,
+                    )
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.editor_crop_reset))
+        }
     }
 }
 
@@ -3525,6 +4084,15 @@ private data class TonemapOption(
  * the GradeK mode int (0 Smooth, 1 Lock First Frame, 2 Horizon Lock).
  */
 private data class StabModeOption(
+    val labelRes: Int,
+    val value: Int,
+)
+
+/**
+ * One aspect preset segmented-button entry (RAW-09): label + the GradeK
+ * aspect int (0 Free, 1 16:9, 2 9:16, 3 4:3, 4 1:1 — CropState.ASPECT_*).
+ */
+private data class CropAspectOption(
     val labelRes: Int,
     val value: Int,
 )

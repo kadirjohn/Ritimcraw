@@ -116,6 +116,19 @@ Grade neutralToneGrade() {
     g.tonemap = 0;
     g.noiseReduction = 0.0f;
     g.chromaDenoise = 0.0f;
+    // COL-13: the color package — six wheel offsets (0 = the wheel's
+    // neutral center) and three split-tone scalars (hue -1 = off, balance
+    // 0). Explicitly neutral so the golden fixtures keep proving the
+    // defaults are the old behavior.
+    g.wheelShadowX = 0.0f;
+    g.wheelShadowY = 0.0f;
+    g.wheelMidX = 0.0f;
+    g.wheelMidY = 0.0f;
+    g.wheelHighX = 0.0f;
+    g.wheelHighY = 0.0f;
+    g.splitShadowHue = -1.0f;
+    g.splitHighlightHue = -1.0f;
+    g.splitBalance = 0.0f;
     return g;
 }
 
@@ -563,6 +576,229 @@ TEST_CASE("saturation_scales_chroma_neutrals_untouched") {
     CHECK(spread2 < spread0 - 0.02f);  // chroma shrank
     CHECK(spread2 > 0.0f);             // but never fully desaturated
     CHECK(fnv1a(n0) == fnv1a(n1));     // neutral patch bit-identical
+}
+
+// ---- Color wheel + split tone (COL-13): stages 18/19 ----
+
+TEST_CASE("wheel_neutral_center_is_bit_identical") {
+    // A wheel grade with every offset 0 is the neutral center: stage 18
+    // must be a complete no-op (bit-identical), whatever the other grade
+    // fields hold — the guard is wheelActive, not a per-pixel epsilon.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
+    Grade neutral;
+    auto a = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto b = developCpu(s.cfa.data(), s.info, s.meta, neutral);
+    CHECK(fnv1a(a) == fnv1a(b));
+}
+
+TEST_CASE("wheel_shadow_band_isolates_the_dark_patch") {
+    // A shadow-band wheel deflection must move the DARK patch and leave
+    // the mid and bright patches untouched (their band weight is 0).
+    Synthetic dark = syntheticFlat(CfaPattern::RGGB, 0.05f, 0.05f, 0.05f);
+    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.40f, 0.40f, 0.40f);
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.85f, 0.85f, 0.85f);
+
+    Grade wheel; // shadows pushed toward +x (warm: red up, blue down)
+    wheel.wheelShadowX = 1.0f;
+    auto d0 = developCpu(dark.cfa.data(), dark.info, dark.meta, Grade{});
+    auto d1 = developCpu(dark.cfa.data(), dark.info, dark.meta, wheel);
+    auto m0 = developCpu(mid.cfa.data(), mid.info, mid.meta, Grade{});
+    auto m1 = developCpu(mid.cfa.data(), mid.info, mid.meta, wheel);
+    auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
+    auto b1 = developCpu(bright.cfa.data(), bright.info, bright.meta, wheel);
+
+    // Dark patch: red up, blue down (warm), green untouched (x axis).
+    CHECK(centerMean(d1, 0) > centerMean(d0, 0) + 0.01f);
+    CHECK(centerMean(d1, 2) < centerMean(d0, 2) - 0.01f);
+    CHECK(std::abs(centerMean(d1, 1) - centerMean(d0, 1)) < 0.001f);
+    // Mid and bright patches: bit-identical (band weight 0).
+    CHECK(fnv1a(m0) == fnv1a(m1));
+    CHECK(fnv1a(b0) == fnv1a(b1));
+}
+
+TEST_CASE("wheel_mid_and_highlight_bands_isolate") {
+    // Same isolation for the other two bands: a midtones deflection moves
+    // only the mid patch, a highlights deflection only the bright patch.
+    // The patch values are the tent's exact zeros (the midtones-slider
+    // precedent): at 0.0 wMid = wHigh = 0, at quantized 0.18 (< the 0.18
+    // edge) wDark and wHigh clamp to 0, at 0.85 wDark = wMid = 0 — so the
+    // neighbor checks are BIT-identity, not tolerance.
+    Synthetic dark = syntheticFlat(CfaPattern::RGGB, 0.0f, 0.0f, 0.0f);
+    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.85f, 0.85f, 0.85f);
+    Grade midWheel;
+    midWheel.wheelMidY = 1.0f; // green up (tint axis): green only
+    Grade highWheel;
+    highWheel.wheelHighX = -1.0f; // cool: red down, blue up
+
+    auto d0 = developCpu(dark.cfa.data(), dark.info, dark.meta, Grade{});
+    auto dM = developCpu(dark.cfa.data(), dark.info, dark.meta, midWheel);
+    auto m0 = developCpu(mid.cfa.data(), mid.info, mid.meta, Grade{});
+    auto mM = developCpu(mid.cfa.data(), mid.info, mid.meta, midWheel);
+    auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
+    auto bM = developCpu(bright.cfa.data(), bright.info, bright.meta, midWheel);
+    CHECK(centerMean(mM, 1) > centerMean(m0, 1) + 0.01f); // mid green moved
+    CHECK(fnv1a(d0) == fnv1a(dM)); // dark untouched (wMid = 0 at black)
+    CHECK(fnv1a(b0) == fnv1a(bM)); // bright untouched (wMid = 0 at 0.85)
+
+    auto dH = developCpu(dark.cfa.data(), dark.info, dark.meta, highWheel);
+    auto mH = developCpu(mid.cfa.data(), mid.info, mid.meta, highWheel);
+    auto bH = developCpu(bright.cfa.data(), bright.info, bright.meta, highWheel);
+    CHECK(centerMean(bH, 2) > centerMean(b0, 2) + 0.01f); // bright: blue up
+    CHECK(centerMean(bH, 0) < centerMean(b0, 0) - 0.01f); // red down
+    CHECK(fnv1a(d0) == fnv1a(dH)); // dark untouched (wHigh = 0 at black)
+    CHECK(fnv1a(m0) == fnv1a(mH)); // mid untouched (wHigh = 0 below 0.18)
+}
+
+TEST_CASE("wheel_y_axis_moves_green_only") {
+    // The y axis is the tint idiom: green up/down alone, red and blue
+    // untouched — the temp idiom (x) moves red/blue and leaves green.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
+    Grade yUp;
+    yUp.wheelMidY = 1.0f;
+    auto n = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto y = developCpu(s.cfa.data(), s.info, s.meta, yUp);
+    CHECK(centerMean(y, 1) > centerMean(n, 1) + 0.01f);  // green moved
+    CHECK(std::abs(centerMean(y, 0) - centerMean(n, 0)) < 0.001f);
+    CHECK(std::abs(centerMean(y, 2) - centerMean(n, 2)) < 0.001f);
+}
+
+TEST_CASE("wheel_partition_of_unity_blends_bands") {
+    // The three band weights sum to exactly 1 at every luma, so a pixel
+    // at midgray takes the MID offset alone (the tent peaks there and the
+    // neighbors are 0), and equal deflections on all three bands move a
+    // midgray pixel by the same amount as the mid deflection alone —
+    // the weighted-average formulation's exactness check.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    Grade midOnly;
+    midOnly.wheelMidX = 1.0f;
+    Grade allBands;
+    allBands.wheelShadowX = 1.0f;
+    allBands.wheelMidX = 1.0f;
+    allBands.wheelHighX = 1.0f;
+    auto n = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto m = developCpu(s.cfa.data(), s.info, s.meta, midOnly);
+    auto a = developCpu(s.cfa.data(), s.info, s.meta, allBands);
+    // midgray: wMid = 1, wDark = wHigh = 0 -> midOnly IS the full
+    // deflection; allBands gives the same blend (1*1 + 0 + 0).
+    CHECK(std::abs(centerMean(m, 0) - centerMean(a, 0)) < 1e-4f);
+    CHECK(centerMean(m, 0) > centerMean(n, 0) + 0.01f); // and it really ran
+}
+
+TEST_CASE("split_tone_off_is_bit_identical") {
+    // Both hues -1 (off): stage 19 must be a complete no-op, whatever the
+    // other grade fields hold — the guard is splitActive, not a per-pixel
+    // epsilon. balance alone (both hues off) is also a no-op.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f);
+    Grade off;
+    Grade balanceOnly;
+    balanceOnly.splitBalance = 50.0f;
+    auto a = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto b = developCpu(s.cfa.data(), s.info, s.meta, off);
+    auto c = developCpu(s.cfa.data(), s.info, s.meta, balanceOnly);
+    CHECK(fnv1a(a) == fnv1a(b));
+    CHECK(fnv1a(a) == fnv1a(c));
+}
+
+TEST_CASE("split_tone_shadow_hue_tints_the_dark_patch") {
+    // A shadow hue must tint the DARK patch and leave the bright patch
+    // untouched (its wShadow is 0 there).
+    Synthetic dark = syntheticFlat(CfaPattern::RGGB, 0.05f, 0.05f, 0.05f);
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.85f, 0.85f, 0.85f);
+    Grade split;
+    split.splitShadowHue = 0.0f; // red window
+
+    auto d0 = developCpu(dark.cfa.data(), dark.info, dark.meta, Grade{});
+    auto d1 = developCpu(dark.cfa.data(), dark.info, dark.meta, split);
+    auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
+    auto b1 = developCpu(bright.cfa.data(), bright.info, bright.meta, split);
+
+    // Dark patch: the red window's gain lifts red.
+    CHECK(centerMean(d1, 0) > centerMean(d0, 0) + 0.001f);
+    // Bright patch: bit-identical (wShadow 0 at 0.85).
+    CHECK(fnv1a(b0) == fnv1a(b1));
+}
+
+TEST_CASE("split_tone_highlight_hue_tints_the_bright_patch") {
+    // A highlight hue must tint the BRIGHT patch and leave the dark patch
+    // untouched.
+    Synthetic dark = syntheticFlat(CfaPattern::RGGB, 0.05f, 0.05f, 0.05f);
+    Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.85f, 0.85f, 0.85f);
+    Grade split;
+    split.splitHighlightHue = 240.0f; // blue window
+
+    auto d0 = developCpu(dark.cfa.data(), dark.info, dark.meta, Grade{});
+    auto d1 = developCpu(dark.cfa.data(), dark.info, dark.meta, split);
+    auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
+    auto b1 = developCpu(bright.cfa.data(), bright.info, bright.meta, split);
+
+    CHECK(centerMean(b1, 2) > centerMean(b0, 2) + 0.001f); // blue lifted
+    CHECK(fnv1a(d0) == fnv1a(d1)); // dark untouched
+}
+
+TEST_CASE("split_tone_balance_shifts_the_crossover") {
+    // Balance moves the crossover m = 0.18 * 2^(balance/100): midgray at 0,
+    // a full octave each way at +100/-100. A midgray patch SITS AT the
+    // balance-0 seam — both smoothstep weights are ~0 there, so the tint
+    // is nearly off (the crossover is a neutral seam). +100 lifts m to
+    // 0.36, pulling the midgray patch INTO the shadow ramp at half weight:
+    // the shadow hue's push (red) rises. -100 drops m to 0.09, pushing the
+    // patch into the highlight ramp's toe: the highlight hue's push (blue)
+    // rises, gently. Positive balance widens the shadow side — the
+    // Lightroom convention.
+    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+    auto make = [&](float balance) {
+        Grade g;
+        g.splitShadowHue = 0.0f;       // red shadows
+        g.splitHighlightHue = 240.0f;  // blue highlights
+        g.splitBalance = balance;
+        return developCpu(mid.cfa.data(), mid.info, mid.meta, g);
+    };
+    auto neutral = developCpu(mid.cfa.data(), mid.info, mid.meta, Grade{});
+    auto seam = make(0.0f);
+    auto plus = make(100.0f);
+    auto minus = make(-100.0f);
+
+    // At the balance-0 seam the tint is nearly off: the midgray patch
+    // stays within 0.001 of the no-split render (not bit-identical — the
+    // seam sits a hair below m on the quantized grid).
+    CHECK(std::abs(centerMean(seam, 0) - centerMean(neutral, 0)) < 0.001f);
+    CHECK(std::abs(centerMean(seam, 2) - centerMean(neutral, 2)) < 0.001f);
+    // +100 pulled the patch into the shadow ramp: the red push rose.
+    CHECK(centerMean(plus, 0) > centerMean(seam, 0) + 0.01f);
+    CHECK(fnv1a(plus) != fnv1a(seam));
+    // -100 pushed the patch into the highlight ramp's toe: the blue push
+    // rose (gently — the patch sits low in that ramp).
+    CHECK(centerMean(minus, 2) > centerMean(seam, 2) + 0.0005f);
+    CHECK(fnv1a(minus) != fnv1a(seam));
+}
+
+TEST_CASE("split_tone_hue_windows_are_120_degrees_apart") {
+    // The three windows peak 120 degrees apart: red at 0, green at 120,
+    // blue at 240. The raised-cosine window pushes the peaked channel UP
+    // and pulls the two off-window channels DOWN EQUALLY (they sit the
+    // same 120 degrees from the hue) — the unit-average normalization
+    // means a tint redistributes, it does not lift everything. So the
+    // sharp check is the SYMMETRY of the two off channels, plus the peak
+    // rising, not off-channel flatness.
+    auto s = syntheticFlat(CfaPattern::RGGB, 0.05f, 0.05f, 0.05f);
+    Grade greenHue;
+    greenHue.splitShadowHue = 120.0f;
+    Grade blueHue;
+    blueHue.splitShadowHue = 240.0f;
+    auto n = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto g = developCpu(s.cfa.data(), s.info, s.meta, greenHue);
+    auto b = developCpu(s.cfa.data(), s.info, s.meta, blueHue);
+    // Green window: green up, red and blue down equally.
+    CHECK(centerMean(g, 1) > centerMean(n, 1) + 0.005f);
+    CHECK(centerMean(g, 0) < centerMean(n, 0) - 0.001f);
+    CHECK(centerMean(g, 2) < centerMean(n, 2) - 0.001f);
+    CHECK(std::abs(centerMean(g, 0) - centerMean(g, 2)) < 0.001f);
+    // Blue window: blue up, red and green down equally.
+    CHECK(centerMean(b, 2) > centerMean(n, 2) + 0.005f);
+    CHECK(centerMean(b, 0) < centerMean(n, 0) - 0.001f);
+    CHECK(centerMean(b, 1) < centerMean(n, 1) - 0.001f);
+    CHECK(std::abs(centerMean(b, 0) - centerMean(b, 1)) < 0.001f);
 }
 
 // ---- RAW metadata toggles (owner request 2026-11-10, spec RAW-07,

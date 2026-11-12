@@ -53,7 +53,7 @@ interface EditorPreviewSession : AutoCloseable {
     /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
-     * stage 20 bypassed, the old look; COL-07). [gyroPath] is the attached
+     * stage 24 bypassed, the old look; COL-07). [gyroPath] is the attached
      * gyro log's path (null = no warp — gyro Phase 5); the ENCODED path has
      * no gyro data and ignores it (the documented skip — stabilization is
      * MCRAW-only). Suspends until done; resumes with the frame or a failure

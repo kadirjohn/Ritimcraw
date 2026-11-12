@@ -367,7 +367,9 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
 // lives in Develop.cpp developLinear (the JNI export calls it); this
 // constant is the single source of the recorded list — the develop and the
 // tag must never drift apart, so the string names the develop function and
-// the test pins its presence.
+// the test pins its presence. The tone controls (9-20, color wheel and
+// split tone included) are part of the NOT-run list: the linear DNG is
+// scene-referred data and carries no display look.
 const char* const kLinearDngStages =
     "ritiMCRAW linear DNG: stages = black/white normalization "
     "(frame-preferred levels), bilinear demosaic, as-shot white balance "

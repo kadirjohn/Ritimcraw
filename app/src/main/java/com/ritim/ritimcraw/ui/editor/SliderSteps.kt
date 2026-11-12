@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.editor
 
+import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -51,6 +52,26 @@ object SliderSteps {
     /** Focal override step in mm: 35mm-equivalent focals are half-mm labeled at finest. */
     const val STABILIZATION_FOCAL_STEP_MM = 0.5f
 
+    /** Straighten step in degrees (RAW-09): half-degree ticks over ±15. */
+    const val STRAIGHTEN_STEP_DEG = 0.5f
+
+    /** Crop fraction step (RAW-09): 1 percent per tick. */
+    const val CROP_FRACTION_STEP = 0.01f
+
+    /**
+     * Wheel offset step (COL-13): 0.05 of the unit-disc radius per tick —
+     * 20 intervals per axis, fine enough that the drag feels continuous
+     * while the stored value stays a two-decimal grid value (the
+     * straighten half-degree precedent).
+     */
+    const val WHEEL_OFFSET_STEP = 0.05f
+
+    /** Split-tone hue step (COL-13): whole degrees, the UNIT_STEP precedent. */
+    const val SPLIT_HUE_STEP_DEG = 1f
+
+    /** Split-tone balance step (COL-13): whole numbers over -100..100. */
+    const val SPLIT_BALANCE_STEP = 1f
+
     /** Snaps a single axis to its step grid (slider change events). */
     fun snapExposure(value: Float): Float = quantize(value, EXPOSURE_STEP)
     fun snapHighlights(value: Float): Float = quantize(value, UNIT_STEP)
@@ -72,6 +93,15 @@ object SliderSteps {
     fun snapStabilizationZoomLimit(value: Float): Float = quantize(value, STABILIZATION_ZOOM_STEP)
     fun snapStabilizationTrimMs(value: Float): Float = quantize(value, STABILIZATION_TRIM_STEP_MS)
     fun snapStabilizationFocalMm(value: Float): Float = quantize(value, STABILIZATION_FOCAL_STEP_MM)
+
+    /** RAW-09: straighten half-degree ticks; crop fractions 1 percent. */
+    fun snapStraighten(value: Float): Float = quantize(value, STRAIGHTEN_STEP_DEG)
+    fun snapCropFraction(value: Float): Float = quantize(value, CROP_FRACTION_STEP)
+
+    /** COL-13: wheel offsets 0.05 grid; split hues/balance whole numbers. */
+    fun snapWheelOffset(value: Float): Float = quantize(value, WHEEL_OFFSET_STEP)
+    fun snapSplitHue(value: Float): Float = quantize(value, SPLIT_HUE_STEP_DEG)
+    fun snapSplitBalance(value: Float): Float = quantize(value, SPLIT_BALANCE_STEP)
 
     /**
      * Snaps a whole grade to the step grid: Exposure to 0.1 EV, Temperature
@@ -100,6 +130,24 @@ object SliderSteps {
             stabilizationZoomLimit = snapStabilizationZoomLimit(grade.stabilizationZoomLimit),
             stabilizationTrimMs = snapStabilizationTrimMs(grade.stabilizationTrimMs),
             stabilizationFocalMm = snapStabilizationFocalMm(grade.stabilizationFocalMm),
+            cropX = snapCropFraction(grade.cropX),
+            cropY = snapCropFraction(grade.cropY),
+            cropW = snapCropFraction(grade.cropW),
+            cropH = snapCropFraction(grade.cropH),
+            straightenDeg = snapStraighten(grade.straightenDeg),
+            // COL-13: wheel offsets to the 0.05 grid, split hues/balance to
+            // whole numbers. A neutral grade stays neutral under the snap
+            // (0, -1 and 0 are all grid values), so the omit-when-neutral
+            // store contract survives a snap.
+            wheelShadowX = snapWheelOffset(grade.wheelShadowX),
+            wheelShadowY = snapWheelOffset(grade.wheelShadowY),
+            wheelMidX = snapWheelOffset(grade.wheelMidX),
+            wheelMidY = snapWheelOffset(grade.wheelMidY),
+            wheelHighX = snapWheelOffset(grade.wheelHighX),
+            wheelHighY = snapWheelOffset(grade.wheelHighY),
+            splitShadowHue = snapSplitHue(grade.splitShadowHue),
+            splitHighlightHue = snapSplitHue(grade.splitHighlightHue),
+            splitBalance = snapSplitBalance(grade.splitBalance),
         )
     }
 
@@ -116,6 +164,11 @@ object SliderSteps {
         TEMPORAL_STRENGTH,
         STABILIZATION_STRENGTH, STABILIZATION_ZOOM_LIMIT,
         STABILIZATION_TRIM_MS, STABILIZATION_FOCAL_MM,
+        // RAW-09: the crop sliders and the straighten dial.
+        CROP_X, CROP_Y, CROP_W, CROP_H, STRAIGHTEN,
+        // COL-13: the split-tone sliders (the wheel is a pad, not sliders —
+        // its reset lives in the wheel UI, not here).
+        SPLIT_SHADOW_HUE, SPLIT_HIGHLIGHT_HUE, SPLIT_BALANCE,
     }
 
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
@@ -149,6 +202,138 @@ object SliderSteps {
             current.copy(stabilizationTrimMs = GradeK().stabilizationTrimMs)
         Axis.STABILIZATION_FOCAL_MM ->
             current.copy(stabilizationFocalMm = GradeK().stabilizationFocalMm)
+        // RAW-09: each crop/straighten slider resets independently to
+        // its GradeK default (0/0/1/1 fractions, 0 deg) — the neutral
+        // full rect. A preset choice is not a slider axis and is
+        // untouched by a reset. The W/H resets also zero the matching
+        // ORIGIN (x/y): w = 1 with x = 0.3 would give x + w = 1.3, an
+        // invalid rect — "full width" pins the left edge to the frame's.
+        Axis.CROP_X -> current.copy(cropX = GradeK().cropX)
+        Axis.CROP_Y -> current.copy(cropY = GradeK().cropY)
+        Axis.CROP_W -> current.copy(cropW = GradeK().cropW, cropX = GradeK().cropX)
+        Axis.CROP_H -> current.copy(cropH = GradeK().cropH, cropY = GradeK().cropY)
+        Axis.STRAIGHTEN -> current.copy(straightenDeg = GradeK().straightenDeg)
+        // COL-13: each split-tone slider resets independently to its GradeK
+        // default (hue -1 = off, balance 0 = midgray crossover). The wheel
+        // is a pad, not sliders — its double-tap reset is the wheel UI's
+        // own center reset, not an Axis.
+        Axis.SPLIT_SHADOW_HUE ->
+            current.copy(splitShadowHue = GradeK().splitShadowHue)
+        Axis.SPLIT_HIGHLIGHT_HUE ->
+            current.copy(splitHighlightHue = GradeK().splitHighlightHue)
+        Axis.SPLIT_BALANCE ->
+            current.copy(splitBalance = GradeK().splitBalance)
+    }
+
+    /**
+     * RAW-09: the crop sliders' full change chain — snap to the grid,
+     * then keep the rect valid and on its preset. Pure so the whole
+     * policy is JVM-testable without Compose:
+     *  - X/Y are TRANSLATION: the position moves, the size never does
+     *    (a moved rect keeps its ratio, so no lock runs) and the honest
+     *    range ends at 1 - size; a stored rect that was invalid
+     *    (hand-edited JSON) is normalized through clampRect first.
+     *  - W/H under a preset run the matching lock (the perpendicular
+     *    axis follows; position gives way before the ratio does), in
+     *    FREE they clamp to the remaining extent at the origin.
+     *  - Straighten snaps to the half-degree grid and clamps to ±15.
+     */
+    fun applyCropAxis(
+        axis: Axis,
+        value: Float,
+        grade: GradeK,
+        frameW: Int,
+        frameH: Int,
+    ): GradeK {
+        val r = CropState.clampRect(
+            CropState.RectF(grade.cropX, grade.cropY, grade.cropW, grade.cropH)
+        )
+        return when (axis) {
+            Axis.CROP_X -> {
+                val x = snapCropFraction(value).coerceIn(0f, 1f - r.w)
+                grade.copy(cropX = x, cropY = r.y, cropW = r.w, cropH = r.h)
+            }
+            Axis.CROP_Y -> {
+                val y = snapCropFraction(value).coerceIn(0f, 1f - r.h)
+                grade.copy(cropX = r.x, cropY = y, cropW = r.w, cropH = r.h)
+            }
+            Axis.CROP_W -> {
+                val w = snapCropFraction(value)
+                val rect = if (grade.cropAspect != CropState.ASPECT_FREE) {
+                    CropState.lockAspect(r.copy(w = w), grade.cropAspect, frameW, frameH)
+                } else {
+                    CropState.clampRect(
+                        r.copy(w = w.coerceIn(CropState.MIN_FRACTION, 1f - r.x))
+                    )
+                }
+                grade.copy(cropX = rect.x, cropY = rect.y, cropW = rect.w, cropH = rect.h)
+            }
+            Axis.CROP_H -> {
+                val h = snapCropFraction(value)
+                val rect = if (grade.cropAspect != CropState.ASPECT_FREE) {
+                    CropState.lockAspectHeight(r.copy(h = h), grade.cropAspect, frameW, frameH)
+                } else {
+                    CropState.clampRect(
+                        r.copy(h = h.coerceIn(CropState.MIN_FRACTION, 1f - r.y))
+                    )
+                }
+                grade.copy(cropX = rect.x, cropY = rect.y, cropW = rect.w, cropH = rect.h)
+            }
+            Axis.STRAIGHTEN -> grade.copy(
+                straightenDeg = snapStraighten(value).coerceIn(
+                    -CropState.STRAIGHTEN_MAX_DEG, CropState.STRAIGHTEN_MAX_DEG,
+                )
+            )
+            else -> grade
+        }
+    }
+
+    /**
+     * RAW-09: the honest slider range for a crop axis — the thumb never
+     * offers a position the [applyCropAxis] policy would clamp away:
+     *  - X/Y span the translation room (0 .. 1 - size, floored at one
+     *    tick so the default full rect never produces a degenerate
+     *    0..0 range).
+     *  - W/H in FREE span the frame minus the origin; under a preset
+     *    they span the preset's own extent (the widest/tallest on-ratio
+     *    rect, [CropState.aspectRect]) — beyond it the lock would cap
+     *    anyway.
+     *  - Straighten is the constant ±15 band.
+     * Unknown frame dims (0x0 before the first publish) degrade W/H to
+     * the FREE ranges, matching the locks' own guard.
+     */
+    fun cropAxisRange(
+        axis: Axis,
+        grade: GradeK,
+        frameW: Int,
+        frameH: Int,
+    ): ClosedFloatingPointRange<Float> {
+        val r = CropState.clampRect(
+            CropState.RectF(grade.cropX, grade.cropY, grade.cropW, grade.cropH)
+        )
+        return when (axis) {
+            Axis.CROP_X -> 0f..((1f - r.w).coerceAtLeast(CROP_FRACTION_STEP))
+            Axis.CROP_Y -> 0f..((1f - r.h).coerceAtLeast(CROP_FRACTION_STEP))
+            Axis.CROP_W -> {
+                val ratio = CropState.aspectRatio(grade.cropAspect)
+                if (ratio != null && frameW > 0 && frameH > 0) {
+                    CropState.MIN_FRACTION..CropState.aspectRect(ratio, frameW, frameH).w
+                } else {
+                    CropState.MIN_FRACTION..(1f - r.x)
+                }
+            }
+            Axis.CROP_H -> {
+                val ratio = CropState.aspectRatio(grade.cropAspect)
+                if (ratio != null && frameW > 0 && frameH > 0) {
+                    CropState.MIN_FRACTION..CropState.aspectRect(ratio, frameW, frameH).h
+                } else {
+                    CropState.MIN_FRACTION..(1f - r.y)
+                }
+            }
+            Axis.STRAIGHTEN ->
+                -CropState.STRAIGHTEN_MAX_DEG..CropState.STRAIGHTEN_MAX_DEG
+            else -> 0f..0f
+        }
     }
 
     /**

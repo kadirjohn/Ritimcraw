@@ -20,8 +20,8 @@
 // out-of-range values (HDR cubes) and the working space is scene-referred
 // linear, so >1 outputs are meaningful.
 //
-// COL-07 color-space definition. applyLut runs as develop stage 22, LAST
-// — after all grade stages and tonemapping (21), BEFORE the Rec.709 OETF
+// COL-07 color-space definition. applyLut runs as develop stage 24, LAST
+// — after all grade stages and tonemapping (23), BEFORE the Rec.709 OETF
 // that lives in the JNI bridge tail. Input: the pipeline's linear working
 // space, scene-referred linear RGB in Rec.709 primaries (post-grade,
 // post-tonemap). Output: the same space, handed to the OETF unchanged.
@@ -80,7 +80,7 @@ Result<Lut> parseCubeText(const std::string& text);
 // Same parser over a file (IoError when the path cannot be opened).
 Result<Lut> parseCubeFile(const std::string& path);
 
-// Stage 22 (COL-07): samples the table trilinearly at every pixel of the
+// Stage 24 (COL-07): samples the table trilinearly at every pixel of the
 // linear working-space image and blends by strength (see above). No-op
 // for a degenerate table (n < 2 or a mismatched row buffer) or a
 // strength that clamps to 0 — callers guard both, this keeps a direct

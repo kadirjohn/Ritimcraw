@@ -92,6 +92,44 @@ object Format {
         String.format(Locale.ROOT, "%.1f mm", mm)
 
     /**
+     * "+3.5°" / "-2.0°" / "+0.0°" — explicit sign, one decimal, for the
+     * straighten dial (RAW-09: a ±15° range with 0 as the default, exactly
+     * the formatEv situation — the sign keeps the readout width stable on
+     * the 0.5° step grid, tnum-friendly).
+     */
+    fun formatDeg(deg: Float): String =
+        String.format(Locale.ROOT, "%+.1f°", deg)
+
+    /**
+     * "37%" — the crop fraction sliders' readout (RAW-09): the stored
+     * fraction (0..1 of the frame) as a whole percent. %.0f ROUNDS, so a
+     * value on the 1 percent grid never displays one off (a truncating
+     * Int cast would turn 0.29999999f into "29%").
+     */
+    fun formatFractionPercent(fraction: Float): String =
+        String.format(Locale.ROOT, "%.0f%%", fraction * 100f)
+
+    /**
+     * "120°" — the split-tone hue sliders' readout (COL-13): whole
+     * degrees, no sign (the 0..359 hue circle has no zero-crossing; the
+     * degree glyph keeps the readout visually distinct from the signed
+     * straighten dial, which reads "+3.5°" with a sign).
+     */
+    fun formatHueDeg(hueDeg: Int): String =
+        String.format(Locale.ROOT, "%d°", hueDeg)
+
+    /**
+     * "+0.35" — the wheel pad's per-axis offset readout (COL-13): explicit
+     * sign, two decimals, matching the 0.05 snap grid exactly (every grid
+     * value renders two decimals, so the readout never rounds a stored
+     * value into display). The sign keeps the readout width stable across
+     * the zero crossing, tnum-friendly — the formatEv precedent at two
+     * decimals.
+     */
+    fun formatWheelOffset(offset: Float): String =
+        String.format(Locale.ROOT, "%+.2f", offset)
+
+    /**
      * Library/clip format line: "3840×2160 • 310 frames • RGGB". Segments
      * with non-positive values are omitted so a half-probed clip degrades
      * gracefully instead of showing "0×0"; an empty clip shows "".

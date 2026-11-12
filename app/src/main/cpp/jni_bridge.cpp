@@ -103,7 +103,7 @@ thread_local std::unique_ptr<rawedit::Lut> gLut;
 
 // Resolves the Kotlin lutPath argument into a table for this render.
 // Returns false ONLY on a parse failure (error state set, cache cleared —
-// the render fails loudly rather than silently dropping stage 20). Returns
+// the render fails loudly rather than silently dropping stage 24). Returns
 // true with *out == nullptr when no LUT is selected (null or empty path —
 // the old no-LUT look) or the path's file is missing (IoError is treated
 // as no-LUT: LutStore.pathFor already checked existence, but a file
@@ -683,7 +683,11 @@ int strideFor(const rawedit::FrameInfo& info, int maxDim) {
 // the Kotlin layer maps GradeK's 0..100 percent to rawedit's 0..1 blend
 // before the call, so the jfloat here is already native-scale. The noise
 // package (DN-01..08) appends its two floats, and the temporal package
-// (DN-05..09) its bool+float, last, in rawedit's native scale. developCpu
+// (DN-05..09) its bool+float, last, in rawedit's native scale. The color
+// package (COL-13) appends its nine floats after temporalStrength in Grade
+// order: six wheel offsets (unit-disc [-1,1], (0,0) neutral) and three
+// split-tone scalars (two hue degrees with -1 = off, balance -100..100).
+// developCpu
 // itself ignores the temporal fields (the bridge applies the stage to the
 // CFA before developCpu); they ride Grade so the whole grade pipeline
 // carries them like any other control.
@@ -694,7 +698,12 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
                                float sharpness, float detail, int tonemap,
                                float lutStrength,
                                float noiseReduction, float chromaDenoise,
-                               bool temporalNr, float temporalStrength) {
+                               bool temporalNr, float temporalStrength,
+                               float wheelShadowX, float wheelShadowY,
+                               float wheelMidX, float wheelMidY,
+                               float wheelHighX, float wheelHighY,
+                               float splitShadowHue, float splitHighlightHue,
+                               float splitBalance) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
@@ -717,6 +726,15 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.chromaDenoise = chromaDenoise;
     g.temporalNr = temporalNr;
     g.temporalStrength = temporalStrength;
+    g.wheelShadowX = wheelShadowX;
+    g.wheelShadowY = wheelShadowY;
+    g.wheelMidX = wheelMidX;
+    g.wheelMidY = wheelMidY;
+    g.wheelHighX = wheelHighX;
+    g.wheelHighY = wheelHighY;
+    g.splitShadowHue = splitShadowHue;
+    g.splitHighlightHue = splitHighlightHue;
+    g.splitBalance = splitBalance;
     return g;
 }
 
@@ -1278,12 +1296,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
         jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // render with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -1330,7 +1353,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
                                              temporalNr == JNI_TRUE,
-                                             temporalStrength),
+                                             temporalStrength,
+                                             wheelShadowX, wheelShadowY,
+                                             wheelMidX, wheelMidY,
+                                             wheelHighX, wheelHighY,
+                                             splitShadowHue, splitHighlightHue,
+                                             splitBalance),
                              lut, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -1363,12 +1391,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
         jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint maxDim) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // render with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -1427,7 +1460,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
                                              temporalNr == JNI_TRUE,
-                                             temporalStrength),
+                                             temporalStrength,
+                                             wheelShadowX, wheelShadowY,
+                                             wheelMidX, wheelMidY,
+                                             wheelHighX, wheelHighY,
+                                             splitShadowHue, splitHighlightHue,
+                                             splitBalance),
                              lut, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -1745,11 +1783,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
         jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
-    // 0. Resolve the stage-22 LUT first (COL-07): a parse failure fails the
+    // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // export frame with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -1795,7 +1838,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                             asShot, highlightReconstruction, keepVignetting,
                             sharpness, detail, tonemap, lutStrength,
                             noiseReduction, chromaDenoise,
-                            temporalNr == JNI_TRUE, temporalStrength),
+                            temporalNr == JNI_TRUE, temporalStrength,
+                            wheelShadowX, wheelShadowY,
+                            wheelMidX, wheelMidY,
+                            wheelHighX, wheelHighY,
+                            splitShadowHue, splitHighlightHue,
+                            splitBalance),
             lut);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
@@ -1973,10 +2021,80 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfo(
 // used (the Source lives only for this call), so the function is safe to
 // call from any single engine thread.
 
+// RAW-09 crop cut: the Kotlin layer passes the crop rect as fractions of
+// the EFFECTIVE-upright frame (the space the user sees and crops in). The
+// CFA pixels live in SOURCE space, and effective = source rotated CW by
+// effectiveDeg (the same convention the DNG Orientation tag uses), so the
+// fractions map through the rotation exactly like the JVM-tested
+// CropState.mapRect: a rect in effective space becomes
+//   90:  (y, 1-x-w, h, w)   180: (1-x-w, 1-y-h, w, h)
+//   270: (1-y-h, x, h, w)   else: unchanged
+// The mapped rect is then snapped to the 2x2 Bayer grid (even offsets and
+// sizes keep the CFA pattern phase intact — the same contract as
+// CropState.pixelRect(align = 2)) and the decoded CFA is cut to the window:
+// a plain copy, never a resample. Returns true when the cut was applied;
+// full-frame fractions leave the buffer untouched.
+static bool dngCropCut(std::vector<uint16_t>& cfa, rawedit::FrameInfo& info,
+                       int effectiveDeg,
+                       float cropX, float cropY, float cropW, float cropH) {
+    const bool full = cropX <= 0.0f && cropY <= 0.0f &&
+                      cropW >= 1.0f && cropH >= 1.0f;
+    if (full) return false;
+
+    const int width = static_cast<int>(info.width);
+    const int height = static_cast<int>(info.height);
+    if (width <= 0 || height <= 0) return false;
+
+    // Effective-space fractions -> source-space fractions (CropState.mapRect).
+    int deg = ((effectiveDeg % 360) + 360) % 360;
+    float fx = cropX, fy = cropY, fw = cropW, fh = cropH;
+    switch (deg) {
+        case 90:  fx = cropY; fy = 1.0f - cropX - cropW; fw = cropH; fh = cropW; break;
+        case 180: fx = 1.0f - cropX - cropW; fy = 1.0f - cropY - cropH; fw = cropW; fh = cropH; break;
+        case 270: fx = 1.0f - cropY - cropH; fy = cropX; fw = cropH; fh = cropW; break;
+        default: break;
+    }
+
+    // Source-space pixel window on the 2x2 Bayer grid (mirrors
+    // CropState.pixelRect with align = 2: round, align, clamp inside).
+    int x = static_cast<int>(std::lround(fx * width));
+    int y = static_cast<int>(std::lround(fy * height));
+    int w = static_cast<int>(std::lround(fw * width));
+    int h = static_cast<int>(std::lround(fh * height));
+    x -= x % 2; y -= y % 2;
+    w = std::max(w - w % 2, 2);
+    h = std::max(h - h % 2, 2);
+    if (x + w > width) x = std::max(width - w, 0);
+    if (y + h > height) y = std::max(height - h, 0);
+    w = std::min(w, width - x);
+    h = std::min(h, height - y);
+    if (w <= 0 || h <= 0) return false;
+
+    // Plain window copy: the selected region at native resolution, never
+    // stretched and never resampled (a raw mosaic must not be interpolated).
+    std::vector<uint16_t> cut(static_cast<size_t>(w * h));
+    for (int row = 0; row < h; ++row) {
+        const uint16_t* srcRow = cfa.data() + static_cast<size_t>(y + row) * width + x;
+        std::copy(srcRow, srcRow + w, cut.data() + static_cast<size_t>(row) * w);
+    }
+    cfa = std::move(cut);
+
+    // The cut frame is a whole "sensor" of its own: the DNG's dimensions and
+    // ActiveArea describe the cropped buffer from (0,0) — a reader must not
+    // see the original frame geometry. The orientation tag keeps the
+    // effective rotation (the reader still turns the pixels upright).
+    info.width = static_cast<uint32_t>(w);
+    info.height = static_cast<uint32_t>(h);
+    info.activeArea = rawedit::Rect{0, 0, w, h};
+    return true;
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
         JNIEnv* env, jclass, jint fd, jint frameIndex,
-        jint manualRotationDeg, jstring outPath) {
+        jint manualRotationDeg,
+        jfloat cropX, jfloat cropY, jfloat cropW, jfloat cropH,
+        jstring outPath) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
     const char* pathChars = env->GetStringUTFChars(outPath, nullptr);
@@ -2024,6 +2142,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
     info.orientationDeg = effectiveDeg;
     const rawedit::RawMeta& meta = src->rawMeta();
 
+    // 2b. RAW-09: cut the selected region from the decoded CFA before the
+    //     write. The fractions arrive in effective-upright space; the cut
+    //     maps them into source space, aligns to the 2x2 Bayer grid and
+    //     copies the window — native resolution, never stretched. The
+    //     straighten dial is deliberately NOT applied here: the raw mosaic
+    //     must not be resampled (documented RAW-09 skip).
+    dngCropCut(*frame.value, info, effectiveDeg,
+               cropX, cropY, cropW, cropH);
+
     // 3. Write the CFA DNG to the staging path (writeCfaDng removes a
     //    partial file on failure, so the staging file exists only on
     //    success — the Kotlin layer renames it into place).
@@ -2064,7 +2191,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDngExport(
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeLinearDngExport(
         JNIEnv* env, jclass, jint fd, jint frameIndex,
-        jint manualRotationDeg, jstring outPath) {
+        jint manualRotationDeg,
+        jfloat cropX, jfloat cropY, jfloat cropW, jfloat cropH,
+        jstring outPath) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
     const char* pathChars = env->GetStringUTFChars(outPath, nullptr);
@@ -2105,6 +2234,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeLinearDngExport(
         (((info.orientationDeg + manualRotationDeg) % 360) + 360) % 360;
     info.orientationDeg = effectiveDeg;
     const rawedit::RawMeta& meta = src->rawMeta();
+
+    // 2b. RAW-09: the crop cut runs BEFORE developLinear, so the demosaic
+    //     works on the selected region only (a cut after the demosaic would
+    //     leave the RGB buffer at full size). Same Bayer-aligned plain
+    //     window copy as the CFA arm; straighten is a documented skip.
+    dngCropCut(*frame.value, info, effectiveDeg,
+               cropX, cropY, cropW, cropH);
 
     // 3. The minimal linear develop (stage 1 + demosaic + WB; the stage list
     //    is recorded in the file's ImageDescription). A camera failure here
@@ -2169,10 +2305,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
-        jboolean temporalNr, jfloat temporalStrength) {
+        jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageDevelop;
-    // Resolve the stage-22 LUT first (COL-07): a parse failure fails the
+    // Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // develop with the lut error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
@@ -2180,7 +2321,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
     // no CFA and no neighbor frames available at this seam, so the two
     // fields travel for signature parity (one signature across every
     // develop entry point) and are ignored here. developEncoded never reads
-    // them; the encoded UI keeps the control MCRAW-gated.
+    // them; the encoded UI keeps the control MCRAW-gated. The color wheel /
+    // split-tone fields (COL-13) travel the same way: tone-band stages are
+    // MCRAW-only (the encoded path grades via its WB/temp/tint/exposure
+    // loop), so they ride the signature for parity and are ignored here.
 
     if (width <= 0 || height <= 0 || yPlane == nullptr || uPlane == nullptr ||
         (semiPlanar == JNI_FALSE && vPlane == nullptr)) {
@@ -2256,7 +2400,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             asShot, highlightReconstruction, keepVignetting,
                             sharpness, detail, tonemap, lutStrength,
                             noiseReduction, chromaDenoise,
-                            temporalNr == JNI_TRUE, temporalStrength),
+                            temporalNr == JNI_TRUE, temporalStrength,
+                            wheelShadowX, wheelShadowY,
+                            wheelMidX, wheelMidY,
+                            wheelHighX, wheelHighY,
+                            splitShadowHue, splitHighlightHue,
+                            splitBalance),
             isBt709 != JNI_FALSE, lut);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
