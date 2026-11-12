@@ -529,6 +529,72 @@ TEST_CASE("local_content_change_is_not_debiased_away") {
                   == c[static_cast<size_t>(y) * kLw + x]);
 }
 
+// Source-comparison item #10 (runtime sigma rescale: compare the metadata
+// sigma against the measured winner-MAD floor, rescale and re-run the taper
+// when they diverge >30%) was DROPPED, and the test below pins the reason:
+//
+// - OVERCLAIM direction (the ghost-risk direction #10 was designed for):
+//   redundant. Every admitted block must already pass the hard floor gate
+//   mad <= 3x floor, and the floor is measured from THIS pair's actual
+//   residuals (~0.399 sigma_true), so any admitted block sits at
+//   r0 <= 1.2 sigma_true where the sigma taper is identically 1.0 —
+//   shrinking the overclaimed sigma re-runs the taper on blocks whose
+//   confidence is already saturated, and rejects stay rejects. The floor
+//   gate, not the metadata sigma, bounds a content change under a
+//   grossly overclaimed profile (test below).
+// - UNDERCLAIM direction: unsafe, not just useless. The rescale's signal
+//   is the measured floor, and a CONTENT-INFLATED floor (textured clip)
+//   is indistinguishable from an underclaimed profile: rescaling sigma
+//   upward there admits blocks up to 3x the inflated floor, i.e.
+//   content. That is a ghost the current gates do not have.
+// - Real footage: on the 4K fixture the divergence is k = 0.342/0.399 =
+//   0.86 (probe_n3b s3), inside the 30% band — the trigger does not even
+//   fire, and simulating the rescale changed zero block decisions.
+
+TEST_CASE("overclaimed_noise_profile_cannot_admit_content_change") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    // True noise sigmaDn=5; the profile claims 30 (6x overclaim). One
+    // block brightens by 0.05 of range. Against the OVERCLAIMED sigma the
+    // changed block's zero-motion residual (~0.047 of range after the
+    // global de-bias) reads as r0 ~ 1.1 — inside the static band, full
+    // sigma-taper confidence — and the per-pixel 6-sigma guard, scaled by
+    // the same overclaim, sits far above the step: without the floor gate
+    // this profile would blend the brightened block in at full weight
+    // (a guaranteed ghost). The MEASURED floor (~0.0029 from the 15
+    // honest blocks) is what rejects it: 3 x 0.0029 = 0.0087 << 0.047.
+    auto oneBlockBrighter = [](uint32_t x, uint32_t y) {
+        if (x >= 128 && x < 256 && y >= 128 && y < 256)
+            return texture(x, y) + 0.05f;
+        return texture(x, y);
+    };
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, texture, 141, 5.0f);
+    std::vector<uint16_t> n =
+        makeFrame(kLw, kLw, oneBlockBrighter, 142, 5.0f);
+    const NoiseProfile overclaim = constantProfile(30.0f); // 6x the truth
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.centerNoise = &overclaim;
+    ts.prevNoise = &overclaim;
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, n.data(), nullptr, m, ts, out.data(), &rep);
+
+    // The 15 honest blocks still merge (an overclaim only ever loosens
+    // sigma-scaled gates; the measured-floor bound is what stays honest).
+    REQUIRE(rep.prev.eligible);
+    CHECK(rep.prev.acceptRate > 0.5f);
+    CHECK(rep.prev.acceptRate < 1.0f); // the changed block did NOT pass
+    // The changed block keeps the center EXACTLY in its interior (outside
+    // the feather bands, where it is the only candidate): rejected by the
+    // floor gate despite the overclaimed profile — precisely the safety
+    // the dropped #10 rescale was meant to add and cannot.
+    for (uint32_t y = 160; y < 224; ++y)
+        for (uint32_t x = 160; x < 224; ++x)
+            CHECK(out[static_cast<size_t>(y) * kLw + x]
+                  == c[static_cast<size_t>(y) * kLw + x]);
+}
+
 // ---- window clamping (DN-09) ----
 
 TEST_CASE("first_and_last_frame_clamp_window_no_crash") {
