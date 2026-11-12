@@ -1,16 +1,12 @@
 package com.ritim.ritimcraw.ui.editor
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -20,10 +16,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -35,35 +31,41 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import kotlin.math.exp
 import kotlin.math.max
 
 /**
- * Toggleable RGB + luma histogram over the preview (owner feature list
- * W5; the RGB extension of the owner's 2026-11-11 histogram spec, with
- * the RapidRAW study's display approach): a dark translucent panel
- * drawing the current frame's four 256-bin histograms
- * ([FrameHistogram.Result]) as filled, smoothed curves with thin crisp
- * outlines, plus shadow/highlight clipping indicators. Pure display —
- * the screen owns the toggle state and the per-frame recompute (on
- * Dispatchers.Default, inside the render pump's isFresh publish guard,
- * so a stale frame's histogram can never overwrite a newer one's);
- * nothing here touches the render pipeline.
+ * The histogram scope content (owner spec PLAY-10, 2026-11-12 §1 + the
+ * manager's design decision): the corner overlay's histogram UI moved
+ * INTO the scope strip — the feature is preserved whole (RGB/Luma/
+ * Parade modes, display-only smoothing, clipping indicators), but it
+ * is no longer an overlay on the image (§2: "Görüntünün üzerine
+ * bindirme"). [ScopeStrip] composes this view as its HISTOGRAM content
+ * under the strip's Histogram | Waveform selector; the corner scope
+ * toggle opens the strip. Pure display — the screen owns the open
+ * flag and the per-frame recompute (its scope compute effect, off the
+ * UI thread); nothing here touches the render pipeline.
  *
- * MODES: compact shows the combined RGB view (the three channel fills
- * + a subtle grey luma outline on top, the owner's Lightroom-style
- * improvement over RapidRAW); tapping the graph expands it with a mode
- * switch — RGB (combined), Luma (the grey curve alone) and Parade
- * (three side-by-side channel graphs, one common scale so relative
- * channel levels read). Mode and expanded state are rememberSaveable
- * INSIDE this composable so the screen's wiring stays one call.
+ * WHAT CHANGED from the overlay shape: the strip is a full-width row
+ * of the workspace, so the adaptive size caps, the scrimmed panel, the
+ * expand/collapse tap and the below-panel badge are gone. The graph
+ * takes [ScopeGraphHeight] and the clipped badge moves into the fixed
+ * [ScopeLabelBandHeight] band (HEIGHT STABILITY in ScopeStrip's KDoc:
+ * the strip's height never changes on a clipping-state change, so the
+ * panel anchors below never churn mid-session). The mode row is
+ * always visible — the strip IS the expanded scope; there is no
+ * compact shape to save space for. The mode stays saveable INSIDE
+ * this composable (the overlay's precedent): it is internal to the
+ * histogram content — the waveform does not share it — so the screen's
+ * wiring stays one call.
+ *
+ * MODES: RGB (combined) — the three channel fills + a subtle grey luma
+ * outline on top, the owner's Lightroom-style improvement over
+ * RapidRAW; Luma — the grey curve alone; Parade — three side-by-side
+ * channel graphs, one common scale so relative channel levels read.
  *
  * CHANNEL COLORS ARE LITERAL, NOT ROLES — the one documented exception
  * to DESIGN.md's roles-never-hex rule: the red/green/blue channel
@@ -92,38 +94,28 @@ import kotlin.math.max
  * bottom-left for shadow clipping, bottom-right for highlight
  * clipping, one dot per slot (R/G/B in channel colors, luma in grey)
  * that clips beyond the documented 0.1% threshold. The "Clipped" text
- * badge (the existing string, reused) sits BELOW the panel in both
- * shapes — the old placement, in the bottom band at the Start side
- * where the BottomEnd refresh chip is not.
- *
- * SIZES/PLACEMENT (the screen aligns the overlay at the preview's
- * BottomStart with an 8dp inset): compact is the spec's 160x85dp; the
- * expanded panel's width is capped so the BottomEnd refresh chip keeps
- * its clearance (widest chip label ~175dp + insets -> panel <= screen
- * width - 210dp, floor 160dp, ceiling 280dp) and its height is capped
- * to the bounded preview region (EditorLayout's 0.38 fraction minus
- * the mode row and badge) so portrait, landscape and fullscreen all
- * keep the panel inside the preview and off the transport row.
- * animateContentSize softens the compact/expanded transition.
+ * badge (the existing string, reused) sits in the fixed label band at
+ * the Start side — the strip's own bottom row, where the waveform's
+ * signal label also sits.
  *
  * PERFORMANCE: the per-frame work is one pass in FrameHistogram (off
- * the UI thread, commit 1); here the smoothed/normalized display
- * arrays are remembered per result (recomputed once per published
- * frame, not per draw), and the draw itself is Canvas + Path with no
- * chart library. Update frequency is bounded by the render pump's
- * publish rate; drawing never blocks on computation.
+ * the UI thread, in the screen's scope compute effect); here the
+ * smoothed/normalized display arrays are remembered per result
+ * (recomputed once per published frame, not per draw), and the draw
+ * itself is Canvas + Path with no chart library. Update frequency is
+ * bounded by the scope compute effect's cadence; drawing never blocks
+ * on computation.
  */
 @Composable
-fun HistogramOverlay(
+fun HistogramScopeView(
     result: FrameHistogram.Result,
     modifier: Modifier = Modifier,
 ) {
-    // View state lives INSIDE the overlay so the screen's wiring stays
-    // one call (surgical footprint): saveable like the screen's tab and
-    // fullscreen flags, so a rotation keeps the mode and expansion.
-    var expanded by rememberSaveable { mutableStateOf(false) }
+    // The histogram's own mode, saveable like the overlay kept it (see
+    // the KDoc). Coerced: the ordinal crosses process-death
+    // save/restore; a stale value must select the nearest real mode.
     var modeOrdinal by rememberSaveable { mutableIntStateOf(HistogramMode.RGB.ordinal) }
-    val mode = HistogramMode.entries[modeOrdinal]
+    val mode = HistogramMode.entries[modeOrdinal.coerceIn(0, HistogramMode.entries.lastIndex)]
 
     // Resolved OUTSIDE the Canvas draw lambda (draw lambdas are not
     // composables). Roles for everything except the channel identity
@@ -138,145 +130,84 @@ fun HistogramOverlay(
         FrameHistogram.Channel.LUMA to lumaColor,
     )
 
-    // Adaptive expanded geometry (see the KDoc SIZES/PLACEMENT): wide
-    // enough to read, never wide/tall enough to reach the refresh chip
-    // or leave the bounded preview region in any orientation.
-    val screenWidthDp = LocalConfiguration.current.screenWidthDp
-    val screenHeightDp = LocalConfiguration.current.screenHeightDp
-    // Width cap keeps the BottomEnd refresh chip's clearance: the widest
-    // chip label ("Onizlemeyi yenile", ~175dp) + its 8dp inset + a gap.
-    // The expanded panel also sits ABOVE the chip's band (see the height
-    // formula), so at large font scales the two never fight for pixels.
-    val expandedWidth = (screenWidthDp - 210).coerceIn(160, 280).dp
-    // The expanded panel must fit INSIDE the bounded preview region
-    // (EditorLayout.PREVIEW_HEIGHT_FRACTION of the screen) and clear the
-    // TopStart toggle's band (8dp inset + 56dp = 64dp): the panel is
-    // bottom-anchored at an 8dp inset, so the graph gets the preview
-    // height minus that 64dp band, minus the panel's own chrome (mode
-    // row ~40dp + padding 12dp + spacer 6dp = 58) and the below-panel
-    // badge (~32dp with its gap) when it shows. Typical portrait previews
-    // clear everything and hit the 150dp cap; a very short preview
-    // (landscape phones) floors the graph at 36dp, where the panel may
-    // reach into the toggle's band — the toggle is the histogram's OWN
-    // control and redundant while expanded (tapping the graph
-    // collapses), and the panel never reaches the top bar (it never
-    // leaves the preview Box) nor the refresh chip (the width cap keeps
-    // the chip's horizontal clearance; the badge stays at the Start
-    // side, where the chip is not).
-    val expandedGraphHeight = (
-        (screenHeightDp * EditorLayout.PREVIEW_HEIGHT_FRACTION).toInt() -
-            130 - if (result.isClipped()) 32 else 0
-        ).coerceIn(36, 150).dp
-    // Compact panel = the spec's 85dp: 6dp padding top + 73dp graph +
-    // 6dp padding bottom. The full 85dp keeps the same footprint as the
-    // old luma overlay, so the preview's other corner controls and the
-    // refresh chip's clearance are unaffected.
-    val compactGraphHeight = 73.dp
-
-    // The compact view always draws the combined RGB set; the saved
-    // mode applies once expanded. Keying the display computation on the
-    // EFFECTIVE mode keeps both views' scales consistent with what is
-    // on screen.
-    val effectiveMode = if (expanded) mode else HistogramMode.RGB
     // Display-only smoothing + normalization, remembered per result so
     // it recomputes once per published frame, not per draw. The raw
     // counts are never touched.
-    val display = remember(result, effectiveMode) {
-        HistogramDisplay.compute(result, effectiveMode)
+    val display = remember(result, mode) {
+        HistogramDisplay.compute(result, mode)
     }
     // Clip indicators read the RAW counts (not the smoothed display).
     val shadowClipSlots = FrameHistogram.Channel.entries.filter { result.isBlackClipped(it) }
     val highlightClipSlots = FrameHistogram.Channel.entries.filter { result.isWhiteClipped(it) }
 
-    val description = stringResource(
-        if (expanded) R.string.editor_histogram_collapse else R.string.editor_histogram_expand
-    )
-
     Column(modifier) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.7f),
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            shape = MaterialTheme.shapes.small,
-            modifier = Modifier
-                .widthIn(max = if (expanded) expandedWidth else 160.dp)
-                .animateContentSize(),
-        ) {
-            Column(Modifier.padding(6.dp)) {
-                if (expanded) {
-                    // Mode switch: RGB / Luma / Parade. The labels are
-                    // literal codes in every locale (owner spec: mode
-                    // names stay untranslated), like ACES/AgX do.
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        HistogramMode.entries.forEachIndexed { index, m ->
-                            SegmentedButton(
-                                selected = m == mode,
-                                onClick = { modeOrdinal = m.ordinal },
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = index,
-                                    count = HistogramMode.entries.size,
-                                ),
-                            ) {
-                                Text(m.label)
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                }
-                // The GRAPH is the tap target, not the panel: clickable
-                // merges descendant semantics, so a clickable Surface
-                // would swallow the mode row's buttons for TalkBack.
-                // The graph carries the toggle action and its
-                // description; the mode row stays its own nodes.
-                Canvas(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(if (expanded) expandedGraphHeight else compactGraphHeight)
-                        .clickable { expanded = !expanded }
-                        .semantics { contentDescription = description },
+        // Mode switch: RGB / Luma / Parade. The labels are literal
+        // codes in every locale (owner spec: mode names stay
+        // untranslated), like ACES/AgX do.
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            HistogramMode.entries.forEachIndexed { index, m ->
+                SegmentedButton(
+                    selected = m == mode,
+                    onClick = { modeOrdinal = m.ordinal },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = HistogramMode.entries.size,
+                    ),
                 ) {
-                    if (effectiveMode == HistogramMode.PARADE) {
-                        drawParade(display, channelColors, gridColor, dotBackingColor,
-                            shadowClipSlots, highlightClipSlots)
-                    } else {
-                        drawGrid(gridColor)
-                        // Draw order blue -> green -> red: with SrcOver
-                        // fills the overlap mixes like Lightroom's, and
-                        // the red channel reads on top.
-                        if (effectiveMode == HistogramMode.RGB) {
-                            drawCurve(display, FrameHistogram.Channel.BLUE, BlueChannelColor)
-                            drawCurve(display, FrameHistogram.Channel.GREEN, GreenChannelColor)
-                            drawCurve(display, FrameHistogram.Channel.RED, RedChannelColor)
-                            // The subtle grey luma outline ON TOP of the
-                            // RGB fills (owner's improvement over the
-                            // RapidRAW reference): outline only, no fill,
-                            // so it never obscures the channels.
-                            drawOutline(display, FrameHistogram.Channel.LUMA, lumaColor)
-                        } else {
-                            drawCurve(display, FrameHistogram.Channel.LUMA, lumaColor)
-                        }
-                        drawClipDots(shadowClipSlots, channelColors, dotBackingColor,
-                            anchorStart = true, boundsWidth = size.width)
-                        drawClipDots(highlightClipSlots, channelColors, dotBackingColor,
-                            anchorStart = false, boundsWidth = size.width)
-                    }
+                    Text(m.label)
                 }
             }
         }
-        // The clipped badge (the existing string, reused) sits BELOW the
-        // panel in BOTH shapes — the old placement, in the bottom band at
-        // the Start side where the BottomEnd refresh chip is not.
-        if (result.isClipped()) {
-            Surface(
-                color = MaterialTheme.colorScheme.errorContainer,
-                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.padding(top = 4.dp),
-            ) {
-                Text(
-                    stringResource(R.string.editor_histogram_clipped),
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                )
+        Spacer(Modifier.height(6.dp))
+        Canvas(Modifier.fillMaxWidth().height(ScopeGraphHeight)) {
+            if (mode == HistogramMode.PARADE) {
+                drawParade(display, channelColors, gridColor, dotBackingColor,
+                    shadowClipSlots, highlightClipSlots)
+            } else {
+                drawGrid(gridColor)
+                // Draw order blue -> green -> red: with SrcOver fills
+                // the overlap mixes like Lightroom's, and the red
+                // channel reads on top.
+                if (mode == HistogramMode.RGB) {
+                    drawCurve(display, FrameHistogram.Channel.BLUE, BlueChannelColor)
+                    drawCurve(display, FrameHistogram.Channel.GREEN, GreenChannelColor)
+                    drawCurve(display, FrameHistogram.Channel.RED, RedChannelColor)
+                    // The subtle grey luma outline ON TOP of the RGB
+                    // fills (owner's improvement over the RapidRAW
+                    // reference): outline only, no fill, so it never
+                    // obscures the channels.
+                    drawOutline(display, FrameHistogram.Channel.LUMA, lumaColor)
+                } else {
+                    drawCurve(display, FrameHistogram.Channel.LUMA, lumaColor)
+                }
+                drawClipDots(shadowClipSlots, channelColors, dotBackingColor,
+                    anchorStart = true, boundsWidth = size.width)
+                drawClipDots(highlightClipSlots, channelColors, dotBackingColor,
+                    anchorStart = false, boundsWidth = size.width)
+            }
+        }
+        // The fixed label band (HEIGHT STABILITY): the clipped badge —
+        // the existing string, reused — at the Start side, where the
+        // waveform's signal label also sits. The band is reserved even
+        // when nothing clips, so the strip's height never changes on a
+        // clipping-state change and the panel anchors below never
+        // churn.
+        Box(
+            Modifier.fillMaxWidth().height(ScopeLabelBandHeight),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (result.isClipped()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.small,
+                ) {
+                    Text(
+                        stringResource(R.string.editor_histogram_clipped),
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
             }
         }
     }
@@ -551,52 +482,8 @@ internal object HistogramDisplay {
 }
 
 // Channel identity colors — the documented exception to roles-never-hex
-// (see HistogramOverlay's KDoc): a channel's color IS its meaning, and
+// (see HistogramScopeView's KDoc): a channel's color IS its meaning, and
 // these RapidRAW-studied values are tuned for the dark scrim.
 private val RedChannelColor = Color(0xFFFF6B6B)
 private val GreenChannelColor = Color(0xFF6BCB77)
 private val BlueChannelColor = Color(0xFF4D96FF)
-
-/**
- * The histogram toggle: a stock M3 IconButton (48dp target, DESIGN.md
- * Inputs) with the vendored bar_chart glyph, placed by the screen at
- * the preview's TopStart corner — the mirror of the fullscreen TopEnd
- * toggle, so the preview's corner icon buttons read as one group. The
- * button's content description carries the toggle state for TalkBack
- * (the action it will perform, like the fullscreen toggle's "Exit
- * fullscreen"); the glyph itself stays decorative.
- *
- * Scrim behind the glyph (owner finding 2026-11-11): over overexposed
- * near-white footage the white icon glyphs of ALL preview corner
- * controls vanished into the frame. The toggle carries the same
- * translucent surfaceContainerLowest scrim (roles, never hex —
- * DESIGN.md; this file's own overlay backdrop is the precedent) at the
- * theme's small shape as the fullscreen and refresh controls. The
- * Surface wraps, not replaces, the IconButton — the 48dp touch target
- * and the click path are unchanged.
- */
-@Composable
-fun HistogramToggleButton(
-    visible: Boolean,
-    onToggle: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val description = stringResource(
-        if (visible) R.string.editor_histogram_hide else R.string.editor_histogram
-    )
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
-        shape = MaterialTheme.shapes.small,
-        modifier = modifier,
-    ) {
-        IconButton(
-            onClick = onToggle,
-            modifier = Modifier.semantics { contentDescription = description },
-        ) {
-            Icon(
-                painter = painterResource(R.drawable.ic_histogram),
-                contentDescription = null,
-            )
-        }
-    }
-}

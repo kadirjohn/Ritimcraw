@@ -143,10 +143,11 @@
     <string name="editor_fullscreen">Fullscreen</string>
     <string name="editor_fullscreen_exit">Exit fullscreen</string>
     <string name="editor_histogram">Histogram</string>
-    <string name="editor_histogram_hide">Hide histogram</string>
     <string name="editor_histogram_clipped">Clipped</string>
-    <string name="editor_histogram_expand">Expand histogram</string>
-    <string name="editor_histogram_collapse">Collapse histogram</string>
+    <string name="editor_scope_waveform">Waveform</string>
+    <string name="editor_scope_show">Show scope</string>
+    <string name="editor_scope_hide">Hide scope</string>
+    <string name="editor_scope_signal">Preview · BT.709</string>
     <string name="export_queued_snackbar">Export queued — see Exports</string>
     <string name="editor_not_loaded_title">Clip not open</string>
     <string name="editor_not_loaded_body">The clip could not be opened by the native engine in this build. Recovery: reopen the clip from the library once the engine build is enabled.</string>

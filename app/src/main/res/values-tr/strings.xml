@@ -143,10 +143,11 @@
     <string name="editor_fullscreen">Tam ekran</string>
     <string name="editor_fullscreen_exit">Tam ekrandan çık</string>
     <string name="editor_histogram">Histogram</string>
-    <string name="editor_histogram_hide">Histogramı gizle</string>
     <string name="editor_histogram_clipped">Kırpıldı</string>
-    <string name="editor_histogram_expand">Histogramı büyüt</string>
-    <string name="editor_histogram_collapse">Histogramı küçült</string>
+    <string name="editor_scope_waveform">Waveform</string>
+    <string name="editor_scope_show">Scope\'u göster</string>
+    <string name="editor_scope_hide">Scope\'u gizle</string>
+    <string name="editor_scope_signal">Önizleme · BT.709</string>
     <string name="export_queued_snackbar">Dışa aktarım sıraya alındı — Dışa aktarımlar sekmesine bakın</string>
     <string name="editor_not_loaded_title">Klip açılamadı</string>
     <string name="editor_not_loaded_body">Klip bu derlemede yerel motorla açılamadı. Çözüm: motor derlemesi etkinleştirildikten sonra klibi kitaplıktan yeniden açın.</string>

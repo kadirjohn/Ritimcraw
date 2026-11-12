@@ -411,7 +411,7 @@ object WaveformDisplay {
 /**
  * The R/G/B channel identity colors, packed opaque ARGB — the same
  * RapidRAW-studied values as the histogram overlay's documented
- * roles-never-hex exception (see HistogramOverlay's KDoc): a channel's
+ * roles-never-hex exception (see HistogramScopeView's KDoc): a channel's
  * color IS its meaning. Packed ints (not Compose Color) so the pure
  * render stays JVM-testable without Compose.
  */
