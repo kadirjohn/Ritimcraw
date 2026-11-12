@@ -26,7 +26,8 @@
     <string name="library_import_failed_access">İçe aktarma başarısız oldu: dosya erişimi verilmedi ya da kaldırıldı (%1$s). Çözüm: klibi yeniden seçin ve erişime izin verin.</string>
     <string name="library_import_failed_storage">İçe aktarma başarısız oldu: dosya depolamadan okunamadı (%1$s). Çözüm: klibin hâlâ mevcut olduğunu kontrol edin, sonra yeniden seçin.</string>
     <string name="library_import_failed_unknown">İçe aktarma başarısız oldu: %1$s. Çözüm: klibi özgün konumundan yeniden seçin.</string>
-    <string name="library_import_done">İçe aktarıldı</string>
+    <string name="library_import_done">Video içe aktarıldı</string>
+    <string name="library_import_done_with_gyro">Video içe aktarıldı · jiro verisiyle</string>
     <string name="library_selection_count">%1$d öğe seçildi</string>
     <string name="library_selection_close">Seçimden çık</string>
     <string name="library_selection_delete">Klipleri sil</string>
@@ -214,7 +215,7 @@
     <string name="settings_gyro_folder_body">MotionCam .gcsv jiro kayıtlarınızın bulunduğu klasörü seçin. Bir kayıtla aynı adlı yeni içe aktarımlar kaydı otomatik olarak ekler.</string>
     <string name="settings_gyro_folder_none">Ayarlanmadı — .gcsv jiro kayıtlarınızın bulunduğu klasörü seçmek için dokunun</string>
     <string name="settings_gyro_folder_set">Geçerli: %1$s — değiştirmek için dokunun</string>
-    <string name="gyro_auto_attached_snackbar">Jiro verisi eklendi</string>
+    <string name="gyro_auto_attached">Jiro verisi eklendi</string>
     <string name="gyro_folder_hint_snackbar">Bir MotionCam klibi içe aktarın; aynı adlı .gcsv jiro kaydı otomatik olarak eklenebilir. Jiro klasörünü seçelim mi?</string>
     <string name="gyro_folder_hint_action">Klasör seç</string>
     <string name="gyro_ambiguous_title">Birden çok jiro kaydı eşleşiyor</string>
