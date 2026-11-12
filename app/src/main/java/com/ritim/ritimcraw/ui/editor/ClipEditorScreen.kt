@@ -1,5 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
+import android.os.SystemClock
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -45,6 +47,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -93,6 +96,44 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * The scope compute pacing window (owner spec PLAY-10, 2026-11-12 §7:
+ * "~10 scope updates/sec during playback, tuned with measured cost"):
+ * at most one compute per window, always on the newest published frame
+ * (see the scope compute effect). The measurement tooling — the strip's
+ * Hz readout and the "ritim-scope" logcat line — exists to validate
+ * this number on a device.
+ */
+private const val ScopeComputePeriodMs = 100L
+
+/**
+ * The scope's trailing-1s compute-rate meter — the Hz readout's source
+ * (see the scope compute effect). A plain class, no Compose: the screen
+ * holds ONE per clip (remember keyed to it) so the history survives the
+ * compute effect's restarts — a mode or sampling switch must not zero
+ * the readout — while the effect's pacing anchor deliberately DOES
+ * reset, so a switch recomputes the current frame immediately.
+ */
+private class ScopeRateMeter {
+    private val computeAt = ArrayDeque<Long>()
+
+    /** Records a compute at [nowMs]; returns the trailing-1s count. */
+    fun record(nowMs: Long): Int {
+        computeAt.addLast(nowMs)
+        return prune(nowMs)
+    }
+
+    /** The trailing-1s count without recording (the decay ticker). */
+    fun rate(nowMs: Long): Int = prune(nowMs)
+
+    private fun prune(nowMs: Long): Int {
+        while (computeAt.isNotEmpty() && nowMs - computeAt.first() > 1_000L) {
+            computeAt.removeFirst()
+        }
+        return computeAt.size
+    }
+}
 
 /**
  * Pure preview-area decision logic (JVM-testable without Compose): which
@@ -468,10 +509,28 @@ fun ClipEditorScreen(
         var scopeOpen by rememberSaveable { mutableStateOf(false) }
         var scopeContent by rememberSaveable { mutableStateOf(ScopeContent.WAVEFORM) }
         var waveformModeOrdinal by rememberSaveable { mutableStateOf(WaveformMode.LUMA.ordinal) }
+        // Sampling quality (spec §6): scope-ONLY resolution — it changes
+        // how many pixels each waveform pass samples, never the source /
+        // preview / export pipeline. Saveable like the mode; keyed into
+        // the compute effect so a change while paused recomputes the
+        // CURRENT frame at the new quality immediately.
+        var scopeSamplingOrdinal by rememberSaveable {
+            mutableStateOf(WaveformScope.Sampling.MEDIUM.ordinal)
+        }
         var histogram by remember(sourceId) { mutableStateOf(FrameHistogram.of(null)) }
         var waveformRendered by remember(sourceId) {
             mutableStateOf<WaveformDisplay.Rendered?>(null)
         }
+        // Measurement (spec §7: "~10 scope updates/sec during playback,
+        // tuned with measured cost"): every compute records into the
+        // clip's ScopeRateMeter and logs one line to logcat tag
+        // "ritim-scope"; the trailing-1s count lands in scopeHz (read
+        // by the strip's label band in Tnum). The meter is remembered
+        // per clip so its history survives the compute effect's
+        // restarts; scopeHz itself is not saveable — a fresh session
+        // measures fresh.
+        val scopeMeter = remember(sourceId) { ScopeRateMeter() }
+        var scopeHz by remember { mutableIntStateOf(0) }
         // The strip's measured height for the anchor math — measured via
         // onSizeChanged like the transport (its chrome varies with font
         // scale), never assumed. The strip is simply NOT composed when
@@ -1010,31 +1069,66 @@ fun ClipEditorScreen(
         // - CLOSED -> return BEFORE snapshotFlow: `frame` is never even
         //   observed, so a closed scope does ZERO per-frame work (spec:
         //   "Scope kapalıyken hesabı durdur").
-        // - The keys are (open, content, waveform mode, clip): a mode or
-        //   content switch while paused RESTARTS the effect and
-        //   snapshotFlow re-emits the CURRENT frame — the scope matches
-        //   the last frame immediately, no re-render needed (spec: after
-        //   pause/seek/grade change/reset the scope matches the frame).
+        // - The keys are (open, content, waveform mode, sampling, clip):
+        //   a mode, content or sampling switch while paused RESTARTS the
+        //   effect and snapshotFlow re-emits the CURRENT frame — the
+        //   scope matches the last frame immediately, no re-render
+        //   needed (spec: after pause/seek/grade change/reset the scope
+        //   matches the frame).
         // - collectLatest = latest-wins (spec: "yeni kare gelirse eski
         //   hesap iptal"): a frame published while a compute still runs
         //   cancels it; computes are never queued and results never land
         //   out of publication order.
-        // Content and mode are captured at launch (not re-read mid-flow):
-        // this effect instance IS those key values — a switch restarts
-        // it, so a mid-flight block can never compute a half-switched
-        // combination. The histogram is computed whenever the strip is
-        // open (sub-millisecond: strided to FrameHistogram.MAX_SAMPLES),
-        // so the Histogram | Waveform selector is a pure UI switch; the
-        // waveform pass runs only for the WAVEFORM content. Sampling is
-        // fixed at MEDIUM for now — the quality selector is a follow-up
-        // (spec §6), and it will key this same effect.
-        LaunchedEffect(scopeOpen, scopeContent, waveformModeOrdinal, sourceId) {
+        // - THROTTLE-LATEST PACING (spec §7: "~10 scope updates/sec during
+        //   playback, tuned with measured cost"): each block first waits
+        //   out the remainder of the [ScopeComputePeriodMs] window since
+        //   the last COMPLETED compute. A newer frame during the wait
+        //   cancels the block — killing only a delay — and the new block
+        //   re-arms against the same window anchor. So during playback
+        //   at most ~10 computes/sec run, ALWAYS on the newest frame,
+        //   while the first change after a quiet period (pause, seek,
+        //   grade change) computes immediately. Deliberately NOT the
+        //   sample() operator: the newest frame must never be dropped,
+        //   and the window must anchor to the last compute, not to
+        //   collection start.
+        // Content, mode and sampling are captured at launch (not re-read
+        // mid-flow): this effect instance IS those key values — a switch
+        // restarts it, so a mid-flight block can never compute a
+        // half-switched combination. The histogram is computed whenever
+        // the strip is open (sub-millisecond: strided to
+        // FrameHistogram.MAX_SAMPLES), so the Histogram | Waveform
+        // selector is a pure UI switch; the waveform pass runs only for
+        // the WAVEFORM content, at the user's sampling quality (spec §6:
+        // scope-ONLY resolution — the source/preview/export pipeline is
+        // untouched).
+        // MEASUREMENT TOOLING (spec §7 "tuned with measured cost"): every
+        // compute logs one line to logcat tag "ritim-scope" (mode,
+        // sampling, frame size, elapsed ms) and records into the
+        // screen's ScopeRateMeter — the trailing-1s count the strip
+        // renders as its Hz readout (the meter outlives this effect's
+        // restarts; the decay ticker below drains the readout when
+        // computes stop). The device pass confirms the pacing and the
+        // per-compute cost from either.
+        LaunchedEffect(scopeOpen, scopeContent, waveformModeOrdinal, scopeSamplingOrdinal, sourceId) {
             if (!scopeOpen) return@LaunchedEffect
             val content = scopeContent
             val mode = WaveformMode.entries[
                 waveformModeOrdinal.coerceIn(0, WaveformMode.entries.lastIndex)
             ]
+            val sampling = WaveformScope.Sampling.entries[
+                scopeSamplingOrdinal.coerceIn(0, WaveformScope.Sampling.entries.lastIndex)
+            ]
+            // The pacing anchor: 0 at launch, so the first compute after
+            // a (re)start — open, mode, content or sampling switch —
+            // runs immediately (the scope matches the current frame
+            // right away); only then does the window arm.
+            var lastComputeAt = 0L
             snapshotFlow { frame }.collectLatest { f ->
+                val since = SystemClock.elapsedRealtime() - lastComputeAt
+                if (since < ScopeComputePeriodMs) {
+                    delay(ScopeComputePeriodMs - since)
+                }
+                val startedAt = SystemClock.elapsedRealtime()
                 if (f == null) {
                     histogram = FrameHistogram.of(null)
                     waveformRendered = null
@@ -1045,15 +1139,36 @@ fun ClipEditorScreen(
                     if (content == ScopeContent.WAVEFORM) {
                         waveformRendered = withContext(Dispatchers.Default) {
                             WaveformDisplay.render(
-                                WaveformScope.of(
-                                    f.argb, f.width, f.height, mode,
-                                    WaveformScope.Sampling.MEDIUM,
-                                ),
+                                WaveformScope.of(f.argb, f.width, f.height, mode, sampling),
                                 mode,
                             )
                         }
                     }
                 }
+                lastComputeAt = SystemClock.elapsedRealtime()
+                scopeHz = scopeMeter.record(lastComputeAt)
+                Log.d(
+                    "ritim-scope",
+                    "compute mode=${mode.name} sampling=${sampling.name} " +
+                        "frame=${f?.width ?: 0}x${f?.height ?: 0} " +
+                        "elapsedMs=${lastComputeAt - startedAt}",
+                )
+            }
+        }
+
+        // The Hz readout's decay: a paused scope must not freeze at its
+        // last playback rate. While the strip is open, a slow ticker
+        // re-reads the meter — its trailing-1s prune drops computes as
+        // they age out, so the readout falls to 0 about a second after
+        // the last compute. Cancellation is the off switch: closing the
+        // strip or leaving the screen cancels the delay, and the loop
+        // with it (the strip is not composed while closed, so the
+        // frozen value is never shown).
+        LaunchedEffect(scopeOpen) {
+            if (!scopeOpen) return@LaunchedEffect
+            while (true) {
+                scopeHz = scopeMeter.rate(SystemClock.elapsedRealtime())
+                delay(500)
             }
         }
 
@@ -1622,6 +1737,9 @@ fun ClipEditorScreen(
                     waveform = waveformRendered,
                     waveformModeOrdinal = waveformModeOrdinal,
                     onWaveformModeChange = { waveformModeOrdinal = it },
+                    samplingOrdinal = scopeSamplingOrdinal,
+                    onSamplingChange = { scopeSamplingOrdinal = it },
+                    hz = scopeHz,
                     modifier = Modifier.onSizeChanged { scopeStripHeight = it.height },
                 )
             }

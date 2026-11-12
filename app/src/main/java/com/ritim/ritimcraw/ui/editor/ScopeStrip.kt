@@ -2,7 +2,6 @@ package com.ritim.ritimcraw.ui.editor
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +31,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.ui.theme.Tnum
 
 /**
  * THE SCOPE STRIP (owner spec PLAY-10, 2026-11-12 §2 + the manager's
@@ -94,7 +95,10 @@ internal val ScopeLabelBandHeight = 26.dp
  * [waveform] its pre-rendered waveform pixels — both computed off the UI
  * thread from the CURRENT published frame by the screen's scope compute
  * effect (spec §7: closed strip = the compute stops entirely), null/empty
- * until the first frame publishes.
+ * until the first frame publishes. The sampling params carry the
+ * waveform pass's quality choice (spec §6) and [hz] its measured compute
+ * rate (spec §7 pacing validation) — screen state, keyed where the
+ * compute is keyed.
  */
 @Composable
 fun ScopeStrip(
@@ -105,6 +109,9 @@ fun ScopeStrip(
     waveform: WaveformDisplay.Rendered?,
     waveformModeOrdinal: Int,
     onWaveformModeChange: (Int) -> Unit,
+    samplingOrdinal: Int,
+    onSamplingChange: (Int) -> Unit,
+    hz: Int,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -145,6 +152,9 @@ fun ScopeStrip(
                     rendered = waveform,
                     modeOrdinal = waveformModeOrdinal,
                     onModeChange = onWaveformModeChange,
+                    samplingOrdinal = samplingOrdinal,
+                    onSamplingChange = onSamplingChange,
+                    hz = hz,
                 )
             } else {
                 HistogramScopeView(
@@ -170,13 +180,19 @@ fun ScopeStrip(
  * The mode selector (Luma / Overlay / Parade, spec §1) is the screen's
  * saveable state passed down — the screen's compute effect needs the
  * mode to know which grids to sample, so the choice must live where the
- * compute is keyed.
+ * compute is keyed. The same holds for the sampling quality chip (spec
+ * §6: [ScopeSamplingChip]) and the Hz readout (spec §7's measurement
+ * tooling, in the fixed label band in Tnum so the ticking digits do not
+ * jog).
  */
 @Composable
 fun WaveformScopeView(
     rendered: WaveformDisplay.Rendered?,
     modeOrdinal: Int,
     onModeChange: (Int) -> Unit,
+    samplingOrdinal: Int,
+    onSamplingChange: (Int) -> Unit,
+    hz: Int,
     modifier: Modifier = Modifier,
 ) {
     // Coerced: the ordinal crosses process-death save/restore; a stale
@@ -196,22 +212,33 @@ fun WaveformScopeView(
         }
     }
     Column(modifier) {
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            WaveformMode.entries.forEachIndexed { index, m ->
-                SegmentedButton(
-                    selected = m == mode,
-                    onClick = { onModeChange(m.ordinal) },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = WaveformMode.entries.size,
-                    ),
-                ) {
-                    // Literal untranslated mode codes in every locale
-                    // (the owner spec's product vocabulary, like the
-                    // histogram's RGB/Luma/Parade and ACES/AgX).
-                    Text(m.label, maxLines = 1)
+        // The mode selector and the sampling chip share ONE row (spec §1
+        // + §6): the chip is a peer of the mode buttons, not an extra
+        // row — the strip's height never changes when it appears (see
+        // HEIGHT STABILITY).
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
+                WaveformMode.entries.forEachIndexed { index, m ->
+                    SegmentedButton(
+                        selected = m == mode,
+                        onClick = { onModeChange(m.ordinal) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = WaveformMode.entries.size,
+                        ),
+                    ) {
+                        // Literal untranslated mode codes in every locale
+                        // (the owner spec's product vocabulary, like the
+                        // histogram's RGB/Luma/Parade and ACES/AgX).
+                        Text(m.label, maxLines = 1)
+                    }
                 }
             }
+            Spacer(Modifier.width(8.dp))
+            ScopeSamplingChip(
+                samplingOrdinal = samplingOrdinal,
+                onSamplingChange = onSamplingChange,
+            )
         }
         Spacer(Modifier.height(6.dp))
         Canvas(
@@ -246,14 +273,61 @@ fun WaveformScopeView(
         // The fixed label band (see HEIGHT STABILITY): the honest
         // signal label (spec §4: "Analiz alanını 'Preview · BT.709'
         // gibi doğru adlandır" — the analyzed pixels are the processed
-        // preview frame, post-grade, post-Rec.709-OETF, pre-UI).
-        Box(
+        // preview frame, post-grade, post-Rec.709-OETF, pre-UI) at the
+        // start, the measured compute rate (spec §7's pacing
+        // validation) at the end — Tnum so the ticking digits do not
+        // jog. Both fit the reserved 26dp band; no height ever changes.
+        Row(
             Modifier.fillMaxWidth().height(ScopeLabelBandHeight),
-            contentAlignment = Alignment.CenterStart,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(signalLabel, style = MaterialTheme.typography.labelSmall)
+            Text(
+                signalLabel,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                stringResource(R.string.editor_scope_hz, hz),
+                style = MaterialTheme.typography.labelSmall.merge(Tnum),
+            )
         }
     }
+}
+
+/**
+ * The sampling quality chip (spec §6): cycles Low / Medium / High on
+ * tap — the scope's OWN read resolution, never the source/preview/
+ * export bit depth. The label shows the CURRENT tier; the description
+ * names the setting for accessibility. The ordinal is the screen's
+ * saveable state keyed into the compute effect, so a change while
+ * paused re-renders the current frame at the new quality immediately.
+ * Inside the strip the default chip container is fine — no corner
+ * scrim needed, the strip is its own surface, not the image.
+ */
+@Composable
+private fun ScopeSamplingChip(
+    samplingOrdinal: Int,
+    onSamplingChange: (Int) -> Unit,
+) {
+    val entries = WaveformScope.Sampling.entries
+    val sampling = entries[samplingOrdinal.coerceIn(0, entries.lastIndex)]
+    val label = stringResource(
+        when (sampling) {
+            WaveformScope.Sampling.LOW -> R.string.editor_scope_sampling_low
+            WaveformScope.Sampling.MEDIUM -> R.string.editor_scope_sampling_medium
+            WaveformScope.Sampling.HIGH -> R.string.editor_scope_sampling_high
+        }
+    )
+    // Resolved OUTSIDE the semantics block: the lambda is not composable.
+    val description = stringResource(R.string.editor_scope_sampling_value, label)
+    AssistChip(
+        onClick = {
+            onSamplingChange(entries[(sampling.ordinal + 1) % entries.size].ordinal)
+        },
+        label = { Text(label, maxLines = 1) },
+        modifier = Modifier.semantics { contentDescription = description },
+    )
 }
 
 /**
