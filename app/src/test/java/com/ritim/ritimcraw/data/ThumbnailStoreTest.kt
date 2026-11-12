@@ -112,6 +112,14 @@ class ThumbnailStoreTest {
         assertFalse(ThumbnailRules.needsThumbnail(s, hasFile = false))
     }
 
+    @Test
+    fun gone_row_cannot_be_probed() {
+        // A GONE row (spec IN-12: the document was deleted/moved) cannot
+        // open its clip either: no generation until the re-link lands.
+        val s = MediaSource("id", "uri", "fp", SourceKind.MCRAW, Access.GONE)
+        assertFalse(ThumbnailRules.needsThumbnail(s, hasFile = false))
+    }
+
     // ---- rules: batch (bounded backfill) ----
 
     @Test

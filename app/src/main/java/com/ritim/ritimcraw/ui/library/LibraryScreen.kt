@@ -154,7 +154,7 @@ fun LibraryScreen(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
         } catch (e: SecurityException) {
-            // Non-fatal: refreshAccess() will surface a lost row if this
+            // Non-fatal: the collection refresh will surface a lost row if this
             // grant really is required; the import attempt still runs.
         }
         val result = runCatching { onImport(uri.toString()) }

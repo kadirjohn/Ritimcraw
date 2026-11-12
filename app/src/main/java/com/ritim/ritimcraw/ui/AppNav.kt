@@ -1180,7 +1180,7 @@ fun AppNav() {
                             // Revoked-access rows retry their thumbnail after the
                             // grant returns: the backfill below picks them up on
                             // the next Library composition too.
-                            onGrantAccess = { sources = stores.sources.refreshAccess() },
+                            onGrantAccess = { sources = stores.sources.refreshStatus() },
                             thumbnailAt = { id ->
                                 // The persisted PNG's path, or null: the row
                                 // shows the placeholder while missing.

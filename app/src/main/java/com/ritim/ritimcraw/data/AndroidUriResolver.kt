@@ -57,6 +57,26 @@ class AndroidUriResolver(
         }
     }
 
+    override fun probe(uri: String): DocumentProbe {
+        // The collection refresh's cheap probe (spec IN-12): one metadata
+        // query decides existence + permission together — a revoked grant
+        // surfaces as SecurityException, a deleted/moved document (or an
+        // unmounted storage) as any other failure or an empty answer.
+        // Never an openInputStream here: the pass must stay cheap.
+        return try {
+            val answered = resolver.query(
+                Uri.parse(uri),
+                arrayOf(OpenableColumns.SIZE),
+                null, null, null,
+            )?.use { cursor -> cursor.moveToFirst() } ?: false
+            if (answered) DocumentProbe.AVAILABLE else DocumentProbe.GONE
+        } catch (e: SecurityException) {
+            DocumentProbe.PERMISSION
+        } catch (e: Exception) {
+            DocumentProbe.GONE
+        }
+    }
+
     companion object {
         fun of(context: Context): AndroidUriResolver = AndroidUriResolver(context.contentResolver)
 
