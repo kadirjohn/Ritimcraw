@@ -342,6 +342,95 @@ class TimelineGeometryTest {
         assertEquals(1, TimelineGeometry.majorStepFor(64f))
     }
 
+    // ---- ruler label regime (owner 2026-11-13 de-clutter) ----
+
+    @Test
+    fun dense_sub_second_steps_label_bare_frames() {
+        // Sub-second steps (a major every few frames): the second is
+        // not the step, so the label is the moving digits — frames.
+        // 24fps: steps 1/2/5/10/20 frames are all < 1s.
+        for (step in listOf(1, 2, 5, 10, 20)) {
+            assertEquals(
+                TimelineGeometry.LabelFields.FRAMES,
+                TimelineGeometry.labelFieldsFor(step, 24, 90.0),
+            )
+        }
+    }
+
+    @Test
+    fun second_and_minute_steps_label_mm_ss() {
+        // Steps of a second up to a minute on a sub-hour timeline: the
+        // salise field is noise — the label is the wall-clock MM:SS.
+        // 24fps: 24 frames = 1s, 1440 = 1min (still MM_SS — sub-hour
+        // timeline, minute steps do not need hours or frames).
+        for (step in listOf(24, 48, 120, 240, 1440)) {
+            assertEquals(
+                TimelineGeometry.LabelFields.MM_SS,
+                TimelineGeometry.labelFieldsFor(step, 24, 90.0),
+            )
+        }
+    }
+
+    @Test
+    fun an_hour_long_timeline_labels_full_timecodes() {
+        // FULL is reserved for rulers that actually run an hour: any
+        // shorter regime wraps at the hour (Format's 2-field MM is
+        // minutes-within-hour — "01:00" would mark both the 1-minute
+        // and the 61-minute major).
+        val hourFrames = 24.0 * 3600.0
+        for (step in listOf(24, 240, 1440)) {
+            assertEquals(
+                TimelineGeometry.LabelFields.FULL,
+                TimelineGeometry.labelFieldsFor(step, 24, hourFrames),
+            )
+        }
+        // One frame short of the hour: still MM_SS.
+        assertEquals(
+            TimelineGeometry.LabelFields.MM_SS,
+            TimelineGeometry.labelFieldsFor(24, 24, hourFrames - 1.0),
+        )
+    }
+
+    @Test
+    fun label_text_matches_the_regime() {
+        // The three shapes at 24fps, tnum-stable per regime:
+        // FRAMES — the bare project-grid frame number of the tick.
+        assertEquals("120", TimelineGeometry.majorLabelText(0L, 24, TimelineGeometry.LabelFields.FRAMES, 120.0))
+        // MM_SS — Format's 2-field adaptive timecode (MM:SS).
+        assertEquals(
+            "00:05",
+            TimelineGeometry.majorLabelText(
+                5_000_000L,
+                24,
+                TimelineGeometry.LabelFields.MM_SS,
+            ),
+        )
+        // FULL — the fixed 4-field HH:MM:SS:FF.
+        assertEquals(
+            "00:00:05:00",
+            TimelineGeometry.majorLabelText(
+                5_000_000L,
+                24,
+                TimelineGeometry.LabelFields.FULL,
+            ),
+        )
+    }
+
+    @Test
+    fun label_regime_degrades_to_default_fps() {
+        // A metadata-less clip (fps <= 0) degrades to Format's 24 —
+        // the same fallback frameToUs and the Format family apply, so
+        // the regime never crashes or disagrees with the tick math.
+        assertEquals(
+            TimelineGeometry.LabelFields.MM_SS,
+            TimelineGeometry.labelFieldsFor(24, 0, 90.0),
+        )
+        assertEquals(
+            TimelineGeometry.LabelFields.FRAMES,
+            TimelineGeometry.labelFieldsFor(10, -1, 90.0),
+        )
+    }
+
     // ---- track row ordering ----
 
     @Test
