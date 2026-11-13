@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.engine.NativeSource
+import com.ritim.ritimcraw.engine.RenderBackend
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -350,6 +351,44 @@ class Mp4ExporterTest {
         for (i in 1 until order.size) {
             assertTrue(order[i].ptsUs >= order[i - 1].ptsUs)
         }
+    }
+
+    @Test
+    fun pts_ns_is_us_times_1000() {
+        // The EGLExt.eglPresentationTimeANDROID stamp (GPU deliverable F,
+        // §10): normalized us -> ns, pure multiplication.
+        assertEquals(0L, PtsTimeline.ptsNs(0L))
+        assertEquals(33_333_000L, PtsTimeline.ptsNs(33_333L))
+        assertEquals(9_007_199_254_000L, PtsTimeline.ptsNs(9_007_199_254L))
+    }
+
+    @Test
+    fun pts_ns_rejects_negative() {
+        // The timeline's own videoPts never produces a negative, but the
+        // stamp is a §10 contract — a negative reaching it fails loudly
+        // instead of wrapping into a wrong presentation time.
+        try {
+            PtsTimeline.ptsNs(-1L)
+            org.junit.Assert.fail("expected IllegalArgumentException")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("non-negative"))
+        }
+    }
+
+    @Test
+    fun pts_ns_rejects_nanosecond_overflow() {
+        // A pts beyond Long.MAX_VALUE/1000 us cannot be represented in ns
+        // — fail loudly, never wrap (§10: ptsUs->ptsNs conversion must
+        // overflow-check).
+        val over = Long.MAX_VALUE / 1000L + 1
+        try {
+            PtsTimeline.ptsNs(over)
+            org.junit.Assert.fail("expected IllegalArgumentException")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("overflows"))
+        }
+        // The boundary itself is fine (exactly representable).
+        assertEquals(Long.MAX_VALUE / 1000L * 1000L, PtsTimeline.ptsNs(Long.MAX_VALUE / 1000L))
     }
 
     // ---- Mp4ExportErrors mapping ----
@@ -1351,6 +1390,283 @@ class Mp4ExporterTest {
         assertEquals("codec died mid-encode", result.detail)
         assertFalse(out.exists())
         assertFalse(File(out.parentFile, out.name + ".partial").exists())
+    }
+
+    // ---- encoder-Surface input mode (GPU deliverable F, §10) ----
+
+    /**
+     * A writer that implements the encoder-Surface offer contract: the
+     * request is recorded, the mode activates at start, and every frame is
+     * taken through writeVideoFrameRgb (never the packed I420 path).
+     */
+    private class SurfaceWriter(
+        /** When set, start() throws SurfaceInputUnavailable (the honest restart case). */
+        private val unavailableAtStart: String? = null,
+    ) : Mp4MediaWriter {
+        var requestCount = 0
+        var started = false
+        var released = false
+        var rgbFrames = ArrayList<Pair<Long, ByteArray>>()
+        var packedFrames = 0
+        var audioBlocks = 0
+
+        override fun requestEncoderSurfaceInput() {
+            requestCount++
+        }
+
+        override fun start(
+            outPath: String,
+            width: Int,
+            height: Int,
+            orientationDeg: Int,
+            sampleRate: Int,
+            channels: Int,
+        ) {
+            unavailableAtStart?.let {
+                throw SurfaceInputUnavailable(it)
+            }
+            started = true
+        }
+
+        override fun surfaceInputActive(): Boolean = started && unavailableAtStart == null
+
+        override fun writeVideoFrameRgb(ptsUs: Long, rgb: ByteArray, width: Int, height: Int): Boolean {
+            rgbFrames.add(ptsUs to rgb.copyOf())
+            return true
+        }
+
+        override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
+            packedFrames++
+        }
+
+        override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {
+            audioBlocks++
+        }
+
+        override fun finish(): Boolean = true
+
+        override fun release() {
+            released = true
+        }
+    }
+
+    @Test
+    fun surface_mode_is_requested_only_for_gpu_experimental() {
+        // The explicit-parameter rule (§10: never auto): CPU and AUTO never
+        // ask; GPU_EXPERIMENTAL asks exactly once, before start.
+        for (backend in listOf(RenderBackend.CPU, RenderBackend.AUTO)) {
+            val session = FakeSession(frames = 2, audio = false)
+            val writer = SurfaceWriter()
+            ExportPipeline(session, writer, renderBackend = backend).run(7, GradeK(), "/tmp/out.partial")
+            assertEquals(0, writer.requestCount)
+            assertEquals(2, writer.packedFrames)
+            assertEquals(0, writer.rgbFrames.size)
+        }
+        val session = FakeSession(frames = 2, audio = false)
+        val writer = SurfaceWriter()
+        ExportPipeline(session, writer, renderBackend = RenderBackend.GPU_EXPERIMENTAL).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, writer.requestCount)
+        assertEquals(2, writer.rgbFrames.size)
+        assertEquals(0, writer.packedFrames)
+    }
+
+    @Test
+    fun surface_mode_default_backend_is_cpu() {
+        // The constructor default: no backend passed = the CPU reference
+        // path, byte-identical to the pre-GPU pipeline (the 18 existing
+        // call sites rely on this).
+        val session = FakeSession(frames = 1, audio = false)
+        val writer = SurfaceWriter()
+        ExportPipeline(session, writer).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, writer.requestCount)
+        assertEquals(1, writer.packedFrames)
+    }
+
+    @Test
+    fun surface_mode_request_precedes_start() {
+        // §10 contract: configure -> createInputSurface -> EGL window ->
+        // codec.start. The pipeline's half is the request BEFORE start —
+        // a writer that is asked after start must refuse (the real
+        // writer throws "must be requested before start").
+        var order = ArrayList<String>()
+        val writer = object : Mp4MediaWriter {
+            override fun requestEncoderSurfaceInput() {
+                order.add("request")
+            }
+
+            override fun start(
+                outPath: String,
+                width: Int,
+                height: Int,
+                orientationDeg: Int,
+                sampleRate: Int,
+                channels: Int,
+            ) {
+                order.add("start")
+            }
+
+            override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {}
+            override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {}
+            override fun finish(): Boolean = true
+            override fun release() {}
+        }
+        ExportPipeline(
+            FakeSession(frames = 1, audio = false),
+            writer,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(listOf("request", "start"), order)
+    }
+
+    @Test
+    fun surface_mode_rgb_offer_carries_cropped_dims_and_pts() {
+        // The frame offered to the Surface path is the CROPPED, UPRIGHT
+        // RGB888 buffer at its true normalized pts — the same pixels the
+        // I420 path would convert (§10: the GPU-developed frame draws to
+        // the encoder surface; no full-frame GPU->CPU->encoder copy).
+        val session = FakeSession(frames = 2, width = 8, height = 4, audio = false)
+        val writer = SurfaceWriter()
+        ExportPipeline(
+            session,
+            writer,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+        ).run(7, GradeK(), "/tmp/out.partial", manualRotationDeg = 90)
+        // 90° container + 90° manual = 180 effective: no dim swap, 8x4.
+        assertEquals(2, writer.rgbFrames.size)
+        val (pts, rgb) = writer.rgbFrames[0]
+        assertEquals(0L, pts)
+        assertEquals(8 * 4 * 3, rgb.size)
+        // The bytes are the session's rendered frame (128-gray here).
+        assertTrue(rgb.all { it == 128.toByte() })
+    }
+
+    @Test
+    fun surface_mode_refused_frame_falls_back_to_i420() {
+        // The offer returning false (a writer without the mode, or the
+        // real writer's CPU mode): the packed I420 path runs for that
+        // frame, byte-identical — the offer is per-frame, never sticky.
+        val session = FakeSession(frames = 2, audio = false)
+        val writer = object : Mp4MediaWriter {
+            var packed = 0
+            override fun requestEncoderSurfaceInput() {}
+            override fun start(
+                outPath: String,
+                width: Int,
+                height: Int,
+                orientationDeg: Int,
+                sampleRate: Int,
+                channels: Int,
+            ) {}
+
+            override fun writeVideoFrameRgb(ptsUs: Long, rgb: ByteArray, width: Int, height: Int): Boolean = false
+            override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
+                packed++
+            }
+
+            override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {}
+            override fun finish(): Boolean = true
+            override fun release() {}
+        }
+        ExportPipeline(
+            session,
+            writer,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(2, writer.packed)
+    }
+
+    @Test
+    fun surface_unavailable_restarts_whole_export_on_cpu() {
+        // §10's fallback contract: the writer could not bring the Surface
+        // mode up (SurfaceInputUnavailable from start) -> the exporter
+        // discards the partial, logs the honest fallback line, and re-runs
+        // the WHOLE export on the CPU path with a FRESH writer — no frame
+        // encoded twice, no partial continued mid-format.
+        val session = FakeSession(frames = 2, audio = false)
+        val failWriter = SurfaceWriter(
+            unavailableAtStart = Mp4ExportErrors.kotlinMessage(
+                Mp4ExportErrors.STAGE_CONFIGURE,
+                "no EGL display is available",
+                "the export restarts on the CPU path",
+            ),
+        )
+        val cpuWriter = FakeWriter()
+        val writers = ArrayDeque(listOf<Mp4MediaWriter>(failWriter, cpuWriter))
+        val lines = ArrayList<String>()
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = { writers.removeFirst() },
+            engine = freshEngine(),
+            stageLog = lines::add,
+        )
+        val out = File(tmp.root, "clip.mp4")
+        val gpuJob = job().copy(renderBackend = RenderBackend.GPU_EXPERIMENTAL)
+        val result = runBlocking { exporter.export(gpuJob, 7, out) }
+        assertEquals(State.DONE, result.state)
+        // The fallback line reached the stage sink, honestly naming both
+        // ends and the reason.
+        assertTrue(lines.any { it.contains("render backend fallback") })
+        assertTrue(lines.any { it.contains("requested=GPU_EXPERIMENTAL") })
+        assertTrue(lines.any { it.contains("effective=CPU") })
+        assertTrue(lines.any { it.contains("reason=surface-input-unavailable") })
+        // The CPU re-run encoded every frame through the packed path.
+        assertEquals(2, cpuWriter.videoFrames)
+        // The failing writer was released (its partial EGL/codec state
+        // went down), and the session opened exactly twice (one whole
+        // run per attempt).
+        assertTrue(failWriter.released)
+        assertEquals(2, session.opened.get())
+        assertEquals(2, session.closed.get())
+        // The file landed: the restart produced the DONE output.
+        assertTrue(out.exists())
+        assertFalse(File(out.parentFile, out.name + ".partial").exists())
+    }
+
+    @Test
+    fun surface_unavailable_mid_encode_is_a_plain_failure_not_a_restart() {
+        // The restart contract covers writer START only: a
+        // SurfaceInputUnavailable thrown mid-encode would be a bug (the
+        // class KDoc forbids it), but the exporter must never interpret a
+        // mid-stream failure as restartable — only the start-phase throw
+        // restarts. A writeVideoFrameRgb that throws a plain encode
+        // failure fails the export honestly (no restart loop).
+        val session = FakeSession(frames = 2, audio = false)
+        var writersServed = 0
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = {
+                writersServed++
+                object : Mp4MediaWriter {
+                    override fun requestEncoderSurfaceInput() {}
+                    override fun start(
+                        outPath: String,
+                        width: Int,
+                        height: Int,
+                        orientationDeg: Int,
+                        sampleRate: Int,
+                        channels: Int,
+                    ) {}
+
+                    override fun writeVideoFrameRgb(ptsUs: Long, rgb: ByteArray, width: Int, height: Int): Boolean {
+                        throw IllegalStateException("encoder Surface swap failed")
+                    }
+
+                    override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {}
+                    override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {}
+                    override fun finish(): Boolean = true
+                    override fun release() {}
+                }
+            },
+            engine = freshEngine(),
+        )
+        val out = File(tmp.root, "clip.mp4")
+        val gpuJob = job().copy(renderBackend = RenderBackend.GPU_EXPERIMENTAL)
+        val result = runBlocking { exporter.export(gpuJob, 7, out) }
+        assertEquals(State.FAILED, result.state)
+        assertTrue(result.detail!!.contains("encoder Surface swap failed"))
+        // Exactly one writer: no restart was attempted.
+        assertEquals(1, writersServed)
+        assertFalse(out.exists())
     }
 
     /** An executor that rejects everything (shutdown engine). */

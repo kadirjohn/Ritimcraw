@@ -9,6 +9,7 @@ import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.LutRole
 import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.engine.RenderBackend
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -755,6 +756,80 @@ class ExportStoreTest {
 
         val job = ExportStore(file).all().single()
         assertEquals(0, job.manualRotationDeg)
+    }
+
+    @Test
+    fun render_backend_round_trips_and_omits_when_default() {
+        // GPU deliverable F (owner request 2026-11-12 §10): the backend the
+        // job snapshotted at enqueue persists with it (a crash between queue
+        // and drain still exports with the requested backend), and
+        // omit-when-default keeps pre-GPU files byte-identical — the same
+        // convention as manualRotationDeg.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(
+            job(id = "gpu", target = Target.MP4).copy(renderBackend = RenderBackend.GPU_EXPERIMENTAL)
+        )
+        store.add(job(id = "cpu", target = Target.MP4)) // CPU = default
+
+        val jobs = ExportStore(file).all()
+        assertEquals(RenderBackend.GPU_EXPERIMENTAL, jobs.single { it.id == "gpu" }.renderBackend)
+        assertEquals(RenderBackend.CPU, jobs.single { it.id == "cpu" }.renderBackend)
+
+        // Only the non-default backend is written: the CPU row's JSON carries
+        // no renderBackend key (legacy rows stay byte-identical).
+        val text = file.readText()
+        assertTrue(text.contains("\"renderBackend\":\"GPU_EXPERIMENTAL\""))
+        val cpuRow = text.substringAfter("\"id\":\"cpu\"")
+        assertTrue(!cpuRow.substringBefore("}").contains("renderBackend"))
+
+        // Retry keeps the backend: the retried export asks for the same
+        // render path (requeued() preserves it via copy()).
+        store.retry("gpu")
+        assertEquals(
+            RenderBackend.GPU_EXPERIMENTAL,
+            ExportStore(file).all().single { it.id == "gpu" }.renderBackend,
+        )
+    }
+
+    @Test
+    fun old_export_row_without_render_backend_parses_cpu() {
+        // A project.json written before the GPU setting (schema 1, no
+        // renderBackend field): the row parses with CPU — the reference
+        // path, exactly what every pre-GPU job always ran.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.0},"target":"DNG","state":"DONE","detail":"clip-a-dng.dng"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val job = ExportStore(file).all().single()
+        assertEquals(RenderBackend.CPU, job.renderBackend)
+    }
+
+    @Test
+    fun unknown_render_backend_value_parses_cpu() {
+        // A value this build does not know (written by a future build with
+        // more backends): fromWire maps it to CPU — the reference path,
+        // never a crash, never a silent behavior change beyond that.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"future-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.0},"target":"MP4","state":"QUEUED","renderBackend":"SOME_FUTURE_BACKEND"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val job = ExportStore(file).all().single()
+        assertEquals(RenderBackend.CPU, job.renderBackend)
     }
 
     @Test

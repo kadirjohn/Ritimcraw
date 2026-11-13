@@ -522,4 +522,77 @@ class GlesShaderValidatorTest {
         )
         assertTrue(problems.any { it.contains("#version 310 es") })
     }
+
+    // ---- BLIT_FRAGMENT (GPU deliverable F: the encoder-Surface blit) ----
+
+    @Test
+    fun shipped_blit_fragment_passes_every_check() {
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.BLIT_FRAGMENT,
+                GlesShaderValidator.Kind.BLIT_FRAGMENT,
+            ),
+        )
+    }
+
+    @Test
+    fun blit_fragment_is_in_the_every_shipped_source_matrix() {
+        // every_shipped_source_passes_validate_with_its_kind is the matrix
+        // that keeps a NEW kind honest — this asserts the blit is actually
+        // IN it (a silent matrix omission would leave the kind unchecked).
+        val problems = GlesShaderValidator.problems(
+            GlesShaderSources.BLIT_FRAGMENT,
+            GlesShaderValidator.Kind.BLIT_FRAGMENT,
+        )
+        assertTrue(problems.isEmpty())
+    }
+
+    @Test
+    fun a_missing_y_flip_is_reported() {
+        // The ONE line that keeps the encode right-side up: without the
+        // flip every encoded frame is upside down (the encoder reads the
+        // Surface buffer top-row-first while GL's row 0 is the render
+        // target's bottom row).
+        val noFlip = GlesShaderSources.BLIT_FRAGMENT
+            .replace("uSize.y - 1 - g.y", "g.y")
+        assertTrue(
+            GlesShaderValidator.problems(noFlip, GlesShaderValidator.Kind.BLIT_FRAGMENT)
+                .any { it.contains("Y flip") || it.contains("uSize.y - 1 - g.y") },
+        )
+    }
+
+    @Test
+    fun a_renamed_blit_uniform_is_reported() {
+        val renamed = GlesShaderSources.BLIT_FRAGMENT
+            .replace("uniform highp sampler2D uSrc;", "uniform highp sampler2D uTex;")
+            .replace("texelFetch(uSrc, src, 0)", "texelFetch(uTex, src, 0)")
+        assertTrue(
+            GlesShaderValidator.problems(renamed, GlesShaderValidator.Kind.BLIT_FRAGMENT)
+                .any { it.contains("uSrc") },
+        )
+    }
+
+    @Test
+    fun a_missing_blit_texel_fetch_is_reported() {
+        // texelFetch — the integer-coordinate fetch with NO sampling
+        // filters — is the readback contract; a smoothstep-ish
+        // texture() call would silently filter.
+        val noFetch = GlesShaderSources.BLIT_FRAGMENT
+            .replace("texelFetch(uSrc, src, 0)", "texture(uSrc, vec2(src))")
+        assertTrue(
+            GlesShaderValidator.problems(noFetch, GlesShaderValidator.Kind.BLIT_FRAGMENT)
+                .any { it.contains("texelFetch") },
+        )
+    }
+
+    @Test
+    fun a_missing_blit_size_uniform_is_reported() {
+        val noSize = GlesShaderSources.BLIT_FRAGMENT
+            .replace("uniform ivec2 uSize;", "")
+            .replace("uSize.y - 1 - g.y", "1023 - g.y")
+        assertTrue(
+            GlesShaderValidator.problems(noSize, GlesShaderValidator.Kind.BLIT_FRAGMENT)
+                .any { it.contains("uSize") },
+        )
+    }
 }

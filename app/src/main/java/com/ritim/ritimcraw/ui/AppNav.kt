@@ -75,6 +75,7 @@ import com.ritim.ritimcraw.data.ThumbnailStore
 import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.PreviewMetrics
+import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.engine.SourcePathDecision
 import com.ritim.ritimcraw.export.BitmapPngWriter
 import com.ritim.ritimcraw.export.DngExporter
@@ -1016,6 +1017,15 @@ fun AppNav() {
                                     // rotate tap must not change an in-flight
                                     // export.
                                     manualRotationDeg = manualRotation,
+                                    // Render backend snapshot at queue time
+                                    // (GPU deliverable F, §10): the job
+                                    // carries what the settings picker held
+                                    // when the user tapped export — a later
+                                    // settings change must not flip an
+                                    // in-flight export. Only MP4 jobs reach
+                                    // the GPU seam (the writer's Surface
+                                    // mode); DNG/PHOTO/LINEAR ignore it.
+                                    renderBackend = renderBackend,
                                 )
                             )
                             exportJobs = stores.exports.all()
@@ -1049,6 +1059,13 @@ fun AppNav() {
                                     // Manual rotation snapshot at queue time
                                     // (§5, the grade-snapshot rule).
                                     manualRotationDeg = manualRotation,
+                                    // Render backend snapshot at queue time
+                                    // (GPU deliverable F, §10) — the photo
+                                    // develop path renders on the CPU
+                                    // reference regardless; the snapshot
+                                    // keeps the job's record honest about
+                                    // what the picker held.
+                                    renderBackend = renderBackend,
                                 )
                             )
                             exportJobs = stores.exports.all()

@@ -5,7 +5,16 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.EGLContext
+import android.opengl.EGLDisplay
+import android.opengl.EGLExt
+import android.opengl.EGLSurface
+import android.opengl.GLES30
 import android.util.Log
+import android.view.Surface
+import com.ritim.ritimcraw.engine.GlesShaderSources
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -28,6 +37,20 @@ import java.nio.ByteOrder
  * starts only after every expected track is added, and samples produced
  * before that moment are held in [pending] and flushed on start — so no
  * encoded packet is ever dropped or written before the muxer is ready.
+ *
+ * Encoder-Surface input mode (GPU deliverable F, owner request 2026-11-12
+ * §10): an EXPLICIT request — requestEncoderSurfaceInput, before start,
+ * never auto — switches the video encoder to COLOR_FormatSurface +
+ * createInputSurface + an EGL window surface on it; frames then arrive as
+ * RGB888 through writeVideoFrameRgb (texture upload + fullscreen blit +
+ * eglPresentationTimeANDROID of the frame's own normalized pts + swap).
+ * The §10 order is honored: the EGL display/config/context fail FIRST
+ * (before any codec is created, throwing the JVM-pure
+ * SurfaceInputUnavailable the exporter turns into a clean whole-export CPU
+ * restart), then configure WITHOUT start, then createInputSurface, the
+ * window surface, the context binding, the blit program, and codec.start
+ * LAST. The CPU path stays byte-identical whenever the mode is not
+ * requested.
  */
 internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
@@ -61,6 +84,31 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         this.timing = timing
     }
 
+    // ---- encoder-Surface input mode (GPU deliverable F, §10) ----
+    // All false/null/0 until an explicit requestEncoderSurfaceInput BEFORE
+    // start and a successful start; release() tears them down in reverse
+    // order and is safe at every partial-init point (§11 idempotent).
+
+    /** True once requestEncoderSurfaceInput was called (before start). */
+    private var surfaceInputRequested = false
+
+    /** True once start() brought the whole Surface path up. */
+    private var surfaceInputActive = false
+
+    private var eglDisplay: EGLDisplay? = null
+    private var eglConfig: EGLConfig? = null
+    private var eglContext: EGLContext? = null
+    private var eglWindowSurface: EGLSurface? = null
+
+    /** The codec's input Surface (Surface mode only; null otherwise). */
+    private var inputSurface: Surface? = null
+
+    /** The blit program, its uniform locations and the frame texture (0/-1 = none). */
+    private var blitProgram = 0
+    private var blitTexture = 0
+    private var blitSrcLocation = -1
+    private var blitSizeLocation = -1
+
     private class PendingSample(
         val track: Int,
         val bytes: ByteArray,
@@ -80,6 +128,16 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         this.sampleRate = sampleRate
         this.channels = channels
 
+        // Encoder-Surface mode (§10 order): the EGL display/config/context
+        // come up FIRST — before the muxer and before any codec is created.
+        // A no-EGL device fails with SurfaceInputUnavailable here and the
+        // exporter turns that into a clean whole-export CPU restart. With
+        // no request (the CPU default) this is a no-op: the path below is
+        // byte-identical to what it always was.
+        if (surfaceInputRequested) {
+            setupEgl()
+        }
+
         try {
             muxer = MediaMuxer(outPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             (muxer as MediaMuxer).setOrientationHint(orientationDeg)
@@ -95,10 +153,248 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
             )
         }
 
-        videoCodec = configure("video/avc", videoFormat(width, height))
+        // §10: the Surface codec is configured WITHOUT start, gets its
+        // input Surface, the EGL window surface, the context binding and
+        // the blit program — and only then starts. The CPU codec keeps
+        // the existing configure+start pair (configure() below) exactly
+        // as it was.
+        videoCodec = if (surfaceInputRequested) {
+            configureSurfaceVideoCodec(width, height)
+        } else {
+            configure("video/avc", videoFormat(width, height, surface = false))
+        }
         if (sampleRate > 0 && channels > 0) {
             audioCodec = configure("audio/mp4a-latm", audioFormat(sampleRate, channels))
         }
+    }
+
+    /**
+     * The explicit encoder-Surface input request (GPU deliverable F,
+     * §10): call BEFORE start — never auto, never mid-export. After it,
+     * start() brings the EGL display/config/context up first
+     * (fail-fast SurfaceInputUnavailable), configures the video encoder
+     * with COLOR_FormatSurface WITHOUT starting it, creates its input
+     * Surface, binds an EGL window surface on it, builds the blit
+     * program, and starts the codec LAST. A call after start (or a
+     * second call) is a mode-confusion bug and throws.
+     */
+    override fun requestEncoderSurfaceInput() {
+        if (videoCodec != null || muxer != null) {
+            throw encodeFailure(
+                "encoder-Surface input must be requested before start"
+            )
+        }
+        surfaceInputRequested = true
+    }
+
+    override fun surfaceInputActive(): Boolean = surfaceInputActive
+
+    /**
+     * Every Surface-mode bring-up failure, as the one type the exporter
+     * catches for its clean whole-export CPU restart — plain
+     * IllegalStateExceptions from start() fail the job honestly instead.
+     */
+    private fun surfaceInputUnavailable(cause: String): SurfaceInputUnavailable =
+        SurfaceInputUnavailable(
+            Mp4ExportErrors.kotlinMessage(
+                Mp4ExportErrors.STAGE_CONFIGURE,
+                cause,
+                "the export restarts on the CPU path (encoder Surface input " +
+                    "is optional — nothing is lost, nothing is half-encoded)",
+            )
+        )
+
+    /**
+     * EGL display + recordable RGBA8888 config + GLES 3 context (§10 order
+     * step 1) — BEFORE the muxer and BEFORE any codec exists, so a no-EGL
+     * device fails before creating anything the CPU restart would have to
+     * clean up. RGBA8888 is honest precision for this blit stage: the input
+     * is packed RGB888 and the encode target is 8-bit SDR YUV.
+     */
+    private fun setupEgl() {
+        val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+        if (display == null || display == EGL14.EGL_NO_DISPLAY) {
+            throw surfaceInputUnavailable("no EGL display is available")
+        }
+        val version = IntArray(2)
+        if (!EGL14.eglInitialize(display, version, 0, version, 1)) {
+            throw surfaceInputUnavailable("the EGL display could not initialize")
+        }
+        eglDisplay = display
+
+        // §10: EGL_CONFIG_RECORDABLE_ANDROID so the encoder can consume the
+        // window surface's buffers.
+        val configAttribs = intArrayOf(
+            EGL14.EGL_RED_SIZE, 8,
+            EGL14.EGL_GREEN_SIZE, 8,
+            EGL14.EGL_BLUE_SIZE, 8,
+            EGL14.EGL_ALPHA_SIZE, 8,
+            EGL14.EGL_RENDERABLE_TYPE, EGLExt.EGL_OPENGL_ES3_BIT_KHR,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
+            EGLExt.EGL_RECORDABLE_ANDROID, 1,
+            EGL14.EGL_NONE,
+        )
+        val configs = arrayOfNulls<EGLConfig>(1)
+        val numConfigs = IntArray(1)
+        if (!EGL14.eglChooseConfig(display, configAttribs, 0, configs, 0, 1, numConfigs, 0) ||
+            numConfigs[0] < 1
+        ) {
+            throw surfaceInputUnavailable("no recordable RGBA8888 EGL config is available")
+        }
+        val config = configs[0]
+            ?: throw surfaceInputUnavailable("no recordable RGBA8888 EGL config is available")
+        eglConfig = config
+
+        val contextAttribs = intArrayOf(
+            EGL14.EGL_CONTEXT_CLIENT_VERSION, 3,
+            EGL14.EGL_NONE,
+        )
+        val context = EGL14.eglCreateContext(
+            display, config, EGL14.EGL_NO_CONTEXT, contextAttribs, 0,
+        )
+        if (context == null || context == EGL14.EGL_NO_CONTEXT) {
+            throw surfaceInputUnavailable("no GLES 3 context could be created")
+        }
+        eglContext = context
+    }
+
+    /**
+     * The §10 Surface bring-up, in the owner's verbatim order — NOT the CPU
+     * codec's configure+start pair: configure WITHOUT start →
+     * createInputSurface → the EGL window surface → the context binding →
+     * the blit program → codec.start LAST. The codec is assigned to
+     * [videoCodec] the moment it exists so release() (which the pipeline
+     * always calls on a failed start) cleans up every partial state — §11
+     * idempotent. Every failure is a [SurfaceInputUnavailable]: none of
+     * them can happen mid-encode, so the exporter's CPU restart never
+     * double-encodes a frame or continues a partial file.
+     */
+    private fun configureSurfaceVideoCodec(w: Int, h: Int): MediaCodec {
+        val codec = try {
+            MediaCodec.createEncoderByType(MIME_AVC)
+        } catch (e: Exception) {
+            throw surfaceInputUnavailable("no $MIME_AVC encoder is available on this device")
+        }
+        videoCodec = codec
+        logEncoderIdentity(codec, MIME_AVC)
+        try {
+            codec.configure(
+                videoFormat(w, h, surface = true),
+                null,
+                null,
+                MediaCodec.CONFIGURE_FLAG_ENCODE,
+            )
+        } catch (e: Exception) {
+            throw surfaceInputUnavailable(
+                "$MIME_AVC rejected the ${w}x$h COLOR_FormatSurface format"
+            )
+        }
+        val surface = try {
+            codec.createInputSurface()
+        } catch (e: Exception) {
+            throw surfaceInputUnavailable("$MIME_AVC gave no input Surface")
+        }
+        inputSurface = surface
+
+        val display = eglDisplay
+        val config = eglConfig
+        val context = eglContext
+        if (display == null || config == null || context == null) {
+            throw surfaceInputUnavailable("the EGL context is missing (setupEgl must run first)")
+        }
+        // §10: an EGL window surface ON the codec's input Surface, with the
+        // recordable flag in the surface attribs too.
+        val surfaceAttribs = intArrayOf(
+            EGLExt.EGL_RECORDABLE_ANDROID, 1,
+            EGL14.EGL_NONE,
+        )
+        val window = EGL14.eglCreateWindowSurface(display, config, surface, surfaceAttribs, 0)
+        if (window == null || window == EGL14.EGL_NO_SURFACE) {
+            throw surfaceInputUnavailable(
+                "no EGL window surface could be created on the input Surface"
+            )
+        }
+        eglWindowSurface = window
+        if (!EGL14.eglMakeCurrent(display, window, window, context)) {
+            throw surfaceInputUnavailable("the GLES 3 context could not be made current")
+        }
+        // Fail fast at START, not per frame: a device without the
+        // presentation-time extension restarts on CPU before any frame
+        // exists (the pts stamp is a §10 contract, not a nicety).
+        if (!EGLExt.eglPresentationTimeANDROID(display, window, 0L)) {
+            throw surfaceInputUnavailable("eglPresentationTimeANDROID is not available")
+        }
+        buildBlitProgram(w, h)
+        try {
+            codec.start()
+        } catch (e: Exception) {
+            throw surfaceInputUnavailable("$MIME_AVC failed to start in Surface-input mode")
+        }
+        surfaceInputActive = true
+        return codec
+    }
+
+    /**
+     * The blit program (GlesShaderSources.FULLSCREEN_VERTEX + BLIT_FRAGMENT
+     * — the same host-validated text the parity harness uses; the device
+     * compiles the exact same strings) plus the frame texture object. Runs
+     * on the EGL context made current just above; the writer is confined to
+     * the export thread, so the GL state set here (viewport, unpack
+     * alignment 1 for RGB rows) holds for the whole export.
+     */
+    private fun buildBlitProgram(w: Int, h: Int) {
+        GLES30.glViewport(0, 0, w, h)
+        // RGB rows are w*3 bytes — the default unpack alignment of 4 would
+        // misread any row whose length is not a multiple of 4.
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        val vertex = compileShader(GLES30.GL_VERTEX_SHADER, GlesShaderSources.FULLSCREEN_VERTEX)
+        val fragment = compileShader(GLES30.GL_FRAGMENT_SHADER, GlesShaderSources.BLIT_FRAGMENT)
+        val program = GLES30.glCreateProgram()
+        if (program == 0) {
+            throw surfaceInputUnavailable("the blit program could not be created")
+        }
+        GLES30.glAttachShader(program, vertex)
+        GLES30.glAttachShader(program, fragment)
+        GLES30.glLinkProgram(program)
+        val linked = IntArray(1)
+        GLES30.glGetProgramiv(program, GLES30.GL_LINK_STATUS, linked, 0)
+        if (linked[0] != GLES30.GL_TRUE) {
+            val info = GLES30.glGetProgramInfoLog(program)
+            GLES30.glDeleteProgram(program)
+            throw surfaceInputUnavailable("the blit program failed to link: $info")
+        }
+        blitProgram = program
+        blitSrcLocation = GLES30.glGetUniformLocation(program, "uSrc")
+        blitSizeLocation = GLES30.glGetUniformLocation(program, "uSize")
+        if (blitSrcLocation < 0 || blitSizeLocation < 0) {
+            throw surfaceInputUnavailable("the blit program lost a uniform (uSrc/uSize)")
+        }
+        val textures = IntArray(1)
+        GLES30.glGenTextures(1, textures, 0)
+        blitTexture = textures[0]
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, blitTexture)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+    }
+
+    private fun compileShader(type: Int, source: String): Int {
+        val shader = GLES30.glCreateShader(type)
+        if (shader == 0) {
+            throw surfaceInputUnavailable("a blit shader object could not be created")
+        }
+        GLES30.glShaderSource(shader, source)
+        GLES30.glCompileShader(shader)
+        val compiled = IntArray(1)
+        GLES30.glGetShaderiv(shader, GLES30.GL_COMPILE_STATUS, compiled, 0)
+        if (compiled[0] != GLES30.GL_TRUE) {
+            val info = GLES30.glGetShaderInfoLog(shader)
+            GLES30.glDeleteShader(shader)
+            throw surfaceInputUnavailable("a blit shader failed to compile: $info")
+        }
+        return shader
     }
 
     /**
@@ -172,9 +468,19 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         }
     }
 
-    private fun videoFormat(w: Int, h: Int): MediaFormat =
+    private fun videoFormat(w: Int, h: Int, surface: Boolean): MediaFormat =
         MediaFormat.createVideoFormat(MIME_AVC, w, h).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                if (surface) {
+                    // §10: Surface input wants the Surface color format; the
+                    // frames arrive through the EGL window surface, not
+                    // through input buffers.
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+                } else {
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+                },
+            )
             // ~20 Mbps at 4K (3840*2160*2.4 = 19.9 Mbps), clamped.
             setInteger(
                 MediaFormat.KEY_BIT_RATE,
@@ -198,6 +504,11 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
         val codec = videoCodec ?: throw notStarted()
+        if (surfaceInputActive) {
+            throw encodeFailure(
+                "the writer is in encoder-Surface mode; packed I420 frames are not accepted"
+            )
+        }
         val timing = this.timing
         val tWait0 = System.nanoTime()
         val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
@@ -239,6 +550,74 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         )
     }
 
+    /**
+     * Per-frame Surface-mode path (§10). The real writer never returns
+     * false: the pipeline only calls this after requestEncoderSurfaceInput,
+     * and a start that could not bring the mode up threw
+     * [SurfaceInputUnavailable] before the first frame — so reaching this
+     * method in CPU mode is a mode-confusion bug and throws. A mid-stream
+     * GL/swap failure is a plain encode failure (the partial is discarded;
+     * the restart contract covers writer START only, never mid-encode).
+     *
+     * The frame arrives as top-row-first RGB888; the Y flip to the
+     * encoder's top-first Surface consumption lives in BLIT_FRAGMENT
+     * (texelFetch integer coordinates — exact, no half-pixel math).
+     */
+    override fun writeVideoFrameRgb(ptsUs: Long, rgb: ByteArray, w: Int, h: Int): Boolean {
+        if (!surfaceInputActive) {
+            throw encodeFailure(
+                "writeVideoFrameRgb needs the encoder-Surface mode " +
+                    "(requestEncoderSurfaceInput before start)"
+            )
+        }
+        val codec = videoCodec ?: throw notStarted()
+        if (w != width || h != height) {
+            throw encodeFailure(
+                "frame ${w}x$h does not match the encoder surface ${width}x$height"
+            )
+        }
+        if (rgb.size != w * h * 3) {
+            throw encodeFailure(
+                "RGB888 frame must hold ${w * h * 3} bytes, got ${rgb.size}"
+            )
+        }
+        val timing = this.timing
+        val tUpload0 = System.nanoTime()
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, blitTexture)
+        GLES30.glTexImage2D(
+            GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGB8, w, h, 0,
+            GLES30.GL_RGB, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.wrap(rgb),
+        )
+        GLES30.glUseProgram(blitProgram)
+        GLES30.glUniform1i(blitSrcLocation, 0)
+        GLES30.glUniform2i(blitSizeLocation, w, h)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        // The frame's OWN normalized pts — never the wall clock (§10);
+        // PtsTimeline.ptsNs is overflow-checked and rejects negatives.
+        if (!EGLExt.eglPresentationTimeANDROID(
+                eglDisplay, eglWindowSurface, PtsTimeline.ptsNs(ptsUs),
+            )
+        ) {
+            throw encodeFailure("the Surface pts could not be set")
+        }
+        if (!EGL14.eglSwapBuffers(eglDisplay, eglWindowSurface)) {
+            throw encodeFailure("the encoder Surface swap failed")
+        }
+        val tDrain0 = System.nanoTime()
+        drain(codec, isVideo = true, timeoutUs = 0)
+        // Stage timing, honestly mapped: Surface input has NO input-buffer
+        // wait (enc_wait = 0 — there is no dequeueInputBuffer); the upload +
+        // blit + swap span is the plane work; the drain is the drain.
+        timing?.markWriterStages(
+            encWaitNanos = 0,
+            planeCopyNanos = tDrain0 - tUpload0,
+            drainNanos = System.nanoTime() - tDrain0,
+        )
+        return true
+    }
+
     // ---- direct-to-plane path (commit (c)) ----
     //
     // The pipeline asks for the encoder input Image's plane buffers BEFORE
@@ -263,6 +642,11 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     override fun acquireVideoFramePlanes(): YuvFramePlanes? {
         val codec = videoCodec ?: throw notStarted()
+        if (surfaceInputActive) {
+            throw encodeFailure(
+                "the writer is in encoder-Surface mode; plane acquire is not available"
+            )
+        }
         if (heldInputIndex >= 0) {
             throw encodeFailure("acquireVideoFramePlanes called twice without queue/abandon")
         }
@@ -293,6 +677,11 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     override fun queueVideoFrame(ptsUs: Long) {
         val codec = videoCodec ?: throw notStarted()
+        if (surfaceInputActive) {
+            throw encodeFailure(
+                "the writer is in encoder-Surface mode; plane queue is not available"
+            )
+        }
         val index = heldInputIndex
         val image = heldImage
         if (index < 0 || image == null) {
@@ -328,6 +717,11 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
     }
 
     override fun abandonVideoFrame() {
+        if (surfaceInputActive) {
+            throw encodeFailure(
+                "the writer is in encoder-Surface mode; plane abandon is not available"
+            )
+        }
         // The conversion refused the planes: hand the buffer back to the
         // codec without queueing a frame (size 0 = empty, the same
         // handback signalEos uses), then clear the stash. The packed
@@ -360,7 +754,16 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
     override fun finish(): Boolean {
         val v = videoCodec
         val a = audioCodec
-        if (v != null) signalEos(v)
+        if (v != null) {
+            if (surfaceInputActive) {
+                // §10: Surface input has no input buffers to carry an EOS
+                // flag — signalEndOfInputStream is the Surface contract, then
+                // drainUntilEos below is unchanged.
+                v.signalEndOfInputStream()
+            } else {
+                signalEos(v)
+            }
+        }
         if (a != null) signalEos(a)
         v?.let { drainUntilEos(it, isVideo = true) }
         a?.let { drainUntilEos(it, isVideo = false) }
@@ -375,6 +778,74 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
     }
 
     override fun release() {
+        // ---- Surface-mode teardown (§10/§11) ----
+        // Reverse bring-up order, idempotent, safe at every partial-init
+        // point: the GL objects go first (the context may still be current),
+        // then the context is unbound, the window surface, the context and
+        // the display are destroyed, and the codec's input Surface is
+        // released before the codec that created it. On a CPU-mode writer
+        // every field is null/0 and this whole block is skipped.
+        val display = eglDisplay
+        val window = eglWindowSurface
+        val context = eglContext
+        val program = blitProgram
+        val texture = blitTexture
+        val surface = inputSurface
+        if (program != 0) {
+            try {
+                GLES30.glDeleteProgram(program)
+            } catch (_: Exception) {
+            }
+            blitProgram = 0
+        }
+        if (texture != 0) {
+            try {
+                GLES30.glDeleteTextures(1, intArrayOf(texture), 0)
+            } catch (_: Exception) {
+            }
+            blitTexture = 0
+        }
+        blitSrcLocation = -1
+        blitSizeLocation = -1
+        if (display != null) {
+            if (window != null) {
+                try {
+                    EGL14.eglMakeCurrent(
+                        display,
+                        EGL14.EGL_NO_SURFACE,
+                        EGL14.EGL_NO_SURFACE,
+                        EGL14.EGL_NO_CONTEXT,
+                    )
+                    EGL14.eglDestroySurface(display, window)
+                } catch (_: Exception) {
+                }
+                eglWindowSurface = null
+            }
+            if (context != null) {
+                try {
+                    EGL14.eglDestroyContext(display, context)
+                } catch (_: Exception) {
+                }
+                eglContext = null
+            }
+            try {
+                EGL14.eglTerminate(display)
+            } catch (_: Exception) {
+            }
+            eglDisplay = null
+            eglConfig = null
+        }
+        if (surface != null) {
+            try {
+                surface.release()
+            } catch (_: Exception) {
+            }
+            inputSurface = null
+        }
+        surfaceInputRequested = false
+        surfaceInputActive = false
+
+        // ---- the CPU-path teardown, unchanged ----
         videoCodec?.let { c ->
             try {
                 c.stop()

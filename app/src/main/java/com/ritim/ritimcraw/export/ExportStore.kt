@@ -4,6 +4,7 @@ import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.JsonParser
 import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.ProjectJson
+import com.ritim.ritimcraw.engine.RenderBackend
 import java.io.File
 import java.nio.charset.StandardCharsets
 
@@ -152,6 +153,15 @@ class ExportStore(private val file: File) {
                 if (j.manualRotationDeg != 0) {
                     sb.append(",\"manualRotationDeg\":").append(j.manualRotationDeg)
                 }
+                // renderBackend (GPU deliverable F, owner request
+                // 2026-11-12 §10): omit-when-default — CPU is the norm for
+                // every job queued before the GPU setting existed, so files
+                // written before the field stay byte-identical and old rows
+                // parse with CPU (the reference path, exactly what they
+                // always ran).
+                if (j.renderBackend != RenderBackend.DEFAULT) {
+                    sb.append(",\"renderBackend\":\"").append(j.renderBackend.name).append('"')
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -251,6 +261,12 @@ class ExportStore(private val file: File) {
                     // before manual rotation — 0 keeps the old behavior
                     // (container orientation alone) for every legacy row.
                     manualRotationDeg = (m["manualRotationDeg"] as? Double)?.toInt() ?: 0,
+                    // renderBackend (GPU deliverable F): absent in rows
+                    // queued before the GPU setting — CPU keeps the old
+                    // behavior (the reference path) for every legacy row;
+                    // an unknown future value parses as CPU too
+                    // (RenderBackend.fromWire).
+                    renderBackend = RenderBackend.fromWire(m["renderBackend"] as? String),
                 )
             }
         }

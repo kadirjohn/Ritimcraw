@@ -382,4 +382,67 @@ void main() {
     oCol = vec4(c, 1.0);
 }
 """
+
+    /**
+     * Blit fragment pass (deliverable F core, owner request 2026-11-12
+     * §10 "Encoder Surface export") — the pass MediaCodecMp4Writer's
+     * Surface-input mode draws to the encoder's input Surface: one
+     * fullscreen draw of the developed frame texture per exported frame.
+     *
+     * Unlike the passes above (which the NATIVE parity harness compiles
+     * through the JNI seam), this one is compiled by the WRITER itself,
+     * in Kotlin EGL14/GLES30 at export time (MediaCodecMp4Writer's
+     * buildBlitProgram) — still THIS exact text, still host-validated
+     * (Kind.BLIT_FRAGMENT), so there is no second copy to drift.
+     *
+     * Program: FULLSCREEN_VERTEX + BLIT_FRAGMENT (both #version 300 es —
+     * GLSL ES forbids linking mixed versions into one program). One
+     * glDrawArrays(GL_TRIANGLE_STRIP, 0, 4) per frame onto the EGL
+     * window surface created on the codec's createInputSurface; the
+     * writer then stamps the frame's pts (eglPresentationTimeANDROID,
+     * nanoseconds) and swaps.
+     *
+     * THE Y FLIP: the encoder consumes the Surface buffer TOP-row-first
+     * (buffer row 0 = the image's top), while GL's gl_FragCoord row 0 is
+     * the render target's BOTTOM row. The frame texture is uploaded
+     * top-row-first (texture row 0 = the image's top — the CPU pipeline's
+     * own packed order), so destination row g.y (bottom-up) must read
+     * source row uSize.y - 1 - g.y (top-down). texelFetch's INTEGER
+     * coordinates make the flip exact — there is no half-pixel math here
+     * to get wrong.
+     *
+     * Input: uSrc — the developed frame, GL_RGB8, width x height,
+     * top-row-first, uploaded per frame by the writer (glTexImage2D,
+     * unpack alignment 1). Output: the window surface's back buffer
+     * (RGBA8888 — the recordable EGL config; 8 bits is the honest
+     * precision for this stage: the frame it receives is the pipeline's
+     * packed RGB888, and the encode target is 8-bit SDR YUV; the float
+     * FBO domain belongs to the parity harness, not the encoder blit).
+     * No filtering (texelFetch), no wrap (coordinates never leave
+     * [0, size-1]), no readback of any kind — this pass's entire job is
+     * to land the frame in the encoder.
+     */
+    const val BLIT_FRAGMENT: String = """#version 300 es
+
+// Blit pass: developed frame texture -> the encoder's input Surface
+// (MediaCodecMp4Writer Surface-input mode). See the Kotlin doc above.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;  // the frame: GL_RGB8, w x h, top-row-first
+uniform ivec2 uSize;          // frame width/height in pixels
+
+out vec4 oCol;
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    // The Y flip: destination row g.y counts from the BOTTOM (GL), the
+    // texture's row 0 is the image's TOP row (the upload order), and the
+    // encoder reads the Surface buffer top-first. Integer texelFetch
+    // coordinates - the flip is exact.
+    ivec2 src = ivec2(g.x, uSize.y - 1 - g.y);
+    oCol = vec4(texelFetch(uSrc, src, 0).rgb, 1.0);
+}
+"""
 }

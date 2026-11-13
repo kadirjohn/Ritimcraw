@@ -47,6 +47,9 @@ object GlesShaderValidator {
 
         /** STORE_FRAGMENT — GLSL ES 3.10 fragment (SSBO write), readback. */
         STORE_FRAGMENT("#version 310 es"),
+
+        /** BLIT_FRAGMENT — GLSL ES 3.00 fragment, the encoder-Surface blit. */
+        BLIT_FRAGMENT("#version 300 es"),
     }
 
     /**
@@ -95,6 +98,7 @@ object GlesShaderValidator {
             -> fullscreenVertexProblems(stripped, out)
             Kind.DEVELOP_FRAGMENT -> developFragmentProblems(stripped, out)
             Kind.STORE_FRAGMENT -> storeFragmentProblems(stripped, out)
+            Kind.BLIT_FRAGMENT -> blitFragmentProblems(stripped, out)
         }
         return out
     }
@@ -240,6 +244,34 @@ object GlesShaderValidator {
             out += "missing `out vec4 oCol;` (the throwaway color output — " +
                 "the SSBO is the real output, but the pass must still write " +
                 "a legal fragment output)"
+        }
+    }
+
+    private fun blitFragmentProblems(s: String, out: MutableList<String>) {
+        // The uniforms MediaCodecMp4Writer's blit program looks up and
+        // sets after linking (buildBlitProgram). Names double as the
+        // Kotlin lookup contract.
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the writer " +
+                "attaches the developed frame texture)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the writer sets it)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the window surface's color output)"
+        }
+        if (!s.contains("texelFetch(uSrc, src, 0)")) {
+            out += "missing the `texelFetch(uSrc, src, 0)` fetch " +
+                "(integer texel fetch — no sampling filters are involved)"
+        }
+        // The Y flip — the one line that keeps the encode right-side up:
+        // the encoder reads the Surface buffer top-row-first while GL's
+        // gl_FragCoord row 0 is the render target's bottom row.
+        if (!s.contains("uSize.y - 1 - g.y")) {
+            out += "missing the Y flip (`uSize.y - 1 - g.y` — the encoder " +
+                "consumes the Surface buffer top-row-first; without the " +
+                "flip every encoded frame is upside down)"
         }
     }
 
