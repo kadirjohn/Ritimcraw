@@ -463,4 +463,101 @@ std::string interpretationSignature(const LutInterpretation& interp) {
     return os.str();
 }
 
+void applyManagedLutStage(ImageF& img, const Lut* lut,
+                          const CompiledLutBinding* binding,
+                          int tonemapMode, float lutStrength) {
+    // Legacy pair, verbatim: the exact statements the pre-management
+    // stage 23/24 sequence ran, so every nullptr-binding call site, every
+    // LegacyLinear709 record, and every passthrough binding stay
+    // byte-identical to the old pipeline (locked by the golden hashes).
+    const auto legacyPair = [&]() {
+        if (tonemapMode != 0)
+            tonemapFrame(img, tonemapMode);
+        if (lut != nullptr && lutStrength != 0.0f)
+            applyLut(img, *lut, lutStrength);
+    };
+
+    if (binding == nullptr || lut == nullptr
+        || binding->interp.role == LutRole::LegacyLinear709) {
+        legacyPair();
+        return;
+    }
+
+    // Strength 0 (or NaN): the LUT is bypassed, so the whole stage is the
+    // legacy tonemap alone — byte-identical to the un-LUT'd chain.
+    if (!(lutStrength > 0.0f)) {
+        if (tonemapMode != 0)
+            tonemapFrame(img, tonemapMode);
+        return;
+    }
+
+    switch (binding->interp.role) {
+        case LutRole::LegacyLinear709:
+            break; // unreachable (handled above)
+
+        case LutRole::DisplayLook: {
+            // Render first, then the look on the rendered image. The
+            // strength blend happens in the rendered reference.
+            if (tonemapMode != 0)
+                tonemapFrame(img, tonemapMode);
+            if (binding->passthroughEncodings) {
+                // Linear/Linear 709/709: the managed chain degenerates to
+                // the legacy sampler; route to applyLut so the numbers are
+                // byte-identical to the legacy stage at this point.
+                applyLut(img, *lut, lutStrength);
+            } else {
+                evaluateManagedLut(img, *lut, *binding, lutStrength);
+            }
+            return;
+        }
+
+        case LutRole::SceneLook: {
+            // The look enters the scene: LUT on the scene-linear image
+            // first, then the render applies ONCE, after. ACES/AgX never
+            // runs on top of the LUT's own output.
+            if (binding->passthroughEncodings) {
+                applyLut(img, *lut, lutStrength); // degenerate: legacy stage
+            } else {
+                evaluateManagedLut(img, *lut, *binding, lutStrength);
+            }
+            if (tonemapMode != 0)
+                tonemapFrame(img, tonemapMode);
+            return;
+        }
+
+        case LutRole::SceneToDisplay: {
+            // The LUT branch is ALREADY rendered output — tonemap never
+            // applies on top of it. Full strength is the pure LUT branch
+            // alone (no baseline, no copy); strength in (0,1) mixes the
+            // two branches in the rendered reference:
+            //   out = lut(px)*s + tonemap(px)*(1-s)
+            // computed per pixel at this shared stage point — one frame
+            // copy, no second develop. The baseline branch is the legacy
+            // chain's stage 23 (tonemap of the scene image), so a mixed
+            // grade is exactly (1-s) of the un-LUT'd chain plus s of the
+            // conversion.
+            const float s = std::min(lutStrength, 1.0f);
+            if (s >= 1.0f) {
+                evaluateManagedLut(img, *lut, *binding, 1.0f);
+                return;
+            }
+            ImageF baseline = img; // the scene image, pre-tonemap
+            if (tonemapMode != 0)
+                tonemapFrame(baseline, tonemapMode);
+            const size_t pixels = static_cast<size_t>(img.w) * img.h;
+            if (pixels == 0 || img.rgb.size() != pixels * 3)
+                return; // degenerate frame: nothing to mix
+            for (size_t p = 0; p < pixels; ++p) {
+                const float* scene = &img.rgb[p * 3];
+                float lutPx[3];
+                evaluateManagedLutPixel(*lut, *binding, scene, lutPx);
+                float* out = &img.rgb[p * 3];
+                for (int c = 0; c < 3; ++c)
+                    out[c] = lutPx[c] * s + baseline.rgb[p * 3 + c] * (1.0f - s);
+            }
+            return;
+        }
+    }
+}
+
 } // namespace rawedit

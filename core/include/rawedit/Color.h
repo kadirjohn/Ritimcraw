@@ -210,9 +210,10 @@ CompiledLutBinding compileLutBinding(const LutInterpretation& interp);
 //   (the EXISTING sampler, untouched) -> decodeTransfer ->
 //   outputToWorking.
 //
-// This is the frame-level entry for the SceneLook role; DisplayLook and
-// SceneToDisplay use the per-pixel form so the two-branch strength mix
-// can share the stage point.
+// This is the frame-level entry for the SceneLook and DisplayLook roles
+// (their strength mix is a single-branch blend in the role's reference);
+// the SceneToDisplay mixed-strength path uses the per-pixel form so the
+// two-branch blend can share the stage point (see applyManagedLutStage).
 void evaluateManagedLut(ImageF& img, const Lut& lut,
                         const CompiledLutBinding& binding, float strength);
 
@@ -227,5 +228,41 @@ void evaluateManagedLutPixel(const Lut& lut, const CompiledLutBinding& binding,
 // gamut + transfer), for cache keys. Two interpretations with the same
 // signature are interchangeable for rendering purposes.
 std::string interpretationSignature(const LutInterpretation& interp);
+
+// The stage-23/24 router: applies tonemapping (grade.tonemap, 0 = off,
+// 1 = ACES, 2-5 = AgX — rawedit::tonemapFrame) and the LUT in the order
+// the binding's role names, on the image at the stage-23 point (after
+// all grade stages, before the Rec.709 OETF that lives in the caller's
+// tail). One shared entry so developCpu and developEncoded stay in
+// lockstep (rawedit::tonemapFrame is reachable through Develop.h).
+//
+//   binding == nullptr, lut == nullptr, or role LegacyLinear709:
+//     the legacy pair verbatim — tonemapFrame (if grade.tonemap != 0),
+//     then applyLut (if lut and grade.lutStrength != 0) — byte-identical
+//     to the pre-management stage 23/24 sequence. Old records and all
+//     existing call sites land here.
+//   DisplayLook: tonemapFrame first, then evaluateManagedLut (the
+//     strength blend happens in the rendered reference). A
+//     passthroughEncodings binding (Linear/Linear 709/709) routes to
+//     applyLut verbatim — the managed chain degenerates to the legacy
+//     sampler, so the numbers stay byte-identical there too.
+//   SceneLook: evaluateManagedLut on the scene-linear image first, then
+//     tonemapFrame ONCE after — ACES/AgX never runs on top of the
+//     LUT's own rendered output.
+//   SceneToDisplay: the LUT branch is already rendered output —
+//     tonemapFrame never applies on top of it. Strength 0 = the legacy
+//     pair (exact bypass, byte-identical); strength 1 = the managed
+//     branch alone, no tonemap even when grade.tonemap != 0; strength
+//     in (0,1) = BOTH branches evaluated at this stage point and mixed
+//     in the rendered reference: baseline = tonemapFrame of a copy of
+//     the scene image (byte-identical to the un-LUT'd chain's stage 23),
+//     lut = evaluateManagedLutPixel of the scene image, and
+//     out = lut*s + baseline*(1-s). One frame copy, no second develop.
+//
+// tonemapMode == 0 with any binding behaves as the legacy pair (no
+// tonemap step), so a neutral grade stays byte-identical everywhere.
+void applyManagedLutStage(ImageF& img, const Lut* lut,
+                          const CompiledLutBinding* binding,
+                          int tonemapMode, float lutStrength);
 
 } // namespace rawedit

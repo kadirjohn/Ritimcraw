@@ -29,6 +29,7 @@
 #include <rawedit/Color.h>
 #include <rawedit/Develop.h>
 #include <rawedit/Lut.h>
+#include <rawedit/Thumbnail.h>
 #include <rawedit/Transfer.h>
 
 TEST_CASE("transfer anchors: gray 0.18 per curve") {
@@ -592,4 +593,358 @@ TEST_CASE("compiled binding: matrices are precompiled, not per-frame") {
     CHECK(a.workingToInput[0] == doctest::Approx(0.56279692f).epsilon(1e-5f));
     CHECK(a.workingToInput[3] == doctest::Approx(0.07769616f).epsilon(1e-4f));
     CHECK(a.workingToInput[6] == doctest::Approx(0.06464207f).epsilon(1e-3f));
+}
+
+// ---------------------------------------------------------------------------
+// The stage-23/24 router (applyManagedLutStage) and the develop wiring.
+// Fixtures: the same synthetic CFA builder as test_lut.cpp (RGGB, black
+// 64, white 1023, identity color matrix, flat linear patch) and the same
+// FNV-1a byte hash for bit-identity pins.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct Synthetic {
+    std::vector<uint16_t> cfa;
+    rawedit::FrameInfo info;
+    rawedit::RawMeta meta;
+};
+
+Synthetic syntheticFlat(float lr, float lg, float lb,
+                        uint32_t w = 8, uint32_t h = 8) {
+    Synthetic s;
+    s.info.width = w;
+    s.info.height = h;
+    s.info.bitDepth = 16;
+    s.info.cfa = rawedit::CfaPattern::RGGB;
+    s.info.activeArea = rawedit::Rect{0, 0, static_cast<int>(w), static_cast<int>(h)};
+
+    s.meta.black[0] = 64; s.meta.black[1] = 64;
+    s.meta.black[2] = 64; s.meta.black[3] = 64;
+    s.meta.white = 1023;
+    s.meta.wbGains[0] = 1.0f; s.meta.wbGains[1] = 1.0f; s.meta.wbGains[2] = 1.0f;
+    s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
+
+    const uint16_t vals[3] = {
+        static_cast<uint16_t>(64 + lr * (1023 - 64)),
+        static_cast<uint16_t>(64 + lg * (1023 - 64)),
+        static_cast<uint16_t>(64 + lb * (1023 - 64)),
+    };
+    s.cfa.assign(static_cast<size_t>(w) * h, 0);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const int site =
+                (y % 2 == 0) ? (x % 2 == 0 ? 0 : 1) : (x % 2 == 0 ? 1 : 2);
+            s.cfa[static_cast<size_t>(y) * w + x] = vals[site];
+        }
+    return s;
+}
+
+uint64_t fnv1a(const rawedit::ImageF& img) {
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(img.rgb.data());
+    const size_t n = img.rgb.size() * sizeof(float);
+    for (size_t i = 0; i < n; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+// The binding for a role with Linear/Linear 709/709 encodings — the
+// passthrough shape (used for the legacy-role and strength pins).
+rawedit::CompiledLutBinding linearBinding(rawedit::LutRole role) {
+    rawedit::LutInterpretation interp;
+    interp.input = {rawedit::GamutId::Rec709, rawedit::TransferId::Linear};
+    interp.output = {rawedit::GamutId::Rec709, rawedit::TransferId::Linear};
+    interp.role = role;
+    return rawedit::compileLutBinding(interp);
+}
+
+} // namespace
+
+TEST_CASE("router: nullptr binding is byte-identical to the legacy pair") {
+    // The three golden fixtures of test_develop.cpp, re-locked through the
+    // router: developCpu with binding == nullptr (explicit and defaulted)
+    // must stay bit-identical — the pre-management pipeline.
+    {
+        auto s = syntheticFlat(0.18f, 0.18f, 0.18f);
+        auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, rawedit::Grade{});
+        CHECK(fnv1a(img) == 0x88593750a9564183ULL);
+    }
+    {
+        auto s = syntheticFlat(0.55f, 0.30f, 0.12f);
+        rawedit::Grade g;
+        g.exposureEv = 0.7f;
+        g.highlights = -35.0f;
+        g.tempK = 7200.0f;
+        g.tint = 12.0f;
+        g.asShot = false;
+        auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, nullptr);
+        CHECK(fnv1a(img) == 0x38150540c239af83ULL);
+    }
+    {
+        auto s = syntheticFlat(0.95f, 0.95f, 0.95f);
+        rawedit::Grade g;
+        g.exposureEv = 2.1f;
+        g.highlights = -55.0f;
+        auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g);
+        CHECK(fnv1a(img) == 0x1cea742e0c17bf03ULL);
+    }
+    // The ACES golden anchor of test_develop.cpp (the tonemap path through
+    // the router): 0.18 flat + tonemap 1 lands on 0.26581848.
+    {
+        auto s = syntheticFlat(0.18f, 0.18f, 0.18f);
+        rawedit::Grade g;
+        g.tonemap = 1;
+        auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g);
+        const uint32_t x0 = img.w / 2 - 1, y0 = img.h / 2 - 1;
+        CHECK(std::abs(img.rgb[(static_cast<size_t>(y0) * img.w + x0) * 3]
+                       - 0.26581848f) < 1e-4f);
+    }
+}
+
+TEST_CASE("router: LegacyLinear709 role binding runs the legacy pair") {
+    // A binding whose role is LegacyLinear709 must reproduce the nullptr
+    // pipeline exactly, whatever its encodings say (the role owns the
+    // ordering; the stage-24 contract is the legacy one).
+    auto s = syntheticFlat(0.4f, 0.4f, 0.4f);
+    const rawedit::Lut dbl = doubleCube();
+
+    rawedit::Grade g;
+    g.tonemap = 1;
+    g.lutStrength = 1.0f;
+    auto legacy = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, &dbl, nullptr);
+    const auto binding = linearBinding(rawedit::LutRole::LegacyLinear709);
+    auto managed = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, &dbl, &binding);
+    CHECK(fnv1a(legacy) == fnv1a(managed));
+
+    // And strength 0 with any managed role is the un-LUT'd chain exactly
+    // (the early bypass): here tonemap still runs, so the hash equals the
+    // tonemap-only pipeline.
+    rawedit::Grade tmOnly;
+    tmOnly.tonemap = 1;
+    auto plain = rawedit::developCpu(s.cfa.data(), s.info, s.meta, tmOnly, nullptr);
+    rawedit::Grade zero;
+    zero.tonemap = 1;
+    zero.lutStrength = 0.0f;
+    for (rawedit::LutRole role : {rawedit::LutRole::DisplayLook,
+                                  rawedit::LutRole::SceneLook,
+                                  rawedit::LutRole::SceneToDisplay}) {
+        const auto b = linearBinding(role);
+        auto out = rawedit::developCpu(s.cfa.data(), s.info, s.meta, zero, &dbl, &b);
+        CHECK(fnv1a(out) == fnv1a(plain));
+    }
+}
+
+TEST_CASE("router: role orderings pinned by the double cube") {
+    // The double cube doubles whatever the LUT stage receives (full
+    // strength, in-domain). The expectations are DERIVED from the actual
+    // pipeline outputs, never hardcoded. The flat 0.18 patch develops to
+    // v = 172/959 = 0.17935349; ACES(v) = 0.26581848 (the test_develop
+    // anchor).
+    //
+    // With tonemap 1 + full strength the three managed roles give three
+    // DIFFERENT values, which pins each role's ordering:
+    //   DisplayLook    : 2 * ACES(v)   (render, then the look doubles)
+    //   SceneLook      : ACES(2v)      (the look doubles, then ACES)
+    //   SceneToDisplay : 2v            (no ACES anywhere — the LUT branch
+    //                                   is already rendered output)
+    auto s = syntheticFlat(0.18f, 0.18f, 0.18f);
+    const rawedit::Lut dbl = doubleCube();
+    const auto centerOf = [](const rawedit::ImageF& img) {
+        const uint32_t x0 = img.w / 2 - 1, y0 = img.h / 2 - 1;
+        return img.rgb[(static_cast<size_t>(y0) * img.w + x0) * 3];
+    };
+
+    rawedit::Grade tm;
+    tm.tonemap = 1;
+    auto tmOnly = rawedit::developCpu(s.cfa.data(), s.info, s.meta, tm, nullptr);
+    const float acesV = centerOf(tmOnly); // ACES(v)
+
+    rawedit::Grade neutral;
+    auto plain = rawedit::developCpu(s.cfa.data(), s.info, s.meta, neutral, nullptr);
+    const float v = centerOf(plain); // the scene value
+
+    rawedit::Grade g;
+    g.tonemap = 1;
+    g.lutStrength = 1.0f;
+
+    // DisplayLook: render first, then the look.
+    {
+        const auto binding = linearBinding(rawedit::LutRole::DisplayLook);
+        auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, &dbl, &binding);
+        const float got = centerOf(img);
+        CHECK(got == doctest::Approx(2.0f * acesV).epsilon(1e-4f));
+        CHECK(got != doctest::Approx(acesV).epsilon(1e-4f)); // really ran
+    }
+    // SceneLook: the look first, then the render. ACES is nonlinear, so
+    // ACES(2v) != 2*ACES(v) — this also separates SceneLook from
+    // DisplayLook.
+    {
+        const auto binding = linearBinding(rawedit::LutRole::SceneLook);
+        auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, &dbl, &binding);
+        const float got = centerOf(img);
+        // ACES at the doubled scene value, derived: acesFit(2v) with the
+        // Narkowicz constants (Develop.cpp's fit, mirrored here).
+        const float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
+        const float num = (2.0f * v) * (a * (2.0f * v) + b);
+        const float den = (2.0f * v) * (c * (2.0f * v) + d) + e;
+        const float aces2v = std::min(std::max(num / den, 0.0f), 1.0f);
+        CHECK(got == doctest::Approx(aces2v).epsilon(1e-4f));
+        CHECK(got != doctest::Approx(2.0f * acesV).epsilon(1e-4f));
+    }
+    // SceneToDisplay: the LUT branch is already rendered — NO ACES on top.
+    {
+        const auto binding = linearBinding(rawedit::LutRole::SceneToDisplay);
+        auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, &dbl, &binding);
+        const float got = centerOf(img);
+        CHECK(got == doctest::Approx(2.0f * v).epsilon(1e-4f));
+        CHECK(got != doctest::Approx(acesV).epsilon(1e-4f)); // no tonemap on top
+        CHECK(got != doctest::Approx(2.0f * acesV).epsilon(1e-4f));
+    }
+}
+
+TEST_CASE("router: SceneToDisplay mixed strength blends the two branches") {
+    // Strength 0.5 with tonemap 1: out = 0.5*lut(px) + 0.5*ACES(px),
+    // evaluated at the shared stage point — both branches in the rendered
+    // reference. Derived, never hardcoded.
+    auto s = syntheticFlat(0.18f, 0.18f, 0.18f);
+    const rawedit::Lut dbl = doubleCube();
+    const auto centerOf = [](const rawedit::ImageF& img) {
+        const uint32_t x0 = img.w / 2 - 1, y0 = img.h / 2 - 1;
+        return img.rgb[(static_cast<size_t>(y0) * img.w + x0) * 3];
+    };
+
+    rawedit::Grade tm;
+    tm.tonemap = 1;
+    auto tmOnly = rawedit::developCpu(s.cfa.data(), s.info, s.meta, tm, nullptr);
+    const float acesV = centerOf(tmOnly);
+    rawedit::Grade neutral;
+    auto plain = rawedit::developCpu(s.cfa.data(), s.info, s.meta, neutral, nullptr);
+    const float v = centerOf(plain);
+
+    rawedit::Grade g;
+    g.tonemap = 1;
+    g.lutStrength = 0.5f;
+    const auto binding = linearBinding(rawedit::LutRole::SceneToDisplay);
+    auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, &dbl, &binding);
+    const float got = centerOf(img);
+    const float want = 0.5f * (2.0f * v) + 0.5f * acesV;
+    CHECK(got == doctest::Approx(want).epsilon(1e-4f));
+    // The two branches differ (ACES is nonlinear), so the mix is a real
+    // third value, not a copy of either branch.
+    CHECK(got != doctest::Approx(2.0f * v).epsilon(1e-4f));
+    CHECK(got != doctest::Approx(acesV).epsilon(1e-4f));
+    // And it is NOT the naive single-branch blend the legacy path would
+    // give (LUT after tonemap, blended against the tonemapped pixel):
+    // 0.5*2*ACES(v) + 0.5*ACES(v) = 1.5*ACES(v).
+    CHECK(got != doctest::Approx(1.5f * acesV).epsilon(1e-4f));
+}
+
+TEST_CASE("router: managed encodings apply through the develop wiring") {
+    // A DWG/DaVinci-Intermediate -> Rec.709/OETF conversion binding with
+    // an identity cube: the managed chain is pure conversion. The
+    // expectation is DERIVED by running the per-pixel contract
+    // (evaluateManagedLutPixel) on the actual developed scene value —
+    // the fixture quantizes (0.18 -> 172/959 = 0.17935), so the exact
+    // 0.18 anchor 0.127535 does not apply. This proves the wiring hands
+    // the router the scene image and the router applies the compiled
+    // matrices.
+    auto s = syntheticFlat(0.18f, 0.18f, 0.18f);
+    const rawedit::Lut lut = identityCube();
+    rawedit::LutInterpretation interp;
+    interp.input = {rawedit::GamutId::DaVinciWideGamut,
+                    rawedit::TransferId::DaVinciIntermediate};
+    interp.output = {rawedit::GamutId::Rec709, rawedit::TransferId::Rec709OETF};
+    interp.role = rawedit::LutRole::SceneToDisplay;
+    const auto binding = rawedit::compileLutBinding(interp);
+
+    rawedit::Grade neutral;
+    auto plain = rawedit::developCpu(s.cfa.data(), s.info, s.meta, neutral, nullptr);
+    const uint32_t x0 = plain.w / 2 - 1, y0 = plain.h / 2 - 1;
+    const float v = plain.rgb[(static_cast<size_t>(y0) * plain.w + x0) * 3];
+
+    float want[3];
+    const float scene[3] = {v, v, v};
+    rawedit::evaluateManagedLutPixel(lut, binding, scene, want);
+
+    rawedit::Grade g;
+    g.lutStrength = 1.0f;
+    auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, &lut, &binding);
+    const float got = img.rgb[(static_cast<size_t>(y0) * img.w + x0) * 3];
+    CHECK(got == doctest::Approx(want[0]).epsilon(1e-5f));
+    // The conversion really changed the pixel (not a passthrough).
+    CHECK(got != doctest::Approx(v).epsilon(1e-3f));
+    // Loose sanity against the 0.18 anchor: the quantized fixture lands
+    // within 1% of the exact-0.18 value 0.127535.
+    CHECK(std::abs(got - 0.127535f) < 0.013f);
+}
+
+TEST_CASE("router: developEncoded routes through the same stage") {
+    // Neutral gray NV12 frame (limited Y=128 -> mid), the test_lut.cpp
+    // fixture. The router must give the encoded path the same semantics:
+    // nullptr binding = legacy bit-identity; SceneToDisplay full strength
+    // with a passthrough binding = exactly 2x, no tonemap on top.
+    rawedit::YuvFrame f;
+    f.width = 4;
+    f.height = 2;
+    f.semiPlanar = true;
+    f.y.assign(8, 128);
+    f.u.assign(4, 128);
+    rawedit::Grade neutral;
+
+    // Legacy bit-identity: nullptr (explicit and defaulted).
+    auto plain = rawedit::developEncoded(f, neutral, true, nullptr);
+    auto def = rawedit::developEncoded(f, neutral, true);
+    CHECK(fnv1a(plain) == fnv1a(def));
+
+    // SceneToDisplay, full strength, passthrough encodings, tonemap 1:
+    // 2x the decoded value, NO ACES on top.
+    const rawedit::Lut dbl = doubleCube();
+    const auto binding = linearBinding(rawedit::LutRole::SceneToDisplay);
+    rawedit::Grade g;
+    g.tonemap = 1;
+    g.lutStrength = 1.0f;
+    auto out = rawedit::developEncoded(f, g, true, &dbl, &binding);
+    CHECK(out.rgb[0] == doctest::Approx(2.0f * plain.rgb[0]).epsilon(1e-5f));
+    CHECK(out.rgb[0] > plain.rgb[0]);
+
+    // DisplayLook with the same grade: render first, so the LUT doubles
+    // the TONEMAPPED value — 2*ACES(plain).
+    const auto dbinding = linearBinding(rawedit::LutRole::DisplayLook);
+    auto dout = rawedit::developEncoded(f, g, true, &dbl, &dbinding);
+    rawedit::Grade tmOnly;
+    tmOnly.tonemap = 1;
+    auto tplain = rawedit::developEncoded(f, tmOnly, true, nullptr);
+    CHECK(dout.rgb[0] == doctest::Approx(2.0f * tplain.rgb[0]).epsilon(1e-5f));
+    CHECK(dout.rgb[0] != doctest::Approx(out.rgb[0]).epsilon(1e-4f));
+}
+
+TEST_CASE("router: developThumbnail forwards the binding (preview == export)") {
+    // The preview must run the SAME managed sequence as the export: with
+    // a SceneToDisplay passthrough binding + double cube at full strength
+    // and no tonemap, both paths give exactly 2x the plain develop.
+    auto s = syntheticFlat(0.18f, 0.18f, 0.18f);
+    const rawedit::Lut dbl = doubleCube();
+    const auto binding = linearBinding(rawedit::LutRole::SceneToDisplay);
+
+    rawedit::Grade neutral;
+    auto plainThumb = rawedit::developThumbnail(s.cfa.data(), s.info, s.meta,
+                                                neutral, 2, nullptr, nullptr);
+    rawedit::Grade g;
+    g.lutStrength = 1.0f;
+    auto lutThumb = rawedit::developThumbnail(s.cfa.data(), s.info, s.meta,
+                                              g, 2, &dbl, &binding);
+    const auto centerOf = [](const rawedit::ImageF& img) {
+        const uint32_t x0 = img.w / 2 - 1, y0 = img.h / 2 - 1;
+        return img.rgb[(static_cast<size_t>(y0) * img.w + x0) * 3];
+    };
+    CHECK(centerOf(lutThumb) ==
+          doctest::Approx(2.0f * centerOf(plainThumb)).epsilon(1e-4f));
+    // The full develop with the same binding gives the same center value
+    // (the thumbnail's decimated mosaic is the same flat patch, so both
+    // agree; the check is the acceptance contract in miniature).
+    auto full = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, &dbl, &binding);
+    CHECK(centerOf(full) == doctest::Approx(centerOf(lutThumb)).epsilon(1e-4f));
 }

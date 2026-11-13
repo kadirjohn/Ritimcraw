@@ -91,18 +91,18 @@ void encodedDetailStages(ImageF& img, const Grade& grade) {
     }
 }
 
-void encodedTonemapStage(ImageF& img, const Grade& grade) {
-    if (grade.tonemap != 0)
-        tonemapFrame(img, grade.tonemap);
-}
-
-void encodedLutStage(ImageF& img, const Grade& grade, const Lut* lut) {
-    if (lut != nullptr && grade.lutStrength != 0.0f)
-        applyLut(img, *lut, grade.lutStrength);
+// The tonemap + LUT pair of developCpu stages 23/24, routed through
+// applyManagedLutStage (rawedit/Color.h) so both pipelines stay in
+// lockstep: with binding == nullptr (every existing call site and every
+// pre-management record) the router runs the legacy pair verbatim —
+// tonemapFrame then applyLut, byte-identical to the old sequence.
+void encodedRenderStage(ImageF& img, const Grade& grade,
+                        const Lut* lut, const CompiledLutBinding* binding) {
+    applyManagedLutStage(img, lut, binding, grade.tonemap, grade.lutStrength);
 }
 } // namespace
 
-ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, const Lut* lut) {
+ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, const Lut* lut, const CompiledLutBinding* binding) {
     ImageF out;
     out.w = frame.width;
     out.h = frame.height;
@@ -176,8 +176,7 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, c
     // stage (exact passthrough, the old look).
     encodedDenoiseStages(out, grade);
     encodedDetailStages(out, grade);
-    encodedTonemapStage(out, grade);
-    encodedLutStage(out, grade, lut);
+    encodedRenderStage(out, grade, lut, binding);
 
     return out;
 }

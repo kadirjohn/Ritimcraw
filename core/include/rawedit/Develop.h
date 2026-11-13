@@ -78,6 +78,7 @@
 #include <cstdint>
 #include <vector>
 
+#include <rawedit/Color.h>
 #include <rawedit/Lut.h>
 #include <rawedit/Source.h>
 
@@ -331,8 +332,18 @@ void tonemapFrame(ImageF& img, int mode);
 //        fast path stays allocation-free. Combined with the default
 //        Grade.lutStrength 0 this keeps every existing call site
 //        bit-identical to the pre-LUT pipeline.
+//   binding: optional managed-LUT interpretation (owner request
+//        2026-11-13, rawedit/Color.h) compiled ahead of time. nullptr =
+//        the legacy stage-23/24 sequence, byte-identical (every existing
+//        call site and every pre-management record). When present, the
+//        stage-23/24 pair routes through applyManagedLutStage, which
+//        applies tonemap and LUT in the order the binding's role names
+//        (DisplayLook: render then look; SceneLook: look then render;
+//        SceneToDisplay: the LUT branch is already rendered, tonemap
+//        never fires on top of it). Appended AFTER lut with a nullptr
+//        default so no existing call site changes.
 // Returns a (width x height) ImageF in the linear working space.
-ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut = nullptr);
+ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut = nullptr, const CompiledLutBinding* binding = nullptr);
 
 // Bilinearly samples the lens shading gain map at normalized sensor
 // coordinates (u, v in [0,1]). plane selects the CFA channel plane (0..3,

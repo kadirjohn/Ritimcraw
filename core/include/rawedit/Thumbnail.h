@@ -51,9 +51,16 @@ namespace rawedit {
 // owner's acceptance check compares them on-device. nullptr = no LUT
 // (the pre-LUT look, bit-identical); defaulted so every existing call
 // site is unchanged.
+// binding: optional managed-LUT interpretation (owner request
+// 2026-11-13, rawedit/Color.h), forwarded to the inner developCpu with
+// the LUT so the preview runs the SAME managed stage-23/24 sequence the
+// export runs — the acceptance check compares them on-device. nullptr =
+// the legacy sequence, bit-identical; appended AFTER lut with a nullptr
+// default so no existing call site changes.
 ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
                         const RawMeta& meta, const Grade& grade, int strideEvery,
-                        const Lut* lut = nullptr);
+                        const Lut* lut = nullptr,
+                        const CompiledLutBinding* binding = nullptr);
 
 // Output dimensions for the given frame size and stride, per the header
 // math: (2*ceil(width/2/N)) x (2*ceil(height/2/N)). Returns 0x0 for an
