@@ -17,6 +17,20 @@ enum class LutGamut(val value: Int) {
     Rec709(0),
     Rec2020(1),
     DaVinciWideGamut(2),
+    /** ACEScg (AP1 primaries, ACES ~D60 white) — commit (e). */
+    Acescg(3),
+    /** ARRI Wide Gamut 3 — commit (e). */
+    ArriWideGamut3(4),
+    /** Sony S-Gamut3.Cine — commit (e). */
+    SGamut3Cine(5),
+    /** Canon Cinema Gamut — commit (e). */
+    CinemaGamut(6),
+    /** Apple Wide Gamut — commit (e). */
+    AppleWideGamut(7),
+    /** Panasonic V-Gamut — commit (e). */
+    VGamut(8),
+    // F-Gamut is deliberately absent: no pinned Fujifilm gamut dataset —
+    // the F-Log transfer ships without its native gamut pairing.
 }
 
 enum class LutTransfer(val value: Int) {
@@ -27,6 +41,22 @@ enum class LutTransfer(val value: Int) {
     /** Pure gamma 2.4 — a separate named curve, NOT the Rec.709 OETF. */
     Gamma24(3),
     DaVinciIntermediate(4),
+    /** ACEScct — commit (e). */
+    Acescct(5),
+    /** ARRI LogC3, SUP 3.x EI 800 — commit (e). */
+    ArriLogC3(6),
+    /** Sony S-Log3 — commit (e). */
+    SonyLog3(7),
+    /** Canon C-Log3 — commit (e). */
+    CanonLog3(8),
+    /** Apple Log / Apple Log 2 shared curve (the gamut distinguishes) — commit (e). */
+    AppleLog(9),
+    /** Panasonic V-Log — commit (e). */
+    VLog(10),
+    /** Fujifilm F-Log — commit (e). */
+    FujifilmFLog(11),
+    /** Cineon log — commit (e). */
+    Cineon(12),
 }
 
 enum class LutRole(val value: Int) {

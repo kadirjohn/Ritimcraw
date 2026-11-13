@@ -110,6 +110,13 @@ object LutInterpPresets {
         LutGamut.Rec709 -> "Rec.709"
         LutGamut.Rec2020 -> "Rec.2020"
         LutGamut.DaVinciWideGamut -> "DWG"
+        // Commit (e) camera gamuts — technical names, never localized.
+        LutGamut.Acescg -> "ACEScg"
+        LutGamut.ArriWideGamut3 -> "AWG3"
+        LutGamut.SGamut3Cine -> "S-Gamut3.Cine"
+        LutGamut.CinemaGamut -> "Cinema Gamut"
+        LutGamut.AppleWideGamut -> "Apple WG"
+        LutGamut.VGamut -> "V-Gamut"
     }
 
     private fun transferShort(t: LutTransfer): String = when (t) {
@@ -120,5 +127,15 @@ object LutInterpPresets {
         LutTransfer.Rec709OETF -> "Rec.709 OETF"
         LutTransfer.Gamma24 -> "Gamma 2.4"
         LutTransfer.DaVinciIntermediate -> "DaVinci Int."
+        // Commit (e) camera curves — one AppleLog entry serves both
+        // Apple Log and Apple Log 2 (the gamut distinguishes them).
+        LutTransfer.Acescct -> "ACEScct"
+        LutTransfer.ArriLogC3 -> "LogC3"
+        LutTransfer.SonyLog3 -> "S-Log3"
+        LutTransfer.CanonLog3 -> "C-Log3"
+        LutTransfer.AppleLog -> "Apple Log"
+        LutTransfer.VLog -> "V-Log"
+        LutTransfer.FujifilmFLog -> "F-Log"
+        LutTransfer.Cineon -> "Cineon"
     }
 }

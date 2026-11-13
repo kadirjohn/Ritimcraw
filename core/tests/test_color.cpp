@@ -166,6 +166,266 @@ TEST_CASE("Gamma 2.4: separate named curve, signed power") {
           rawedit::encodeTransfer(0.18f, TransferId::Rec709OETF));
 }
 
+// ---- Commit (e): the priority-2 camera curves. Every expected value is
+// the pinned source's own math in double precision, re-measured in float
+// mirroring the C++ op order; tolerances are ~10x the measured f32 error
+// unless the deviation is a documented property of the rounded pinned
+// constants (branch-cut discontinuities, pinned separately below).
+
+TEST_CASE("commit (e) anchors: gray 0.18 and black/white per camera curve") {
+    using rawedit::TransferId;
+    struct A { const char* name; TransferId t; float anchor; };
+    const A anchors[] = {
+        // ACES CTL lib_ACES.util.baked_param (cct) — f32 diff 2.2e-9.
+        {"ACEScct", TransferId::Acescct, 0.4135884024924423f},
+        // colour-science arri.py EI 800 row (doctest anchor) — 4.7e-9.
+        {"LogC3", TransferId::ArriLogC3, 0.39100683203408376f},
+        // colour-science sony.py (doctest anchor) — 4.1e-9.
+        {"SLog3", TransferId::SonyLog3, 0.41055718475073316f},
+        // Canon lin_to_CLog3 main() (doctest anchor) — 2.1e-8.
+        {"CLog3", TransferId::CanonLog3, 0.3309579103868913f},
+        // Apple CSC.Apple.AppleLog.ctl (doctest anchor) — 2.1e-10.
+        {"AppleLog", TransferId::AppleLog, 0.4882724585268676f},
+        // Panasonic AVC-Intra V-Log white paper — 6.6e-9.
+        {"VLog", TransferId::VLog, 0.42331144876013616f},
+        // Fujifilm log_encoding_FLog (doctest anchor) — 3.0e-8.
+        {"FLog", TransferId::FujifilmFLog, 0.45931845866162124f},
+        // Cineon: the pinned form, bo = 10^((95-685)/300) — 4.2e-9.
+        {"Cineon", TransferId::Cineon, 0.4573196130854184f},
+    };
+    for (const auto& a : anchors) {
+        INFO("anchor ", a.name);
+        CHECK(rawedit::encodeTransfer(0.18f, a.t) ==
+              doctest::Approx(a.anchor).epsilon(1e-6f));
+    }
+    // Cineon's pinned anchors at black and white (f32 diffs 6e-9/1.7e-8).
+    CHECK(rawedit::encodeTransfer(0.0f, TransferId::Cineon) ==
+          doctest::Approx(0.09286412512218964f).epsilon(1e-6f));
+    CHECK(rawedit::encodeTransfer(1.0f, TransferId::Cineon) ==
+          doctest::Approx(0.6695992179863147f).epsilon(1e-6f));
+}
+
+TEST_CASE("commit (e) round trips: breakpoints, gray, >1, allowed "
+          "negatives") {
+    using rawedit::TransferId;
+    // Measured f32 max errors per curve (probe compiled against the real
+    // Color.cpp): ACEScct 7.2e-7, LogC3 9.5e-7, SLog3 2.4e-7, CLog3 2.4e-7,
+    // AppleLog 2.4e-7, VLog 4.8e-7, FLog 2.4e-7, Cineon 4.8e-7. Tolerance
+    // 10x measured. Probe sets are per curve: each set straddles the
+    // curve's own branch cut(s) (both sides), the gray anchor, an HDR
+    // value, and the negatives its pinned policy allows.
+    struct R { const char* name; TransferId t; std::vector<float> probes; };
+    const R rts[] = {
+        // ACEScct: linear cut 0.0078125; A*L+B carries negatives
+        // (Color.h policy: reversible).
+        {"ACEScct", TransferId::Acescct,
+         {0.0f, 0.0078125f, 0.0078126f, 0.18f, 1.0f, 2.5f, -0.05f, -0.5f}},
+        // LogC3: linear cut 0.010591 (log branch needs L > cut); E*L+F
+        // carries negatives. 4.0 is the >1 HDR probe.
+        {"LogC3", TransferId::ArriLogC3,
+         {0.0f, 0.010591f, 0.010592f, 0.18f, 1.0f, 4.0f, -0.05f, -0.5f}},
+        // SLog3: log cut 0.01125 (log branch takes L >= cut); the linear
+        // branch carries negatives.
+        {"SLog3", TransferId::SonyLog3,
+         {0.0f, 0.01125f, 0.01126f, 0.18f, 1.0f, 2.5f, -0.05f, -0.5f}},
+        // CLog3: three branches; the linear band covers [-0.014, 0.014]
+        // (both encoded cuts probed from inside), and moderate negatives
+        // (L < 1/14.98325) ride the negative log branch.
+        {"CLog3", TransferId::CanonLog3,
+         {0.0f, -0.014f, -0.0139f, 0.0139f, 0.014f, 0.18f, 1.0f, 2.5f,
+          -0.05f, -0.5f}},
+        // AppleLog: negatives below R_0 (-0.05641088) are NOT reversible
+        // (the pinned encode clips them to 0 — Color.h policy), so the
+        // negative probes ride the sqrt branch: R_0 itself and above.
+        {"AppleLog", TransferId::AppleLog,
+         {0.0f, 0.01f, 0.010001f, 0.18f, 1.0f, 2.5f, -0.05641088f, -0.03f}},
+        // VLog: linear cut 0.01 (log branch takes L >= cut); 5.6*L+0.125
+        // carries negatives.
+        {"VLog", TransferId::VLog,
+         {0.0f, 0.01f, 0.010001f, 0.18f, 1.0f, 2.5f, -0.05f, -0.5f}},
+        // FLog: linear cut 0.00089; E*L+F carries negatives. 0.00089
+        // itself is NOT probed: in f32 its encode lands 3 ulps above the
+        // decode cut (log branch, 4e-9 round trip), but that is a
+        // knife-edge the band test pins separately — see below.
+        {"FLog", TransferId::FujifilmFLog,
+         {0.0f, 0.0005f, 0.001f, 0.18f, 1.0f, 2.5f, -0.05f, -0.0225f}},
+        // Cineon: L >= -bo/(1-bo) keeps the log argument positive; -0.005
+        // is inside that range.
+        {"Cineon", TransferId::Cineon,
+         {0.0f, 0.18f, 1.0f, 2.5f, -0.005f}},
+    };
+    const float tol = 1e-5f;
+    for (const auto& r : rts) {
+        INFO("round trip ", r.name);
+        for (float x : r.probes) {
+            INFO("probe ", x);
+            const float back = rawedit::decodeTransfer(
+                rawedit::encodeTransfer(x, r.t), r.t);
+            CHECK(back == doctest::Approx(x).epsilon(tol));
+        }
+    }
+}
+
+TEST_CASE("commit (e) branch cuts: continuity or documented discontinuity, "
+          "per curve") {
+    using rawedit::TransferId;
+    // Each check recomputes BOTH branch values at the cut from the pinned
+    // constants (the same arithmetic Color.cpp uses), then pins the
+    // measured gap. "Continuous" here means the f32 recomputation agrees
+    // within the f32 noise floor.
+    {
+        // ACEScct: cut 0.0078125. Linear side A*x+B, log side
+        // (log2(x)+9.72)/17.52. f64 gap 1.7e-16; f32 recomputation exact.
+        const float lin = 10.5402377416545f * 0.0078125f
+                        + 0.0729055341958355f;
+        const float log = (std::log2(0.0078125f) + 9.72f) / 17.52f;
+        CHECK(lin == doctest::Approx(log).epsilon(1e-6f));
+        // The decode cut is the LINEAR branch's value at the cut (the
+        // encode's own breakpoint convention).
+        CHECK(rawedit::decodeTransfer(0.1552511415525113f,
+                                      TransferId::Acescct) ==
+              doctest::Approx(0.0078125f).epsilon(1e-5f));
+    }
+    {
+        // LogC3: cut 0.010591. Linear side E*x+F, log side
+        // C*log10(A*x+B)+D. The pinned EI 800 constants are rounded, so
+        // the branches are ~2.5e-7 discontinuous (f64 2.5017e-7 —
+        // measured; the curve's own property, documented in Color.h, not
+        // altered). Pin the measured gap, not a false continuity claim.
+        const float lin = 5.367655f * 0.010591f + 0.092809f;
+        const float log = 0.247190f * std::log10(5.555556f * 0.010591f
+                                                + 0.052272f) + 0.385537f;
+        // Pin the RANGE, not a false continuity claim: the jump is
+        // clearly discontinuous (> 1e-7) and bounded (< 1e-6).
+        const float jump = std::fabs(lin - log);
+        CHECK(jump > 1e-7f);
+        CHECK(jump < 1e-6f);
+        // Decode cut: E*cut + F (the linear branch's value at the cut).
+        CHECK(rawedit::decodeTransfer(0.149657834105f,
+                                      TransferId::ArriLogC3) ==
+              doctest::Approx(0.010591f).epsilon(1e-5f));
+    }
+    {
+        // SLog3: cut 0.01125. Linear side (95 + L*(171.2102946929-95)/
+        // cut)/1023, log side (420 + 261.5*log10((L+0.01)/0.19))/1023.
+        // f64 gap 3.85e-14 — continuous to the f32 noise floor.
+        const float lin = (0.01125f * (171.2102946929f - 95.0f) / 0.01125f
+                           + 95.0f) / 1023.0f;
+        const float log = (420.0f + 261.5f * std::log10(
+                              (0.01125f + 0.01f) / (0.18f + 0.01f)))
+                          / 1023.0f;
+        CHECK(lin == doctest::Approx(log).epsilon(1e-6f));
+        // The decode cut is the pinned 171.2102946929/1023.
+        CHECK(rawedit::decodeTransfer(171.2102946929f / 1023.0f,
+                                      TransferId::SonyLog3) ==
+              doctest::Approx(0.01125f).epsilon(1e-5f));
+    }
+    {
+        // CLog3: the two encoded cuts (the linear branch's values at
+        // ±0.014). f64 discontinuities 2.56e-9 both cuts; f32
+        // recomputation: 0 below (exact), 1.5e-8 above.
+        const float cutLo = 1.9754798f * -0.014f + 0.12512219f;
+        const float cutHi = 1.9754798f * 0.014f + 0.12512219f;
+        CHECK(cutLo == doctest::Approx(0.0974654728f).epsilon(1e-6f));
+        CHECK(cutHi == doctest::Approx(0.1527789072f).epsilon(1e-6f));
+        // Decode at the cuts lands exactly on ±0.014 (the linear branch).
+        CHECK(rawedit::decodeTransfer(cutLo, TransferId::CanonLog3) ==
+              doctest::Approx(-0.014f).epsilon(1e-6f));
+        CHECK(rawedit::decodeTransfer(cutHi, TransferId::CanonLog3) ==
+              doctest::Approx(0.014f).epsilon(1e-6f));
+    }
+    {
+        // AppleLog: P_t = sigma*(R_t - R_0)^2 = 0.208555315954642; the
+        // log branch's value at R_t is 2.75e-9 above it (f64 measured) —
+        // the sqrt branch's value at P_t is R_t to 4.4e-10.
+        CHECK(rawedit::decodeTransfer(0.208555315954642f,
+                                      TransferId::AppleLog) ==
+              doctest::Approx(0.01f).epsilon(1e-6f));
+        // Below P_t the sqrt branch takes over: decode(0) = R_0 (the
+        // encode's floor — negatives NOT reversible, by design).
+        CHECK(rawedit::decodeTransfer(0.0f, TransferId::AppleLog) ==
+              doctest::Approx(-0.05641088f).epsilon(1e-6f));
+        // And the encode clips R < R_0 to 0 (the pinned floor).
+        CHECK(rawedit::encodeTransfer(-0.5f, TransferId::AppleLog) ==
+              doctest::Approx(0.0f).epsilon(1e-6f));
+    }
+    {
+        // VLog: cut 0.01. Linear side 5.6*L + 0.125 = 0.181 exactly; log
+        // side 0.1809996888 — the pinned constants are rounded, so the
+        // branches are ~3.1e-7 discontinuous (f64 3.1123e-7 measured;
+        // documented in Color.h, not altered).
+        const float lin = 5.6f * 0.01f + 0.125f;
+        const float log = 0.241514f * std::log10(0.01f + 0.00873f)
+                        + 0.598206f;
+        // Pin the RANGE: clearly discontinuous (> 1e-7), bounded
+        // (< 1e-6).
+        const float jump = std::fabs(lin - log);
+        CHECK(jump > 1e-7f);
+        CHECK(jump < 1e-6f);
+        // Decode cut: 0.181 (the linear branch's value at the cut).
+        CHECK(rawedit::decodeTransfer(0.181f, TransferId::VLog) ==
+              doctest::Approx(0.01f).epsilon(1e-5f));
+    }
+    {
+        // FLog: the encode's linear branch at the cut (E*cut + F) and the
+        // decode's cut2 differ by ~1.0e-4 (f64 1.0094e-4 measured) — the
+        // rounded pinned constants make the band, and values in it decode
+        // through the log branch (documented in Color.h, not altered).
+        const float linAtCut = 8.735631f * 0.00089f + 0.092864f;
+        CHECK(linAtCut == doctest::Approx(0.10063871159f).epsilon(1e-6f));
+        // Pin the RANGE: the band is wide (> 1e-4) and bounded (< 2e-4).
+        const float band = linAtCut - 0.100537775223865f;
+        CHECK(band > 1e-4f);
+        CHECK(band < 2e-4f);
+        // Both sides of the band decode through the log branch:
+        // dec(cut2) = 0.00089 (the cut's own linear value), and the
+        // linear side decodes 1.2e-5 off it (inside the band).
+        CHECK(rawedit::decodeTransfer(0.100537775223865f,
+                                      TransferId::FujifilmFLog) ==
+              doctest::Approx(0.00089f).epsilon(1e-5f));
+        CHECK(rawedit::decodeTransfer(linAtCut,
+                                      TransferId::FujifilmFLog) ==
+              doctest::Approx(0.000902090f).epsilon(1e-4f));
+    }
+}
+
+TEST_CASE("commit (e) negative anchors: each curve's pinned negative "
+          "policy, measured") {
+    using rawedit::TransferId;
+    // The linear branches carry negatives exactly (f32 measured): the
+    // encode is the branch's own arithmetic, so pin it verbatim.
+    CHECK(rawedit::encodeTransfer(-0.05f, TransferId::Acescct) ==
+          doctest::Approx(-0.45410635288688955f).epsilon(1e-6f));
+    CHECK(rawedit::encodeTransfer(-0.05f, TransferId::ArriLogC3) ==
+          doctest::Approx(-0.17557375f).epsilon(1e-6f));
+    CHECK(rawedit::encodeTransfer(-0.05f, TransferId::SonyLog3) ==
+          doctest::Approx(-0.23823306046660148f).epsilon(1e-6f));
+    CHECK(rawedit::encodeTransfer(-0.05f, TransferId::VLog) ==
+          doctest::Approx(-0.155f).epsilon(1e-6f));
+    CHECK(rawedit::encodeTransfer(-0.0225f, TransferId::FujifilmFLog) ==
+          doctest::Approx(-0.10368769749999998f).epsilon(1e-6f));
+    // AppleLog's sqrt branch: R_0 <= R < R_t encodes sigma*(R-R_0)^2.
+    CHECK(rawedit::encodeTransfer(-0.03f, TransferId::AppleLog) ==
+          doctest::Approx(0.032984396171723926f).epsilon(1e-6f));
+    // Cineon's log argument stays positive at -0.005 (>= -bo/(1-bo)).
+    CHECK(rawedit::encodeTransfer(-0.005f, TransferId::Cineon) ==
+          doctest::Approx(0.014844100669590491f).epsilon(1e-6f));
+    // CLog3's negative log branch — the regression for the decode sign
+    // fix (found by the round-trip verification, fixed before commit):
+    // moderate negatives (L < 1/14.98325) must encode finite and decode
+    // back to the input. f32 measured: -0.05 -> 0.038655166 ->
+    // -0.050000004 (3.7e-9); -0.5 -> -0.213349983 -> -0.5 exact.
+    const float e05 = rawedit::encodeTransfer(-0.05f,
+                                              TransferId::CanonLog3);
+    CHECK(e05 == doctest::Approx(0.038655154255723065f).epsilon(1e-6f));
+    CHECK(rawedit::decodeTransfer(e05, TransferId::CanonLog3) ==
+          doctest::Approx(-0.05f).epsilon(1e-6f));
+    const float e5 = rawedit::encodeTransfer(-0.5f, TransferId::CanonLog3);
+    CHECK(e5 == doctest::Approx(-0.21335000374006766f).epsilon(1e-6f));
+    CHECK(rawedit::decodeTransfer(e5, TransferId::CanonLog3) ==
+          doctest::Approx(-0.5f).epsilon(1e-6f));
+}
+
 TEST_CASE("gamut matrices: pinned values verbatim") {
     using rawedit::GamutId;
     float m[9];
@@ -359,6 +619,141 @@ TEST_CASE("Bradford CAT: identity, D60->D65, round trip") {
         CHECK(rt[i] == doctest::Approx(d60xyz[i]).epsilon(1e-5f));
 }
 
+TEST_CASE("commit (e) gamuts: pinned matrices verbatim, npm references, "
+          "white points") {
+    using rawedit::GamutId;
+    float m[9];
+    // ARRI AWG3: the pinned colour-science MATRIX_ARRI_WIDE_GAMUT_3_TO_XYZ
+    // verbatim (memcpy'd at runtime). f32 diff 0 (same constants).
+    rawedit::gamutToXyz(GamutId::ArriWideGamut3, m);
+    const float pinnedAwg3[9] = {
+        0.638008f, 0.214704f, 0.097744f,
+        0.291954f, 0.823841f, -0.115795f,
+        0.002798f, -0.067034f, 1.153294f,
+    };
+    for (int i = 0; i < 9; ++i)
+        CHECK(m[i] == doctest::Approx(pinnedAwg3[i]).epsilon(1e-6f));
+    // Sony S-Gamut3.Cine: the pinned MATRIX_S_GAMUT3_CINE_TO_XYZ verbatim
+    // (memcpy'd at runtime). f32 diff 0.
+    rawedit::gamutToXyz(GamutId::SGamut3Cine, m);
+    const float pinnedSg3c[9] = {
+        0.5990839208f, 0.2489255161f, 0.1024464902f,
+        0.2150758201f, 0.8850685017f, -0.1001443219f,
+        -0.0320658495f, -0.0276583907f, 1.1487819910f,
+    };
+    for (int i = 0; i < 9; ++i)
+        CHECK(m[i] == doctest::Approx(pinnedSg3c[i]).epsilon(1e-6f));
+
+    // The four npm-derived gamuts: f64 normalised-primary-matrix
+    // references computed from the pinned primaries (the same
+    // derivation the pinned datasets use). Measured f32 diffs: ACEScg
+    // 6.6e-8, CinemaGamut 5.2e-8, AppleWG 1.0e-7, V-Gamut 2.0e-7.
+    // Tolerance 2e-6 (10x the worst).
+    struct G { const char* name; GamutId g; const float ref[9]; };
+    const G npm[] = {
+        // AP1 / ACEScg (datasets/aces.py, AP1 primaries, ACES white)
+        {"ACEScg", GamutId::Acescg,
+         {0.6624541811085053f, 0.13400420645643313f, 0.15618768700490782f,
+          0.27222871678091454f, 0.6740817658111483f, 0.05368951740793706f,
+          -0.005574649490394108f, 0.004060733528982825f,
+          1.0103391003129973f}},
+        // Canon Cinema Gamut (datasets/canon_cinema_gamut.py primaries)
+        {"CinemaGamut", GamutId::CinemaGamut,
+         {0.7160496465515205f, 0.1296834778757396f, 0.10472280262441157f,
+          0.2612613575255548f, 0.8696421457549597f, -0.13090350328051448f,
+          -0.009676346575020556f, -0.23648163612634865f,
+          1.3352157334612476f}},
+        // Apple Wide Gamut (CSC.Apple.ACES_to_AppleLog2.ctl primaries)
+        {"AppleWideGamut", GamutId::AppleWideGamut,
+         {0.6514914801673071f, 0.2215531132940403f, 0.07741133359032426f,
+          0.27048129038670266f, 0.8160372589201303f, -0.08651854930683299f,
+          -0.023363832392206848f, -0.03508759712801535f,
+          1.1475091802801007f}},
+        // Panasonic V-Gamut (CSC.Panasonic.ACES_to_VLog_VGamut.ctl)
+        {"V-Gamut", GamutId::VGamut,
+         {0.679644469878474f, 0.15221141243975453f, 0.11860004473344309f,
+          0.26068555009037364f, 0.7748944633296593f, -0.035580013420032926f,
+          -0.009310198217513352f, -0.004612467043628929f,
+          1.1029804160210208f}},
+    };
+    for (const auto& g : npm) {
+        INFO("npm matrix ", g.name);
+        rawedit::gamutToXyz(g.g, m);
+        for (int i = 0; i < 9; ++i)
+            CHECK(m[i] == doctest::Approx(g.ref[i]).epsilon(2e-6f));
+    }
+
+    // White points: ACEScg's white is the ACES chromaticity
+    // (0.32168, 0.33767) ~D60 (f32 measured 0.952646136/1/1.008825183;
+    // diff < 9e-8); every other gamut's is D65.
+    float w[3];
+    rawedit::whitePointGamut(GamutId::Acescg, w);
+    CHECK(w[0] == doctest::Approx(0.9526460745698463f).epsilon(1e-6f));
+    CHECK(w[1] == doctest::Approx(1.0f).epsilon(1e-6f));
+    CHECK(w[2] == doctest::Approx(1.0088251843515859f).epsilon(1e-6f));
+    for (GamutId g : {GamutId::ArriWideGamut3, GamutId::SGamut3Cine,
+                      GamutId::CinemaGamut, GamutId::AppleWideGamut,
+                      GamutId::VGamut}) {
+        INFO("white point ", static_cast<int>(g));
+        rawedit::whitePointGamut(g, w);
+        CHECK(w[0] == doctest::Approx(0.9504559270516716f).epsilon(1e-6f));
+        CHECK(w[1] == doctest::Approx(1.0f).epsilon(1e-6f));
+        CHECK(w[2] == doctest::Approx(1.0890577507598784f).epsilon(1e-6f));
+    }
+}
+
+TEST_CASE("commit (e) gamut transforms: round trips through the Bradford "
+          "CAT, all nine gamuts") {
+    using rawedit::GamutId;
+    const float probe[6][3] = {
+        {0.18f, 0.18f, 0.18f},
+        {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f},
+        {0.2f, 0.5f, 0.9f}, {-0.05f, 0.3f, 1.4f},
+    };
+    // Every gamut against Rec.709 (measured f32 round trip < 2.4e-7;
+    // tolerance 40x). ACEScg exercises the D60 <-> D65 CAT both ways.
+    const GamutId all[] = {
+        GamutId::Rec709, GamutId::Rec2020, GamutId::DaVinciWideGamut,
+        GamutId::Acescg, GamutId::ArriWideGamut3, GamutId::SGamut3Cine,
+        GamutId::CinemaGamut, GamutId::AppleWideGamut, GamutId::VGamut,
+    };
+    for (GamutId a : all) {
+        INFO("gamut round trip ", static_cast<int>(a));
+        float fwd[9], back[9];
+        rawedit::gamutToGamut(a, GamutId::Rec709, fwd);
+        rawedit::gamutToGamut(GamutId::Rec709, a, back);
+        for (const auto& p : probe) {
+            float mid[3], rt[3];
+            for (int i = 0; i < 3; ++i)
+                mid[i] = fwd[i * 3 + 0] * p[0] + fwd[i * 3 + 1] * p[1]
+                       + fwd[i * 3 + 2] * p[2];
+            for (int i = 0; i < 3; ++i)
+                rt[i] = back[i * 3 + 0] * mid[0] + back[i * 3 + 1] * mid[1]
+                      + back[i * 3 + 2] * mid[2];
+            for (int i = 0; i < 3; ++i)
+                CHECK(rt[i] == doctest::Approx(p[i]).epsilon(1e-5f));
+        }
+    }
+    // The ACEScg neutral chain: (1,1,1) in ACEScg maps to the SAME
+    // 4-decimal 709 white slip as Rec2020 (measured f32
+    // 0.999828696/1.000045180/1.000058413) — the pinned 4-decimal 709
+    // matrix's own documented property, carried through the CAT.
+    float fwd[9];
+    rawedit::gamutToGamut(GamutId::Acescg, GamutId::Rec709, fwd);
+    float neutral[3];
+    for (int i = 0; i < 3; ++i)
+        neutral[i] = fwd[i * 3 + 0] + fwd[i * 3 + 1] + fwd[i * 3 + 2];
+    CHECK(neutral[0] == doctest::Approx(0.99982865f).epsilon(5e-3f));
+    CHECK(neutral[1] == doctest::Approx(1.00004494f).epsilon(5e-3f));
+    CHECK(neutral[2] == doctest::Approx(1.00005855f).epsilon(5e-3f));
+    // Same gamut: exact identity (the shortcut, not a computed CAT).
+    float m[9];
+    rawedit::gamutToGamut(GamutId::Acescg, GamutId::Acescg, m);
+    CHECK(m[0] == 1.0f); CHECK(m[1] == 0.0f); CHECK(m[2] == 0.0f);
+    CHECK(m[3] == 0.0f); CHECK(m[4] == 1.0f); CHECK(m[5] == 0.0f);
+    CHECK(m[6] == 0.0f); CHECK(m[7] == 0.0f); CHECK(m[8] == 1.0f);
+}
+
 namespace {
 
 // A 2x2x2 identity cube, same text as test_lut.cpp's kIdentity2.
@@ -403,6 +798,31 @@ rawedit::ImageF flatImage(uint32_t w, uint32_t h,
 }
 
 } // namespace
+
+TEST_CASE("commit (e) managed chain: identity cube, Acescg/Acescct in, "
+          "Rec.709 OETF out") {
+    // Gray 0.18 through the full managed chain (gamut CAT + ACEScct
+    // encode + identity sample + 709 OETF decode + gamut back): f32
+    // measured 0.183632389/0.183624640/0.183623224. The channels differ
+    // because the neutral passes through the D60 <-> D65 CAT; the value
+    // is NOT 0.18 (the encodings genuinely differ), and it is close to
+    // the f64 no-CAT reference 0.18362666 (the 709 matrix's own white
+    // slip ~1.7e-4 explains the rest).
+    const rawedit::Lut lut = identityCube();
+    rawedit::LutInterpretation interp;
+    interp.input = {rawedit::GamutId::Acescg, rawedit::TransferId::Acescct};
+    interp.output = {rawedit::GamutId::Rec709,
+                     rawedit::TransferId::Rec709OETF};
+    interp.role = rawedit::LutRole::DisplayLook;
+    const auto binding = rawedit::compileLutBinding(interp);
+    float in[3] = {0.18f, 0.18f, 0.18f}, out[3];
+    rawedit::evaluateManagedLutPixel(lut, binding, in, out);
+    CHECK(out[0] == doctest::Approx(0.183632389f).epsilon(1e-4f));
+    CHECK(out[1] == doctest::Approx(0.183624640f).epsilon(1e-4f));
+    CHECK(out[2] == doctest::Approx(0.183623224f).epsilon(1e-4f));
+    // And visibly not the passthrough value.
+    CHECK(out[0] != doctest::Approx(0.18f).epsilon(1e-3f));
+}
 
 TEST_CASE("managed lut: identity cube with matching encodings preserves "
           "light exactly") {

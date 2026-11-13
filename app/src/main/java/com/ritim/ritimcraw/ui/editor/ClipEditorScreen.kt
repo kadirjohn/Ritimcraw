@@ -3729,6 +3729,12 @@ private fun lutGamutLabel(g: LutGamut): Int = when (g) {
     LutGamut.Rec709 -> R.string.editor_lut_gamut_rec709
     LutGamut.Rec2020 -> R.string.editor_lut_gamut_rec2020
     LutGamut.DaVinciWideGamut -> R.string.editor_lut_gamut_dwg
+    LutGamut.Acescg -> R.string.editor_lut_gamut_acescg
+    LutGamut.ArriWideGamut3 -> R.string.editor_lut_gamut_awg3
+    LutGamut.SGamut3Cine -> R.string.editor_lut_gamut_sg3cine
+    LutGamut.CinemaGamut -> R.string.editor_lut_gamut_cinema_gamut
+    LutGamut.AppleWideGamut -> R.string.editor_lut_gamut_apple_wide_gamut
+    LutGamut.VGamut -> R.string.editor_lut_gamut_vgamut
 }
 
 /** The transfer label for [t] — honest names, per the mission rules. */
@@ -3738,6 +3744,14 @@ private fun lutTransferLabel(t: LutTransfer): Int = when (t) {
     LutTransfer.Rec709OETF -> R.string.editor_lut_transfer_rec709_oetf
     LutTransfer.Gamma24 -> R.string.editor_lut_transfer_gamma24
     LutTransfer.DaVinciIntermediate -> R.string.editor_lut_transfer_di
+    LutTransfer.Acescct -> R.string.editor_lut_transfer_acescct
+    LutTransfer.ArriLogC3 -> R.string.editor_lut_transfer_logc3
+    LutTransfer.SonyLog3 -> R.string.editor_lut_transfer_slog3
+    LutTransfer.CanonLog3 -> R.string.editor_lut_transfer_clog3
+    LutTransfer.AppleLog -> R.string.editor_lut_transfer_apple_log
+    LutTransfer.VLog -> R.string.editor_lut_transfer_vlog
+    LutTransfer.FujifilmFLog -> R.string.editor_lut_transfer_flog
+    LutTransfer.Cineon -> R.string.editor_lut_transfer_cineon
 }
 
 /** The role label for [r]. */

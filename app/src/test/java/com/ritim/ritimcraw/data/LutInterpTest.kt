@@ -22,23 +22,44 @@ class LutInterpTest {
 
     @Test
     fun gamut_ordinals_match_the_cpp_enum() {
-        // GamutId { Rec709, Rec2020, DaVinciWideGamut } — Rec709/sRGB is
-        // ONE identity (same primaries).
+        // GamutId { Rec709, Rec2020, DaVinciWideGamut, Acescg,
+        // ArriWideGamut3, SGamut3Cine, CinemaGamut, AppleWideGamut,
+        // VGamut } — Rec709/sRGB is ONE identity (same primaries); the
+        // commit (e) camera gamuts APPEND; F-Gamut is deliberately
+        // absent (no pinned Fujifilm gamut dataset).
         assertEquals(0, LutGamut.Rec709.value)
         assertEquals(1, LutGamut.Rec2020.value)
         assertEquals(2, LutGamut.DaVinciWideGamut.value)
+        assertEquals(3, LutGamut.Acescg.value)
+        assertEquals(4, LutGamut.ArriWideGamut3.value)
+        assertEquals(5, LutGamut.SGamut3Cine.value)
+        assertEquals(6, LutGamut.CinemaGamut.value)
+        assertEquals(7, LutGamut.AppleWideGamut.value)
+        assertEquals(8, LutGamut.VGamut.value)
     }
 
     @Test
     fun transfer_ordinals_match_the_cpp_enum() {
         // TransferId { Linear, Srgb, Rec709OETF, Gamma24,
-        // DaVinciIntermediate } — the Rec.709 OETF is the app's EXISTING
-        // linearToRec709 curve; Gamma24 is a separate curve, NOT a rename.
+        // DaVinciIntermediate, Acescct, ArriLogC3, SonyLog3, CanonLog3,
+        // AppleLog, VLog, FujifilmFLog, Cineon } — the Rec.709 OETF is
+        // the app's EXISTING linearToRec709 curve; Gamma24 is a separate
+        // curve, NOT a rename; the commit (e) camera curves APPEND; one
+        // AppleLog entry serves Apple Log and Apple Log 2 (the gamut
+        // distinguishes them).
         assertEquals(0, LutTransfer.Linear.value)
         assertEquals(1, LutTransfer.Srgb.value)
         assertEquals(2, LutTransfer.Rec709OETF.value)
         assertEquals(3, LutTransfer.Gamma24.value)
         assertEquals(4, LutTransfer.DaVinciIntermediate.value)
+        assertEquals(5, LutTransfer.Acescct.value)
+        assertEquals(6, LutTransfer.ArriLogC3.value)
+        assertEquals(7, LutTransfer.SonyLog3.value)
+        assertEquals(8, LutTransfer.CanonLog3.value)
+        assertEquals(9, LutTransfer.AppleLog.value)
+        assertEquals(10, LutTransfer.VLog.value)
+        assertEquals(11, LutTransfer.FujifilmFLog.value)
+        assertEquals(12, LutTransfer.Cineon.value)
     }
 
     @Test
@@ -86,12 +107,16 @@ class LutInterpTest {
     fun parse_unknown_ordinal_falls_back_to_legacy_not_crash() {
         // A future C++ enum extension must never wedge an older UI into
         // a wrong-but-silent role: unknown ordinals fall back to the
-        // legacy default per field.
+        // legacy default per field. The ordinals here must stay past the
+        // LAST real member (gamut 8 V-Gamut, transfer 12 Cineon after
+        // commit (e)) — 42/1234/99/-1 were chosen once and 7 later
+        // became AppleWideGamut, which is exactly the scenario this test
+        // guards against, so the probes now sit far past the ends.
         val parsed = LutInterpK.parse(
             mapOf(
                 "role" to 99.0,
                 "in" to mapOf("g" to 42.0, "t" to -1.0),
-                "out" to mapOf("g" to 7.0, "t" to 1234.0),
+                "out" to mapOf("g" to 1234.0, "t" to 1234.0),
             ),
         )
         assertEquals(LutInterpK.legacy(), parsed)
