@@ -70,7 +70,11 @@ thread_local int gLastErrorStage = kStageOpen;
 // Debug measurement logging (audit fix 2026-11-12, stabilization round 2):
 // one logcat line per settle-class render describing the stabilization
 // actually applied — mode, strength, per-frame max angle, requiredZoom vs
-// appliedZoom, IMU overlap, or the skip reason when nothing was applied.
+// appliedZoom, the correction-scale numbers (audit fix 2026-11-13: the
+// fraction of the correction actually applied when the zoom limit cannot
+// cover the full need — scale/minScale/meanScale per frame/clip, plus the
+// invalid-sample counter), IMU overlap, or the skip reason when nothing
+// was applied.
 // Tag "ritim-stab" (the "ritim-pm" / "ritim-scope" precedent):
 //
 //   adb logcat -s ritim-stab        (live)
@@ -406,9 +410,15 @@ inline bool stabWarps(const rawedit::StabilizationFrame& f) {
 
 // What one render's measurement line reports (audit fix 2026-11-12):
 // the request as logged, the plan's clip-wide numbers, the overlap, and
-// the per-frame slice at the rendered index. Filled by
-// stabilizationFrameFor next to the frame it returns; logged by
-// applyStabilization when gStabDebugLog is on.
+// the per-frame slice at the rendered index. The correction-scale fields
+// (audit fix 2026-11-13) carry the crop-budget honesty readout: the
+// fraction of the correction actually applied — per rendered frame
+// (frameScale), the clip-wide constant baseline (clipScale) and the
+// effective-reduction min/mean over the plan (minScale/meanScale), plus
+// the invalidSampleFrames counter (frames whose final warp still samples
+// outside the source — expected 0; any other value is a bug, never a
+// silently clamped edge). Filled by stabilizationFrameFor next to the
+// frame it returns; logged by applyStabilization when gStabDebugLog is on.
 struct StabMeasure {
     rawedit::StabilizationStatus status =
         rawedit::StabilizationStatus::Unsynced; // the frame's own status
@@ -419,6 +429,11 @@ struct StabMeasure {
     size_t framesInside = 0;     // frames whose imuTs is inside the gyro span
     size_t framesTotal = 0;
     bool anchored = false;       // the sync estimate carried real anchors
+    double frameScale = 1.0;     // correctionScale at the rendered frame
+    double clipScale = 1.0;      // clip-wide constant baseline a
+    double minScale = 1.0;       // effective reduction, worst frame
+    double meanScale = 1.0;     // effective reduction, clip mean
+    size_t invalidSamples = 0;   // final-warp out-of-source frames (exp. 0)
 };
 
 // The clip-wide stabilization plan cache (the choppy-playback fix,
@@ -444,13 +459,18 @@ struct StabMeasure {
 // from the SAME gyro artifacts the path key already pins.
 //
 // VALUE: the StabilizationResult (per-frame homographies + zooms + the
-// angle list) plus the three plan-level measure numbers that are not
-// per-frame slices (anchored / maxAngleDeg / framesInside), so a cache
-// hit serves the per-frame tail AND the debug measure line identically
-// to a fresh compute. The frameTs vector and the sync model are NOT
-// stored: they are compute inputs only (the measure path's framesToImu
-// overlap is folded into framesInside at store time). ~56 KB for a
-// 576-frame clip — trivial next to the Entry's CFA caches.
+// angle list + the correction-scale fields of the 2026-11-13 audit fix —
+// correctionScale per frame, clipCorrectionScale, min/mean
+// correctionScale, invalidSampleFrames; all of them plan OUTPUT, so they
+// ride the result wholesale and the cache key needs no new slots: the
+// scale is a pure function of the key's own inputs) plus the three
+// plan-level measure numbers that are not per-frame slices (anchored /
+// maxAngleDeg / framesInside), so a cache hit serves the per-frame tail
+// AND the debug measure line identically to a fresh compute. The frameTs
+// vector and the sync model are NOT stored: they are compute inputs only
+// (the measure path's framesToImu overlap is folded into framesInside at
+// store time). ~61 KB for a 576-frame clip — trivial next to the Entry's
+// CFA caches.
 //
 // THREADING: the cache lives in the session's Entry, whose access
 // contract is the owner session's engine thread only (identical to
@@ -649,6 +669,22 @@ void stabilizationFrameFor(const StabRequest& req,
         measure->maxAngleDeg = maxAngleDeg;
         measure->framesInside = framesInside;
         measure->anchored = anchored;
+        // Correction-scale honesty (audit fix 2026-11-13): the numbers ride
+        // the plan wholesale (cache value or fresh compute — the fields are
+        // StabilizationResult members, so a cache hit serves them without
+        // any extra walk). The refusing plans zero them in the core, so a
+        // skip line never carries a fabricated scale; a plan inside budget
+        // carries all-1.0 scales and the reduction is visible exactly when
+        // the budget demanded it.
+        measure->clipScale = plan->clipCorrectionScale;
+        measure->minScale = plan->minCorrectionScale;
+        measure->meanScale = plan->meanCorrectionScale;
+        measure->invalidSamples = plan->invalidSampleFrames;
+        if (static_cast<size_t>(frameIndex) <
+            plan->correctionScale.size()) {
+            measure->frameScale = plan->correctionScale[
+                static_cast<size_t>(std::max(0, frameIndex))];
+        }
     }
 }
 
@@ -742,7 +778,10 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
                           in.planCache, debug ? &planFromCache : nullptr);
     const auto planEnd = std::chrono::steady_clock::now();
     if (wantLog) {
-        char line[256];
+        // 320: the applied line's worst case (long status name, 6-digit
+        // frame/overlap counts) is ~244 chars; the margin keeps the
+        // correction-scale fields from ever truncating mid-number.
+        char line[320];
         // Skip reasons read honestly: off/no-imu/unsynced say WHY nothing
         // was applied; the warp statuses carry the numbers that were.
         if (in.request.mode == rawedit::StabilizationMode::Off) {
@@ -755,13 +794,24 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
                 rawedit::stabilizationStatusName(frame.status), in.frameIndex,
                 static_cast<int>(img.w), static_cast<int>(img.h));
         } else {
+            // scale/minScale/meanScale: the correction actually applied as
+            // a fraction of the full correction (audit fix 2026-11-13).
+            // 1.000 everywhere = the budget covered the full correction;
+            // below 1.0 = the correction was honestly reduced to fit the
+            // zoom limit (the alternative was clamped edge pixels). The
+            // owner's device re-test reads exactly these: at high strength
+            // with the limit raised, scale=1.000 and no edge tearing; at a
+            // tight limit, scale<1 and the correction visibly reduced.
             std::snprintf(line, sizeof line,
                 "applied: mode=%d strength=%.2f frame=%d angle=%.3fdeg "
                 "maxAngle=%.3fdeg requiredZoom=%.4f appliedZoom=%.4f "
+                "scale=%.4f minScale=%.4f meanScale=%.4f invalid=%zu "
                 "imuOverlap=%zu/%zu status=%s %s",
                 static_cast<int>(in.request.mode), in.request.strength,
                 in.frameIndex, measure.frameAngleDeg, measure.maxAngleDeg,
                 measure.requiredZoom, measure.appliedZoom,
+                measure.frameScale, measure.minScale, measure.meanScale,
+                measure.invalidSamples,
                 measure.framesInside, measure.framesTotal,
                 rawedit::stabilizationStatusName(frame.status),
                 measure.anchored ? "anchored" : "manual-trim");
