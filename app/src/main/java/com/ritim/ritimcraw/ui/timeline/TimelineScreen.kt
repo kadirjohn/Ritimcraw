@@ -1,7 +1,9 @@
 package com.ritim.ritimcraw.ui.timeline
 
+import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +42,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,9 +52,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -59,6 +68,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
+import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.audio.AudioProject
 import com.ritim.ritimcraw.data.audio.AudioStore
@@ -72,12 +82,22 @@ import com.ritim.ritimcraw.data.timeline.TimelineHistory
 import com.ritim.ritimcraw.data.timeline.TimelineIds
 import com.ritim.ritimcraw.data.timeline.TimelineOps
 import com.ritim.ritimcraw.data.timeline.TimelineOps.TrimEdge
+import com.ritim.ritimcraw.data.timeline.TimelinePreviewPlan
 import com.ritim.ritimcraw.data.timeline.TimelineProject
 import com.ritim.ritimcraw.data.timeline.TimelineStore
 import com.ritim.ritimcraw.data.timeline.TrackKind
+import com.ritim.ritimcraw.engine.EditorPreviewSession
+import com.ritim.ritimcraw.engine.PreviewFrame
+import com.ritim.ritimcraw.engine.PreviewRenderer
+import com.ritim.ritimcraw.engine.PreviewSessions
+import com.ritim.ritimcraw.engine.PreviewTiers
+import com.ritim.ritimcraw.engine.PtsTimeline
+import com.ritim.ritimcraw.engine.SourcePathDecision
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 /**
  * The timeline editing screen (Stage C UI, spec TL-03/04/05/07/16/17) —
@@ -122,11 +142,27 @@ import com.ritim.ritimcraw.util.Format
  * longer than the screen, ruler and lanes sharing one ScrollState so
  * the playhead lines up across rows.
  *
- * PLAYBACK BOUNDARY (documented): this screen has NO playback wiring
- * — playback is the clip editor's domain (the transport lives in
- * ui/editor). The playhead here is an EDIT POINT: scrubbing sets the
- * frame the Split action cuts at (TL-05) and snapping pulls it to
- * clip edges (TL-07). Nothing here starts a preview surface.
+ * PREVIEW (the owner's timeline layout, 2026-11-13): the screen is
+ * PREVIEW ON TOP, TRACKS AT THE BOTTOM — the top region renders what
+ * the playhead sits on through the [TimelinePreviewPlan] (the export
+ * walk reused verbatim: what you preview is what you export), the
+ * video+audio lanes with their ruler sit at the screen's bottom, and
+ * the playhead scrub drives the preview. The current clip's source
+ * renders through ONE [EditorPreviewSession] at a time (the editor's
+ * PreviewSessions.open seam — the AppNav wiring hands in the fd +
+ * mime providers); a gap renders black; a clip change closes the old
+ * session and opens the new one. Playback is paced by
+ * [PtsTimeline] on the plan's uniform output grid (the project fps;
+ * frame-nearest, v1 has no resampling), the playhead moving with
+ * playback; scrubbing is a seek (it pauses). Edits (split/trim/move)
+ * re-derive the plan on the next committed project, so the preview
+ * picks them up on the next walk.
+ *
+ * PREVIEW V1 LIMITS (documented honestly): the preview renders the
+ * NEUTRAL grade (the timeline applies per-source grades at export;
+ * grading preview in the timeline waits for a later milestone); only
+ * the VIDEO track renders (audio playback is commit c); audio-less
+ * sources play video-only.
  *
  * ADD PATH (v1's honest insert): nothing else in the app seeds the
  * timeline section yet, so this screen owns the minimal insert — the
@@ -186,6 +222,13 @@ import com.ritim.ritimcraw.util.Format
  *   "audio" section) — the audio model's store; this screen's add
  *   path is its first consumer (later commits hang the AUD-03
  *   settings sheet off it).
+ * @param sourceFdFor hands a FRESH read-only file descriptor for a
+ *   source id (the editor's sourceFdProvider pattern) or -1 when the
+ *   source cannot be opened — the preview session's only fd seam;
+ *   the session/factory owns every ownership rule from there.
+ * @param sourceMimeFor the source's content type (or null) — with
+ *   the source's own kind it decides the session path
+ *   (SourcePathDecision), MCRAW vs ENCODED.
  * @param onBack closes the screen (the screen persists first).
  * @param onExportTimeline queues the timeline's video track as an MP4
  *   (TL-EX): called with the COMMITTED project — the same [TimelineProject]
@@ -201,6 +244,8 @@ fun TimelineScreen(
     sources: List<MediaSource>,
     metadata: MetadataStore,
     audio: AudioStore,
+    sourceFdFor: (String) -> Int = { -1 },
+    sourceMimeFor: (String) -> String? = { null },
     onBack: () -> Unit,
     onExportTimeline: (TimelineProject) -> Unit = {},
 ) {
@@ -213,6 +258,10 @@ fun TimelineScreen(
         var selectedClipId by rememberSaveable { mutableStateOf<String?>(null) }
         var playheadFrame by rememberSaveable { mutableStateOf(0.0) }
         var showAddDialog by rememberSaveable { mutableStateOf(false) }
+        // The transport state (see KDoc, PREVIEW): saveable so process
+        // death mid-play restores PAUSED, never a loop that thinks it
+        // is running against a dead wall clock.
+        var isPlaying by rememberSaveable { mutableStateOf(false) }
         // The audio settings sheet (AUD-02/AUD-03): true while open.
         // NOT saveable — a process death mid-sheet reopens honestly
         // with no sheet (every action already saved; nothing is lost;
@@ -398,8 +447,11 @@ fun TimelineScreen(
         // Scrub (TL-07): the tapped/dragged ruler position becomes the
         // playhead frame, snapped to the project's edit points (clip
         // edges + the axis ends) within the threshold, clamped to the
-        // resolved length.
+        // resolved length. A scrub is a SEEK (see KDoc, PREVIEW): it
+        // pauses playback first — the playhead lands where the finger
+        // put it, never snapped forward by a running loop.
         val scrub: (Float) -> Unit = { xPx ->
+            isPlaying = false
             val raw = TimelineGeometry.pxToFrame(xPx, pxPerFrame)
             val snapped = TimelineOps.snap(
                 raw,
@@ -408,6 +460,189 @@ fun TimelineScreen(
             )
             playheadFrame = snapped.coerceIn(0.0, length)
         }
+
+        // ---- preview: plan, session, playback (see KDoc, PREVIEW) ----
+
+        // The plan is RE-DERIVED per COMMITTED project (never a drag
+        // preview — the same snapshot rule the export applies): an
+        // applied split/trim/move replaces the project wholesale, the
+        // plan follows, and the preview walks the new plan on its next
+        // lookup. runCatching because the export plan's build requires
+        // a usable timebase: a hand-edited project.json with a broken
+        // output must not take the screen down — a null plan renders
+        // the preview region black and leaves the tracks editable.
+        val plan = remember(project, sources) {
+            runCatching {
+                TimelinePreviewPlan.build(
+                    project = project,
+                    sources = sources.associateBy { it.id },
+                    fpsMeasured = { id -> metadata.get(id)?.fpsMeasured?.value },
+                    frameCount = { id -> metadata.get(id)?.frameCount?.value },
+                )
+            }.getOrNull()
+        }
+        val pts = remember(plan) { plan?.ptsUs() }
+
+        // What the playhead sits on RIGHT NOW (the plan's own answer —
+        // the preview renders, never recomputes). clipAt == null means
+        // the plan says BLACK here (a gap, a gated-out span, or no
+        // plan): the preview region shows black, honestly.
+        val frameAt = plan?.atPlayhead(playheadFrame)
+        val clipAt = frameAt?.frame as? TimelinePreviewPlan.Frame.Clip
+
+        // ONE session at a time (the brief's rule): the session for the
+        // CURRENT clip's source, plus the source id it was opened for —
+        // a frame renders only when its sourceId matches, so a session
+        // still draining from the previous clip can never paint a
+        // foreign frame.
+        var session by remember { mutableStateOf<EditorPreviewSession?>(null) }
+        var sessionSourceId by remember { mutableStateOf<String?>(null) }
+        // The last rendered frame (null = black). NOT saveable — the
+        // frame re-renders from the plan on restore, and a Bitmap does
+        // not belong in a Bundle anyway.
+        var previewFrame by remember { mutableStateOf<PreviewFrame?>(null) }
+
+        /** Renders one plan position at [maxDim] (the loop's tick). */
+        suspend fun renderPlanFrame(outputFrame: Int, maxDim: Int) {
+            val at = plan?.atOutputFrame(outputFrame) ?: return
+            when (val f = at.frame) {
+                is TimelinePreviewPlan.Frame.Black -> previewFrame = null
+                is TimelinePreviewPlan.Frame.Clip -> {
+                    val s = session
+                    if (s == null || sessionSourceId != f.sourceId) {
+                        // No session for THIS frame yet (still opening,
+                        // or the plan moved to another clip): black —
+                        // never a stale frame from the previous clip.
+                        previewFrame = null
+                    } else {
+                        s.render(f.sourceFrame, NeutralGrade, maxDim)
+                            .getOrNull()?.let { previewFrame = it }
+                    }
+                }
+            }
+        }
+
+        // The open gate (the editor's renderSeq pattern): a monotonic
+        // token per launch. The suspend open is NOT cancellable (the
+        // engine's plain suspendCoroutine — its result lands even after
+        // this launch was cancelled by a scrub or the screen leaving),
+        // so a stale landing must not assign: it CLOSES the session it
+        // opened instead (an assigned-but-orphaned native session would
+        // hold its fd forever — the editor never re-keys its open, the
+        // timeline scrubs, so the gate is this screen's own).
+        val openSeq = remember { intArrayOf(0) }
+
+        // Session open/close, keyed on the current clip's source: close
+        // the outgoing session IMMEDIATELY (one open at a time), then
+        // open the new one after a short settle so a fast scrub across
+        // a boundary re-keys this effect before the open spends
+        // anything. A gap (null id) keeps no session — the plan's black
+        // answer covers it.
+        LaunchedEffect(clipAt?.sourceId) {
+            val id = clipAt?.sourceId
+            val mySeq = ++openSeq[0]
+            if (sessionSourceId != null && sessionSourceId != id) {
+                session?.close()
+                session = null
+                sessionSourceId = null
+            }
+            if (id == null) return@LaunchedEffect
+            delay(SessionOpenSettleMs)
+            // Still the current source after the settle? The plan +
+            // playhead are read FRESH here — a scrub that moved on
+            // makes this launch obsolete; the newer launch owns the
+            // open (this one spends nothing).
+            val stillCurrent =
+                (plan?.atPlayhead(playheadFrame)?.frame as? TimelinePreviewPlan.Frame.Clip)
+                    ?.sourceId == id
+            if (!stillCurrent) return@LaunchedEffect
+            val source = sources.firstOrNull { it.id == id }
+            if (source != null) {
+                PreviewSessions.open(
+                    path = SourcePathDecision.decide(source.kind, sourceMimeFor(id)),
+                    fdProvider = { sourceFdFor(id) },
+                    engine = PreviewRenderer.previewEngine,
+                ).getOrNull()?.let { opened ->
+                    if (isActive && openSeq[0] == mySeq) {
+                        session = opened
+                        sessionSourceId = id
+                    } else {
+                        // Obsolete landing (a newer launch owns the
+                        // open, or the screen left): close what this
+                        // launch spent — never assign it.
+                        opened.close()
+                    }
+                }
+            }
+        }
+
+        // Session close on screen exit — exactly once, after the
+        // change-effect above has been cancelled (a cancelled launch
+        // never ran its close). close() is idempotent (the sessions'
+        // compareAndSet), so an edge overlap is harmless.
+        DisposableEffect(Unit) {
+            onDispose {
+                session?.close()
+                session = null
+                sessionSourceId = null
+            }
+        }
+
+        // Paused render (scrub + the frame after open + the pause-tier
+        // settle): the plan's frame at the playhead through the cached
+        // path at the paused tier. Black answers black; a frame whose
+        // session is not open stays black until the open lands (then
+        // this effect re-fires on the session change).
+        LaunchedEffect(session, clipAt, isPlaying) {
+            if (isPlaying) return@LaunchedEffect
+            if (clipAt == null) {
+                previewFrame = null
+                return@LaunchedEffect
+            }
+            val s = session
+            if (s == null || sessionSourceId != clipAt.sourceId) return@LaunchedEffect
+            s.renderCached(clipAt.sourceFrame, NeutralGrade, PreviewTiers.PAUSED_MAX_DIM)
+                .getOrNull()?.let { previewFrame = it }
+        }
+
+        // PLAYBACK LOOP: the editor's PtsTimeline pacing verbatim, on
+        // the plan's UNIFORM output grid (output frame i at i * 1e6 /
+        // project fps — the exporter's own pts rule). Each tick picks
+        // the frame whose pts is closest to the wall-clock elapsed
+        // (drop-late: never a backlog), moves the playhead with it, and
+        // renders at the playback tier; gaps answer black through the
+        // plan; a clip change swaps the session under the loop (the
+        // session effect above) — the frame renders once the new open
+        // lands. At the last frame: stop, hold the playhead there, and
+        // settle the final frame at the paused tier (a fresh Play then
+        // restarts from 0, the editor's rule).
+        LaunchedEffect(isPlaying, pts) {
+            val p = pts ?: return@LaunchedEffect
+            val pl = plan ?: return@LaunchedEffect
+            if (!isPlaying || p.isEmpty()) return@LaunchedEffect
+            val startFrame = pl.outputFrameOf(playheadFrame)
+            val startUs = System.nanoTime() / 1000
+            var lastRendered = -1
+            while (isPlaying) {
+                val elapsed = PtsTimeline.elapsedAt(p, startFrame, System.nanoTime() / 1000 - startUs)
+                val idx = PtsTimeline.frameAt(p, elapsed)
+                if (idx >= 0 && idx != lastRendered) {
+                    playheadFrame = pl.playheadOf(idx)
+                    renderPlanFrame(idx, PreviewTiers.PLAYBACK_MAX_DIM)
+                    lastRendered = idx
+                }
+                if (idx >= p.size - 1) {
+                    isPlaying = false
+                    playheadFrame = pl.playheadOf(p.size - 1)
+                    renderPlanFrame(p.size - 1, PreviewTiers.PAUSED_MAX_DIM)
+                    break
+                }
+                val nextDelay = PtsTimeline.delayUntilNextUs(p, idx, elapsed)
+                if (nextDelay > 0) delay(nextDelay / 1000) else delay(1)
+            }
+        }
+
+        val canPlay = (plan?.totalFrames ?: 0) > 0
 
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -451,6 +686,39 @@ fun TimelineScreen(
                             contentDescription = stringResource(R.string.timeline_add),
                         )
                     }
+                    // The transport (see KDoc, PREVIEW): pause when
+                    // playing (pause keeps the position); a fresh play
+                    // at the very end restarts from frame 0 (the
+                    // editor's rule). The paused-tier settle lands in
+                    // the paused render effect (session/frame keys).
+                    IconButton(
+                        onClick = {
+                            if (isPlaying) {
+                                isPlaying = false
+                            } else {
+                                val p = plan
+                                if (p != null &&
+                                    p.outputFrameOf(playheadFrame) >= p.totalFrames - 1
+                                ) {
+                                    playheadFrame = 0.0
+                                }
+                                isPlaying = true
+                            }
+                        },
+                        enabled = canPlay,
+                    ) {
+                        if (isPlaying) {
+                            Icon(
+                                painterResource(R.drawable.ic_pause),
+                                contentDescription = stringResource(R.string.timeline_pause),
+                            )
+                        } else {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = stringResource(R.string.timeline_play),
+                            )
+                        }
+                    }
                     // Timeline export (TL-EX): queue the COMMITTED project
                     // (the same project save would persist — the export
                     // snapshot must freeze intent, never a drag preview)
@@ -475,24 +743,47 @@ fun TimelineScreen(
                         )
                     }
                 }
-                if (displayProject.clips.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
+                // ---- the preview region (see KDoc, PREVIEW): ON TOP ----
+                // The owner's timeline layout: preview at the top, the
+                // video+audio track rows at the bottom. This region
+                // shows what the playhead sits on — the plan's frame
+                // through the session, or black (a gap, an unopened
+                // clip, an empty timeline renders its honest empty
+                // text over the black). Fit inside a black letterboxed
+                // box (the editor's PreviewSurface display pattern):
+                // never stretch, never crop.
+                Box(
+                    modifier = Modifier
+                        .weight(PreviewWeight)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .clipToBounds()
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val f = previewFrame
+                    if (f != null) {
+                        Image(
+                            bitmap = remember(f) { f.toImageBitmap() },
+                            contentDescription = stringResource(R.string.timeline_preview),
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else if (displayProject.clips.isEmpty()) {
                         Text(
                             stringResource(R.string.timeline_empty),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+                if (displayProject.clips.isEmpty()) {
+                    Spacer(Modifier.height(16.dp))
                 } else {
+                    // ---- the tracks (see KDoc, PREVIEW): AT THE BOTTOM ----
                     Row(
                         modifier = Modifier
-                            .weight(1f)
+                            .weight(TracksWeight)
                             .fillMaxWidth(),
                     ) {
                         // The pinned track headers, outside the scroll —
@@ -804,6 +1095,32 @@ fun TimelineScreen(
 /** v1's fixed scale (see TimelineScreen KDoc, SCALE CHOICE). */
 private val PixelsPerFrame = 4.dp
 
+/**
+ * The layout split (the owner's timeline layout, 2026-11-13): preview
+ * on top takes ~40% of the body, the tracks at the bottom take the
+ * rest. The editor's own preview demands more room; the timeline's
+ * lanes stay finger-grabbable at the bottom.
+ */
+private const val PreviewWeight = 0.4f
+private const val TracksWeight = 0.6f
+
+/**
+ * The preview renders the NEUTRAL grade (see KDoc, PREVIEW V1 LIMITS):
+ * the timeline applies per-source grades at export; grading preview in
+ * the timeline waits for a later milestone. One instance, shared by
+ * every preview render.
+ */
+private val NeutralGrade = GradeK()
+
+/**
+ * How long the session-open effect waits before spending an open
+ * (see TimelineScreen KDoc, PREVIEW): a scrub raking across a clip
+ * boundary re-keys the effect within this window, and only the launch
+ * whose source is STILL current opens — one open per stop, not one
+ * per frame flicked through.
+ */
+private const val SessionOpenSettleMs = 120L
+
 /** Snap pull distance in frames (TL-07) — one screen constant. */
 private const val SnapThresholdFrames = 2.0
 
@@ -942,6 +1259,15 @@ private fun frameToUs(frame: Double, fps: Int): Long {
     val safeFps = if (fps <= 0) Format.DEFAULT_FPS else fps
     return (frame * 1_000_000.0 / safeFps).toLong()
 }
+
+/**
+ * One rendered frame → a Compose bitmap (the editor PreviewSurface's
+ * private helper, mirrored here — the timeline's preview display is
+ * the same Image/ContentScale.Fit pattern over the same PreviewFrame
+ * shape, and ui/editor is not this screen's to import from).
+ */
+private fun PreviewFrame.toImageBitmap(): androidx.compose.ui.graphics.ImageBitmap =
+    Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888).asImageBitmap()
 
 // ---------------------------------------------------------------------------
 // Track header + lane + clip blocks (TL-03)

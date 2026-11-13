@@ -314,6 +314,9 @@
     <string name="timeline_track_video">Video</string>
     <string name="timeline_track_audio">Ses</string>
     <string name="timeline_playhead_frame">Kare %1$d</string>
+    <string name="timeline_play">Zaman çizelgesini oynat</string>
+    <string name="timeline_pause">Zaman çizelgesini duraklat</string>
+    <string name="timeline_preview">Zaman çizelgesi önizlemesi</string>
     <string name="timeline_split">Oynatma başında böl</string>
     <string name="timeline_duplicate">Çoğalt</string>
     <string name="timeline_remove">Kaldır</string>
