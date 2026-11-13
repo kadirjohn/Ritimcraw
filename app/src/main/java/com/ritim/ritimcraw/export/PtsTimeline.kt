@@ -87,4 +87,27 @@ object PtsTimeline {
             }
         }
     }
+
+    /**
+     * Encoder pts (us) -> the nanosecond timestamp
+     * EGLExt.eglPresentationTimeANDROID takes (deliverable F core, owner
+     * request 2026-11-12 §10: "ptsUs->ptsNs dönüşümünde taşma kontrolü;
+     * wall-clock kullanmama"). Pure math on the frame's OWN normalized
+     * pts — NEVER the wall clock: an export that runs slower than
+     * realtime must still stamp true media time (the Surface-mode
+     * writer sets this before every eglSwapBuffers). Overflow-checked:
+     * a pts beyond Long.MAX_VALUE / 1000 us cannot be represented in
+     * nanoseconds and fails loudly instead of wrapping into a wrong
+     * timestamp.
+     */
+    fun ptsNs(ptsUs: Long): Long {
+        require(ptsUs >= 0L) { "pts must be non-negative us, got $ptsUs" }
+        if (ptsUs > Long.MAX_VALUE / 1000L) {
+            throw IllegalArgumentException(
+                "pts $ptsUs us overflows the nanosecond domain " +
+                    "(max ${Long.MAX_VALUE / 1000L} us)",
+            )
+        }
+        return ptsUs * 1000L
+    }
 }

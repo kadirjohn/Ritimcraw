@@ -761,6 +761,32 @@ class NativeSource private constructor(
             computeSource: String,
         ): DoubleArray?
 
+        /**
+         * Single-frame FRAGMENT develop parity (deliverable D): the first
+         * REAL GPU render path. Statelessly opens the clip behind [fd]
+         * (dup'd — the caller's fd is untouched), decodes frame 0, and
+         * runs the CALLER-PROVIDED four-shader fragment chain (the Kotlin
+         * single source of truth: FULLSCREEN_VERTEX + DEVELOP_FRAGMENT as
+         * the develop program, FULLSCREEN_VERTEX_310 + STORE_FRAGMENT as
+         * the readback program) against developLinear, the DNG path's own
+         * reference, on the same frame. Returns
+         * [ran, maxDiffLsb, mismatchCount, samples] (see the bridge
+         * comment); ran=0 means a GPU stage failed and the error detail
+         * names it (EGL step, extension gate, compile log, link log, FBO
+         * completeness, draw, map). The PASS VERDICT lives in
+         * GpuParityRules — raw numbers only, never a claim. The fragment
+         * path needs NO compute (contextOk + floatFboOk gate it). No
+         * handle, no render-cache touch, safe on any thread.
+         * Device-test-pending.
+         */
+        @JvmStatic private external fun nativeGlesFragmentParity(
+            fd: Int,
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+        ): DoubleArray?
+
         // ---- Cross-module wrappers (external decls stay private; see the
         // mangling note at the top of the JNI section) ----
 
@@ -1181,6 +1207,27 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeGlesParity(fd, computeSource)
+        }
+
+        /**
+         * JNI bridge: see nativeGlesFragmentParity. Throws
+         * IllegalStateException when the .so is absent; ran=0 otherwise
+         * means "the GPU fragment pass failed at a named stage"
+         * (previewLastError) — never a fabricated verdict.
+         */
+        internal fun jniGlesFragmentParity(
+            fd: Int,
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+        ): DoubleArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeGlesFragmentParity(
+                fd, vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+            )
         }
 
         /** JNI bridge: closeSource for export sessions. */

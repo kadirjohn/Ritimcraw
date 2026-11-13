@@ -4,6 +4,7 @@ import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.engine.NativeSource
+import com.ritim.ritimcraw.engine.RenderBackend
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -428,6 +429,42 @@ interface Mp4MediaWriter {
      * identically; a null argument turns the writer's timing off.
      */
     fun attachTiming(timing: ExportStageTiming?) {}
+
+    /**
+     * The encoder-Surface input request (GPU deliverable F, owner request
+     * 2026-11-12 §10): the pipeline calls this BEFORE start when the export
+     * job's render backend is GPU_EXPERIMENTAL — an explicit request, never
+     * auto. The default no-op = this writer does not speak Surface input:
+     * start() behaves exactly as before and every JVM fake keeps its
+     * existing behavior untouched. A writer that accepts the request brings
+     * the mode up inside start(); one that CANNOT bring it up throws
+     * [SurfaceInputUnavailable] from start (the exporter's clean
+     * whole-export CPU restart).
+     */
+    fun requestEncoderSurfaceInput() {}
+
+    /**
+     * Per-frame Surface-mode offer: the developed frame as packed RGB888
+     * (top-row-first, width*height*3 bytes) at its own normalized [ptsUs].
+     * True = the frame was taken (the pipeline then skips the I420
+     * conversion entirely — the encoder consumes the frame through its
+     * input Surface, no full-frame GPU->CPU->encoder round trip, §10's
+     * zero-copy goal). False (the default) = this writer does not speak
+     * Surface input — the pipeline falls back to the I420 path for this
+     * frame, exactly as before. A writer in Surface mode that fails
+     * mid-stream throws a plain encode failure: the partial is discarded
+     * honestly (no mid-file format change, no double-encoded frame).
+     */
+    fun writeVideoFrameRgb(ptsUs: Long, rgb: ByteArray, width: Int, height: Int): Boolean = false
+
+    /**
+     * True once start() brought the encoder-Surface input mode up (frames
+     * feed the encoder through its input Surface). The default false = a
+     * CPU-input writer; the pipeline reads this only for honest stage-log
+     * lines, never for a decision — the per-frame [writeVideoFrameRgb]
+     * offer is the decision.
+     */
+    fun surfaceInputActive(): Boolean = false
 }
 
 /** AAC input: one block = 1024 PCM frames per channel (the AAC frame size). */
@@ -808,6 +845,20 @@ class ExportPipeline(
      * way — that is the seam's whole contract (core/src/Yuv.cpp).
      */
     private val converter: RgbToI420 = NativeRgbToI420,
+    /**
+     * The render backend the export job snapshotted (GPU deliverable F
+     * core, owner request 2026-11-12 §10): GPU_EXPERIMENTAL asks the writer
+     * for its encoder-Surface input mode BEFORE start (an explicit request
+     * from the job, never auto) and offers each developed frame through
+     * [Mp4MediaWriter.writeVideoFrameRgb] — when the writer takes it, the
+     * I420 conversion is skipped entirely (the encoder consumes the
+     * frame through its input Surface). CPU (the default) and AUTO both
+     * take the byte-identical CPU path: AUTO stays CPU until the owner's
+     * device parity verdict. A writer that cannot bring the Surface mode
+     * up throws [SurfaceInputUnavailable] from start — the exporter turns
+     * that into a clean whole-export CPU restart.
+     */
+    private val renderBackend: RenderBackend = RenderBackend.CPU,
 ) {
 
     /**
@@ -910,6 +961,14 @@ class ExportPipeline(
             grade.cropX, grade.cropY, grade.cropW, grade.cropH,
         )
         val cropOutDims = CropState.outputDims(outDims.width, outDims.height, cropRect, even = true)
+        // GPU deliverable F (§10): the Surface request goes to the writer
+        // BEFORE start — an explicit request from the job's render-backend
+        // snapshot, never auto. A writer that cannot bring the mode up
+        // throws SurfaceInputUnavailable from start (the exporter's clean
+        // CPU restart); the default no-op means CPU bytes, unchanged.
+        if (renderBackend == RenderBackend.GPU_EXPERIMENTAL) {
+            writer.requestEncoderSurfaceInput()
+        }
         try {
             writer.start(outPath, cropOutDims.width, cropOutDims.height, 0, sampleRate, channels)
         } catch (e: Throwable) {
@@ -973,6 +1032,28 @@ class ExportPipeline(
                         )
                         timing?.mark(ExportStageTiming.STAGE_CROP, System.nanoTime() - t2)
                         val t3 = System.nanoTime()
+                        // GPU deliverable F (§10): offer the frame to the
+                        // writer's encoder-Surface mode FIRST — but only
+                        // for a job that requested the mode (the same
+                        // explicit GPU_EXPERIMENTAL request, never auto):
+                        // the real writer treats an offer in CPU mode as a
+                        // mode-confusion bug, so a CPU export must not make
+                        // the call at all (byte-identical: not even a
+                        // method dispatch on the reference path). True = the
+                        // frame was taken (the encoder consumes it through
+                        // its input Surface — no I420 conversion, no
+                        // full-frame GPU->CPU->encoder round trip; STAGE_YUV
+                        // stays 0, honestly: no conversion ran). False (a
+                        // writer without the mode) falls through to the
+                        // byte-identical I420 path.
+                        if (renderBackend == RenderBackend.GPU_EXPERIMENTAL &&
+                            writer.writeVideoFrameRgb(s.ptsUs, cropped.rgb, cropped.width, cropped.height)
+                        ) {
+                            timing?.endFrame()
+                            done++
+                            onProgress?.invoke(done, videoPts.size)
+                            continue
+                        }
                         // Direct-to-plane first (commit (c)): when the writer
                         // offers the encoder Image's plane buffers, the
                         // conversion writes them directly — no packed
@@ -1154,10 +1235,36 @@ class Mp4Exporter(
             try {
                 engine.execute {
                     val res = try {
-                        ExportPipeline(session, writerFactory(), stageLog).run(
-                            sourceFd, job.snapshot, partial.absolutePath, lutPath, gyroPath,
-                            job.manualRotationDeg, onProgress
-                        )
+                        try {
+                            exportOnce(
+                                job.renderBackend, sourceFd, job.snapshot,
+                                partial.absolutePath, lutPath, gyroPath,
+                                job.manualRotationDeg, onProgress,
+                            )
+                        } catch (e: SurfaceInputUnavailable) {
+                            // §10: the writer could not bring its
+                            // encoder-Surface mode up (no EGL display, no
+                            // recordable config, no GLES 3 context, the
+                            // codec refused COLOR_FormatSurface...). The
+                            // whole export restarts on the CPU path from
+                            // frame 0 with a FRESH writer — no frame is
+                            // encoded twice, no partial file continues
+                            // mid-stream in an incompatible format. The
+                            // discard + fresh writerFactory() below is
+                            // that clean restart; the fallback is logged,
+                            // never silent.
+                            ExportStaging.discard(partial)
+                            stageLog?.invoke(
+                                "render backend fallback: " +
+                                    "requested=${job.renderBackend.name} " +
+                                    "effective=CPU reason=surface-input-unavailable"
+                            )
+                            exportOnce(
+                                RenderBackend.CPU, sourceFd, job.snapshot,
+                                partial.absolutePath, lutPath, gyroPath,
+                                job.manualRotationDeg, onProgress,
+                            )
+                        }
                         if (ExportStaging.finalize(partial, out)) {
                             Result.success(Unit)
                         } else {
@@ -1195,6 +1302,34 @@ class Mp4Exporter(
         return outcome.fold(
             onSuccess = { job.copy(state = State.DONE, detail = out.name) },
             onFailure = { e -> job.copy(state = State.FAILED, detail = e.message) },
+        )
+    }
+
+    /**
+     * One whole-pipeline attempt (GPU deliverable F, §10): a FRESH writer
+     * per attempt — the CPU restart contract is a clean re-run from frame
+     * 0, never a mid-stream continuation, so the writer (its codecs, its
+     * muxer, its EGL state) is never reused across attempts. [renderBackend]
+     * is the attempt's backend: the job's snapshot for the first attempt,
+     * CPU for the restart.
+     */
+    private fun exportOnce(
+        renderBackend: RenderBackend,
+        sourceFd: Int,
+        grade: GradeK,
+        outPath: String,
+        lutPath: String?,
+        gyroPath: String?,
+        manualRotationDeg: Int,
+        onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
+    ) {
+        ExportPipeline(
+            session,
+            writerFactory(),
+            stageLog,
+            renderBackend = renderBackend,
+        ).run(
+            sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )
     }
 }

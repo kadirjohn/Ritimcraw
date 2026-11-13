@@ -133,4 +133,56 @@ ParityReport demosaicParity(const std::string& computeSource,
                             const rawedit::FrameInfo& info,
                             const rawedit::RawMeta& meta);
 
+// Single-frame FRAGMENT develop parity (deliverable D) — the first REAL
+// GPU render path: the fused fragment pass (GlesShaderSources
+// DEVELOP_FRAGMENT) runs stages 1+4+5 (+6/14/OETF behind runtime
+// uniforms) as a draw, not a compute dispatch, and the readback goes
+// through a second fragment pass that writes an SSBO (STORE_FRAGMENT —
+// glReadPixels is banned, the recorded baseline invariant). The device
+// compiles the CALLER-PROVIDED Kotlin text for all four stages:
+//
+//   [vertexSource]      the 300-es fullscreen vertex (develop program)
+//   [vertex310Source]   the 310-es fullscreen vertex — GLSL ES forbids
+//                       linking different #version lines into one
+//                       program, and STORE_FRAGMENT is 310 es (its SSBO
+//                       write needs 3.1 fragment-shader SSBO access)
+//   [fragmentSource]    DEVELOP_FRAGMENT (300 es)
+//   [storeFragmentSource] STORE_FRAGMENT (310 es)
+//
+// The pipeline (parity shape — uHasProfile=0, uExposure=1.0, uOetf=0, so
+// the pass computes exactly developLinear's stage list 1+4+5, WB applied
+// in-shader):
+//
+//   CPU reference — rawedit::developLinear itself (untouched, exported);
+//   CPU-computed uniforms — frame-preferred stage-1 levels (uBlack/
+//       uRange, the developLinear stage-1 rule), WB gains (uWb, the
+//       1/asShotNeutral vector with the >0 guard);
+//   GPU pass 1 (develop) — GL_R16UI CFA texture -> RGBA32F attachment
+//       (EXT_color_buffer_float, gated HERE in this context — the probe's
+//       report belongs to the probe's throwaway context, this harness
+//       re-reads its own extension string and framebuffer-completeness,
+//       never guessing past a missing capability);
+//   GPU pass 2 (store) — the RGBA32F texture -> SSBO, drawn to a
+//       THROWAWAY RGBA8 framebuffer (never to the FBO the source texture
+//       is attached to — that would be a feedback loop); the pass also
+//       writes a throwaway color output (a zero-output fragment shader is
+//       spec-gray on some ES drivers);
+//   readback — glMapBufferRange on the SSBO (never glReadPixels), then
+//       the CPU tail clamps [0,1] and quantizes uint16 exactly like the
+//       developLinear tail (NO WB tail — the shader already applied it);
+//   comparison — the uint16 domain, same verdict rules as the compute
+//       harness (the verdict itself lives in Kotlin, GpuParityRules).
+//
+// The fragment path does NOT need compute: the gate is contextOk +
+// floatFboOk, NOT computeOk (a compute-less ES 3.1 device can still pass
+// this leg). ran=false means a stage failed and [detail] names it.
+// Device-test-pending: no phone has run this.
+ParityReport developFragmentParity(const std::string& vertexSource,
+                                    const std::string& vertex310Source,
+                                    const std::string& fragmentSource,
+                                    const std::string& storeFragmentSource,
+                                    const std::vector<uint16_t>& cfa,
+                                    const rawedit::FrameInfo& info,
+                                    const rawedit::RawMeta& meta);
+
 } // namespace gles

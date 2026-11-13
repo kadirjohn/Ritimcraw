@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.engine.RenderBackend
 
 /**
  * Export target format (sprint plan Task 5: CFA DNG or SDR H.264 MP4;
@@ -79,6 +80,19 @@ data class ExportJob(
      * (the frameIndex shape).
      */
     val manualRotationDeg: Int = 0,
+    /**
+     * The render backend this job's export should request (GPU deliverable
+     * F, owner request 2026-11-12 §10): snapshotted at ENQUEUE time from
+     * the settings picker, exactly like the grade — a later settings
+     * change must not flip an in-flight export. CPU (the default) keeps
+     * the byte-identical reference path; GPU_EXPERIMENTAL asks the writer
+     * for its encoder-Surface input mode and falls back to CPU with a
+     * logged reason when the device cannot bring it up
+     * ([SurfaceInputUnavailable] — the clean whole-export restart).
+     * Persisted only when non-default so pre-GPU project.json rows stay
+     * byte-identical (the manualRotationDeg shape).
+     */
+    val renderBackend: RenderBackend = RenderBackend.CPU,
 ) {
 
     /**

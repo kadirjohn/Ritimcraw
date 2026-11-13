@@ -94,6 +94,64 @@ GLenum glErrorAfter(const char* op, std::string* detail) {
     return err;
 }
 
+// Compile one shader of [type] from [source] (the caller-provided Kotlin
+// text). Returns the GL name on success and writes a compile-failure
+// detail into [detail]; returns 0 on failure (no GL object leaks: the
+// caller wraps the name in GlShader).
+GLuint compileShader(GLenum type, const std::string& source, const char* stage,
+                     std::string* detail) {
+    GLuint id = glCreateShader(type);
+    if (id == 0) {
+        if (detail != nullptr && detail->empty()) *detail = std::string("glCreateShader ") + stage;
+        return 0;
+    }
+    const char* src = source.c_str();
+    glShaderSource(id, 1, &src, nullptr);
+    glCompileShader(id);
+    GLint compiled = GL_FALSE;
+    glGetShaderiv(id, GL_COMPILE_STATUS, &compiled);
+    if (compiled != GL_TRUE) {
+        char log[512] = {0};
+        GLsizei len = 0;
+        glGetShaderInfoLog(id, sizeof(log) - 1, &len, log);
+        if (detail != nullptr && detail->empty()) {
+            *detail = std::string(stage) + "-compile: " + log;
+        }
+        glDeleteShader(id);
+        return 0;
+    }
+    return id;
+}
+
+// Link [vert] + [frag] into one program (the fragment chain's two
+// programs each link exactly one vertex + one fragment). Returns the GL
+// name on success; 0 on failure (shaders are NOT deleted — the caller's
+// GlShader guards own them; the program, when 0, was never created or
+// already deleted).
+GLuint linkProgram(GLuint vert, GLuint frag, const char* stage, std::string* detail) {
+    GLuint id = glCreateProgram();
+    if (id == 0) {
+        if (detail != nullptr && detail->empty()) *detail = std::string("glCreateProgram ") + stage;
+        return 0;
+    }
+    glAttachShader(id, vert);
+    glAttachShader(id, frag);
+    glLinkProgram(id);
+    GLint linked = GL_FALSE;
+    glGetProgramiv(id, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        char log[512] = {0};
+        GLsizei len = 0;
+        glGetProgramInfoLog(id, sizeof(log) - 1, &len, log);
+        if (detail != nullptr && detail->empty()) {
+            *detail = std::string(stage) + "-link: " + log;
+        }
+        glDeleteProgram(id);
+        return 0;
+    }
+    return id;
+}
+
 } // namespace
 
 EglSession::~EglSession() { release(); }
@@ -422,6 +480,266 @@ ParityReport demosaicParity(const std::string& computeSource,
         if (diff > 0) ++mismatches;
     }
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+
+    rep.ran = true;
+    rep.maxDiffLsb = maxDiff;
+    rep.mismatchCount = mismatches;
+    rep.samples = static_cast<long long>(n) * 3;
+    rep.detail = version;  // device context for the log line
+    return rep;
+}
+
+ParityReport developFragmentParity(const std::string& vertexSource,
+                                    const std::string& vertex310Source,
+                                    const std::string& fragmentSource,
+                                    const std::string& storeFragmentSource,
+                                    const std::vector<uint16_t>& cfa,
+                                    const rawedit::FrameInfo& info,
+                                    const rawedit::RawMeta& meta) {
+    ParityReport rep;
+    const uint32_t w = info.width;
+    const uint32_t h = info.height;
+    if (w == 0 || h == 0 || cfa.size() != static_cast<size_t>(w) * h) {
+        rep.detail = "input: cfa size != w*h";
+        return rep;
+    }
+    const size_t n = static_cast<size_t>(w) * h;
+
+    // --- CPU reference: developLinear itself, untouched ------------------
+    const std::vector<uint16_t> ref =
+        rawedit::developLinear(cfa.data(), info, meta);
+    if (ref.size() != n * 3) {
+        rep.detail = "cpu-reference: developLinear returned " +
+                     std::to_string(ref.size()) + " samples (expected " +
+                     std::to_string(n * 3) + ")";
+        return rep;
+    }
+
+    // --- CPU-computed uniforms (documented copies of developLinear's own
+    // stage-1 / stage-5 math — the shader applies them in-hardware) ------
+    const bool useFrameBlack = info.dynamicBlack[0] >= 0;
+    const float white = info.dynamicWhite > 0
+        ? static_cast<float>(info.dynamicWhite)
+        : static_cast<float>(meta.white);
+    float black[4];
+    for (int slot = 0; slot < 4; ++slot)
+        black[slot] = useFrameBlack
+            ? static_cast<float>(info.dynamicBlack[slot])
+            : static_cast<float>(meta.black[slot]);
+    float range[4];
+    for (int slot = 0; slot < 4; ++slot)
+        range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
+    const float invNeutral[3] = {
+        meta.asShotNeutral[0] > 0.0f ? 1.0f / meta.asShotNeutral[0] : 1.0f,
+        meta.asShotNeutral[1] > 0.0f ? 1.0f / meta.asShotNeutral[1] : 1.0f,
+        meta.asShotNeutral[2] > 0.0f ? 1.0f / meta.asShotNeutral[2] : 1.0f,
+    };
+    int cell[4];
+    cellFor(info, cell);
+
+    // --- EGL + capability gates (THIS context, not the probe's) ----------
+    EglSession egl;
+    if (!egl.open(&rep.detail)) {
+        rep.detail = "egl: " + rep.detail;
+        return rep;
+    }
+    const GLubyte* v = glGetString(GL_VERSION);
+    const std::string version = v != nullptr ? reinterpret_cast<const char*>(v) : "";
+    const std::pair<int, int> mm = parseGlesVersion(version);
+    // STORE_FRAGMENT needs ES 3.1 (fragment-shader SSBO access); the
+    // develop pass itself is 300 es but its readback is not.
+    if (mm.first < 3 || (mm.first == 3 && mm.second < 1)) {
+        rep.detail = "context-not-31: " + version;
+        return rep;
+    }
+    const GLubyte* e = glGetString(GL_EXTENSIONS);
+    const std::string extensions = e != nullptr ? reinterpret_cast<const char*>(e) : "";
+    if (extensions.find("GL_EXT_color_buffer_float") == std::string::npos) {
+        rep.detail = "no EXT_color_buffer_float (RGBA32F not renderable)";
+        return rep;
+    }
+
+    // --- CPU-computed uniform uploads need the programs first ------------
+    GlShader vertShader;
+    vertShader.id = compileShader(GL_VERTEX_SHADER, vertexSource, "vertex", &rep.detail);
+    if (vertShader.id == 0) return rep;
+
+    GlShader fragShader;
+    fragShader.id = compileShader(GL_FRAGMENT_SHADER, fragmentSource, "develop-fragment", &rep.detail);
+    if (fragShader.id == 0) return rep;
+
+    GlProgram developProgram;
+    developProgram.id = linkProgram(vertShader.id, fragShader.id, "develop", &rep.detail);
+    if (developProgram.id == 0) return rep;
+
+    GlShader vert310Shader;
+    vert310Shader.id = compileShader(GL_VERTEX_SHADER, vertex310Source, "vertex310", &rep.detail);
+    if (vert310Shader.id == 0) return rep;
+
+    GlShader storeFragShader;
+    storeFragShader.id = compileShader(GL_FRAGMENT_SHADER, storeFragmentSource, "store-fragment", &rep.detail);
+    if (storeFragShader.id == 0) return rep;
+
+    GlProgram storeProgram;
+    storeProgram.id = linkProgram(vert310Shader.id, storeFragShader.id, "store", &rep.detail);
+    if (storeProgram.id == 0) return rep;
+
+    // --- CFA texture: GL_R16UI, the RAW samples in their native values --
+    // (normalization is stage 1 IN-SHADER — that is the point of the fused
+    // pass; the CPU-computed uBlack/uRange carry the frame-preferred
+    // levels). Row-major CPU order: texture row y = CFA row y.
+    GLuint cfaTex = 0;
+    glGenTextures(1, &cfaTex);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, cfaTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R16UI, static_cast<GLsizei>(w),
+                 static_cast<GLsizei>(h), 0, GL_RED_INTEGER, GL_UNSIGNED_SHORT,
+                 cfa.data());
+    if (glErrorAfter("glTexImage2D(R16UI)", &rep.detail) != GL_NO_ERROR) return rep;
+
+    // --- develop FBO: RGBA32F attachment --------------------------------
+    GLuint developTex = 0;
+    glGenTextures(1, &developTex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, developTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, static_cast<GLsizei>(w),
+                 static_cast<GLsizei>(h), 0, GL_RGBA, GL_FLOAT, nullptr);
+    if (glErrorAfter("glTexImage2D(RGBA32F)", &rep.detail) != GL_NO_ERROR) return rep;
+
+    GLuint developFbo = 0;
+    glGenFramebuffers(1, &developFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, developFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           developTex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        rep.detail = "develop fbo incomplete (RGBA32F not renderable here)";
+        return rep;
+    }
+
+    // --- draw 1: the develop pass (parity shape: profile off, exposure
+    // neutral, no OETF — exactly developLinear's stage list) -------------
+    glUseProgram(developProgram.id);
+    glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+    const GLint cfaLoc = glGetUniformLocation(developProgram.id, "uCfa");
+    const GLint sizeLoc = glGetUniformLocation(developProgram.id, "uSize");
+    const GLint cellLoc = glGetUniformLocation(developProgram.id, "uCell");
+    const GLint blackLoc = glGetUniformLocation(developProgram.id, "uBlack");
+    const GLint rangeLoc = glGetUniformLocation(developProgram.id, "uRange");
+    const GLint wbLoc = glGetUniformLocation(developProgram.id, "uWb");
+    const GLint camLoc = glGetUniformLocation(developProgram.id, "uCam2rgb");
+    const GLint hasProfileLoc = glGetUniformLocation(developProgram.id, "uHasProfile");
+    const GLint exposureLoc = glGetUniformLocation(developProgram.id, "uExposure");
+    const GLint oetfLoc = glGetUniformLocation(developProgram.id, "uOetf");
+    if (cfaLoc < 0 || sizeLoc < 0 || cellLoc < 0 || blackLoc < 0 ||
+        rangeLoc < 0 || wbLoc < 0 || camLoc < 0 || hasProfileLoc < 0 ||
+        exposureLoc < 0 || oetfLoc < 0) {
+        rep.detail = "shader-contract: missing a develop uniform";
+        return rep;
+    }
+    glUniform1i(cfaLoc, 0);  // texture unit 0 (GL_TEXTURE0 above)
+    glUniform2i(sizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+    glUniform4i(cellLoc, cell[0], cell[1], cell[2], cell[3]);
+    glUniform4f(blackLoc, black[0], black[1], black[2], black[3]);
+    glUniform4f(rangeLoc, range[0], range[1], range[2], range[3]);
+    glUniform3f(wbLoc, invNeutral[0], invNeutral[1], invNeutral[2]);
+    const float identity[9] = {1.0f, 0.0f, 0.0f,
+                               0.0f, 1.0f, 0.0f,
+                               0.0f, 0.0f, 1.0f};
+    glUniformMatrix3fv(camLoc, 1, GL_TRUE, identity);  // transpose=GL_TRUE: row-major upload, the CPU contract
+    glUniform1i(hasProfileLoc, 0);
+    glUniform1f(exposureLoc, 1.0f);
+    glUniform1i(oetfLoc, 0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (glErrorAfter("glDrawArrays(develop)", &rep.detail) != GL_NO_ERROR) return rep;
+
+    // --- draw 2: the store pass, to a THROWAWAY RGBA8 FBO ----------------
+    // (never to the develop FBO — the source texture is still attached
+    // there; drawing to it would be a feedback loop). The RGBA8 contents
+    // are never read; the SSBO is the real output.
+    GLuint scratchTex = 0;
+    glGenTextures(1, &scratchTex);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, scratchTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(w),
+                 static_cast<GLsizei>(h), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (glErrorAfter("glTexImage2D(RGBA8)", &rep.detail) != GL_NO_ERROR) return rep;
+    GLuint scratchFbo = 0;
+    glGenFramebuffers(1, &scratchFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, scratchFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           scratchTex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        rep.detail = "store fbo incomplete";
+        return rep;
+    }
+
+    GlBuffer outBuf;
+    glGenBuffers(1, &outBuf.id);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, outBuf.id);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 static_cast<GLsizeiptr>(n * 3 * sizeof(float)),
+                 nullptr, GL_STREAM_READ);
+    if (glErrorAfter("glBufferData(out)", &rep.detail) != GL_NO_ERROR) return rep;
+
+    glUseProgram(storeProgram.id);
+    glActiveTexture(GL_TEXTURE1);  // the develop texture, unit 1 (same unit the develop pass wrote; sampler uniform below)
+    glBindTexture(GL_TEXTURE_2D, developTex);
+    const GLint srcLoc = glGetUniformLocation(storeProgram.id, "uSrc");
+    const GLint storeSizeLoc = glGetUniformLocation(storeProgram.id, "uSize");
+    if (srcLoc < 0 || storeSizeLoc < 0) {
+        rep.detail = "shader-contract: missing uSrc/uSize";
+        return rep;
+    }
+    glUniform1i(srcLoc, 1);  // texture unit 1
+    glUniform2i(storeSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, outBuf.id);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (glErrorAfter("glDrawArrays(store)", &rep.detail) != GL_NO_ERROR) return rep;
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+    // --- readback: a MAPPED buffer, NEVER glReadPixels -------------------
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, outBuf.id);
+    void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+                                    static_cast<GLsizeiptr>(n * 3 * sizeof(float)),
+                                    GL_MAP_READ_BIT);
+    if (mapped == nullptr) {
+        glErrorAfter("glMapBufferRange", &rep.detail);
+        if (rep.detail.empty()) rep.detail = "glMapBufferRange returned null";
+        return rep;
+    }
+    const float* gpu = static_cast<const float*>(mapped);
+    int maxDiff = 0;
+    long long mismatches = 0;
+    for (size_t i = 0; i < n * 3; ++i) {
+        // The shader applied WB (uWb) in-hardware; the tail only does what
+        // developLinear does AFTER WB: clamp [0,1] and quantize uint16.
+        float g = gpu[i];
+        g = std::min(std::max(g, 0.0f), 1.0f);
+        const int gi = static_cast<int>(std::lround(g * 65535.0f));
+        const int diff = gi > static_cast<int>(ref[i])
+            ? gi - static_cast<int>(ref[i])
+            : static_cast<int>(ref[i]) - gi;
+        if (diff > maxDiff) maxDiff = diff;
+        if (diff > 0) ++mismatches;
+    }
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+
+    // --- teardown (scope guards own the shaders/programs/buffers; the
+    // textures + FBOs are deleted here in reverse creation order) --------
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &scratchFbo);
+    glDeleteFramebuffers(1, &developFbo);
+    glDeleteTextures(1, &scratchTex);
+    glDeleteTextures(1, &developTex);
+    glDeleteTextures(1, &cfaTex);
 
     rep.ran = true;
     rep.maxDiffLsb = maxDiff;

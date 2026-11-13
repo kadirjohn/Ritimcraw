@@ -1,5 +1,7 @@
 package com.ritim.ritimcraw.engine
 
+import com.ritim.ritimcraw.data.GradeK
+
 /**
  * User-requested image-processing backend (owner request 2026-11-12,
  * deliverable B): what the SETTINGS picker stores and what an export job
@@ -114,6 +116,33 @@ data class BackendGates(
         if (!parityOk) missing += "parity-not-verified"
         return missing.joinToString(",")
     }
+
+    /**
+     * True when every gate the FRAGMENT develop path needs is green
+     * (deliverable D, owner request 2026-11-12 §D). The fragment chain is a
+     * DRAW pipeline (ES 3.00 develop pass + ES 3.10 store pass), so it needs
+     * NO compute: a compute-less ES 3.1 device can still run it. The gates
+     * are context + float FBO (the RGBA32F attachment needs
+     * EXT_color_buffer_float) + the fragment parity verdict. Deliberately a
+     * SEPARATE predicate from [gpuAllowed] — the compute leg's four-gate
+     * math stays untouched (locked by RenderBackendTest); this is the
+     * fragment leg's own honest gate, ADDED alongside it.
+     */
+    fun fragmentAllowed(): Boolean = contextOk && floatFboOk && parityOk
+
+    /**
+     * The logged reason when the FRAGMENT path is not taken — mirrors
+     * [fallbackReason] for the fragment leg's own gate set: only the gates
+     * the fragment path needs are listed, and only when missing. Pure.
+     */
+    fun fragmentFallbackReason(): String? {
+        if (fragmentAllowed()) return null
+        val missing = mutableListOf<String>()
+        if (!contextOk) missing += "no-egl-context"
+        if (!floatFboOk) missing += "no-float-fbo"
+        if (!parityOk) missing += "parity-not-verified"
+        return missing.joinToString(",")
+    }
 }
 
 /**
@@ -164,5 +193,164 @@ object BackendRules {
         val reason = gates.fallbackReason() ?: return null
         return "render backend fallback: requested=${requested.name} " +
             "effective=CPU reason=$reason"
+    }
+
+    /**
+     * The stage-coverage set of the FRAGMENT develop pass (deliverable D,
+     * GlesShaderSources.DEVELOP_FRAGMENT): the per-pixel pure stages fused
+     * into the one ES 3.00 draw — normalization (1), demosaic (4), WB (5),
+     * color transform (6), exposure (14) and the OETF tail. Everything
+     * else in the 24-stage CPU contract falls back to CPU when active
+     * (see [fragmentUncoveredStages]).
+     */
+    val FRAGMENT_COVERED_STAGES: Set<Int> = setOf(1, 4, 5, 6, 14)
+
+    /**
+     * The fragment path's honest uncovered list, as stage number ->
+     * short reason token used in the fallback line (deliverable D's
+     * no-silent-skip rule: an active effect the GPU does not cover makes
+     * the whole frame take the CPU path, and the line says which stage
+     * forced it). Mirrors GlesShaderSources.DEVELOP_FRAGMENT's "Stages
+     * NOT covered" doc and the CPU guards in core/src/Develop.cpp
+     * exactly — the same field != neutral / toggle checks the CPU runs.
+     */
+    val FRAGMENT_UNCOVERED_STAGES: Map<Int, String> = linkedMapOf(
+        2 to "lens-shading",          // grade.keepVignetting && shading map non-empty
+        3 to "highlight-reconstruction", // grade.highlightReconstruction
+        7 to "chroma-denoise",        // grade.chromaDenoise != 0
+        8 to "noise-reduction",       // grade.noiseReduction != 0
+        9 to "black-point",           // grade.blackPoint != 0
+        10 to "white-point",          // grade.whitePoint != 0
+        11 to "shadows",              // grade.shadows != 0
+        12 to "midtones",             // grade.midtones != 0
+        13 to "contrast",             // grade.contrast != 0
+        15 to "highlights",           // grade.highlights != 0
+        16 to "temperature",          // !grade.asShot && grade.tempK != 5600
+        17 to "tint",                 // !grade.asShot && grade.tint != 0
+        18 to "color-wheel",          // any wheel offset != 0
+        19 to "split-tone",           // splitShadowHue/HighlightHue >= 0
+        20 to "saturation",           // grade.saturation != 0
+        21 to "sharpness",            // grade.sharpness != 0
+        22 to "detail",               // grade.detail != 0
+        23 to "tonemap",              // grade.tonemap != 0
+        24 to "lut",                  // lut selected && grade.lutStrength > 0
+    )
+
+    /**
+     * The uncovered work that runs OUTSIDE developCpu's own stage list but
+     * still changes pixels before the encode: the temporal NR (applied by
+     * the JNI bridge to the CFA frames BEFORE developCpu) and the gyro
+     * warp. Same no-silent-skip rule: active -> CPU, with the token in
+     * the line.
+     */
+    val FRAGMENT_UNCOVERED_PRE_STAGES: Set<String> = setOf(
+        "temporal-nr",    // grade.temporalNr && grade.temporalStrength > 0
+        "gyro-warp",      // a gyro path is attached to the export job
+    )
+
+    /**
+     * The uncovered stages ACTIVE in one grade, as (stage, token) pairs —
+     * pure, honest, and mirroring the CPU guards exactly (owner prompt
+     * deliverable D: no active effect is silently skipped; the GPU path
+     * only takes a frame when EVERY active stage is covered).
+     *
+     * Stage 2's guard is the CPU's own: keepVignetting toggles it, but the
+     * stage is also skipped when the clip's shading map is empty — the
+     * Kotlin rule conservatively treats keepVignetting=true (the DEFAULT)
+     * as active, because the Kotlin side does not know the map state
+     * without the metadata; a false negative (GPU takes a frame whose clip
+     * has a shading map) would skip an active effect, the exact thing the
+     * rule forbids. The clip-with-empty-map case loses only the
+     * opportunity, never correctness.
+     */
+    fun fragmentUncoveredStages(grade: GradeK): List<Pair<Int, String>> {
+        val active = mutableListOf<Pair<Int, String>>()
+        if (grade.keepVignetting) active += 2 to "lens-shading"
+        if (grade.highlightReconstruction) active += 3 to "highlight-reconstruction"
+        if (grade.chromaDenoise != 0f) active += 7 to "chroma-denoise"
+        if (grade.noiseReduction != 0f) active += 8 to "noise-reduction"
+        if (grade.blackPoint != 0f) active += 9 to "black-point"
+        if (grade.whitePoint != 0f) active += 10 to "white-point"
+        if (grade.shadows != 0f) active += 11 to "shadows"
+        if (grade.midtones != 0f) active += 12 to "midtones"
+        if (grade.contrast != 0f) active += 13 to "contrast"
+        if (grade.highlights != 0f) active += 15 to "highlights"
+        if (!grade.asShot && grade.tempK != 5600f) active += 16 to "temperature"
+        if (!grade.asShot && grade.tint != 0f) active += 17 to "tint"
+        if (grade.wheelShadowX != 0f || grade.wheelShadowY != 0f ||
+            grade.wheelMidX != 0f || grade.wheelMidY != 0f ||
+            grade.wheelHighX != 0f || grade.wheelHighY != 0f
+        ) {
+            active += 18 to "color-wheel"
+        }
+        if (grade.splitShadowHue >= 0f || grade.splitHighlightHue >= 0f) {
+            active += 19 to "split-tone"
+        }
+        if (grade.saturation != 0f) active += 20 to "saturation"
+        if (grade.sharpness != 0f) active += 21 to "sharpness"
+        if (grade.detail != 0f) active += 22 to "detail"
+        if (grade.tonemap != 0) active += 23 to "tonemap"
+        if (grade.lutId != null && grade.lutStrength > 0f) active += 24 to "lut"
+        return active
+    }
+
+    /**
+     * The uncovered pre-develop work active in one grade (temporal NR; the
+     * gyro warp is a job-level fact the caller adds — see the export
+     * wiring). Pure.
+     */
+    fun fragmentUncoveredPreStages(grade: GradeK): List<String> {
+        val active = mutableListOf<String>()
+        if (grade.temporalNr && grade.temporalStrength > 0f) active += "temporal-nr"
+        return active
+    }
+
+    /**
+     * The effective backend for the FRAGMENT develop leg of one export:
+     * the fragment pass only takes the frame when the fragment gates pass
+     * AND every stage active in the grade is covered — otherwise CPU, with
+     * the honest line from [fragmentFallbackLine]. ADDS alongside
+     * [effectiveBackend] (the compute-leg rule stays untouched).
+     */
+    fun fragmentEffectiveBackend(
+        requested: RenderBackend,
+        gates: BackendGates,
+        grade: GradeK,
+        gyroWarpActive: Boolean,
+    ): EffectiveRenderBackend {
+        if (requested == RenderBackend.CPU) return EffectiveRenderBackend.CPU
+        if (!gates.fragmentAllowed()) return EffectiveRenderBackend.CPU
+        if (fragmentUncoveredStages(grade).isNotEmpty()) return EffectiveRenderBackend.CPU
+        if (fragmentUncoveredPreStages(grade).isNotEmpty()) return EffectiveRenderBackend.CPU
+        if (gyroWarpActive) return EffectiveRenderBackend.CPU
+        return EffectiveRenderBackend.GLES
+    }
+
+    /**
+     * The fragment leg's honest fallback line: null when the fragment path
+     * runs (or CPU was requested). The reason names the missing fragment
+     * gates OR the active uncovered stages — whichever forced the CPU
+     * path, never silently. Format matches [fallbackLine] so the export
+     * log reads uniformly.
+     */
+    fun fragmentFallbackLine(
+        requested: RenderBackend,
+        gates: BackendGates,
+        grade: GradeK,
+        gyroWarpActive: Boolean,
+    ): String? {
+        if (requested == RenderBackend.CPU) return null
+        if (fragmentEffectiveBackend(requested, gates, grade, gyroWarpActive) ==
+            EffectiveRenderBackend.GLES
+        ) {
+            return null
+        }
+        val reasons = mutableListOf<String>()
+        gates.fragmentFallbackReason()?.let { reasons += it }
+        reasons += fragmentUncoveredStages(grade).map { it.second }
+        reasons += fragmentUncoveredPreStages(grade)
+        if (gyroWarpActive) reasons += "gyro-warp"
+        return "render backend fallback: requested=${requested.name} " +
+            "effective=CPU reason=${reasons.joinToString(",")}"
     }
 }
