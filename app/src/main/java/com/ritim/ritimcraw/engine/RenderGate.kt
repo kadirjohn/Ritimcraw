@@ -75,4 +75,17 @@ data class RenderRequest(
      * sequence — offerIfEmpty never displaces a pending request.
      */
     val followUpMaxDim: Int? = null,
+    /**
+     * WHAT this render is for (choppy-preview fix 2026-11-13): the render
+     * class the request was made under, carried to the tier gates at the
+     * seam. [PreviewTiers.RenderClass.SETTLE] is the default — the class
+     * of every parked/inspection render, and the only class that may run
+     * temporal NR ([PreviewTiers.temporalNrAppliesAt]). The playback loop
+     * passes PLAYBACK (the fix itself: playback never runs the temporal
+     * merge, whatever tier the quality setting gives it); slider/seek
+     * drags pass DRAG. The progressive follow-up inherits the class of
+     * the request that queued it ([RenderClass.SETTLE] — only settle-class
+     * requests carry [followUpMaxDim] today).
+     */
+    val renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
 )

@@ -214,9 +214,12 @@ class PreviewRenderer private constructor(
      * stage 24 bypassed, the old look; COL-07). [gyroPath] is the attached
      * gyro log's path (null = no warp — gyro Phase 5; the stabilization
      * gate is [GradeMapping.stabilizationArgs], applied here at this
-     * render's tier). MUST run on the renderer's engine thread (the
-     * bridge's error state is thread-local) — the suspend [render]
-     * companion function does that for callers.
+     * render's tier). [renderClass] feeds the temporal NR gate
+     * ([PreviewTiers.temporalNrAppliesAt], choppy-preview fix 2026-11-13:
+     * settle-only — playback and drag renders never pay the merge). MUST
+     * run on the renderer's engine thread (the bridge's error state is
+     * thread-local) — the suspend [render] companion function does that
+     * for callers.
      */
     internal fun renderBlocking(
         frameIndex: Int,
@@ -224,6 +227,7 @@ class PreviewRenderer private constructor(
         maxDim: Int,
         lutPath: String? = null,
         gyroPath: String? = null,
+        renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
     ): Result<PreviewFrame> {
         if (frameIndex < 0 || (frameCount > 0 && frameIndex >= frameCount)) {
             return Result.failure(
@@ -233,10 +237,12 @@ class PreviewRenderer private constructor(
             )
         }
         val args = GradeMapping.toNative(grade)
-        // DN-08 tier policy: temporal NR only at the settle/paused tier —
-        // the drag (480) and playback (720) tiers skip the full-res merge.
+        // DN-08 render-class policy (choppy-preview fix 2026-11-13):
+        // temporal NR only on SETTLE renders at the paused tier or above —
+        // playback and drag renders skip the full-res merge (the pristine
+        // center shows; the effect lands on the settle render).
         val temporal = args.copy(
-            temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
+            temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim, renderClass),
         )
         // Gyro Phase 5: the stabilization gate at this render's tier (null
         // stab = no warp — off, tier skip, or no attached log).
@@ -389,7 +395,10 @@ class PreviewRenderer private constructor(
          * Suspends until frame [frameIndex] is rendered with [grade] scaled
          * to [maxDim]. [lutPath] is the selected .cube's path (null = no
          * LUT, the old look; COL-07). [gyroPath] is the attached gyro log's
-         * path (null = no warp — gyro Phase 5). The whole open -> render ->
+         * path (null = no warp — gyro Phase 5). [renderClass] feeds the
+         * temporal NR gate ([PreviewTiers.temporalNrAppliesAt],
+         * choppy-preview fix 2026-11-13: settle-only — playback and drag
+         * renders never pay the merge). The whole open -> render ->
          * close sequence runs on the shared preview engine thread and the
          * continuation resumes from there — the caller never blocks its own
          * dispatcher.
@@ -410,6 +419,7 @@ class PreviewRenderer private constructor(
             maxDim: Int,
             lutPath: String? = null,
             gyroPath: String? = null,
+            renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
         ): Result<PreviewFrame> = suspendCoroutine { cont ->
             try {
                 previewEngine.execute {
@@ -424,7 +434,10 @@ class PreviewRenderer private constructor(
                             // thread, so submitting to it would deadlock.
                             openResult(NativeSource.jniPreviewOpen(sourceFd), previewEngine).fold(
                                 onSuccess = { r ->
-                                    val res = r.renderBlocking(frameIndex, grade, maxDim, lutPath, gyroPath)
+                                    val res = r.renderBlocking(
+                                        frameIndex, grade, maxDim,
+                                        lutPath, gyroPath, renderClass,
+                                    )
                                     r.close()
                                     res
                                 },
