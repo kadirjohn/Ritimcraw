@@ -261,6 +261,14 @@ class NativeSource private constructor(
          * (unit-disc [-1,1], (0,0) = neutral — stage 18) and the split-tone
          * scalars (hue degrees, -1 = off; balance -100..100 — stage 19),
          * all at GradeK's native scale.
+         *
+         * lutRole..lutOutTransfer (owner request 2026-11-13, managed LUT
+         * interpretations): the selected binding's interpretation as the
+         * rawedit enum ordinals (LutInterpK's values, passed straight
+         * through — the bridge constructs the rawedit::LutInterpretation
+         * from them with no lookup table). ALL FIVE -1 = no binding: the
+         * legacy COL-07 stage-24 path, byte-identical. lutRole alone -1
+         * (a malformed call) also develops legacy.
          */
         @JvmStatic private external fun nativePreviewRender(
             handle: Long,
@@ -303,6 +311,11 @@ class NativeSource private constructor(
             stabFocalMm: Float,
             stabTrimMs: Float,
             maxDim: Int,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): IntArray?
 
         /**
@@ -314,7 +327,9 @@ class NativeSource private constructor(
          * lutPath/lutStrength as in nativePreviewRender (COL-07);
          * noiseReduction/chromaDenoise as in nativePreviewRender (DN-01..08);
          * the wheel/split-tone package as in nativePreviewRender (COL-13);
-         * the stabilization package as in nativePreviewRender (gyro Phase 5).
+         * the stabilization package as in nativePreviewRender (gyro Phase 5);
+         * the lutRole..lutOutTransfer binding package as in
+         * nativePreviewRender (managed interpretations, 2026-11-13).
          */
         @JvmStatic private external fun nativePreviewSessionRenderCached(
             handle: Long,
@@ -357,6 +372,11 @@ class NativeSource private constructor(
             stabFocalMm: Float,
             stabTrimMs: Float,
             maxDim: Int,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): IntArray?
 
         /** rawedit::ErrorCode of the last failed preview call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
@@ -464,6 +484,9 @@ class NativeSource private constructor(
          * wheel/split (COL-13): the job snapshot's wheel offsets and
          * split-tone scalars — the SAME stage-18/19 apply as the preview
          * (identical math, identical order; export parity by construction).
+         * lutRole..lutOutTransfer (managed interpretations, 2026-11-13):
+         * the snapshot's binding ordinals as in nativePreviewRender; all
+         * five -1 = the legacy stage-24 path, byte-identical.
          */
         @JvmStatic private external fun nativeExportFrame(
             handle: Long,
@@ -505,6 +528,11 @@ class NativeSource private constructor(
             stabZoomLimit: Float,
             stabFocalMm: Float,
             stabTrimMs: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -584,6 +612,9 @@ class NativeSource private constructor(
          * signature across every develop entry point) but are IGNORED here —
          * the tone-band color stages are MCRAW-only; the encoded path grades
          * via its WB/temp/tint/exposure loop.
+         * lutRole..lutOutTransfer (managed interpretations, 2026-11-13):
+         * the binding ordinals as in nativePreviewRender; all five -1 =
+         * the legacy stage-24 path, byte-identical.
          */
         @JvmStatic private external fun nativeEncodedDevelop(
             yPlane: ByteArray,
@@ -627,6 +658,11 @@ class NativeSource private constructor(
             splitShadowHue: Float,
             splitHighlightHue: Float,
             splitBalance: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): IntArray?
 
         /**
@@ -773,6 +809,11 @@ class NativeSource private constructor(
             stabFocalMm: Float,
             stabTrimMs: Float,
             maxDim: Int,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -786,6 +827,7 @@ class NativeSource private constructor(
             wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
+            lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
         )
 
         /** JNI bridge: cached interactive render; see nativePreviewSessionRenderCached. */
@@ -830,6 +872,11 @@ class NativeSource private constructor(
             stabFocalMm: Float,
             stabTrimMs: Float,
             maxDim: Int,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -843,6 +890,7 @@ class NativeSource private constructor(
             wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
+            lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
         )
 
         /** JNI bridge: rawedit::ErrorCode of the last failed preview call. */
@@ -922,6 +970,11 @@ class NativeSource private constructor(
             stabZoomLimit: Float,
             stabFocalMm: Float,
             stabTrimMs: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): ByteArray? = nativeExportFrame(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -934,6 +987,7 @@ class NativeSource private constructor(
             wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
             wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
+            lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
         )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
@@ -1020,6 +1074,11 @@ class NativeSource private constructor(
             splitShadowHue: Float,
             splitHighlightHue: Float,
             splitBalance: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): IntArray? = nativeEncodedDevelop(
             yPlane, uPlane, vPlane,
             width, height, stride, uvStride,
@@ -1033,6 +1092,7 @@ class NativeSource private constructor(
             temporalNr, temporalStrength,
             wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
             wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
+            lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
         )
 
         /** JNI bridge: readAudio for export sessions. */

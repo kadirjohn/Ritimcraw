@@ -28,8 +28,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -37,6 +39,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -75,12 +78,17 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.GradePreset
+import com.ritim.ritimcraw.data.LutGamut
 import com.ritim.ritimcraw.data.LutInfo
+import com.ritim.ritimcraw.data.LutInterpK
+import com.ritim.ritimcraw.data.LutRole
+import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
@@ -641,12 +649,21 @@ fun ClipEditorScreen(
     // screen owns no store; AppNav passes the list and refreshes it after
     // every import/remove so the rows stay current.
     lutEntries: List<LutInfo> = emptyList(),
-    // Imports the picked SAF document (AppNav: LutStore.import + the native
-    // probe + the TITLE rename). Returns the entry on success or the failure
-    // for the local error line; never throws.
-    onImportLut: (uri: String, fallbackName: String) -> Result<LutInfo> =
-        { _, _ -> Result.failure(IllegalStateException()) },
-    // Removes a cube from the library (AppNav: LutStore.remove + refresh).
+    // Imports the picked SAF document under the user-confirmed name and
+    // interpretation (AppNav: LutStore.import + the native probe as
+    // VALIDATION — the confirmed name stands, the pre-dialog TITLE rename
+    // is superseded by the sheet's Name field). Returns the entry on
+    // success or the failure for the local error line; never throws.
+    onImportLut: (uri: String, name: String, interp: LutInterpK) -> Result<LutInfo> =
+        { _, _, _ -> Result.failure(IllegalStateException()) },
+    // "Edit interpretation" on a library record (AppNav: setTitle when the
+    // confirmed name differs, then LutStore.bindInterp — a NEW binding
+    // revision on the same blob, never a mutation, never a re-import).
+    onEditLutInterp: (lut: LutInfo, name: String, interp: LutInterpK) -> Unit =
+        { _, _, _ -> },
+    // Removes ONE binding — the record — from the library (AppNav:
+    // LutStore.removeBinding; the copied cube file goes only when it was
+    // the blob's last record).
     onRemoveLut: (LutInfo) -> Unit = {},
     // The grade's lutId -> the copied cube's path (AppNav: LutStore.pathFor).
     // Null = no LUT: stage 24 is bypassed and the old look is preserved.
@@ -1153,11 +1170,28 @@ fun ClipEditorScreen(
         var precisionActive by remember(sourceId) { mutableStateOf(false) }
         var precisionStartFrame by remember(sourceId) { mutableStateOf(0) }
 
-        // ---- LUT import (COL-07) ----
+        // ---- LUT import (COL-07, managed interpretations 2026-11-13) ----
         // The import error is LOCAL to the LUT section: errorText drives the
         // preview FAILED state (EditorPreviewLogic.stateOf), so a failed
         // import must not yank the preview placeholder.
         var lutImportError by remember(sourceId) { mutableStateOf<String?>(null) }
+        // The sheet's pending pick (owner request 2026-11-13): the SAF
+        // picker no longer imports immediately — it ARMS the
+        // interpretation sheet with the picked uri + the file's fallback
+        // name, and the import happens only on the sheet's Confirm (Name +
+        // Preset + gamuts + transfers + role). Cancel/dismiss leaves NO
+        // record: nothing is copied, nothing persisted. Saveable like
+        // framePickerOpen so a rotation mid-dialog keeps the pick armed.
+        var pendingLutUri by rememberSaveable { mutableStateOf<String?>(null) }
+        var pendingLutName by rememberSaveable { mutableStateOf("") }
+        // The record being re-interpreted ("Edit interpretation"): the
+        // sheet opens with this record's own name + interpretation and
+        // Confirm calls onEditLutInterp — a NEW binding revision, never a
+        // mutation of the selected record. Plain remember (LutInfo is not
+        // Bundle-saveable): a configuration change mid-edit dismisses the
+        // sheet with cancel semantics — no record touched, the user
+        // reopens it.
+        var editingLut by remember { mutableStateOf<LutInfo?>(null) }
         // SAF picker: any mime — the native probe validates the .cube, and a
         // non-cube pick fails the probe with a clear message instead of being
         // blocked at the picker (the same permissive shape as the clip
@@ -1166,17 +1200,12 @@ fun ClipEditorScreen(
             ActivityResultContracts.OpenDocument()
         ) { uri ->
             if (uri == null) return@rememberLauncherForActivityResult
-            val fallbackName = uri.lastPathSegment
+            pendingLutName = uri.lastPathSegment
                 ?.substringAfterLast('/')
                 ?.substringBeforeLast('.')
                 ?: uri.lastPathSegment
                 ?: ""
-            // AppNav does LutStore.import + the native probe + the TITLE
-            // rename; the failure message lands in the local error line.
-            onImportLut(uri.toString(), fallbackName).fold(
-                onSuccess = { lutImportError = null },
-                onFailure = { e -> lutImportError = e.message ?: "LUT import failed" },
-            )
+            pendingLutUri = uri.toString()
         }
 
         // ---- Gyro attach (gyro Phase 5) ----
@@ -2912,6 +2941,9 @@ fun ClipEditorScreen(
                     lutImportError = lutImportError,
                     onImportLut = { lutPicker.launch(arrayOf("*/*")) },
                     onRemoveLut = onRemoveLut,
+                    // "Edit interpretation" arms the sheet with the record;
+                    // Confirm runs AppNav's bindInterp (a NEW revision).
+                    onEditLut = { editingLut = it },
                     onLutSelect = { g ->
                         // A LUT selection is a discrete history step (null
                         // cause, feature N7).
@@ -3363,6 +3395,50 @@ fun ClipEditorScreen(
             onDismiss = { framePickerOpen = false },
         )
     }
+
+    // ---- LUT interpretation sheet (owner request 2026-11-13) ----
+    // Two open paths, one sheet. IMPORT: the SAF picker armed it with the
+    // picked uri + fallback name; Confirm runs the REAL import (AppNav:
+    // LutStore.import + the native probe as validation) under the
+    // confirmed Name + interpretation — and clears the armed pick, so a
+    // second Confirm can never double-import. EDIT: a library row's "Edit
+    // interpretation" armed it with the record; Confirm hands the new name
+    // + interpretation to onEditLutInterp (AppNav: bindInterp — a NEW
+    // binding revision, never a mutation). Both paths' Cancel/dismiss
+    // leave NO record and clear the armed state.
+    if (pendingLutUri != null) {
+        LutInterpSheet(
+            initialName = pendingLutName,
+            // The sheet opens on the LEGACY preset — the tap-through
+            // default that keeps the exact previous pipeline for a user
+            // who confirms without engaging with the fields.
+            initial = LutInterpK.legacy(),
+            onConfirm = { name, interp ->
+                val uri = pendingLutUri
+                pendingLutUri = null
+                if (uri != null) {
+                    onImportLut(uri, name, interp).fold(
+                        onSuccess = { lutImportError = null },
+                        onFailure = { e ->
+                            lutImportError = e.message ?: "LUT import failed"
+                        },
+                    )
+                }
+            },
+            onDismiss = { pendingLutUri = null },
+        )
+    }
+    editingLut?.let { editing ->
+        LutInterpSheet(
+            initialName = editing.name,
+            initial = editing.interp,
+            onConfirm = { name, interp ->
+                editingLut = null
+                onEditLutInterp(editing, name, interp)
+            },
+            onDismiss = { editingLut = null },
+        )
+    }
     }
 }
 
@@ -3436,6 +3512,255 @@ private fun FramePickerSheet(
     }
 }
 
+
+/**
+ * The LUT interpretation sheet (owner request 2026-11-13): the dialog
+ * behind BOTH the import flow and "Edit interpretation" on a library
+ * record. PresetNameDialog style — a ModalBottomSheet with a titleSmall
+ * title — plus the four single-choice rows the managed model needs.
+ *
+ * HONESTY CONTRACT: the app does NOT detect a cube's color encoding, and
+ * this sheet never claims it did. The preset row is a SUGGESTION that
+ * fills the fields (the common real-world authoring spaces); the hint
+ * line says so in plain words. The user CONFIRMS the interpretation;
+ * Legacy leaves the exact pre-managed pipeline (the stage-24 path,
+ * byte-identical).
+ *
+ * The preset row and the four field rows are one control seen two ways:
+ * picking a preset OVERWRITES the fields with its interpretation, and
+ * editing any field snaps the preset row to the matching name (or
+ * Custom when nothing matches) — [LutInterpPresets.matchingPreset]. A
+ * hand-built interpretation that happens to equal a preset shows that
+ * preset's name, never a false "Custom".
+ *
+ * CANCEL LEAVES NO RECORD: the sheet only hands [onConfirm] the finished
+ * name and interpretation on the Confirm button; dismissing (scrim,
+ * back, or Cancel) calls nothing — the caller's store is untouched,
+ * exactly like the preset-name dialog.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LutInterpSheet(
+    initialName: String,
+    initial: LutInterpK,
+    onConfirm: (name: String, interp: LutInterpK) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(initialName) }
+    var interp by remember { mutableStateOf(initial) }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        // The sheet is far taller than the viewport (a name field, five
+        // presets, two encodings' worth of gamut+transfer rows, four
+        // roles), so the whole body scrolls as one column.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+        ) {
+        Text(
+            stringResource(R.string.editor_lut_interp_title),
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        // The display name (import: the picked file's fallback; edit: the
+        // record's current name). The user's text is stored/displayed
+        // verbatim — never localized (the PresetNameDialog rule).
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text(stringResource(R.string.editor_lut_interp_name_label)) },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        // The honesty hint: the app cannot detect the encoding; the user
+        // confirms. Above the fields so it frames every choice below.
+        Text(
+            stringResource(R.string.editor_lut_interp_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        // Preset: one row, five choices. Picking one OVERWRITES the four
+        // field rows with the preset's interpretation; the row's own
+        // selection is the matching-name rule (a hand-edited field set
+        // that equals a preset shows that preset).
+        Text(
+            stringResource(R.string.editor_lut_interp_preset),
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        LutInterpPreset.values().forEach { p ->
+            LutInterpChoiceRow(
+                label = stringResource(lutPresetLabel(p)),
+                selected = LutInterpPresets.matchingPreset(interp) == p,
+                onClick = {
+                    // Custom starts from the legacy defaults: every field
+                    // below is then the user's explicit pick.
+                    interp = LutInterpPresets.interpOf(p)
+                },
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        // ---- Input encoding: gamut rows then transfer rows ----
+        Text(
+            stringResource(R.string.editor_lut_interp_input),
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        LutGamut.values().forEach { g ->
+            LutInterpChoiceRow(
+                label = stringResource(lutGamutLabel(g)),
+                selected = interp.input.gamut == g,
+                onClick = { interp = interp.copy(input = interp.input.copy(gamut = g)) },
+            )
+        }
+        LutTransfer.values().forEach { t ->
+            LutInterpChoiceRow(
+                label = stringResource(lutTransferLabel(t)),
+                selected = interp.input.transfer == t,
+                onClick = { interp = interp.copy(input = interp.input.copy(transfer = t)) },
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        // ---- Output encoding: gamut rows then transfer rows ----
+        Text(
+            stringResource(R.string.editor_lut_interp_output),
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        LutGamut.values().forEach { g ->
+            LutInterpChoiceRow(
+                label = stringResource(lutGamutLabel(g)),
+                selected = interp.output.gamut == g,
+                onClick = { interp = interp.copy(output = interp.output.copy(gamut = g)) },
+            )
+        }
+        LutTransfer.values().forEach { t ->
+            LutInterpChoiceRow(
+                label = stringResource(lutTransferLabel(t)),
+                selected = interp.output.transfer == t,
+                onClick = { interp = interp.copy(output = interp.output.copy(transfer = t)) },
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        // ---- Role ----
+        Text(
+            stringResource(R.string.editor_lut_interp_role),
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        LutRole.values().forEach { r ->
+            LutInterpChoiceRow(
+                label = stringResource(lutRoleLabel(r)),
+                selected = interp.role == r,
+                onClick = { interp = interp.copy(role = r) },
+            )
+        }
+        // Confirm / Cancel: the preset-name dialog's row (Cancel left,
+        // Confirm right, 8dp apart). Cancel and dismiss call nothing —
+        // cancel leaves no record.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.editor_lut_interp_cancel))
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = { onConfirm(name.trim(), interp) }) {
+                Text(stringResource(R.string.editor_lut_interp_confirm))
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+/**
+ * One radio row of the interpretation sheet: the LutRow shape (48dp
+ * minimum, RadioButton left, label right) with the label left-aligned in
+ * the remaining space.
+ */
+@Composable
+private fun LutInterpChoiceRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .selectable(
+                selected = selected,
+                role = Role.RadioButton,
+                onClick = onClick,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Radio rows in this sheet are 48dp minimum (DESIGN.md Inputs);
+        // the trailing padding keeps the label off the screen edge.
+        RadioButton(selected = selected, onClick = null)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 4.dp, end = 16.dp),
+        )
+    }
+}
+
+/** The preset label for [p]. */
+private fun lutPresetLabel(p: LutInterpPreset): Int = when (p) {
+    LutInterpPreset.SRGB_CREATIVE -> R.string.editor_lut_preset_srgb_creative
+    LutInterpPreset.REC709_CREATIVE -> R.string.editor_lut_preset_rec709_creative
+    LutInterpPreset.DWG_TO_REC709 -> R.string.editor_lut_preset_dwg_to_rec709
+    LutInterpPreset.CUSTOM -> R.string.editor_lut_preset_custom
+    LutInterpPreset.LEGACY -> R.string.editor_lut_preset_legacy
+}
+
+/** The gamut label for [g] — Rec.709/sRGB presented as one identity. */
+private fun lutGamutLabel(g: LutGamut): Int = when (g) {
+    LutGamut.Rec709 -> R.string.editor_lut_gamut_rec709
+    LutGamut.Rec2020 -> R.string.editor_lut_gamut_rec2020
+    LutGamut.DaVinciWideGamut -> R.string.editor_lut_gamut_dwg
+    LutGamut.Acescg -> R.string.editor_lut_gamut_acescg
+    LutGamut.ArriWideGamut3 -> R.string.editor_lut_gamut_awg3
+    LutGamut.SGamut3Cine -> R.string.editor_lut_gamut_sg3cine
+    LutGamut.CinemaGamut -> R.string.editor_lut_gamut_cinema_gamut
+    LutGamut.AppleWideGamut -> R.string.editor_lut_gamut_apple_wide_gamut
+    LutGamut.VGamut -> R.string.editor_lut_gamut_vgamut
+}
+
+/** The transfer label for [t] — honest names, per the mission rules. */
+private fun lutTransferLabel(t: LutTransfer): Int = when (t) {
+    LutTransfer.Linear -> R.string.editor_lut_transfer_linear
+    LutTransfer.Srgb -> R.string.editor_lut_transfer_srgb
+    LutTransfer.Rec709OETF -> R.string.editor_lut_transfer_rec709_oetf
+    LutTransfer.Gamma24 -> R.string.editor_lut_transfer_gamma24
+    LutTransfer.DaVinciIntermediate -> R.string.editor_lut_transfer_di
+    LutTransfer.Acescct -> R.string.editor_lut_transfer_acescct
+    LutTransfer.ArriLogC3 -> R.string.editor_lut_transfer_logc3
+    LutTransfer.SonyLog3 -> R.string.editor_lut_transfer_slog3
+    LutTransfer.CanonLog3 -> R.string.editor_lut_transfer_clog3
+    LutTransfer.AppleLog -> R.string.editor_lut_transfer_apple_log
+    LutTransfer.VLog -> R.string.editor_lut_transfer_vlog
+    LutTransfer.FujifilmFLog -> R.string.editor_lut_transfer_flog
+    LutTransfer.Cineon -> R.string.editor_lut_transfer_cineon
+}
+
+/** The role label for [r]. */
+private fun lutRoleLabel(r: LutRole): Int = when (r) {
+    LutRole.LegacyLinear709 -> R.string.editor_lut_role_legacy
+    LutRole.DisplayLook -> R.string.editor_lut_role_display
+    LutRole.SceneLook -> R.string.editor_lut_role_scene
+    LutRole.SceneToDisplay -> R.string.editor_lut_role_scene_to_display
+}
 
 /**
  * Light tab: Exposure / Highlights / tone controls (DESIGN.md Editor).
@@ -3609,6 +3934,10 @@ private fun ColorPanel(
     lutImportError: String? = null,
     onImportLut: () -> Unit = {},
     onRemoveLut: (LutInfo) -> Unit = {},
+    // "Edit interpretation" on a record row: arms the interpretation sheet
+    // with that record (the screen owns the sheet; AppNav's bindInterp
+    // runs on Confirm).
+    onEditLut: (LutInfo) -> Unit = {},
     // LUT selection and the tonemap/AgX choices are grade edits on the
     // DISCRETE settle path (immediate full tier, their own undo step) —
     // the exact routes they had in DetailPanel.
@@ -3661,6 +3990,7 @@ private fun ColorPanel(
             lutImportError = lutImportError,
             onImportLut = onImportLut,
             onRemoveLut = onRemoveLut,
+            onEditLut = onEditLut,
             onLutSelect = onLutSelect,
         )
     }
@@ -3816,6 +4146,7 @@ private fun ColorLookBody(
     lutImportError: String? = null,
     onImportLut: () -> Unit = {},
     onRemoveLut: (LutInfo) -> Unit = {},
+    onEditLut: (LutInfo) -> Unit = {},
     onLutSelect: (GradeK) -> Unit = {},
 ) {
     Column(
@@ -3910,19 +4241,39 @@ private fun ColorLookBody(
             )
         } else {
             // None row first: deselecting is the removal of the selection
-            // (lutId = null), not a grade reset — Strength keeps its value
-            // so re-selecting a cube restores the blend the user set.
+            // (lutId AND lutInterp = null), not a grade reset — Strength
+            // keeps its value so re-selecting a cube restores the blend
+            // the user set. A null lutInterp is the legacy selection: the
+            // grade takes the byte-identical stage-24 path and persists
+            // WITHOUT the lutInterp key.
             LutRow(
                 label = stringResource(R.string.editor_lut_none),
                 selected = grade.lutId == null,
-                onClick = { onLutSelect(grade.copy(lutId = null)) },
+                onClick = {
+                    onLutSelect(grade.copy(lutId = null, lutInterp = null))
+                },
             )
             lutEntries.forEach { lut ->
                 LutRow(
                     label = lut.name,
+                    // The record row's input -> output summary (owner
+                    // request 2026-11-13): technical color-science
+                    // names, never localized — the same convention as
+                    // the AgX look names.
+                    summary = LutInterpPresets.summaryOf(lut.interp),
                     selected = grade.lutId == lut.id,
-                    onClick = { onLutSelect(grade.copy(lutId = lut.id)) },
+                    onClick = {
+                        // The grade carries the interpretation BY VALUE
+                        // (null for a legacy record = the stage-24 path).
+                        onLutSelect(
+                            grade.copy(
+                                lutId = lut.id,
+                                lutInterp = LutInterpPresets.gradeInterpOf(lut),
+                            )
+                        )
+                    },
                     onRemove = { onRemoveLut(lut) },
+                    onEdit = { onEditLut(lut) },
                 )
             }
         }
@@ -5155,9 +5506,11 @@ private data class CropAspectOption(
 @Composable
 private fun LutRow(
     label: String,
+    summary: String? = null,
     selected: Boolean,
     onClick: () -> Unit,
     onRemove: (() -> Unit)? = null,
+    onEdit: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
@@ -5171,13 +5524,34 @@ private fun LutRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(selected = selected, onClick = null)
-        Text(
-            label,
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = 4.dp),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            if (summary != null) {
+                // The record's input -> output summary: bodySmall on the
+                // variant color so it reads as the row's caption, not a
+                // second choice.
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+        if (onEdit != null) {
+            TextButton(
+                onClick = onEdit,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.heightIn(min = 36.dp),
+            ) {
+                Text(stringResource(R.string.editor_lut_edit_interp))
+            }
+        }
         if (onRemove != null) {
             TextButton(
                 onClick = onRemove,
@@ -5187,6 +5561,9 @@ private fun LutRow(
                 Text(stringResource(R.string.editor_lut_remove))
             }
         }
+        // Keep the row's text off the screen edge (the sheet's radio-row
+        // convention).
+        Spacer(Modifier.width(8.dp))
     }
 }
 

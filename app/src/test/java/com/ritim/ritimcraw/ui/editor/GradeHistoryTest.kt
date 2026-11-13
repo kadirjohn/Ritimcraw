@@ -1,6 +1,11 @@
 package com.ritim.ritimcraw.ui.editor
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.LutEncodingK
+import com.ritim.ritimcraw.data.LutGamut
+import com.ritim.ritimcraw.data.LutInterpK
+import com.ritim.ritimcraw.data.LutRole
+import com.ritim.ritimcraw.data.LutTransfer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -251,5 +256,28 @@ class GradeHistoryTest {
         // state the user actually saw), never an intermediate frame.
         assertEquals(gradeAt(2), history.undo())
         assertEquals(initial, history.undo())
+    }
+
+    @Test
+    fun undo_and_redo_carry_the_managed_lut_interpretation() {
+        // Owner request 2026-11-13: the interpretation rides INSIDE the
+        // GradeK the history holds by value — an undo/redo restores the
+        // exact interpretation the user set at that step, independent of
+        // the library's records.
+        val interp = LutInterpK(
+            input = LutEncodingK(LutGamut.Rec2020, LutTransfer.Linear),
+            output = LutEncodingK(LutGamut.Rec709, LutTransfer.Rec709OETF),
+            role = LutRole.SceneLook,
+        )
+        val withInterp = GradeK(exposureEv = 0.5f, lutId = "abc123def4567890", lutInterp = interp)
+
+        val history = GradeHistory(initial)
+        history.record(withInterp)
+
+        val undone = history.undo()
+        assertEquals(initial, undone)
+        val redone = history.redo()
+        assertEquals(interp, redone!!.lutInterp)
+        assertEquals("abc123def4567890", redone.lutId)
     }
 }

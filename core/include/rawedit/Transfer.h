@@ -62,6 +62,13 @@ struct YuvFrame {
 //   lut: optional stage-22 LUT (COL-07). nullptr = no LUT selected — the
 //   stage is skipped entirely, so every existing call site stays
 //   bit-identical to the pre-LUT pipeline.
-ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, const Lut* lut = nullptr);
+//   binding: optional managed-LUT interpretation (owner request
+//   2026-11-13, rawedit/Color.h) compiled ahead of time. nullptr = the
+//   legacy tonemap+LUT sequence, byte-identical. When present, the pair
+//   routes through applyManagedLutStage exactly like developCpu's stages
+//   23/24 (same roles, same ordering, same strength semantics), so the
+//   two pipelines stay in lockstep. Appended AFTER lut with a nullptr
+//   default so no existing call site changes.
+ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, const Lut* lut = nullptr, const CompiledLutBinding* binding = nullptr);
 
 } // namespace rawedit

@@ -176,6 +176,71 @@ bool resolveLut(JNIEnv* env, jstring lutPath, const rawedit::Lut** out) {
     return true;
 }
 
+// Managed LUT binding cache (owner request 2026-11-13) ----------------------
+//
+// The gLut pattern mirrored for the compiled interpretation: compiling a
+// binding (gamut-conversion matrices + transfer curves) is cheap next to
+// parsing a cube, but it is per-frame work when done inline, so each engine
+// thread keeps ONE compiled binding keyed by the SAME key the parsed table
+// uses (the path) plus the interpretation's ordinal tuple — the Kotlin
+// LutInterpK.signature() mirrored verbatim. Same key = reuse; any change =
+// recompile; all-five -1 = no binding (the legacy stage-24 pair, the old
+// look byte-identical).
+//
+// The binding is compiled FROM the ordinals the Kotlin side passes straight
+// through (the rawedit enum ordinals — LutInterpK's values are pinned to the
+// C++ order by LutInterpTest), so the bridge holds no lookup table and a
+// future C++ enum extension can never wedge an older UI into a wrong role:
+// an ordinal the core does not know falls back to the legacy interpretation
+// (compileLutBinding clamps), never a silent mis-render.
+struct BindingKey {
+    std::string path;
+    int role = -1;
+    int inGamut = -1;
+    int inTransfer = -1;
+    int outGamut = -1;
+    int outTransfer = -1;
+
+    bool matches(const std::string& p, int r, int ig, int it, int og, int ot) const {
+        return role == r && inGamut == ig && inTransfer == it &&
+               outGamut == og && outTransfer == ot && path == p;
+    }
+};
+
+thread_local BindingKey gBindingKey;
+thread_local rawedit::CompiledLutBinding gBinding;
+
+// Resolves the Kotlin lutRole..lutOutTransfer arguments into a compiled
+// binding for this render. Returns true with *out == nullptr when there is
+// no managed binding (all five -1, or lutRole alone -1 — a malformed call)
+// or when no LUT is resolved (the caller passes the resolveLut result: no
+// table means the grade develops through the legacy pair, which a null
+// binding reproduces byte-identically). Always true: a binding resolution
+// cannot fail — an out-of-range ordinal is clamped by compileLutBinding to
+// the legacy interpretation, and the table itself was already resolved.
+void resolveBinding(
+    const rawedit::Lut* lut,
+    int role, int inGamut, int inTransfer, int outGamut, int outTransfer,
+    const rawedit::CompiledLutBinding** out) {
+    *out = nullptr;
+    if (lut == nullptr || role < 0) return;
+    // The default key (role = -1) can never match a live call (role >= 0
+    // here), so the first call always compiles.
+    if (gBindingKey.matches(gLutPath, role, inGamut, inTransfer, outGamut, outTransfer)) {
+        *out = &gBinding;
+        return;
+    }
+    rawedit::LutInterpretation interp;
+    interp.role = static_cast<rawedit::LutRole>(role);
+    interp.input.gamut = static_cast<rawedit::GamutId>(inGamut);
+    interp.input.transfer = static_cast<rawedit::TransferId>(inTransfer);
+    interp.output.gamut = static_cast<rawedit::GamutId>(outGamut);
+    interp.output.transfer = static_cast<rawedit::TransferId>(outTransfer);
+    gBinding = rawedit::compileLutBinding(interp);
+    gBindingKey = BindingKey{gLutPath, role, inGamut, inTransfer, outGamut, outTransfer};
+    *out = &gBinding;
+}
+
 // Gyro stabilization cache (gyro Phase 5) ------------------------------------------------
 //
 // The gLut pattern mirrored for the sidecar .gcsv: parsing the log + running
@@ -797,11 +862,12 @@ jintArray developToArgb(JNIEnv* env,
                          const rawedit::RawMeta& meta,
                          const rawedit::Grade& grade,
                          const rawedit::Lut* lut,
+                         const rawedit::CompiledLutBinding* binding,
                          const StabInput& stab,
                          int maxDim) {
     const int strideEvery = strideFor(info, maxDim);
     rawedit::ImageF img = rawedit::developThumbnail(
-        cfa.data(), info, meta, grade, strideEvery, lut);
+        cfa.data(), info, meta, grade, strideEvery, lut, binding);
     if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                  "develop: unsupported — the frame is too small to develop "
@@ -1363,13 +1429,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
-        jint maxDim) {
+        jint maxDim,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // render with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
+    // 0a. Resolve the managed binding (2026-11-13): all five -1 = the
+    //     legacy stage-24 pair, byte-identical.
+    const rawedit::CompiledLutBinding* binding = nullptr;
+    resolveBinding(lut, lutRole, lutInGamut, lutInTransfer,
+                   lutOutGamut, lutOutTransfer, &binding);
     rawedit::Source* s = sourceFor(handle);
     if (!s) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
@@ -1419,7 +1492,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
                                              splitBalance),
-                             lut, stab.input, maxDim);
+                             lut, binding, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -1458,13 +1531,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
-        jint maxDim) {
+        jint maxDim,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // render with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
+    // 0a. Resolve the managed binding (2026-11-13): all five -1 = the
+    //     legacy stage-24 pair, byte-identical.
+    const rawedit::CompiledLutBinding* binding = nullptr;
+    resolveBinding(lut, lutRole, lutInGamut, lutInTransfer,
+                   lutOutGamut, lutOutTransfer, &binding);
     if (handle <= 0 || handle > kMaxSources) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
                  "invalid clip handle (recovery: reopen the clip)");
@@ -1526,7 +1606,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
                                              splitBalance),
-                             lut, stab.input, maxDim);
+                             lut, binding, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -2029,13 +2109,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         jfloat splitShadowHue, jfloat splitHighlightHue,
         jfloat splitBalance,
         jstring gyroPath, jint stabMode, jfloat stabStrength,
-        jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs) {
+        jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // export frame with the lut error instead of a frame-read error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
+    // 0a. Resolve the managed binding (2026-11-13): all five -1 = the
+    //     legacy stage-24 pair, byte-identical.
+    const rawedit::CompiledLutBinding* binding = nullptr;
+    resolveBinding(lut, lutRole, lutInGamut, lutInTransfer,
+                   lutOutGamut, lutOutTransfer, &binding);
     rawedit::Source* s = sourceFor(handle);
     if (!s) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
@@ -2105,7 +2192,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                             wheelHighX, wheelHighY,
                             splitShadowHue, splitHighlightHue,
                             splitBalance),
-            lut);
+            lut, binding);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "
@@ -2715,13 +2802,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat wheelMidX, jfloat wheelMidY,
         jfloat wheelHighX, jfloat wheelHighY,
         jfloat splitShadowHue, jfloat splitHighlightHue,
-        jfloat splitBalance) {
+        jfloat splitBalance,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageDevelop;
     // Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // develop with the lut error.
     const rawedit::Lut* lut = nullptr;
     if (!resolveLut(env, lutPath, &lut)) return nullptr;
+    // Resolve the managed binding (2026-11-13): all five -1 = the legacy
+    // stage-24 pair, byte-identical.
+    const rawedit::CompiledLutBinding* binding = nullptr;
+    resolveBinding(lut, lutRole, lutInGamut, lutInTransfer,
+                   lutOutGamut, lutOutTransfer, &binding);
     // Temporal NR (DN-05..DN-09) is a CFA-frame stage; the encoded path has
     // no CFA and no neighbor frames available at this seam, so the two
     // fields travel for signature parity (one signature across every
@@ -2811,7 +2905,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             wheelHighX, wheelHighY,
                             splitShadowHue, splitHighlightHue,
                             splitBalance),
-            isBt709 != JNI_FALSE, lut);
+            isBt709 != JNI_FALSE, lut, binding);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "

@@ -1,6 +1,11 @@
 package com.ritim.ritimcraw.ui.editor
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.LutEncodingK
+import com.ritim.ritimcraw.data.LutGamut
+import com.ritim.ritimcraw.data.LutInterpK
+import com.ritim.ritimcraw.data.LutRole
+import com.ritim.ritimcraw.data.LutTransfer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -81,5 +86,30 @@ class GradeClipboardTest {
         GradeClipboard.clear()
         assertNull(GradeClipboard.paste())
         assertFalse(GradeClipboard.hasContent())
+    }
+
+    @Test
+    fun copy_paste_carries_the_managed_lut_interpretation() {
+        // Owner request 2026-11-13: the interpretation rides INSIDE the
+        // GradeK by value — pasting onto another clip applies the exact
+        // interpretation the source clip had, not the library's current
+        // record for that blob.
+        GradeClipboard.clear()
+        try {
+            val interp = LutInterpK(
+                input = LutEncodingK(LutGamut.DaVinciWideGamut, LutTransfer.DaVinciIntermediate),
+                output = LutEncodingK(LutGamut.Rec709, LutTransfer.Rec709OETF),
+                role = LutRole.SceneToDisplay,
+            )
+            val grade = GradeK(lutId = "abc123def4567890", lutInterp = interp)
+            GradeClipboard.copy(grade)
+
+            val pasted = GradeClipboard.paste()
+
+            assertEquals(interp, pasted?.lutInterp)
+            assertEquals("abc123def4567890", pasted?.lutId)
+        } finally {
+            GradeClipboard.clear()
+        }
     }
 }

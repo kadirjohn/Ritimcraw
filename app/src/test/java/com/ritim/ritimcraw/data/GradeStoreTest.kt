@@ -615,5 +615,91 @@ class GradeStoreTest {
         assertEquals(true, balanceOnly.contains("\"splitShadowHue\":30.0"))
     }
 
+    @Test
+    fun lut_interpretation_survives_persist_and_reload() {
+        // Managed LUT (owner request 2026-11-13): the grade carries the
+        // interpretation BY VALUE — what the user set survives a persist +
+        // reload exactly, independent of the library's records.
+        val file = projectFile()
+        val interp = LutInterpK(
+            input = LutEncodingK(LutGamut.DaVinciWideGamut, LutTransfer.DaVinciIntermediate),
+            output = LutEncodingK(LutGamut.Rec709, LutTransfer.Rec709OETF),
+            role = LutRole.SceneToDisplay,
+        )
+        val grade = GradeK(lutId = "abc123def4567890", lutInterp = interp)
+        GradeStore(file).put("c1", grade)
+
+        val reloaded = GradeStore(file).get("c1")
+        assertEquals(interp, reloaded.lutInterp)
+        assertEquals(grade, reloaded)
+    }
+
+    @Test
+    fun null_interpretation_renders_without_the_key() {
+        // Byte-identity: a grade with a null lutInterp (the legacy
+        // selection, and every pre-managed grade) writes NONE of the
+        // lutInterp keys — old files stay byte-identical.
+        val rendered = GradeStore.renderGrade(GradeK(lutId = "abc123def4567890"))
+        assertEquals(false, rendered.contains("lutInterp"))
+    }
+
+    @Test
+    fun old_format_file_loads_lut_interp_as_null() {
+        // A project.json written by the pre-managed build: the lutInterp
+        // key is absent and must parse as null (the legacy stage-24 path
+        // keyed on lutId alone) — the old look is preserved exactly.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"pre-managed-clip":{"version":1,"exposureEv":0.8,"sharpness":15.0,"detail":-3.0,"tonemap":1,"tempK":4600.0,"tint":3.0,"lutId":"abc123def4567890","lutStrength":100.0}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("pre-managed-clip")
+        assertEquals("abc123def4567890", g.lutId)
+        assertNull(g.lutInterp)
+    }
+
+    @Test
+    fun json_null_lut_interp_parses_as_null() {
+        // renderGrade omits the key when null, but an explicit JSON null
+        // (a hand-edited file) must parse to null the same way.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"null-interp-clip":{"version":1,"exposureEv":0.0,"highlights":0.0,"tempK":5600.0,"tint":0.0,"saturation":0.0,"blackPoint":0.0,"whitePoint":0.0,"shadows":0.0,"midtones":0.0,"contrast":0.0,"asShot":true,"highlightReconstruction":true,"keepVignetting":true,"sharpness":0.0,"detail":0.0,"tonemap":0,"lutId":"abc123def4567890","lutStrength":100.0,"lutInterp":null}}}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val g = GradeStore(file).get("null-interp-clip")
+        assertEquals("abc123def4567890", g.lutId)
+        assertNull(g.lutInterp)
+    }
+
+    @Test
+    fun grade_copy_carries_the_interpretation_by_value() {
+        // The undo/redo and copy/paste contract: a GradeK copy carries
+        // the interpretation BY VALUE — mutating the library's records
+        // later never changes a held grade's interpretation.
+        val interp = LutInterpK(
+            input = LutEncodingK(LutGamut.Rec2020, LutTransfer.Linear),
+            output = LutEncodingK(LutGamut.Rec709, LutTransfer.Rec709OETF),
+            role = LutRole.SceneLook,
+        )
+        val original = GradeK(lutId = "abc123def4567890", lutInterp = interp)
+
+        val copy = original.copy(exposureEv = 1f)
+
+        assertEquals(interp, copy.lutInterp)
+        // The copy is independent: it is not the same object, and the
+        // interpretation is a value, not a reference into the library.
+        assertTrue(copy !== original)
+        assertEquals(original.lutInterp, copy.lutInterp)
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 }

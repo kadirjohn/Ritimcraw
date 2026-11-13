@@ -1065,19 +1065,23 @@ fun AppNav() {
                         // The top bar's clip name (§2b): display name with
                         // the id as fallback — displayOrId never blank.
                         sourceName = sourceName,
-                        // ---- LUT wiring (COL-07) ----
+                        // ---- LUT wiring (COL-07, managed interpretations
+                        // 2026-11-13) ----
                         lutEntries = lutEntries,
-                        // Import = copy + native probe + TITLE rename. A
-                        // probe failure (bad .cube, or no native lib) removes
-                        // the entry again so the library never holds an
-                        // unapplicable cube; the message reaches the
-                        // editor's local error line.
-                        onImportLut = { uri, fallbackName ->
+                        // Import = copy under the user-confirmed name +
+                        // interpretation, then the native probe as
+                        // VALIDATION only. A probe failure (bad .cube, or
+                        // no native lib) removes the JUST-CONFIRMED
+                        // binding — removeBinding, never remove: two
+                        // interpretations of one blob share the record
+                        // list, and a failed second import must not
+                        // delete the first interpretation's record.
+                        onImportLut = { uri, name, interp ->
                             try {
-                                val imported = stores.luts.import(uri, fallbackName)
+                                val imported = stores.luts.import(uri, name, interp)
                                 val path = stores.luts.pathFor(imported.id)
                                 if (path == null) {
-                                    stores.luts.remove(imported.id)
+                                    stores.luts.removeBinding(imported.id, interp)
                                     lutEntries = stores.luts.all()
                                     Result.failure(
                                         IllegalStateException(
@@ -1086,19 +1090,24 @@ fun AppNav() {
                                     )
                                 } else {
                                     try {
-                                        val title = NativeSource.jniLutProbe(path)
-                                        if (title.isNullOrBlank()) {
-                                            stores.luts.setTitle(imported.id, imported.name)
-                                        } else {
-                                            stores.luts.setTitle(imported.id, title)
+                                        // The probe VALIDATES the cube. The
+                                        // sheet's confirmed Name stands as
+                                        // the display name (the user's
+                                        // explicit choice supersedes the
+                                        // pre-dialog TITLE rename); a
+                                        // blank confirm keeps import's own
+                                        // fallback (the id).
+                                        NativeSource.jniLutProbe(path)
+                                        if (name.isNotBlank()) {
+                                            stores.luts.setTitle(imported.id, name)
                                         }
                                         lutEntries = stores.luts.all()
                                         Result.success(imported)
                                     } catch (e: Exception) {
-                                        // The cube does not parse: drop it —
-                                        // an unapplicable LUT must not stay
-                                        // selectable.
-                                        stores.luts.remove(imported.id)
+                                        // The cube does not parse: drop the
+                                        // confirmed binding — an unapplicable
+                                        // LUT must not stay selectable.
+                                        stores.luts.removeBinding(imported.id, interp)
                                         lutEntries = stores.luts.all()
                                         Result.failure(e)
                                     }
@@ -1107,8 +1116,26 @@ fun AppNav() {
                                 Result.failure(e)
                             }
                         },
+                        onEditLutInterp = { lut, name, interp ->
+                            // "Edit interpretation" (owner request
+                            // 2026-11-13): a NEW binding revision on the
+                            // same blob — bindInterp never mutates and
+                            // never re-imports (the copied cube is
+                            // reused). The confirmed name renames every
+                            // record sharing the blob (setTitle's
+                            // rule: the name belongs to the cube).
+                            if (name.isNotBlank() && name != lut.name) {
+                                stores.luts.setTitle(lut.id, name)
+                            }
+                            stores.luts.bindInterp(lut.id, interp, fallbackName = name)
+                            lutEntries = stores.luts.all()
+                        },
                         onRemoveLut = { lut ->
-                            stores.luts.remove(lut.id)
+                            // Per-record removal: only THIS (id, interp)
+                            // binding goes; the copied cube file goes only
+                            // when it was the blob's last record, so a
+                            // sibling interpretation stays usable.
+                            stores.luts.removeBinding(lut.id, lut.interp)
                             lutEntries = stores.luts.all()
                         },
                         lutPathFor = { id -> stores.luts.pathFor(id) },

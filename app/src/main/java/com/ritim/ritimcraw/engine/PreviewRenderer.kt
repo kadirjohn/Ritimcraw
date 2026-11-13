@@ -241,6 +241,9 @@ class PreviewRenderer private constructor(
         // Gyro Phase 5: the stabilization gate at this render's tier (null
         // stab = no warp — off, tier skip, or no attached log).
         val stab = GradeMapping.stabilizationArgs(grade, maxDim, gyroPath)
+        // Managed LUT interpretation (owner request 2026-11-13): the grade's
+        // binding BY VALUE; null = the legacy stage-24 path (all five -1).
+        val interp = grade.lutInterp
         val out = NativeSource.jniPreviewRender(
             handle, frameIndex,
             args.exposureEv, args.highlights, args.tempK, args.tint,
@@ -259,6 +262,14 @@ class PreviewRenderer private constructor(
             stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
             stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
             maxDim,
+            // Managed LUT binding (owner request 2026-11-13): the five
+            // interpretation ordinals; all -1 = no binding = the legacy
+            // stage-24 pair, byte-identical.
+            interp?.role?.value ?: -1,
+            interp?.input?.gamut?.value ?: -1,
+            interp?.input?.transfer?.value ?: -1,
+            interp?.output?.gamut?.value ?: -1,
+            interp?.output?.transfer?.value ?: -1,
         )
         if (out == null || out.size < 2) {
             val code = NativeSource.jniPreviewErrorCode()

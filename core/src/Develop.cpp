@@ -672,7 +672,7 @@ ImageF demosaicBilinear(const std::vector<float>& cfa, uint32_t w, uint32_t h, C
     return img;
 }
 
-ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut) {
+ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut, const CompiledLutBinding* binding) {
     const uint32_t w = info.width;
     const uint32_t h = info.height;
     ImageF img;
@@ -1175,25 +1175,21 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     }
 
     // ---- Stage 23: tonemapping (grade.tonemap, 0 = off, 1 = ACES, 2 = AgX). ----
-    // COL-16: optional display tone compression, LAST, after all grade
-    // stages. Input/output is the linear working space (linear Rec.709
-    // primaries); the Rec.709 OETF stays in the JNI bridge tail. The ACES and
-    // AgX fits, their versions, working spaces and target displays are
-    // recorded in the Grade comment block in Develop.h. 0 = exact
-    // passthrough (the old look).
-    if (grade.tonemap != 0)
-        tonemapFrame(img, grade.tonemap);
-
     // ---- Stage 24: LUT (lut + grade.lutStrength in [0, 1], 0 = bypass). ----
-    // COL-07: optional .cube 3D LUT, LAST, after tonemapping. Input/output
-    // is the linear working space (linear Rec.709 primaries); the Rec.709
-    // OETF stays in the JNI bridge tail. The table is per-clip user data
-    // passed as `lut` (nullptr = none selected); the strength blend and the
-    // color-space contract are recorded in rawedit/Lut.h and the Grade
-    // comment block. No LUT or strength 0 = exact passthrough (the old
-    // look); the guard keeps the neutral fast path allocation-free.
-    if (lut != nullptr && grade.lutStrength != 0.0f)
-        applyLut(img, *lut, grade.lutStrength);
+    // COL-16/COL-07: both stages now route through applyManagedLutStage
+    // (rawedit/Color.h), which owns the role ordering for managed LUT
+    // interpretations. With binding == nullptr (every existing call site
+    // and every pre-management record) the router runs the legacy pair
+    // verbatim — tonemapFrame then applyLut, byte-identical to the old
+    // stage 23/24 sequence, locked by the golden hashes. Input/output of
+    // both stages is the linear working space (linear Rec.709 primaries);
+    // the Rec.709 OETF stays in the JNI bridge tail. The ACES and AgX
+    // fits are recorded in the Grade comment block in Develop.h; the
+    // strength blend and the color-space contract in rawedit/Lut.h; the
+    // managed roles in rawedit/Color.h. No LUT or strength 0 = exact
+    // passthrough (the old look); the router keeps the neutral fast path
+    // allocation-free.
+    applyManagedLutStage(img, lut, binding, grade.tonemap, grade.lutStrength);
 
     return img;
 }
