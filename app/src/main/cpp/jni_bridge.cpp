@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -79,6 +80,22 @@ thread_local int gLastErrorStage = kStageOpen;
 // away to a single relaxed load and never write a line. The per-render cost
 // when on is one snprintf + one __android_log_print — the plan is already
 // computed at that point, nothing is re-run for the log.
+//
+// Second tag, "ritim-stab-timing" (2026-11-13, the plan-cache round): one
+// line per RENDERED frame at EVERY tier —
+//
+//   ritim-stab-timing: frame=N planMs=..(cache-hit|computed) warpMs=.. totalMs=..
+//
+// planMs is the stabilizationFrameFor span (plan lookup or compute), warpMs
+// the warpFrame span, totalMs the two combined. Unlike "ritim-stab" (which
+// fires on settle-class renders only), this fires per render including
+// playback — it is the line the owner's ON/OFF playback comparison reads:
+// after the first frame of a key, planMs should collapse to a cache-hit
+// rounding to ~0 while warpMs stays the real per-frame warp cost. Same
+// gate (gStabDebugLog), same adb filter shape:
+//
+//   adb logcat -s ritim-stab-timing    (live)
+//   adb logcat -d -s ritim-stab-timing (dump after a run)
 std::atomic<bool> gStabDebugLog{false};
 
 void setError(const std::string& message) {
@@ -608,23 +625,29 @@ StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
 // / Unsynced carry identity H and MUST NOT pay the warp cost).
 //
 // [maxDim] is the render's preview tier (0 = full res, the export path and
-// the full-res follow-up). It gates ONLY the debug measurement line (audit
-// fix 2026-11-12): the warp itself applies at EVERY tier (the Fix 1 rule),
-// but the log fires on settle-class renders only — the paused/settle tier
+// the full-res follow-up). It gates ONLY the "ritim-stab" line (audit fix
+// 2026-11-12): the warp itself applies at EVERY tier (the Fix 1 rule), but
+// that log fires on settle-class renders only — the paused/settle tier
 // (>= 1280) and full res — so a slider drag or playback does not spam one
-// line per frame. One line per settle render, tag "ritim-stab".
+// line per frame. One line per settle render, tag "ritim-stab". The
+// "ritim-stab-timing" line (2026-11-13) is NOT tier-gated: it fires per
+// rendered frame at every tier, because the owner's ON/OFF playback
+// comparison happens during playback, not at the settle.
 void applyStabilization(const StabInput& in, rawedit::ImageF& img,
                         int maxDim = 0) {
     if (in.gyro == nullptr || in.source == nullptr) return;
     if (img.w == 0 || img.h == 0) return;
-    const bool wantLog = gStabDebugLog.load(std::memory_order_relaxed) &&
-                         maxDim != 480 && maxDim != 720;
+    const bool debug = gStabDebugLog.load(std::memory_order_relaxed);
+    const bool wantLog = debug && maxDim != 480 && maxDim != 720;
     rawedit::StabilizationFrame frame;
     StabMeasure measure;
+    bool planFromCache = false;
+    const auto planStart = std::chrono::steady_clock::now();
     stabilizationFrameFor(in.request, *in.source, in.frameIndex,
                           static_cast<int>(img.w), static_cast<int>(img.h),
                           in.gyro, &frame, wantLog ? &measure : nullptr,
-                          in.planCache);
+                          in.planCache, debug ? &planFromCache : nullptr);
+    const auto planEnd = std::chrono::steady_clock::now();
     if (wantLog) {
         char line[256];
         // Skip reasons read honestly: off/no-imu/unsynced say WHY nothing
@@ -652,13 +675,40 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
         }
         __android_log_print(ANDROID_LOG_INFO, "ritim-stab", "%s", line);
     }
-    if (!stabWarps(frame)) return;
+    if (!stabWarps(frame)) {
+        if (debug) {
+            // A refusing frame (Off / NoImu / Unsynced) still pays the plan
+            // span; the warp is what it skipped. Same line shape as the
+            // applied case — a skip simply reads warpMs=0.000 — so the
+            // owner's parser sees one uniform format per rendered frame.
+            const double planMs = std::chrono::duration<double, std::milli>(
+                planEnd - planStart).count();
+            __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
+                "frame=%d planMs=%.3f(%s) warpMs=0.000 totalMs=%.3f",
+                in.frameIndex, planMs,
+                planFromCache ? "cache-hit" : "computed", planMs);
+        }
+        return;
+    }
     // cx/cy resolve the principalPoint sentinel exactly the way the core
     // plan resolves it ({0,0} sentinel -> the buffer center): the warp and
     // the plan must agree or the crop drifts off the intended center.
     const double cx = static_cast<double>(img.w) / 2.0;
     const double cy = static_cast<double>(img.h) / 2.0;
+    const auto warpStart = std::chrono::steady_clock::now();
     img = rawedit::warpFrame(img, frame.h, frame.zoom, cx, cy);
+    const auto warpEnd = std::chrono::steady_clock::now();
+    if (debug) {
+        const double planMs = std::chrono::duration<double, std::milli>(
+            planEnd - planStart).count();
+        const double warpMs = std::chrono::duration<double, std::milli>(
+            warpEnd - warpStart).count();
+        __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
+            "frame=%d planMs=%.3f(%s) warpMs=%.3f totalMs=%.3f",
+            in.frameIndex, planMs,
+            planFromCache ? "cache-hit" : "computed", warpMs,
+            planMs + warpMs);
+    }
 }
 
 // Handle registry: a small fixed table keeps the bridge simple and avoids
@@ -1384,8 +1434,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeLastError(JNIEnv* env, jclass
 
 // Debug measurement logging toggle (audit fix 2026-11-12): NativeSource's
 // companion init calls this once at library load with BuildConfig.DEBUG, so
-// the "ritim-stab" per-settle-render line exists only in debug builds —
-// release keeps the flag's default false and stays silent.
+// the "ritim-stab" per-settle-render line and the "ritim-stab-timing"
+// per-render timing line exist only in debug builds — release keeps the
+// flag's default false and stays silent.
 JNIEXPORT void JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetStabDebugLog(
         JNIEnv*, jclass, jboolean enabled) {
