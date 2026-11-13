@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.editor
 
+import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.engine.SourcePath
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -443,5 +444,115 @@ class EditorPreviewLogicTest {
                 requiredZoom = 1.05, appliedZoom = 1.05,
             ),
         )
+    }
+
+    // ---- crop overlay (owner request 2026-11-13 §2) ----
+
+    @Test
+    fun crop_overlay_visible_on_frame_crop_for_both_clip_kinds() {
+        // The overlay is the Crop sub-tab's own surface: FRAME + Crop
+        // shows it on an MCRAW (stabilization exists but is NOT the
+        // open sub-tab) and on an encoded clip (no stabilization at
+        // all) — the sanitize resolves Crop either way.
+        assertTrue(
+            EditorPreviewLogic.cropOverlayVisible(
+                tab = EditorCategories.FRAME,
+                subTab = EditorCategories.FRAME_CROP,
+                showStabilization = true,
+            ),
+        )
+        assertTrue(
+            EditorPreviewLogic.cropOverlayVisible(
+                tab = EditorCategories.FRAME,
+                subTab = EditorCategories.FRAME_CROP,
+                showStabilization = false,
+            ),
+        )
+    }
+
+    @Test
+    fun crop_overlay_hidden_on_stabilize_subtab() {
+        // FRAME + Stabilize: the stabilization group is the open sub-
+        // tab, not the crop — no overlay (and an MCRAW is the only kind
+        // that can even be here).
+        assertFalse(
+            EditorPreviewLogic.cropOverlayVisible(
+                tab = EditorCategories.FRAME,
+                subTab = EditorCategories.FRAME_STABILIZE,
+                showStabilization = true,
+            ),
+        )
+    }
+
+    @Test
+    fun crop_overlay_visible_for_stale_saved_stabilize_on_encoded() {
+        // The panel's own sanitized dispatch: a grade saved with the
+        // Stabilize sub-tab open, reopened on an encoded clip (no
+        // stabilization), sanitizes to CROP — the panel shows Crop, so
+        // the overlay shows too (visibility can never drift from what
+        // the panel dispatches).
+        assertTrue(
+            EditorPreviewLogic.cropOverlayVisible(
+                tab = EditorCategories.FRAME,
+                subTab = EditorCategories.FRAME_STABILIZE,
+                showStabilization = false,
+            ),
+        )
+    }
+
+    @Test
+    fun crop_overlay_hidden_on_every_other_tab() {
+        // Only the FRAME tab hosts the overlay; LIGHT/COLOR/DETAIL
+        // never show it whatever the sub-tab value.
+        for (tab in listOf(
+            EditorCategories.LIGHT,
+            EditorCategories.COLOR,
+            EditorCategories.DETAIL,
+        )) {
+            assertFalse(
+                EditorPreviewLogic.cropOverlayVisible(
+                    tab = tab,
+                    subTab = EditorCategories.FRAME_CROP,
+                    showStabilization = true,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun display_grade_neutralizes_the_crop_group_only() {
+        // The display render behind the overlay: full rect, FREE
+        // aspect, zero straighten — every crop-group field at its
+        // default — while every OTHER grade field passes through
+        // untouched (the swap is display-only; the real grade keeps
+        // its crop).
+        val graded = GradeK(
+            exposureEv = 1.25f,
+            cropAspect = 2,
+            cropX = 0.1f,
+            cropY = 0.2f,
+            cropW = 0.5f,
+            cropH = 0.4f,
+            straightenDeg = 3.5f,
+        )
+        val display = EditorPreviewLogic.displayGradeForCropOverlay(graded)
+        assertEquals(GradeK().cropAspect, display.cropAspect)
+        assertEquals(GradeK().cropX, display.cropX, 0f)
+        assertEquals(GradeK().cropY, display.cropY, 0f)
+        assertEquals(GradeK().cropW, display.cropW, 0f)
+        assertEquals(GradeK().cropH, display.cropH, 0f)
+        assertEquals(GradeK().straightenDeg, display.straightenDeg, 0f)
+        assertEquals(graded.exposureEv, display.exposureEv, 0f)
+        // The input is untouched — copy, never mutate.
+        assertEquals(2, graded.cropAspect)
+        assertEquals(0.5f, graded.cropW, 0f)
+    }
+
+    @Test
+    fun display_grade_of_neutral_crop_is_unchanged() {
+        // A neutral grade swaps to itself: entering the overlay on an
+        // uncropped clip changes nothing about what renders.
+        val neutral = GradeK()
+        assertEquals(neutral, EditorPreviewLogic.displayGradeForCropOverlay(neutral))
     }
 }

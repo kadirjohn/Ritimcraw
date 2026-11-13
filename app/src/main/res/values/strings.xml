@@ -153,6 +153,10 @@
     <string name="editor_slider_crop_top">Top</string>
     <string name="editor_slider_crop_width">Width</string>
     <string name="editor_slider_crop_height">Height</string>
+    <!-- 2026-11-13 §2: the handles-on-preview crop overlay's gesture
+         surface (the ColorWheel pad precedent: the description is the
+         honest label; the sliders carry the values to readers). -->
+    <string name="editor_crop_overlay">Crop handles</string>
     <string name="editor_render_preview">Render preview</string>
     <string name="editor_refresh_preview">Refresh preview</string>
     <string name="editor_refresh_preview_state">Preview: %1$s</string>
