@@ -200,6 +200,60 @@ class GpuParityTest {
         )
     }
 
+    // ---- fragment develop-parity leg (deliverable D) ----
+
+    @Test
+    fun fragment_parity_line_carries_the_raw_numbers_and_the_leg_label() {
+        // Same numbers, same verdict rules as the compute leg — but the
+        // "fragment" label lets the owner tell the two legs apart in one
+        // Measure block (a compute-less device can pass this leg while
+        // the compute leg reads "skipped").
+        val line = GpuParityRules.fragmentParityLine(
+            GlesParityResult(ran = true, maxDiffLsb = 1, mismatchCount = 12, samples = 1000),
+        )
+        assertEquals(
+            "fragment parity: ran=1 maxDiffLsb=1 mismatch=12 samples=1000",
+            line,
+        )
+    }
+
+    @Test
+    fun fragment_parity_uses_the_same_verdict_rules_as_compute() {
+        // One rule set for both legs: the fragment harness reports raw
+        // numbers, THIS verdict applies, and the thresholds are the
+        // documented 1 LSB / 0.01% pair.
+        val v = GpuParityRules.verdict(
+            GlesParityResult(ran = true, maxDiffLsb = 1, mismatchCount = 2488, samples = 24883200),
+        )
+        assertEquals(ParityVerdict.Status.PASS, v.status)
+    }
+
+    @Test
+    fun skipped_fragment_line_names_the_reason() {
+        assertEquals(
+            "fragment parity: skipped (no EXT_color_buffer_float (RGBA32F not renderable))",
+            GpuParityRules.skippedFragmentLine(
+                "no EXT_color_buffer_float (RGBA32F not renderable)",
+            ),
+        )
+    }
+
+    @Test
+    fun a_compute_less_probe_still_supports_the_fragment_leg() {
+        // The fragment chain is a draw, not a compute dispatch: its gate
+        // is contextOk + floatFboOk, NEVER computeOk. A compute-less
+        // ES 3.1 device (floatFbo yes, compute no) can still pass the
+        // fragment leg — the compute leg reads "skipped" in the same
+        // block, honestly.
+        val gates = GpuParityRules.gatesFrom(
+            GlesProbeResult(contextOk = true, glesMajor = 3, glesMinor = 1, computeOk = false, floatFboOk = true, maxTextureSize = 16384),
+        )
+        assertTrue(gates.contextOk)
+        assertTrue(gates.floatFboOk)
+        assertFalse(gates.computeOk)
+        assertFalse(gates.parityOk)
+    }
+
     @Test
     fun block_wraps_the_lines_with_the_gles_markers() {
         val block = GpuParityRules.block(listOf("probe: context=1", "verdict: PASS (ok)"))

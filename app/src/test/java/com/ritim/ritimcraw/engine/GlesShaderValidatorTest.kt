@@ -276,6 +276,33 @@ class GlesShaderValidatorTest {
     }
 
     @Test
+    fun shipped_fullscreen_vertex_310_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.FULLSCREEN_VERTEX_310,
+                GlesShaderValidator.Kind.FULLSCREEN_VERTEX_310,
+            ),
+        )
+    }
+
+    @Test
+    fun the_two_vertex_sources_cannot_drift() {
+        // The store program links a 310-es vertex (GLSL ES forbids mixing
+        // #version lines in one program); the body past the version line
+        // must be VERBATIM the develop program's 300-es vertex body — one
+        // shared body const composes both, and this test locks that.
+        val v300 = GlesShaderSources.FULLSCREEN_VERTEX
+        val v310 = GlesShaderSources.FULLSCREEN_VERTEX_310
+        assertTrue(v300.startsWith("#version 300 es\n"))
+        assertTrue(v310.startsWith("#version 310 es\n"))
+        assertEquals(
+            v300.removePrefix("#version 300 es\n"),
+            v310.removePrefix("#version 310 es\n"),
+        )
+    }
+
+    @Test
     fun every_shipped_source_passes_validate_with_its_kind() {
         assertTrue(
             GlesShaderValidator.validate(
@@ -467,5 +494,32 @@ class GlesShaderValidatorTest {
             GlesShaderValidator.problems(withUniform, GlesShaderValidator.Kind.FULLSCREEN_VERTEX)
                 .any { it.contains("uniform") },
         )
+    }
+
+    @Test
+    fun a_missing_store_color_output_is_reported() {
+        // The throwaway oCol write keeps the readback pass legal on
+        // drivers that dislike zero-output fragment shaders — dropping it
+        // must be caught (the SSBO alone is not a legal fragment output on
+        // every ES driver).
+        val noOcol = GlesShaderSources.STORE_FRAGMENT
+            .replace("out vec4 oCol;\n", "")
+            .replace("    oCol = vec4(c, 1.0);\n", "")
+        assertTrue(
+            GlesShaderValidator.problems(noOcol, GlesShaderValidator.Kind.STORE_FRAGMENT)
+                .any { it.contains("oCol") },
+        )
+    }
+
+    @Test
+    fun a_300_vertex_checked_as_310_is_reported() {
+        // The store program MUST link the 310-es vertex (GLSL ES forbids
+        // mixed #version lines); passing the 300-es one by mistake is a
+        // link error on the device — the validator catches it host-side.
+        val problems = GlesShaderValidator.problems(
+            GlesShaderSources.FULLSCREEN_VERTEX,
+            GlesShaderValidator.Kind.FULLSCREEN_VERTEX_310,
+        )
+        assertTrue(problems.any { it.contains("#version 310 es") })
     }
 }

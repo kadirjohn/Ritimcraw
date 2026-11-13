@@ -99,13 +99,16 @@ object MetricsSummary {
  *     (the interactive slider path — decode skipped, only the grade moved),
  *  3. five seconds of pts-paced playback at the playback tier, counting
  *     completed frames for the fps window (drop-late, like the editor),
- *  4. GLES capability probe + single-frame demosaic parity (owner request
- *     2026-11-12, deliverable C): the device entry point for the GPU
+ *  4. GLES capability probe + single-frame parity legs (owner request
+ *     2026-11-12, deliverable C + D): the device entry point for the GPU
  *     groundwork. The probe always runs (an honest no-context report is
- *     a result); parity runs only when the probe's compute gate is green,
- *     on the SAME clip, against the GlesShaderSources shader text. The
- *     verdict feeds the render-backend gates (BackendGates.parityOk) —
- *     nothing about the render path changes on its own.
+ *     a result); each parity leg runs only when ITS gate is green — the
+ *     compute demosaic parity needs context+compute, the FRAGMENT develop
+ *     parity (deliverable D, the first real GPU render path) needs
+ *     context+floatFbo and no compute — on the SAME clip, against the
+ *     GlesShaderSources shader text. The verdicts feed the render-backend
+ *     gates (BackendGates.parityOk) — nothing about the render path
+ *     changes on its own.
  */
 object PreviewMetrics {
 
@@ -225,13 +228,14 @@ object PreviewMetrics {
     }
 
     /**
-     * GLES leg (deliverable C): capability probe + single-frame demosaic
-     * parity, stateless (no handle, no render-cache touch — the probes
-     * are safe from any thread, so the Measure runner runs them off the
-     * engine thread). The fd is dup'd natively for the parity frame
-     * decode; the caller's copy closes here, always. Returns the logged
-     * block (also logged under [TAG]), or null when the leg is skipped
-     * (disabled, or the clip cannot be opened for parity).
+     * GLES leg (deliverable C + D): capability probe + the two
+     * single-frame parity legs (compute demosaic parity — C; FRAGMENT
+     * develop parity — D, the first real GPU render path), stateless (no
+     * handle, no render-cache touch — the probes are safe from any
+     * thread, so the Measure runner runs them off the engine thread).
+     * The fd is dup'd natively for each parity frame decode; the caller's
+     * copy closes here, always. Returns the logged block (also logged
+     * under [TAG]), or null when the leg is skipped (disabled).
      *
      * Device-test-pending: no phone has run this leg; the first real run
      * IS the owner's device test.
@@ -254,34 +258,70 @@ object PreviewMetrics {
             val probe = GlesProbeResult.fromArray(probeRaw)
             lines += GpuParityRules.probeLine(probe)
 
-            // Leg 4b: parity — only when the context + compute gates are
-            // green (running the parity shader on a device without compute
-            // would only produce a compile error we can already predict).
-            // Audit fix 2026-11-13: the probe now reads the per-axis
-            // dispatch limits the indexed way (glGetIntegeri_v), so a
-            // compute=0 here is a REAL device fact, not the old query
-            // artifact that misreported compute-capable hardware.
+            // Leg 4b: compute parity — only when the context + compute
+            // gates are green (running the parity shader on a device
+            // without compute would only produce a compile error we can
+            // already predict). Audit fix 2026-11-13: the probe now reads
+            // the per-axis dispatch limits the indexed way
+            // (glGetIntegeri_v), so a compute=0 here is a REAL device
+            // fact, not the old query artifact that misreported
+            // compute-capable hardware. The skip is NOT fatal to the
+            // block: leg 4c needs no compute and still runs below.
             if (!probe.contextOk || !probe.computeOk) {
                 lines += GpuParityRules.skippedParityLine(
                     if (!probe.contextOk) "no gles context" else "no compute (indexed probe)",
                 )
-                Log.i(TAG, GpuParityRules.block(lines))
-                return GpuParityRules.block(lines)
-            }
-            val parityRaw = NativeSource.jniGlesParity(
-                fd, GlesShaderSources.DEMOSAIC_COMPUTE,
-            )
-            val parity = if (parityRaw != null) {
-                GlesParityResult.fromArray(parityRaw)
             } else {
-                lines += "parity: jni failure (${NativeSource.previewLastError() ?: "no detail"})"
-                null
-            }
-            if (parity != null) {
-                lines += GpuParityRules.parityLine(parity)
-                lines += GpuParityRules.verdictLine(
-                    GpuParityRules.verdict(parity, NativeSource.previewLastError()),
+                val parityRaw = NativeSource.jniGlesParity(
+                    fd, GlesShaderSources.DEMOSAIC_COMPUTE,
                 )
+                val parity = if (parityRaw != null) {
+                    GlesParityResult.fromArray(parityRaw)
+                } else {
+                    lines += "parity: jni failure (${NativeSource.previewLastError() ?: "no detail"})"
+                    null
+                }
+                if (parity != null) {
+                    lines += GpuParityRules.parityLine(parity)
+                    lines += GpuParityRules.verdictLine(
+                        GpuParityRules.verdict(parity, NativeSource.previewLastError()),
+                    )
+                }
+            }
+
+            // Leg 4c: FRAGMENT develop parity (deliverable D) — the first
+            // REAL GPU render path (a draw, not a compute dispatch). Gated
+            // on context + floatFbo (NOT compute: the fragment chain needs
+            // no compute; a compute-less ES 3.1 device can still pass this
+            // leg). The four shader sources are the Kotlin single source
+            // of truth; the device compiles the exact text the host
+            // validator checked. The fd is still open (the finally below
+            // owns the close on every path).
+            if (!probe.contextOk || !probe.floatFboOk) {
+                lines += GpuParityRules.skippedFragmentLine(
+                    if (!probe.contextOk) "no gles context"
+                    else "no EXT_color_buffer_float (RGBA32F not renderable)",
+                )
+            } else {
+                val fragRaw = NativeSource.jniGlesFragmentParity(
+                    fd,
+                    GlesShaderSources.FULLSCREEN_VERTEX,
+                    GlesShaderSources.FULLSCREEN_VERTEX_310,
+                    GlesShaderSources.DEVELOP_FRAGMENT,
+                    GlesShaderSources.STORE_FRAGMENT,
+                )
+                val frag = if (fragRaw != null) {
+                    GlesParityResult.fromArray(fragRaw)
+                } else {
+                    lines += "fragment: jni failure (${NativeSource.previewLastError() ?: "no detail"})"
+                    null
+                }
+                if (frag != null) {
+                    lines += GpuParityRules.fragmentParityLine(frag)
+                    lines += GpuParityRules.verdictLine(
+                        GpuParityRules.verdict(frag, NativeSource.previewLastError()),
+                    )
+                }
             }
         } catch (e: IllegalStateException) {
             lines += "probe: native unavailable (${e.message})"

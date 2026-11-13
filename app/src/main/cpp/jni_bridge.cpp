@@ -2079,6 +2079,120 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesParity(
     return result;
 }
 
+// nativeGlesFragmentParity (deliverable D): the FRAGMENT develop parity —
+// the first REAL GPU render path. Opens the clip behind [fd] (dup'd),
+// decodes frame 0, and runs the CALLER-PROVIDED four-shader fragment chain
+// (the Kotlin single source of truth: FULLSCREEN_VERTEX,
+// FULLSCREEN_VERTEX_310, DEVELOP_FRAGMENT, STORE_FRAGMENT — the device
+// compiles the exact text the host validator checked):
+//
+//   GL_R16UI CFA texture -> fused develop fragment pass (stages 1+4+5,
+//   parity shape: uHasProfile=0, uExposure=1.0, uOetf=0) into an RGBA32F
+//   attachment (EXT_color_buffer_float, gated in-context) -> store
+//   fragment pass -> SSBO -> glMapBufferRange (never glReadPixels) ->
+//   clamp + uint16 quantize exactly like the developLinear tail.
+//
+// Reference: rawedit::developLinear itself, same frame. Returns
+//
+//   [0] ran           1 when the GPU pass produced real numbers
+//   [1] maxDiffLsb    largest |gpu - cpu| in 16-bit LSB units
+//   [2] mismatchCount samples whose 16-bit outputs differ
+//   [3] samples       w * h * 3
+//
+// ran=0: a GPU stage failed (EGL, extension gate, compile, link, FBO
+// completeness, draw, map) — the error detail names it (nativeLastError).
+// nullptr: clip-level failure (open/decode; error state set). The PASS
+// VERDICT is Kotlin's (GpuParityRules) — raw numbers only, never a
+// claim. The fragment path needs NO compute (contextOk + floatFboOk
+// gates it, not computeOk). Device-test-pending: no phone has run it.
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
+        JNIEnv* env, jclass, jint fd, jstring vertexSource, jstring vertex310Source,
+        jstring fragmentSource, jstring storeFragmentSource) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+
+    // Read the four shader sources (each GetStringUTFChars pair follows the
+    // nativeGlesParity pattern; a null return is the JNI OOM path).
+    const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
+    if (v300Chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "gles fragment parity: out of memory reading the vertex source "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    }
+    const std::string v300(v300Chars);
+    env->ReleaseStringUTFChars(vertexSource, v300Chars);
+
+    const char* v310Chars = env->GetStringUTFChars(vertex310Source, nullptr);
+    if (v310Chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "gles fragment parity: out of memory reading the 310 vertex source "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    }
+    const std::string v310(v310Chars);
+    env->ReleaseStringUTFChars(vertex310Source, v310Chars);
+
+    const char* fragChars = env->GetStringUTFChars(fragmentSource, nullptr);
+    if (fragChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "gles fragment parity: out of memory reading the develop source "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    }
+    const std::string frag(fragChars);
+    env->ReleaseStringUTFChars(fragmentSource, fragChars);
+
+    const char* storeChars = env->GetStringUTFChars(storeFragmentSource, nullptr);
+    if (storeChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "gles fragment parity: out of memory reading the store source "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    }
+    const std::string store(storeChars);
+    env->ReleaseStringUTFChars(storeFragmentSource, storeChars);
+
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("gles fragment parity: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail +
+                     " (recovery: reopen the clip and retry)");
+        return nullptr;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+    const rawedit::FrameInfo info = src->frameInfo(0);
+    auto frame = src->readFrame(0);
+    if (!frame.isOk()) {
+        setError(static_cast<int>(frame.code), kStageFrameRead,
+                 std::string("gles fragment parity: frame 0 decode — ") +
+                     rawedit::errorName(frame.code) + " — " + frame.detail +
+                     " (recovery: reopen the clip and retry)");
+        return nullptr;
+    }
+    const gles::ParityReport rep =
+        gles::developFragmentParity(v300, v310, frag, store, *frame.value, info,
+                                     src->rawMeta());
+    if (!rep.ran) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "gles fragment parity: " + rep.detail +
+                     " (recovery: the CPU render path stays the default)");
+    }
+    const double out[4] = {
+        rep.ran ? 1.0 : 0.0,
+        static_cast<double>(rep.maxDiffLsb),
+        static_cast<double>(rep.mismatchCount),
+        static_cast<double>(rep.samples),
+    };
+    jdoubleArray result = env->NewDoubleArray(4);
+    if (result == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(result, 0, 4, out);
+    return result;
+}
+
 // MP4 export pipeline ----------------------------------------------------------
 //
 // The exporter opens a session with nativePreviewOpen (same handle registry,

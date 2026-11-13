@@ -39,6 +39,9 @@ object GlesShaderValidator {
         /** FULLSCREEN_VERTEX — GLSL ES 3.00, the draw-only vertex stage. */
         FULLSCREEN_VERTEX("#version 300 es"),
 
+        /** FULLSCREEN_VERTEX_310 — the same stage, 310 es (see GlesShaderSources). */
+        FULLSCREEN_VERTEX_310("#version 310 es"),
+
         /** DEVELOP_FRAGMENT — GLSL ES 3.00 fragment, the fused develop pass. */
         DEVELOP_FRAGMENT("#version 300 es"),
 
@@ -87,7 +90,9 @@ object GlesShaderValidator {
         }
         when (kind) {
             Kind.COMPUTE -> computeProblems(stripped, out)
-            Kind.FULLSCREEN_VERTEX -> fullscreenVertexProblems(stripped, out)
+            Kind.FULLSCREEN_VERTEX,
+            Kind.FULLSCREEN_VERTEX_310,
+            -> fullscreenVertexProblems(stripped, out)
             Kind.DEVELOP_FRAGMENT -> developFragmentProblems(stripped, out)
             Kind.STORE_FRAGMENT -> storeFragmentProblems(stripped, out)
         }
@@ -227,6 +232,14 @@ object GlesShaderValidator {
         if (!s.contains("texelFetch(uSrc, g, 0)")) {
             out += "missing the `texelFetch(uSrc, g, 0)` readback fetch " +
                 "(integer texel fetch — no sampling filters are involved)"
+        }
+        // The throwaway color output keeps the pass legal on drivers that
+        // dislike zero-output fragment shaders (the SSBO is the real
+        // output; the RGBA8 target is never read).
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the throwaway color output — " +
+                "the SSBO is the real output, but the pass must still write " +
+                "a legal fragment output)"
         }
     }
 

@@ -119,20 +119,8 @@ void main() {
 }
 """
 
-    /**
-     * Fullscreen triangle-strip vertex shader (deliverable D) — the one
-     * vertex stage every fragment pass in the chain draws with. Four
-     * hard-coded corner positions, no attributes, no varyings, no
-     * uniforms: the fragment passes derive their pixel from gl_FragCoord,
-     * so there is nothing to link but the program itself. A draw is
-     * glDrawArrays(GL_TRIANGLE_STRIP, 0, 4) with no VBO bound — the
-     * corner array is indexed by gl_VertexID (ES 3.00).
-     *
-     * ES 3.0 (the develop chain is a fragment pipeline, not compute):
-     * #version 300 es. No precision-sensitive work happens here.
-     */
-    const val FULLSCREEN_VERTEX: String = """#version 300 es
-
+    /** The fullscreen vertex body shared by both versioned sources (zero drift). */
+    private const val kFullscreenBody: String = """
 // Fullscreen triangle-strip: 4 hard-coded NDC corners, no attributes,
 // no varyings (the fragment passes use gl_FragCoord).
 
@@ -145,6 +133,34 @@ void main() {
     gl_Position = vec4(kPos[gl_VertexID] * 2.0 - 1.0, 0.0, 1.0);
 }
 """
+
+    /**
+     * Fullscreen triangle-strip vertex shader (deliverable D) — the one
+     * vertex stage every fragment pass in the chain draws with. Four
+     * hard-coded corner positions, no attributes, no varyings, no
+     * uniforms: the fragment passes derive their pixel from gl_FragCoord,
+     * so there is nothing to link but the program itself. A draw is
+     * glDrawArrays(GL_TRIANGLE_STRIP, 0, 4) with no VBO bound — the
+     * corner array is indexed by gl_VertexID (ES 3.00).
+     *
+     * ES 3.0 (the develop chain is a fragment pipeline, not compute):
+     * #version 300 es. No precision-sensitive work happens here.
+     */
+    const val FULLSCREEN_VERTEX: String = "#version 300 es\n" + kFullscreenBody
+
+    /**
+     * The SAME fullscreen vertex stage, #version 310 es (deliverable D):
+     * GLSL ES forbids linking shaders with different #version lines into
+     * one program, and the STORE_FRAGMENT readback pass is ES 3.10 (its
+     * SSBO write needs 3.1 fragment-shader SSBO access), so its program
+     * needs a 310-es vertex stage. The body past the version line is
+     * VERBATIM the same text as FULLSCREEN_VERTEX (both compose the
+     * shared [kFullscreenBody] above), so the two programs cannot drift:
+     * the harness links FULLSCREEN_VERTEX + DEVELOP_FRAGMENT and
+     * FULLSCREEN_VERTEX_310 + STORE_FRAGMENT, and both draw the same
+     * fullscreen geometry the same way.
+     */
+    const val FULLSCREEN_VERTEX_310: String = "#version 310 es\n" + kFullscreenBody
 
     /**
      * Fused develop fragment pass (deliverable D) — the fragment-shader
@@ -326,6 +342,13 @@ void main() {
      * The pixel comes from gl_FragCoord (the same coordinate the develop
      * pass used for its CFA fetch and output), so the readback lands in
      * CPU row order with no flip anywhere.
+     *
+     * The pass writes a throwaway color output too: a fragment shader
+     * with ZERO declared outputs is spec-gray on some ES drivers (the
+     * spec's "at least one output" wording is desktop-GL-flavored), so
+     * oCol gets a benign write while the SSBO carries the real payload.
+     * The harness draws this pass to a throwaway RGBA8 FBO whose contents
+     * nobody reads — the SSBO is the output.
      */
     const val STORE_FRAGMENT: String = """#version 310 es
 
@@ -343,6 +366,11 @@ uniform ivec2 uSize;          // width/height in pixels
 // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, outBuf) attaches to.
 layout(std430, binding = 0) writeonly buffer OutBuf { float rgb[]; };  // 3 floats per pixel, row-major
 
+// Throwaway color output: the harness never reads the RGBA8 target this
+// pass draws to (the SSBO is the real output); the write keeps the shader
+// legal on drivers that dislike zero-output fragment shaders.
+out vec4 oCol;
+
 void main() {
     ivec2 g = ivec2(gl_FragCoord.xy);
     if (g.x >= uSize.x || g.y >= uSize.y) return;
@@ -351,6 +379,7 @@ void main() {
     rgb[base + 0] = c.r;
     rgb[base + 1] = c.g;
     rgb[base + 2] = c.b;
+    oCol = vec4(c, 1.0);
 }
 """
 }

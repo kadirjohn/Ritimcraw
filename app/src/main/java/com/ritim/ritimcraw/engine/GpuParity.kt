@@ -146,10 +146,23 @@ object GpuParityRules {
         "parity: ran=${bit(p.ran)} maxDiffLsb=${p.maxDiffLsb}" +
             " mismatch=${p.mismatchCount} samples=${p.samples}"
 
+    /**
+     * The FRAGMENT develop-parity line (deliverable D) — same numbers,
+     * same verdict rules as the compute leg, but labeled so the owner can
+     * tell the two legs apart in one Measure block (a compute-less device
+     * can pass this leg while the compute leg reads "skipped").
+     */
+    fun fragmentParityLine(p: GlesParityResult): String =
+        "fragment parity: ran=${bit(p.ran)} maxDiffLsb=${p.maxDiffLsb}" +
+            " mismatch=${p.mismatchCount} samples=${p.samples}"
+
     fun verdictLine(v: ParityVerdict): String =
         "verdict: ${v.status.name} (${v.reason})"
 
     fun skippedParityLine(reason: String): String = "parity: skipped ($reason)"
+
+    fun skippedFragmentLine(reason: String): String =
+        "fragment parity: skipped ($reason)"
 
     /**
      * The Measure log block wrapper (the "ritim-pm" preview-metrics
