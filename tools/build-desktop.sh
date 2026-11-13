@@ -47,6 +47,12 @@ for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientatio
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
 done
+# Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
+# multiply-add chain must round exactly where the Kotlin float ops round,
+# so this TU alone opts out of FMA contraction (-ffp-contract=off).
+# Everything else keeps the default (FMA where the target allows).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Yuv.cpp" -o "$BUILD/core_Yuv.o"
+CORE_OBJS+=("$BUILD/core_Yuv.o")
 # OrientationEstimate.cpp (in the core list) links against vqf, so every
 # core consumer needs it — mirrors core/CMakeLists.txt's
 # target_link_libraries(rawedit PUBLIC ... vqf).
@@ -104,6 +110,12 @@ echo "== building tests =="
 # fixtures — no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_rawstats.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_rawstats"
+# test_yuv: byte-exact RGB888->I420 contract with export/YuvConverter.kt
+# (NEON path runs on arm64 hosts, so NEON-vs-scalar is proven here too).
+# -ffp-contract=off matches the Yuv.cpp build: the reference formulas in
+# the test must round exactly like the Kotlin float ops.
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_yuv.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_yuv"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -140,6 +152,8 @@ echo "== running test_warp =="
 (cd "$ROOT" && "$BUILD/test_warp")
 echo "== running test_rawstats =="
 "$BUILD/test_rawstats"
+echo "== running test_yuv =="
+"$BUILD/test_yuv"
 
 echo
 echo "ALL TESTS DONE. Binaries in $BUILD:"

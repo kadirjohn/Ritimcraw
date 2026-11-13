@@ -57,7 +57,13 @@ add_library(rawedit STATIC
     src/Temporal.cpp
     src/Stabilization.cpp
     src/Warp.cpp
-    src/RawStats.cpp)
+    src/RawStats.cpp
+    src/Yuv.cpp)
+# Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
+# multiply-add chain must round exactly where the Kotlin float ops round,
+# so this TU alone opts out of FMA contraction (-ffp-contract=off).
+set_source_files_properties(src/Yuv.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)
@@ -86,6 +92,14 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_warp tests/test_warp.cpp)
     target_include_directories(test_warp PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_warp PRIVATE rawedit)
+    # test_yuv: byte-exact RGB888->I420 contract with export/YuvConverter.kt
+    # (on arm64 hosts the NEON path runs, so NEON-vs-scalar is proven too).
+    # -ffp-contract=off matches the Yuv.cpp build: the reference formulas in
+    # the test must round exactly like the Kotlin float ops.
+    add_executable(test_yuv tests/test_yuv.cpp)
+    target_include_directories(test_yuv PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_yuv PRIVATE rawedit)
+    target_compile_options(test_yuv PRIVATE -ffp-contract=off)
 
     add_executable(rawcli ../cli/main.cpp)
     target_link_libraries(rawcli PRIVATE rawedit)
@@ -97,4 +111,5 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME temporal COMMAND test_temporal)
     add_test(NAME stabilization COMMAND test_stabilization)
     add_test(NAME warp COMMAND test_warp)
+    add_test(NAME yuv COMMAND test_yuv)
 endif()
