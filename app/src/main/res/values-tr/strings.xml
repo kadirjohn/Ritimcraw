@@ -347,6 +347,10 @@
     <string name="timeline_audio_restore">Geri yükle</string>
     <string name="timeline_audio_relink">Düzenlenmiş sesi bağla</string>
     <string name="timeline_audio_relink_hint">Düzenlenmiş bir ses kaydını bağlama, ses düzenleme aşamasıyla gelecek (sonrası).</string>
+    <!-- Timeline export (TL-EX): the top-bar action that queues the
+         timeline's video track as an MP4 through the export queue. -->
+    <string name="timeline_export">Zaman çizelgesini dışa aktar</string>
+    <string name="timeline_export_name">Zaman çizelgesi</string>
 
     <!-- Settings -->
     <string name="settings_title">Ayarlar</string>

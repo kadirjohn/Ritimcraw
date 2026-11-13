@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
@@ -186,6 +187,13 @@ import com.ritim.ritimcraw.util.Format
  *   path is its first consumer (later commits hang the AUD-03
  *   settings sheet off it).
  * @param onBack closes the screen (the screen persists first).
+ * @param onExportTimeline queues the timeline's video track as an MP4
+ *   (TL-EX): called with the COMMITTED project — the same [TimelineProject]
+ *   save would persist, never a drag preview — because the export
+ *   snapshots user intent at queue time (ExportJob.timeline): a later
+ *   edit, split or delete must not change an in-flight export. The
+ *   shell owns the enqueue (the same serial ExportQueue every other
+ *   export uses); the screen does not export itself.
  */
 @Composable
 fun TimelineScreen(
@@ -194,6 +202,7 @@ fun TimelineScreen(
     metadata: MetadataStore,
     audio: AudioStore,
     onBack: () -> Unit,
+    onExportTimeline: (TimelineProject) -> Unit = {},
 ) {
     RitimTheme(editor = true) {
         // ---- state holder (see KDoc) ----
@@ -440,6 +449,17 @@ fun TimelineScreen(
                         Icon(
                             Icons.Filled.Add,
                             contentDescription = stringResource(R.string.timeline_add),
+                        )
+                    }
+                    // Timeline export (TL-EX): queue the COMMITTED project
+                    // (the same project save would persist — the export
+                    // snapshot must freeze intent, never a drag preview)
+                    // through the shell's serial export queue. Same glyph
+                    // as the editor's Export (the house icon language).
+                    IconButton(onClick = { onExportTimeline(project) }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ExitToApp,
+                            contentDescription = stringResource(R.string.timeline_export),
                         )
                     }
                     IconButton(onClick = ::undo, enabled = canUndo) {
