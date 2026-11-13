@@ -316,3 +316,24 @@ TEST_CASE("audio_is_present_with_rate" * doctest::description("real clip; set RA
     CHECK(info->sampleRate > 0);
     CHECK(info->channels > 0);
 }
+
+// IN-13: the container identity read (camera/lens keys) against the real
+// fixture. The owner's Xiaomi leaves uniqueCameraModel EMPTY — the honest
+// fallback chain (deviceModel, then build identity) exists for exactly
+// this container — and carries the focal/aperture the lens string derives
+// from. Absent keys stay empty (unknown, never a guess).
+TEST_CASE("container_identity_reads_real_fixture" * doctest::description("real clip; set RAWEDIT_REALCLIP=1 to run")) {
+    if (!realclipEnabled()) {
+        MESSAGE("SKIP: set RAWEDIT_REALCLIP=1 (2 GB fixture, decode is slow)");
+        return;
+    }
+    auto s = Source::open(realclipPath());
+    REQUIRE(s.isOk());
+    const auto& id = (*s)->containerIdentity();
+    // This container leaves uniqueCameraModel empty — the documented
+    // fallback chain starts at deviceModel.
+    CHECK(id.uniqueCameraModel.empty());
+    CHECK_FALSE(id.deviceModel.empty());
+    CHECK(id.aperture > 0.0);
+    CHECK((*s)->rawMeta().focalLengthMm > 0.0);
+}

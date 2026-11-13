@@ -17,6 +17,7 @@ namespace rawedit {
 struct SourceImpl {
     std::unique_ptr<motioncam::Decoder> decoder;
     RawMeta meta;
+    ContainerIdentity identity;
     CfaPattern cfa = CfaPattern::RGGB;
     int sensorOrientation = 0;
 };
@@ -112,6 +113,32 @@ bool initMeta(SourceImpl& impl) {
     getJson(cm, "focalLengths", focalLengths);
     if (!focalLengths.empty() && focalLengths[0] > 0.0)
         impl.meta.focalLengthMm = focalLengths[0];
+
+    // Camera identity (IN-13): read-only container keys no develop/export
+    // consumer touches. Absent keys leave the field empty/0 — unknown,
+    // never a guess. The dotted names are literal JSON keys, and the
+    // nested objects are read defensively (a missing parent leaves the
+    // string empty, matching getJson's leave-unchanged policy).
+    getJson(cm, "uniqueCameraModel", impl.identity.uniqueCameraModel);
+    if (const auto it = cm.find("deviceSpecificProfile");
+        it != cm.end() && it->is_object()) {
+        getJson(*it, "deviceModel", impl.identity.deviceModel);
+    }
+    if (const auto it = cm.find("extraData");
+        it != cm.end() && it->is_object()) {
+        const auto post = it->find("postProcessSettings");
+        if (post != it->end() && post->is_object()) {
+            const auto meta = post->find("metadata");
+            if (meta != post->end() && meta->is_object()) {
+                getJson(*meta, "build.manufacturer", impl.identity.manufacturer);
+                getJson(*meta, "build.model", impl.identity.buildModel);
+            }
+        }
+    }
+    std::vector<double> apertures;
+    getJson(cm, "apertures", apertures);
+    if (!apertures.empty() && apertures[0] > 0.0)
+        impl.identity.aperture = apertures[0];
 
     // White balance from the first frame's asShotNeutral: gains are the
     // reciprocal of the neutral vector (DNG semantics). Each field is parsed
@@ -439,6 +466,10 @@ Result<std::vector<int16_t>> Source::readAudio() {
 
 const RawMeta& Source::rawMeta() const {
     return mImpl->meta;
+}
+
+const ContainerIdentity& Source::containerIdentity() const {
+    return mImpl->identity;
 }
 
 } // namespace rawedit

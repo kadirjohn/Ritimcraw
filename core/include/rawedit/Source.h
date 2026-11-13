@@ -99,6 +99,29 @@ struct RawMeta {
     double focalLengthMm = 0.0; // 35mm-equivalent mm; 0 = absent
 };
 
+// Per-clip camera identity (IN-13 metadata extraction): the container's
+// camera/lens facts that no other reader consumes. Read through
+// Source::containerIdentity(). Empty string / 0 mean the key is absent —
+// unknown, never a guess (the RawMeta convention). The key spellings are
+// the container's own (verified against real recordings):
+//  - uniqueCameraModel: top-level "uniqueCameraModel" (EMPTY on the
+//    owner's Xiaomi — the fallback chain lives in the Kotlin layer).
+//  - deviceModel: "deviceSpecificProfile"."deviceModel".
+//  - manufacturer / buildModel: "extraData"."postProcessSettings".
+//    "metadata" keys "build.manufacturer" / "build.model" (literal dotted
+//    key names in the JSON).
+//  - aperture: top-level "apertures"[0], the lens f-number (0 = absent).
+// focalLengthMm is NOT duplicated here — it already lives in RawMeta
+// (35mm-equivalent; 0 = absent) and the JNI probe reads both accessors
+// off the same open Source.
+struct ContainerIdentity {
+    std::string uniqueCameraModel;
+    std::string deviceModel;
+    std::string manufacturer;
+    std::string buildModel;
+    double aperture = 0.0; // lens f-number; 0 = absent
+};
+
 // Per-frame Camera2 SENSOR_NOISE_PROFILE as stored in the MCRAW frame
 // metadata: 8 floats = 4 CFA slots x (S, O) in the slot order of
 // RawMeta::black (r, g, g, b), normalized-signal domain:
@@ -147,6 +170,12 @@ public:
     // Per-clip RAW metadata (black/white levels, CFA, color matrix,
     // as-shot neutral, lens shading map). Valid after a successful open.
     const RawMeta& rawMeta() const;
+
+    // Per-clip camera identity (IN-13): the container's camera/lens keys
+    // that no develop/export consumer touches. Absent keys leave the
+    // field empty/0 — unknown, never a guess. Reads metadata only; valid
+    // after a successful open.
+    const ContainerIdentity& containerIdentity() const;
 
     // Per-frame noise profile (Camera2 SENSOR_NOISE_PROFILE, "noiseProfile"
     // in the frame metadata): variance = S*signal + O per CFA slot. Reads
