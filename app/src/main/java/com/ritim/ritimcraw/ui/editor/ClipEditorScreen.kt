@@ -750,7 +750,11 @@ fun ClipEditorScreen(
         // remembered ONCE with the restored value as its initial anchor
         // target — a rotation keeps the panel exactly where it was, and
         // the offset is never recreated (§18: no reset, no reprocessing).
-        var panelState by rememberSaveable { mutableStateOf(PanelState.NORMAL) }
+        // The FRESH-OPEN default is the LARGEST state (owner feedback
+        // 2026-11-13 "default en yüksek boyda açılsın" — PanelBehavior.
+        // DEFAULT_OPEN, JVM-tested); a restored saveable keeps whatever
+        // the user last settled on, as before.
+        var panelState by rememberSaveable { mutableStateOf(PanelBehavior.DEFAULT_OPEN) }
         val panelDrag = rememberPanelDragState(panelState)
         // Per-category scroll positions (§11.6 "relevant scroll position"):
         // one ScrollState per category, remembered SAVEABLY (ScrollState's
@@ -969,6 +973,41 @@ fun ClipEditorScreen(
         LaunchedEffect(panelDrag) {
             snapshotFlow { panelDrag.settledValue }
                 .collect { settled -> panelState = settled }
+        }
+        // ---- Swipe-up unfold redirect (owner feedback 2026-11-13) ----
+        // The component's own settle can only ever target the ADJACENT
+        // anchor, so an up-release from COLLAPSED animates to NORMAL —
+        // never the EXPANDED the owner asked for. This observer watches
+        // the settle's LIVE target (targetValue while animating) and,
+        // when the pure PanelBehavior rule fires (COLLAPSED settling UP
+        // to NORMAL), re-targets the state's OWN animateTo: the public
+        // extension cancels the settle at the same mutation priority,
+        // restarts from the live offset with the settle's velocity and
+        // runs the same snapAnimationSpec — one continuous physics
+        // motion to EXPANDED, never a hand-rolled spring. The category
+        // tap's programmatic open to NORMAL (§10.3) is excluded by the
+        // flag below; every downward settle is untouched (the rule only
+        // matches COLLAPSED->NORMAL).
+        var panelOpenByTap by remember { mutableStateOf(false) }
+        LaunchedEffect(panelDrag) {
+            snapshotFlow {
+                Pair(
+                    panelDrag.isAnimationRunning,
+                    if (panelDrag.isAnimationRunning) {
+                        Pair(panelDrag.settledValue, panelDrag.targetValue)
+                    } else {
+                        null
+                    },
+                )
+            }
+                .collect { animating ->
+                    val live = animating.second ?: return@collect
+                    if (panelOpenByTap) {
+                        panelOpenByTap = false
+                    } else if (PanelBehavior.swipeUpRetarget(live.first, live.second)) {
+                        scope.launch { panelDrag.animateTo(PanelBehavior.swipeUpTarget(live.first)) }
+                    }
+                }
         }
         var grade by remember(sourceId) { mutableStateOf(initialGrade) }
 
@@ -3404,6 +3443,12 @@ fun ClipEditorScreen(
                         // editing position").
                         val target = PanelSheet.panelAfterCategoryTap(panelDrag.targetValue)
                         if (target != panelDrag.targetValue) {
+                            // §10.3's open stays at NORMAL: flagged so the
+                            // swipe-up redirect observer above never
+                            // re-targets this PROGRAMMATIC open toward
+                            // EXPANDED (the flag is consumed by the very
+                            // next animation the observer sees).
+                            panelOpenByTap = true
                             scope.launch { panelDrag.animateTo(target) }
                         }
                     },
