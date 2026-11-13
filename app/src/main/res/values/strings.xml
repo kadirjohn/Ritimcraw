@@ -263,8 +263,26 @@
 
     <!-- Projects -->
     <string name="projects_title">Projects</string>
+    <string name="projects_open_timeline">Open timeline</string>
     <string name="projects_empty_title">No projects yet</string>
     <string name="projects_empty_body">Projects group graded clips and their exports. Create one from the library once timelines land.</string>
+
+    <!-- Timeline (Stage C UI, TL-03..TL-17) -->
+    <string name="timeline_title">Timeline</string>
+    <string name="timeline_track_video">Video</string>
+    <string name="timeline_track_audio">Audio</string>
+    <string name="timeline_playhead_frame">Frame %1$d</string>
+    <string name="timeline_split">Split at playhead</string>
+    <string name="timeline_duplicate">Duplicate</string>
+    <string name="timeline_remove">Remove</string>
+    <string name="timeline_undo">Undo</string>
+    <string name="timeline_redo">Redo</string>
+    <string name="timeline_back">Back to projects</string>
+    <string name="timeline_empty">This timeline is empty. Add a clip with the plus button.</string>
+    <string name="timeline_add">Add clip</string>
+    <string name="timeline_add_title">Add a clip</string>
+    <string name="timeline_add_empty">No readable sources in the library. Import a clip first.</string>
+    <string name="timeline_add_cancel">Cancel</string>
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>

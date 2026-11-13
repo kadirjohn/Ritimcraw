@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <!-- OFFICIAL Material Symbols glyph "content_copy", ROUNDED style,
+         default (filled) weight, 24px — pathdata verbatim from Google Fonts:
+         https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/content_copy/default/24px.svg
+         (viewBox="0 -960 960 960"; the group's translateY remaps the
+         font's negative-Y coordinates onto Android's downward viewport).
+
+         The timeline's Duplicate action (TL-03). Vendored as a local
+         drawable because material-icons-core 1.7.3 ships no copy glyph
+         (checked the AAR) — the same reason and the same format as
+         ic_undo/ic_redo. The 48dp touch target comes from the
+         IconButton; Compose's Icon tints it via LocalContentColor. -->
+    <group android:translateY="960">
+        <path
+            android:fillColor="@android:color/white"
+            android:pathData="M360-240q-33 0-56.5-23.5T280-320v-480q0-33 23.5-56.5T360-880h360q33 0 56.5 23.5T800-800v480q0 33-23.5 56.5T720-240H360Zm0-80h360v-480H360v480ZM200-80q-33 0-56.5-23.5T120-160v-520q0-17 11.5-28.5T160-720q17 0 28.5 11.5T200-680v520h400q17 0 28.5 11.5T640-120q0 17-11.5 28.5T600-80H200Zm160-240v-480 480Z" />
+    </group>
+</vector>

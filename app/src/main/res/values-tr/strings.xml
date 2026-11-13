@@ -263,8 +263,26 @@
 
     <!-- Projects -->
     <string name="projects_title">Projeler</string>
+    <string name="projects_open_timeline">Zaman çizelgesini aç</string>
     <string name="projects_empty_title">Henüz proje yok</string>
     <string name="projects_empty_body">Projeler, renk düzenlenmiş klipleri ve dışa aktarımlarını gruplar. Zaman çizelgeleri geldiğinde kitaplıktan bir tane oluşturun.</string>
+
+    <!-- Timeline (Stage C UI, TL-03..TL-17) -->
+    <string name="timeline_title">Zaman çizelgesi</string>
+    <string name="timeline_track_video">Video</string>
+    <string name="timeline_track_audio">Ses</string>
+    <string name="timeline_playhead_frame">Kare %1$d</string>
+    <string name="timeline_split">Oynatma başında böl</string>
+    <string name="timeline_duplicate">Çoğalt</string>
+    <string name="timeline_remove">Kaldır</string>
+    <string name="timeline_undo">Geri al</string>
+    <string name="timeline_redo">Yinele</string>
+    <string name="timeline_back">Projelere dön</string>
+    <string name="timeline_empty">Bu zaman çizelgesi boş. Artı düğmesiyle bir klip ekleyin.</string>
+    <string name="timeline_add">Klip ekle</string>
+    <string name="timeline_add_title">Klip ekle</string>
+    <string name="timeline_add_empty">Kitaplıkta okunabilir kaynak yok. Önce bir klip içe aktarın.</string>
+    <string name="timeline_add_cancel">İptal</string>
 
     <!-- Settings -->
     <string name="settings_title">Ayarlar</string>
