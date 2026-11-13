@@ -153,6 +153,7 @@
     <string name="editor_slider_crop_top">Üst</string>
     <string name="editor_slider_crop_width">Genişlik</string>
     <string name="editor_slider_crop_height">Yükseklik</string>
+    <string name="editor_crop_overlay">Kırpma tutamaçları</string>
     <string name="editor_render_preview">Önizlemeyi oluştur</string>
     <string name="editor_refresh_preview">Önizlemeyi yenile</string>
     <string name="editor_refresh_preview_state">Önizleme: %1$s</string>

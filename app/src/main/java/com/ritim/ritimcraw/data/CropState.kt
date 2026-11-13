@@ -5,6 +5,7 @@ import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlin.math.sin
 
 /**
@@ -188,6 +189,237 @@ object CropState {
         return clampRect(
             RectF(min(rect.x, 1f - w), min(rect.y, 1f - rect.h), w, rect.h)
         )
+    }
+
+    /**
+     * The overlay's 8 drag handles (owner request 2026-11-13 §2): 4
+     * corners (resize both axes) + 4 edges (resize one axis). The
+     * overlay draws one visual per handle; the TOUCH area around each
+     * handle point is the gesture surface — sized by the caller to
+     * >= 48dp (DESIGN.md's touch-target rule; the drawn handle can be
+     * smaller than its touch area).
+     */
+    enum class Handle {
+        TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT,
+        TOP, BOTTOM, LEFT, RIGHT,
+    }
+
+    /**
+     * Hit-tests a pointer position ([px], [py] — pixels of the video
+     * rect, the overlay's own coordinate space) against the 8 handles
+     * of [rect] (fractions of the same rect): each handle point — the
+     * rect's corners, the edges' midpoints — grows by [tolerance] px
+     * into its touch square (the overlay passes half of 48dp so each
+     * square is 48dp wide/tall). Corners are tested first (a corner
+     * point sits on both its edges — the corner wins), then edges in
+     * enum order, so overlapping squares resolve deterministically.
+     * Returns null outside every square: the caller leaves the event
+     * UNCONSUMED so the preview's own gestures (pinch-zoom, pan,
+     * hold) keep working there.
+     */
+    fun handleAt(
+        rect: RectF,
+        px: Float,
+        py: Float,
+        width: Float,
+        height: Float,
+        tolerance: Float,
+    ): Handle? {
+        if (width <= 0f || height <= 0f || tolerance < 0f) return null
+        val x0 = rect.x * width
+        val y0 = rect.y * height
+        val x1 = (rect.x + rect.w) * width
+        val y1 = (rect.y + rect.h) * height
+        val mx = (x0 + x1) / 2f
+        val my = (y0 + y1) / 2f
+        val cornerHandles = arrayOf(
+            Handle.TOP_LEFT, Handle.TOP_RIGHT,
+            Handle.BOTTOM_LEFT, Handle.BOTTOM_RIGHT,
+        )
+        val cornerX = floatArrayOf(x0, x1, x0, x1)
+        val cornerY = floatArrayOf(y0, y0, y1, y1)
+        for (i in cornerHandles.indices) {
+            if (px >= cornerX[i] - tolerance && px <= cornerX[i] + tolerance &&
+                py >= cornerY[i] - tolerance && py <= cornerY[i] + tolerance
+            ) {
+                return cornerHandles[i]
+            }
+        }
+        val edgeHandles = arrayOf(Handle.TOP, Handle.BOTTOM, Handle.LEFT, Handle.RIGHT)
+        val edgeX = floatArrayOf(mx, mx, x0, x1)
+        val edgeY = floatArrayOf(y0, y1, my, my)
+        for (i in edgeHandles.indices) {
+            if (px >= edgeX[i] - tolerance && px <= edgeX[i] + tolerance &&
+                py >= edgeY[i] - tolerance && py <= edgeY[i] + tolerance
+            ) {
+                return edgeHandles[i]
+            }
+        }
+        return null
+    }
+
+    /**
+     * One handle-drag frame (owner request 2026-11-13 §2): applies the
+     * pointer's CUMULATIVE pixel delta ([dxPx], [dyPx] — video-rect
+     * pixels moved since the drag started) to the drag-START [rect],
+     * with the dragged [handle]'s OPPOSITE edge/corner anchored. The
+     * result writes the SAME cropX/Y/W/H fractions the sliders write:
+     * under a preset the resize runs the EXACT lock chain the W/H
+     * sliders run — [lockAspect] width-led for LEFT/RIGHT/corners,
+     * [lockAspectHeight] height-led for TOP/BOTTOM — so the overlay
+     * and the sliders can never disagree about the same drag.
+     *
+     * Semantics:
+     *  - FREE: each moved axis follows the pointer independently,
+     *    clamped to the frame bounds and the 5 percent floor; the
+     *    opposite edge never moves.
+     *  - PRESET, edges: the moved axis's size comes from the pointer,
+     *    the perpendicular axis is DERIVED by the lock (the slider's
+     *    own chain); the lock's position-gives-way slide is then
+     *    RE-ANCHORED so the dragged handle's opposite edge is back
+     *    where the drag started (the frame bound is the only thing
+     *    that can push an anchored line — the ratio never gives way,
+     *    the anchor does at the edge).
+     *  - PRESET, corners: the corner follows the on-ratio diagonal
+     *    ray from the anchored corner — the pointer's displacement is
+     *    projected onto the ray, so every drag direction resizes
+     *    (pure-vertical corner drags too) with no axis-flip jumps.
+     *    The projected width feeds the same width-led lock.
+     *  - [snap] = true (release): the moved sizes quantize to the 1
+     *    percent grid BEFORE the lock — the sliders' own settle
+     *    semantics ("leading axis snapped, derived axis on-ratio").
+     *    Continuous drag frames pass false: raw fractions while the
+     *    finger is down, mirroring the slider's live drag values.
+     *
+     * Unknown frame dims (0x0 before the first publish) degrade to
+     * the FREE behavior — the locks' own guard.
+     */
+    fun applyHandleDrag(
+        rect: RectF,
+        handle: Handle,
+        dxPx: Float,
+        dyPx: Float,
+        width: Float,
+        height: Float,
+        preset: Int,
+        frameW: Int,
+        frameH: Int,
+        snap: Boolean = false,
+    ): RectF {
+        if (width <= 0f || height <= 0f) return clampRect(rect)
+        val base = clampRect(rect)
+        val fx = dxPx / width
+        val fy = dyPx / height
+        val ratio = aspectRatio(preset)
+        val known = ratio != null && frameW > 0 && frameH > 0
+        val movesLeft = handle == Handle.LEFT ||
+            handle == Handle.TOP_LEFT || handle == Handle.BOTTOM_LEFT
+        val movesTop = handle == Handle.TOP ||
+            handle == Handle.TOP_LEFT || handle == Handle.TOP_RIGHT
+        val movesW = handle != Handle.TOP && handle != Handle.BOTTOM
+        val movesH = handle != Handle.LEFT && handle != Handle.RIGHT
+        // The anchored (opposite) lines, captured from the start rect.
+        val anchorLeft = base.x
+        val anchorRight = base.x + base.w
+        val anchorTop = base.y
+        val anchorBottom = base.y + base.h
+
+        // The pointer's target sizes (fraction space), per moved axis,
+        // with the anchor clamps baked in: the moving edge can never
+        // cross its anchored opposite (the 5 percent floor) nor leave
+        // the frame.
+        var targetW = base.w
+        var targetH = base.h
+        if (movesW) {
+            targetW = if (movesLeft) {
+                val newLeft = (base.x + fx)
+                    .coerceIn(0f, (anchorRight - MIN_FRACTION).coerceAtLeast(0f))
+                anchorRight - newLeft
+            } else {
+                val newRight = (anchorRight + fx)
+                    .coerceIn((anchorLeft + MIN_FRACTION).coerceAtMost(1f), 1f)
+                newRight - anchorLeft
+            }
+        }
+        if (movesH) {
+            targetH = if (movesTop) {
+                val newTop = (base.y + fy)
+                    .coerceIn(0f, (anchorBottom - MIN_FRACTION).coerceAtLeast(0f))
+                anchorBottom - newTop
+            } else {
+                val newBottom = (anchorBottom + fy)
+                    .coerceIn((anchorTop + MIN_FRACTION).coerceAtMost(1f), 1f)
+                newBottom - anchorTop
+            }
+        }
+        // Corners under a preset follow the on-ratio diagonal ray from
+        // the anchored corner: project the pointer's displacement onto
+        // the ray direction (dirX, dirY * k), where k = frameRatio /
+        // ratio is [lockAspect]'s own height-per-width derivation, so
+        // the corner tracks the drag in every direction and the
+        // projected width feeds the same width-led lock the W slider
+        // runs (the raw targetH is advisory only — the lock derives
+        // the height).
+        if (known && movesW && movesH) {
+            val k = (frameW.toFloat() / frameH.toFloat()) / ratio!!
+            val dirX = if (movesLeft) -1f else 1f
+            val dirY = if (movesTop) -1f else 1f
+            val t = (fx * dirX + fy * dirY * k) / (1f + k * k)
+            targetW = base.w + t
+        }
+        // Release snap: the moved sizes quantize to the 1 percent grid
+        // BEFORE the lock — leading axis snapped, derived on-ratio
+        // (the height-led case snaps the height; a width-led preset
+        // drag derives its height from the snapped width, so the raw
+        // targetH is left alone there).
+        val widthLed = known && movesW
+        if (snap) {
+            if (movesW) targetW = quantizeFraction(targetW)
+            if (movesH && !widthLed) targetH = quantizeFraction(targetH)
+        }
+        // The preset lock re-derives the follower axis — the EXACT
+        // chain the sliders run; FREE keeps the pointer's sizes.
+        val sized: RectF = when {
+            widthLed -> lockAspect(
+                base.copy(w = targetW.coerceIn(MIN_FRACTION, 1f)),
+                preset, frameW, frameH,
+            )
+            known && movesH -> lockAspectHeight(
+                base.copy(h = targetH.coerceIn(MIN_FRACTION, 1f)),
+                preset, frameW, frameH,
+            )
+            else -> RectF(
+                base.x, base.y,
+                targetW.coerceIn(MIN_FRACTION, 1f),
+                targetH.coerceIn(MIN_FRACTION, 1f),
+            )
+        }
+        // Re-anchor: restore the anchored lines the lock's
+        // position-gives-way slide (or the raw clamp) may have moved.
+        val maxX = (1f - sized.w).coerceAtLeast(0f)
+        val maxY = (1f - sized.h).coerceAtLeast(0f)
+        val x = when {
+            !movesW -> sized.x.coerceIn(0f, maxX)
+            movesLeft -> (anchorRight - sized.w).coerceIn(0f, maxX)
+            else -> anchorLeft.coerceIn(0f, maxX)
+        }
+        val y = when {
+            !movesH -> sized.y.coerceIn(0f, maxY)
+            movesTop -> (anchorBottom - sized.h).coerceIn(0f, maxY)
+            else -> anchorTop.coerceIn(0f, maxY)
+        }
+        return clampRect(RectF(x, y, sized.w, sized.h))
+    }
+
+    /**
+     * Snaps a fraction to the 1 percent grid ([FRACTION_STEP]) — the
+     * same double-math quantize the sliders' SliderSteps chain runs,
+     * local here so the data layer stays ui-free (0.467 -> 0.47, not
+     * 0.47000003).
+     */
+    private fun quantizeFraction(v: Float): Float {
+        val units = (v / FRACTION_STEP).roundToLong()
+        return (units.toDouble() * FRACTION_STEP.toDouble()).toFloat()
     }
 
     /**

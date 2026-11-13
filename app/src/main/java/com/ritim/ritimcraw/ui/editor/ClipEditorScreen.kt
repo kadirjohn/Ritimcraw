@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
@@ -49,6 +50,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -60,6 +62,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -67,6 +72,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
@@ -385,6 +392,41 @@ object EditorPreviewLogic {
      * encoded path ever grows its own wheel stages.
      */
     fun showColorTools(path: SourcePath): Boolean = path == SourcePath.MCRAW
+
+    /**
+     * True when the preview's crop overlay (owner request 2026-11-13 §2)
+     * should compose: the Frame tab is the active tab AND its sanitized
+     * sub-tab is Crop. Pure so a JVM test can lock the gate — the screen
+     * reads the SAME sanitized value the FramePanel call site reads, so
+     * the overlay and the panel body can never disagree about which
+     * segment is open (a stale saved Stabilize selection on an encoded
+     * clip resolves to Crop here too, exactly like the panel).
+     */
+    fun cropOverlayVisible(tab: Int, subTab: Int, showStabilization: Boolean): Boolean =
+        tab == EditorCategories.FRAME &&
+            EditorCategories.sanitizeFrameSubTab(subTab, showStabilization) ==
+                EditorCategories.FRAME_CROP
+
+    /**
+     * The display grade the preview renders while the crop overlay is
+     * active (owner request 2026-11-13 §2): the REAL grade with the crop
+     * group neutralized — full rect, FREE aspect, zero straighten. The
+     * publish fold crops before display, so an honest overlay needs the
+     * UNCROPPED image behind it; the overlay itself draws the REAL
+     * grade's rect, and leaving the sub-tab restores the normal render
+     * (the grade itself is never touched — display-only, by
+     * construction). Straighten is neutralized too: an axis-aligned
+     * rect over straightened (auto-zoomed) content would sit in a
+     * different pixel space than the rect it edits.
+     */
+    fun displayGradeForCropOverlay(grade: GradeK): GradeK = grade.copy(
+        cropAspect = GradeK().cropAspect,
+        cropX = GradeK().cropX,
+        cropY = GradeK().cropY,
+        cropW = GradeK().cropW,
+        cropH = GradeK().cropH,
+        straightenDeg = GradeK().straightenDeg,
+    )
 
     /**
      * The sync status line's verdict for the Stabilization group (gyro
@@ -1185,6 +1227,46 @@ fun ClipEditorScreen(
         // remember(sourceId)-keyed from AppNav, so the path is stable for
         // the clip's whole editor lifetime).
         val sourcePath = SourcePathDecision.decide(sourceKind, sourceMime)
+        // ---- Crop overlay mode (owner request 2026-11-13 §2) ----
+        // Derived, not remembered: the value is a pure function of tab +
+        // frameSubTab + the clip kind's stabilization gate (+ fullscreen
+        // + zoom), so it can never drift from the panel's own sanitized
+        // dispatch. While true, EVERY render the screen requests carries
+        // the crop-neutral display grade (requestRender swaps it in), the
+        // overlay composes over the preview, and handle drags write the
+        // REAL grade through the same slider route the panel's sliders
+        // use. Derived state also means the funnels below (plain local
+        // functions, rebuilt every recomposition) always read the
+        // CURRENT value at call time.
+        //
+        // SUSPENSIONS — both are view-the-result modes, and both flip
+        // the SAME derived flag so the flip effect below re-renders the
+        // transition in both directions:
+        //  - FULLSCREEN hides the panel; cropping blind is pointless.
+        //  - PINCH-ZOOM: the zoom/pan transform lives INSIDE
+        //    PreviewSurface (its own rememberSaveable zoomPan — the
+        //    screen sees only the settled previewZoomed boolean), while
+        //    the overlay's anchor Box measures the UNZOOMED video rect.
+        //    Over zoomed content the overlay's rect would sit at unzoomed
+        //    fractions — a rect that LIES about the content under it —
+        //    and handle hit-testing would map pointer px to the wrong
+        //    fraction space. Making the overlay zoom-aware would mean
+        //    breaking the surface's encapsulation (out of scope here),
+        //    so zoom suspends the mode instead: pinch in and the real
+        //    crop renders (inspect the result), pinch back to 1x and the
+        //    overlay returns. Pan only exists while zoomed, so it never
+        //    coexists with the overlay; at 1x the preview's gestures
+        //    (pinch-start, hold, chip taps) all keep flowing — the
+        //    overlay's pointerInput leaves non-handle events unconsumed.
+        val cropOverlayActive by remember {
+            derivedStateOf {
+                !fullscreen && !previewZoomed &&
+                    EditorPreviewLogic.cropOverlayVisible(
+                        tab, frameSubTab,
+                        EditorPreviewLogic.showStabilization(sourcePath),
+                    )
+            }
+        }
 
         /**
          * Offers a render to the pipeline (replaces any pending one).
@@ -1201,8 +1283,23 @@ fun ClipEditorScreen(
             cached: Boolean = false,
             followUpMaxDim: Int? = null,
         ) {
+            // Crop overlay mode (owner request 2026-11-13 §2): every
+            // render while the Crop sub-tab is open renders the
+            // crop-neutral display grade — the publish fold crops
+            // before display, so the overlay needs the UNCROPPED image
+            // behind it (the overlay draws the REAL grade's rect). The
+            // swap is display-only: `grade` itself is untouched, and
+            // the followUp re-offer inside the pump re-uses req.grade,
+            // so the progressive settle inherits the same display
+            // grade. Every render path funnels here (tier events, the
+            // grade debounce, playback, the hold, the flip effect
+            // below), so ONE point covers them all.
+            val renderGrade =
+                if (cropOverlayActive) EditorPreviewLogic.displayGradeForCropOverlay(g) else g
             renderSeq += 1
-            gate.offer(RenderRequest(frameIndex, g, maxDim, renderSeq, cached, followUpMaxDim))
+            gate.offer(
+                RenderRequest(frameIndex, renderGrade, maxDim, renderSeq, cached, followUpMaxDim),
+            )
             pumpKick.trySend(Unit)
         }
 
@@ -1401,6 +1498,53 @@ fun ClipEditorScreen(
             )
         }
 
+        // Quarter-turn re-fold (owner request 2026-11-13 §1): rotation is
+        // applied in the PUBLISH fold (effectiveDims + the crop's space
+        // mapping), never in the native render — so a rotation change
+        // with no other trigger would leave the published frame and the
+        // aspect-preset dims in the OLD space. This effect re-renders the
+        // CURRENT position on every manual-rotation change: a discrete
+        // tap (never mid-drag), so the settle tier; the frame itself is
+        // unchanged (the native pixels do not depend on the rotation),
+        // so the cached CFA path serves it. The renderSeq guard skips
+        // the initial composition (the first-render effect owns that
+        // one) — and a rotation tapped before the session opens is
+        // picked up by that first render, whose fold reads the mirrored
+        // value fresh.
+        LaunchedEffect(manualRotationDeg) {
+            if (!canRender || renderSeq == 0L) return@LaunchedEffect
+            requestRender(
+                positionFrame, grade,
+                SliderTiers.tierFor(
+                    dragActive, previewQuality.scrubMaxDim,
+                    zoomed = previewZoomed,
+                ),
+                cached = true,
+            )
+        }
+
+        // Crop-overlay flip (owner request 2026-11-13 §2): entering the
+        // Crop sub-tab must show the UNCROPPED image (the display-grade
+        // swap inside requestRender), leaving must restore the real
+        // crop — and nothing else keys on the sub-tab, so this effect is
+        // the only trigger. A discrete transition (never mid-drag: the
+        // sub-tab cannot change while a handle drag owns the gesture),
+        // so the settle tier; the frame index is unchanged, so the
+        // cached CFA path serves it — one develop per flip, like the
+        // quarter-turn re-fold above. The renderSeq guard skips the
+        // initial composition (the first-render effect owns that one).
+        LaunchedEffect(cropOverlayActive, sourceId) {
+            if (!canRender || renderSeq == 0L) return@LaunchedEffect
+            requestRender(
+                positionFrame, grade,
+                SliderTiers.tierFor(
+                    dragActive, previewQuality.scrubMaxDim,
+                    zoomed = previewZoomed,
+                ),
+                cached = true,
+            )
+        }
+
         // Zoom-limit honesty probe (audit fix 2026-11-12, Fix 5): one
         // native plan evaluation per stab-grade change — the clip-wide
         // required/applied zoom does not depend on the frame or the
@@ -1473,6 +1617,11 @@ fun ClipEditorScreen(
         // is picked up on the next render without restarting the pump.
         val currentGyroPathFor by rememberUpdatedState(gyroPathFor)
         val currentGyroId by rememberUpdatedState(gyroId)
+        // Manual rotation (owner request 2026-11-13 §1): the publish fold
+        // reads it for effectiveDims and the crop's space mapping, so it
+        // is mirrored the same way — a quarter-turn tapped mid-session
+        // must re-crop in the NEW space, not the launch-time one.
+        val currentManualRotationDeg by rememberUpdatedState(manualRotationDeg)
 
         LaunchedEffect(sourceId) {
             // Monotonic publication: the pump is serial and the gate is
@@ -1546,7 +1695,7 @@ fun ClipEditorScreen(
                                 // against this pair, never the cropped
                                 // `frame` dims.
                                 effectiveDims = RotationState.rotatedDims(
-                                    f.width, f.height, manualRotationDeg,
+                                    f.width, f.height, currentManualRotationDeg,
                                 )
                                 // Crop + straighten (RAW-09): the
                                 // published preview is the GRADED frame
@@ -1570,7 +1719,7 @@ fun ClipEditorScreen(
                                         req.grade.cropH,
                                     ),
                                     straightenDeg = req.grade.straightenDeg,
-                                    spaceDeltaDeg = manualRotationDeg,
+                                    spaceDeltaDeg = currentManualRotationDeg,
                                 )
                                 frame = PreviewFrame(
                                     width = cropped.width,
@@ -2137,6 +2286,62 @@ fun ClipEditorScreen(
                 // it untouched; only the controls themselves consume,
                 // exactly as before.
                 Box(Modifier.previewBounds(previewDisplayRatio)) {
+                    // THE CROP OVERLAY (owner request 2026-11-13 §2): the
+                    // handles-on-preview crop, composed inside this anchor
+                    // Box so its coordinate space IS the video rect (the
+                    // Box measures exactly the video's bounds — the same
+                    // previewBounds sizer the surface uses). While the
+                    // Crop sub-tab is open the preview renders the
+                    // crop-neutral display grade (requestRender's swap),
+                    // so the overlay draws the REAL grade's rect over the
+                    // UNCROPPED image; leaving the sub-tab (or entering
+                    // fullscreen) drops the overlay and the flip effect
+                    // restores the real crop. FIRST CHILD, UNDER the
+                    // corner controls: the overlay's pointerInput consumes
+                    // ONLY handle grabs (everywhere else the event keeps
+                    // flowing — the anchor-Box precedent), but its touch
+                    // surface covers the whole video rect, so the refresh
+                    // chip / scope / zebra / fullscreen buttons must stay
+                    // ON TOP to keep their taps (their clickables consume
+                    // the down, so the overlay's unconsumed-down hit test
+                    // never fires under them; the corner handles stay
+                    // grabbable through the rest of their 48dp touch
+                    // squares, and any crop smaller than full moves its
+                    // corners away from the chips entirely).
+                    if (cropOverlayActive) {
+                        CropOverlay(
+                            rect = CropState.RectF(
+                                grade.cropX, grade.cropY,
+                                grade.cropW, grade.cropH,
+                            ),
+                            frameW = effectiveDims.width,
+                            frameH = effectiveDims.height,
+                            preset = grade.cropAspect,
+                            onDragStart = {
+                                applyTierEvent(SliderTiers.Event.DragStarted)
+                            },
+                            onDragFrame = { r ->
+                                applyGradeEdit(
+                                    grade.copy(
+                                        cropX = r.x, cropY = r.y,
+                                        cropW = r.w, cropH = r.h,
+                                    ),
+                                    GradeHistory.SLIDER_GESTURE,
+                                )
+                            },
+                            onDragEnd = { r ->
+                                applyGradeEdit(
+                                    grade.copy(
+                                        cropX = r.x, cropY = r.y,
+                                        cropW = r.w, cropH = r.h,
+                                    ),
+                                    GradeHistory.SLIDER_GESTURE,
+                                )
+                                applyTierEvent(SliderTiers.Event.DragEnded)
+                                gradeHistory.settle()
+                            },
+                        )
+                    }
                     // Small corner refresh control (design review: the manual
                     // render leaves the prime area): status from the existing
                     // PreviewState data, tap = the old Render-preview button's
@@ -2818,6 +3023,13 @@ fun ClipEditorScreen(
                     onCropEdit = { g ->
                         applyGradeEdit(g)
                     },
+                    // Quarter-turn rotate (owner request 2026-11-13 §1):
+                    // the screen's existing route — AppNav's
+                    // RotationState.applyManual + setManualRotation
+                    // persistence. MediaSource state, not grade state:
+                    // no gradeHistory involvement, one discrete persisted
+                    // edit per tap.
+                    onRotate = onRotate,
                 )
             }
         }
@@ -4246,6 +4458,10 @@ private fun FramePanel(
     // RAW toggles): they settle IMMEDIATELY at the full tier and record
     // as their own undo step, never coalesced into a slider gesture.
     onCropEdit: (GradeK) -> Unit = {},
+    // Quarter-turn rotate (owner request 2026-11-13 §1): the Crop body's
+    // button pair, driving the SAME AppNav route the clip-info sheet's
+    // rows drive.
+    onRotate: (byDeg: Int) -> Unit = {},
 ) {
     when (subTab) {
         EditorCategories.FRAME_CROP -> FrameCropBody(
@@ -4256,6 +4472,7 @@ private fun FramePanel(
             onDragActiveChange = onDragActiveChange,
             onReset = onReset,
             onCropEdit = onCropEdit,
+            onRotate = onRotate,
         )
         // The gate is double-armed (row + this guard — see KDoc): the
         // body keeps the panel honest even if a stale saved sub-tab
@@ -4321,6 +4538,9 @@ private fun FrameSubTabRow(
 
 /**
  * The Crop sub-tab body (RAW-09, moved from DetailPanel verbatim): the
+ * quarter-turn rotate pair (owner request 2026-11-13 §1 — the SAME
+ * AppNav route the clip-info sheet's rows drive; MediaSource state, so
+ * each tap is one discrete persisted edit, outside gradeHistory), the
  * Aspect choice (Free / 16:9 / 9:16 / 4:3 / 1:1 — a preset replaces the
  * rect with the largest centered on-ratio rect, FREE keeps it), the
  * Straighten dial (±15°, half-degree ticks, edge-preserving auto zoom),
@@ -4343,6 +4563,13 @@ private fun FrameCropBody(
     onDragActiveChange: (Boolean) -> Unit = {},
     onReset: (GradeK) -> Unit = {},
     onCropEdit: (GradeK) -> Unit = {},
+    // Quarter-turn rotate (owner request 2026-11-13 §1): the SAME route
+    // the clip-info sheet's rows drive — RotationState.applyManual in
+    // AppNav. Manual rotation is MediaSource state, NOT grade state, so
+    // it lives outside gradeHistory undo: each tap is one discrete
+    // persisted edit (the quarter-turn accumulation itself is
+    // JVM-tested in RotationStateTest).
+    onRotate: (byDeg: Int) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -4350,6 +4577,29 @@ private fun FrameCropBody(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // Quarter-turn pair: two 48dp IconButtons (stock M3 touch
+        // target), the vendored official Material Symbols Rounded
+        // glyphs (ic_undo precedent — material-icons-core 1.7.3 ships
+        // no rotate pair). A compact row above the aspect choice; the
+        // icons are self-describing, contentDescriptions reuse the
+        // info sheet's rotate strings.
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            IconButton(onClick = { onRotate(-90) }) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_rotate_left),
+                    contentDescription = stringResource(R.string.editor_rotate_left),
+                )
+            }
+            IconButton(onClick = { onRotate(90) }) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_rotate_right),
+                    contentDescription = stringResource(R.string.editor_rotate_right),
+                )
+            }
+        }
         // Aspect: one choice row (Free / 16:9 / 9:16 / 4:3 / 1:1). A preset
         // REPLACES the rect with the largest centered on-ratio rect
         // (CropState.aspectRect); FREE keeps the rect as it is.
@@ -4969,5 +5219,240 @@ private fun RawToggleRow(
             modifier = Modifier.padding(end = 16.dp),
         )
         Switch(checked = checked, onCheckedChange = null)
+    }
+}
+
+/**
+ * THE CROP OVERLAY (owner request 2026-11-13 §2): handles-on-preview
+ * cropping, composed as the FIRST child of the preview's anchor Box so
+ * its coordinate space IS the video rect (the Box measures exactly the
+ * video's bounds with the same previewBounds sizer the surface uses —
+ * pointer pixels map 1:1 onto [CropState.handleAt]'s width/height).
+ *
+ * ONE SOURCE OF TRUTH: the overlay never owns crop state. It draws the
+ * REAL grade's cropX/Y/W/H fractions and writes drags back through the
+ * caller's callbacks — the screen routes those through the SAME
+ * applyGradeEdit + SLIDER_GESTURE + settle pipeline the panel's four
+ * fraction sliders use, so the sliders and the handles are two views of
+ * one state and can never disagree. One handle drag is ONE undo step
+ * (frames coalesce on the open SLIDER_GESTURE entry; the end callback's
+ * gradeHistory.settle closes it), exactly like one slider drag.
+ *
+ * GESTURE ARBITRATION (the contract the preview relies on): the
+ * overlay's touch surface covers the WHOLE video rect, but its
+ * pointerInput consumes ONLY handle grabs. A down outside every handle's
+ * touch square returns from the gesture block WITHOUT consuming, so the
+ * event keeps flowing to the surface's zoom/pan handler and the hold
+ * handler below it (awaitEachGesture's inter-gesture drain awaits the
+ * Final pass without consuming — verified against the Compose 1.7.3
+ * source — so the early return cannot starve them). The corner chips
+ * (refresh/scope/zebra/fullscreen) are LATER siblings of the overlay:
+ * their clickables consume the down before the overlay's Main-pass hit
+ * test ever sees it, so they stay tappable on top of the overlay's
+ * surface; a crop smaller than full moves its corner handles away from
+ * the chips entirely.
+ *
+ * TOUCH VS VISUAL: each of the 8 handles is a 48dp TOUCH square
+ * (DESIGN.md touch targets; the hit tolerance passed to handleAt is
+ * 24dp so each square spans 48dp) but a much smaller drawn circle —
+ * the touch target is generous where the finger aims, the visual stays
+ * light. The drawn handle rides INSIDE the rect's corner/edge-midpoint
+ * squares, so the visuals never sit outside the crop.
+ *
+ * SNAP SEMANTICS (the sliders' own): drag frames are continuous raw
+ * fractions (snap = false — the slider's live drag values); release
+ * quantizes to the 1 percent grid (snap = true — the slider's settle
+ * semantics, CropState.FRACTION_STEP). The end callback fires on lift
+ * AND on cancellation (a second finger stealing the stream to pinch:
+ * the surface's pinch branch consumes everything on takeover, which
+ * cancels this block mid-drag) — both are the gesture's end, and both
+ * settle the same way.
+ */
+@Composable
+private fun CropOverlay(
+    rect: CropState.RectF,
+    frameW: Int,
+    frameH: Int,
+    preset: Int,
+    onDragStart: () -> Unit,
+    onDragFrame: (CropState.RectF) -> Unit,
+    onDragEnd: (CropState.RectF) -> Unit,
+) {
+    // rememberUpdatedState mirrors: the pointerInput below captures
+    // these ONCE (its key is Unit), so every volatile input — the grade
+    // fractions, the preset, the effective frame dims (swapped by a
+    // quarter-turn rotate), the callbacks — reads through a State that
+    // always holds the CURRENT value. The same pattern the render pump
+    // uses for its own one-time captures.
+    val currentRect by rememberUpdatedState(rect)
+    val currentFrameW by rememberUpdatedState(frameW)
+    val currentFrameH by rememberUpdatedState(frameH)
+    val currentPreset by rememberUpdatedState(preset)
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDragFrame by rememberUpdatedState(onDragFrame)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val handleDescription = stringResource(R.string.editor_crop_overlay)
+    // Color roles read in COMPOSITION (the draw lambda below is not a
+    // composable scope): the scrim role dimmed to the corner controls'
+    // own translucency (their surfaceContainerLowest.copy(alpha =
+    // 0.6f) precedent — a full-opacity scrim would hide the discarded
+    // region entirely, and judging a crop needs to see what is being
+    // thrown away), primary for the border and the handles. Roles,
+    // never hex (DESIGN.md).
+    val scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f)
+    val primaryColor = MaterialTheme.colorScheme.primary
+    Canvas(
+        Modifier
+            .fillMaxSize()
+            .semantics { contentDescription = handleDescription }
+            // ONE pointerInput for the whole overlay: the per-gesture
+            // hit test below decides whether this surface owns the
+            // stream (a handle grab) or passes it through untouched.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    val w = size.width.toFloat()
+                    val h = size.height.toFloat()
+                    // Half of 48dp: each handle's touch square spans
+                    // 48dp (DESIGN.md touch), the drawn circle is far
+                    // smaller (see the drawing below).
+                    val tolerance = 24.dp.toPx()
+                    val handle = CropState.handleAt(
+                        currentRect,
+                        down.position.x, down.position.y,
+                        w, h, tolerance,
+                    )
+                    // Not a handle grab: return WITHOUT consuming.
+                    // The down keeps flowing to the surface's zoom/pan
+                    // handler and the hold handler (pinch-zoom, pan,
+                    // double-tap, hold all keep working), and
+                    // awaitEachGesture's own inter-gesture drain
+                    // awaits the Final pass WITHOUT consuming, so this
+                    // early return cannot starve them of events.
+                    if (handle == null) return@awaitEachGesture
+                    // Handle grab: this surface owns the gesture. The
+                    // consumed down cancels the hold window (a handle
+                    // grab is not a before/after compare) and makes the
+                    // hold handler's cleanTap false (a grab is not a
+                    // fullscreen-chrome tap either).
+                    down.consume()
+                    currentOnDragStart()
+                    // The drag base: the rect AS GRABBED — every frame
+                    // applies the CUMULATIVE pointer delta to THIS
+                    // rect (applyHandleDrag's contract), never a
+                    // delta-on-delta chain that would drift.
+                    val base = currentRect
+                    val startX = down.position.x
+                    val startY = down.position.y
+                    var lastDx = 0f
+                    var lastDy = 0f
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change =
+                                event.changes.firstOrNull { it.id == down.id }
+                            // The dragged finger lifted: the gesture's
+                            // natural end.
+                            if (change == null || !change.pressed) break
+                            // A second finger over the video joins: the
+                            // pinch takes over (the surface's pinch
+                            // branch consumes everything from this
+                            // event on). End the drag HERE, through the
+                            // same settle path as a lift — one finger
+                            // drags handles, two fingers pinch, never
+                            // both at once.
+                            if (event.changes.count { it.pressed } >= 2) break
+                            lastDx = change.position.x - startX
+                            lastDy = change.position.y - startY
+                            change.consume()
+                            // Continuous while dragging (snap = false):
+                            // raw fractions under the finger, exactly
+                            // the slider's live drag values.
+                            currentOnDragFrame(
+                                CropState.applyHandleDrag(
+                                    base, handle, lastDx, lastDy,
+                                    w, h, currentPreset,
+                                    currentFrameW, currentFrameH,
+                                    snap = false,
+                                ),
+                            )
+                        }
+                    } finally {
+                        // EVERY end settles identically — lift, the
+                        // second-finger steal above, or coroutine
+                        // cancellation (the overlay leaving
+                        // composition mid-drag: a sub-tab switch under
+                        // another finger). The release snaps to the 1
+                        // percent grid (snap = true, the sliders' own
+                        // settle semantics), and the end callback runs
+                        // the screen's DragEnded + history-settle
+                        // route, so the open SLIDER_GESTURE entry can
+                        // never leak into the next gesture's undo step.
+                        currentOnDragEnd(
+                            CropState.applyHandleDrag(
+                                base, handle, lastDx, lastDy,
+                                w, h, currentPreset,
+                                currentFrameW, currentFrameH,
+                                snap = true,
+                            ),
+                        )
+                    }
+                }
+            },
+    ) {
+        // The video rect's pixel size — the overlay's whole coordinate
+        // space (the anchor Box IS the video rect).
+        val w = size.width
+        val h = size.height
+        if (w <= 0f || h <= 0f) return@Canvas
+        val x0 = rect.x * w
+        val y0 = rect.y * h
+        val x1 = (rect.x + rect.w) * w
+        val y1 = (rect.y + rect.h) * h
+        // Dim scrim OUTSIDE the rect (four bands), never inside: the
+        // kept region stays fully legible for judging the crop, and
+        // the discarded region stays faintly visible for the same
+        // reason.
+        drawRect(
+            color = scrimColor,
+            topLeft = Offset(0f, 0f),
+            size = Size(w, y0),
+        )
+        drawRect(
+            color = scrimColor,
+            topLeft = Offset(0f, y1),
+            size = Size(w, h - y1),
+        )
+        drawRect(
+            color = scrimColor,
+            topLeft = Offset(0f, y0),
+            size = Size(x0, y1 - y0),
+        )
+        drawRect(
+            color = scrimColor,
+            topLeft = Offset(x1, y0),
+            size = Size(w - x1, y1 - y0),
+        )
+        // Thin border on the rect.
+        drawRect(
+            color = primaryColor,
+            topLeft = Offset(x0, y0),
+            size = Size(x1 - x0, y1 - y0),
+            style = Stroke(width = 2.dp.toPx()),
+        )
+        // The 8 handles: corners + edge midpoints, drawn as small
+        // primary circles well inside their 48dp touch squares.
+        val handleRadius = 6.dp.toPx()
+        val points = listOf(
+            Offset(x0, y0), Offset(x1, y0), // top-left, top-right
+            Offset(x0, y1), Offset(x1, y1), // bottom-left, bottom-right
+            Offset((x0 + x1) / 2f, y0), // top edge midpoint
+            Offset((x0 + x1) / 2f, y1), // bottom edge midpoint
+            Offset(x0, (y0 + y1) / 2f), // left edge midpoint
+            Offset(x1, (y0 + y1) / 2f), // right edge midpoint
+        )
+        for (p in points) {
+            drawCircle(color = primaryColor, radius = handleRadius, center = p)
+        }
     }
 }

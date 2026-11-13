@@ -425,4 +425,338 @@ class CropStateTest {
         assertEquals(4, out.height)
         assertEquals(6 * 4, out.argb.size)
     }
+
+    // ---- overlay handles (owner request 2026-11-13 §2) ----
+    //
+    // The hit-test and drag tests use a 1000x1000 video rect, so a
+    // pointer pixel is exactly 0.1 percent and every expected number
+    // is hand-derived in percents; the preset drag tests use a square
+    // 1000x1000 FRAME too, where an on-ratio rect has w/h == ratio in
+    // fraction space (frameRatio 1).
+
+    @Test
+    fun `handleAt finds all 8 handles at their points`() {
+        val rect = CropState.RectF(0.2f, 0.2f, 0.5f, 0.5f)
+        // rect -> pixels (x0,y0)=(200,200), (x1,y1)=(700,700),
+        // midpoints mx=my=450.
+        assertEquals(
+            CropState.Handle.TOP_LEFT,
+            CropState.handleAt(rect, 200f, 200f, 1000f, 1000f, 24f),
+        )
+        assertEquals(
+            CropState.Handle.TOP_RIGHT,
+            CropState.handleAt(rect, 700f, 200f, 1000f, 1000f, 24f),
+        )
+        assertEquals(
+            CropState.Handle.BOTTOM_LEFT,
+            CropState.handleAt(rect, 200f, 700f, 1000f, 1000f, 24f),
+        )
+        assertEquals(
+            CropState.Handle.BOTTOM_RIGHT,
+            CropState.handleAt(rect, 700f, 700f, 1000f, 1000f, 24f),
+        )
+        assertEquals(
+            CropState.Handle.TOP,
+            CropState.handleAt(rect, 450f, 200f, 1000f, 1000f, 24f),
+        )
+        assertEquals(
+            CropState.Handle.BOTTOM,
+            CropState.handleAt(rect, 450f, 700f, 1000f, 1000f, 24f),
+        )
+        assertEquals(
+            CropState.Handle.LEFT,
+            CropState.handleAt(rect, 200f, 450f, 1000f, 1000f, 24f),
+        )
+        assertEquals(
+            CropState.Handle.RIGHT,
+            CropState.handleAt(rect, 700f, 450f, 1000f, 1000f, 24f),
+        )
+    }
+
+    @Test
+    fun `handleAt grows each handle point into its tolerance square`() {
+        val rect = CropState.RectF(0.2f, 0.2f, 0.5f, 0.5f)
+        // The square reaches 24px out in every direction.
+        assertEquals(
+            CropState.Handle.TOP_LEFT,
+            CropState.handleAt(rect, 176f, 176f, 1000f, 1000f, 24f),
+        )
+        // One pixel past the square is nobody's handle (the LEFT
+        // midpoint sits 250px away — no fallback edge catches it).
+        assertNull(CropState.handleAt(rect, 175f, 200f, 1000f, 1000f, 24f))
+        // The rect center and the far corner are outside every square.
+        assertNull(CropState.handleAt(rect, 450f, 450f, 1000f, 1000f, 24f))
+        assertNull(CropState.handleAt(rect, 990f, 990f, 1000f, 1000f, 24f))
+    }
+
+    @Test
+    fun `handleAt lets the corner win over the edge it sits on`() {
+        // A small rect (400..600) with a 60px tolerance: the point
+        // (450,400) is inside BOTH the TOP_LEFT corner square and the
+        // TOP midpoint square — the corner is tested first and wins,
+        // the documented tie-break for overlapping touch areas.
+        val rect = CropState.RectF(0.4f, 0.4f, 0.2f, 0.2f)
+        assertEquals(
+            CropState.Handle.TOP_LEFT,
+            CropState.handleAt(rect, 450f, 400f, 1000f, 1000f, 60f),
+        )
+    }
+
+    @Test
+    fun `handleAt returns null for degenerate video rects`() {
+        assertNull(
+            CropState.handleAt(CropState.FULL_RECT, 500f, 500f, 0f, 1000f, 24f),
+        )
+        assertNull(
+            CropState.handleAt(CropState.FULL_RECT, 500f, 500f, 1000f, 0f, 24f),
+        )
+    }
+
+    @Test
+    fun `free edge drags move one axis and pin the opposite edge`() {
+        val base = CropState.RectF(0.2f, 0.2f, 0.5f, 0.5f)
+        // RIGHT +100px: w 0.5 -> 0.6, the LEFT edge stays at 0.2.
+        var r = CropState.applyHandleDrag(
+            base, CropState.Handle.RIGHT, 100f, 0f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0.2f, r.x, 1e-6f)
+        assertEquals(0.6f, r.w, 1e-6f)
+        assertEquals(0.2f, r.y, 1e-6f)
+        assertEquals(0.5f, r.h, 1e-6f)
+        // LEFT -100px: w 0.5 -> 0.6, the RIGHT edge stays at 0.7.
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.LEFT, -100f, 0f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0.1f, r.x, 1e-6f)
+        assertEquals(0.6f, r.w, 1e-6f)
+        assertEquals(0.7f, r.x + r.w, 1e-6f)
+        assertEquals(0.5f, r.h, 1e-6f)
+        // BOTTOM +100px: h 0.5 -> 0.6, the TOP edge stays at 0.2.
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.BOTTOM, 0f, 100f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0.2f, r.y, 1e-6f)
+        assertEquals(0.6f, r.h, 1e-6f)
+        assertEquals(0.5f, r.w, 1e-6f)
+        // TOP -100px: h 0.5 -> 0.6, the BOTTOM edge stays at 0.7.
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.TOP, 0f, -100f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0.1f, r.y, 1e-6f)
+        assertEquals(0.6f, r.h, 1e-6f)
+        assertEquals(0.7f, r.y + r.h, 1e-6f)
+        assertEquals(0.5f, r.w, 1e-6f)
+    }
+
+    @Test
+    fun `free corner drags move both axes independently`() {
+        val base = CropState.RectF(0.2f, 0.2f, 0.5f, 0.5f)
+        // TOP_RIGHT (+100, -100)px: w and h both 0.5 -> 0.6; the
+        // anchored LEFT edge stays 0.2, the anchored BOTTOM edge
+        // stays 0.7.
+        val r = CropState.applyHandleDrag(
+            base, CropState.Handle.TOP_RIGHT, 100f, -100f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0.2f, r.x, 1e-6f)
+        assertEquals(0.6f, r.w, 1e-6f)
+        assertEquals(0.1f, r.y, 1e-6f)
+        assertEquals(0.6f, r.h, 1e-6f)
+        assertEquals(0.7f, r.y + r.h, 1e-6f)
+    }
+
+    @Test
+    fun `edge drags clamp at the 5 percent floor and the frame bounds`() {
+        val base = CropState.RectF(0.2f, 0.2f, 0.5f, 0.5f)
+        // LEFT dragged +600px: the new left edge wants 0.8, but the
+        // anchored right edge (0.7) minus the floor caps it at 0.65 ->
+        // w floors at 0.05.
+        var r = CropState.applyHandleDrag(
+            base, CropState.Handle.LEFT, 600f, 0f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0.65f, r.x, 1e-6f)
+        assertEquals(CropState.MIN_FRACTION, r.w, 1e-6f)
+        // LEFT dragged -300px: the left edge wants -0.1 and clamps at
+        // the frame bound 0 -> w grows to 0.7.
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.LEFT, -300f, 0f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0f, r.x, 1e-6f)
+        assertEquals(0.7f, r.w, 1e-6f)
+        // RIGHT dragged +600px: the right edge wants 1.3 and clamps
+        // at the frame bound 1 -> w grows to 0.8.
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.RIGHT, 600f, 0f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0.8f, r.w, 1e-6f)
+        assertEquals(1f, r.x + r.w, 1e-6f)
+    }
+
+    @Test
+    fun `preset edge drags run the slider lock chains`() {
+        // 16:9 on a square frame: an on-ratio rect has w/h = 16/9 in
+        // fraction space (0.4 / 0.225).
+        val base = CropState.RectF(0.2f, 0.2f, 0.4f, 0.225f)
+        // RIGHT +100px: the width-led lock derives h = 0.5 * 9/16 =
+        // 0.28125 — the SAME chain the W slider runs, so the overlay
+        // and the slider agree on the same width by construction.
+        var r = CropState.applyHandleDrag(
+            base, CropState.Handle.RIGHT, 100f, 0f, 1000f, 1000f,
+            CropState.ASPECT_16_9, 1000, 1000,
+        )
+        assertEquals(0.5f, r.w, 1e-6f)
+        assertEquals(0.28125f, r.h, 1e-6f)
+        assertEquals(0.2f, r.x, 1e-6f)
+        assertEquals(0.2f, r.y, 1e-6f)
+        // Cross-check: identical to lockAspect on the same width —
+        // the W slider's own chain, verbatim.
+        val sliderChain = CropState.lockAspect(
+            base.copy(w = 0.5f), CropState.ASPECT_16_9, 1000, 1000,
+        )
+        assertEquals(sliderChain.x, r.x, 1e-6f)
+        assertEquals(sliderChain.y, r.y, 1e-6f)
+        assertEquals(sliderChain.w, r.w, 1e-6f)
+        assertEquals(sliderChain.h, r.h, 1e-6f)
+        // TOP -100px: the height-led lock (the H slider's chain)
+        // derives w = 0.325 * 16/9 = 0.5777..., and the re-anchor
+        // pins the BOTTOM edge at its start line 0.425.
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.TOP, 0f, -100f, 1000f, 1000f,
+            CropState.ASPECT_16_9, 1000, 1000,
+        )
+        assertEquals(0.325f, r.h, 1e-6f)
+        assertEquals(0.325f * 16f / 9f, r.w, 1e-6f)
+        assertEquals(0.425f, r.y + r.h, 1e-6f)
+        assertEquals(0.2f, r.x, 1e-6f)
+        // 4:3 BOTTOM +100px from an on-ratio 0.4x0.3 rect: the
+        // height-led lock derives w = 0.4 * 4/3 = 0.5333...
+        r = CropState.applyHandleDrag(
+            CropState.RectF(0.2f, 0.2f, 0.4f, 0.3f),
+            CropState.Handle.BOTTOM, 0f, 100f, 1000f, 1000f,
+            CropState.ASPECT_4_3, 1000, 1000,
+        )
+        assertEquals(0.4f, r.h, 1e-6f)
+        assertEquals(0.4f * 4f / 3f, r.w, 1e-6f)
+        assertEquals(0.2f, r.y, 1e-6f)
+    }
+
+    @Test
+    fun `preset corner drags follow the on-ratio ray from the anchored corner`() {
+        // 1:1 on a square frame: the ray is the diagonal, k = 1.
+        // A PURE-VERTICAL drag still resizes: the projection of
+        // (0, +0.1) onto the diagonal advances the corner by 0.05
+        // along each axis -> w = h = 0.45.
+        var r = CropState.applyHandleDrag(
+            CropState.RectF(0.2f, 0.2f, 0.4f, 0.4f),
+            CropState.Handle.BOTTOM_RIGHT, 0f, 100f, 1000f, 1000f,
+            CropState.ASPECT_1_1, 1000, 1000,
+        )
+        assertEquals(0.45f, r.w, 1e-6f)
+        assertEquals(0.45f, r.h, 1e-6f)
+        assertEquals(0.2f, r.x, 1e-6f)
+        assertEquals(0.2f, r.y, 1e-6f)
+        // 16:9 on a square frame: k = frameRatio / ratio = 9/16; a
+        // pure-HORIZONTAL +100px drag projects onto the ray
+        // (1, 9/16): t = fx / (1 + k^2), expected w follows the same
+        // formula the implementation runs (the straighten-zoom
+        // tests' derive-through-the-formula style), and the lock
+        // keeps the result on-ratio.
+        val k = 9f / 16f
+        val expectedW = 0.4f + 0.1f / (1f + k * k)
+        r = CropState.applyHandleDrag(
+            CropState.RectF(0.2f, 0.2f, 0.4f, 0.225f),
+            CropState.Handle.BOTTOM_RIGHT, 100f, 0f, 1000f, 1000f,
+            CropState.ASPECT_16_9, 1000, 1000,
+        )
+        assertEquals(expectedW, r.w, 1e-6f)
+        assertEquals(expectedW * 9f / 16f, r.h, 1e-6f)
+        assertEquals(0.2f, r.x, 1e-6f)
+        assertEquals(0.2f, r.y, 1e-6f)
+    }
+
+    @Test
+    fun `release snap quantizes the leading axis to the 1 percent grid`() {
+        val base = CropState.RectF(0.2f, 0.2f, 0.5f, 0.5f)
+        // Continuous drag frames keep the raw pointer fraction...
+        var r = CropState.applyHandleDrag(
+            base, CropState.Handle.RIGHT, 33f, 0f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000, snap = false,
+        )
+        assertEquals(0.533f, r.w, 1e-6f)
+        // ...and release snaps it to the grid (0.533 -> 0.53).
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.RIGHT, 33f, 0f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000, snap = true,
+        )
+        assertEquals(0.53f, r.w, 1e-6f)
+        assertEquals(0.2f, r.x, 1e-6f)
+        // Rounding: 0.567 lands on the 57th tick, not the 56th.
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.RIGHT, 67f, 0f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000, snap = true,
+        )
+        assertEquals(0.57f, r.w, 1e-6f)
+        // FREE corners snap BOTH axes, and the re-anchor keeps the
+        // opposite corner pinned: TOP_LEFT (-33, -33) -> w = h = 0.53
+        // at (0.17, 0.17), the bottom-right corner staying at 0.7.
+        r = CropState.applyHandleDrag(
+            base, CropState.Handle.TOP_LEFT, -33f, -33f, 1000f, 1000f,
+            CropState.ASPECT_FREE, 1000, 1000, snap = true,
+        )
+        assertEquals(0.53f, r.w, 1e-6f)
+        assertEquals(0.53f, r.h, 1e-6f)
+        assertEquals(0.17f, r.x, 1e-6f)
+        assertEquals(0.17f, r.y, 1e-6f)
+        assertEquals(0.7f, r.x + r.w, 1e-6f)
+        assertEquals(0.7f, r.y + r.h, 1e-6f)
+    }
+
+    @Test
+    fun `release snap under a preset snaps the leader and derives the follower on-ratio`() {
+        // 16:9 on a square frame, RIGHT +33px: the width snaps to
+        // 0.43 and the lock DERIVES h = 0.43 * 9/16 = 0.241875 —
+        // deliberately NOT on the 1 percent grid, the sliders' own
+        // "leading axis snapped, derived axis on-ratio" settle.
+        val r = CropState.applyHandleDrag(
+            CropState.RectF(0.2f, 0.2f, 0.4f, 0.225f),
+            CropState.Handle.RIGHT, 33f, 0f, 1000f, 1000f,
+            CropState.ASPECT_16_9, 1000, 1000, snap = true,
+        )
+        assertEquals(0.43f, r.w, 1e-6f)
+        assertEquals(0.43f * 9f / 16f, r.h, 1e-6f)
+        assertEquals(0.2f, r.x, 1e-6f)
+    }
+
+    @Test
+    fun `unknown frame dims degrade a preset drag to free behavior`() {
+        // frameW/frameH 0 (before the first publish): the locks'
+        // own guard — the drag still works, unconstrained.
+        val r = CropState.applyHandleDrag(
+            CropState.RectF(0.2f, 0.2f, 0.5f, 0.5f),
+            CropState.Handle.RIGHT, 100f, 0f, 1000f, 1000f,
+            CropState.ASPECT_16_9, 0, 0,
+        )
+        assertEquals(0.6f, r.w, 1e-6f)
+        assertEquals(0.5f, r.h, 1e-6f)
+        assertEquals(0.2f, r.x, 1e-6f)
+    }
+
+    @Test
+    fun `degenerate video rects clamp and return the start rect`() {
+        val r = CropState.applyHandleDrag(
+            CropState.RectF(-0.1f, 0f, 2f, 0.01f),
+            CropState.Handle.RIGHT, 100f, 100f, 0f, 0f,
+            CropState.ASPECT_FREE, 1000, 1000,
+        )
+        assertEquals(0f, r.x, 1e-6f)
+        assertEquals(1f, r.w, 1e-6f)
+        assertEquals(CropState.MIN_FRACTION, r.h, 1e-6f)
+    }
 }
