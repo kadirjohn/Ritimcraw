@@ -317,6 +317,9 @@
     <string name="timeline_track_video">Video</string>
     <string name="timeline_track_audio">Audio</string>
     <string name="timeline_playhead_frame">Frame %1$d</string>
+    <string name="timeline_play">Play timeline</string>
+    <string name="timeline_pause">Pause timeline</string>
+    <string name="timeline_preview">Timeline preview</string>
     <string name="timeline_split">Split at playhead</string>
     <string name="timeline_duplicate">Duplicate</string>
     <string name="timeline_remove">Remove</string>

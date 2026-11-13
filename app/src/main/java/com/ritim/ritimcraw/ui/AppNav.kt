@@ -883,6 +883,31 @@ fun AppNav() {
                     sources = sources,
                     metadata = stores.metadata,
                     audio = stores.audio,
+                    // The preview's seams (the editor's sourceFdProvider /
+                    // sourceMime pattern): a FRESH read-only fd per open
+                    // and the content type for the MCRAW/ENCODED decision.
+                    // The session/factory owns every fd-ownership rule
+                    // from here (MCRAW dup's, encoded adopts).
+                    sourceFdFor = { sourceId ->
+                        val source = stores.sources.get(sourceId)
+                            ?: return@TimelineScreen -1
+                        try {
+                            context.contentResolver
+                                .openFileDescriptor(Uri.parse(source.uri), "r")
+                                ?.detachFd() ?: -1
+                        } catch (e: Exception) {
+                            -1
+                        }
+                    },
+                    sourceMimeFor = { sourceId ->
+                        val uri = stores.sources.get(sourceId)?.uri
+                            ?: return@TimelineScreen null
+                        try {
+                            context.contentResolver.getType(Uri.parse(uri))
+                        } catch (e: Exception) {
+                            null
+                        }
+                    },
                     onBack = { timelineOpen = false },
                     // Timeline export (TL-EX): the screen hands up the
                     // COMMITTED project (its own state var — never a
