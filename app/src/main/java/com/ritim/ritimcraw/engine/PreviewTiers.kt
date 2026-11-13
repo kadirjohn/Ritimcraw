@@ -27,7 +27,8 @@ object PreviewTiers {
      *    settle, zoom settle, grade settle, refresh, precision scrub,
      *    before/after hold, first frame, the full-res follow-up. The ONLY
      *    class that may run temporal NR (and only at tier >=
-     *    [PAUSED_MAX_DIM], via [temporalNrAppliesAt]).
+     *    [PAUSED_MAX_DIM] or at the [SOURCE_MAX_DIM] full-res follow-up,
+     *    via [temporalNrAppliesAt]).
      *  - [PLAYBACK] — the playback loop's per-frame renders. NEVER runs
      *    temporal NR, at ANY tier (see [temporalNrAppliesAt] for the
      *    measured cause).
@@ -75,15 +76,22 @@ object PreviewTiers {
      * could no longer tell a playback render from a settle render.
      *
      * Policy after the fix: only [RenderClass.SETTLE] renders may run the
-     * merge, and only at tier >= [PAUSED_MAX_DIM] (today's settle
-     * behavior, unchanged: 1280 pause/clip-end/zoom settle and any
-     * full-res tier keep it; the drag tier and the 0-dim SOURCE follow-up
-     * stay below the floor exactly as before). [RenderClass.PLAYBACK]
-     * NEVER runs temporal NR at any tier — a skipped render shows the
-     * pristine center, and the effect lands on the settle render when the
-     * user pauses. [RenderClass.DRAG] never runs it (it already could not
-     * at 480; a ZOOMED drag priced at the 1280 settle tier keeps the DRAG
-     * class and stays honest — interactive renders never pay the merge).
+     * merge, at tier >= [PAUSED_MAX_DIM] OR at the [SOURCE_MAX_DIM] (0)
+     * full-res follow-up (the audit fix 2026-11-13: the pure tier floor
+     * `>= PAUSED_MAX_DIM` silently skipped the SOURCE follow-up — maxDim 0
+     * is BELOW every floor by construction — so the single full-res
+     * settle render arrived UN-merged and visibly replaced the denoised
+     * 1280 pause frame with a noisier one at the settle. The follow-up is
+     * a one-off parked render, exactly the case the merge is for; it now
+     * applies). Settle-class renders at nonzero tiers below 1280 (e.g. the
+     * 720 playback-tier size used by precision scrubbing) still skip the
+     * merge — the tier floor survives inside the settle class.
+     * [RenderClass.PLAYBACK] NEVER runs temporal NR at any tier — a
+     * skipped render shows the pristine center, and the effect lands on
+     * the settle render when the user pauses. [RenderClass.DRAG] never
+     * runs it (it already could not at 480; a ZOOMED drag priced at the
+     * 1280 settle tier keeps the DRAG class and stays honest —
+     * interactive renders never pay the merge).
      *
      * HONEST BUDGET NOTE (no auto-downscaling, the quality ladder is
      * untouched): with NR off, a 1280-tier playback render still pays the
@@ -98,7 +106,8 @@ object PreviewTiers {
      * and always applies temporal at full quality.
      */
     fun temporalNrAppliesAt(maxDim: Int, renderClass: RenderClass): Boolean =
-        renderClass == RenderClass.SETTLE && maxDim >= PAUSED_MAX_DIM
+        renderClass == RenderClass.SETTLE &&
+            (maxDim == SOURCE_MAX_DIM || maxDim >= PAUSED_MAX_DIM)
 
     /**
      * Stabilization warp tier policy (gyro Phase 5, audit fix 2026-11-12):

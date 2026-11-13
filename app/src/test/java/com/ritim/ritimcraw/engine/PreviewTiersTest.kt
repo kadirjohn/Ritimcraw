@@ -8,11 +8,15 @@ import org.junit.Test
  * PreviewTiers tests: the tier policies. The constants themselves are
  * exercised by every render-path test; this suite locks the policy
  * decisions — temporal NR (DN-08 graceful degradation) applies ONLY to
- * SETTLE-class renders at the settle/paused tier and above: the render
- * CLASS, not the tier size, decides (choppy-preview fix 2026-11-13 — the
- * old tier-only gate silently turned the merge on for PLAYBACK renders
+ * SETTLE-class renders at the settle/paused tier and above, plus the
+ * SOURCE_MAX_DIM (0) full-res settle follow-up: the render CLASS, not
+ * the tier size, decides (choppy-preview fix 2026-11-13 — the old
+ * tier-only gate silently turned the merge on for PLAYBACK renders
  * whenever the preview-quality setting made the playback tier 1280, and
- * the owner's device measured ~3.65 renders/sec at HIGH). The gyro
+ * the owner's device measured ~3.65 renders/sec at HIGH; audit fix later
+ * that day — the pure tier floor also skipped the 0-dim SOURCE
+ * follow-up, whose maxDim sits below every floor by construction). The
+ * gyro
  * stabilization warp (gyro Phase 5, audit fix 2026-11-12) applies at
  * EVERY tier: its cost scales with the developed buffer (measured ~1-5
  * ms at the preview tiers), and skipping it at any tier made
@@ -45,7 +49,9 @@ class PreviewTiersTest {
         // (~274 ms/frame, position advancing +8 frames/render). The class,
         // not the tier size, decides now: playback NEVER runs the merge;
         // a skipped render shows the pristine center, and the effect
-        // lands on the settle render when the user pauses.
+        // lands on the settle render when the user pauses. Pinned at the
+        // SOURCE tier too: the 0-dim follow-up is a SETTLE-only render,
+        // and playback must never inherit the source-tier fix.
         assertFalse(
             PreviewTiers.temporalNrAppliesAt(
                 PreviewTiers.PAUSED_MAX_DIM, PreviewTiers.RenderClass.PLAYBACK,
@@ -59,6 +65,11 @@ class PreviewTiersTest {
         assertFalse(
             PreviewTiers.temporalNrAppliesAt(
                 SliderTiers.DRAG_MAX_DIM, PreviewTiers.RenderClass.PLAYBACK,
+            )
+        )
+        assertFalse(
+            PreviewTiers.temporalNrAppliesAt(
+                PreviewTiers.SOURCE_MAX_DIM, PreviewTiers.RenderClass.PLAYBACK,
             )
         )
     }
@@ -98,16 +109,26 @@ class PreviewTiersTest {
 
     @Test
     fun temporal_skipped_at_settle_below_the_paused_tier() {
-        // Today's behavior, pinned: a settle-class render below 1280 skips
-        // the merge (the old tier floor survives inside the settle class),
-        // and the SOURCE_MAX_DIM (0) full-res follow-up skips it too — its
-        // 1280 intermediate (the pause render) already carried the merge.
+        // A settle-class render at a nonzero tier below 1280 skips the
+        // merge — the tier floor survives inside the settle class (the
+        // 720 playback-tier size used by precision scrubbing etc.).
         assertFalse(
             PreviewTiers.temporalNrAppliesAt(
                 PreviewTiers.PLAYBACK_MAX_DIM, PreviewTiers.RenderClass.SETTLE,
             )
         )
-        assertFalse(
+    }
+
+    @Test
+    fun temporal_applies_to_settle_at_source_resolution_follow_up() {
+        // THE AUDIT FIX (2026-11-13): the SOURCE_MAX_DIM (0) full-res
+        // settle follow-up previously skipped the merge — its maxDim sits
+        // below every >= floor by construction, so the pure tier gate
+        // could never reach it. The follow-up is a one-off parked render,
+        // exactly what the merge is for; the old skip made the full-res
+        // frame visibly REPLACE the denoised 1280 pause frame with a
+        // noisier one at the settle. It applies now.
+        assertTrue(
             PreviewTiers.temporalNrAppliesAt(
                 PreviewTiers.SOURCE_MAX_DIM, PreviewTiers.RenderClass.SETTLE,
             )

@@ -111,6 +111,8 @@ import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.PreviewTiers.RenderClass
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
+import com.ritim.ritimcraw.engine.RenderTrace
+import com.ritim.ritimcraw.ui.editor.PublishCrop
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
@@ -1748,6 +1750,13 @@ fun ClipEditorScreen(
                     // -> PreviewTiers.stabilizationAppliesAt), so the pump
                     // stays policy-free and every arm just carries the path.
                     val gyroPath = currentGyroId.takeIf { it.isNotBlank() }?.let(currentGyroPathFor)
+                    // Render trace (audit M0, 2026-11-13): wall time of the
+                    // render call itself (the PreviewMetrics precedent), so
+                    // the trace's ms= carries the develop pipeline the
+                    // audit's host harness measured — NOT the UI crop, which
+                    // is a publish-space resample the host numbers never
+                    // included.
+                    val renderStartedMs = System.currentTimeMillis()
                     val result = if (sessionRender && s != null) {
                         if (req.cached) {
                             // Interactive drag render: the bridge reuses the
@@ -1793,6 +1802,7 @@ fun ClipEditorScreen(
                             }
                         }
                     }
+                    val renderMs = System.currentTimeMillis() - renderStartedMs
                     if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
                         result.fold(
                             onSuccess = { f ->
@@ -1804,7 +1814,8 @@ fun ClipEditorScreen(
                                 effectiveDims = RotationState.rotatedDims(
                                     f.width, f.height, currentManualRotationDeg,
                                 )
-                                // Crop + straighten (RAW-09): the
+                                // Crop + straighten (RAW-09), OFF the
+                                // main thread (audit fix 2026-11-13): the
                                 // published preview is the GRADED frame
                                 // cut to the crop rect, in the same
                                 // effective space the user sees. The
@@ -1812,33 +1823,71 @@ fun ClipEditorScreen(
                                 // CONTAINER-upright pixels and the
                                 // surface turns only the manual delta,
                                 // so the rect is mapped through the
-                                // delta first (CropState.applyToArgb
-                                // returns the input buffer untouched
-                                // while the crop group is neutral).
-                                val cropped = CropState.applyToArgb(
-                                    argb = f.argb,
-                                    width = f.width,
-                                    height = f.height,
-                                    rect = CropState.RectF(
-                                        req.grade.cropX,
-                                        req.grade.cropY,
-                                        req.grade.cropW,
-                                        req.grade.cropH,
-                                    ),
-                                    straightenDeg = req.grade.straightenDeg,
+                                // delta first. PublishCrop plans the
+                                // fold: the NEUTRAL crop group publishes
+                                // inline (the input buffer by
+                                // reference — no dispatcher hop, the
+                                // pre-fix fast path), an ACTIVE
+                                // crop/straighten resamples on
+                                // Dispatchers.Default and publishes
+                                // under the same generation guard. The
+                                // pump AWAITS the resample, so it stays
+                                // serial: one render, one crop, one
+                                // publish, in sequence order.
+                                when (val plan = PublishCrop.plan(
+                                    frame = f,
+                                    grade = req.grade,
                                     spaceDeltaDeg = currentManualRotationDeg,
-                                )
-                                frame = PreviewFrame(
-                                    width = cropped.width,
-                                    height = cropped.height,
-                                    argb = cropped.argb,
-                                )
+                                    sequence = req.sequence,
+                                    frameIndex = req.frameIndex,
+                                )) {
+                                    is PublishCrop.Plan.PublishInline -> frame = plan.frame
+                                    is PublishCrop.Plan.ResampleOffMain -> {
+                                        val cropped = PublishCrop.resample(plan.request)
+                                        if (PublishCrop.mayPublish(
+                                                plan.request.sequence, lastPublished,
+                                            )
+                                        ) {
+                                            frame = cropped
+                                        }
+                                    }
+                                }
                                 // The rendered frame's index, published
                                 // beside the frame (feature N6): the
                                 // scope compute's RAW fetch asks for
                                 // stats of THIS frame, never guessing
                                 // the index from transport state.
                                 renderedFrameIndex = req.frameIndex
+                                // The production render trace line (audit
+                                // M0): ONE line per COMPLETED render, at the
+                                // completion point. out= is the developed
+                                // buffer's own dims (f, pre-crop — the truth
+                                // the native strideFor produced, so a 720
+                                // request on a 4K clip logs 640x360); tnr
+                                // carries the tier gate's DECISION for this
+                                // render (class + tier, the M0 SOURCE fix
+                                // visible in the trace), not the grade's
+                                // toggle; stab only when a gyro log was
+                                // actually attached and carried. Debug builds
+                                // only — no-op in release.
+                                RenderTrace.log(
+                                    RenderTrace.Record(
+                                        sequence = req.sequence,
+                                        frameIndex = req.frameIndex,
+                                        renderClass = req.renderClass,
+                                        requestedMaxDim = req.maxDim,
+                                        outW = f.width,
+                                        outH = f.height,
+                                        renderMs = renderMs,
+                                        grade = req.grade,
+                                        temporalNrApplied = req.grade.temporalNr &&
+                                            PreviewTiers.temporalNrAppliesAt(
+                                                req.maxDim, req.renderClass,
+                                            ),
+                                        stabilizationApplied = req.grade.stabilization &&
+                                            gyroPath != null,
+                                    )
+                                )
                                 lastRenderFailed = false
                                 errorText = null
                             },
