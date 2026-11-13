@@ -399,12 +399,27 @@ the first REAL GPU render path (a draw, not a compute dispatch):
   the tonemap math has no hand copy to drift), but their GPU run is
   device-test-pending like the rest.
   Encoder Surface mode — implemented + compiled, JVM seam-tested
-  (Mp4ExporterTest 70/70); device-test-pending. Owner device test:
+  (Mp4ExporterTest); device-test-pending. Export render-backend visibility
+  (owner request 2026-11-13, deliverable (c)): every export emits ONE
+  DEBUG stage-log line "render backend: requested=<X> effective=<Y>
+  unsupported=<tokens or none>" — the effective value is the encoder-input
+  axis the export actually has (GLES = the writer took the encoder-Surface
+  mode; the per-frame develop always runs the CPU reference — the fragment
+  develop pass is not wired into the export), and the unsupported tokens
+  are the exact BackendRules fragment vocabulary for the grade (plus
+  gyro-warp when stabilization is on AND a log is attached) — "none" for
+  the default grade after the stage 2+3+23 ports, which is the coverage
+  statement for the day the fragment develop is wired in. A GPU request
+  that engaged the Surface mode also logs "encoder input: surface". The
+  existing "render backend fallback: ... reason=surface-input-unavailable"
+  restart line coexists unchanged. Owner device test:
   Settings -> GPU Experimental, export a DEFAULT-grade clip (no other
-  edits) — expect the Surface-input encoder path with NO fallback line
-  (stages 2, 3 and 23 are covered now, so a tonemap grade exports on GPU
-  too); a grade with an active uncovered stage (e.g. chroma denoise)
-  still honestly logs the fragment fallback line and runs CPU. Run
-  Measure for the probe + all three parity legs (the fixed indexed
-  probe should now report compute=1 on the owner's Xiaomi 15 Ultra /
-  Adreno 830).
+  edits) — expect the Surface-input encoder path, the new line saying
+  requested=GPU_EXPERIMENTAL effective=GLES unsupported=none, the
+  "encoder input: surface" line, and NO fallback line (stages 2, 3 and 23
+  are covered now, so a tonemap grade exports on GPU too); a grade with an
+  active uncovered stage (e.g. chroma denoise) still honestly logs the
+  fragment fallback line, runs CPU, and its visibility line names the
+  token (unsupported=chroma-denoise). Run Measure for the probe + all
+  three parity legs (the fixed indexed probe should now report compute=1
+  on the owner's Xiaomi 15 Ultra / Adreno 830).
