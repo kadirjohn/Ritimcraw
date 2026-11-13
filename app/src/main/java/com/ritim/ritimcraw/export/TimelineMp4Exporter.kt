@@ -69,7 +69,9 @@ import kotlin.coroutines.suspendCoroutine
  * session, closed at the end); [sources]/[fpsMeasured]/[frameCount]/[gradeFor]
  * resolve the WORLD at run time (the snapshot froze user intent, not
  * the world — the same live-world semantics as the per-clip export's
- * fps/frame metadata); [writerFactory] builds the MP4 writer.
+ * fps/frame metadata); [writerFactory] builds the MP4 writer;
+ * [converter] is the RGB -> I420 step (native twin, Kotlin fallback —
+ * byte-identical either way).
  *
  * The whole pipeline runs on the shared export engine thread
  * ([ExportEngine]) — one motioncam decoder is not concurrency-safe and
@@ -91,6 +93,15 @@ class TimelineMp4Exporter(
     private val lutPathFor: (String?) -> String? = { null },
     /** Per-export stage log sink; null = no logging. */
     private val stageLog: ((String) -> Unit)? = null,
+    /**
+     * The RGB888 -> I420 conversion seam (the per-clip export's
+     * [ExportPipeline.converter] pattern): the default dispatches to the
+     * byte-exact native twin with the Kotlin YuvConverter.toI420 as
+     * fallback (see [NativeRgbToI420]); JVM tests inject a pure fake. The
+     * conversion's BYTES are identical either way — that is the seam's
+     * whole contract (core/src/Yuv.cpp).
+     */
+    private val converter: RgbToI420 = NativeRgbToI420,
 ) {
 
     /**
@@ -294,10 +305,10 @@ class TimelineMp4Exporter(
                                     upright.rgb, upright.width, upright.height,
                                     plan.width, plan.height,
                                 )
-                                val converted = YuvConverter.toI420(
+                                val converted = convertFrame(
                                     scaled, plan.width, plan.height,
                                 )
-                                writer.writeVideoFrame(pts(done, plan.fps), converted)
+                                writer.writeVideoFrame(pts(done, plan.fps), converted.i420)
                                 done++
                                 onProgress?.invoke(done, plan.totalFrames)
                             }
@@ -371,6 +382,28 @@ class TimelineMp4Exporter(
 
     /** Output-grid pts: frame [i] at i seconds / fps, in microseconds. */
     private fun pts(i: Int, fps: Int): Long = i.toLong() * 1_000_000L / fps
+
+    /**
+     * One frame's conversion through the seam, plus the debug dual-run
+     * (the per-clip export's [ExportPipeline.convertFrame] pattern — the
+     * byte-exactness affordance): the FIRST frame produced by the native
+     * path of an export is converted by Kotlin too, and the comparison
+     * lands in the stage-log sink (a null stageLog means the dual-run
+     * never runs, so release exports pay nothing). The native bytes
+     * always win: a mismatch is logged, never applied.
+     */
+    private fun convertFrame(rgb: ByteArray, width: Int, height: Int): RgbToI420Result {
+        val traced = converter.convert(rgb, width, height)
+        if (stageLog != null && RgbToI420Verify.shouldDualRun(nativeFramesSeen, traced.fromNative)) {
+            val kt = YuvConverter.toI420(rgb, width, height)
+            RgbToI420Verify.line(width, height, traced.i420, kt)?.let { stageLog(it) }
+        }
+        if (traced.fromNative) nativeFramesSeen++
+        return traced
+    }
+
+    /** Native-produced frames so far this export (the dual-run counter). */
+    private var nativeFramesSeen = 0
 
     private fun failed(
         job: ExportJob,

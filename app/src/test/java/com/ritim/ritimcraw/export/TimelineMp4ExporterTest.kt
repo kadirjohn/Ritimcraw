@@ -207,6 +207,7 @@ class TimelineMp4ExporterTest {
         frames: Map<String, Int> = mapOf("s1" to 8, "s2" to 8),
         stageLog: ((String) -> Unit)? = null,
         engine: ExecutorService = freshEngine(),
+        converter: RgbToI420 = NativeRgbToI420,
     ): TimelineMp4Exporter {
         val fdOf = sources.keys.withIndex().associate { (i, id) -> id to 10 + i }
         return TimelineMp4Exporter(
@@ -219,6 +220,7 @@ class TimelineMp4ExporterTest {
             frameCount = { id -> frames[id] },
             gradeFor = { GradeK() },
             stageLog = stageLog,
+            converter = converter,
         )
     }
 
@@ -609,6 +611,100 @@ class TimelineMp4ExporterTest {
         // 0..8 with the SAME total — the plan's totalFrames.
         assertEquals((0..8).toList(), reports.map { it.first })
         assertTrue(reports.all { it.second == 8 })
+    }
+
+    // ---- RgbToI420 seam: the native YUV step's dispatch + debug dual-run ----
+
+    @Test
+    fun rgb_to_i420_seam_default_is_the_native_dispatcher() {
+        // The exporter's default converter is the native dispatch (the
+        // per-clip export's seam, now shared by the timeline walk). On the
+        // JVM the library is unavailable, so the dispatch falls back to the
+        // Kotlin toI420 — and the writer still receives the exact
+        // YuvConverter bytes (the fallback wiring's proof).
+        val writer = FakeWriter()
+        val e = exporter(FakeSession(), writer)
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        // 4x4 output, 4x4 source, deg 0: identity scale, so the converter
+        // saw exactly the session's 128-gray frame.
+        val expected = YuvConverter.toI420(
+            ByteArray(4 * 4 * 3) { 128.toByte() }, 4, 4,
+        )
+        assertTrue(writer.frames[0].contentEquals(expected))
+    }
+
+    @Test
+    fun rgb_to_i420_injected_converter_feeds_the_writer() {
+        // A fake converter proves the walk calls THROUGH the seam and feeds
+        // the writer what the seam returned (not a re-conversion): one call
+        // per rendered clip frame, zero for the black gap.
+        var calls = 0
+        val marker = ByteArray(4 * 4 + 2 * 2 * 2) { 7.toByte() }
+        val converter = RgbToI420 { _, _, _ ->
+            calls++
+            RgbToI420Result(marker, fromNative = false)
+        }
+        val writer = FakeWriter()
+        val e = exporter(FakeSession(), writer, converter = converter)
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        // 6 rendered clip frames (3 + 3), the 2 gap frames are blackI420
+        // and never reach the seam.
+        assertEquals(6, calls)
+        assertTrue(writer.frames[0].contentEquals(marker))
+        assertFalse(writer.frames[3].contentEquals(marker)) // the gap stays black
+    }
+
+    @Test
+    fun rgb_to_i420_walk_dual_run_logs_through_the_stage_sink() {
+        // A converter that claims native origin drives the walk's dual-run:
+        // the FIRST frame logs the comparison line through the stage sink,
+        // later frames do not (the per-clip pipeline's affordance, now on
+        // the timeline walk too).
+        val converter = RgbToI420 { rgb, w, h ->
+            RgbToI420Result(YuvConverter.toI420(rgb, w, h), fromNative = true)
+        }
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        val e = exporter(FakeSession(), writer, stageLog = lines::add, converter = converter)
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        // Exactly ONE dual-run line for the whole export.
+        assertEquals(1, lines.count { it.startsWith("rgbToI420 dual-run") })
+        val dual = lines.first { it.startsWith("rgbToI420 dual-run") }
+        assertTrue(dual.contains("native == kotlin"))
+    }
+
+    @Test
+    fun rgb_to_i420_walk_dual_run_skipped_for_kotlin_frames() {
+        // fromNative false (the JVM fallback, any pure fake): no dual-run
+        // line, even with the sink wired.
+        val converter = RgbToI420 { rgb, w, h ->
+            RgbToI420Result(YuvConverter.toI420(rgb, w, h), fromNative = false)
+        }
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        val e = exporter(FakeSession(), writer, stageLog = lines::add, converter = converter)
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        assertEquals(0, lines.count { it.startsWith("rgbToI420 dual-run") })
+    }
+
+    @Test
+    fun rgb_to_i420_walk_dual_run_skipped_without_sink() {
+        // A null stage sink (release builds, logging off): the dual-run
+        // never runs — the guard is the sink itself, so release exports
+        // pay zero.
+        val converter = RgbToI420 { rgb, w, h ->
+            RgbToI420Result(YuvConverter.toI420(rgb, w, h), fromNative = true)
+        }
+        val writer = FakeWriter()
+        val e = exporter(FakeSession(), writer, converter = converter)
+        val out = File(tmp.root, "timeline.mp4")
+        val result = runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        assertEquals(State.DONE, result.state) // the export ran, conversion included
+        assertEquals(8, writer.videoFrames)
     }
 
     // ---- blackI420 ----
