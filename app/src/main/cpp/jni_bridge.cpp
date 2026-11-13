@@ -2301,7 +2301,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesParity(
 //   fragment pass -> SSBO -> glMapBufferRange (never glReadPixels) ->
 //   clamp + uint16 quantize exactly like the developLinear tail.
 //
-// [caseIndex] selects the parity case (gles/GlesPipeline.h documents both):
+// [caseIndex] selects the parity case (gles/GlesPipeline.h documents all
+// three):
 //   0 — the developLinear shape (uHasShading=0, uHr=0): the reference is
 //       rawedit::developLinear itself, same frame, byte-honest regardless
 //       of the clip's real metadata (the Measure leg keeps this case).
@@ -2309,6 +2310,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesParity(
 //       map-present gate with the real 4-plane map uploaded, uHr=1 with
 //       uHrGain = meta.wbGains with the >0 guard): the reference is
 //       computed C++-side from the exported rawedit primitives.
+//   2 — the TONEMAP sweep (stage 23): uTonemap runs modes 1 (ACES) through
+//       5 (AgX Base), one develop+store+readback pass per mode; each
+//       mode's reference is rawedit::developCpu itself with a default
+//       Grade (tonemap=mode only) and an identity-matrices meta copy, so
+//       the reference is the real exported stage list (1+2+3+4+5+23).
+//       The report carries the WORST case across the five modes and
+//       samples = 5 * w * h * 3.
 // Returns
 //
 //   [0] ran           1 when the GPU pass produced real numbers

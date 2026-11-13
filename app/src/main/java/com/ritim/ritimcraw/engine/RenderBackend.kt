@@ -200,14 +200,15 @@ object BackendRules {
      * GlesShaderSources.DEVELOP_FRAGMENT): the per-pixel pure stages fused
      * into the one ES 3.00 draw — normalization (1), lens shading (2),
      * highlight reconstruction (3), demosaic (4), WB (5), color transform
-     * (6), exposure (14) and the OETF tail. Stages 2 and 3 are the
-     * DEFAULT grade's own toggles (keepVignetting and
+     * (6), exposure (14), tonemapping (23) and the OETF tail. Stages 2 and
+     * 3 are the DEFAULT grade's own toggles (keepVignetting and
      * highlightReconstruction both default true), so porting them is what
-     * lets a default-grade GPU request actually stay on GPU. Everything
-     * else in the 24-stage CPU contract falls back to CPU when active
-     * (see [fragmentUncoveredStages]).
+     * lets a default-grade GPU request actually stay on GPU; stage 23 is
+     * the ACES fit plus the full AgX family (modes 1-5, the CPU's exact
+     * math behind uTonemap). Everything else in the 24-stage CPU contract
+     * falls back to CPU when active (see [fragmentUncoveredStages]).
      */
-    val FRAGMENT_COVERED_STAGES: Set<Int> = setOf(1, 2, 3, 4, 5, 6, 14)
+    val FRAGMENT_COVERED_STAGES: Set<Int> = setOf(1, 2, 3, 4, 5, 6, 14, 23)
 
     /**
      * The fragment path's honest uncovered list, as stage number ->
@@ -222,7 +223,10 @@ object BackendRules {
      * gate says the clip has a map (the CPU's own guard, computed
      * CPU-side — see [fragmentShadingApplies]) and stage 3 when the
      * grade toggles it, so coverage no longer depends on the clip's
-     * metadata shape.
+     * metadata shape. Stage 23 left it with the tonemap port: the shader
+     * carries the ACES fit and every AgX mode (1-5) behind uTonemap,
+     * the CPU's exact math, so an active tonemap grade no longer forces
+     * the CPU path.
      */
     val FRAGMENT_UNCOVERED_STAGES: Map<Int, String> = linkedMapOf(
         7 to "chroma-denoise",        // grade.chromaDenoise != 0
@@ -240,7 +244,6 @@ object BackendRules {
         20 to "saturation",           // grade.saturation != 0
         21 to "sharpness",            // grade.sharpness != 0
         22 to "detail",               // grade.detail != 0
-        23 to "tonemap",              // grade.tonemap != 0
         24 to "lut",                  // lut selected && grade.lutStrength > 0
     )
 
@@ -262,12 +265,14 @@ object BackendRules {
      * deliverable D: no active effect is silently skipped; the GPU path
      * only takes a frame when EVERY active stage is covered).
      *
-     * Stages 2 and 3 are no longer listed: both are covered by the
+     * Stages 2, 3 and 23 are no longer listed: all three are covered by the
      * fragment pass. Stage 2's map-state guard moved into the shader's
      * uniform (uHasShading — the CPU-side gate computed where the map
-     * state is known; see [fragmentShadingApplies]), and stage 3's toggle
-     * moved into uHr. A keepVignetting/highlightReconstruction grade is
-     * therefore NOT an uncovered-stage fallback anymore.
+     * state is known; see [fragmentShadingApplies]), stage 3's toggle
+     * moved into uHr, and stage 23's mode moved into uTonemap (the ACES
+     * fit and every AgX look, the CPU's exact math). A
+     * keepVignetting/highlightReconstruction/tonemap grade is therefore
+     * NOT an uncovered-stage fallback anymore.
      */
     fun fragmentUncoveredStages(grade: GradeK): List<Pair<Int, String>> {
         val active = mutableListOf<Pair<Int, String>>()
@@ -293,7 +298,6 @@ object BackendRules {
         if (grade.saturation != 0f) active += 20 to "saturation"
         if (grade.sharpness != 0f) active += 21 to "sharpness"
         if (grade.detail != 0f) active += 22 to "detail"
-        if (grade.tonemap != 0) active += 23 to "tonemap"
         if (grade.lutId != null && grade.lutStrength > 0f) active += 24 to "lut"
         return active
     }

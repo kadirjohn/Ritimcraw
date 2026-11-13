@@ -306,15 +306,16 @@ the first REAL GPU render path (a draw, not a compute dispatch):
 
 - Native (Android-only, compiled by :app:assembleDebug): the two-pass
   fragment parity harness in `app/src/main/cpp/gles/GlesPipeline.{h,cpp}`
-  — DEVELOP_FRAGMENT (one ES 3.00 fused pass, stages 1+2+3+4+5+6+14+OETF
-  behind uniforms; 2 and 3 ported this stage) renders into an RGBA32F
+  — DEVELOP_FRAGMENT (one ES 3.00 fused pass, stages
+  1+2+3+4+5+6+14+23+OETF behind uniforms; 2, 3 and 23 ported this stage)
+  renders into an RGBA32F
   attachment (EXT_color_buffer_float, gated at runtime), STORE_FRAGMENT
   (ES 3.10 + SSBO) moves the attachment to a buffer for
   glMapBufferRange readback; the CPU tail clamps + quantizes uint16
   exactly like the developLinear tail. glReadPixels is used NOWHERE
-  (the recorded baseline invariant). TWO parity cases (a caseIndex
+  (the recorded baseline invariant). THREE parity cases (a caseIndex
   argument selects): case 0 — the developLinear shape (uHasShading=0,
-  uHr=0, uHasProfile=0, uExposure=1.0, uOetf=0) against
+  uHr=0, uHasProfile=0, uExposure=1.0, uOetf=0, uTonemap=0) against
   rawedit::developLinear itself (untouched) — the Measure leg keeps this
   case, byte-identical verdict; case 1 — the DEFAULT grade's real stage
   list: uHasShading = the clip's map-present gate with the real 4-plane
@@ -327,7 +328,17 @@ the first REAL GPU render path (a draw, not a compute dispatch):
   documented copies of the stage-1/2/3/5 loops — core/src/Develop.cpp
   stays untouched (READ ONLY), and any drift between the two copies
   shows up as a parity mismatch, exactly what the harness exists to
-  catch.
+  catch; case 2 — the TONEMAP sweep (stage 23, this stage's port):
+  uTonemap runs modes 1 (ACES Narkowicz fit) through 5 (AgX Base), one
+  full develop+store+readback pass per mode, and the per-mode reference
+  is rawedit::developCpu ITSELF — the real exported stage list, not a
+  hand copy — called with a default Grade whose only active control is
+  tonemap=mode and a meta copy with forwardMatrix/colorMatrix pinned to
+  identity (buildCameraToRec709 returns false for an identity profile,
+  so developCpu skips stage 6, matching uHasProfile=0). The verdict
+  accumulates the WORST case across the five modes and samples counts
+  all five passes (5*w*h*3) — the same PASS rule per mode as ever
+  (maxDiffLsb <= 1, mismatchCount*10000 <= samples).
 - JNI seam: `nativeGlesFragmentParity(fd, vs, vs310, developFs, storeFs,
   caseIndex)` -> [ran, maxDiffLsb, mismatchCount, samples]; the device
   compiles the exact Kotlin shader text (GlesShaderSources is the
@@ -340,20 +351,25 @@ the first REAL GPU render path (a draw, not a compute dispatch):
   compute leg's four-gate gpuAllowed() math is untouched (locked by
   RenderBackendTest); the fragment rules are ADDED alongside.
 - Stage coverage (BackendRules, pure JVM, host-tested): the fragment
-  pass covers stages 1+2+3+4+5 fused (+6/14/OETF behind uniforms);
+  pass covers stages 1+2+3+4+5 fused (+6/14/23/OETF behind uniforms);
   FRAGMENT_UNCOVERED_STAGES lists every other stage with its CPU guard
-  mirrored exactly (field != neutral / toggle). Stages 2 and 3 LEFT the
-  uncovered list when they were ported: the DEFAULT grade (keepVignetting
-  + highlightReconstruction both true, no other edits) now has NO active
-  uncovered stage, so a default-grade GPU request stays on GPU — the
-  point of this port. Stage 2's map-state guard lives in the shader's
-  uHasShading uniform (the CPU-side gate computed where the map state
-  is known: BackendRules.fragmentShadingApplies(grade, hasShadingMap) =
+  mirrored exactly (field != neutral / toggle). Stages 2, 3 and 23 LEFT
+  the uncovered list when they were ported: the DEFAULT grade
+  (keepVignetting + highlightReconstruction both true, no other edits)
+  now has NO active uncovered stage, so a default-grade GPU request
+  stays on GPU — the point of this port. Stage 2's map-state guard
+  lives in the shader's uHasShading uniform (the CPU-side gate computed
+  where the map state is known:
+  BackendRules.fragmentShadingApplies(grade, hasShadingMap) =
   grade.keepVignetting && hasShadingMap — the same guard developCpu
   stage 2 runs; the CPU path keeps its own copy inside developCpu, the
-  documented asymmetry). The full 24-stage grade chain (denoise, tone
-  controls, wheel/split, tonemap, LUT) is D+ and NOT ported; active
-  uncovered stages force CPU with their token in the line.
+  documented asymmetry), and stage 23's mode lives in uTonemap (the
+  ACES Narkowicz fit for mode 1 and the full AgX family — Punchy with
+  its legacy operation order preserved, Golden, Greyscale, Base — the
+  CPU's exact math, so a tonemap-active grade no longer forces the CPU
+  path either). The remaining grade chain (denoise, tone controls,
+  wheel/split, LUT) is D+ and NOT ported; active uncovered stages
+  force CPU with their token in the line.
 - Encoder Surface export (deliverable F's core, MediaCodecMp4Writer):
   COLOR_FormatSurface + createInputSurface + an EGL window surface
   (grafika EglCore topology, Kotlin EGL14/EGLExt); the developed frame
@@ -376,16 +392,19 @@ the first REAL GPU render path (a draw, not a compute dispatch):
   documented separately); export jobs pick the backend per the snapshot.
 - Status: fragment develop pipeline — implemented + compiled +
   host-tested (parity rules, validator, coverage rules; EGL/GLSL runtime
-  behavior device-test-pending — no GL on this host). Stages 2+3 are
-  ported and host-verified at the text level (validator mirrors the CPU
-  kernel lines; the C++ case-1 reference copies the Develop.cpp loops
-  verbatim), but their GPU run is device-test-pending like the rest.
+  behavior device-test-pending — no GL on this host). Stages 2, 3 and
+  23 are ported and host-verified at the text level (validator mirrors
+  the CPU kernel lines; the C++ case-1 reference copies the Develop.cpp
+  loops verbatim; case 2 uses developCpu itself as the reference, so
+  the tonemap math has no hand copy to drift), but their GPU run is
+  device-test-pending like the rest.
   Encoder Surface mode — implemented + compiled, JVM seam-tested
   (Mp4ExporterTest 70/70); device-test-pending. Owner device test:
   Settings -> GPU Experimental, export a DEFAULT-grade clip (no other
   edits) — expect the Surface-input encoder path with NO fallback line
-  (stages 2+3 are covered now); a grade with an active uncovered stage
-  (e.g. chroma denoise) still honestly logs the fragment fallback line
-  and runs CPU. Run Measure for the probe + both parity legs (the
-  fixed indexed probe should now report compute=1 on the owner's
-  Xiaomi 15 Ultra / Adreno 830).
+  (stages 2, 3 and 23 are covered now, so a tonemap grade exports on GPU
+  too); a grade with an active uncovered stage (e.g. chroma denoise)
+  still honestly logs the fragment fallback line and runs CPU. Run
+  Measure for the probe + all three parity legs (the fixed indexed
+  probe should now report compute=1 on the owner's Xiaomi 15 Ultra /
+  Adreno 830).

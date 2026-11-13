@@ -171,6 +171,7 @@ object GlesShaderValidator {
             "uniform mat3 uCam2rgb;",
             "uniform int uHasProfile;",
             "uniform float uExposure;",
+            "uniform int uTonemap;",
             "uniform int uOetf;",
         )
         for (u in uniforms) {
@@ -277,6 +278,185 @@ object GlesShaderValidator {
         if (!s.contains("1.099 * pow(lin, 0.45) - 0.099")) {
             out += "missing the OETF power segment " +
                 "(`1.099 * pow(lin, 0.45) - 0.099` — rawedit::linearToRec709)"
+        }
+        // Stage 23: the CPU tonemap math verbatim — rawedit::
+        // tonemapFrameImpl (core/src/Develop.cpp). The rational-function
+        // products and the cancelling polynomial terms are
+        // precision-sensitive; a silent edit of any constant surfaces
+        // here (the CPU side is pinned by core's own doctests, the GLSL
+        // side by these contract checks + the device parity case 2).
+        if (!s.contains("const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;")) {
+            out += "missing the ACES fit constants " +
+                "(`const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, " +
+                "e = 0.14;` — rawedit::acesFit, the Narkowicz 2015 fit)"
+        }
+        if (!s.contains("float num = x * (a * x + b);")) {
+            out += "missing the ACES numerator product " +
+                "(`float num = x * (a * x + b);` — rawedit::acesFit; the " +
+                "rational-function products are precision-sensitive)"
+        }
+        if (!s.contains("float den = x * (c * x + d) + e;")) {
+            out += "missing the ACES denominator product " +
+                "(`float den = x * (c * x + d) + e;` — rawedit::acesFit)"
+        }
+        if (!s.contains("float y = den > 0.0 ? num / den : 0.0;")) {
+            out += "missing the ACES den>0 guard " +
+                "(`float y = den > 0.0 ? num / den : 0.0;` — " +
+                "rawedit::acesFit keeps the rational function defined at 0)"
+        }
+        if (!s.contains("return min(max(y, 0.0), 1.0);")) {
+            out += "missing the ACES [0,1] clamp " +
+                "(`return min(max(y, 0.0), 1.0);` — rawedit::acesFit)"
+        }
+        if (!s.contains(
+                "15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4"
+            )
+        ) {
+            out += "missing the AgX contrast polynomial head " +
+                "(`15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4` — " +
+                "rawedit::agxContrastApprox, the 6th-order fit)"
+        }
+        if (!s.contains("- 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;")) {
+            out += "missing the AgX contrast polynomial tail " +
+                "(`- 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - " +
+                "0.00232;` — rawedit::agxContrastApprox)"
+        }
+        if (!s.contains("if (v <= 0.0) return 0.0;")) {
+            out += "missing the AgX log2 guard " +
+                "(`if (v <= 0.0) return 0.0;` — rawedit::agxEncode keeps " +
+                "log2's argument positive)"
+        }
+        if (!s.contains("const float minEv = -12.47393;")) {
+            out += "missing the AgX EV window floor " +
+                "(`const float minEv = -12.47393;` — rawedit::tonemapFrameImpl)"
+        }
+        if (!s.contains("const float maxEv = 4.026069;")) {
+            out += "missing the AgX EV window ceiling " +
+                "(`const float maxEv = 4.026069;` — rawedit::tonemapFrameImpl)"
+        }
+        if (!s.contains("return min(max(agxContrastApprox(t), 0.0), 1.0);")) {
+            out += "missing the AgX [0,1] clamp before any pow " +
+                "(`return min(max(agxContrastApprox(t), 0.0), 1.0);` — " +
+                "the polynomial dips to -0.00232 at t=0 and the Punchy " +
+                "pow() must never see a negative base)"
+        }
+        if (!s.contains("const vec3 kAgxInsetR = vec3(0.856627153315983, 0.0951212405381588, 0.0482516061458583);")) {
+            out += "missing the AgX inset row 0 " +
+                "(`kAgxInsetR` — rawedit::tonemapFrameImpl inset[0..2])"
+        }
+        if (!s.contains("const vec3 kAgxInsetG = vec3(0.137318972929847, 0.761241990602591, 0.101439036467562);")) {
+            out += "missing the AgX inset row 1 " +
+                "(`kAgxInsetG` — rawedit::tonemapFrameImpl inset[3..5])"
+        }
+        if (!s.contains("const vec3 kAgxInsetB = vec3(0.11189821299995, 0.0767994186031903, 0.811302368396859);")) {
+            out += "missing the AgX inset row 2 " +
+                "(`kAgxInsetB` — rawedit::tonemapFrameImpl inset[6..8])"
+        }
+        if (!s.contains("const vec3 kAgxOutsetR = vec3(1.1271005818144366432, -0.1106066430966032116, -0.016493938717834568157);")) {
+            out += "missing the AgX outset row 0 " +
+                "(`kAgxOutsetR` — rawedit::tonemapFrameImpl outset[0..2])"
+        }
+        if (!s.contains("const vec3 kAgxOutsetG = vec3(-0.14132976349843826565, 1.1578237022162717623, -0.01649393871783425265);")) {
+            out += "missing the AgX outset row 1 " +
+                "(`kAgxOutsetG` — rawedit::tonemapFrameImpl outset[3..5])"
+        }
+        if (!s.contains("const vec3 kAgxOutsetB = vec3(-0.14132976349843824772, -0.11060664309660291788, 1.2519364065950402828);")) {
+            out += "missing the AgX outset row 2 " +
+                "(`kAgxOutsetB` — rawedit::tonemapFrameImpl outset[6..8])"
+        }
+        // The look table: slope/power/sat/lumaW per mode, indexed
+        // [uTonemap - 2] exactly like the CPU's looks[mode - 2].
+        if (!s.contains("vec3(1.0, 0.9, 0.5),")) {
+            out += "missing the Golden look slope " +
+                "(`vec3(1.0, 0.9, 0.5)` — looks[1].slope, AgX Golden)"
+        }
+        if (!s.contains("const float kAgxSat[4] = float[4](1.4, 1.3, 0.0, 1.0);")) {
+            out += "missing the AgX look saturation table " +
+                "(`const float kAgxSat[4] = float[4](1.4, 1.3, 0.0, 1.0);` " +
+                "— Punchy 1.4, Golden 1.3, Greyscale 0.0, Base 1.0)"
+        }
+        if (!s.contains(
+                "vec3(0.2589235355689848, 0.6104985346066525, 0.13057792982436284),"
+            )
+        ) {
+            out += "missing the Greyscale BT.2020 luma weights " +
+                "(`vec3(0.2589235355689848, 0.6104985346066525, " +
+                "0.13057792982436284),` — looks[2].lumaW, the AgX " +
+                "Greyscale look's BT.2020 matrix rows verbatim)"
+        }
+        if (!s.contains("vec3(1.35, 1.35, 1.35),")) {
+            out += "missing the Punchy look power " +
+                "(`vec3(1.35, 1.35, 1.35),` — looks[0].power, AgX Punchy)"
+        }
+        // The two evaluation orders — Punchy's legacy order (luma from
+        // PRE-power values) vs the ASC CDL order (pow(v*slope, power)
+        // FIRST, then luma of the powered values). The CPU distinction
+        // is part of value 2 (byte-identical old grades); a swap here
+        // would silently change every Punchy render.
+        if (!s.contains("if (uTonemap == 2) {")) {
+            out += "missing the Punchy legacy-order branch " +
+                "(`if (uTonemap == 2) {` — looks[0].punchyLegacyOrder, " +
+                "the pre-2025.04.20 iolite form the CPU keeps bit-exactly)"
+        }
+        val punchyLumaIdx = s.indexOf("float luma = dot(kAgxLumaW[look], v);")
+        val punchyPowIdx = s.indexOf("v = luma + kAgxSat[look] * (pow(v, kAgxPower[look]) - luma);")
+        if (punchyLumaIdx < 0 || punchyPowIdx < 0 || punchyLumaIdx >= punchyPowIdx) {
+            out += "the Punchy legacy order is broken (luma must precede " +
+                "the pow — luma from PRE-power sigmoid values, the CPU's " +
+                "punchyLegacyOrder branch)"
+        }
+        if (!s.contains("v = pow(v * kAgxSlope[look], kAgxPower[look]);")) {
+            out += "missing the ASC CDL slope+power " +
+                "(`v = pow(v * kAgxSlope[look], kAgxPower[look]);` — the " +
+                "non-Punchy looks apply slope and power FIRST, then take " +
+                "luma of the powered values)"
+        }
+        val cdlPowIdx = s.indexOf("v = pow(v * kAgxSlope[look], kAgxPower[look]);")
+        val cdlLumaIdx = s.indexOf("float luma = dot(kAgxLumaW[look], v);", cdlPowIdx + 1)
+        if (cdlPowIdx < 0 || cdlLumaIdx < 0) {
+            out += "the ASC CDL order is broken (the luma of the powered " +
+                "values must follow the slope+power line)"
+        }
+        // GLSL ES 3.00 const requires a CONSTANT-expression initializer.
+        // The CPU's `const` is read-only, NOT the GLSL meaning — a `const` on
+        // a parameter/uniform-derived local is a device compile error. The
+        // literal-only declarations (the ACES a/b/c/d/e, minEv/maxEv and the
+        // global look tables) keep const; these must not.
+        if (s.contains("const float num") || s.contains("const float den") ||
+            s.contains("const float y = den") || s.contains("const float x2") ||
+            s.contains("const float x4") || s.contains("const int look") ||
+            s.contains("const float luma")
+        ) {
+            out += "a tonemap local uses `const` with a non-constant " +
+                "initializer (GLSL ES 3.00 requires constant expressions " +
+                "for const; the CPU's read-only const does not carry — " +
+                "drop the qualifier, keep the literal-only declarations)"
+        }
+        // The tail: clamp BEFORE the pow-2.2 (NaN guard) and the pow
+        // itself — the AgX output encoding the CPU leaves in the buffer
+        // (the Rec.709 OETF composes on top on BOTH sides; exactly one
+        // OETF each).
+        if (!s.contains("o = clamp(o, 0.0, 1.0);")) {
+            out += "missing the AgX outset clamp " +
+                "(`o = clamp(o, 0.0, 1.0);` — before the pow, the NaN guard)"
+        }
+        if (!s.contains("return pow(o, vec3(2.2));")) {
+            out += "missing the AgX gamma-2.2 tail " +
+                "(`return pow(o, vec3(2.2));` — the look's output " +
+                "encoding, rawedit::tonemapFrameImpl's last line)"
+        }
+        // The application point: tonemap sits between the exposure
+        // multiply (stage 14) and the OETF (the JNI tail's position) —
+        // the CPU stage order 14 -> 23 -> OETF.
+        val exposureIdx = s.indexOf("c *= uExposure;")
+        val tonemapIdx = s.indexOf("if (uTonemap != 0) {")
+        val oetfIdx = s.indexOf("if (uOetf == 1) {")
+        if (exposureIdx < 0 || tonemapIdx < 0 || oetfIdx < 0 ||
+            !(exposureIdx < tonemapIdx && tonemapIdx < oetfIdx)
+        ) {
+            out += "the tonemap application point is wrong (must sit " +
+                "between `c *= uExposure;` and the OETF block — the CPU " +
+                "stage order 14 -> 23 -> OETF)"
         }
     }
 

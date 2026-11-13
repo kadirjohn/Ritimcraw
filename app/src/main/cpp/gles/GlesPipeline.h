@@ -135,7 +135,7 @@ ParityReport demosaicParity(const std::string& computeSource,
 
 // Single-frame FRAGMENT develop parity (deliverable D) — the first REAL
 // GPU render path: the fused fragment pass (GlesShaderSources
-// DEVELOP_FRAGMENT) runs stages 1+2+3+4+5 (+6/14/OETF behind runtime
+// DEVELOP_FRAGMENT) runs stages 1+2+3+4+5 (+6/14/23/OETF behind runtime
 // uniforms) as a draw, not a compute dispatch, and the readback goes
 // through a second fragment pass that writes an SSBO (STORE_FRAGMENT —
 // glReadPixels is banned, the recorded baseline invariant). The device
@@ -149,32 +149,51 @@ ParityReport demosaicParity(const std::string& computeSource,
 //   [fragmentSource]    DEVELOP_FRAGMENT (300 es)
 //   [storeFragmentSource] STORE_FRAGMENT (310 es)
 //   [caseIndex]         0 = the developLinear shape (see below);
-//                       1 = the default grade's real stage list
+//                       1 = the default grade's real stage list;
+//                       2 = the tonemap sweep (stage 23, modes 1-5)
 //
-// TWO parity cases (the fragment pass covers stages 1+2+3+4+5 now, so
-// ONE reference no longer fits both shapes):
+// THREE parity cases (the fragment pass covers stages 1+2+3+4+5+23 now,
+// so ONE reference no longer fits all the shapes):
 //
 //   case 0 — the developLinear shape, byte-honest regardless of the
 //       clip's real metadata: uHasShading=0, uHr=0, uHasProfile=0,
-//       uExposure=1.0, uOetf=0 — the pass computes exactly stages 1+4+5,
-//       and the reference is rawedit::developLinear itself (untouched,
-//       exported), so this case keeps its original meaning and verdict.
+//       uExposure=1.0, uOetf=0, uTonemap=0 — the pass computes exactly
+//       stages 1+4+5, and the reference is rawedit::developLinear itself
+//       (untouched, exported), so this case keeps its original meaning
+//       and verdict.
 //
 //   case 1 — the DEFAULT grade's real stage list: uHasShading=1 with the
 //       clip's actual 4-plane map uploaded as a GL_R32F texture (planes
 //       stacked vertically, texel y = plane*shadingH + row — the layout
 //       the shader's texelFetch reads), uHr=1 with uHrGain = meta.wbGains
 //       with the >0 guard (a DIFFERENT vector from uWb's 1/asShotNeutral),
-//       uHasProfile=0, uExposure=1.0, uOetf=0. developLinear CANNOT serve
-//       as this case's reference (it runs stages 1+4+5 only), so the
-//       reference is computed HERE in C++ from the exported rawedit
+//       uHasProfile=0, uExposure=1.0, uOetf=0, uTonemap=0. developLinear
+//       CANNOT serve as this case's reference (it runs stages 1+4+5 only),
+//       so the reference is computed HERE in C++ from the exported rawedit
 //       primitives — a local stage-1 copy (frame-preferred levels), the
 //       stage-2 loop through rawedit::sampleShading, a verbatim copy of
 //       the stage-3 cell pass, rawedit::demosaicBilinear, the WB multiply
 //       (1/asShotNeutral with the >0 guard), clamp [0,1], quantize
 //       uint16 — core/src/Develop.cpp itself stays untouched.
 //
-// The pipeline (both cases):
+//   case 2 — the TONEMAP sweep (stage 23): the same stage-2/3 gates as
+//       case 1 (the reference below runs the same decisions), with
+//       uTonemap sweeping modes 1 (ACES) through 5 (AgX Base), one full
+//       develop+store+readback pass per mode. The reference per mode is
+//       rawedit::developCpu ITSELF — the real exported stage list, not a
+//       hand copy — called with a default Grade whose only active control
+//       is tonemap=mode and a meta copy whose forwardMatrix/colorMatrix
+//       are pinned to identity (buildCameraToRec709 returns false for an
+//       identity profile, so developCpu skips stage 6 — matching
+//       uHasProfile=0). A default Grade runs exactly 1+2+3+4+5+23: every
+//       other stage is gated off by its neutral default (exposureEv 0,
+//       saturation 0, sharpness/detail 0, split hues -1, wheels 0,
+//       chromaDenoise/noiseReduction 0). The verdict accumulates the
+//       WORST case across the five modes and [samples] counts all five
+//       passes (5 * w * h * 3) — the same PASS rule per mode as ever
+//       (maxDiffLsb <= 1, mismatchCount*10000 <= samples).
+//
+// The pipeline (all cases):
 //
 //   CPU-computed uniforms — frame-preferred stage-1 levels (uBlack/
 //       uRange, the developLinear stage-1 rule), WB gains (uWb, the

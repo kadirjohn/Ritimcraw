@@ -225,11 +225,12 @@ class RenderBackendTest {
     @Test
     fun fragment_uncovered_stages_match_the_cpu_guards() {
         // The map is the single uncovered list the line tokens come from.
-        // Stages 2 and 3 left it when they were ported into the fragment
-        // pass (they are covered now, map-state gate included).
-        assertEquals(17, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
+        // Stages 2, 3 and 23 left it when they were ported into the
+        // fragment pass (they are covered now, map-state gate and all five
+        // tonemap modes included).
+        assertEquals(16, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
         assertEquals(
-            setOf(7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24),
+            setOf(7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 24),
             BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
         )
         // Covered + uncovered = the full 24-stage contract, no overlap.
@@ -268,8 +269,8 @@ class RenderBackendTest {
     fun every_uncovered_stage_guard_mirrors_the_cpu() {
         // One grade per stage: the field that activates CPU stage N must
         // activate the Kotlin rule's stage N (same guard, same number).
-        // Stages 2 and 3 are gone from the list (covered by the fragment
-        // pass), so their cases are gone with them.
+        // Stages 2, 3 and 23 are gone from the list (covered by the
+        // fragment pass), so their cases are gone with them.
         val cases = listOf(
             7 to GradeK(chromaDenoise = 25f),
             8 to GradeK(noiseReduction = 25f),
@@ -286,7 +287,6 @@ class RenderBackendTest {
             20 to GradeK(saturation = 5f),
             21 to GradeK(sharpness = 5f),
             22 to GradeK(detail = 5f),
-            23 to GradeK(tonemap = 1),
             24 to GradeK(lutId = "l1", lutStrength = 100f),
         )
         cases.forEach { (stage, grade) ->
@@ -300,6 +300,30 @@ class RenderBackendTest {
                 GradeK(keepVignetting = false, highlightReconstruction = false),
             ).isEmpty(),
         )
+    }
+
+    @Test
+    fun tonemap_grade_covers_the_fragment_path() {
+        // Stage 23 is ported into the fragment pass (the ACES fit and every
+        // AgX mode behind uTonemap), so a tonemap-only grade — the exact
+        // shape the parity harness's case 2 measures — is NOT an
+        // uncovered-stage fallback anymore: gates green -> the fragment
+        // leg runs.
+        listOf(1, 2, 3, 4, 5).forEach { mode ->
+            val grade = GradeK(tonemap = mode)
+            assertTrue(
+                "tonemap mode $mode must be covered",
+                BackendRules.fragmentUncoveredStages(grade).isEmpty(),
+            )
+            assertTrue(BackendRules.fragmentUncoveredPreStages(grade).isEmpty())
+            assertEquals(
+                EffectiveRenderBackend.GLES,
+                BackendRules.fragmentEffectiveBackend(
+                    RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+                    gyroWarpActive = false,
+                ),
+            )
+        }
     }
 
     @Test

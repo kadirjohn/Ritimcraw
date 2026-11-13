@@ -213,17 +213,32 @@ void main() {
      *      multiply (no-profile clips / the parity shape);
      *  14  exposure 2^ev — uExposure (1.0 = neutral; the CPU guard
      *      exposureEv != 0 maps to exactly 1.0);
+     *  23  tonemap — uTonemap, the exact tonemapFrameImpl math
+     *      (core/src/Develop.cpp): 1 = ACES (the project's Narkowicz
+     *      2015 fit, per-component, [0,1]-clamped); 2-5 = AgX (the
+     *      essential fit: inset, log2 encode around 0.18 clamped to the
+     *      [-12.47393, 4.026069] EV window, the 6th-order contrast
+     *      polynomial, the look variant, outset, [0,1] clamp,
+     *      pow 2.2). The AgX pow-2.2 tail is part of the CPU tonemap
+     *      math itself (the look's output encoding is what the CPU
+     *      leaves in the buffer); the Rec.709 OETF composes ON TOP of
+     *      it on the CPU side too (the JNI bridge tail) — exactly one
+     *      OETF on each side, no double encode. Punchy (2) keeps the
+     *      legacy minimal-fit order (luma from PRE-power values); the
+     *      other looks use the ASC CDL order (slope, power, THEN luma
+     *      of the powered values, then sat) — the CPU distinction is
+     *      preserved;
      *  OETF linearToRec709 — the exact Transfer.cpp curve (4.5*lin below
      *      0.018, else 1.099*pow(lin, 0.45) - 0.099), unclamped, exactly
      *      as the CPU tail leaves it; applied only when uOetf == 1.
      *
      * Stages NOT covered (honest): 7-8 denoise, 9-13 tone controls,
-     * 15-24 highlights/temp-tint/wheel/split/saturation/sharpness/
-     * detail/tonemap/LUT, and the gyro warp — the BackendRules
+     * 15-22 highlights/temp-tint/wheel/split/saturation/sharpness/
+     * detail, 24 LUT, and the gyro warp — the BackendRules
      * stage-coverage rules fall back to CPU with a reason line whenever
      * one of those is active in the grade.
      *
-     * Parity shape: the harness runs TWO cases against THIS pass. Case
+     * Parity shape: the harness runs THREE cases against THIS pass. Case
      * 0 pins uHasShading = 0, uHr = 0, uHasProfile = 0, uExposure = 1.0,
      * uOetf = 0 — stages 1+4+5, developLinear's exact stage list (the
      * case must stay byte-honest regardless of the clip's real map, so
@@ -235,7 +250,20 @@ void main() {
      * uExposure = 1.0, uOetf = 0 — against a CPU reference the harness
      * computes in C++ from the exported rawedit primitives (stage 1 +
      * sampleShading + the stage-3 pass + demosaicBilinear + the WB
-     * tail), so core/src/Develop.cpp stays untouched. Both cases land
+     * tail), so core/src/Develop.cpp stays untouched. Case 2 sweeps
+     * uTonemap over modes 1-5 (every shipped ACES/AgX look): per mode
+     * the reference is the REAL exported rawedit::developCpu run with a
+     * tonemap-only Grade (everything else default, so the stage list is
+     * exactly 1+2+3+4+5+23 — the REAL production develop path) on an
+     * identity-matrices COPY of the meta (forwardMatrix AND colorMatrix
+     * identity -> buildCameraToRec709 returns false -> stage 6 skipped,
+     * the same shape uHasProfile = 0 pins), quantized clamp [0,1] +
+     * lround x65535; the fragment pass runs case-1's stage-2/3 gates
+     * with uTonemap = mode, uHasProfile = 0, uExposure = 1.0, uOetf = 0
+     * (the AgX pow-2.2 tail is in-shader tonemap math; the Rec.709 OETF
+     * stays OFF on both sides — exactly one OETF each, no double
+     * encode); the verdict is the WORST case across the five modes,
+     * samples accumulate 5 x n x 3. All cases land
      * in an RGBA32F attachment, whose contents the STORE_FRAGMENT pass
      * moves to an SSBO for glMapBufferRange; the CPU then clamps [0,1]
      * and quantizes uint16 exactly like the developLinear tail and
@@ -268,7 +296,7 @@ void main() {
      */
     const val DEVELOP_FRAGMENT: String = """#version 300 es
 
-// Fused develop pass - stages 1+2+3+4+5+6+14+OETF of rawedit::developCpu
+// Fused develop pass - stages 1+2+3+4+5+6+14+23+OETF of rawedit::developCpu
 // (core/src/Develop.cpp). See the Kotlin doc above.
 
 precision highp float;
@@ -288,6 +316,7 @@ uniform vec3 uWb;               // WB gains = 1/asShotNeutral, >0 guard included
 uniform mat3 uCam2rgb;          // camera->Rec.709, the CPU row-major matrix uploaded with transpose=GL_TRUE
 uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (no profile / parity shape)
 uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
+uniform int uTonemap;           // grade.tonemap (stage 23): 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base
 uniform int uOetf;              // 1 = apply linearToRec709 (export shape); 0 = linear endpoint (parity)
 
 out vec4 oCol;
@@ -435,6 +464,121 @@ float linearToRec709(float lin) {
     return 1.099 * pow(lin, 0.45) - 0.099;
 }
 
+// Stage 23: tonemap - the CPU rawedit::tonemapFrameImpl math verbatim
+// (core/src/Develop.cpp). Every constant, guard and evaluation order is
+// the CPU's; no GLSL built-in substitutions (the CPU helpers carry
+// explicitly, including the clamps that keep pow() bases non-negative -
+// GLSL pow of a negative base is undefined for the same reason the CPU
+// guards it).
+// ACES: the project's Narkowicz 2015 fit (NOT full ACES), per-component,
+// with the CPU's den>0 guard and [0,1] clamp.
+float acesFit(float x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    float num = x * (a * x + b);
+    float den = x * (c * x + d) + e;
+    float y = den > 0.0 ? num / den : 0.0;
+    return min(max(y, 0.0), 1.0);
+}
+
+// AgX 6th-order contrast polynomial (monotone on [0,1]; the 7th-order
+// variant is not). Dips to -0.00232 at t=0 - an artifact of the fit, not
+// a designed toe - so agxEncode clamps the result to [0,1] BEFORE any
+// pow() sees it (NaN guard).
+float agxContrastApprox(float x) {
+    float x2 = x * x;
+    float x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4
+         - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+// One AgX channel: log2 encode around 0.18 clamped to the
+// [-12.47393, 4.026069] EV window, contrast, [0,1] clamp (the CPU's
+// exact order; the v<=0 guard keeps log2's argument positive).
+float agxEncode(float v, float minEv, float maxEv) {
+    if (v <= 0.0) return 0.0;
+    float t = log2(v / 0.18);
+    t = min(max(t, minEv), maxEv);
+    t = (t - minEv) / (maxEv - minEv);
+    return min(max(agxContrastApprox(t), 0.0), 1.0);
+}
+
+// The AgX inset matrix rows, explicit (the CPU's inset[c*3+0..2] rows -
+// dot products mirror the CPU row indexing exactly; a GLSL mat3 is
+// column-major and would need a transpose the reader must verify).
+const vec3 kAgxInsetR = vec3(0.856627153315983, 0.0951212405381588, 0.0482516061458583);
+const vec3 kAgxInsetG = vec3(0.137318972929847, 0.761241990602591, 0.101439036467562);
+const vec3 kAgxInsetB = vec3(0.11189821299995, 0.0767994186031903, 0.811302368396859);
+// The AgX outset matrix rows, same explicit shape.
+const vec3 kAgxOutsetR = vec3(1.1271005818144366432, -0.1106066430966032116, -0.016493938717834568157);
+const vec3 kAgxOutsetG = vec3(-0.14132976349843826565, 1.1578237022162717623, -0.01649393871783425265);
+const vec3 kAgxOutsetB = vec3(-0.14132976349843824772, -0.11060664309660291788, 1.2519364065950402828);
+
+// The four AgX looks, indexed [uTonemap - 2] exactly like the CPU's
+// looks[mode - 2] (2 Punchy, 3 Golden, 4 Greyscale, 5 Base). Slope/power
+// per channel, sat, luma weights (Greyscale's are BT.2020 - the config
+// it comes from applies the matrix in the post-inset 2020-primaries
+// space). Punchy's legacy order (luma from PRE-power values) is the
+// uTonemap == 2 branch in tonemap below - kept bit-exactly as the CPU
+// ships it.
+const vec3 kAgxSlope[4] = vec3[4](
+    vec3(1.0, 1.0, 1.0),
+    vec3(1.0, 0.9, 0.5),
+    vec3(1.0, 1.0, 1.0),
+    vec3(1.0, 1.0, 1.0));
+const vec3 kAgxPower[4] = vec3[4](
+    vec3(1.35, 1.35, 1.35),
+    vec3(0.8, 0.8, 0.8),
+    vec3(1.0, 1.0, 1.0),
+    vec3(1.0, 1.0, 1.0));
+const float kAgxSat[4] = float[4](1.4, 1.3, 0.0, 1.0);
+const vec3 kAgxLumaW[4] = vec3[4](
+    vec3(0.2126, 0.7152, 0.0722),
+    vec3(0.2126, 0.7152, 0.0722),
+    vec3(0.2589235355689848, 0.6104985346066525, 0.13057792982436284),
+    vec3(0.2126, 0.7152, 0.0722));
+
+// Stage 23 applied to one pixel - the CPU tonemapFrameImpl loop body
+// verbatim: mode 1 ACES per-component; 2-5 AgX inset -> agxEncode ->
+// look -> outset -> clamp -> pow 2.2. The pow(o, 2.2) tail is part of
+// the CPU tonemap math itself (the look's output encoding); the Rec.709
+// OETF (uOetf) composes ON TOP of it exactly like the CPU chain's JNI
+// tail - exactly one OETF each, no double encode.
+vec3 tonemapPixel(vec3 c) {
+    if (uTonemap == 1) {
+        return vec3(acesFit(c.r), acesFit(c.g), acesFit(c.b));
+    }
+    if (uTonemap < 2 || uTonemap > 5) return c;
+
+    int look = uTonemap - 2;
+    const float minEv = -12.47393;
+    const float maxEv = 4.026069;
+    vec3 v;
+    v.x = agxEncode(dot(kAgxInsetR, c), minEv, maxEv);
+    v.y = agxEncode(dot(kAgxInsetG, c), minEv, maxEv);
+    v.z = agxEncode(dot(kAgxInsetB, c), minEv, maxEv);
+    if (uTonemap == 2) {
+        // Punchy exactly as the minimal fit shipped it (pre-2025.04.20
+        // iolite order): luma from the PRE-power sigmoid values, then
+        // power, then sat around that luma. Bit-for-bit the old path.
+        float luma = dot(kAgxLumaW[look], v);
+        v = luma + kAgxSat[look] * (pow(v, kAgxPower[look]) - luma);
+    } else {
+        // ASC CDL order (current iolite / OCIO CDLTransform): slope,
+        // power, THEN luma of the powered values, then sat.
+        v = pow(v * kAgxSlope[look], kAgxPower[look]);
+        float luma = dot(kAgxLumaW[look], v);
+        v = luma + kAgxSat[look] * (v - luma);
+    }
+    vec3 o;
+    o.x = dot(kAgxOutsetR, v);
+    o.y = dot(kAgxOutsetG, v);
+    o.z = dot(kAgxOutsetB, v);
+    // Outset, clamp to the display box, Rec.709 gamma 2.2 - the clamp
+    // BEFORE the pow keeps the base non-negative (NaN guard).
+    o = clamp(o, 0.0, 1.0);
+    return pow(o, vec3(2.2));
+}
+
 void main() {
     ivec2 g = ivec2(gl_FragCoord.xy);
     if (g.x >= uSize.x || g.y >= uSize.y) discard;
@@ -465,6 +609,9 @@ void main() {
         c = uCam2rgb * c;
     }
     c *= uExposure;
+    if (uTonemap != 0) {
+        c = tonemapPixel(c);
+    }
     if (uOetf == 1) {
         c = vec3(linearToRec709(c.r), linearToRec709(c.g), linearToRec709(c.b));
     }

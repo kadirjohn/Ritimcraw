@@ -504,8 +504,8 @@ ParityReport developFragmentParity(const std::string& vertexSource,
         rep.detail = "input: cfa size != w*h";
         return rep;
     }
-    if (caseIndex != 0 && caseIndex != 1) {
-        rep.detail = "input: caseIndex must be 0 or 1";
+    if (caseIndex < 0 || caseIndex > 2) {
+        rep.detail = "input: caseIndex must be 0, 1 or 2";
         return rep;
     }
     const size_t n = static_cast<size_t>(w) * h;
@@ -532,7 +532,7 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     int cell[4];
     cellFor(info, cell);
 
-    // --- CPU reference, per case (GlesPipeline.h documents both) ---------
+    // --- CPU reference, per case (GlesPipeline.h documents all three) ----
     // case 0: rawedit::developLinear itself — the exact function the DNG
     // path ships (stages 1+4+5 + quantize), zero drift risk, so this case
     // keeps its original meaning and verdict.
@@ -545,10 +545,19 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     // each line mirrored from core/src/Develop.cpp (which stays
     // untouched). Any drift between the two copies shows up as a parity
     // mismatch — exactly what this harness exists to catch.
+    // case 2: the tonemap sweep — NO upfront reference. Each mode 1-5 gets
+    // its own rawedit::developCpu run inside the sweep (see below), the
+    // real exported stage list itself rather than a hand copy, with a
+    // default Grade whose only active control is tonemap and a meta copy
+    // whose two color matrices are pinned to identity (buildCameraToRec709
+    // returns false for an identity profile, so stage 6 is a passthrough —
+    // exactly uHasProfile=0). developCpu IS the right reference here: the
+    // grade pins every stage outside the fragment pass's coverage OFF, so
+    // the stage lists match stage for stage (1+2+3+4+5+23).
     std::vector<uint16_t> ref;
     if (caseIndex == 0) {
         ref = rawedit::developLinear(cfa.data(), info, meta);
-    } else {
+    } else if (caseIndex == 1) {
         // Stage 1 (documented copy of developCpu stage 1 / developLinear
         // stage 1 — same frame-preferred rule, same slot mapping, same
         // clamp; the same levels the uBlack/uRange uniforms carry).
@@ -659,7 +668,7 @@ ParityReport developFragmentParity(const std::string& vertexSource,
             ref[i] = static_cast<uint16_t>(std::lround(v * 65535.0f));
         }
     }
-    if (ref.size() != n * 3) {
+    if (caseIndex != 2 && ref.size() != n * 3) {
         rep.detail = "cpu-reference: returned " + std::to_string(ref.size()) +
                      " samples (expected " + std::to_string(n * 3) + ")";
         return rep;
@@ -788,8 +797,9 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     }
 
     // --- draw 1: the develop pass (case 0: developLinear's stage list;
-    // case 1: the default grade's real stage list — profile off, exposure
-    // neutral, no OETF in BOTH cases) --------------------------------------
+    // case 1: the default grade's real stage list; case 2: the same gates
+    // as case 1 plus the uTonemap sweep — profile off, exposure neutral,
+    // no OETF in ALL cases) -----------------------------------------------
     glUseProgram(developProgram.id);
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
     const GLint cfaLoc = glGetUniformLocation(developProgram.id, "uCfa");
@@ -806,11 +816,13 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     const GLint camLoc = glGetUniformLocation(developProgram.id, "uCam2rgb");
     const GLint hasProfileLoc = glGetUniformLocation(developProgram.id, "uHasProfile");
     const GLint exposureLoc = glGetUniformLocation(developProgram.id, "uExposure");
+    const GLint tonemapLoc = glGetUniformLocation(developProgram.id, "uTonemap");
     const GLint oetfLoc = glGetUniformLocation(developProgram.id, "uOetf");
     if (cfaLoc < 0 || sizeLoc < 0 || cellLoc < 0 || blackLoc < 0 ||
         rangeLoc < 0 || hasShadingLoc < 0 || shadingLoc < 0 ||
         shadingSizeLoc < 0 || hrLoc < 0 || hrGainLoc < 0 || wbLoc < 0 ||
-        camLoc < 0 || hasProfileLoc < 0 || exposureLoc < 0 || oetfLoc < 0) {
+        camLoc < 0 || hasProfileLoc < 0 || exposureLoc < 0 ||
+        tonemapLoc < 0 || oetfLoc < 0) {
         rep.detail = "shader-contract: missing a develop uniform";
         return rep;
     }
@@ -823,11 +835,13 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     // The stage-2/3 uniform gates, per case. case 0 pins both OFF (the
     // developLinear shape — byte-honest regardless of the clip's real
     // metadata, so this case keeps its original meaning and verdict);
-    // case 1 carries the CPU's own gates: uHasShading = the map-present
+    // cases 1 and 2 carry the CPU's own gates: uHasShading = the map-present
     // guard from developCpu stage 2 (the default grade keeps vignetting),
     // uHr = the default grade's highlightReconstruction, uHrGain =
     // meta.wbGains with the >0 guard (developCpu stage 3's own gain[3]
-    // — a DIFFERENT vector from uWb's 1/asShotNeutral).
+    // — a DIFFERENT vector from uWb's 1/asShotNeutral). Case 2 rides the
+    // same gates: its reference (developCpu with a default Grade) runs the
+    // same stage-2/3 decisions.
     if (caseIndex == 0) {
         glUniform1i(hasShadingLoc, 0);
         glUniform2i(shadingSizeLoc, 1, 1);
@@ -852,8 +866,36 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     glUniform1i(hasProfileLoc, 0);
     glUniform1f(exposureLoc, 1.0f);
     glUniform1i(oetfLoc, 0);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    if (glErrorAfter("glDrawArrays(develop)", &rep.detail) != GL_NO_ERROR) return rep;
+    // uTonemap: case 2 sweeps modes 1-5 below (the uniform is re-set before
+    // each redraw); cases 0/1 stay pinned OFF — their references run no
+    // stage 23.
+    glUniform1i(tonemapLoc, 0);
+
+    // --- case 2's per-mode reference: the REAL developCpu stage list -------
+    // (not a hand copy): a default Grade whose only active control is
+    // tonemap runs exactly 1+2+3+4+5+23 — every other stage is gated off by
+    // its neutral default (exposureEv 0, saturation 0, sharpness/detail 0,
+    // split hues -1, wheels 0, chromaDenoise/noiseReduction 0), and stage 6
+    // is a passthrough because the meta copy's two color matrices are
+    // pinned to identity (buildCameraToRec709 returns false for an identity
+    // profile — the same uHasProfile=0 gate the shader carries). The
+    // output is the linear working space; the quantize tail is the same
+    // clamp [0,1] + lround x65535 the readback applies to the GPU values.
+    // One mode's ref is alive at a time (5 stored upfront would add ~5x
+    // 292 MB peak on a full-res frame — the sweep computes each ref lazily).
+    rawedit::RawMeta identityMeta = meta;
+    for (int i = 0; i < 9; ++i)
+        identityMeta.forwardMatrix[i] = (i % 4 == 0) ? 1.0f : 0.0f;
+    for (int i = 0; i < 9; ++i)
+        identityMeta.colorMatrix[i] = (i % 4 == 0) ? 1.0f : 0.0f;
+
+    // cases 0/1: the one develop draw this case measures. case 2 skips it —
+    // the sweep below redraws the develop pass once per mode (an upfront
+    // draw with uTonemap=0 would be wasted work).
+    if (caseIndex != 2) {
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(develop)", &rep.detail) != GL_NO_ERROR) return rep;
+    }
 
     // --- draw 2: the store pass, to a THROWAWAY RGBA8 FBO ----------------
     // (never to the develop FBO — the source texture is still attached
@@ -896,36 +938,86 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     glUniform1i(srcLoc, 1);  // texture unit 1
     glUniform2i(storeSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, outBuf.id);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    if (glErrorAfter("glDrawArrays(store)", &rep.detail) != GL_NO_ERROR) return rep;
-    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
-    // --- readback: a MAPPED buffer, NEVER glReadPixels -------------------
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, outBuf.id);
-    void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
-                                    static_cast<GLsizeiptr>(n * 3 * sizeof(float)),
-                                    GL_MAP_READ_BIT);
-    if (mapped == nullptr) {
-        glErrorAfter("glMapBufferRange", &rep.detail);
-        if (rep.detail.empty()) rep.detail = "glMapBufferRange returned null";
-        return rep;
-    }
-    const float* gpu = static_cast<const float*>(mapped);
+    // --- the measurement passes -------------------------------------------
+    // cases 0/1: ONE develop draw + ONE store draw + ONE readback against
+    // the upfront reference (uTonemap stays 0). case 2: the same two-draw
+    // shape repeated for each tonemap mode 1-5 — per mode the develop
+    // program is re-used (uTonemap re-set, redraw), the store pass re-draws
+    // the SSBO, and the readback compares against that mode's own
+    // developCpu reference; the verdict accumulates the WORST case across
+    // modes, and samples counts all five passes (5 * n * 3).
     int maxDiff = 0;
     long long mismatches = 0;
-    for (size_t i = 0; i < n * 3; ++i) {
-        // The shader applied WB (uWb) in-hardware; the tail only does what
-        // developLinear does AFTER WB: clamp [0,1] and quantize uint16.
-        float g = gpu[i];
-        g = std::min(std::max(g, 0.0f), 1.0f);
-        const int gi = static_cast<int>(std::lround(g * 65535.0f));
-        const int diff = gi > static_cast<int>(ref[i])
-            ? gi - static_cast<int>(ref[i])
-            : static_cast<int>(ref[i]) - gi;
-        if (diff > maxDiff) maxDiff = diff;
-        if (diff > 0) ++mismatches;
+    const int modeBegin = caseIndex == 2 ? 1 : 0;
+    const int modeEnd = caseIndex == 2 ? 5 : 0;  // inclusive
+    for (int mode = modeBegin; mode <= modeEnd; ++mode) {
+        if (caseIndex == 2) {
+            // This mode's CPU reference: the real exported stage list with
+            // tonemap = mode. developCpu returns the linear working space;
+            // the quantize tail matches the readback's own (clamp [0,1] +
+            // lround x65535 — the developLinear tail).
+            rawedit::Grade grade;  // default: every stage outside 1+2+3+4+5+23 off
+            grade.tonemap = mode;
+            const rawedit::ImageF img =
+                rawedit::developCpu(cfa.data(), info, identityMeta, grade);
+            if (img.rgb.size() != n * 3) {
+                rep.detail = "cpu-reference: developCpu returned " +
+                             std::to_string(img.rgb.size()) + " samples (expected " +
+                             std::to_string(n * 3) + ")";
+                return rep;
+            }
+            ref.resize(img.rgb.size());
+            for (size_t i = 0; i < img.rgb.size(); ++i) {
+                float v = img.rgb[i];
+                v = std::min(std::max(v, 0.0f), 1.0f);
+                ref[i] = static_cast<uint16_t>(std::lround(v * 65535.0f));
+            }
+            // Redraw the develop pass with this mode's tonemap gate open.
+            glUseProgram(developProgram.id);
+            glBindFramebuffer(GL_FRAMEBUFFER, developFbo);
+            glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+            glUniform1i(tonemapLoc, mode);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            if (glErrorAfter("glDrawArrays(develop)", &rep.detail) != GL_NO_ERROR) return rep;
+        }
+        // The store pass into the SSBO, every iteration (cases 0/1: the one
+        // draw this case measures — the develop draw above already wrote the
+        // texture; case 2: the redraw of the mode the develop pass just
+        // wrote). The rebinds are redundant for cases 0/1 (already bound)
+        // and required for case 2 (the develop redraw rebound the FBO).
+        glUseProgram(storeProgram.id);
+        glBindFramebuffer(GL_FRAMEBUFFER, scratchFbo);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(store)", &rep.detail) != GL_NO_ERROR) return rep;
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        // --- readback: a MAPPED buffer, NEVER glReadPixels ----------------
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, outBuf.id);
+        void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+                                        static_cast<GLsizeiptr>(n * 3 * sizeof(float)),
+                                        GL_MAP_READ_BIT);
+        if (mapped == nullptr) {
+            glErrorAfter("glMapBufferRange", &rep.detail);
+            if (rep.detail.empty()) rep.detail = "glMapBufferRange returned null";
+            return rep;
+        }
+        const float* gpu = static_cast<const float*>(mapped);
+        for (size_t i = 0; i < n * 3; ++i) {
+            // The shader applied WB (uWb) in-hardware; the tail only does
+            // what developLinear does AFTER WB: clamp [0,1] and quantize
+            // uint16.
+            float g = gpu[i];
+            g = std::min(std::max(g, 0.0f), 1.0f);
+            const int gi = static_cast<int>(std::lround(g * 65535.0f));
+            const int diff = gi > static_cast<int>(ref[i])
+                ? gi - static_cast<int>(ref[i])
+                : static_cast<int>(ref[i]) - gi;
+            if (diff > maxDiff) maxDiff = diff;
+            if (diff > 0) ++mismatches;
+        }
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     }
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
     // --- teardown (scope guards own the shaders/programs/buffers; the
     // textures + FBOs are deleted here in reverse creation order) --------
@@ -940,7 +1032,7 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     rep.ran = true;
     rep.maxDiffLsb = maxDiff;
     rep.mismatchCount = mismatches;
-    rep.samples = static_cast<long long>(n) * 3;
+    rep.samples = static_cast<long long>(n) * 3 * (caseIndex == 2 ? 5 : 1);
     rep.detail = version;  // device context for the log line
     return rep;
 }

@@ -769,14 +769,20 @@ class NativeSource private constructor(
          * single source of truth: FULLSCREEN_VERTEX + DEVELOP_FRAGMENT as
          * the develop program, FULLSCREEN_VERTEX_310 + STORE_FRAGMENT as
          * the readback program). [caseIndex] selects the parity case
-         * (gles/GlesPipeline.h documents both): 0 — the developLinear
+         * (gles/GlesPipeline.h documents all three): 0 — the developLinear
          * shape (uHasShading=0, uHr=0) against developLinear itself, the
          * DNG path's own reference, byte-honest regardless of the clip's
          * real metadata; 1 — the DEFAULT grade's real stage list
          * (uHasShading = the clip's map-present gate with the real
          * 4-plane map uploaded, uHr=1 with uHrGain = meta.wbGains with
          * the >0 guard) against a C++-side reference computed from the
-         * exported rawedit primitives. Returns
+         * exported rawedit primitives; 2 — the TONEMAP sweep (stage 23):
+         * uTonemap runs modes 1 (ACES) through 5 (AgX Base), one
+         * develop+store+readback pass per mode, each mode's reference
+         * being developCpu itself with a default Grade (tonemap=mode
+         * only) and an identity-matrices meta copy — the real exported
+         * stage list (1+2+3+4+5+23). The report carries the WORST case
+         * across the five modes and samples = 5 * w * h * 3. Returns
          * [ran, maxDiffLsb, mismatchCount, samples] (see the bridge
          * comment); ran=0 means a GPU stage failed and the error detail
          * names it (EGL step, extension gate, compile log, link log, FBO
@@ -1220,9 +1226,11 @@ class NativeSource private constructor(
         /**
          * JNI bridge: see nativeGlesFragmentParity ([caseIndex] selects the
          * parity case: 0 developLinear shape, 1 the default grade's real
-         * stage list). Throws IllegalStateException when the .so is
-         * absent; ran=0 otherwise means "the GPU fragment pass failed at
-         * a named stage" (previewLastError) — never a fabricated verdict.
+         * stage list, 2 the tonemap sweep — stage 23 modes 1-5, worst case
+         * across the five modes). Throws IllegalStateException when the
+         * .so is absent; ran=0 otherwise means "the GPU fragment pass
+         * failed at a named stage" (previewLastError) — never a fabricated
+         * verdict.
          */
         internal fun jniGlesFragmentParity(
             fd: Int,
