@@ -56,8 +56,14 @@ interface EditorPreviewSession : AutoCloseable {
      * stage 24 bypassed, the old look; COL-07). [gyroPath] is the attached
      * gyro log's path (null = no warp — gyro Phase 5); the ENCODED path has
      * no gyro data and ignores it (the documented skip — stabilization is
-     * MCRAW-only). Suspends until done; resumes with the frame or a failure
-     * carrying stage + cause + recovery.
+     * MCRAW-only). [renderClass] is what the render is FOR (choppy-preview
+     * fix 2026-11-13): the MCRAW session's temporal NR gate keys on it
+     * ([PreviewTiers.temporalNrAppliesAt] — settle-only), so the playback
+     * loop's renders never pay the ~85-107 ms merge whatever tier the
+     * quality setting gives them. The default [PreviewTiers.RenderClass.SETTLE]
+     * keeps every pre-fix caller (thumbnails, metrics, the timeline) honest
+     * and bit-identical. Suspends until done; resumes with the frame or a
+     * failure carrying stage + cause + recovery.
      */
     suspend fun render(
         frameIndex: Int,
@@ -65,6 +71,7 @@ interface EditorPreviewSession : AutoCloseable {
         maxDim: Int,
         lutPath: String? = null,
         gyroPath: String? = null,
+        renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
     ): Result<PreviewFrame>
 
     /**
@@ -72,7 +79,8 @@ interface EditorPreviewSession : AutoCloseable {
      * when the frame is unchanged (a grade-only change skips the decode);
      * the encoded path has no such stage and decodes like [render].
      * [lutPath] as in [render] (COL-07); [gyroPath] as in [render] (gyro
-     * Phase 5 — ignored by the encoded path).
+     * Phase 5 — ignored by the encoded path); [renderClass] as in [render]
+     * (choppy-preview fix 2026-11-13 — the temporal NR gate keys on it).
      */
     suspend fun renderCached(
         frameIndex: Int,
@@ -80,6 +88,7 @@ interface EditorPreviewSession : AutoCloseable {
         maxDim: Int,
         lutPath: String? = null,
         gyroPath: String? = null,
+        renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
     ): Result<PreviewFrame>
 
     /**
@@ -281,13 +290,17 @@ class EncodedPreviewSession private constructor(
 
     // gyroPath is intentionally ignored (gyro Phase 5): an encoded clip has
     // no gyro data — stabilization is MCRAW-only, and the editor never
-    // shows the group for an encoded clip anyway.
+    // shows the group for an encoded clip anyway. renderClass is ignored
+    // too (choppy-preview fix 2026-11-13): the temporal NR gate it feeds is
+    // MCRAW-only — an encoded clip's pixels were developed by the camera,
+    // there is no RAW CFA to merge (the DN-05..09 skip).
     override suspend fun render(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
         lutPath: String?,
         gyroPath: String?,
+        renderClass: PreviewTiers.RenderClass,
     ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
 
     /**
@@ -303,6 +316,7 @@ class EncodedPreviewSession private constructor(
         maxDim: Int,
         lutPath: String?,
         gyroPath: String?,
+        renderClass: PreviewTiers.RenderClass,
     ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
 
     private suspend fun renderOnEngine(

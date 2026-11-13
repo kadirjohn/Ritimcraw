@@ -90,6 +90,7 @@ import com.ritim.ritimcraw.engine.SourcePathDecision
 import com.ritim.ritimcraw.engine.PtsTimeline
 import com.ritim.ritimcraw.engine.RenderGate
 import com.ritim.ritimcraw.engine.RenderRequest
+import com.ritim.ritimcraw.engine.PreviewTiers.RenderClass
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.ui.theme.RitimTheme
@@ -1012,7 +1013,15 @@ fun ClipEditorScreen(
          * 2026-11-11 section 2): after THIS render publishes, the pump
          * offers one more render of the same frame/grade at that tier —
          * only when the pending slot is empty, so anything the user did
-         * in between still wins.
+         * in between still wins. [renderClass] (choppy-preview fix
+         * 2026-11-13) tells the seam's temporal NR gate WHAT this render
+         * is for: the playback loop passes PLAYBACK (the fix — playback
+         * never runs the ~85-107 ms merge, whatever tier the quality
+         * setting gives it; at HIGH that tier is 1280 and the old
+         * tier-only gate turned NR on, ~3.65 renders/sec measured),
+         * slider/seek drags pass DRAG, everything else stays SETTLE (the
+         * default — pause, clip end, zoom settle, refresh, precision
+         * scrub, holds: the parked frames that can afford the merge).
          */
         fun requestRender(
             frameIndex: Int,
@@ -1020,9 +1029,12 @@ fun ClipEditorScreen(
             maxDim: Int,
             cached: Boolean = false,
             followUpMaxDim: Int? = null,
+            renderClass: RenderClass = RenderClass.SETTLE,
         ) {
             renderSeq += 1
-            gate.offer(RenderRequest(frameIndex, g, maxDim, renderSeq, cached, followUpMaxDim))
+            gate.offer(
+                RenderRequest(frameIndex, g, maxDim, renderSeq, cached, followUpMaxDim, renderClass)
+            )
             pumpKick.trySend(Unit)
         }
 
@@ -1040,7 +1052,11 @@ fun ClipEditorScreen(
             dragActive = t.dragActive
             when (val d = t.decision) {
                 is SliderTiers.Decision.RenderAtDragTier ->
-                    requestRender(positionFrame, grade, d.maxDim, cached = true)
+                    // DRAG class even when the tier is the 1280 settle tier
+                    // (a zoomed drag): the class, not the tier size, feeds
+                    // the temporal NR gate — an interactive render never
+                    // pays the ~85-107 ms merge.
+                    requestRender(positionFrame, grade, d.maxDim, cached = true, renderClass = RenderClass.DRAG)
                 is SliderTiers.Decision.RenderAtSettleTier ->
                     requestRender(positionFrame, grade, d.maxDim)
                 SliderTiers.Decision.NoRender -> Unit
@@ -1218,6 +1234,7 @@ fun ClipEditorScreen(
                     zoomed = previewZoomed,
                 ),
                 cached = dragActive,
+                renderClass = if (dragActive) RenderClass.DRAG else RenderClass.SETTLE,
             )
         }
 
@@ -1323,9 +1340,15 @@ fun ClipEditorScreen(
                         if (req.cached) {
                             // Interactive drag render: the bridge reuses the
                             // cached CFA when the frame is unchanged.
-                            s.renderCached(req.frameIndex, req.grade, req.maxDim, lutPath, gyroPath)
+                            s.renderCached(
+                                req.frameIndex, req.grade, req.maxDim,
+                                lutPath, gyroPath, req.renderClass,
+                            )
                         } else {
-                            s.render(req.frameIndex, req.grade, req.maxDim, lutPath, gyroPath)
+                            s.render(
+                                req.frameIndex, req.grade, req.maxDim,
+                                lutPath, gyroPath, req.renderClass,
+                            )
                         }
                     } else {
                         // No session. The per-render fallback is the MCRAW
@@ -1353,6 +1376,7 @@ fun ClipEditorScreen(
                                     maxDim = req.maxDim,
                                     lutPath = lutPath,
                                     gyroPath = gyroPath,
+                                    renderClass = req.renderClass,
                                 )
                             }
                         }
@@ -1430,6 +1454,7 @@ fun ClipEditorScreen(
                                 RenderRequest(
                                     req.frameIndex, req.grade, req.followUpMaxDim,
                                     renderSeq, cached = true,
+                                    renderClass = req.renderClass,
                                 )
                             )
                         ) {
@@ -1651,8 +1676,15 @@ fun ClipEditorScreen(
                     positionFrame = idx
                     // Playback tier = the user's preview-quality choice
                     // (owner request 2026-11-11b section 3); the default
-                    // equals the old fixed PLAYBACK_MAX_DIM.
-                    requestRender(idx, grade, previewQuality.playbackMaxDim)
+                    // equals the old fixed PLAYBACK_MAX_DIM. PLAYBACK class
+                    // (choppy-preview fix 2026-11-13): the render's class,
+                    // not its tier size, feeds the temporal NR gate — at
+                    // the HIGH quality setting the tier is 1280 and the old
+                    // tier-only gate turned the ~85-107 ms merge on for
+                    // every playback frame (~3.65 renders/sec measured);
+                    // playback NEVER runs the merge now, the settle render
+                    // on pause still does.
+                    requestRender(idx, grade, previewQuality.playbackMaxDim, renderClass = RenderClass.PLAYBACK)
                     lastRendered = idx
                 }
                 if (idx >= pts.size - 1) {
@@ -2195,6 +2227,7 @@ fun ClipEditorScreen(
                                 zoomed = previewZoomed,
                             ),
                             cached = true,
+                            renderClass = if (dragActive) RenderClass.DRAG else RenderClass.SETTLE,
                         )
                     }
                 },

@@ -403,6 +403,7 @@ class EditorAudioTest {
             maxDim: Int,
             lutPath: String?,
             gyroPath: String?,
+            renderClass: PreviewTiers.RenderClass,
         ): Result<PreviewFrame> = Result.failure(IllegalStateException("unused"))
 
         override suspend fun renderCached(
@@ -411,6 +412,7 @@ class EditorAudioTest {
             maxDim: Int,
             lutPath: String?,
             gyroPath: String?,
+            renderClass: PreviewTiers.RenderClass,
         ): Result<PreviewFrame> = Result.failure(IllegalStateException("unused"))
 
         override suspend fun framePtsUs(index: Int): Long = 0L

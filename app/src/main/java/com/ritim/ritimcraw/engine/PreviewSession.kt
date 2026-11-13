@@ -63,9 +63,12 @@ class PreviewSession private constructor(
      * stage 24 bypassed, the old look; COL-07). [gyroPath] is the attached
      * gyro log's path (null = no warp — gyro Phase 5; the stabilization
      * gate is [GradeMapping.stabilizationArgs], applied at this render's
-     * tier). Suspends until done; resumes with the frame or a failure
-     * carrying stage + cause + recovery. A closed session fails cleanly
-     * instead of touching the dead handle.
+     * tier). [renderClass] feeds the temporal NR gate
+     * ([PreviewTiers.temporalNrAppliesAt], choppy-preview fix 2026-11-13:
+     * settle-only — playback and drag renders never pay the merge).
+     * Suspends until done; resumes with the frame or a failure carrying
+     * stage + cause + recovery. A closed session fails cleanly instead of
+     * touching the dead handle.
      */
     override suspend fun render(
         frameIndex: Int,
@@ -73,6 +76,7 @@ class PreviewSession private constructor(
         maxDim: Int,
         lutPath: String?,
         gyroPath: String?,
+        renderClass: PreviewTiers.RenderClass,
     ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
@@ -101,7 +105,7 @@ class PreviewSession private constructor(
                                 )
                             )
                         } else {
-                            renderBlocking(frameIndex, grade, maxDim, lutPath, gyroPath)
+                            renderBlocking(frameIndex, grade, maxDim, lutPath, gyroPath, renderClass)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)
@@ -128,12 +132,15 @@ class PreviewSession private constructor(
         maxDim: Int,
         lutPath: String? = null,
         gyroPath: String? = null,
+        renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
     ): Result<PreviewFrame> {
         val args = GradeMapping.toNative(grade)
-        // DN-08 tier policy: temporal NR only at the settle/paused tier —
-        // the drag (480) and playback (720) tiers skip the full-res merge.
+        // DN-08 render-class policy (choppy-preview fix 2026-11-13):
+        // temporal NR only on SETTLE renders at the paused tier or above —
+        // playback and drag renders skip the full-res merge (the pristine
+        // center shows; the effect lands on the settle render).
         val temporal = args.copy(
-            temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
+            temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim, renderClass),
         )
         // Gyro Phase 5: the stabilization gate at this render's tier (null
         // stab = no warp — off, tier skip, or no attached log).
@@ -175,6 +182,7 @@ class PreviewSession private constructor(
         maxDim: Int,
         lutPath: String?,
         gyroPath: String?,
+        renderClass: PreviewTiers.RenderClass,
     ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
@@ -203,11 +211,12 @@ class PreviewSession private constructor(
                             )
                         } else {
                             val args = GradeMapping.toNative(grade)
-                            // DN-08 tier policy: temporal NR only at the
-                            // settle/paused tier — the drag-tier cached path
-                            // (480) skips the full-res merge.
+                            // DN-08 render-class policy (choppy-preview fix
+                            // 2026-11-13): temporal NR only on SETTLE
+                            // renders at the paused tier or above — the
+                            // drag-tier cached path skips the full-res merge.
                             val temporal = args.copy(
-                                temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim),
+                                temporalNr = args.temporalNr && PreviewTiers.temporalNrAppliesAt(maxDim, renderClass),
                             )
                             // Gyro Phase 5: the stabilization gate at this
                             // render's tier (null stab = no warp).
