@@ -175,6 +175,19 @@ data class GradeK(
     val splitHighlightHue: Float = -1f,
     /** Split-tone balance -100..100; shifts the crossover around midgray. */
     val splitBalance: Float = 0f,
+    // Managed LUT interpretation (owner request 2026-11-13) — appended
+    // LAST, rendered omit-when-null (see the class KDoc): a grade with no
+    // managed interpretation writes NONE of the keys, so files this
+    // build writes for every pre-managed grade stay byte-identical.
+    //
+    // The interpretation rides BY VALUE, not as a library reference: an
+    // export snapshot (a GradeK captured at enqueue) is then
+    // self-sufficient — a retry develops with exactly the interpretation
+    // the user saw even if the library record is later removed or edited
+    // (records are immutable; an edit creates a new revision). lutId
+    // stays the blob/binding reference (legacy selections keep it alone).
+    /** The managed interpretation of the selected LUT, or null = the legacy COL-07 stage-24 path. */
+    val lutInterp: LutInterpK? = null,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -409,6 +422,17 @@ class GradeStore(private val file: File) {
                     .append(',')
                     .append("\"splitBalance\":").append(num(g.splitBalance))
             }
+            // Managed LUT interpretation (owner request 2026-11-13):
+            // omit-when-null — a grade with no managed interpretation
+            // (every pre-managed grade, and any legacy LUT selection)
+            // writes NONE of the keys, so files this build writes for an
+            // untouched clip stay byte-identical to the pre-managed
+            // format. A non-null interpretation rides BY VALUE here, so
+            // an export snapshot is self-sufficient (see GradeK.lutInterp).
+            if (g.lutInterp != null) {
+                sb.append(',')
+                    .append("\"lutInterp\":").append(g.lutInterp.render())
+            }
             sb.append('}')
             return sb.toString()
         }
@@ -566,6 +590,11 @@ class GradeStore(private val file: File) {
                     splitShadowHue = (m["splitShadowHue"] as? Double)?.toFloat() ?: -1f,
                     splitHighlightHue = (m["splitHighlightHue"] as? Double)?.toFloat() ?: -1f,
                     splitBalance = (m["splitBalance"] as? Double)?.toFloat() ?: 0f,
+                    // Managed LUT interpretation postdates older files:
+                    // absent or JSON-null parses as null (the legacy
+                    // stage-24 path keyed on lutId alone) — the old look
+                    // is preserved exactly.
+                    lutInterp = LutInterpK.parse(m["lutInterp"]),
                 )
             }
             return out

@@ -4,15 +4,28 @@ import java.io.File
 import java.security.MessageDigest
 
 /**
- * One imported .cube 3D LUT (owner request 2026-11-10 section 3, COL-07).
- * The id is derived from the file's fingerprint, so re-importing the same
- * cube keeps the same id (the SourceRepository convention). [name] is the
- * display name: the parsed TITLE from the .cube file when present (set
- * after a successful native probe), else the imported file's own fallback.
+ * One imported .cube 3D LUT binding (owner request 2026-11-10 section 3,
+ * COL-07; managed interpretations 2026-11-13). The id is derived from the
+ * file's fingerprint, so re-importing the same cube keeps the same id (the
+ * SourceRepository convention). [name] is the display name: the parsed
+ * TITLE from the .cube file when present (set after a successful native
+ * probe), else the imported file's own fallback.
+ *
+ * A record is an IMMUTABLE binding: the blob (id) plus ONE interpretation
+ * ([interp]). "Editing the interpretation" never mutates a record — it
+ * creates a NEW record with the same blob and the new interpretation
+ * ([LutStore.addBinding]); two interpretations of the same blob coexist
+ * as two records sharing one copied file. A grade references the binding
+ * as the PAIR (GradeK.lutId = the blob, GradeK.lutInterp = the
+ * interpretation by value); a grade with a null lutInterp is a legacy
+ * selection that develops through the COL-07 stage-24 path exactly as
+ * before.
  */
 data class LutInfo(
     val id: String,
     val name: String,
+    /** The managed interpretation this record binds to the blob. */
+    val interp: LutInterpK = LutInterpK.legacy(),
 )
 
 /**
@@ -54,19 +67,64 @@ class LutStore(
      * section. Returns the entry. The display name starts as the fallback
      * name; the screen re-probes and calls [setTitle] with the parsed
      * TITLE when the native parse succeeds.
+     *
+     * The record binds [interp] (default: the legacy interpretation, so
+     * pre-managed call sites keep compiling and behave exactly as before).
+     * Dedupe is on the (blob, interpretation) PAIR: importing the same
+     * bytes with the same interpretation returns the existing record;
+     * importing them with a DIFFERENT interpretation creates a second
+     * record on the same blob (see [addBinding]) — the first is never
+     * removed or mutated.
      */
-    fun import(uri: String, fallbackName: String): LutInfo {
+    fun import(uri: String, fallbackName: String, interp: LutInterpK = LutInterpK.legacy()): LutInfo {
         val fingerprint = fingerprintOf(uri)
-        val existing = all().find { it.id == idFrom(fingerprint) }
-        if (existing != null) return existing
-        val id = idFrom(fingerprint)
-        val target = File(lutsDir, "$id.cube")
-        lutsDir.mkdirs()
-        resolver.open(uri).use { input ->
-            target.outputStream().use { out -> input.copyTo(out) }
-        }
-        val entry = LutInfo(id = id, name = fallbackName.ifBlank { id })
+        return addBinding(idFrom(fingerprint), fallbackName, uri, interp)
+    }
+
+    /**
+     * The "edit interpretation" path on a library record: binds [interp]
+     * to the ALREADY-IMPORTED blob [id] without re-importing — no SAF
+     * uri, the copied cube in [lutsDir] is reused. Creates a NEW record
+     * (never mutates), deduped on the (id, interp) pair; the new record
+     * inherits the blob's existing display name.
+     */
+    fun bindInterp(id: String, interp: LutInterpK, fallbackName: String = id): LutInfo =
+        addBinding(id, fallbackName, null, interp)
+
+    /**
+     * Binds [interp] to the blob [id] — the "edit interpretation" path:
+     * creates a NEW record (never mutates an existing one), deduped on
+     * the (id, interp) pair — binding an interpretation that already
+     * exists on the blob returns that record unchanged. The blob file is
+     * copied from [uri] only when this is the blob's first record; a
+     * second interpretation on the same blob shares the existing copy.
+     */
+    private fun addBinding(
+        id: String,
+        fallbackName: String,
+        uri: String?,
+        interp: LutInterpK,
+    ): LutInfo {
         val luts = load().toMutableList()
+        val existing = luts.find { it.id == id && it.interp == interp }
+        if (existing != null) return existing
+        val target = File(lutsDir, "$id.cube")
+        // First record on this blob: copy the bytes (import). bindInterp
+        // (null uri) reuses the existing copy; if that copy is missing
+        // the binding is still created, and pathFor's null keeps the
+        // render the same as no LUT rather than failing it.
+        if (!target.exists() && uri != null) {
+            lutsDir.mkdirs()
+            resolver.open(uri).use { input ->
+                target.outputStream().use { out -> input.copyTo(out) }
+            }
+        }
+        val existingName = luts.find { it.id == id }?.name
+        val entry = LutInfo(
+            id = id,
+            name = (existingName ?: fallbackName.ifBlank { id }),
+            interp = interp,
+        )
         luts.add(entry)
         write(luts)
         return entry
@@ -76,20 +134,46 @@ class LutStore(
 
     fun get(id: String): LutInfo? = load().find { it.id == id }
 
-    /** Sets the display name (the parsed TITLE, or a user-facing fallback). */
+    /**
+     * Sets the display name (the parsed TITLE, or a user-facing fallback)
+     * on EVERY record sharing the blob [id] — the name belongs to the
+     * cube, not to one interpretation of it.
+     */
     fun setTitle(id: String, name: String) {
         val luts = load().toMutableList()
-        val i = luts.indexOfFirst { it.id == id }
-        if (i >= 0 && luts[i].name != name) {
-            luts[i] = luts[i].copy(name = name)
-            write(luts)
+        var changed = false
+        for (i in luts.indices) {
+            if (luts[i].id == id && luts[i].name != name) {
+                luts[i] = luts[i].copy(name = name)
+                changed = true
+            }
         }
+        if (changed) write(luts)
     }
 
-    /** Removes the entry and deletes the copied cube file. */
+    /**
+     * Removes EVERY binding on the blob [id] and deletes the copied cube
+     * file — the pre-managed behavior, kept for the existing call sites
+     * (the list screen's delete). Per-record removal is [removeBinding].
+     */
     fun remove(id: String) {
         write(load().filterNot { it.id == id })
         File(lutsDir, "$id.cube").delete()
+    }
+
+    /**
+     * Removes ONE binding — the (id, interp) record — leaving any other
+     * interpretation of the same blob untouched. The copied cube file is
+     * deleted only when this was the blob's last record: two
+     * interpretations share one file, so removing one keeps the other
+     * usable.
+     */
+    fun removeBinding(id: String, interp: LutInterpK) {
+        val luts = load()
+        write(luts.filterNot { it.id == id && it.interp == interp })
+        if (luts.count { it.id == id } == 1) {
+            File(lutsDir, "$id.cube").delete()
+        }
     }
 
     /**
@@ -156,7 +240,13 @@ class LutStore(
         const val FINGERPRINT_BYTES = 1024 * 1024
         const val ID_HEX_CHARS = 16
 
-        /** Renders the "luts" section: [{ "id": ..., "name": ... }, ...]. */
+        /**
+         * Renders the "luts" section: [{ "id": ..., "name": ..., "interp": {...} }, ...].
+         * The interpretation object is omit-when-legacy — a record bound
+         * to the legacy interpretation writes NONE of the interp keys, so
+         * files this build writes for a pre-managed library stay
+         * byte-identical to the old format.
+         */
         internal fun renderLutsArray(luts: List<LutInfo>): String {
             val sb = StringBuilder()
             sb.append('[')
@@ -164,7 +254,10 @@ class LutStore(
                 if (i > 0) sb.append(',')
                 sb.append("{\"id\":").append(ProjectJson.quote(l.id))
                     .append(",\"name\":").append(ProjectJson.quote(l.name))
-                    .append('}')
+                if (l.interp != LutInterpK.legacy()) {
+                    sb.append(",\"interp\":").append(l.interp.render())
+                }
+                sb.append('}')
             }
             sb.append(']')
             return sb.toString()
@@ -180,6 +273,13 @@ class LutStore(
                 LutInfo(
                     id = m["id"] as? String ?: return@mapNotNull null,
                     name = m["name"] as? String ?: "",
+                    // Records written before the managed model are
+                    // {id, name} only: absent interp parses as the legacy
+                    // interpretation — the migration rule. A record with
+                    // a partial interp object still develops as legacy
+                    // for anything unspecified (LutInterpK.parse falls
+                    // back per field).
+                    interp = LutInterpK.parse(m["interp"]) ?: LutInterpK.legacy(),
                 )
             }
         }

@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.JsonParser
+import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.ProjectJson
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -200,6 +201,18 @@ class ExportStore(private val file: File) {
                     .append(",\"stabilizationTrimMs\":").append(num(g.stabilizationTrimMs))
                     .append(",\"stabilizationFocalMm\":").append(num(g.stabilizationFocalMm))
             }
+            // Managed LUT interpretation (owner request 2026-11-13):
+            // omit-when-null — a queued job with no managed interpretation
+            // writes none of the keys, so old rows stay byte-identical and
+            // parse as the legacy path. A non-null interpretation is written
+            // BY VALUE at enqueue: the job then exports with exactly the
+            // interpretation the user saw, and a retry (requeued() keeps
+            // the same snapshot) is invariant even if the library record
+            // is later removed or edited (records are immutable; an edit
+            // creates a new revision).
+            if (g.lutInterp != null) {
+                sb.append(",\"lutInterp\":").append(g.lutInterp.render())
+            }
             sb.append('}')
             return sb.toString()
         }
@@ -300,6 +313,11 @@ class ExportStore(private val file: File) {
                 stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
                 stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                 stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
+                // Managed LUT interpretation postdates older snapshots:
+                // absent or JSON-null parses as null (the legacy stage-24
+                // path keyed on lutId alone) — the old look is preserved
+                // exactly.
+                lutInterp = LutInterpK.parse(m["lutInterp"]),
             )
         }
 

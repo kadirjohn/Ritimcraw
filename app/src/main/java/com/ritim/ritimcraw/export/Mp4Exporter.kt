@@ -247,6 +247,14 @@ internal object NativeMp4Session : Mp4Session {
             grade.stabilizationZoomLimit,
             grade.stabilizationFocalMm,
             grade.stabilizationTrimMs,
+            // Managed LUT interpretation (owner request 2026-11-13): the
+            // grade's binding BY VALUE; null = the legacy stage-24 path
+            // (all five -1, byte-identical).
+            grade.lutInterp?.role?.value ?: -1,
+            grade.lutInterp?.input?.gamut?.value ?: -1,
+            grade.lutInterp?.input?.transfer?.value ?: -1,
+            grade.lutInterp?.output?.gamut?.value ?: -1,
+            grade.lutInterp?.output?.transfer?.value ?: -1,
         )
     }
 

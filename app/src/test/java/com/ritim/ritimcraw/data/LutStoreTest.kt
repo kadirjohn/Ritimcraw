@@ -195,4 +195,165 @@ class LutStoreTest {
         assertNull(s.pathFor(imported.id))
         assertTrue(LutStore(UriKeyedResolver(mapOf()), projectFile(), lutsDir()).all().isEmpty())
     }
+
+    // ---- managed interpretations (owner request 2026-11-13) ----
+
+    /** A display-look interpretation: rendered linear Rec.709 in/out. */
+    private val displayLook = LutInterpK(
+        input = LutEncodingK(LutGamut.Rec709, LutTransfer.Linear),
+        output = LutEncodingK(LutGamut.Rec709, LutTransfer.Linear),
+        role = LutRole.DisplayLook,
+    )
+
+    /** A scene-to-display conversion: DWG/Intermediate -> Rec.709 OETF. */
+    private val sceneToDisplay = LutInterpK(
+        input = LutEncodingK(LutGamut.DaVinciWideGamut, LutTransfer.DaVinciIntermediate),
+        output = LutEncodingK(LutGamut.Rec709, LutTransfer.Rec709OETF),
+        role = LutRole.SceneToDisplay,
+    )
+
+    @Test
+    fun same_blob_two_interpretations_coexist_as_two_records() {
+        // The immutable-binding rule: importing the same bytes with a
+        // DIFFERENT interpretation never removes or mutates the first —
+        // two records, one shared cube file.
+        val s = store(UriKeyedResolver(mapOf("content://luts/a" to cubeA)))
+
+        val first = s.import("content://luts/a", "A", displayLook)
+        val second = s.import("content://luts/a", "A", sceneToDisplay)
+
+        assertEquals(first.id, second.id)
+        assertEquals(2, s.all().size)
+        assertEquals(setOf(displayLook, sceneToDisplay), s.all().map { it.interp }.toSet())
+        // ONE file for the blob, shared by both records.
+        assertEquals(1, lutsDir().listFiles()!!.size)
+        // Re-importing the SAME interpretation dedupes (no third record).
+        val again = s.import("content://luts/a", "A", sceneToDisplay)
+        assertEquals(second, again)
+        assertEquals(2, s.all().size)
+    }
+
+    @Test
+    fun legacy_import_binds_the_legacy_interpretation() {
+        // The default keeps pre-managed call sites byte-identical: an
+        // import without an interpretation is a LegacyLinear709 record.
+        val s = store(UriKeyedResolver(mapOf("content://luts/a" to cubeA)))
+
+        val imported = s.import("content://luts/a", "A")
+
+        assertEquals(LutInterpK.legacy(), imported.interp)
+        assertEquals(LutRole.LegacyLinear709, imported.interp.role)
+    }
+
+    @Test
+    fun legacy_record_renders_without_the_interp_keys() {
+        // Byte-identity: a legacy record writes NONE of the interp keys,
+        // so a pre-managed library file stays byte-identical.
+        val s = store(UriKeyedResolver(mapOf("content://luts/a" to cubeA)))
+        s.import("content://luts/a", "A")
+
+        val rendered = projectFile().readText(Charsets.UTF_8)
+        assertTrue(!rendered.contains("interp"))
+        assertTrue(!rendered.contains("\"role\""))
+    }
+
+    @Test
+    fun bind_interp_creates_a_new_revision_never_mutates() {
+        // The "edit interpretation" path: binding a new interpretation to
+        // an ALREADY-IMPORTED blob creates a NEW record — the old one is
+        // untouched (grades holding it keep rendering exactly as before).
+        val s = store(UriKeyedResolver(mapOf("content://luts/a" to cubeA)))
+        val original = s.import("content://luts/a", "My Look", displayLook)
+
+        val revision = s.bindInterp(original.id, sceneToDisplay)
+
+        assertEquals(original.id, revision.id)
+        assertEquals(sceneToDisplay, revision.interp)
+        // The new record inherits the blob's existing display name.
+        assertEquals("My Look", revision.name)
+        // BOTH records exist; the original is unchanged.
+        assertEquals(2, s.all().size)
+        assertEquals(displayLook, s.all().first { it.interp == displayLook }.interp)
+        // Dedupe: binding an interpretation that already exists on the
+        // blob returns that record unchanged (no third record).
+        val sameAgain = s.bindInterp(original.id, sceneToDisplay)
+        assertEquals(revision, sameAgain)
+        assertEquals(2, s.all().size)
+        // No re-import: the shared file is still there, still one copy.
+        assertEquals(1, lutsDir().listFiles()!!.size)
+    }
+
+    @Test
+    fun pre_managed_records_migrate_to_legacy_interpretation() {
+        // The migration rule: a "luts" section written before the managed
+        // model is [{id, name}] only — every record parses as
+        // LegacyLinear709 and renders back WITHOUT the interp keys.
+        val id = "abcdef0123456789"
+        projectFile().writeText(
+            "{\"version\":1,\"luts\":[{\"id\":\"$id\",\"name\":\"Old Import\"}]}",
+            Charsets.UTF_8,
+        )
+
+        val s = store(UriKeyedResolver(mapOf()))
+        val all = s.all()
+
+        assertEquals(1, all.size)
+        assertEquals(id, all.single().id)
+        assertEquals("Old Import", all.single().name)
+        assertEquals(LutInterpK.legacy(), all.single().interp)
+        // The migration is render-stable: rewriting the store keeps the
+        // file byte-identical (omit-when-legacy).
+        val before = projectFile().readText(Charsets.UTF_8)
+        s.setTitle(id, "Old Import")
+        assertEquals(before, projectFile().readText(Charsets.UTF_8))
+    }
+
+    @Test
+    fun remove_binding_drops_one_record_and_keeps_the_shared_file() {
+        // Two interpretations share one cube file: removing ONE keeps the
+        // other usable (the file survives); removing the LAST one deletes
+        // the file.
+        val s = store(UriKeyedResolver(mapOf("content://luts/a" to cubeA)))
+        val blob = s.import("content://luts/a", "A", displayLook)
+        s.bindInterp(blob.id, sceneToDisplay)
+        val copy = File(lutsDir(), "${blob.id}.cube")
+        assertTrue(copy.exists())
+
+        s.removeBinding(blob.id, sceneToDisplay)
+
+        assertEquals(listOf(displayLook), s.all().map { it.interp })
+        assertTrue(copy.exists())
+
+        s.removeBinding(blob.id, displayLook)
+
+        assertTrue(s.all().isEmpty())
+        assertTrue(!copy.exists())
+    }
+
+    @Test
+    fun remove_blob_drops_every_binding_and_the_file() {
+        // The legacy remove (the list screen's delete): EVERY record on
+        // the blob goes, file too — pre-managed behavior preserved.
+        val s = store(UriKeyedResolver(mapOf("content://luts/a" to cubeA)))
+        val blob = s.import("content://luts/a", "A", displayLook)
+        s.bindInterp(blob.id, sceneToDisplay)
+
+        s.remove(blob.id)
+
+        assertTrue(s.all().isEmpty())
+        assertTrue(!File(lutsDir(), "${blob.id}.cube").exists())
+    }
+
+    @Test
+    fun set_title_renames_every_record_on_the_blob() {
+        // The name belongs to the cube, not to one interpretation: the
+        // probe's TITLE rename touches every record sharing the blob.
+        val s = store(UriKeyedResolver(mapOf("content://luts/a" to cubeA)))
+        val blob = s.import("content://luts/a", "fallback", displayLook)
+        s.bindInterp(blob.id, sceneToDisplay)
+
+        s.setTitle(blob.id, "Parsed Title")
+
+        assertEquals(listOf("Parsed Title", "Parsed Title"), s.all().map { it.name })
+    }
 }

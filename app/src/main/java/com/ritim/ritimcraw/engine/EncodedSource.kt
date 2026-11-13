@@ -383,6 +383,14 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             grade.wheelMidX, grade.wheelMidY,
             grade.wheelHighX, grade.wheelHighY,
             grade.splitShadowHue, grade.splitHighlightHue, grade.splitBalance,
+            // Managed LUT interpretation (owner request 2026-11-13): the
+            // grade's binding BY VALUE; null = the legacy stage-24 path
+            // (all five -1, byte-identical).
+            grade.lutInterp?.role?.value ?: -1,
+            grade.lutInterp?.input?.gamut?.value ?: -1,
+            grade.lutInterp?.input?.transfer?.value ?: -1,
+            grade.lutInterp?.output?.gamut?.value ?: -1,
+            grade.lutInterp?.output?.transfer?.value ?: -1,
         )
     }
 

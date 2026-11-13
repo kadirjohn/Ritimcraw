@@ -138,6 +138,9 @@ class PreviewSession private constructor(
         // Gyro Phase 5: the stabilization gate at this render's tier (null
         // stab = no warp — off, tier skip, or no attached log).
         val stab = GradeMapping.stabilizationArgs(grade, maxDim, gyroPath)
+        // Managed LUT interpretation (owner request 2026-11-13): the grade's
+        // binding BY VALUE; null = the legacy stage-24 path (all five -1).
+        val interp = grade.lutInterp
         return renderArray(
             NativeSource.jniPreviewRender(
                 handle, frameIndex,
@@ -157,6 +160,13 @@ class PreviewSession private constructor(
                 stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
                 stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
                 maxDim,
+                // Managed LUT binding: all five -1 = the legacy stage-24
+                // pair, byte-identical.
+                interp?.role?.value ?: -1,
+                interp?.input?.gamut?.value ?: -1,
+                interp?.input?.transfer?.value ?: -1,
+                interp?.output?.gamut?.value ?: -1,
+                interp?.output?.transfer?.value ?: -1,
             )
         )
     }
@@ -212,6 +222,10 @@ class PreviewSession private constructor(
                             // Gyro Phase 5: the stabilization gate at this
                             // render's tier (null stab = no warp).
                             val stab = GradeMapping.stabilizationArgs(grade, maxDim, gyroPath)
+                            // Managed LUT interpretation (owner request
+                            // 2026-11-13): the grade's binding BY VALUE;
+                            // null = the legacy stage-24 path (all five -1).
+                            val interp = grade.lutInterp
                             renderArray(
                                 NativeSource.jniPreviewSessionRenderCached(
                                     handle, frameIndex,
@@ -231,6 +245,13 @@ class PreviewSession private constructor(
                                     stab?.gyroPath, stab?.mode ?: 0, stab?.strength ?: 0f,
                                     stab?.zoomLimit ?: 0f, stab?.focalMm ?: 0f, stab?.trimMs ?: 0f,
                                     maxDim,
+                                    // Managed LUT binding: all five -1 = the
+                                    // legacy stage-24 pair, byte-identical.
+                                    interp?.role?.value ?: -1,
+                                    interp?.input?.gamut?.value ?: -1,
+                                    interp?.input?.transfer?.value ?: -1,
+                                    interp?.output?.gamut?.value ?: -1,
+                                    interp?.output?.transfer?.value ?: -1,
                                 )
                             )
                         }

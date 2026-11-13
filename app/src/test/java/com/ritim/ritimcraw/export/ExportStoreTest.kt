@@ -3,6 +3,11 @@ package com.ritim.ritimcraw.export
 import com.ritim.ritimcraw.data.FakeResolver
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.GradeStore
+import com.ritim.ritimcraw.data.LutEncodingK
+import com.ritim.ritimcraw.data.LutGamut
+import com.ritim.ritimcraw.data.LutInterpK
+import com.ritim.ritimcraw.data.LutRole
+import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.SourceRepository
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -774,6 +779,90 @@ class ExportStoreTest {
         state = state,
         detail = detail,
     )
+
+    @Test
+    fun snapshot_round_trips_the_managed_lut_interpretation() {
+        // Owner request 2026-11-13: the snapshot carries the FULL
+        // interpretation BY VALUE at enqueue — the job exports exactly
+        // what the user saw.
+        val file = projectFile()
+        val interp = LutInterpK(
+            input = LutEncodingK(LutGamut.DaVinciWideGamut, LutTransfer.DaVinciIntermediate),
+            output = LutEncodingK(LutGamut.Rec709, LutTransfer.Rec709OETF),
+            role = LutRole.SceneToDisplay,
+        )
+        val snapshot = GradeK(lutId = "abc123def4567890", lutInterp = interp)
+        ExportStore(file).add(
+            ExportJob(
+                id = "managed-lut-job",
+                sourceId = "clip-a",
+                snapshot = snapshot,
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+
+        val job = ExportStore(file).all().single { it.id == "managed-lut-job" }
+        assertEquals(interp, job.snapshot.lutInterp)
+        assertEquals(snapshot, job.snapshot)
+    }
+
+    @Test
+    fun old_snapshot_without_interp_parses_null_and_renders_identical() {
+        // Byte-identity both ways: a pre-managed queue row parses with a
+        // null interpretation (the legacy stage-24 path keyed on lutId
+        // alone), and a null-interpretation snapshot renders back WITHOUT
+        // the lutInterp key — the old look and the old file both survive.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-b","snapshot":{"version":1,"exposureEv":0.5,"tempK":5600.0,"tint":0.0,"lutId":"abc123def4567890","lutStrength":80.0},"target":"MP4","state":"QUEUED"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+        val old = ExportStore(file).all().single()
+        assertNull(old.snapshot.lutInterp)
+        assertEquals("abc123def4567890", old.snapshot.lutId)
+
+        // Rewriting the parsed row keeps the file's lutInterp absent.
+        ExportStore(file).update(old)
+        val rewritten = file.readText(Charsets.UTF_8)
+        assertEquals(false, rewritten.contains("lutInterp"))
+    }
+
+    @Test
+    fun retry_keeps_the_snapshot_interpretation_invariant() {
+        // The retry contract: requeued() keeps the SAME snapshot, so a
+        // retried job develops with exactly the interpretation captured
+        // at enqueue — even if the library record is later removed or
+        // "edited" (an edit creates a new revision; records are
+        // immutable). The interpretation rides INSIDE the snapshot by
+        // value, so nothing outside the job can change it.
+        val file = projectFile()
+        val interp = LutInterpK(
+            input = LutEncodingK(LutGamut.Rec2020, LutTransfer.Linear),
+            output = LutEncodingK(LutGamut.Rec709, LutTransfer.Rec709OETF),
+            role = LutRole.SceneLook,
+        )
+        ExportStore(file).add(
+            ExportJob(
+                id = "retry-job",
+                sourceId = "clip-a",
+                snapshot = GradeK(lutId = "abc123def4567890", lutInterp = interp),
+                target = Target.MP4,
+                state = State.FAILED,
+            )
+        )
+
+        ExportStore(file).retry("retry-job")
+
+        val requeued = ExportStore(file).all().single { it.id == "retry-job" }
+        assertEquals(interp, requeued.snapshot.lutInterp)
+        assertEquals(State.QUEUED, requeued.state)
+    }
 
     private fun projectFile(): File = File(tmp.root, "project.json")
 }
