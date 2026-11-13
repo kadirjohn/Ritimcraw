@@ -162,11 +162,25 @@ class ExportStore(private val file: File) {
                 if (j.renderBackend != RenderBackend.DEFAULT) {
                     sb.append(",\"renderBackend\":\"").append(j.renderBackend.name).append('"')
                 }
+                // timeline (the timeline export): omit-when-null — every
+                // per-clip job keeps the field absent, so files written
+                // before the timeline export stay byte-identical and old
+                // rows parse with null (a per-clip job, exactly what they
+                // always were). The snapshot itself is a JSON STRING
+                // (ProjectJson.quote carries the wrapped section).
+                if (j.timeline != null) {
+                    sb.append(",\"timeline\":").append(renderTimelineRef(j.timeline))
+                }
                 sb.append('}')
             }
             sb.append(']')
             return sb.toString()
         }
+
+        /** The timeline snapshot row: name + the wrapped section, both quoted strings. */
+        private fun renderTimelineRef(t: TimelineRef): String =
+            "{\"name\":" + ProjectJson.quote(t.name) +
+                ",\"projectJson\":" + ProjectJson.quote(t.projectJson) + "}"
 
         private fun renderSnapshot(g: GradeK): String {
             val sb = StringBuilder()
@@ -267,6 +281,19 @@ class ExportStore(private val file: File) {
                     // an unknown future value parses as CPU too
                     // (RenderBackend.fromWire).
                     renderBackend = RenderBackend.fromWire(m["renderBackend"] as? String),
+                    // timeline (the timeline export): absent in every
+                    // per-clip row — null keeps the old behavior. The
+                    // parse is ROW-TOLERANT (TimelineRef.parseOrNull
+                    // never throws): a malformed snapshot degrades this
+                    // ONE row to a null instead of throwing out of the
+                    // loop, because load()'s catch-all would otherwise
+                    // empty the whole queue over one bad row. The
+                    // exporter fails such a job honestly at run.
+                    timeline = if (m["timeline"] == null) {
+                        null
+                    } else {
+                        TimelineRef.parseOrNull(ProjectJson.renderRaw(m["timeline"]))
+                    },
                 )
             }
         }

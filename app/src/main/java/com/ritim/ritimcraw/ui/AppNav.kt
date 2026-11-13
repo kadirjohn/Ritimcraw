@@ -54,6 +54,7 @@ import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
+import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.audio.AudioStore
 import com.ritim.ritimcraw.data.CollectionRefresh
 import com.ritim.ritimcraw.data.GradeStore
@@ -93,6 +94,8 @@ import com.ritim.ritimcraw.export.PhotoDevelop
 import com.ritim.ritimcraw.export.PhotoExporter
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
+import com.ritim.ritimcraw.export.TimelineMp4Exporter
+import com.ritim.ritimcraw.export.TimelineRef
 import com.ritim.ritimcraw.data.timeline.TimelineStore
 import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
 import com.ritim.ritimcraw.ui.exports.ExportsScreen
@@ -249,6 +252,51 @@ fun AppNav() {
             photo = PhotoExporter(
                 pngWriter = BitmapPngWriter(),
                 lutPathFor = { id -> stores.luts.pathFor(id) },
+            ),
+            // Timeline export (TL-EX): the timeline arm — walks the
+            // queued project snapshot clip by clip (trims/splits/order,
+            // black for gaps and skipped clips, frame-nearest fps
+            // mapping) and encodes one MP4 at the output grid. The seams
+            // resolve the LIVE world at run time (the snapshot froze
+            // user intent, not the world — the same live-grade semantics
+            // as the MP4 arm): sources from the Library, the MEASURED
+            // fps and real frame count from MetadataStore (the only
+            // honest source rate — UNKNOWN skips the clip honestly,
+            // never a guess), the CURRENT per-source grade, and each
+            // grade's LUT path resolved once per source. The fd seam
+            // mirrors io.sourceFd (the queue owns the fd's lifetime).
+            // Stage lines under the same DEBUG-only export-diagnostics
+            // tag as the MP4 arm.
+            timeline = TimelineMp4Exporter(
+                sourceFdFor = { sourceId ->
+                    val source = stores.sources.get(sourceId) ?: return@TimelineMp4Exporter -1
+                    try {
+                        context.contentResolver
+                            .openFileDescriptor(Uri.parse(source.uri), "r")
+                            ?.detachFd() ?: -1
+                    } catch (e: Exception) {
+                        -1
+                    }
+                },
+                sources = {
+                    // Read the STORE live at run time (not the UI's
+                    // state snapshot): the plan must see the world as it
+                    // is when the job runs.
+                    stores.sources.all().associateBy { it.id }
+                },
+                fpsMeasured = { sourceId ->
+                    stores.metadata.get(sourceId)?.fpsMeasured?.value
+                },
+                frameCount = { sourceId ->
+                    stores.metadata.get(sourceId)?.frameCount?.value
+                },
+                gradeFor = { sourceId -> stores.grades.get(sourceId) },
+                lutPathFor = { id -> stores.luts.pathFor(id) },
+                stageLog = if (BuildConfig.DEBUG) {
+                    { line -> Log.i(ExportStageTiming.TAG, line) }
+                } else {
+                    null
+                },
             ),
             io = object : ExportIo {
                 override fun sourceFd(job: ExportJob): Int {
@@ -450,6 +498,11 @@ fun AppNav() {
     val exportSnackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val exportQueuedText = stringResource(R.string.export_queued_snackbar)
+    // The timeline's display name (TL-EX): v1 has one unnamed shared
+    // timeline, so the honest name is the localized screen title. Used
+    // for the export's output file name, the Exports row label, and the
+    // job's snapshot name.
+    val timelineTitleText = stringResource(R.string.timeline_export_name)
     fun enqueueFeedback() {
         // SHORT (not LONG): confirmation, not an error the user must read.
         scope.launch { exportSnackbar.showSnackbar(exportQueuedText, duration = SnackbarDuration.Short) }
@@ -831,6 +884,41 @@ fun AppNav() {
                     metadata = stores.metadata,
                     audio = stores.audio,
                     onBack = { timelineOpen = false },
+                    // Timeline export (TL-EX): the screen hands up the
+                    // COMMITTED project (its own state var — never a
+                    // drag preview); this shell callback owns the
+                    // enqueue, exactly like the editor's onExport.
+                    // sourceId is the synthetic "timeline" (the row's
+                    // name comes from sourceNames below, not the id);
+                    // the marker is the timeline FIELD, so the queue
+                    // dispatches this to the timeline exporter before
+                    // the target when (ExportQueue). The snapshot rule:
+                    // capture NOW, at queue time — a later edit, split
+                    // or delete must not change the in-flight export.
+                    // v1's timeline is unnamed (one shared timeline —
+                    // the projects model lands later), so the honest
+                    // name is the localized screen title, used for the
+                    // output file name and the row label.
+                    onExportTimeline = { project ->
+                        val title = timelineTitleText
+                        stores.exports.add(
+                            ExportJob(
+                                id = "job-" + System.nanoTime(),
+                                sourceId = "timeline",
+                                // The per-clip grade field is unused by
+                                // the timeline walk (grades resolve per
+                                // SOURCE at run time); neutral default.
+                                snapshot = GradeK(),
+                                target = Target.MP4,
+                                state = State.QUEUED,
+                                outputName = ExportQueue.displayOutputName(title, Target.MP4),
+                                timeline = TimelineRef.capture(title, project),
+                            )
+                        )
+                        exportJobs = stores.exports.all()
+                        queueKick += 1
+                        enqueueFeedback()
+                    },
                 )
             } else if (route != null) {
                 // Fade between browse and editor (DESIGN.md Motion).
@@ -1467,8 +1555,12 @@ fun AppNav() {
                             jobs = exportJobs,
                             // Rows show the clip's display name (§2b); the
                             // id is the fallback for sources whose name the
-                            // resolver could not read.
-                            sourceNames = sources.associate { it.id to it.displayOrId },
+                            // resolver could not read. A timeline job's
+                            // synthetic "timeline" id maps to the localized
+                            // timeline title (TL-EX) so its row reads the
+                            // timeline's name, not the marker id.
+                            sourceNames = sources.associate { it.id to it.displayOrId } +
+                                ("timeline" to timelineTitleText),
                             onRetry = { job ->
                                 // Retry re-queues with the same snapshot.
                                 stores.exports.retry(job.id)

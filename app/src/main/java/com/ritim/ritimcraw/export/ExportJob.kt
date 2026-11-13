@@ -93,6 +93,30 @@ data class ExportJob(
      * byte-identical (the manualRotationDeg shape).
      */
     val renderBackend: RenderBackend = RenderBackend.CPU,
+    /**
+     * (Timeline export) the timeline this job renders, when it is a TIMELINE
+     * job — null on every per-clip job. The marker is a FIELD, not a Target
+     * value: Target is persisted BY NAME, so a new enum constant would be a
+     * persisted-enum wire change; a null-defaulted field keeps every existing
+     * row byte-identical (the frameIndex/manualRotationDeg shape).
+     *
+     * SNAPSHOT AT ENQUEUE, exactly like [snapshot] (the grade): the timeline
+     * is user intent at the moment the export was queued — a later edit,
+     * split or delete must not change an in-flight export, and Retry
+     * re-exports the SAME timeline. [TimelineRef.projectJson] holds the
+     * rendered timeline section wrapped as its own parseable document
+     * (TimelineStore.renderTimeline inside `{"timeline":...}` — parseTimeline
+     * reads the whole document and looks up the section).
+     *
+     * The world facts the snapshot does NOT freeze — the Library's sources,
+     * each source's measured fps and real frame count, and the per-source
+     * grade from GradeStore — are resolved FRESH at run time by the timeline
+     * exporter (a source that went missing or UNKNOWN after enqueue skips
+     * honestly, the plan's gates; a grade edited after enqueue is the
+     * current grade, the same live-grade semantics the per-clip exporters
+     * apply to fps/frame metadata).
+     */
+    val timeline: TimelineRef? = null,
 ) {
 
     /**

@@ -79,6 +79,18 @@ class ExportQueue(
     private val io: ExportIo,
     private val publisher: ExportPublisher = ExportPublisher.None,
     private val progressClock: () -> Long = System::currentTimeMillis,
+    /**
+     * (Timeline export) the timeline exporter, when the app wires one —
+     * null keeps every legacy construction compiling and makes a timeline
+     * job (a job whose [ExportJob.timeline] marker is set) fail HONESTLY
+     * at dispatch: "timeline export unavailable" with a recovery, never a
+     * silent skip or a wrong per-clip export of the marker row. The
+     * dispatch checks the marker BEFORE the target `when`, so a timeline
+     * job never falls into the per-clip exporters whatever its target
+     * value is (the marker owns the routing, the target is just the
+     * persisted format).
+     */
+    private val timeline: TimelineMp4Exporter? = null,
 ) {
 
     /**
@@ -334,7 +346,31 @@ class ExportQueue(
         // export is safe — one fd per job, never leaked).
         val fd = io.sourceFd(job)
         val result = try {
-            when (job.target) {
+            // Timeline dispatch (the marker owns the routing, BEFORE the
+            // target `when`): a job whose timeline snapshot is set renders
+            // THE TIMELINE — never the per-clip exporters, whatever its
+            // target value is (Target is the persisted FORMAT; the
+            // snapshot is the WHAT). The fd above is acquired for the
+            // job's synthetic sourceId (a timeline has no single source);
+            // the timeline exporter opens each needed source itself via
+            // its own seam, and this fd is simply closed unused below —
+            // harmless, and the acquire-then-finally shape stays uniform
+            // for every job kind.
+            if (job.timeline != null) {
+                val exporter = timeline
+                if (exporter == null) {
+                    job.copy(
+                        state = State.FAILED,
+                        detail = "Timeline export failed (stage: dispatch): " +
+                            "no timeline exporter is wired — recovery: " +
+                            "update the app and retry the export",
+                        framesDone = null,
+                        framesTotal = null,
+                    )
+                } else {
+                    exporter.export(job, out, onProgress)
+                }
+            } else when (job.target) {
                 // The DNG arm now passes the job's frame index (RAW-11): a
                 // picker-queued DNG develops the picked frame, and every
                 // pre-picker job carries 0 — the exact frame it always
