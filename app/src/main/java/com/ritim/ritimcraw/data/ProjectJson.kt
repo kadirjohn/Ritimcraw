@@ -29,9 +29,11 @@ internal object ProjectJson {
      * and their rendered files, and the timeline section renders last.
      * "audio" (the audio track model, AudioStore — Stage C AUD-02/03)
      * follows the same additive precedent, appended after "timeline".
+     * "metadata" (the per-source metadata records, MetadataStore — IN-13
+     * Stage A) follows the same additive precedent, appended last.
      */
     private val SECTION_ORDER =
-        listOf("grades", "sources", "exports", "luts", "timeline", "audio")
+        listOf("grades", "sources", "exports", "luts", "timeline", "audio", "metadata")
 
     /**
      * Renders the whole project.json with [section] set to [renderedSection],

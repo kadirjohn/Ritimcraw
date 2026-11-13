@@ -65,6 +65,9 @@ import com.ritim.ritimcraw.data.RenderBackendStore
 import com.ritim.ritimcraw.data.LutStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.PresetStore
+import com.ritim.ritimcraw.data.metadata.Field
+import com.ritim.ritimcraw.data.metadata.MetadataExtractor
+import com.ritim.ritimcraw.data.metadata.MetadataStore
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
 import com.ritim.ritimcraw.data.ThumbnailRules
@@ -176,6 +179,12 @@ fun AppNav() {
             // top-level "gyroFolder" scalar, omit-when-absent — the
             // PreviewQualityStore pattern.
             gyroFolder = GyroFolderStore(project),
+            // Per-source metadata records (spec IN-13, Stage A): same
+            // shared project.json, own "metadata" section keyed by
+            // sourceId — the join with the sources section. Filled by
+            // the probe launched alongside generateThumbnail on import
+            // and relink; the UI surface is a later stage's.
+            metadata = MetadataStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -368,6 +377,42 @@ fun AppNav() {
                 },
             )
         )
+    }
+
+    // IN-13 Stage A: extracts the source's honest metadata record and
+    // persists it into project.json's "metadata" section (keyed by
+    // sourceId — the join with the sources section). WIRING ONLY: the
+    // probe reads through the same seams the thumbnail path uses; a
+    // failed read persists the honest all-UNKNOWN record, never blocks
+    // the import, and the UI surface is a later stage's (the mission's
+    // file boundary kept ui/library untouched).
+    suspend fun probeMetadata(source: MediaSource) {
+        val uri = source.uri
+        val record = MetadataExtractor().probe(
+            source.id,
+            source.kind,
+            fdProvider = {
+                try {
+                    context.contentResolver
+                        .openFileDescriptor(Uri.parse(uri), "r")
+                        ?.detachFd() ?: -1
+                } catch (e: Exception) {
+                    -1
+                }
+            },
+        )
+        // The two file-level facts come from the repository seams, not
+        // the container: the resolver's OpenableColumns.SIZE (-1 stays
+        // UNKNOWN — never a zero) and the repository's own fingerprint.
+        val recordWithFile = record.copy(
+            fileSize = AndroidUriResolver(context).size(uri).takeIf { it >= 0 }
+                ?.let { Field.known(it) }
+                ?: record.fileSize,
+            fileIdentity = source.fingerprint.ifBlank { null }
+                ?.let { Field.known(it) }
+                ?: record.fileIdentity,
+        )
+        stores.metadata.put(recordWithFile)
     }
 
     // Enqueue feedback (owner finding 2026-11-10: Export MP4 gave NO
@@ -1193,6 +1238,11 @@ fun AppNav() {
                                     val imported = stores.sources.import(uri)
                                     sources = stores.sources.all()
                                     scope.launch { generateThumbnail(imported) }
+                                    // IN-13: the metadata probe runs after the
+                                    // import, alongside the thumbnail — it
+                                    // never blocks the import announcement and
+                                    // persists its own section.
+                                    scope.launch { probeMetadata(imported) }
                                     // The auto-match runs AFTER the import
                                     // returns: the import announcement never
                                     // waits on the tree query + copy + probe.
@@ -1237,6 +1287,11 @@ fun AppNav() {
                                     val relinked = stores.sources.relink(sourceId, uri)
                                     sources = stores.sources.all()
                                     scope.launch { generateThumbnail(relinked) }
+                                    // IN-13: a relink re-probes the metadata —
+                                    // the file may differ from what the old
+                                    // record described (the fingerprint check
+                                    // already guarantees it is the same clip).
+                                    scope.launch { probeMetadata(relinked) }
                                     Result.success(relinked)
                                 } catch (e: Exception) {
                                     Result.failure(e)
@@ -1451,4 +1506,7 @@ private class Stores(
     // The granted gyro-folder tree URI (owner request 2026-11-12, G1):
     // same shared project.json, own top-level "gyroFolder" scalar.
     val gyroFolder: GyroFolderStore,
+    // Per-source metadata records (spec IN-13, Stage A): same shared
+    // project.json, own "metadata" section keyed by sourceId.
+    val metadata: MetadataStore,
 )
