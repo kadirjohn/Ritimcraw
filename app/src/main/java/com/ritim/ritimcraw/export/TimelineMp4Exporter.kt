@@ -1,0 +1,411 @@
+package com.ritim.ritimcraw.export
+
+import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.MediaSource
+import com.ritim.ritimcraw.data.RotationState
+import com.ritim.ritimcraw.data.timeline.TimelineExportPlan
+import com.ritim.ritimcraw.data.timeline.TimelineStore
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.RejectedExecutionException
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
+
+/**
+ * Exports a TIMELINE as an SDR H.264 MP4 (the timeline's first export,
+ * TL-EX): walks the [TimelineExportPlan] built from the job's snapshotted
+ * project ([ExportJob.timeline], captured at enqueue — a later edit must
+ * not change an in-flight export), rendering the VIDEO track clip by clip
+ * in timeline order, honoring trims/splits/order, with BLACK frames for
+ * gaps and skipped clips.
+ *
+ * THE PLAN IS THE RECIPE: [TimelineExportPlan.build] already decided
+ * which source frame each output frame shows (frame-nearest mapping, NO
+ * resampling — v1, documented there), where the black runs are, and
+ * what was honestly skipped ([fpsMeasured] is the ONLY source rate; a
+ * source that went missing or UNKNOWN after enqueue skips honestly,
+ * never guesses). This exporter only executes it: decode, rotate, scale,
+ * convert, submit at the output grid's pts.
+ *
+ * V1 LIMITS (honest, KDoc'd — the scope of THIS milestone):
+ *  - AUDIO: VIDEO-ONLY. The plan's [TimelineExportPlan.audioSkipped]
+ *    marker (true when the project holds AUDIO-track clips) is logged to
+ *    the stage log — the audio was consciously left out, not lost.
+ *    Mixing placed PCM at per-clip rates/gains/fades is AUD-05/07.
+ *  - TIMING: output pts are the OUTPUT grid's — frame i lands at
+ *    i * 1_000_000 us / plan.fps — because the movie's timebase is the
+ *    project's frame grid (TimelineModel's TIMEBASE contract), not any
+ *    source's. Frame-nearest mapping already preserved real time; the
+ *    pts spacing carries it to the muxer.
+ *  - ORIENTATION: each source's frames are rotated UPRIGHT by the
+ *    session's container orientation (the per-clip export's pixel
+ *    rotation, owner request 2026-11-11 section 5 — even players that
+ *    ignore rotation metadata see it right-side up). TimelineOutput
+ *    .orientationDeg is NOT applied on top (v1: the output is upright
+ *    per source; a whole-timeline turn is a later milestone).
+ *  - COLOR: the writer's existing handling is the whole story — SDR
+ *    Rec.709 limited range (MediaCodecMp4Writer). TimelineOutput
+ *    .colorSpace/.transfer/.hdr are NOT honored beyond that (the same
+ *    stance as the per-clip MP4 export; HDR/P3/2020 outputs are later
+ *    milestones).
+ *  - FRAME SIZE: the reconcile choice lives in [RgbScale] (aspect-fill
+ *    center-crop, bilinear, pure Kotlin) — see its KDoc for why.
+ *  - BACKEND: CPU only. The packed writeVideoFrame path — no encoder
+ *    Surface, no planes, no GPU members. The per-clip export's GPU
+ *    affordance does not apply to the timeline's multi-source walk v1.
+ *
+ * FAILURE SEMANTICS (the honest-completion rule): a source that fails to
+ * OPEN renders its entry's frames BLACK with the failure in the stage
+ * log — the export COMPLETES and reports, it never dies whole over one
+ * clip (the plan's skip philosophy, extended to open-time failures; a
+ * mid-render frame failure is the same: that frame renders black and
+ * the walk continues). Only failures of the OUTPUT (writer start,
+ * write, finish, finalize) fail the job.
+ *
+ * THE SEAMS (the app wires real ones, tests fakes — the Mp4Exporter
+ * pattern): [session] is the shared native boundary; [sourceFdFor]
+ * turns a sourceId into its fd, called ONCE per DISTINCT source per
+ * run (a timeline may place the same source many times — one open, one
+ * session, closed at the end); [sources]/[fpsMeasured]/[frameCount]/[gradeFor]
+ * resolve the WORLD at run time (the snapshot froze user intent, not
+ * the world — the same live-world semantics as the per-clip export's
+ * fps/frame metadata); [writerFactory] builds the MP4 writer.
+ *
+ * The whole pipeline runs on the shared export engine thread
+ * ([ExportEngine]) — one motioncam decoder is not concurrency-safe and
+ * the bridge's error state is thread-local. One job at a time.
+ * Staging per the spec: the muxer writes to `out.partial`; only a
+ * finished export is renamed to [out] (ExportStaging).
+ */
+class TimelineMp4Exporter(
+    private val session: Mp4Session = NativeMp4Session,
+    private val writerFactory: () -> Mp4MediaWriter = { MediaCodecMp4Writer() },
+    private val engine: ExecutorService = ExportEngine.thread,
+    private val sourceFdFor: (String) -> Int,
+    private val sources: () -> Map<String, MediaSource>,
+    private val fpsMeasured: (String) -> Double?,
+    private val frameCount: (String) -> Int?,
+    /** The clip's CURRENT source grade from GradeStore by sourceId. */
+    private val gradeFor: (String) -> GradeK,
+    /** The LUT path seam (the per-clip export's lutPathFor pattern). */
+    private val lutPathFor: (String?) -> String? = { null },
+    /** Per-export stage log sink; null = no logging. */
+    private val stageLog: ((String) -> Unit)? = null,
+) {
+
+    /**
+     * Exports the job's timeline as an MP4 at [out]. Returns the updated
+     * job: DONE on success (detail = output file name), FAILED with a
+     * stage + cause + recovery detail on failure. Never throws; a failure
+     * leaves neither [out] nor its partial behind.
+     *
+     * [onProgress] hears (framesDone, framesTotal = plan.totalFrames) per
+     * frame; the queue owns the throttled persistence.
+     */
+    suspend fun export(
+        job: ExportJob,
+        out: File,
+        onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
+    ): ExportJob {
+        val ref = job.timeline
+            ?: return failed(
+                job,
+                "plan", "the job has no timeline snapshot",
+                "re-queue the export from the timeline",
+            )
+        val partial = ExportStaging.partial(out)
+        val outcome: Result<Unit> = suspendCoroutine { cont ->
+            try {
+                engine.execute {
+                    val res = try {
+                        exportOnce(ref, partial, onProgress)
+                        if (ExportStaging.finalize(partial, out)) {
+                            Result.success(Unit)
+                        } else {
+                            ExportStaging.discard(partial)
+                            Result.failure<Unit>(
+                                IllegalStateException(
+                                    kotlinMessage(
+                                        Mp4ExportErrors.STAGE_FINALIZE,
+                                        "the finished movie could not be moved",
+                                        "check free space and retry",
+                                    )
+                                )
+                            )
+                        }
+                    } catch (e: Throwable) {
+                        ExportStaging.discard(partial)
+                        Result.failure<Unit>(e)
+                    }
+                    cont.resume(res)
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(
+                    Result.failure<Unit>(
+                        IllegalStateException(
+                            kotlinMessage(
+                                "open",
+                                "export engine unavailable",
+                                "retry the export",
+                            )
+                        )
+                    )
+                )
+            }
+        }
+        return outcome.fold(
+            onSuccess = { job.copy(state = State.DONE, detail = out.name) },
+            onFailure = { e -> job.copy(state = State.FAILED, detail = e.message) },
+        )
+    }
+
+    /** One whole-pipeline attempt: plan, walk, encode, finish, release. */
+    private fun exportOnce(
+        ref: TimelineRef,
+        partial: File,
+        onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
+    ) {
+        // The snapshot back to a project (row-tolerant parse upstream; a
+        // null here is a degraded row — fail honestly, never guess).
+        val project = try {
+            TimelineStore.parseTimeline(ref.projectJson)
+        } catch (e: IllegalArgumentException) {
+            throw IllegalStateException(
+                kotlinMessage(
+                    "plan",
+                    "the queued timeline snapshot could not be read",
+                    "re-queue the export from the timeline",
+                    e.message,
+                )
+            )
+        }
+        val plan = TimelineExportPlan.build(
+            project = project,
+            sources = sources(),
+            fpsMeasured = fpsMeasured,
+            frameCount = frameCount,
+        )
+        if (plan.totalFrames <= 0) {
+            throw IllegalStateException(
+                kotlinMessage(
+                    "plan",
+                    "the timeline resolves to zero frames (no video clips)",
+                    "place a clip on the video track, then retry",
+                )
+            )
+        }
+        stageLog?.invoke(
+            "timeline plan: frames=${plan.totalFrames} fps=${plan.fps} " +
+                "size=${plan.width}x${plan.height} entries=${plan.entries.size} " +
+                "skips=${plan.skips.size} audioSkipped=${plan.audioSkipped}"
+        )
+        for (s in plan.skips) {
+            stageLog?.invoke(
+                "timeline skip: clip=${s.clipId} source=${s.sourceId} reason=${s.reason}"
+            )
+        }
+        if (plan.audioSkipped) {
+            stageLog?.invoke("timeline audio: skipped (v1 exports the video track only)")
+        }
+
+        val black = blackI420(plan.width, plan.height)
+        val writer = writerFactory()
+        try {
+            // Video-only: 0/0 sample rate/channels (the writer contract).
+            writer.start(
+                partial.absolutePath, plan.width, plan.height,
+                0, 0, 0,
+            )
+            // Open-once cache: a source placed N times opens ONCE. The
+            // handles map also REMEMBERS failures (-1 sentinel), the
+            // geometry map holds each opened source's session info.
+            val handles = HashMap<String, Long>()
+            val geometry = HashMap<String, Mp4SessionInfo>()
+            try {
+                var done = 0
+                onProgress?.invoke(0, plan.totalFrames)
+                for (entry in plan.entries) {
+                    when (entry) {
+                        is TimelineExportPlan.Entry.Black -> {
+                            for (i in 0 until entry.frameCount) {
+                                writer.writeVideoFrame(
+                                    pts(done, plan.fps), black,
+                                )
+                                done++
+                                onProgress?.invoke(done, plan.totalFrames)
+                            }
+                        }
+                        is TimelineExportPlan.Entry.Clip -> {
+                            val handle = openCached(handles, geometry, entry.sourceId)
+                            if (handle == null) {
+                                // Failed open: the entry's frames render
+                                // BLACK (the honest-completion rule — the
+                                // entry's span is never skipped, the
+                                // movie keeps its length and timing).
+                                for (i in 0 until entry.frameCount) {
+                                    writer.writeVideoFrame(pts(done, plan.fps), black)
+                                    done++
+                                    onProgress?.invoke(done, plan.totalFrames)
+                                }
+                                continue
+                            }
+                            val grade = gradeFor(entry.sourceId)
+                            val lutPath = lutPathFor(
+                                if (grade.lutId.isNullOrBlank()) null else grade.lutId,
+                            )
+                            var lastFrame: Int = -1
+                            var lastRgb: ByteArray? = null
+                            for (f in entry.sourceFrames) {
+                                val rgb = if (f == lastFrame && lastRgb != null) {
+                                    // Repeated source frame (frame-nearest
+                                    // mapping repeats): reuse the decoded
+                                    // frame — decode once per DISTINCT frame.
+                                    lastRgb
+                                } else {
+                                    val rendered = session.renderFrame(
+                                        handle, f, grade, lutPath, null,
+                                    )
+                                    if (rendered == null) {
+                                        // Mid-render failure: this frame
+                                        // renders black, the walk continues
+                                        // (the honest-completion rule).
+                                        stageLog?.invoke(
+                                            "timeline render: clip=${entry.clipId} " +
+                                                "frame=$f failed code=${session.code()} " +
+                                                "stage=${session.stage()} — black"
+                                        )
+                                        lastFrame = -1
+                                        lastRgb = null
+                                        writer.writeVideoFrame(pts(done, plan.fps), black)
+                                        done++
+                                        onProgress?.invoke(done, plan.totalFrames)
+                                        continue
+                                    }
+                                    lastFrame = f
+                                    lastRgb = rendered
+                                    rendered
+                                }
+                                val upright = RotationState.rotateRgb888(
+                                    rgb, geometry[entry.sourceId]?.width ?: 0,
+                                    geometry[entry.sourceId]?.height ?: 0,
+                                    geometry[entry.sourceId]?.orientationDeg ?: 0,
+                                )
+                                val scaled = RgbScale.aspectFill(
+                                    upright.rgb, upright.width, upright.height,
+                                    plan.width, plan.height,
+                                )
+                                val converted = YuvConverter.toI420(
+                                    scaled, plan.width, plan.height,
+                                )
+                                writer.writeVideoFrame(pts(done, plan.fps), converted)
+                                done++
+                                onProgress?.invoke(done, plan.totalFrames)
+                            }
+                        }
+                    }
+                }
+            } finally {
+                // Close only REAL handles: a -1 sentinel is a remembered
+                // failure, never an opened session — closing it would hand
+                // a bogus handle to native.
+                for (h in handles.values) {
+                    if (h > 0L) session.close(h)
+                }
+            }
+            if (!writer.finish()) {
+                throw IllegalStateException(
+                    kotlinMessage(
+                        Mp4ExportErrors.STAGE_MUX,
+                        "the muxer could not finish the movie",
+                        "check free space and retry",
+                    )
+                )
+            }
+        } finally {
+            writer.release()
+        }
+    }
+
+    /**
+     * The open-once cache: opens [sourceId] on first need, reuses the
+     * handle after. A failed open renders the entry's frames BLACK (the
+     * caller's continue) with the failure in the stage log — the export
+     * completes honestly. The cache REMEMBERS the failure (a source
+     * that failed once does not retry per frame): the -1 sentinel reads
+     * back as null on a cache hit, so a later entry with the same source
+     * takes the black path instead of rendering against a bogus handle.
+     * [geometry] receives the session info of every successful open
+     * (the per-source rotation/scaling facts, used by the frame loop).
+     */
+    private fun openCached(
+        handles: HashMap<String, Long>,
+        geometry: HashMap<String, Mp4SessionInfo>,
+        sourceId: String,
+    ): Long? {
+        val cached = handles[sourceId]
+        if (cached != null) {
+            return if (cached > 0L) cached else null
+        }
+        val fd = sourceFdFor(sourceId)
+        if (fd < 0) {
+            stageLog?.invoke(
+                "timeline open: source=$sourceId unavailable (no fd) — its frames render black"
+            )
+            handles[sourceId] = -1L
+            return null
+        }
+        val info = session.open(fd)
+        if (info == null || info.handle <= 0L) {
+            stageLog?.invoke(
+                "timeline open: source=$sourceId failed " +
+                    "code=${session.code()} stage=${session.stage()} " +
+                    "detail=${session.detail()} — its frames render black"
+            )
+            handles[sourceId] = -1L
+            return null
+        }
+        handles[sourceId] = info.handle
+        geometry[sourceId] = info
+        return info.handle
+    }
+
+    /** Output-grid pts: frame [i] at i seconds / fps, in microseconds. */
+    private fun pts(i: Int, fps: Int): Long = i.toLong() * 1_000_000L / fps
+
+    private fun failed(
+        job: ExportJob,
+        stage: String,
+        cause: String,
+        recovery: String,
+        detail: String? = null,
+    ): ExportJob = job.copy(
+        state = State.FAILED,
+        detail = kotlinMessage(stage, cause, recovery, detail),
+    )
+
+    private fun kotlinMessage(
+        stage: String,
+        cause: String,
+        recovery: String,
+        detail: String? = null,
+    ): String {
+        val base = "Timeline export failed (stage: $stage): $cause — recovery: $recovery"
+        return if (detail.isNullOrBlank()) base else "$base [$detail]"
+    }
+
+    companion object {
+
+        /**
+         * The packed black I420 frame (YuvConverter.toI420 layout): Y=16
+         * (limited-range black), U=V=128 (neutral chroma).
+         */
+        fun blackI420(width: Int, height: Int): ByteArray {
+            val cw = (width + 1) / 2
+            val ch = (height + 1) / 2
+            val out = ByteArray(width * height + 2 * cw * ch)
+            java.util.Arrays.fill(out, 0, width * height, 16.toByte())
+            java.util.Arrays.fill(out, width * height, out.size, 128.toByte())
+            return out
+        }
+    }
+}
