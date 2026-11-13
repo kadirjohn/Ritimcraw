@@ -750,7 +750,11 @@ fun ClipEditorScreen(
         // remembered ONCE with the restored value as its initial anchor
         // target — a rotation keeps the panel exactly where it was, and
         // the offset is never recreated (§18: no reset, no reprocessing).
-        var panelState by rememberSaveable { mutableStateOf(PanelState.NORMAL) }
+        // The FRESH-OPEN default is the LARGEST state (owner feedback
+        // 2026-11-13 "default en yüksek boyda açılsın" — PanelBehavior.
+        // DEFAULT_OPEN, JVM-tested); a restored saveable keeps whatever
+        // the user last settled on, as before.
+        var panelState by rememberSaveable { mutableStateOf(PanelBehavior.DEFAULT_OPEN) }
         val panelDrag = rememberPanelDragState(panelState)
         // Per-category scroll positions (§11.6 "relevant scroll position"):
         // one ScrollState per category, remembered SAVEABLY (ScrollState's
@@ -969,6 +973,41 @@ fun ClipEditorScreen(
         LaunchedEffect(panelDrag) {
             snapshotFlow { panelDrag.settledValue }
                 .collect { settled -> panelState = settled }
+        }
+        // ---- Swipe-up unfold redirect (owner feedback 2026-11-13) ----
+        // The component's own settle can only ever target the ADJACENT
+        // anchor, so an up-release from COLLAPSED animates to NORMAL —
+        // never the EXPANDED the owner asked for. This observer watches
+        // the settle's LIVE target (targetValue while animating) and,
+        // when the pure PanelBehavior rule fires (COLLAPSED settling UP
+        // to NORMAL), re-targets the state's OWN animateTo: the public
+        // extension cancels the settle at the same mutation priority,
+        // restarts from the live offset with the settle's velocity and
+        // runs the same snapAnimationSpec — one continuous physics
+        // motion to EXPANDED, never a hand-rolled spring. The category
+        // tap's programmatic open to NORMAL (§10.3) is excluded by the
+        // flag below; every downward settle is untouched (the rule only
+        // matches COLLAPSED->NORMAL).
+        var panelOpenByTap by remember { mutableStateOf(false) }
+        LaunchedEffect(panelDrag) {
+            snapshotFlow {
+                Pair(
+                    panelDrag.isAnimationRunning,
+                    if (panelDrag.isAnimationRunning) {
+                        Pair(panelDrag.settledValue, panelDrag.targetValue)
+                    } else {
+                        null
+                    },
+                )
+            }
+                .collect { animating ->
+                    val live = animating.second ?: return@collect
+                    if (panelOpenByTap) {
+                        panelOpenByTap = false
+                    } else if (PanelBehavior.swipeUpRetarget(live.first, live.second)) {
+                        scope.launch { panelDrag.animateTo(PanelBehavior.swipeUpTarget(live.first)) }
+                    }
+                }
         }
         var grade by remember(sourceId) { mutableStateOf(initialGrade) }
 
@@ -2120,9 +2159,6 @@ fun ClipEditorScreen(
             // stay 0 on both counts).
             rawSampleFormat = if (sourcePath == SourcePath.MCRAW) "raw16" else null,
             rawWhiteLevel = session?.rawWhiteLevel ?: 0,
-            // Manual rotation (§5): the persisted delta; the sheet's
-            // rotation row shows it and the two rotate actions tap it.
-            manualRotationDeg = manualRotationDeg,
         )
 
         // ---- Landscape workspace decision (owner request 2026-11-11d
@@ -3187,8 +3223,6 @@ fun ClipEditorScreen(
                     presets = presets,
                     onSavePreset = onSavePreset,
                     onRemovePreset = onRemovePreset,
-                    // Manual rotation (§5): the sheet's rotate rows.
-                    onRotate = onRotate,
                 )
             }
             // ---- Workspace branch (owner request 2026-11-11d sections 11
@@ -3404,6 +3438,12 @@ fun ClipEditorScreen(
                         // editing position").
                         val target = PanelSheet.panelAfterCategoryTap(panelDrag.targetValue)
                         if (target != panelDrag.targetValue) {
+                            // §10.3's open stays at NORMAL: flagged so the
+                            // swipe-up redirect observer above never
+                            // re-targets this PROGRAMMATIC open toward
+                            // EXPANDED (the flag is consumed by the very
+                            // next animation the observer sees).
+                            panelOpenByTap = true
                             scope.launch { panelDrag.animateTo(target) }
                         }
                     },
@@ -3559,7 +3599,20 @@ private fun FramePickerSheet(
  * The LUT interpretation sheet (owner request 2026-11-13): the dialog
  * behind BOTH the import flow and "Edit interpretation" on a library
  * record. PresetNameDialog style — a ModalBottomSheet with a titleSmall
- * title — plus the four single-choice rows the managed model needs.
+ * title — plus the four single-choice row groups the managed model
+ * needs.
+ *
+ * TWO SELECTABLE WINDOWS (owner device feedback 2026-11-13: "source ve
+ * transform iki farklı window olarak sunulmalı" — the one long list
+ * overwhelmed the device, so the option-heavy operation splits into a
+ * "Source | Transform" segmented toggle INSIDE this one sheet; the house
+ * pattern, never two stacked dialogs). The pure split is
+ * [LutInterpLayout]: SOURCE carries the preset suggestion plus the
+ * input encoding (what the cube READS); TRANSFORM carries the output
+ * encoding plus the role (what the cube DOES). The name field, the
+ * honesty hint and the Confirm/Cancel row belong to NEITHER window —
+ * they frame the whole record and stay above/below the toggle, visible
+ * in both.
  *
  * HONESTY CONTRACT: the app does NOT detect a cube's color encoding, and
  * this sheet never claims it did. The preset row is a SUGGESTION that
@@ -3573,7 +3626,9 @@ private fun FramePickerSheet(
  * editing any field snaps the preset row to the matching name (or
  * Custom when nothing matches) — [LutInterpPresets.matchingPreset]. A
  * hand-built interpretation that happens to equal a preset shows that
- * preset's name, never a false "Custom".
+ * preset's name, never a false "Custom". The preset seeds BOTH windows'
+ * fields from its Source home, so the windows are two views of ONE
+ * interpretation, never two separate edits.
  *
  * CANCEL LEAVES NO RECORD: the sheet only hands [onConfirm] the finished
  * name and interpretation on the Confirm button; dismissing (scrim,
@@ -3590,10 +3645,15 @@ private fun LutInterpSheet(
 ) {
     var name by remember { mutableStateOf(initialName) }
     var interp by remember { mutableStateOf(initial) }
+    // The selected window (owner feedback 2026-11-13): the sheet opens on
+    // SOURCE — the preset suggestion's home — and the toggle switches the
+    // field rows below; the shared rows (name, hint, Confirm/Cancel) never
+    // move.
+    var window by remember { mutableStateOf(LutInterpLayout.INITIAL_WINDOW) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        // The sheet is far taller than the viewport (a name field, five
-        // presets, two encodings' worth of gamut+transfer rows, four
-        // roles), so the whole body scrolls as one column.
+        // Each window is still far taller than the viewport (five preset
+        // rows or a full gamut+transfer ladder), so the whole body scrolls
+        // as one column.
         Column(
             Modifier
                 .fillMaxWidth()
@@ -3606,7 +3666,8 @@ private fun LutInterpSheet(
         )
         // The display name (import: the picked file's fallback; edit: the
         // record's current name). The user's text is stored/displayed
-        // verbatim — never localized (the PresetNameDialog rule).
+        // verbatim — never localized (the PresetNameDialog rule). Shared:
+        // the record's identity, visible in both windows.
         OutlinedTextField(
             value = name,
             onValueChange = { name = it },
@@ -3617,92 +3678,131 @@ private fun LutInterpSheet(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         )
         // The honesty hint: the app cannot detect the encoding; the user
-        // confirms. Above the fields so it frames every choice below.
+        // confirms. Shared: it frames every choice in BOTH windows.
         Text(
             stringResource(R.string.editor_lut_interp_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
-        // Preset: one row, five choices. Picking one OVERWRITES the four
-        // field rows with the preset's interpretation; the row's own
-        // selection is the matching-name rule (a hand-edited field set
-        // that equals a preset shows that preset).
-        Text(
-            stringResource(R.string.editor_lut_interp_preset),
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-        LutInterpPreset.values().forEach { p ->
-            LutInterpChoiceRow(
-                label = stringResource(lutPresetLabel(p)),
-                selected = LutInterpPresets.matchingPreset(interp) == p,
-                onClick = {
-                    // Custom starts from the legacy defaults: every field
-                    // below is then the user's explicit pick.
-                    interp = LutInterpPresets.interpOf(p)
-                },
-            )
+        // ---- The window toggle (owner feedback 2026-11-13): one
+        // SingleChoiceSegmentedButtonRow, one label per button (the E3
+        // lesson — a SegmentedButton centers all its content at the same
+        // spot, so a button carries ONLY its label). The display order is
+        // the pipeline's own order: Source | Transform.
+        SingleChoiceSegmentedButtonRow(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            LutInterpLayout.WINDOW_ORDER.forEachIndexed { index, w ->
+                SegmentedButton(
+                    selected = window == w,
+                    onClick = { window = w },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = LutInterpLayout.WINDOW_ORDER.size,
+                    ),
+                ) {
+                    Text(stringResource(lutWindowLabel(w)))
+                }
+            }
         }
-        Spacer(Modifier.height(8.dp))
-        // ---- Input encoding: gamut rows then transfer rows ----
-        Text(
-            stringResource(R.string.editor_lut_interp_input),
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-        LutGamut.values().forEach { g ->
-            LutInterpChoiceRow(
-                label = stringResource(lutGamutLabel(g)),
-                selected = interp.input.gamut == g,
-                onClick = { interp = interp.copy(input = interp.input.copy(gamut = g)) },
+        // ---- SOURCE window: the preset suggestion + the input encoding
+        // (what the cube READS). The pure placement is
+        // LutInterpLayout.hasPresetRow/hasInputRows.
+        if (LutInterpLayout.hasPresetRow(window)) {
+            // Preset: one row, five choices. Picking one OVERWRITES the
+            // fields (both windows) with the preset's interpretation; the
+            // row's own selection is the matching-name rule (a hand-edited
+            // field set that equals a preset shows that preset).
+            Text(
+                stringResource(R.string.editor_lut_interp_preset),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
+            LutInterpPreset.values().forEach { p ->
+                LutInterpChoiceRow(
+                    label = stringResource(lutPresetLabel(p)),
+                    selected = LutInterpPresets.matchingPreset(interp) == p,
+                    onClick = {
+                        // Custom starts from the legacy defaults: every
+                        // field is then the user's explicit pick.
+                        interp = LutInterpPresets.interpOf(p)
+                    },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
         }
-        LutTransfer.values().forEach { t ->
-            LutInterpChoiceRow(
-                label = stringResource(lutTransferLabel(t)),
-                selected = interp.input.transfer == t,
-                onClick = { interp = interp.copy(input = interp.input.copy(transfer = t)) },
+        if (LutInterpLayout.hasInputRows(window)) {
+            // Input encoding: gamut rows then transfer rows.
+            Text(
+                stringResource(R.string.editor_lut_interp_input),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
+            LutGamut.values().forEach { g ->
+                LutInterpChoiceRow(
+                    label = stringResource(lutGamutLabel(g)),
+                    selected = interp.input.gamut == g,
+                    onClick = { interp = interp.copy(input = interp.input.copy(gamut = g)) },
+                )
+            }
+            LutTransfer.values().forEach { t ->
+                LutInterpChoiceRow(
+                    label = stringResource(lutTransferLabel(t)),
+                    selected = interp.input.transfer == t,
+                    onClick = { interp = interp.copy(input = interp.input.copy(transfer = t)) },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.height(8.dp))
-        // ---- Output encoding: gamut rows then transfer rows ----
-        Text(
-            stringResource(R.string.editor_lut_interp_output),
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-        LutGamut.values().forEach { g ->
-            LutInterpChoiceRow(
-                label = stringResource(lutGamutLabel(g)),
-                selected = interp.output.gamut == g,
-                onClick = { interp = interp.copy(output = interp.output.copy(gamut = g)) },
+        // ---- TRANSFORM window: the output encoding + the role (what the
+        // cube DOES). The pure placement is
+        // LutInterpLayout.hasOutputRows/hasRoleRow.
+        if (LutInterpLayout.hasOutputRows(window)) {
+            // Output encoding: gamut rows then transfer rows.
+            Text(
+                stringResource(R.string.editor_lut_interp_output),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
+            LutGamut.values().forEach { g ->
+                LutInterpChoiceRow(
+                    label = stringResource(lutGamutLabel(g)),
+                    selected = interp.output.gamut == g,
+                    onClick = { interp = interp.copy(output = interp.output.copy(gamut = g)) },
+                )
+            }
+            LutTransfer.values().forEach { t ->
+                LutInterpChoiceRow(
+                    label = stringResource(lutTransferLabel(t)),
+                    selected = interp.output.transfer == t,
+                    onClick = { interp = interp.copy(output = interp.output.copy(transfer = t)) },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
         }
-        LutTransfer.values().forEach { t ->
-            LutInterpChoiceRow(
-                label = stringResource(lutTransferLabel(t)),
-                selected = interp.output.transfer == t,
-                onClick = { interp = interp.copy(output = interp.output.copy(transfer = t)) },
+        if (LutInterpLayout.hasRoleRow(window)) {
+            // Role: where the pipeline applies the cube.
+            Text(
+                stringResource(R.string.editor_lut_interp_role),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
-        }
-        Spacer(Modifier.height(8.dp))
-        // ---- Role ----
-        Text(
-            stringResource(R.string.editor_lut_interp_role),
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-        LutRole.values().forEach { r ->
-            LutInterpChoiceRow(
-                label = stringResource(lutRoleLabel(r)),
-                selected = interp.role == r,
-                onClick = { interp = interp.copy(role = r) },
-            )
+            LutRole.values().forEach { r ->
+                LutInterpChoiceRow(
+                    label = stringResource(lutRoleLabel(r)),
+                    selected = interp.role == r,
+                    onClick = { interp = interp.copy(role = r) },
+                )
+            }
         }
         // Confirm / Cancel: the preset-name dialog's row (Cancel left,
-        // Confirm right, 8dp apart). Cancel and dismiss call nothing —
-        // cancel leaves no record.
+        // Confirm right, 8dp apart). Shared — the buttons commit the
+        // WHOLE interpretation across both windows, so they stay put
+        // under either one. Cancel and dismiss call nothing — cancel
+        // leaves no record.
         Row(
             Modifier
                 .fillMaxWidth()
@@ -3720,6 +3820,12 @@ private fun LutInterpSheet(
         Spacer(Modifier.height(16.dp))
         }
     }
+}
+
+/** The toggle label for [w] — "Source" / "Transform" (owner 2026-11-13). */
+private fun lutWindowLabel(w: LutInterpWindow): Int = when (w) {
+    LutInterpWindow.SOURCE -> R.string.editor_lut_interp_window_source
+    LutInterpWindow.TRANSFORM -> R.string.editor_lut_interp_window_transform
 }
 
 /**

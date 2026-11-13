@@ -833,11 +833,19 @@ private val LaneSpacing = 4.dp
 private val ContentTailPx = 64.dp
 
 /**
- * The ruler's minimum on-screen major spacing: labels are full
- * timecodes (labelSmall, tnum), so majors stay at least this far apart
- * or the labels collide.
+ * The ruler's minimum on-screen major spacing, in dp (owner device
+ * feedback 2026-11-13 — the old raw-px 96 collided on the device):
+ * labels render labelSmall+tnum at dp-scaled widths (a full
+ * HH:MM:SS:FF is ~76dp wide; the adaptive MM:SS ~24dp), and
+ * [PixelsPerFrame] is itself 4dp — so the spacing budget must be
+ * density-aware too or it buys a different amount of label per
+ * device. 96dp fits the widest label with a ~20dp gutter, and the
+ * dp-for-dp ratio against the scale (96/4 = 24 frames) is the same
+ * on every device — the ladder's choice becomes device-independent.
+ * Converted to px at the call site (the PanelSheet.VELOCITY_THRESHOLD
+ * pattern — dp so the value is readable here, px where it compares).
  */
-private const val MajorLabelSpacingPx = 96f
+private val MajorLabelSpacing = 96.dp
 
 /**
  * The VIDEO and AUDIO tracks in stacking order — v1's rendered rows
@@ -857,13 +865,16 @@ private fun audioTrackIdOf(project: TimelineProject): String? =
 // ---------------------------------------------------------------------------
 
 /**
- * The frame ruler: major ticks with TIMECODE labels + minor ticks,
+ * The frame ruler: major ticks with ADAPTIVE labels + minor ticks,
  * spanning 0..resolveLength (TL-17) — the model's own length rule,
- * never a UI guess. One Canvas paints every tick and label (a long
- * timeline has hundreds of ticks — one draw pass, not hundreds of
- * layout nodes). Tapping or dragging the ruler scrubs the playhead;
- * the scrub consumes the gesture, so dragging the ruler never
- * scrolls the timeline.
+ * never a UI guess. The label regime follows the ladder step the
+ * ruler chose (TimelineGeometry.labelFieldsFor — full timecodes only
+ * when the timeline runs an hour; MM:SS at second-scale steps; bare
+ * frame numbers when a major is every few frames). One Canvas paints
+ * every tick and label (a long timeline has hundreds of ticks — one
+ * draw pass, not hundreds of layout nodes). Tapping or dragging the
+ * ruler scrubs the playhead; the scrub consumes the gesture, so
+ * dragging the ruler never scrolls the timeline.
  */
 @Composable
 private fun TimelineRuler(
@@ -878,6 +889,8 @@ private fun TimelineRuler(
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val labelStyle = MaterialTheme.typography.labelSmall.merge(Tnum)
     val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val minMajorPx = with(density) { MajorLabelSpacing.toPx() }
     Canvas(
         modifier
             .pointerInput(lengthFrames, pxPerFrame) {
@@ -890,7 +903,10 @@ private fun TimelineRuler(
                 }
             },
     ) {
-        val step = TimelineGeometry.majorStepFor(pxPerFrame, MajorLabelSpacingPx)
+        val step = TimelineGeometry.majorStepFor(pxPerFrame, minMajorPx)
+        // The label regime follows the step the ruler just chose: one
+        // ruler, one label shape (see TimelineGeometry.labelFieldsFor).
+        val labelFields = TimelineGeometry.labelFieldsFor(step, fps, lengthFrames)
         val ticks = TimelineGeometry.rulerTicks(lengthFrames, step)
         val tickBottom = size.height * 0.55f
         ticks.forEach { tick ->
@@ -904,10 +920,13 @@ private fun TimelineRuler(
             )
         }
         ticks.filter { it.major }.forEach { tick ->
-            // tnum timecode labels (DESIGN.md Typography): fixed-width
-            // fields from the house Format, so digits never reflow.
+            // tnum labels (DESIGN.md Typography): fixed-width fields
+            // from the house Format, so digits never reflow — and the
+            // regime drops fields the step cannot resolve (a dense
+            // ruler labels MM:SS, not a crowding HH:MM:SS:FF).
             val us = frameToUs(tick.frame, fps)
-            val label = textMeasurer.measure(Format.formatTimecode(us, fps), labelStyle)
+            val text = TimelineGeometry.majorLabelText(us, fps, labelFields, tick.frame)
+            val label = textMeasurer.measure(text, labelStyle)
             val x = TimelineGeometry.frameToPx(tick.frame, pxPerFrame)
             drawText(
                 label,

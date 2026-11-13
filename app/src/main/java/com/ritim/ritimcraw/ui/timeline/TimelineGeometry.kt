@@ -5,6 +5,7 @@ import com.ritim.ritimcraw.data.timeline.TimelineEdit
 import com.ritim.ritimcraw.data.timeline.TimelineOps
 import com.ritim.ritimcraw.data.timeline.TimelineOps.TrimEdge
 import com.ritim.ritimcraw.data.timeline.TimelineProject
+import com.ritim.ritimcraw.util.Format
 import kotlin.math.roundToInt
 
 /**
@@ -243,6 +244,81 @@ object TimelineGeometry {
             if (frameToPx(step.toDouble(), pxPerFrame) >= minMajorPx) return step
         }
         return MAJOR_LADDER.last()
+    }
+
+    /**
+     * The label precision a major tick carries (owner device feedback
+     * 2026-11-13: "saniye salieseler birbirine karışıyor, kötü görüntü"
+     * — the full-timecode labels crowd into an unreadable mess at dense
+     * scales). The 1-2-5 ladder already picks the step; the LABEL drops
+     * the fields the step cannot resolve:
+     *
+     *  - [LabelFields.FULL] — HH:MM:SS:FF, the fixed 4-field timecode:
+     *    only when the timeline itself runs an hour or longer (any
+     *    shorter regime wraps at the hour — Format's 2-field MM is
+     *    minutes-within-hour, so "01:00" would mark both the 1-minute
+     *    and the 61-minute major — ambiguity, not clutter).
+     *  - [LabelFields.MM_SS] — MM:SS: the default for sub-hour
+     *    timelines at steps of a second and up — the salise (frame)
+     *    field is pure noise at this density, and the wall-clock
+     *    reading is what an editor scrubs by.
+     *  - [LabelFields.FRAMES] — the bare FRAME NUMBER on the project
+     *    grid, for sub-second steps (a high-fps clip at a dense step):
+     *    the second is not the step, so the moving digits — frames —
+     *    are the label. Frame numbers never wrap, so they stay
+     *    unambiguous at any length; the colon-less shape is its own
+     *    visual distinction from the timecode regimes.
+     *
+     * The regime is a function of the STEP and the ruler's SPAN, never
+     * of the individual tick: one ruler never mixes label SHAPES (a
+     * colon-less frame count never sits beside an MM:SS), and tnum
+     * keeps the digits from reflowing within a shape (DESIGN.md
+     * Typography). A FRAMES label still grows a digit at each decade
+     * boundary (99 -> 100) — rare, gradual, and dwarfed by the
+     * label-spacing gutter.
+     */
+    enum class LabelFields { FRAMES, MM_SS, FULL }
+
+    /**
+     * The label regime for a ruler: [majorStepFrames] is the ladder's
+     * step at [fps] (typically from [majorStepFor]),
+     * [timelineLengthFrames] the ruler's span. Pure — the composable
+     * renders exactly this shape; see [LabelFields] for the rationale.
+     */
+    fun labelFieldsFor(
+        majorStepFrames: Int,
+        fps: Int,
+        timelineLengthFrames: Double = 0.0,
+    ): LabelFields {
+        val safeFps = if (fps <= 0) Format.DEFAULT_FPS else fps
+        val stepSeconds = majorStepFrames.toDouble() / safeFps
+        val timelineHours = timelineLengthFrames / safeFps / 3600.0
+        return when {
+            timelineHours >= 1.0 -> LabelFields.FULL
+            stepSeconds < 1.0 -> LabelFields.FRAMES
+            else -> LabelFields.MM_SS
+        }
+    }
+
+    /**
+     * The text of one major tick's label at [ptsUs] in the regime
+     * [fields] (typically from [labelFieldsFor]) at [fps]:
+     * MM_SS renders Format's 2-field adaptive timecode (MM:SS), FULL
+     * the fixed 4-field HH:MM:SS:FF, FRAMES the bare frame number
+     * (the frame ON the tick — the project-grid integer the ruler
+     * ticks are actually drawn on, not a re-derived one, so a frame
+     * line and its label can never disagree). Locale.ROOT and tnum
+     * come from the house Format / the caller's style.
+     */
+    fun majorLabelText(
+        ptsUs: Long,
+        fps: Int,
+        fields: LabelFields,
+        tickFrame: Double = 0.0,
+    ): String = when (fields) {
+        LabelFields.MM_SS -> Format.adaptiveTimecode(ptsUs, fps, 2)
+        LabelFields.FULL -> Format.formatTimecode(ptsUs, fps)
+        LabelFields.FRAMES -> tickFrame.toLong().toString()
     }
 
     /**
