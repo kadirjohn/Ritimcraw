@@ -281,6 +281,31 @@ object NativeRgbToI420 : RgbToI420 {
         }
         return RgbToI420Result(YuvConverter.toI420(rgb, width, height), fromNative = false)
     }
+
+    /**
+     * The direct-to-plane form (commit (c)): the native twin writes the
+     * encoder Image's plane buffers directly — no packed intermediate,
+     * no second copy. Null (packed fallback) whenever the native entry
+     * cannot: library unavailable, non-direct buffers, malformed frame,
+     * or a stride geometry it refuses. The fallback produces the SAME
+     * bytes (the seam's contract), so a refusal never changes the
+     * encoded output.
+     */
+    override fun convertToPlanes(
+        rgb: ByteArray,
+        width: Int,
+        height: Int,
+        planes: YuvFramePlanes,
+    ): RgbToI420PlanesResult? {
+        if (!NativeSource.nativeAvailable) return null // packed fallback
+        val ok = NativeSource.jniRgbToI420Planes(
+            rgb, width, height, MATRIX_BT709,
+            planes.y, planes.yStride,
+            planes.u, planes.uStride, planes.uPixelStride,
+            planes.v, planes.vStride, planes.vPixelStride,
+        )
+        return if (ok) RgbToI420PlanesResult(fromNative = true) else null
+    }
 }
 
 /**
@@ -311,6 +336,44 @@ interface Mp4MediaWriter {
 
     /** Feeds one I420 frame (YuvConverter.toI420 layout) at [ptsUs]. */
     fun writeVideoFrame(ptsUs: Long, i420: ByteArray)
+
+    /**
+     * The direct-to-plane offer (commit (c)): dequeues the encoder input
+     * buffer and returns its plane geometry so the conversion can write
+     * the encoder's memory directly. Null (the default) = this writer
+     * only speaks packed frames — the pipeline then uses
+     * [writeVideoFrame] exactly as before, and every JVM fake keeps its
+     * existing behavior untouched. A non-null return MUST be followed by
+     * exactly one [queueVideoFrame] (success) or [abandonVideoFrame]
+     * (conversion refused the planes) for the SAME frame — the acquired
+     * input buffer is held until then.
+     */
+    fun acquireVideoFramePlanes(): YuvFramePlanes? = null
+
+    /**
+     * Queues the frame whose planes [acquireVideoFramePlanes] handed
+     * over (the conversion wrote them directly). The size is computed
+     * from the same plane strides (imageInputSize) — the codec does NOT
+     * infer it from the Image. The default throws: a writer that offers
+     * planes must implement the acquire/queue/abandon triple.
+     */
+    fun queueVideoFrame(ptsUs: Long) {
+        throw IllegalStateException(
+            Mp4ExportErrors.kotlinMessage(
+                Mp4ExportErrors.STAGE_ENCODE,
+                "the writer offered video frame planes but cannot queue them",
+                "retry the export",
+            )
+        )
+    }
+
+    /**
+     * Returns the held input buffer without queueing (the conversion
+     * refused the planes — the packed fallback takes over). The default
+     * no-op matches [acquireVideoFramePlanes]'s null default: a writer
+     * that never offers planes never has anything to abandon.
+     */
+    fun abandonVideoFrame() {}
 
     /** Feeds one block of interleaved PCM frames at [ptsUs]. */
     fun writeAudioBlock(ptsUs: Long, pcm: ShortArray)
@@ -800,12 +863,50 @@ class ExportPipeline(
                         )
                         timing?.mark(ExportStageTiming.STAGE_CROP, System.nanoTime() - t2)
                         val t3 = System.nanoTime()
-                        val converted = convertFrame(cropped.rgb, cropped.width, cropped.height)
-                        timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3)
+                        // Direct-to-plane first (commit (c)): when the writer
+                        // offers the encoder Image's plane buffers, the
+                        // conversion writes them directly — no packed
+                        // intermediate, no second copy. Any refusal falls
+                        // back to the packed path (writeVideoFrame), which
+                        // produces the same bytes through the writer's
+                        // copy. The dual-run rides whichever path ran.
+                        val planes = writer.acquireVideoFramePlanes()
+                        if (planes != null) {
+                            val tAcquire = System.nanoTime() - t3
+                            val wrote = converter.convertToPlanes(cropped.rgb, cropped.width, cropped.height, planes)
+                            if (wrote != null) {
+                                // The debug dual-run reads the encoder memory
+                                // back and compares against the Kotlin oracle
+                                // — proving the stride mapping too.
+                                if (stageLog != null && RgbToI420Verify.shouldDualRun(nativeFramesSeen, wrote.fromNative)) {
+                                    val kt = YuvConverter.toI420(cropped.rgb, cropped.width, cropped.height)
+                                    val got = YuvPlaneIo.readPlanesToPacked(cropped.width, cropped.height, planes)
+                                    RgbToI420Verify.line(cropped.width, cropped.height, got, kt)?.let { stageLog(it) }
+                                }
+                                if (wrote.fromNative) nativeFramesSeen++
+                                // The yuv slot covers ONLY the conversion — the
+                                // writer's own stages (enc_wait / plane_copy /
+                                // drain) are marked by the writer at queue
+                                // time, so the slots stay disjoint.
+                                timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3 - tAcquire)
+                                writer.queueVideoFrame(s.ptsUs)
+                            } else {
+                                writer.abandonVideoFrame()
+                                // Packed fallback: identical bytes, and the
+                                // same dual-run/counter bookkeeping.
+                                val converted = convertFrame(cropped.rgb, cropped.width, cropped.height)
+                                timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3 - tAcquire)
+                                writer.writeVideoFrame(s.ptsUs, converted.i420)
+                            }
+                        } else {
+                            val converted = convertFrame(cropped.rgb, cropped.width, cropped.height)
+                            timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3)
+                            writer.writeVideoFrame(s.ptsUs, converted.i420)
+                        }
                         // The writer's own stages (enc_wait / plane_copy /
-                        // drain_mux) are marked INTO this timing object while
-                        // writeVideoFrame runs, before endFrame reads them.
-                        writer.writeVideoFrame(s.ptsUs, converted.i420)
+                        // drain_mux) are marked INTO this timing object by
+                        // whichever writer call just ran (writeVideoFrame or
+                        // queueVideoFrame), before endFrame reads them.
                         timing?.endFrame()
                         done++
                         onProgress?.invoke(done, videoPts.size)

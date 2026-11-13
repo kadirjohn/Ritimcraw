@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.engine
 
 import android.graphics.Rect
 import com.ritim.ritimcraw.BuildConfig
+import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -490,6 +491,32 @@ class NativeSource private constructor(
             matrix: Int,
         ): ByteArray?
 
+        /**
+         * Direct-to-plane RGB888 -> I420 (commit (c)): the same byte-exact
+         * native twin as [nativeRgbToI420], writing straight into the
+         * encoder Image's plane ByteBuffers at their strides (planar or
+         * NV12, padded rows) — no packed intermediate, no second copy.
+         * The buffers must be DIRECT (the writer hands over the MediaCodec
+         * input Image's buffers). Returns true when the planes hold the
+         * frame; false when the caller must take the packed fallback
+         * (non-direct buffers, empty frame, short rgb — never an error
+         * state; the fallback produces the same bytes).
+         */
+        @JvmStatic private external fun nativeRgbToI420Planes(
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            matrix: Int,
+            yBuf: ByteBuffer,
+            yStride: Int,
+            uBuf: ByteBuffer,
+            uStride: Int,
+            uPixelStride: Int,
+            vBuf: ByteBuffer,
+            vStride: Int,
+            vPixelStride: Int,
+        ): Boolean
+
         // ---- Encoded (Mi-Log MP4) develop JNI (developEncoded -> Rec709 -> ARGB) ----
 
         /**
@@ -866,6 +893,25 @@ class NativeSource private constructor(
             height: Int,
             matrix: Int,
         ): ByteArray? = nativeRgbToI420(rgb, width, height, matrix)
+
+        /** JNI bridge: see nativeRgbToI420Planes (direct-to-plane twin). */
+        internal fun jniRgbToI420Planes(
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            matrix: Int,
+            yBuf: ByteBuffer,
+            yStride: Int,
+            uBuf: ByteBuffer,
+            uStride: Int,
+            uPixelStride: Int,
+            vBuf: ByteBuffer,
+            vStride: Int,
+            vPixelStride: Int,
+        ): Boolean = nativeRgbToI420Planes(
+            rgb, width, height, matrix,
+            yBuf, yStride, uBuf, uStride, uPixelStride, vBuf, vStride, vPixelStride,
+        )
 
         /** JNI bridge: see nativeEncodedDevelop. */
         internal fun jniEncodedDevelop(

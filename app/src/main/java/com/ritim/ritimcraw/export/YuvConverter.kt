@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.export
 
+import java.nio.ByteBuffer
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -170,6 +171,117 @@ object YuvConverter {
 }
 
 /**
+ * Destination planes for one I420 frame, the MediaCodec Image geometry
+ * (rowStride/pixelStride) generalized — the Kotlin twin of rawedit's
+ * YuvPlanes (core/include/rawedit/Yuv.h). Buffers are addressed
+ * ABSOLUTELY (position never moves), so the pure helpers below work on
+ * any ByteBuffer and the JNI bridge can hand over the encoder Image's
+ * direct buffers untouched.
+ */
+class YuvFramePlanes(
+    /** Luma plane buffer (pixelStride is always 1 for YUV 4:2:0 luma). */
+    val y: ByteBuffer,
+    /** Bytes per luma row (>= width). */
+    val yStride: Int,
+    /** U plane buffer (position 0 = the plane's first byte). */
+    val u: ByteBuffer,
+    /** Bytes per U row (>= cw * uPixelStride). */
+    val uStride: Int,
+    /** Bytes between adjacent U samples (1 planar, 2 semi-planar). */
+    val uPixelStride: Int,
+    /** V plane buffer (== u + 1 for NV12 interleaved UV). */
+    val v: ByteBuffer,
+    /** Bytes per V row. */
+    val vStride: Int,
+    /** Bytes between adjacent V samples. */
+    val vPixelStride: Int,
+)
+
+/**
+ * Pure strided-plane I/O for the YUV step (JVM-testable, no Android
+ * imports): the packed <-> plane-laid-out conversions the writer's
+ * fallback and the debug dual-run need. All accesses are absolute —
+ * [ByteBuffer.position] never moves — so the same helpers work on heap
+ * arrays (tests) and the encoder Image's direct buffers (production).
+ */
+object YuvPlaneIo {
+
+    /**
+     * Copies a tightly packed I420 frame ([YuvConverter.toI420] layout)
+     * into [planes] honoring its strides — the exact write pattern
+     * MediaCodecMp4Writer.copyI420ToImage performed (row-batched Y,
+     * per-sample chroma at pixelStride), now pure and shared.
+     */
+    fun copyPackedToPlanes(i420: ByteArray, width: Int, height: Int, planes: YuvFramePlanes) {
+        val cw = (width + 1) / 2
+        val ch = (height + 1) / 2
+        val uOff = width * height
+        val vOff = uOff + cw * ch
+        // Row-batched luma: one absolute put per row (the fast path the
+        // writer always had).
+        for (row in 0 until height) {
+            planes.y.put(row * planes.yStride, i420, 0 + row * width, width)
+        }
+        // Chroma: per-sample at pixelStride (planar 1, NV12's 2 — the
+        // native twin writes cb/cr pairs directly; this Kotlin fallback
+        // handles any layout the same way).
+        for (row in 0 until ch) {
+            var src = uOff + row * cw
+            var dst = row * planes.uStride
+            for (col in 0 until cw) {
+                planes.u.put(dst, i420[src])
+                src++
+                dst += planes.uPixelStride
+            }
+        }
+        for (row in 0 until ch) {
+            var src = vOff + row * cw
+            var dst = row * planes.vStride
+            for (col in 0 until cw) {
+                planes.v.put(dst, i420[src])
+                src++
+                dst += planes.vPixelStride
+            }
+        }
+    }
+
+    /**
+     * Reads [planes] back into the tightly packed I420 layout — the
+     * inverse of [copyPackedToPlanes] (the debug dual-run's readback:
+     * what the encoder memory actually holds). Absolute gets.
+     */
+    fun readPlanesToPacked(width: Int, height: Int, planes: YuvFramePlanes): ByteArray {
+        val cw = (width + 1) / 2
+        val ch = (height + 1) / 2
+        val out = ByteArray(width * height + 2 * cw * ch)
+        for (row in 0 until height) {
+            planes.y.get(row * planes.yStride, out, 0 + row * width, width)
+        }
+        val uOff = width * height
+        val vOff = uOff + cw * ch
+        for (row in 0 until ch) {
+            var dst = uOff + row * cw
+            var src = row * planes.uStride
+            for (col in 0 until cw) {
+                out[dst] = planes.u.get(src)
+                dst++
+                src += planes.uPixelStride
+            }
+        }
+        for (row in 0 until ch) {
+            var dst = vOff + row * cw
+            var src = row * planes.vStride
+            for (col in 0 until cw) {
+                out[dst] = planes.v.get(src)
+                dst++
+                src += planes.vPixelStride
+            }
+        }
+        return out
+    }
+}
+
+/**
  * The pipeline's RGB888 -> I420 conversion seam: the pipeline calls through
  * this so the encode loop stays JVM-testable while production dispatches to
  * the native twin (Mp4Exporter's NativeRgbToI420). The result carries the
@@ -177,10 +289,38 @@ object YuvConverter {
  * when it has a native frame to compare against — without sniffing the
  * implementation. The BYTES are identical either way; that is the seam's
  * whole contract (core/src/Yuv.cpp).
+ *
+ * [convertToPlanes] is the direct-to-plane form (commit (c)): when the
+ * writer offers the encoder Image's plane buffers, the conversion writes
+ * them directly — no packed intermediate, no second copy. Null = the
+ * caller must take the packed fallback, which produces the SAME bytes
+ * through [YuvPlaneIo]'s strided copy. The default implementation is
+ * exactly that packed path (packed convert + copy), so a JVM fake or any
+ * converter that only knows packed keeps working and never returns null.
  */
 fun interface RgbToI420 {
     /** Converts packed row-major RGB888 to tightly packed I420 (toI420 layout). */
     fun convert(rgb: ByteArray, width: Int, height: Int): RgbToI420Result
+
+    /**
+     * Converts straight into [planes] (the encoder Image's buffers,
+     * honored at their strides). Null = the caller must take the packed
+     * path; non-null = [planes] hold the frame and the result's
+     * [RgbToI420PlanesResult.fromNative] tells the dual-run whether
+     * there is native output to compare. The default runs the packed
+     * conversion and copies it into the planes — never null,
+     * byte-identical, the guaranteed fallback.
+     */
+    fun convertToPlanes(
+        rgb: ByteArray,
+        width: Int,
+        height: Int,
+        planes: YuvFramePlanes,
+    ): RgbToI420PlanesResult? {
+        val packed = convert(rgb, width, height)
+        YuvPlaneIo.copyPackedToPlanes(packed.i420, width, height, planes)
+        return RgbToI420PlanesResult(fromNative = packed.fromNative)
+    }
 }
 
 /** One conversion outcome: the bytes plus where they came from. */
@@ -188,6 +328,12 @@ class RgbToI420Result(
     /** The tightly packed I420 frame (YuvConverter.toI420 layout). */
     val i420: ByteArray,
     /** True when [i420] came from the native twin, false from Kotlin. */
+    val fromNative: Boolean,
+)
+
+/** The direct-to-plane outcome: origin only — the bytes live in the planes. */
+class RgbToI420PlanesResult(
+    /** True when the planes were written by the native twin. */
     val fromNative: Boolean,
 )
 

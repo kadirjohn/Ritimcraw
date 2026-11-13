@@ -12,6 +12,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -844,6 +845,247 @@ class Mp4ExporterTest {
         val writer = FakeWriter()
         ExportPipeline(session, writer, converter = converter).run(7, GradeK(), "/tmp/out.partial")
         assertEquals(1, writer.videoFrames) // the export ran, conversion included
+    }
+
+    // ---- direct-to-plane path (commit (c)): writer-offered planes ----
+
+    /** A writer that offers the encoder Image's plane buffers (heap-backed). */
+    private class PlanesWriter(
+        /** When true, the writer revokes the offer before the conversion. */
+        private val revokeBeforeQueue: Boolean = false,
+    ) : Mp4MediaWriter {
+        var started = false
+        var released = false
+        var queuedPts = ArrayList<Long>()
+        var abandoned = 0
+        var packedFrames = 0
+        var lastPackedFrame: ByteArray? = null
+        var acquireCount = 0
+
+        // The encoder Image's plane buffers: heap ByteBuffers with
+        // MediaCodec-typical strides (y 4x4 fits; chroma rows padded).
+        private val yBuf = ByteBuffer.allocate(4 * 4)
+        private val uBuf = ByteBuffer.allocate(2 * 2)
+        private val vBuf = ByteBuffer.allocate(2 * 2)
+
+        override fun start(
+            outPath: String,
+            width: Int,
+            height: Int,
+            orientationDeg: Int,
+            sampleRate: Int,
+            channels: Int,
+        ) {
+            started = true
+        }
+
+        override fun acquireVideoFramePlanes(): YuvFramePlanes? {
+            acquireCount++
+            if (revokeBeforeQueue) return null
+            return YuvFramePlanes(
+                y = yBuf,
+                yStride = 4,
+                u = uBuf,
+                uStride = 2,
+                uPixelStride = 1,
+                v = vBuf,
+                vStride = 2,
+                vPixelStride = 1,
+            )
+        }
+
+        override fun queueVideoFrame(ptsUs: Long) {
+            queuedPts.add(ptsUs)
+        }
+
+        override fun abandonVideoFrame() {
+            abandoned++
+        }
+
+        override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
+            packedFrames++
+            lastPackedFrame = i420
+        }
+
+        override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {}
+
+        override fun finish(): Boolean = true
+
+        override fun release() {
+            released = true
+        }
+
+        /** The bytes the planes actually hold (packed I420 readback). */
+        fun packedFromPlanes(): ByteArray = YuvPlaneIo.readPlanesToPacked(4, 4, planesSnapshot())
+
+        private fun planesSnapshot(): YuvFramePlanes =
+            YuvFramePlanes(yBuf, 4, uBuf, 2, 1, vBuf, 2, 1)
+    }
+
+    @Test
+    fun planes_offered_default_converter_writes_them_directly() {
+        // The interface's DEFAULT convertToPlanes (packed convert +
+        // strided copy) is the guaranteed fallback: it never returns
+        // null, so an offered planes writer gets its buffers filled
+        // byte-identically to the packed path — no writeVideoFrame call
+        // at all. (A lambda inherits the default; the pipeline's own
+        // dispatcher returns null on the JVM — native unavailable — and
+        // takes the packed path, which the refusal test covers.)
+        val converter = RgbToI420 { rgb, w, h ->
+            RgbToI420Result(YuvConverter.toI420(rgb, w, h), fromNative = false)
+        }
+        val session = FakeSession(frames = 2, width = 4, height = 4, audio = false)
+        val writer = PlanesWriter()
+        ExportPipeline(session, writer, converter = converter).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(2, writer.acquireCount)
+        assertEquals(2, writer.queuedPts.size)
+        assertEquals(0, writer.packedFrames)
+        assertEquals(0, writer.abandoned)
+        val expected = YuvConverter.toI420(
+            ByteArray(4 * 4 * 3) { 128.toByte() }, 4, 4,
+        )
+        assertTrue(writer.packedFromPlanes().contentEquals(expected))
+    }
+
+    @Test
+    fun planes_refusal_falls_back_to_packed_with_abandon() {
+        // convertToPlanes returning null = the conversion refused the
+        // planes: the pipeline abandons the frame and feeds the writer the
+        // packed bytes through writeVideoFrame — the byte-identical
+        // fallback (the native twin returning false on device).
+        val session = FakeSession(frames = 1, width = 4, height = 4, audio = false)
+        val writer = PlanesWriter()
+        val converter = object : RgbToI420 {
+            override fun convert(rgb: ByteArray, width: Int, height: Int): RgbToI420Result =
+                RgbToI420Result(YuvConverter.toI420(rgb, width, height), fromNative = false)
+
+            override fun convertToPlanes(
+                rgb: ByteArray,
+                width: Int,
+                height: Int,
+                planes: YuvFramePlanes,
+            ): RgbToI420PlanesResult? = null
+        }
+        ExportPipeline(session, writer, converter = converter).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, writer.acquireCount)
+        assertEquals(1, writer.abandoned)
+        assertEquals(0, writer.queuedPts.size)
+        assertEquals(1, writer.packedFrames)
+        val expected = YuvConverter.toI420(
+            ByteArray(4 * 4 * 3) { 128.toByte() }, 4, 4,
+        )
+        assertTrue(writer.lastPackedFrame!!.contentEquals(expected))
+    }
+
+    @Test
+    fun planes_null_offer_uses_the_packed_path_untouched() {
+        // A writer that offers nothing (the interface default, every
+        // pre-(c) fake): the packed path runs exactly as in commit (b).
+        val session = FakeSession(frames = 2, width = 4, height = 4, audio = false)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(2, writer.videoFrames)
+        val expected = YuvConverter.toI420(
+            ByteArray(4 * 4 * 3) { 128.toByte() }, 4, 4,
+        )
+        assertTrue(writer.lastVideoFrame!!.contentEquals(expected))
+    }
+
+    @Test
+    fun planes_default_converter_round_trip_is_byte_identical() {
+        // The pure strided-copy round trip: packed -> planes -> packed is
+        // the identity, at MediaCodec-typical strides (padded chroma rows,
+        // NV12 pixelStride 2 with v == u + 1).
+        val rgb = ByteArray(4 * 4 * 3) { 128.toByte() }
+        val packed = YuvConverter.toI420(rgb, 4, 4)
+        // Planar with padded rows: yStride 8, u/vStride 4, pixelStride 1.
+        val yBuf = ByteBuffer.allocate(8 * 4)
+        val uBuf = ByteBuffer.allocate(4 * 2)
+        val vBuf = ByteBuffer.allocate(4 * 2)
+        val planar = YuvFramePlanes(yBuf, 8, uBuf, 4, 1, vBuf, 4, 1)
+        YuvPlaneIo.copyPackedToPlanes(packed, 4, 4, planar)
+        assertTrue(
+            YuvPlaneIo.readPlanesToPacked(4, 4, planar).contentEquals(packed),
+        )
+        // NV12 (semi-planar): uPixelStride 2, V interleaved at u + 1.
+        // The plane helpers address absolutely, so V is a SLICE at
+        // offset 1 of the shared UV buffer (element 0 = first V sample) —
+        // exactly how the encoder Image hands over NV12 planes.
+        val nv12UV = ByteBuffer.allocate(4 * 2) // 2 chroma rows x 4 bytes
+        val nv12U = nv12UV.duplicate()
+        val nv12V = nv12UV.duplicate().apply { position(1) }.slice()
+        val nv12 = YuvFramePlanes(yBuf, 8, nv12U, 4, 2, nv12V, 4, 2)
+        YuvPlaneIo.copyPackedToPlanes(packed, 4, 4, nv12)
+        assertTrue(
+            YuvPlaneIo.readPlanesToPacked(4, 4, nv12).contentEquals(packed),
+        )
+        // The interleave really happened: UV holds u,v pairs.
+        assertEquals(packed[16], nv12UV.get(0))
+        assertEquals(packed[20], nv12UV.get(1))
+    }
+
+    @Test
+    fun planes_dual_run_reads_encoder_memory_back() {
+        // The direct path's dual-run: a converter claiming native origin
+        // makes the pipeline read the planes BACK and compare against the
+        // Kotlin oracle — the stride-mapping proof, logged once.
+        val converter = object : RgbToI420 {
+            override fun convert(rgb: ByteArray, width: Int, height: Int): RgbToI420Result =
+                RgbToI420Result(YuvConverter.toI420(rgb, width, height), fromNative = true)
+
+            override fun convertToPlanes(
+                rgb: ByteArray,
+                width: Int,
+                height: Int,
+                planes: YuvFramePlanes,
+            ): RgbToI420PlanesResult {
+                val packed = convert(rgb, width, height)
+                YuvPlaneIo.copyPackedToPlanes(packed.i420, width, height, planes)
+                return RgbToI420PlanesResult(fromNative = true)
+            }
+        }
+        val session = FakeSession(frames = 2, width = 4, height = 4, audio = false)
+        val writer = PlanesWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(session, writer, lines::add, converter).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, lines.count { it.startsWith("rgbToI420 dual-run") })
+        val dual = lines.first { it.startsWith("rgbToI420 dual-run") }
+        assertTrue(dual.contains("native == kotlin"))
+        assertTrue(dual.contains("4x4"))
+        // BOTH frames were queued from the planes, none written packed.
+        assertEquals(2, writer.queuedPts.size)
+        assertEquals(0, writer.packedFrames)
+    }
+
+    @Test
+    fun planes_dual_run_mismatch_reports_through_the_sink() {
+        // A converter that writes WRONG bytes into the planes (claims
+        // native): the dual-run reads them back and the mismatch line
+        // names the first differing byte — on-device debugging affordance.
+        val converter = object : RgbToI420 {
+            override fun convert(rgb: ByteArray, width: Int, height: Int): RgbToI420Result =
+                RgbToI420Result(YuvConverter.toI420(rgb, width, height), fromNative = true)
+
+            override fun convertToPlanes(
+                rgb: ByteArray,
+                width: Int,
+                height: Int,
+                planes: YuvFramePlanes,
+            ): RgbToI420PlanesResult {
+                val packed = convert(rgb, width, height)
+                val corrupted = packed.i420.copyOf()
+                corrupted[3] = (corrupted[3] + 1).toByte()
+                YuvPlaneIo.copyPackedToPlanes(corrupted, width, height, planes)
+                return RgbToI420PlanesResult(fromNative = true)
+            }
+        }
+        val session = FakeSession(frames = 1, width = 4, height = 4, audio = false)
+        val writer = PlanesWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(session, writer, lines::add, converter).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, lines.count { it.startsWith("rgbToI420 dual-run") })
+        val dual = lines.first { it.startsWith("rgbToI420 dual-run") }
+        assertTrue(dual.contains("MISMATCH at byte 3"))
     }
 
     @Test

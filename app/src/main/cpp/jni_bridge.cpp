@@ -2202,6 +2202,69 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeRgbToI420(
     return out;
 }
 
+// RGB888 -> I420, direct into the encoder Image's planes (commit (c)) ------
+//
+// The same byte-exact twin as nativeRgbToI420 above, writing STRAIGHT into
+// the MediaCodec input Image's plane ByteBuffers (GetDirectBufferAddress —
+// zero copies, zero intermediates: the per-frame packed I420 allocation and
+// the Kotlin plane copy both disappear). Kotlin hands over the buffers the
+// writer dequeued and the strides it read from Image.Plane; the C++ side
+// fills a rawedit::YuvPlanes and calls rgb888ToI420, whose scalar/NEON
+// kernels honor any rowStride/pixelStride pair (planar, NV12, padded).
+//
+// Returns JNI_TRUE when the planes hold the frame, JNI_FALSE when Kotlin
+// must take the packed fallback (which produces the same bytes through
+// YuvConverter.toI420 + the writer's copy): null/non-direct buffers,
+// library-level refusals (empty frame / short rgb), or a stride geometry
+// the converter cannot address (row/pixel strides < the frame's row bytes).
+// A JNI_FALSE is NOT an error state: the fallback is the designed path for
+// every refusal, so the error accessors stay untouched.
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRgbToI420Planes(
+        JNIEnv* env, jclass, jbyteArray rgb, jint width, jint height,
+        jint matrix, jobject yBuf, jint yStride,
+        jobject uBuf, jint uStride, jint uPixelStride,
+        jobject vBuf, jint vStride, jint vPixelStride) {
+    if (rgb == nullptr || width <= 0 || height <= 0) return JNI_FALSE;
+    if (static_cast<long long>(env->GetArrayLength(rgb)) <
+        static_cast<long long>(width) * height * 3) {
+        return JNI_FALSE;
+    }
+    uint8_t* y = static_cast<uint8_t*>(env->GetDirectBufferAddress(yBuf));
+    uint8_t* u = static_cast<uint8_t*>(env->GetDirectBufferAddress(uBuf));
+    uint8_t* v = static_cast<uint8_t*>(env->GetDirectBufferAddress(vBuf));
+    if (y == nullptr || u == nullptr || v == nullptr) return JNI_FALSE;
+    const int cw = (width + 1) / 2;
+    const int ch = (height + 1) / 2;
+    // Stride sanity: each row must fit inside its plane buffer, and the
+    // last sample of the last row must be addressable. The writer hands
+    // over the Image's strides unvalidated (they come from MediaCodec and
+    // are trusted there), so this check is the single gate — a refusal is
+    // the designed fallback, never an error.
+    if (yStride < width || uStride < cw * uPixelStride ||
+        vStride < cw * vPixelStride) {
+        return JNI_FALSE;
+    }
+    jbyte* in = env->GetByteArrayElements(rgb, nullptr);
+    if (in == nullptr) return JNI_FALSE; // OOM: take the packed fallback
+    rawedit::YuvPlanes planes;
+    planes.y = y;
+    planes.yStride = yStride;
+    planes.u = u;
+    planes.uStride = uStride;
+    planes.uPixelStride = uPixelStride;
+    planes.v = v;
+    planes.vStride = vStride;
+    planes.vPixelStride = vPixelStride;
+    const rawedit::RgbToYuvMatrix& m =
+        matrix == 0 ? rawedit::kYuvMatrixBt601 : rawedit::kYuvMatrixBt709;
+    rawedit::rgb888ToI420(
+        reinterpret_cast<const uint8_t*>(in), width, height, m, planes);
+    env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+    return JNI_TRUE;
+}
+
 // DNG export -------------------------------------------------------------------
 //
 // One-shot: open the clip from fd, decode frame [frameIndex], write the raw
