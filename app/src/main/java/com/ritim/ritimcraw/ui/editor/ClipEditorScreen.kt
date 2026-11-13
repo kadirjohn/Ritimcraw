@@ -111,6 +111,7 @@ import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.PreviewTiers.RenderClass
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
+import com.ritim.ritimcraw.engine.RenderTrace
 import com.ritim.ritimcraw.ui.editor.PublishCrop
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
@@ -1749,6 +1750,13 @@ fun ClipEditorScreen(
                     // -> PreviewTiers.stabilizationAppliesAt), so the pump
                     // stays policy-free and every arm just carries the path.
                     val gyroPath = currentGyroId.takeIf { it.isNotBlank() }?.let(currentGyroPathFor)
+                    // Render trace (audit M0, 2026-11-13): wall time of the
+                    // render call itself (the PreviewMetrics precedent), so
+                    // the trace's ms= carries the develop pipeline the
+                    // audit's host harness measured — NOT the UI crop, which
+                    // is a publish-space resample the host numbers never
+                    // included.
+                    val renderStartedMs = System.currentTimeMillis()
                     val result = if (sessionRender && s != null) {
                         if (req.cached) {
                             // Interactive drag render: the bridge reuses the
@@ -1794,6 +1802,7 @@ fun ClipEditorScreen(
                             }
                         }
                     }
+                    val renderMs = System.currentTimeMillis() - renderStartedMs
                     if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
                         result.fold(
                             onSuccess = { f ->
@@ -1849,6 +1858,36 @@ fun ClipEditorScreen(
                                 // stats of THIS frame, never guessing
                                 // the index from transport state.
                                 renderedFrameIndex = req.frameIndex
+                                // The production render trace line (audit
+                                // M0): ONE line per COMPLETED render, at the
+                                // completion point. out= is the developed
+                                // buffer's own dims (f, pre-crop — the truth
+                                // the native strideFor produced, so a 720
+                                // request on a 4K clip logs 640x360); tnr
+                                // carries the tier gate's DECISION for this
+                                // render (class + tier, the M0 SOURCE fix
+                                // visible in the trace), not the grade's
+                                // toggle; stab only when a gyro log was
+                                // actually attached and carried. Debug builds
+                                // only — no-op in release.
+                                RenderTrace.log(
+                                    RenderTrace.Record(
+                                        sequence = req.sequence,
+                                        frameIndex = req.frameIndex,
+                                        renderClass = req.renderClass,
+                                        requestedMaxDim = req.maxDim,
+                                        outW = f.width,
+                                        outH = f.height,
+                                        renderMs = renderMs,
+                                        grade = req.grade,
+                                        temporalNrApplied = req.grade.temporalNr &&
+                                            PreviewTiers.temporalNrAppliesAt(
+                                                req.maxDim, req.renderClass,
+                                            ),
+                                        stabilizationApplied = req.grade.stabilization &&
+                                            gyroPath != null,
+                                    )
+                                )
                                 lastRenderFailed = false
                                 errorText = null
                             },
