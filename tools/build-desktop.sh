@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Sync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -116,6 +116,10 @@ echo "== building tests =="
 # the test must round exactly like the Kotlin float ops.
 "$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_yuv.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_yuv"
+# test_color: managed LUT color model (gamuts, transfers, CAT, compiled
+# bindings, evaluateManagedLut) on synthetic fixtures — no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_color.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_color"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -154,6 +158,8 @@ echo "== running test_rawstats =="
 "$BUILD/test_rawstats"
 echo "== running test_yuv =="
 "$BUILD/test_yuv"
+echo "== running test_color =="
+"$BUILD/test_color"
 
 echo
 echo "ALL TESTS DONE. Binaries in $BUILD:"

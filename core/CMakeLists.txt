@@ -49,6 +49,7 @@ add_library(rawedit STATIC
     src/Thumbnail.cpp
     src/Transfer.cpp
     src/Lut.cpp
+    src/Color.cpp
     src/DngWriter.cpp
     src/Gyro.cpp
     src/Orientation.cpp
@@ -100,6 +101,11 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     target_include_directories(test_yuv PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_yuv PRIVATE rawedit)
     target_compile_options(test_yuv PRIVATE -ffp-contract=off)
+    # test_color: managed LUT color model (gamuts, transfers, Bradford CAT,
+    # compiled bindings, evaluateManagedLut) — synthetic fixtures only.
+    add_executable(test_color tests/test_color.cpp)
+    target_include_directories(test_color PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_color PRIVATE rawedit)
 
     add_executable(rawcli ../cli/main.cpp)
     target_link_libraries(rawcli PRIVATE rawedit)
@@ -112,4 +118,5 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME stabilization COMMAND test_stabilization)
     add_test(NAME warp COMMAND test_warp)
     add_test(NAME yuv COMMAND test_yuv)
+    add_test(NAME color COMMAND test_color)
 endif()
