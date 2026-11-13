@@ -1,6 +1,13 @@
 // Stabilization Phase 4 implementation — see Stabilization.h for the
 // contracts (direction, signs, fallbacks). Everything here is plain
 // CPU math; no GPU, no UI.
+//
+// Audit fix 2026-11-13 (owner's audit, section D): the crop checker
+// and the correction scaler share warpFootprintViolation below — a
+// sampler-EXACT footprint measure (warpFrame's composite map, the
+// [0,w-1]x[0,h-1] pixel-center domain, positive denominators) — so
+// a plan that passes the checker never hands warpFrame a sample it
+// would edge-clamp into smear.
 
 #include <rawedit/Stabilization.h>
 
@@ -53,7 +60,11 @@ bool matInv(const double m[9], double out[9]) {
 }
 
 // Homogeneous point map: out = H * (x, y, 1), perspective-divided.
-bool mapPoint(const double h[9], double x, double y, double& ox, double& oy) {
+// (Unused in this TU since the 2026-11-13 audit fix folded its body
+// into warpFootprintViolation — kept as the reference twin of
+// Warp.cpp's copy; doctests pin the two to the same values.)
+[[maybe_unused]] bool mapPoint(const double h[9], double x, double y,
+                               double& ox, double& oy) {
     const double u = h[0] * x + h[1] * y + h[2];
     const double v = h[3] * x + h[4] * y + h[5];
     const double w = h[6] * x + h[7] * y + h[8];
@@ -141,6 +152,72 @@ void intrinsics(double f, double cx, double cy, double k[9]) {
 
 // The view-axis flip D = diag(1, 1, -1) (frameTransform's derivation).
 constexpr double kViewFlip[9] = {1, 0, 0, 0, 1, 0, 0, 0, -1};
+
+// ---------------------------------------------------------------------------
+// Sampler-exact footprint (audit fix 2026-11-13)
+//
+// warpFrame samples p_src = M * (x, y, 1) for every OUTPUT pixel-center
+// (x, y) in [0,w-1]x[0,h-1], with
+//     M = Hinv * S,  S = scale-about-c by 1/Z
+// (built bit-for-bit as Warp.cpp does), then clamps samples outside
+// [0,w-1]x[0,h-1] to the nearest edge pixel — the smear the audit
+// found. The checker must be as strict as the sampler, so this
+// measures the worst violation over the four OUTPUT pixel-center rect
+// corners with these exact conventions:
+//   * finite HOMOGENEOUS DENOMINATOR, and POSITIVE: mapPoint alone
+//     would accept a negative w, but warpFrame perspective-divides
+//     with it (mirroring the sample across the plane) — for the
+//     composite of a rotation homography the denominator
+//     w(x,y) = m[6]x + m[7]y + m[8] is AFFINE over the rect, so
+//     positivity at the four corners implies positivity over the
+//     whole rect: no horizon crossing, and the image of the rect is
+//     the convex hull of the corner images — the corner check is
+//     then EXACT, not a conservative bound.
+//   * the mapped point inside [0, w-1] x [0, h-1] INCLUSIVE: the
+//     x1/y1 bilinear guards make fx == w-1 exactly safe (the tap at
+//     x0+1 == w falls back to the edge pixel), so the boundary
+//     itself is valid; anything past it would clamp = smear.
+// Returns the largest excursion in pixels (0 = every sampled source
+// coordinate valid), or +inf when a corner is unmappable or has a
+// non-positive denominator.
+// ---------------------------------------------------------------------------
+double warpFootprintViolation(const double hInv[9], double zoom,
+                              double cx, double cy, int width, int height) {
+    if (width <= 0 || height <= 0 || !(zoom >= 1.0) || !std::isfinite(zoom))
+        return std::numeric_limits<double>::infinity();
+    // The composite M, exactly as Warp.cpp builds it (bit-for-bit).
+    const double s = 1.0 / zoom;
+    double m[9];
+    for (int i = 0; i < 3; ++i) {
+        m[i * 3 + 0] = hInv[i * 3 + 0] * s;
+        m[i * 3 + 1] = hInv[i * 3 + 1] * s;
+        m[i * 3 + 2] = hInv[i * 3 + 0] * (cx - cx * s)
+                     + hInv[i * 3 + 1] * (cy - cy * s)
+                     + hInv[i * 3 + 2];
+    }
+    const double maxU = static_cast<double>(width) - 1.0;
+    const double maxV = static_cast<double>(height) - 1.0;
+    const double corners[4][2] = {{0.0, 0.0}, {maxU, 0.0},
+                                  {0.0, maxV}, {maxU, maxV}};
+    double worst = 0.0;
+    for (int c = 0; c < 4; ++c) {
+        const double x = corners[c][0], y = corners[c][1];
+        const double w = m[6] * x + m[7] * y + m[8];
+        if (!std::isfinite(w) || w <= 0.0)
+            return std::numeric_limits<double>::infinity();
+        const double u = m[0] * x + m[1] * y + m[2];
+        const double v = m[3] * x + m[4] * y + m[5];
+        if (!std::isfinite(u) || !std::isfinite(v))
+            return std::numeric_limits<double>::infinity();
+        const double sx = u / w, sy = v / w;
+        if (!std::isfinite(sx) || !std::isfinite(sy))
+            return std::numeric_limits<double>::infinity();
+        const double dx = std::fmax(-sx, sx - maxU);
+        const double dy = std::fmax(-sy, sy - maxV);
+        worst = std::fmax(worst, std::fmax(dx, dy));
+    }
+    return worst;
+}
 
 } // namespace
 
@@ -327,7 +404,7 @@ double focalLengthPxFromEquivalent(double focalLengthMm35, int width) {
 }
 
 // ---------------------------------------------------------------------------
-// Static crop (deliverable 4)
+// Static crop (deliverable 4; sampler-exact since the 2026-11-13 audit fix)
 // ---------------------------------------------------------------------------
 double staticCropZoom(const std::vector<double>& quatsRel,
                       double focalLengthPx, double cx, double cy,
@@ -336,48 +413,36 @@ double staticCropZoom(const std::vector<double>& quatsRel,
         return 1.0;
     const size_t n = quatsRel.size() / 4;
 
-    // The composite output->source map for one q_rel at zoom Z
-    // (Stabilization.h): p_src = H⁻¹( c + (p_out - c)/Z ), i.e. the
-    // sampled window is the output rect shrunk about the principal
-    // point by 1/Z, then mapped through H⁻¹. Corners are the extremes
-    // of the image (projective maps take convex hull corners to the
-    // hull of the image; the window is a rectangle), and the
-    // constraint "all four corners inside [0,w]x[0,h]" is monotone
-    // in Z, so a bisection on Z converges to the minimal factor.
+    // Per frame: the minimal Z >= 1 with the OUTPUT pixel-center rect
+    // corners mapping inside [0,w-1]x[0,h-1] through warpFrame's exact
+    // composite (warpFootprintViolation above — the reconciled
+    // conventions; the old checker used the looser continuous
+    // [0,w]x[0,h] window corners, which is how plans that the sampler
+    // then edge-clamped into smear passed the check).
+    //
+    // Feasibility is monotone in Z: for a fixed warp the sampled
+    // window contracts about c along straight segments ending at
+    // hInv(c) (projective maps take segments to segments under
+    // positive denominators), and a line meets the valid rect in a
+    // single interval, so each corner constraint flips
+    // infeasible->feasible at most once. When hInv(c) itself sits
+    // outside the valid rect no Z fits at all (the Z->inf footprint
+    // is that point alone) — the doubling cap honestly returns the
+    // absurd bound there. Bisection on that interval converges to
+    // the minimal factor.
     double h[9], hInv[9];
-    auto cornerViolation = [&](const double z) {
-        // Largest source-space excursion over the four window corners
-        // (positive = outside by that many pixels, 0 = inside).
-        double worst = 0.0;
-        const double halfW = width / (2.0 * z);
-        const double halfH = height / (2.0 * z);
-        const double corners[4][2] = {{cx - halfW, cy - halfH},
-                                      {cx + halfW, cy - halfH},
-                                      {cx - halfW, cy + halfH},
-                                      {cx + halfW, cy + halfH}};
-        for (int c = 0; c < 4; ++c) {
-            double sx, sy;
-            if (!mapPoint(hInv, corners[c][0], corners[c][1], sx, sy))
-                return std::numeric_limits<double>::infinity();
-            const double dx = std::fmax(-sx, sx - width);
-            const double dy = std::fmax(-sy, sy - height);
-            worst = std::fmax(worst, std::fmax(dx, dy));
-        }
-        return worst;
-    };
-
     double zNeed = 1.0;
     for (size_t i = 0; i < n; ++i) {
         frameTransform(&quatsRel[4 * i], focalLengthPx, cx, cy, h);
         if (!matInv(h, hInv))
             continue; // degenerate warp; skip (never crops for it)
-        if (cornerViolation(1.0) <= 0.0)
+        if (warpFootprintViolation(hInv, 1.0, cx, cy, width, height) <= 0.0)
             continue; // this frame needs no crop at all
         // Bisection on [1, zHi] where zHi is the first probed bound
         // with no violation (doubling from 2; the crop for real
         // rotation warps is bounded well below 16x).
         double lo = 1.0, hi = 2.0;
-        while (cornerViolation(hi) > 0.0) {
+        while (warpFootprintViolation(hInv, hi, cx, cy, width, height) > 0.0) {
             lo = hi;
             hi *= 2.0;
             if (hi > 64.0)
@@ -385,7 +450,7 @@ double staticCropZoom(const std::vector<double>& quatsRel,
         }
         for (int iter = 0; iter < 60; ++iter) {
             const double mid = 0.5 * (lo + hi);
-            if (cornerViolation(mid) > 0.0)
+            if (warpFootprintViolation(hInv, mid, cx, cy, width, height) > 0.0)
                 lo = mid;
             else
                 hi = mid;
@@ -414,12 +479,19 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
 
     // Refusal short-circuits: uniform identity + the honest status.
     // intrinsicsAssumed stays false on refusals (no frame is warped on
-    // any focal there).
+    // any focal there). A refusal applies no correction, so the
+    // applied-scale numbers report 0 (the identity plan); the
+    // per-frame status says why, and no samples are taken at all.
     auto refuseAll = [&](StabilizationStatus s) {
         for (auto& f : result.frames) {
             f.status = s;
             f.zoom = 1.0;
         }
+        result.correctionScale.assign(n, 0.0);
+        result.clipCorrectionScale = 0.0;
+        result.minCorrectionScale = 0.0;
+        result.meanCorrectionScale = 0.0;
+        result.invalidSampleFrames = 0;
         return result;
     };
 
@@ -433,6 +505,15 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
         return refuseAll(StabilizationStatus::NoImu); // no fabricated intrinsics
     if (n == 0)
         return result; // nothing to warp; flags stay clean
+
+    // Default the new fields for the non-refusing paths below; the
+    // sufficient-budget case leaves them at 1.0 (bit-identical to the
+    // pre-fix behavior — the compatibility contract).
+    result.correctionScale.assign(n, 1.0);
+    result.clipCorrectionScale = 1.0;
+    result.minCorrectionScale = 1.0;
+    result.meanCorrectionScale = 1.0;
+    result.invalidSampleFrames = 0;
 
     const double cx = params.principalPoint[0] > 0.0
         ? params.principalPoint[0] : static_cast<double>(params.width) / 2.0;
@@ -533,10 +614,213 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
     result.appliedZoom = std::fmin(result.requiredZoom, zoomLimit);
     result.intrinsicsAssumed = assumedFocal;
 
+    // --- Step 7b: crop-constrained correction (audit fix 2026-11-13) ---
+    // The audit's finding: when the zoom limit sits below requiredZoom
+    // the old code kept the FULL correction and merely clamped the
+    // zoom, so warpFrame edge-clamped out-of-source samples into smear.
+    // The fix scales the CORRECTION to fit the budget — q_rel_i(a) =
+    // slerp(identity, q_rel_i, a) along the geodesic (never linear
+    // scaling of components/Euler/matrix entries) — smoothly over
+    // time. When requiredZoom <= appliedZoom the budget suffices and
+    // every scale below stays 1.0: bit-identical to the pre-fix plan.
+    if (result.appliedZoom >= result.requiredZoom) {
+        // Sufficient budget: full correction, nothing to scale.
+    } else {
+        // fits(i, a): frame i's correction at scale a keeps every
+        // sampled source coordinate valid at appliedZoom — the same
+        // warpFootprintViolation the static-crop solver used, so the
+        // scaler and the checker can never disagree. The warp checked
+        // is EXACTLY the warp Step 8 ships: slerpToward(identity,
+        // q_rel_i, a) (a = 0 -> identity exactly, a >= 1 -> q_rel_i
+        // exactly), frameTransform, matInv — the same deterministic
+        // chain warpFrame will run. a = 0 is the identity warp, which
+        // maps the output rect onto itself through M = S: feasible
+        // at any Z >= 1 whenever the principal point lies inside the
+        // rect (the default center does). The feasible set is an
+        // interval containing 0 (connectedness along the slerp
+        // geodesic: the footprints move continuously in a, and a
+        // segment under positive denominators meets the valid rect
+        // in a single interval), so a bracketed search on [0, 1]
+        // finds its edge. Feasibility is NOT assumed monotone in a
+        // for arbitrary projective warps — the bracket is only
+        // [0, b] with b REVALIDATED before use, and any frame that
+        // still fails falls back to a_clip, then to 0 (below).
+        const double Z = result.appliedZoom;
+        auto fits = [&](size_t i, double a) {
+            if (!(a >= 0.0) || !std::isfinite(a))
+                return false;
+            double qScaled[4];
+            const double qIdentity[4] = {1.0, 0.0, 0.0, 0.0};
+            slerpToward(qIdentity, &qRel[4 * i], a, qScaled);
+            double hS[9], hInvS[9];
+            frameTransform(qScaled, params.focalLengthPx, cx, cy, hS);
+            if (!matInv(hS, hInvS))
+                return false;
+            return warpFootprintViolation(hInvS, Z, cx, cy,
+                                          params.width, params.height)
+                <= 0.0;
+        };
+
+        // (a) a_clip — the clip-wide constant baseline: the largest a
+        // with EVERY frame fitting at appliedZoom. Bisect on [0,1]
+        // from the always-feasible a = 0; 40 iterations resolve the
+        // bracket to ~1e-12. This alone is a complete, shippable
+        // fix (uniform reduction, no temporal artifacts); (b)/(c)
+        // refine it per frame and in time.
+        double aClip = 0.0;
+        {
+            double lo = 0.0, hi = 1.0;
+            bool hiFits = true;
+            for (size_t i = 0; i < n && hiFits; ++i)
+                hiFits = fits(i, hi);
+            if (hiFits) {
+                aClip = 1.0;
+            } else {
+                for (int iter = 0; iter < 40; ++iter) {
+                    const double mid = 0.5 * (lo + hi);
+                    bool midFits = true;
+                    for (size_t i = 0; i < n && midFits; ++i)
+                        midFits = fits(i, mid);
+                    if (midFits)
+                        lo = mid;
+                    else
+                        hi = mid;
+                    if (hi - lo < 1e-12)
+                        break;
+                }
+                aClip = lo; // the feasible side of the bracket
+            }
+        }
+
+        // (b) b_i — the per-frame safe cap: the largest a with frame
+        // i fitting at appliedZoom (same bracketed search, per
+        // frame). Revalidated before use (no monotonicity assumed).
+        std::vector<double> bCap(n, 0.0);
+        for (size_t i = 0; i < n; ++i) {
+            double lo = 0.0, hi = 1.0;
+            if (fits(i, hi)) {
+                bCap[i] = 1.0;
+                continue;
+            }
+            for (int iter = 0; iter < 40; ++iter) {
+                const double mid = 0.5 * (lo + hi);
+                if (fits(i, mid))
+                    lo = mid;
+                else
+                    hi = mid;
+                if (hi - lo < 1e-12)
+                    break;
+            }
+            bCap[i] = lo;
+        }
+
+        // (c) a_i — time-smoothed per-frame scales. The raw b_i jump
+        // frame to frame with the motion; applying them directly
+        // would pump the correction strength over time (a visible
+        // breathing artifact). Two steps keep the result both smooth
+        // AND feasible:
+        //   env_i = min{ b_j : |t_j - t_i| <= W/2 }  (sliding min
+        //                    over the ACTUAL frame PTS — never an
+        //                    assumed fps; VFR clips keep honest
+        //                    windows)
+        //   a_i  = sum_k k(t_i - t_k) * env_k        (a nonnegative
+        //                    normalized kernel with support radius
+        //                    <= W/2)
+        // Every k contributing to a_i satisfies |t_i - t_k| <= W/2,
+        // so i lies in j = i's own min window, hence env_k <= b_i and
+        // the weighted average a_i <= b_i: smoothing can never push a
+        // frame past its own safe cap. W = 0.5 s is chosen because it
+        // matches the smoothing time constants the target series
+        // itself uses at mid strengths (tau ~ 0.1-1 s): the correction
+        // reduction then breathes on the same timescale as the
+        // correction, not faster.
+        const double windowSec = 0.5;
+        std::vector<double> env(n, 1.0);
+        for (size_t i = 0; i < n; ++i) {
+            const double ti = static_cast<double>(frameTimestampsNs[i]) * 1e-9;
+            double e = 1.0;
+            for (size_t j = 0; j < n; ++j) {
+                const double tj =
+                    static_cast<double>(frameTimestampsNs[j]) * 1e-9;
+                if (std::fabs(tj - ti) <= windowSec / 2.0)
+                    e = std::fmin(e, bCap[j]);
+            }
+            env[i] = e;
+        }
+        std::vector<double> aSmooth(n, 1.0);
+        for (size_t i = 0; i < n; ++i) {
+            const double ti = static_cast<double>(frameTimestampsNs[i]) * 1e-9;
+            double num = 0.0, den = 0.0;
+            for (size_t k = 0; k < n; ++k) {
+                const double tk =
+                    static_cast<double>(frameTimestampsNs[k]) * 1e-9;
+                const double dt = std::fabs(ti - tk);
+                if (dt > windowSec / 2.0)
+                    continue;
+                const double weight = 1.0 - dt / (windowSec / 2.0); // triangular
+                num += weight * env[k];
+                den += weight;
+            }
+            aSmooth[i] = den > 0.0 ? num / den : env[i];
+        }
+
+        // Final selection with revalidation: the smoothed a_i, any
+        // frame that fails (numerical edge of the bracket, or an
+        // exotic warp where smoothing and feasibility interact)
+        // falls back to a_clip, then to 0 — the honest ladder, never
+        // edge-clamped pixels. a is additionally clamped from BELOW at
+        // a_clip: the clip-wide baseline always fits, so a smoothing
+        // rounding dip below it (an ulp lost in the weighted average
+        // when every b_i is identical, e.g.) is pure loss — this also
+        // gives the ordering a_clip <= min(a_i) that Stabilization.h
+        // pins. invalidSampleFrames counts the frames that STILL fail
+        // after all fallbacks (expected 0; if the identity itself does
+        // not fit something is broken upstream and the count says so).
+        result.clipCorrectionScale = aClip;
+        for (size_t i = 0; i < n; ++i) {
+            double a = aSmooth[i];
+            if (a > bCap[i])
+                a = bCap[i]; // the smoothing guarantee, enforced
+            if (a < aClip)
+                a = aClip;  // the baseline guarantee, enforced
+            if (!fits(i, a)) {
+                a = aClip;
+                if (!fits(i, a)) {
+                    a = 0.0;
+                    if (!fits(i, 0.0)) {
+                        // The identity itself does not fit (a broken
+                        // principal point, e.g.) — count honestly and
+                        // ship identity anyway (the least-wrong warp;
+                        // warpFrame's own no-op ladder is the final
+                        // backstop downstream).
+                        ++result.invalidSampleFrames;
+                    }
+                }
+            }
+            result.correctionScale[i] = a;
+        }
+        double aMin = 1.0, aSum = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            aMin = std::fmin(aMin, result.correctionScale[i]);
+            aSum += result.correctionScale[i];
+        }
+        result.minCorrectionScale = aMin;
+        result.meanCorrectionScale = aSum / static_cast<double>(n);
+    }
+
     // --- Step 8: per-frame H + statuses ---
+    // H is rebuilt from the SCALED q_rel (slerpToward(identity,
+    // q_rel_i, a_i)) — the warp the footprint check validated is the
+    // warp that ships. relativeAngleDeg above stays the REQUESTED
+    // full-correction angle (the honest "what was asked for" number;
+    // correctionScale says what was applied).
     for (size_t i = 0; i < n; ++i) {
         StabilizationFrame& f = result.frames[i];
-        frameTransform(&qRel[4 * i], params.focalLengthPx, cx, cy, f.h);
+        const double qIdentity[4] = {1.0, 0.0, 0.0, 0.0};
+        double qScaled[4];
+        slerpToward(qIdentity, &qRel[4 * i], result.correctionScale[i],
+                    qScaled);
+        frameTransform(qScaled, params.focalLengthPx, cx, cy, f.h);
         f.zoom = result.appliedZoom;
         f.status = inside[i] ? StabilizationStatus::Ok
                              : StabilizationStatus::LowOverlap;
