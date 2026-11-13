@@ -4,7 +4,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,11 +18,17 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.ui.components.ScreenHeader
 
 /**
- * Projects screen: designed empty state (DESIGN.md Empty states). Projects
- * group graded clips and their exports; creation lands with timelines.
+ * Projects screen: designed empty state (DESIGN.md Empty states) plus the
+ * timeline entry. Projects group graded clips and their exports; v1's one
+ * timeline is the shared project.json timeline section, opened here —
+ * project creation (multiple named timelines) lands with the projects
+ * model, so the empty state keeps its copy and gains the entry button.
  */
 @Composable
-fun ProjectsScreen(modifier: Modifier = Modifier) {
+fun ProjectsScreen(
+    onOpenTimeline: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     // Canonical header call site (title consistency, owner finding
     // 2026-11-12 — the contract lives in ScreenHeader's doc): the root
     // Column pads NOTHING, so the title's left edge is ScreenHeader's
@@ -50,6 +58,18 @@ fun ProjectsScreen(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp),
             )
+            // The timeline entry (spec TL-01): the screen's one primary
+            // action — a filled button (DESIGN.md Buttons: filled for the
+            // one primary action), 48dp tall per the touch-target rule,
+            // opening the shared timeline.
+            Button(
+                onClick = onOpenTimeline,
+                modifier = Modifier
+                    .padding(top = 24.dp)
+                    .heightIn(min = 48.dp),
+            ) {
+                Text(stringResource(R.string.projects_open_timeline))
+            }
         }
     }
 }
