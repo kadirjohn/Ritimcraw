@@ -187,6 +187,19 @@ Result<std::unique_ptr<Source>> Source::open(int fd) {
         return Result<std::unique_ptr<Source>>::fail(ErrorCode::BadHeader,
             "open: invalid file descriptor (recovery: pass a descriptor opened for reading)");
 
+    // dup() shares the open-file-description, so the dup's file offset is
+    // whatever offset the caller's fd arrives with — a caller may hand us an
+    // fd whose offset was advanced by an earlier consumer (the GPU->CPU
+    // export restart re-opens the same fd attempt 1's decoder already read
+    // through). Rewind after fdopen so every open is position-independent,
+    // like the path-based overload is by construction; the decoder reads the
+    // container header from the current offset and would otherwise parse
+    // mid-file bytes as the header ("Invalid container version"). Because
+    // the offset is shared, the caller's position is saved first and
+    // restored after init — the polite contract is that we never move the
+    // caller's own fd offset.
+    const off_t callerOffset = ::lseek(fd, 0, SEEK_CUR);
+
     const int dupFd = ::dup(fd);
     if (dupFd < 0)
         return Result<std::unique_ptr<Source>>::fail(ErrorCode::IoError,
@@ -197,6 +210,12 @@ Result<std::unique_ptr<Source>> Source::open(int fd) {
         ::close(dupFd);
         return Result<std::unique_ptr<Source>>::fail(ErrorCode::IoError,
             "open: fdopen failed (recovery: check available file descriptors)");
+    }
+
+    if (std::fseek(file, 0, SEEK_SET) != 0) {
+        std::fclose(file);
+        return Result<std::unique_ptr<Source>>::fail(ErrorCode::IoError,
+            "open: could not rewind file descriptor (recovery: a non-seekable stream is not a usable source)");
     }
 
     std::unique_ptr<SourceImpl> impl;
@@ -216,6 +235,11 @@ Result<std::unique_ptr<Source>> Source::open(int fd) {
         return Result<std::unique_ptr<Source>>::fail(ErrorCode::IoError,
             "open: unknown decoder error (recovery: verify the file is a complete MotionCam recording)");
     }
+
+    // init() is done; every decoder read from here on seeks explicitly, so
+    // put the shared offset back where the caller left it.
+    if (callerOffset >= 0)
+        ::lseek(fd, callerOffset, SEEK_SET);
 
     Source* s = new Source();
     s->mImpl = impl.release();
