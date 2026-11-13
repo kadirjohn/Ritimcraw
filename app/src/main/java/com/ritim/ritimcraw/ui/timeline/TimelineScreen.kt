@@ -70,6 +70,7 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.MediaSource
+import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.data.audio.AudioProject
 import com.ritim.ritimcraw.data.audio.AudioStore
 import com.ritim.ritimcraw.data.audio.AudioTrackOps
@@ -86,6 +87,7 @@ import com.ritim.ritimcraw.data.timeline.TimelinePreviewPlan
 import com.ritim.ritimcraw.data.timeline.TimelineProject
 import com.ritim.ritimcraw.data.timeline.TimelineStore
 import com.ritim.ritimcraw.data.timeline.TrackKind
+import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
 import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
@@ -96,6 +98,7 @@ import com.ritim.ritimcraw.engine.SourcePathDecision
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
+import kotlin.math.roundToLong
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -158,11 +161,27 @@ import kotlinx.coroutines.isActive
  * re-derive the plan on the next committed project, so the preview
  * picks them up on the next walk.
  *
+ * AUDIO (commit c, the editor's transport verbatim): the CURRENT
+ * clip's original audio plays through [EditorAudioPlayback] when the
+ * source's AUD-02 link state is ATTACHED (AudioStore lookup — the
+ * same honesty gate the editor applies; DETACHED/REMOVED/
+ * LINKED_EDITED stay silent, and LINKED_EDITED's edited recording is
+ * not played here). One controller per SOURCE (the controller caches
+ * the source's whole-clip PCM, so a source switch needs a fresh one
+ * — the editor's remember(sourceId) rule). The start hands the
+ * controller the plan's CURRENT source frame in the source's own
+ * microseconds — the plan's answer already carries sourceRange.start,
+ * so a trimmed head skips its audio exactly as its video skips
+ * frames, and the source's own fps maps the frame to us (AUD-06's
+ * no-assumed-rate rule). Playback pauses it; a gap or a clip switch
+ * pauses and the next start re-primes at the new position (the
+ * editor's pause + re-prime rule); the plan's end stops it with the
+ * loop.
+ *
  * PREVIEW V1 LIMITS (documented honestly): the preview renders the
  * NEUTRAL grade (the timeline applies per-source grades at export;
- * grading preview in the timeline waits for a later milestone); only
- * the VIDEO track renders (audio playback is commit c); audio-less
- * sources play video-only.
+ * grading preview in the timeline waits for a later milestone);
+ * audio-less sources play video-only.
  *
  * ADD PATH (v1's honest insert): nothing else in the app seeds the
  * timeline section yet, so this screen owns the minimal insert — the
@@ -220,8 +239,9 @@ import kotlinx.coroutines.isActive
  *   reads it per source.
  * @param audio the app's AudioStore (the shared project.json's
  *   "audio" section) — the audio model's store; this screen's add
- *   path is its first consumer (later commits hang the AUD-03
- *   settings sheet off it).
+ *   path mints the linked pair, the AUD-03 settings sheet edits the
+ *   rows, and the AUDIO transport reads the link state (ATTACHED
+ *   plays; anything else stays silent).
  * @param sourceFdFor hands a FRESH read-only file descriptor for a
  *   source id (the editor's sourceFdProvider pattern) or -1 when the
  *   source cannot be opened — the preview session's only fd seam;
@@ -605,6 +625,21 @@ fun TimelineScreen(
                 .getOrNull()?.let { previewFrame = it }
         }
 
+        // ---- AUDIO TRANSPORT (commit c; see KDoc, AUDIO) ----
+        // ONE controller per SOURCE (the editor's remember(sourceId)
+        // rule): the controller caches the source's whole-clip PCM in
+        // its openAudio, so a source switch needs a FRESH controller —
+        // the old one is released exactly once on the key change (the
+        // controller's release is exactly-once by contract, and it
+        // subsumes a pause). A gap (null key) holds an unused
+        // controller — never started, released on the next change.
+        // Declared BEFORE the playback loop so the loop's end branch
+        // can stop it.
+        val audioController = remember(clipAt?.sourceId) { EditorAudioPlayback() }
+        DisposableEffect(clipAt?.sourceId) {
+            onDispose { audioController.release() }
+        }
+
         // PLAYBACK LOOP: the editor's PtsTimeline pacing verbatim, on
         // the plan's UNIFORM output grid (output frame i at i * 1e6 /
         // project fps — the exporter's own pts rule). Each tick picks
@@ -632,6 +667,10 @@ fun TimelineScreen(
                     lastRendered = idx
                 }
                 if (idx >= p.size - 1) {
+                    // The plan's end: the audio ends with the movie
+                    // (the editor's clip-end rule — stop drops the
+                    // still-queued tail after the last frame).
+                    audioController.stop()
                     isPlaying = false
                     playheadFrame = pl.playheadOf(p.size - 1)
                     renderPlanFrame(p.size - 1, PreviewTiers.PAUSED_MAX_DIM)
@@ -639,6 +678,57 @@ fun TimelineScreen(
                 }
                 val nextDelay = PtsTimeline.delayUntilNextUs(p, idx, elapsed)
                 if (nextDelay > 0) delay(nextDelay / 1000) else delay(1)
+            }
+        }
+
+        // Audio follows the play state (the editor's transport
+        // verbatim): started while the current clip is playing and its
+        // source's AUD-02 link state is ATTACHED (the same honesty gate
+        // the editor applies — DETACHED/REMOVED/LINKED_EDITED stay
+        // silent); paused otherwise (a gap, a clip switch, a pause, a
+        // non-ATTACHED link). Every start re-primes at the CURRENT
+        // position (AUD-08's first form: old queued samples dropped), so
+        // a clip switch or a gap crossing lands the audio at the new
+        // clip's own position on its next start.
+        //
+        // The POSITION the start resumes from is a provider, evaluated
+        // on the audio thread when the start is handled — the plan and
+        // playhead are read FRESH there, so a slow PCM open still
+        // begins in sync wherever the wall clock is at that moment.
+        // The provider answers through the plan: the CURRENT clip's
+        // SOURCE-ABSOLUTE frame (the plan's own answer — it already
+        // carries sourceRange.start, so a trimmed head skips its audio
+        // exactly as its video skips frames) mapped to the source's
+        // own microseconds by the source's own fps (AUD-06: never an
+        // assumed rate; the project's fps would drift the audio against
+        // the video the moment the two disagree). The rate is read once
+        // here on the main thread — the plan guarantees a Clip frame
+        // has one (UNKNOWN gates the span to black), so a null/zero
+        // read pauses: silence, never a guess.
+        //
+        // KEYED ON THE PLAN TOO: a committed edit re-derives the plan,
+        // and the re-fire re-primes the audio at the NEW plan's answer
+        // for the current playhead — what you hear always matches what
+        // you see (the same snapshot rule the video loop gets by
+        // keying on pts). The re-prime is the same operation a seek
+        // does; edits land while paused in practice.
+        LaunchedEffect(isPlaying, plan, clipAt?.clipId, clipAt?.sourceId, sessionSourceId, audioProject) {
+            val c = clipAt
+            val attached =
+                c != null && audioProject.link(c.sourceId).state == AudioLinkState.ATTACHED
+            val sourceFps = if (c == null) null else metadata.get(c.sourceId)?.fpsMeasured?.value
+            if (isPlaying && c != null && attached && sessionSourceId == c.sourceId &&
+                sourceFps != null && sourceFps > 0
+            ) {
+                audioController.start(session, { sourceFdFor(c.sourceId) }) {
+                    val pl = plan ?: return@start 0L
+                    val at = pl.atPlayhead(playheadFrame)
+                    val f = at.frame as? TimelinePreviewPlan.Frame.Clip ?: return@start 0L
+                    if (f.sourceId != c.sourceId) return@start 0L
+                    (f.sourceFrame * 1_000_000.0 / sourceFps).roundToLong()
+                }
+            } else {
+                audioController.pause()
             }
         }
 
