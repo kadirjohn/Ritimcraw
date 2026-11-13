@@ -111,6 +111,7 @@ import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.PreviewTiers.RenderClass
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
+import com.ritim.ritimcraw.ui.editor.PublishCrop
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
@@ -1804,7 +1805,8 @@ fun ClipEditorScreen(
                                 effectiveDims = RotationState.rotatedDims(
                                     f.width, f.height, currentManualRotationDeg,
                                 )
-                                // Crop + straighten (RAW-09): the
+                                // Crop + straighten (RAW-09), OFF the
+                                // main thread (audit fix 2026-11-13): the
                                 // published preview is the GRADED frame
                                 // cut to the crop rect, in the same
                                 // effective space the user sees. The
@@ -1812,27 +1814,35 @@ fun ClipEditorScreen(
                                 // CONTAINER-upright pixels and the
                                 // surface turns only the manual delta,
                                 // so the rect is mapped through the
-                                // delta first (CropState.applyToArgb
-                                // returns the input buffer untouched
-                                // while the crop group is neutral).
-                                val cropped = CropState.applyToArgb(
-                                    argb = f.argb,
-                                    width = f.width,
-                                    height = f.height,
-                                    rect = CropState.RectF(
-                                        req.grade.cropX,
-                                        req.grade.cropY,
-                                        req.grade.cropW,
-                                        req.grade.cropH,
-                                    ),
-                                    straightenDeg = req.grade.straightenDeg,
+                                // delta first. PublishCrop plans the
+                                // fold: the NEUTRAL crop group publishes
+                                // inline (the input buffer by
+                                // reference — no dispatcher hop, the
+                                // pre-fix fast path), an ACTIVE
+                                // crop/straighten resamples on
+                                // Dispatchers.Default and publishes
+                                // under the same generation guard. The
+                                // pump AWAITS the resample, so it stays
+                                // serial: one render, one crop, one
+                                // publish, in sequence order.
+                                when (val plan = PublishCrop.plan(
+                                    frame = f,
+                                    grade = req.grade,
                                     spaceDeltaDeg = currentManualRotationDeg,
-                                )
-                                frame = PreviewFrame(
-                                    width = cropped.width,
-                                    height = cropped.height,
-                                    argb = cropped.argb,
-                                )
+                                    sequence = req.sequence,
+                                    frameIndex = req.frameIndex,
+                                )) {
+                                    is PublishCrop.Plan.PublishInline -> frame = plan.frame
+                                    is PublishCrop.Plan.ResampleOffMain -> {
+                                        val cropped = PublishCrop.resample(plan.request)
+                                        if (PublishCrop.mayPublish(
+                                                plan.request.sequence, lastPublished,
+                                            )
+                                        ) {
+                                            frame = cropped
+                                        }
+                                    }
+                                }
                                 // The rendered frame's index, published
                                 // beside the frame (feature N6): the
                                 // scope compute's RAW fetch asks for
