@@ -81,6 +81,22 @@ thread_local int gLastErrorStage = kStageOpen;
 // away to a single relaxed load and never write a line. The per-render cost
 // when on is one snprintf + one __android_log_print — the plan is already
 // computed at that point, nothing is re-run for the log.
+//
+// Second tag, "ritim-stab-timing" (2026-11-13, the plan-cache round): one
+// line per RENDERED frame at EVERY tier —
+//
+//   ritim-stab-timing: frame=N planMs=..(cache-hit|computed) warpMs=.. totalMs=..
+//
+// planMs is the stabilizationFrameFor span (plan lookup or compute), warpMs
+// the warpFrame span, totalMs the two combined. Unlike "ritim-stab" (which
+// fires on settle-class renders only), this fires per render including
+// playback — it is the line the owner's ON/OFF playback comparison reads:
+// after the first frame of a key, planMs should collapse to a cache-hit
+// rounding to ~0 while warpMs stays the real per-frame warp cost. Same
+// gate (gStabDebugLog), same adb filter shape:
+//
+//   adb logcat -s ritim-stab-timing    (live)
+//   adb logcat -d -s ritim-stab-timing (dump after a run)
 std::atomic<bool> gStabDebugLog{false};
 
 // Export sub-stage timing (commit (d), owner request 2026-11-13): the
@@ -248,11 +264,18 @@ void resolveBinding(
 // resolved artifact set keyed by path — same path = reuse, different path =
 // reparse, null/empty path = no stabilization. The artifacts hold only the
 // path-invariant work (parsed ImuData, axis-remapped sample streams, VQF
-// orientation series); the clip-wide stabilization plan is recomputed per
-// render because it depends on the request's mode/strength/focal/trim and
-// the Source's frame timestamps — a plan cache keyed on that tuple would
-// churn on every slider step anyway.
+// orientation series); the clip-wide stabilization plan is NOT here — it
+// depends on the request's mode/strength/focal/trim, the warp buffer's dims
+// and the Source's frame timestamps, so it caches per HANDLE in the
+// session's Entry (StabPlanCache below), keyed on exactly that tuple. The
+// old per-render recompute was the choppy-playback bug: a slider step
+// recomputes once per step now, and playback between steps is all cache
+// hits — the churn argument that kept the plan out of a cache held only
+// for drags, never for playback. [path] is the parse identity that plan
+// key borrows: the artifacts cached under a path are the ones every plan
+// built from that same path used.
 struct GyroArtifacts {
+    std::string path;                        // parse identity (the plan cache key)
     rawedit::ImuData imu;                    // parsed log (logStartWallMs anchor)
     std::vector<rawedit::ImuSample> gyro;   // canonical camera frame
     std::vector<rawedit::ImuSample> accel;  // canonical camera frame
@@ -398,6 +421,61 @@ struct StabMeasure {
     bool anchored = false;       // the sync estimate carried real anchors
 };
 
+// The clip-wide stabilization plan cache (the choppy-playback fix,
+// 2026-11-13). The plan — sync estimate + the whole-clip frameTs walk +
+// computeStabilization — is a pure function of (request, buffer dims,
+// gyro artifacts, the Source's frame series), NONE of which changes frame
+// to frame during playback. The old code recomputed all of it per
+// DISPLAYED frame: a 576-frame clip paid 576 metadata JSON parses (the
+// frameTs walk) + a full clip plan per rendered frame — the measured
+// choppy-with-stab smoking gun (stabilization OFF never enters this
+// path, hence OFF = smooth).
+//
+// KEY (what invalidates): mode, strength, zoomLimit, focalMmOverride,
+// trimMs (the StabRequest — a slider step changes exactly one of these
+// and recomputes ONCE per step, not per frame), bufW/bufH (the pixel
+// focal derives from the buffer width, so a tier change is a different
+// plan), the gyro artifacts' PATH (the parse identity: a re-attached
+// log is a different series even at the same settings) and frameCount
+// (the frame series identity — a different clip is a different Source,
+// and the cache lives inside the clip's own Entry, so a reopen starts
+// empty by construction). Sync inputs need no key slots of their own:
+// the frame-0 anchors come from THIS Source and the wall-clock anchor
+// from the SAME gyro artifacts the path key already pins.
+//
+// VALUE: the StabilizationResult (per-frame homographies + zooms + the
+// angle list) plus the three plan-level measure numbers that are not
+// per-frame slices (anchored / maxAngleDeg / framesInside), so a cache
+// hit serves the per-frame tail AND the debug measure line identically
+// to a fresh compute. The frameTs vector and the sync model are NOT
+// stored: they are compute inputs only (the measure path's framesToImu
+// overlap is folded into framesInside at store time). ~56 KB for a
+// 576-frame clip — trivial next to the Entry's CFA caches.
+//
+// THREADING: the cache lives in the session's Entry, whose access
+// contract is the owner session's engine thread only (identical to
+// cachedCfa/ring/mafdByPairEnd above/below); the registry mutex guards
+// slot bookkeeping, not per-render reads. The export path opens its OWN
+// handle (a fresh Entry) so preview and export never share a cache.
+struct StabPlanCache {
+    // Key.
+    rawedit::StabilizationMode mode = rawedit::StabilizationMode::Smooth;
+    double strength = 0.5;
+    double zoomLimit = 1.3;
+    double focalMmOverride = 0.0;
+    double trimMs = 0.0;
+    int bufW = 0;
+    int bufH = 0;
+    std::string gyroPath;
+    size_t frameCount = 0;
+    // Value.
+    bool valid = false;
+    rawedit::StabilizationResult result{};
+    bool anchored = false;
+    double maxAngleDeg = 0.0;
+    size_t framesInside = 0;
+};
+
 // The clip-wide stabilization plan evaluated at [frameIndex], for the
 // buffer being warped ([bufW] x [bufH] — thumbnail dims on the preview
 // path, full dims on the export path; the homography scales with the
@@ -410,92 +488,167 @@ struct StabMeasure {
 // unanchored one with no trim stays honestly Unsynced — offsetKnown false,
 // computeStabilization returns Unsynced identity frames and the caller
 // skips the warp. Never a fabricated zero offset.
+// [planCache], when non-null, is the handle's Entry cache (see
+// StabPlanCache): a key match serves the plan without the frameTs walk or
+// computeStabilization; a mismatch recomputes ONCE and stores. Null keeps
+// the old always-compute behavior for callers without an Entry.
 // [measure], when non-null, receives the debug line's numbers (Fix 4 of the
 // 2026-11-12 audit): status/zooms/overlap as computed for THIS render —
 // no extra work, the plan is already in hand.
+// [fromCache], when non-null, reports whether the plan came from the cache
+// (the debug timing line's cache-hit|computed split).
 void stabilizationFrameFor(const StabRequest& req,
                           rawedit::Source& src,
                           int frameIndex,
                           int bufW, int bufH,
                           const GyroArtifacts* gyro,
                           rawedit::StabilizationFrame* out,
-                          StabMeasure* measure = nullptr) {
+                          StabMeasure* measure = nullptr,
+                          StabPlanCache* planCache = nullptr,
+                          bool* fromCache = nullptr) {
     *out = rawedit::StabilizationFrame(); // identity + Off until proven
     if (measure != nullptr) measure->anchored = false;
+    if (fromCache != nullptr) *fromCache = false;
     if (gyro == nullptr || bufW <= 0 || bufH <= 0) return;
 
-    // Sync: frame-0 anchors from the Source itself.
-    const rawedit::FrameInfo first = src.frameInfo(0);
-    const rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
-        first.recvdMs, gyro->imu.logStartWallMs, first.ptsUs * 1000);
-    rawedit::SyncModel model = est.model;
-    bool offsetKnown = false;
-    if (est.isAnchored()) {
-        offsetKnown = true;
-        if (req.trimMs != 0.0) {
-            model = rawedit::trimOffsetMs(est, req.trimMs).model;
+    // Cache lookup: the key is the full request + buffer + gyro identity
+    // (StabPlanCache above). A hit skips the sync estimate, the frameTs
+    // walk AND computeStabilization — everything up to the per-frame
+    // tail, which is the only part that varies frame to frame.
+    const bool hit = planCache != nullptr && planCache->valid &&
+        planCache->mode == req.mode &&
+        planCache->strength == req.strength &&
+        planCache->zoomLimit == req.zoomLimit &&
+        planCache->focalMmOverride == req.focalMmOverride &&
+        planCache->trimMs == req.trimMs &&
+        planCache->bufW == bufW && planCache->bufH == bufH &&
+        planCache->gyroPath == gyro->path &&
+        planCache->frameCount == src.frameCount();
+    if (hit && fromCache != nullptr) *fromCache = true;
+
+    // The plan in hand, whichever way it was obtained. A local keeps the
+    // no-cache (legacy) path alive; with a cache the pointer pins the
+    // Entry's copy so a store below is move-free.
+    rawedit::StabilizationResult local;
+    const rawedit::StabilizationResult* plan = nullptr;
+    bool anchored = false;
+    double maxAngleDeg = 0.0;
+    size_t framesInside = 0;
+
+    if (hit) {
+        plan = &planCache->result;
+        anchored = planCache->anchored;
+        maxAngleDeg = planCache->maxAngleDeg;
+        framesInside = planCache->framesInside;
+    } else {
+        // Sync: frame-0 anchors from the Source itself.
+        const rawedit::FrameInfo first = src.frameInfo(0);
+        const rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
+            first.recvdMs, gyro->imu.logStartWallMs, first.ptsUs * 1000);
+        rawedit::SyncModel model = est.model;
+        bool offsetKnown = false;
+        if (est.isAnchored()) {
+            offsetKnown = true;
+            if (req.trimMs != 0.0) {
+                model = rawedit::trimOffsetMs(est, req.trimMs).model;
+            }
+        } else if (req.trimMs != 0.0) {
+            offsetKnown = true;
+            model = rawedit::manualOffsetMs(req.trimMs).model;
         }
-    } else if (req.trimMs != 0.0) {
-        offsetKnown = true;
-        model = rawedit::manualOffsetMs(req.trimMs).model;
-    }
-    // else: unanchored + no trim -> offsetKnown stays false (Unsynced).
-    if (measure != nullptr) measure->anchored = est.isAnchored();
+        // else: unanchored + no trim -> offsetKnown stays false (Unsynced).
+        anchored = est.isAnchored();
 
-    // Focal: the grade's override wins; 0 = the container's 35mm-equiv
-    // value. focalLengthPxFromEquivalent is the one documented, FLAGGED
-    // fallback (f_px = width * mm / 36) — assumedFocal below wires the
-    // IntrinsicsAssumed status so the assumption is visible, never silent.
-    const double focalMm = req.focalMmOverride > 0.0
-        ? req.focalMmOverride
-        : src.rawMeta().focalLengthMm;
-    const double focalPx = rawedit::focalLengthPxFromEquivalent(focalMm, bufW);
+        // Focal: the grade's override wins; 0 = the container's 35mm-equiv
+        // value. focalLengthPxFromEquivalent is the one documented,
+        // FLAGGED fallback (f_px = width * mm / 36) — assumedFocal below
+        // wires the IntrinsicsAssumed status so the assumption is visible,
+        // never silent.
+        const double focalMm = req.focalMmOverride > 0.0
+            ? req.focalMmOverride
+            : src.rawMeta().focalLengthMm;
+        const double focalPx = rawedit::focalLengthPxFromEquivalent(
+            focalMm, bufW);
 
-    rawedit::StabilizationParams params;
-    params.mode = req.mode;
-    params.strength = req.strength;
-    params.zoomLimit = req.zoomLimit;
-    params.focalLengthPx = focalPx;
-    params.width = bufW;
-    params.height = bufH;
-    // principalPoint keeps the {0,0} sentinel -> the buffer center; the
-    // warp's cx/cy must match that resolution exactly (width/2, height/2).
+        rawedit::StabilizationParams params;
+        params.mode = req.mode;
+        params.strength = req.strength;
+        params.zoomLimit = req.zoomLimit;
+        params.focalLengthPx = focalPx;
+        params.width = bufW;
+        params.height = bufH;
+        // principalPoint keeps the {0,0} sentinel -> the buffer center;
+        // the warp's cx/cy must match that resolution exactly
+        // (width/2, height/2).
 
-    // Frame timestamps: the develop's frame clock (ptsUs) for the whole
-    // clip — frameInfo is metadata-only, so this walk adds no decode.
-    const size_t frames = src.frameCount();
-    std::vector<int64_t> frameTs(frames);
-    for (size_t i = 0; i < frames; ++i) {
-        frameTs[i] = src.frameInfo(i).ptsUs * 1000;
-    }
-
-    const rawedit::StabilizationResult result = rawedit::computeStabilization(
-        gyro->orientation.series, model, frameTs,
-        gyro->orientation.gravityCamera, offsetKnown, /*assumedFocal=*/true,
-        params);
-    if (frameIndex >= 0 &&
-        static_cast<size_t>(frameIndex) < result.frames.size()) {
-        *out = result.frames[static_cast<size_t>(frameIndex)];
-    }
-    if (measure != nullptr) {
-        measure->status = out->status;
-        measure->requiredZoom = result.requiredZoom;
-        measure->appliedZoom = result.appliedZoom;
-        measure->framesTotal = result.frames.size();
-        if (static_cast<size_t>(frameIndex) < result.relativeAngleDeg.size()) {
-            measure->frameAngleDeg = result.relativeAngleDeg[
-                static_cast<size_t>(std::max(0, frameIndex))];
+        // Frame timestamps: the develop's frame clock (ptsUs) for the
+        // whole clip — frameInfo is metadata-only, so this walk adds no
+        // decode, but each call parses the frame's metadata JSON, which
+        // is exactly why the plan is cached now (once per key change,
+        // not once per displayed frame).
+        const size_t frames = src.frameCount();
+        std::vector<int64_t> frameTs(frames);
+        for (size_t i = 0; i < frames; ++i) {
+            frameTs[i] = src.frameInfo(i).ptsUs * 1000;
         }
-        for (double a : result.relativeAngleDeg)
-            measure->maxAngleDeg = std::fmax(measure->maxAngleDeg, a);
+
+        rawedit::StabilizationResult computed = rawedit::computeStabilization(
+            gyro->orientation.series, model, frameTs,
+            gyro->orientation.gravityCamera, offsetKnown,
+            /*assumedFocal=*/true, params);
+        for (double a : computed.relativeAngleDeg)
+            maxAngleDeg = std::fmax(maxAngleDeg, a);
         // IMU overlap: the same framesToImu the plan's LowOverlap flags
         // come from — frames mapped inside the gyro span (samples in the
-        // window). Cheap: one pass over the already-mapped timestamps.
+        // window). Cheap: one pass over the already-mapped timestamps,
+        // and folded into the cache so a hit never re-walks it.
         const rawedit::FrameSync overlap = rawedit::framesToImu(
             frameTs, model, gyro->orientation.series.firstTs(),
             gyro->orientation.series.lastTs());
-        measure->framesInside = overlap.frameCount -
-                                overlap.beforeGyroStart - overlap.afterGyroEnd;
+        framesInside = overlap.frameCount - overlap.beforeGyroStart -
+                       overlap.afterGyroEnd;
+
+        if (planCache != nullptr) {
+            planCache->mode = req.mode;
+            planCache->strength = req.strength;
+            planCache->zoomLimit = req.zoomLimit;
+            planCache->focalMmOverride = req.focalMmOverride;
+            planCache->trimMs = req.trimMs;
+            planCache->bufW = bufW;
+            planCache->bufH = bufH;
+            planCache->gyroPath = gyro->path;
+            planCache->frameCount = frames;
+            planCache->valid = true;
+            planCache->anchored = anchored;
+            planCache->maxAngleDeg = maxAngleDeg;
+            planCache->framesInside = framesInside;
+            planCache->result = std::move(computed);
+            plan = &planCache->result;
+        } else {
+            local = std::move(computed);
+            plan = &local;
+        }
+    }
+
+    // Per-frame tail: identical for a cache hit and a fresh compute —
+    // the plan is in hand either way.
+    if (frameIndex >= 0 &&
+        static_cast<size_t>(frameIndex) < plan->frames.size()) {
+        *out = plan->frames[static_cast<size_t>(frameIndex)];
+    }
+    if (measure != nullptr) {
+        measure->status = out->status;
+        measure->requiredZoom = plan->requiredZoom;
+        measure->appliedZoom = plan->appliedZoom;
+        measure->framesTotal = plan->frames.size();
+        if (static_cast<size_t>(frameIndex) <
+            plan->relativeAngleDeg.size()) {
+            measure->frameAngleDeg = plan->relativeAngleDeg[
+                static_cast<size_t>(std::max(0, frameIndex))];
+        }
+        measure->maxAngleDeg = maxAngleDeg;
+        measure->framesInside = framesInside;
+        measure->anchored = anchored;
     }
 }
 
@@ -504,12 +657,16 @@ void stabilizationFrameFor(const StabRequest& req,
 // to a null gyroPath (the tier gate passes at every tier since the
 // 2026-11-12 audit fix), and a log that went missing since the attach
 // probe degrades the same way — so a default StabInput warps nothing and
-// costs nothing.
+// costs nothing. planCache is the handle's Entry plan cache (nullptr for
+// callers without an Entry — the legacy always-compute behavior): it is
+// resolved here, once per render, so applyStabilization's call into
+// stabilizationFrameFor carries it.
 struct StabInput {
     StabRequest request;
     rawedit::Source* source = nullptr;
     int frameIndex = -1;
     const GyroArtifacts* gyro = nullptr;
+    StabPlanCache* planCache = nullptr;
 };
 
 // resolveStabilization's result: ok=false is a .gcsv parse failure (error
@@ -526,12 +683,14 @@ struct StabResolution {
 // since the 2026-11-12 audit fix), so the ONLY decisions left here are
 // the cache lookup and the honest failure. strength arrives already in
 // rawedit's 0..1 scale (GradeK percent / 100 at the Kotlin boundary, the
-// lutStrength precedent).
+// lutStrength precedent). [planCache] is the handle's Entry cache,
+// forwarded into the input (nullptr = the legacy uncached path).
 StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
                                     jint stabMode, jfloat stabStrength,
                                     jfloat stabZoomLimit, jfloat stabFocalMm,
                                     jfloat stabTrimMs,
-                                    rawedit::Source* src, int frameIndex) {
+                                    rawedit::Source* src, int frameIndex,
+                                    StabPlanCache* planCache = nullptr) {
     StabResolution r;
     const GyroArtifacts* gyro = nullptr;
     if (!resolveGyro(env, gyroPath, &gyro)) {
@@ -544,6 +703,7 @@ StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
     r.input.source = src;
     r.input.frameIndex = frameIndex;
     r.input.gyro = gyro;
+    r.input.planCache = planCache;
     return r;
 }
 
@@ -558,22 +718,29 @@ StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
 // / Unsynced carry identity H and MUST NOT pay the warp cost).
 //
 // [maxDim] is the render's preview tier (0 = full res, the export path and
-// the full-res follow-up). It gates ONLY the debug measurement line (audit
-// fix 2026-11-12): the warp itself applies at EVERY tier (the Fix 1 rule),
-// but the log fires on settle-class renders only — the paused/settle tier
+// the full-res follow-up). It gates ONLY the "ritim-stab" line (audit fix
+// 2026-11-12): the warp itself applies at EVERY tier (the Fix 1 rule), but
+// that log fires on settle-class renders only — the paused/settle tier
 // (>= 1280) and full res — so a slider drag or playback does not spam one
-// line per frame. One line per settle render, tag "ritim-stab".
+// line per frame. One line per settle render, tag "ritim-stab". The
+// "ritim-stab-timing" line (2026-11-13) is NOT tier-gated: it fires per
+// rendered frame at every tier, because the owner's ON/OFF playback
+// comparison happens during playback, not at the settle.
 void applyStabilization(const StabInput& in, rawedit::ImageF& img,
                         int maxDim = 0) {
     if (in.gyro == nullptr || in.source == nullptr) return;
     if (img.w == 0 || img.h == 0) return;
-    const bool wantLog = gStabDebugLog.load(std::memory_order_relaxed) &&
-                         maxDim != 480 && maxDim != 720;
+    const bool debug = gStabDebugLog.load(std::memory_order_relaxed);
+    const bool wantLog = debug && maxDim != 480 && maxDim != 720;
     rawedit::StabilizationFrame frame;
     StabMeasure measure;
+    bool planFromCache = false;
+    const auto planStart = std::chrono::steady_clock::now();
     stabilizationFrameFor(in.request, *in.source, in.frameIndex,
                           static_cast<int>(img.w), static_cast<int>(img.h),
-                          in.gyro, &frame, wantLog ? &measure : nullptr);
+                          in.gyro, &frame, wantLog ? &measure : nullptr,
+                          in.planCache, debug ? &planFromCache : nullptr);
+    const auto planEnd = std::chrono::steady_clock::now();
     if (wantLog) {
         char line[256];
         // Skip reasons read honestly: off/no-imu/unsynced say WHY nothing
@@ -601,13 +768,40 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
         }
         __android_log_print(ANDROID_LOG_INFO, "ritim-stab", "%s", line);
     }
-    if (!stabWarps(frame)) return;
+    if (!stabWarps(frame)) {
+        if (debug) {
+            // A refusing frame (Off / NoImu / Unsynced) still pays the plan
+            // span; the warp is what it skipped. Same line shape as the
+            // applied case — a skip simply reads warpMs=0.000 — so the
+            // owner's parser sees one uniform format per rendered frame.
+            const double planMs = std::chrono::duration<double, std::milli>(
+                planEnd - planStart).count();
+            __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
+                "frame=%d planMs=%.3f(%s) warpMs=0.000 totalMs=%.3f",
+                in.frameIndex, planMs,
+                planFromCache ? "cache-hit" : "computed", planMs);
+        }
+        return;
+    }
     // cx/cy resolve the principalPoint sentinel exactly the way the core
     // plan resolves it ({0,0} sentinel -> the buffer center): the warp and
     // the plan must agree or the crop drifts off the intended center.
     const double cx = static_cast<double>(img.w) / 2.0;
     const double cy = static_cast<double>(img.h) / 2.0;
+    const auto warpStart = std::chrono::steady_clock::now();
     img = rawedit::warpFrame(img, frame.h, frame.zoom, cx, cy);
+    const auto warpEnd = std::chrono::steady_clock::now();
+    if (debug) {
+        const double planMs = std::chrono::duration<double, std::milli>(
+            planEnd - planStart).count();
+        const double warpMs = std::chrono::duration<double, std::milli>(
+            warpEnd - warpStart).count();
+        __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
+            "frame=%d planMs=%.3f(%s) warpMs=%.3f totalMs=%.3f",
+            in.frameIndex, planMs,
+            planFromCache ? "cache-hit" : "computed", warpMs,
+            planMs + warpMs);
+    }
 }
 
 // Handle registry: a small fixed table keeps the bridge simple and avoids
@@ -676,6 +870,16 @@ struct Entry {
     int mergedFrameIndex = -1;
     float mergedStrength = -1.0f;
     CfaBuffer mergedCfa;
+    // Stabilization plan cache (the choppy-playback fix, 2026-11-13):
+    // the clip-wide plan — sync estimate + frameTs walk +
+    // computeStabilization — is a pure function of the request + buffer
+    // dims + gyro artifacts + this Source's frame series, so it computes
+    // ONCE per key change instead of once per displayed frame (the old
+    // per-render recompute was the choppy-with-stab bug; a 576-frame clip
+    // paid 576 metadata JSON parses per frame). Same threading contract
+    // as the caches above: owner session's engine thread only. See
+    // StabPlanCache for the key/invalidation rules.
+    StabPlanCache stabPlan;
 };
 
 Entry gEntries[kMaxSources];
@@ -695,6 +899,7 @@ void clearEntryCaches(Entry& e) {
     e.mergedFrameIndex = -1;
     e.mergedStrength = -1.0f;
     e.mergedCfa = nullptr;
+    e.stabPlan = StabPlanCache{}; // a reopened handle starts planless
 }
 
 int64_t insertSource(std::unique_ptr<rawedit::Source> src) {
@@ -1323,8 +1528,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeLastError(JNIEnv* env, jclass
 
 // Debug measurement logging toggle (audit fix 2026-11-12): NativeSource's
 // companion init calls this once at library load with BuildConfig.DEBUG, so
-// the "ritim-stab" per-settle-render line exists only in debug builds —
-// release keeps the flag's default false and stays silent.
+// the "ritim-stab" per-settle-render line and the "ritim-stab-timing"
+// per-render timing line exist only in debug builds — release keeps the
+// flag's default false and stays silent.
 JNIEXPORT void JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetStabDebugLog(
         JNIEnv*, jclass, jboolean enabled) {
@@ -1452,18 +1658,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
     try {
         // 0b. Resolve the gyro stabilization input (gyro Phase 5): a .gcsv
         //     parse failure fails the render; a null path (off / tier skip /
-        //     no attachment — the Kotlin gate) warps nothing.
+        //     no attachment — the Kotlin gate) warps nothing. The handle's
+        //     Entry carries the plan cache (the 2026-11-13 perf fix): the
+        //     clip-wide plan computes once per key change, not per frame.
+        Entry& e = gEntries[handle - 1];
         const StabResolution stab =
             resolveStabilization(env, gyroPath, stabMode, stabStrength,
                                  stabZoomLimit, stabFocalMm, stabTrimMs,
-                                 s, frameIndex);
+                                 s, frameIndex, &e.stabPlan);
         if (!stab.ok) return nullptr;
 
         // 1. Frame read — through the ring, so with temporal NR on the
         //    center joins its neighbors in one LRU (the merge reads them
         //    all back from it; with NR off the ring is cleared by
         //    temporalMergedCfa and this was a plain decode).
-        Entry& e = gEntries[handle - 1];
         const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
         if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
@@ -1560,11 +1768,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
     try {
         // 0b. Resolve the gyro stabilization input (gyro Phase 5): a .gcsv
         //     parse failure fails the render; a null path (off / tier skip /
-        //     no attachment — the Kotlin gate) warps nothing.
+        //     no attachment — the Kotlin gate) warps nothing. The handle's
+        //     Entry carries the plan cache (the 2026-11-13 perf fix).
         const StabResolution stab =
             resolveStabilization(env, gyroPath, stabMode, stabStrength,
                                  stabZoomLimit, stabFocalMm, stabTrimMs,
-                                 s, frameIndex);
+                                 s, frameIndex, &e.stabPlan);
         if (!stab.ok) return nullptr;
 
         // 1. Decode only when the requested frame is not the cached one —
@@ -2249,10 +2458,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         //     is on (export is NEVER tier-gated — the temporal NR
         //     precedent: export always applies at full quality); a .gcsv
         //     parse failure fails the frame; a null path warps nothing.
+        //     The export handle's OWN Entry carries its plan cache (the
+        //     2026-11-13 perf fix): sequential export frames hit it after
+        //     the first frame.
+        Entry& e = gEntries[handle - 1];
         const StabResolution stab =
             resolveStabilization(env, gyroPath, stabMode, stabStrength,
                                  stabZoomLimit, stabFocalMm, stabTrimMs,
-                                 s, frameIndex);
+                                 s, frameIndex, &e.stabPlan);
         if (!stab.ok) return nullptr;
 
         // Sub-stage timing (commit (d)): one steady_clock read at each of
@@ -2270,7 +2483,6 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
 
         // 1. Frame read — through the ring, like the preview paths (sequential
         //    export amortizes to ~1 decode per frame with temporal NR on).
-        Entry& e = gEntries[handle - 1];
         const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
         if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
@@ -2446,12 +2658,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabZoomProbe(
     // The full plan evaluation the renders run, frame 0, measure filled:
     // requiredZoom/appliedZoom are clip-wide (the static crop is one
     // number over the whole q_rel list), status is frame 0's own verdict.
+    // The handle's Entry plan cache rides along (the 2026-11-13 perf
+    // fix): a probe at the same request + recorded dims as a previous
+    // probe or render SERVES from it, and a first probe WARMS it for the
+    // renders that follow — the probe is the settle-time plan builder.
     const StabRequest req = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
                                           stabFocalMm, stabTrimMs);
     rawedit::StabilizationFrame frame;
     StabMeasure measure;
     stabilizationFrameFor(req, *s, /*frameIndex=*/0, bufW, bufH, gyro,
-                          &frame, &measure);
+                          &frame, &measure, &gEntries[handle - 1].stabPlan);
 
     const double out[3] = {
         measure.requiredZoom,
