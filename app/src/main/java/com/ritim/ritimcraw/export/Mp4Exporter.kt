@@ -136,6 +136,20 @@ interface Mp4Session {
     /** ptsUs of frame [frameIndex] (-1 on a bad handle). */
     fun framePts(handle: Long, frameIndex: Int): Long
 
+    /**
+     * The six native sub-stage times of the frame [renderFrame] just
+     * produced, in milliseconds, in the fixed order
+     * [decode, temporal, develop, warp, oetf_pack, jni_copy] — or null
+     * when there is nothing to report (a fake, a non-NDK build, or a
+     * release build's gate off). Commit (d): the ExportStageTiming sample
+     * lines use this to split "native=..ms" into its internals. Default
+     * null so every JVM fake stays untouched — only NativeMp4Session
+     * reports. The pipeline reads this only after a SUCCESSFUL renderFrame:
+     * a failed frame leaves the previous frame's slots in place, which
+     * nobody reads.
+     */
+    fun lastFrameSubStagesMs(): DoubleArray? = null
+
     /** [sampleRate, channels], or null/0-0 when the clip has no audio. */
     fun audioInfo(handle: Long): IntArray?
 
@@ -239,6 +253,17 @@ internal object NativeMp4Session : Mp4Session {
     override fun framePts(handle: Long, frameIndex: Int): Long =
         NativeSource.jniFramePtsUs(handle, frameIndex)
 
+    override fun lastFrameSubStagesMs(): DoubleArray? {
+        // The gate is off in release builds (null from the bridge), and the
+        // pipeline only calls this after a successful renderFrame — the
+        // slots then hold THIS frame's numbers (thread-local, same thread).
+        return if (NativeSource.nativeAvailable) {
+            NativeSource.jniExportFrameTimingMs()
+        } else {
+            null
+        }
+    }
+
     override fun audioInfo(handle: Long): IntArray? = NativeSource.jniAudioInfo(handle)
 
     override fun readAudio(handle: Long): ShortArray? = NativeSource.jniReadAudio(handle)
@@ -252,6 +277,60 @@ internal object NativeMp4Session : Mp4Session {
     override fun stage(): Int = NativeSource.jniPreviewErrorStage()
 
     override fun detail(): String? = NativeSource.previewLastError()
+}
+
+/**
+ * The production RGB888 -> I420 dispatch (the [RgbToI420] seam's default):
+ * the native twin first (the byte-exact converter in core/src/Yuv.cpp,
+ * reached through NativeSource.jniRgbToI420), the Kotlin
+ * [YuvConverter.toI420] as the fallback. The fallback keeps the export
+ * working wherever the native entry refuses — a non-NDK build
+ * (nativeAvailable false), a malformed frame (the native entry's
+ * null-return with the error state set; the Kotlin require() then fails
+ * the export the same way it always did, never a silent wrong frame).
+ *
+ * JVM tests never touch this object: the pipeline's default is injectable
+ * (ExportPipeline's converter parameter), and the fakes stay pure.
+ */
+object NativeRgbToI420 : RgbToI420 {
+
+    private const val MATRIX_BT709 = 1
+
+    override fun convert(rgb: ByteArray, width: Int, height: Int): RgbToI420Result {
+        if (NativeSource.nativeAvailable) {
+            val native = NativeSource.jniRgbToI420(rgb, width, height, MATRIX_BT709)
+            if (native != null) return RgbToI420Result(native, fromNative = true)
+            // A null return with the library loaded is a malformed request
+            // (empty frame / short buffer): fall through to Kotlin, whose
+            // require() turns it into the export's existing failure mode.
+        }
+        return RgbToI420Result(YuvConverter.toI420(rgb, width, height), fromNative = false)
+    }
+
+    /**
+     * The direct-to-plane form (commit (c)): the native twin writes the
+     * encoder Image's plane buffers directly — no packed intermediate,
+     * no second copy. Null (packed fallback) whenever the native entry
+     * cannot: library unavailable, non-direct buffers, malformed frame,
+     * or a stride geometry it refuses. The fallback produces the SAME
+     * bytes (the seam's contract), so a refusal never changes the
+     * encoded output.
+     */
+    override fun convertToPlanes(
+        rgb: ByteArray,
+        width: Int,
+        height: Int,
+        planes: YuvFramePlanes,
+    ): RgbToI420PlanesResult? {
+        if (!NativeSource.nativeAvailable) return null // packed fallback
+        val ok = NativeSource.jniRgbToI420Planes(
+            rgb, width, height, MATRIX_BT709,
+            planes.y, planes.yStride,
+            planes.u, planes.uStride, planes.uPixelStride,
+            planes.v, planes.vStride, planes.vPixelStride,
+        )
+        return if (ok) RgbToI420PlanesResult(fromNative = true) else null
+    }
 }
 
 /**
@@ -282,6 +361,44 @@ interface Mp4MediaWriter {
 
     /** Feeds one I420 frame (YuvConverter.toI420 layout) at [ptsUs]. */
     fun writeVideoFrame(ptsUs: Long, i420: ByteArray)
+
+    /**
+     * The direct-to-plane offer (commit (c)): dequeues the encoder input
+     * buffer and returns its plane geometry so the conversion can write
+     * the encoder's memory directly. Null (the default) = this writer
+     * only speaks packed frames — the pipeline then uses
+     * [writeVideoFrame] exactly as before, and every JVM fake keeps its
+     * existing behavior untouched. A non-null return MUST be followed by
+     * exactly one [queueVideoFrame] (success) or [abandonVideoFrame]
+     * (conversion refused the planes) for the SAME frame — the acquired
+     * input buffer is held until then.
+     */
+    fun acquireVideoFramePlanes(): YuvFramePlanes? = null
+
+    /**
+     * Queues the frame whose planes [acquireVideoFramePlanes] handed
+     * over (the conversion wrote them directly). The size is computed
+     * from the same plane strides (imageInputSize) — the codec does NOT
+     * infer it from the Image. The default throws: a writer that offers
+     * planes must implement the acquire/queue/abandon triple.
+     */
+    fun queueVideoFrame(ptsUs: Long) {
+        throw IllegalStateException(
+            Mp4ExportErrors.kotlinMessage(
+                Mp4ExportErrors.STAGE_ENCODE,
+                "the writer offered video frame planes but cannot queue them",
+                "retry the export",
+            )
+        )
+    }
+
+    /**
+     * Returns the held input buffer without queueing (the conversion
+     * refused the planes — the packed fallback takes over). The default
+     * no-op matches [acquireVideoFramePlanes]'s null default: a writer
+     * that never offers planes never has anything to abandon.
+     */
+    fun abandonVideoFrame() {}
 
     /** Feeds one block of interleaved PCM frames at [ptsUs]. */
     fun writeAudioBlock(ptsUs: Long, pcm: ShortArray)
@@ -409,13 +526,19 @@ fun imageInputSize(
  * BOUNDARY HONESTY: the "native" stage times ONE JNI call,
  * Mp4Session.renderFrame. Inside that single call the bridge runs the
  * MCRAW decode (+ temporal NR when on) + the 24-stage developCpu + the
- * gyro warp (when on) + the Rec.709 OETF + the RGB888 pack — and
- * jni_bridge.cpp is outside this mission's file boundary, so those
- * sub-stages are NOT separable here. The call is timed as one number and
- * the boundary is documented, never guessed. The separable stages are
- * the Kotlin ones (rotate / crop / yuv) and the writer internals
- * (encoder input wait / plane copy / drain-mux, reported by the writer
- * through [markWriterStages]).
+ * gyro warp (when on) + the Rec.709 OETF + the RGB888 pack. Commit (d)
+ * made those sub-stages separable: the bridge times its six internals
+ * into thread-local slots (gated by the same BuildConfig.DEBUG flag as
+ * the stab debug log) and the pipeline reads them through
+ * [Mp4Session.lastFrameSubStagesMs] right after the call, handing them
+ * to [markNativeSubStages]. When the slots exist (a debug build with the
+ * native library), the native pair renders as
+ * "native=472.3ms(decode=..ms temporal=..ms develop=..ms warp=..ms
+ * oetf=..ms copy=..ms)"; when they do not (a JVM fake, a release build,
+ * a non-NDK build), the line is exactly what it always was. The other
+ * stages are the Kotlin ones (rotate / crop / yuv) and the writer
+ * internals (encoder input wait / plane copy / drain-mux, reported by
+ * the writer through [markWriterStages]).
  *
  * OUTPUT — all through the injected sink, one line each (never one line
  * per frame):
@@ -436,6 +559,7 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
     /** Clears the per-frame slots at the top of a video frame iteration. */
     fun startFrame() {
         for (i in frameNanos.indices) frameNanos[i] = 0
+        nativeSubStagesMs = null
         frameWallStartNanos = System.nanoTime()
     }
 
@@ -456,6 +580,22 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         frameNanos[STAGE_ENC_WAIT] += encWaitNanos
         frameNanos[STAGE_PLANE_COPY] += planeCopyNanos
         frameNanos[STAGE_DRAIN_MUX] += drainNanos
+    }
+
+    /**
+     * The native call's own sub-stage split, read through
+     * [Mp4Session.lastFrameSubStagesMs] right after a successful
+     * renderFrame (commit (d)). Null / wrong length = no data (a fake,
+     * release build, or non-NDK build): the frame's native pair renders
+     * without the parenthetical, exactly as before. The slots are
+     * milliseconds — the native side already did the conversion.
+     */
+    fun markNativeSubStages(subStagesMs: DoubleArray?) {
+        nativeSubStagesMs = if (subStagesMs != null && subStagesMs.size == SUB_STAGE_COUNT) {
+            subStagesMs.copyOf()
+        } else {
+            null
+        }
     }
 
     /** Closes one video frame: accumulates, emits a sample line at checkpoints. */
@@ -506,6 +646,8 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
     private val sums = LongArray(STAGE_COUNT)
     private var frames = 0
     private var frameWallStartNanos = 0L
+    /** The native call's sub-stage split for THIS frame, or null (see [markNativeSubStages]). */
+    private var nativeSubStagesMs: DoubleArray? = null
 
     private fun isSampleFrame(f: Int): Boolean =
         f == SAMPLE_FRAMES[0] || f == SAMPLE_FRAMES[1] ||
@@ -517,7 +659,31 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         for (s in 0 until STAGE_COUNT) {
             if (s > 0) sb.append(' ')
             sb.append(stageName(s)).append('=').append(ms(nanos(s))).append("ms")
+            if (s == STAGE_NATIVE) sb.append(nativeSubStagesSuffix())
         }
+        return sb.toString()
+    }
+
+    /**
+     * The native pair's parenthetical — "(decode=..ms temporal=..ms
+     * develop=..ms warp=..ms oetf=..ms copy=..ms)" — or empty when this
+     * frame has no sub-stage data (see [markNativeSubStages]). Per-frame
+     * values only: the averages line stays the plain stage pairs, because
+     * a sum over frames where some frames report and others do not is a
+     * guess, not a measurement.
+     */
+    private fun nativeSubStagesSuffix(): String {
+        val t = nativeSubStagesMs ?: return ""
+        val sb = StringBuilder(64)
+        sb.append('(')
+        for (i in 0 until SUB_STAGE_COUNT) {
+            if (i > 0) sb.append(' ')
+            // The slots are already milliseconds (the native side did the
+            // conversion) — format directly, never through ms().
+            sb.append(subStageName(i)).append('=')
+                .append(String.format(Locale.ROOT, "%.1f", t[i])).append("ms")
+        }
+        sb.append(')')
         return sb.toString()
     }
 
@@ -538,7 +704,7 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         const val STAGE_ROTATE = 1
         /** Kotlin crop/straighten (CropState.applyToRgb). */
         const val STAGE_CROP = 2
-        /** Kotlin I420 conversion (YuvConverter.toI420). */
+        /** RGB888 -> I420 conversion (the RgbToI420 seam: native twin, Kotlin fallback). */
         const val STAGE_YUV = 3
         /** Writer: the dequeueInputBuffer wait for a free encoder input buffer. */
         const val STAGE_ENC_WAIT = 4
@@ -547,6 +713,27 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         /** Writer: drain — encoded packets out of the codec into the muxer. */
         const val STAGE_DRAIN_MUX = 6
         const val STAGE_COUNT = 7
+
+        /**
+         * The native call's internal split (commit (d)) — the bridge's own
+         * sub-stage slots, in the FIXED order both sides render/read:
+         * decode (MCRAW decode + frame info), temporal (temporal NR merge),
+         * develop (the 24-stage developCpu), warp (gyro stabilization),
+         * oetf (Rec.709 OETF + RGB888 pack), copy (the JNI ByteArray
+         * copy). A debug build with the native library reports all six;
+         * anything else reports null and the sample line stays plain.
+         */
+        const val SUB_STAGE_COUNT = 6
+
+        fun subStageName(i: Int): String = when (i) {
+            0 -> "decode"
+            1 -> "temporal"
+            2 -> "develop"
+            3 -> "warp"
+            4 -> "oetf"
+            5 -> "copy"
+            else -> "sub$i"
+        }
 
         /** Per-frame sample checkpoints: the first frame + steady-state points. */
         val SAMPLE_FRAMES = intArrayOf(1, 30, 60, 90)
@@ -605,6 +792,14 @@ class ExportPipeline(
      * are identical (see ExportStageTiming).
      */
     private val stageLog: ((String) -> Unit)? = null,
+    /**
+     * The RGB888 -> I420 conversion seam (the native YUV step): the
+     * default dispatches to the byte-exact native twin with the Kotlin
+     * YuvConverter.toI420 as fallback (see [NativeRgbToI420]); JVM tests
+     * inject a pure fake. The conversion's BYTES are identical either
+     * way — that is the seam's whole contract (core/src/Yuv.cpp).
+     */
+    private val converter: RgbToI420 = NativeRgbToI420,
 ) {
 
     /**
@@ -738,6 +933,13 @@ class ExportPipeline(
                                 )
                             )
                         timing?.mark(ExportStageTiming.STAGE_NATIVE, System.nanoTime() - t0)
+                        // Commit (d): the bridge timed its six internals
+                        // into thread-local slots during that call (debug
+                        // builds only) — read them NOW, on this same
+                        // thread, before anything else can overwrite them.
+                        // Null (fake / release / non-NDK) renders the
+                        // sample line exactly as before.
+                        timing?.markNativeSubStages(session.lastFrameSubStagesMs())
                         // Section 5: renderFrame returns NOT-rotated RGB888;
                         // rotating by the EFFECTIVE orientation makes the
                         // pixels themselves upright (the encoder wants
@@ -763,12 +965,50 @@ class ExportPipeline(
                         )
                         timing?.mark(ExportStageTiming.STAGE_CROP, System.nanoTime() - t2)
                         val t3 = System.nanoTime()
-                        val i420 = YuvConverter.toI420(cropped.rgb, cropped.width, cropped.height)
-                        timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3)
+                        // Direct-to-plane first (commit (c)): when the writer
+                        // offers the encoder Image's plane buffers, the
+                        // conversion writes them directly — no packed
+                        // intermediate, no second copy. Any refusal falls
+                        // back to the packed path (writeVideoFrame), which
+                        // produces the same bytes through the writer's
+                        // copy. The dual-run rides whichever path ran.
+                        val planes = writer.acquireVideoFramePlanes()
+                        if (planes != null) {
+                            val tAcquire = System.nanoTime() - t3
+                            val wrote = converter.convertToPlanes(cropped.rgb, cropped.width, cropped.height, planes)
+                            if (wrote != null) {
+                                // The debug dual-run reads the encoder memory
+                                // back and compares against the Kotlin oracle
+                                // — proving the stride mapping too.
+                                if (stageLog != null && RgbToI420Verify.shouldDualRun(nativeFramesSeen, wrote.fromNative)) {
+                                    val kt = YuvConverter.toI420(cropped.rgb, cropped.width, cropped.height)
+                                    val got = YuvPlaneIo.readPlanesToPacked(cropped.width, cropped.height, planes)
+                                    RgbToI420Verify.line(cropped.width, cropped.height, got, kt)?.let { stageLog(it) }
+                                }
+                                if (wrote.fromNative) nativeFramesSeen++
+                                // The yuv slot covers ONLY the conversion — the
+                                // writer's own stages (enc_wait / plane_copy /
+                                // drain) are marked by the writer at queue
+                                // time, so the slots stay disjoint.
+                                timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3 - tAcquire)
+                                writer.queueVideoFrame(s.ptsUs)
+                            } else {
+                                writer.abandonVideoFrame()
+                                // Packed fallback: identical bytes, and the
+                                // same dual-run/counter bookkeeping.
+                                val converted = convertFrame(cropped.rgb, cropped.width, cropped.height)
+                                timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3 - tAcquire)
+                                writer.writeVideoFrame(s.ptsUs, converted.i420)
+                            }
+                        } else {
+                            val converted = convertFrame(cropped.rgb, cropped.width, cropped.height)
+                            timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3)
+                            writer.writeVideoFrame(s.ptsUs, converted.i420)
+                        }
                         // The writer's own stages (enc_wait / plane_copy /
-                        // drain_mux) are marked INTO this timing object while
-                        // writeVideoFrame runs, before endFrame reads them.
-                        writer.writeVideoFrame(s.ptsUs, i420)
+                        // drain_mux) are marked INTO this timing object by
+                        // whichever writer call just ran (writeVideoFrame or
+                        // queueVideoFrame), before endFrame reads them.
                         timing?.endFrame()
                         done++
                         onProgress?.invoke(done, videoPts.size)
@@ -802,6 +1042,28 @@ class ExportPipeline(
             writer.release()
         }
     }
+
+    /**
+     * One frame's conversion through the seam, plus the debug dual-run
+     * (the byte-exactness affordance): the FIRST frame produced by the
+     * native path of an export is converted by Kotlin too, and the
+     * comparison lands in the stage-timing sink (the app wires it to
+     * Log.i under "ritim-export", DEBUG builds only — a null stageLog
+     * means the dual-run never runs, so release exports pay nothing).
+     * The native bytes always win: a mismatch is logged, never applied.
+     */
+    private fun convertFrame(rgb: ByteArray, width: Int, height: Int): RgbToI420Result {
+        val traced = converter.convert(rgb, width, height)
+        if (stageLog != null && RgbToI420Verify.shouldDualRun(nativeFramesSeen, traced.fromNative)) {
+            val kt = YuvConverter.toI420(rgb, width, height)
+            RgbToI420Verify.line(width, height, traced.i420, kt)?.let { stageLog(it) }
+        }
+        if (traced.fromNative) nativeFramesSeen++
+        return traced
+    }
+
+    /** Native-produced frames so far this export (the dual-run counter). */
+    private var nativeFramesSeen = 0
 
     /** Splits interleaved PCM into AAC-sized blocks (last one may be short). */
     private fun chunk(pcm: ShortArray, channels: Int): List<ShortArray> {

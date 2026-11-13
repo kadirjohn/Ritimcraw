@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.engine
 
 import android.graphics.Rect
 import com.ritim.ritimcraw.BuildConfig
+import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -126,6 +127,12 @@ class NativeSource private constructor(
                 // skip reason); release keeps the native default (off) and
                 // never logs.
                 if (BuildConfig.DEBUG) nativeSetStabDebugLog(true)
+                // Export sub-stage timing (commit (d)): same gate — debug
+                // builds collect the six nativeExportFrame sub-stage slots
+                // (decode/temporal/develop/warp/oetf/copy) so the export
+                // sample lines can split "native=..ms"; release reads one
+                // relaxed atomic per boundary and collects nothing.
+                if (BuildConfig.DEBUG) nativeSetExportTiming(true)
             } catch (e: UnsatisfiedLinkError) {
                 nativeAvailable = false
             } catch (e: SecurityException) {
@@ -200,6 +207,27 @@ class NativeSource private constructor(
          * BuildConfig.DEBUG, so release builds stay silent.
          */
         @JvmStatic private external fun nativeSetStabDebugLog(enabled: Boolean)
+
+        /**
+         * Toggles the export sub-stage timing collection (commit (d)):
+         * when on, nativeExportFrame records its six internals — decode,
+         * temporal NR, develop, gyro warp, OETF+pack, JNI copy — into
+         * thread-local slots read by [nativeExportFrameTimingMs]. Called
+         * once from the companion init with BuildConfig.DEBUG (the
+         * nativeSetStabDebugLog pattern), so release builds collect
+         * nothing.
+         */
+        @JvmStatic private external fun nativeSetExportTiming(enabled: Boolean)
+
+        /**
+         * The six sub-stage slots of the frame nativeExportFrame just
+         * produced, in milliseconds, in the fixed order
+         * [decode, temporal, develop, warp, oetf_pack, jni_copy] — or null
+         * when the gate is off (release) or nothing was collected.
+         * Thread-local like the error accessors: call on the export thread
+         * right after a successful nativeExportFrame.
+         */
+        @JvmStatic private external fun nativeExportFrameTimingMs(): DoubleArray?
 
         // ---- Preview JNI (decoder -> developThumbnail -> Rec709 -> ARGB) ----
         // Every call must run on the renderer's single engine thread
@@ -488,6 +516,50 @@ class NativeSource private constructor(
          * audio track should be written.
          */
         @JvmStatic private external fun nativeAudioInfo(handle: Long): IntArray?
+
+        /**
+         * Stateless RGB888 -> I420 conversion (MP4 export YUV step): the
+         * byte-exact native twin of export/YuvConverter.kt's toI420 (the
+         * contract lives in core/include/rawedit/Yuv.h). [matrix] is the
+         * YuvMatrix ordinal: 0 = BT.601, else BT.709. Returns the tightly
+         * packed I420 frame (YuvConverter.toI420 layout), or null on a
+         * malformed request (empty frame / short rgb buffer — read the
+         * error accessors from the same thread); the Kotlin dispatcher
+         * falls back to YuvConverter.toI420, whose require() fails the
+         * export the same way it always did.
+         */
+        @JvmStatic private external fun nativeRgbToI420(
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            matrix: Int,
+        ): ByteArray?
+
+        /**
+         * Direct-to-plane RGB888 -> I420 (commit (c)): the same byte-exact
+         * native twin as [nativeRgbToI420], writing straight into the
+         * encoder Image's plane ByteBuffers at their strides (planar or
+         * NV12, padded rows) — no packed intermediate, no second copy.
+         * The buffers must be DIRECT (the writer hands over the MediaCodec
+         * input Image's buffers). Returns true when the planes hold the
+         * frame; false when the caller must take the packed fallback
+         * (non-direct buffers, empty frame, short rgb — never an error
+         * state; the fallback produces the same bytes).
+         */
+        @JvmStatic private external fun nativeRgbToI420Planes(
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            matrix: Int,
+            yBuf: ByteBuffer,
+            yStride: Int,
+            uBuf: ByteBuffer,
+            uStride: Int,
+            uPixelStride: Int,
+            vBuf: ByteBuffer,
+            vStride: Int,
+            vPixelStride: Int,
+        ): Boolean
 
         // ---- Encoded (Mi-Log MP4) develop JNI (developEncoded -> Rec709 -> ARGB) ----
 
@@ -869,6 +941,41 @@ class NativeSource private constructor(
 
         /** JNI bridge: [sampleRate, channels] or null. */
         internal fun jniAudioInfo(handle: Long): IntArray? = nativeAudioInfo(handle)
+
+        /** JNI bridge: see nativeRgbToI420 (byte-exact toI420 twin). */
+        internal fun jniRgbToI420(
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            matrix: Int,
+        ): ByteArray? = nativeRgbToI420(rgb, width, height, matrix)
+
+        /** JNI bridge: see nativeRgbToI420Planes (direct-to-plane twin). */
+        internal fun jniRgbToI420Planes(
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            matrix: Int,
+            yBuf: ByteBuffer,
+            yStride: Int,
+            uBuf: ByteBuffer,
+            uStride: Int,
+            uPixelStride: Int,
+            vBuf: ByteBuffer,
+            vStride: Int,
+            vPixelStride: Int,
+        ): Boolean = nativeRgbToI420Planes(
+            rgb, width, height, matrix,
+            yBuf, yStride, uBuf, uStride, uPixelStride, vBuf, vStride, vPixelStride,
+        )
+
+        /**
+         * JNI bridge: see nativeExportFrameTimingMs — the six sub-stage
+         * slots of the frame nativeExportFrame just produced, read on the
+         * export thread right after a successful call.
+         */
+        internal fun jniExportFrameTimingMs(): DoubleArray? =
+            nativeExportFrameTimingMs()
 
         /** JNI bridge: see nativeEncodedDevelop. */
         internal fun jniEncodedDevelop(

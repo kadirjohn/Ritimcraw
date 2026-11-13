@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -41,6 +42,7 @@
 #include <rawedit/Thumbnail.h>
 #include <rawedit/Transfer.h>
 #include <rawedit/Warp.h>
+#include <rawedit/Yuv.h>
 
 #include "gles/GlesPipeline.h"
 
@@ -80,6 +82,33 @@ thread_local int gLastErrorStage = kStageOpen;
 // when on is one snprintf + one __android_log_print — the plan is already
 // computed at that point, nothing is re-run for the log.
 std::atomic<bool> gStabDebugLog{false};
+
+// Export sub-stage timing (commit (d), owner request 2026-11-13): the
+// export frame's native wall time splits into its six internals so the
+// owner's "native=472ms" sample line becomes
+// "native=472ms(decode=.. temporal=.. develop=.. warp=.. oetf=.. copy=..)".
+// Collection is gated by the SAME BuildConfig.DEBUG flag as gStabDebugLog
+// (set at library load) — a release build reads one relaxed atomic per
+// branch and collects nothing. The slots are thread-local: the export
+// engine owns one thread, and the getter is read from that thread right
+// after the call (the error accessors' thread contract).
+struct ExportFrameTiming {
+    double decodeMs = 0;
+    double temporalMs = 0;
+    double developMs = 0;
+    double warpMs = 0;
+    double oetfPackMs = 0;
+    double jniCopyMs = 0;
+};
+std::atomic<bool> gExportTiming{false};
+thread_local ExportFrameTiming gExportFrameTiming;
+
+// Milliseconds between two steady_clock points — the only arithmetic the
+// sub-stage boundaries do (kept out of nativeExportFrame's body).
+inline double elapsedMs(const std::chrono::steady_clock::time_point& a,
+                        const std::chrono::steady_clock::time_point& b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+}
 
 void setError(const std::string& message) {
     gLastError = message;
@@ -1236,6 +1265,35 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetStabDebugLog(
     gStabDebugLog.store(enabled == JNI_TRUE, std::memory_order_relaxed);
 }
 
+// Export sub-stage timing toggle (commit (d)): same companion-init pattern
+// as nativeSetStabDebugLog — the gate flips on only in debug builds, and a
+// release build reads it once per boundary as a relaxed load.
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetExportTiming(
+        JNIEnv*, jclass, jboolean enabled) {
+    gExportTiming.store(enabled == JNI_TRUE, std::memory_order_relaxed);
+}
+
+// The six sub-stage slots of the frame nativeExportFrame just produced, in
+// the fixed order the Kotlin side renders:
+//   [decode, temporal, develop, warp, oetf_pack, jni_copy] (milliseconds).
+// Thread-local like the error accessors: call on the export thread right
+// after a successful nativeExportFrame — that is the only writer. Null when
+// the gate is off (nothing was collected); the Kotlin side treats that as
+// "no sub-stage data" and keeps the plain "native=..ms" line.
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrameTimingMs(
+        JNIEnv* env, jclass) {
+    if (!gExportTiming.load(std::memory_order_relaxed)) return nullptr;
+    const ExportFrameTiming& t = gExportFrameTiming;
+    const double slots[6] = {t.decodeMs, t.temporalMs, t.developMs,
+                             t.warpMs, t.oetfPackMs, t.jniCopyMs};
+    jdoubleArray out = env->NewDoubleArray(6);
+    if (out == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(out, 0, 6, slots);
+    return out;
+}
+
 // Preview pipeline -------------------------------------------------------------
 
 JNIEXPORT jintArray JNICALL
@@ -1996,6 +2054,19 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                                  s, frameIndex);
         if (!stab.ok) return nullptr;
 
+        // Sub-stage timing (commit (d)): one steady_clock read at each of
+        // the six boundaries, collected only when the debug gate is on.
+        // Release builds pay one relaxed atomic load per boundary and
+        // nothing else (the gStabDebugLog pattern). The slots are read by
+        // nativeExportFrameTimingMs on this same thread right after a
+        // SUCCESSFUL call; a failure return leaves the previous frame's
+        // numbers, which the Kotlin side never reads on a failed frame.
+        const bool timing = gExportTiming.load(std::memory_order_relaxed);
+        using SteadyClock = std::chrono::steady_clock;
+        SteadyClock::time_point tDecode0{}, tTemporal0{}, tDevelop0{},
+            tWarp0{}, tOetf0{}, tCopy0{};
+        if (timing) tDecode0 = SteadyClock::now();
+
         // 1. Frame read — through the ring, like the preview paths (sequential
         //    export amortizes to ~1 decode per frame with temporal NR on).
         Entry& e = gEntries[handle - 1];
@@ -2003,12 +2074,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
+        if (timing) {
+            tTemporal0 = SteadyClock::now();
+            gExportFrameTiming.decodeMs = elapsedMs(tDecode0, tTemporal0);
+        }
 
         // 2. Temporal NR on the CFA (pristine buffer back when off).
         const CfaBuffer cfa = temporalMergedCfa(
             *s, e, frameIndex, center, info,
             temporalNr == JNI_TRUE, temporalStrength);
         if (cfa == nullptr) return nullptr; // neighbor decode failed
+        if (timing) {
+            tDevelop0 = SteadyClock::now();
+            gExportFrameTiming.temporalMs = elapsedMs(tTemporal0, tDevelop0);
+        }
 
         // 3. Full-res develop with the job's grade snapshot (core/Develop.h).
         gLastErrorStage = kStageDevelop;
@@ -2033,6 +2112,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                      "(recovery: re-import the clip)");
             return nullptr;
         }
+        if (timing) {
+            tWarp0 = SteadyClock::now();
+            gExportFrameTiming.developMs = elapsedMs(tDevelop0, tWarp0);
+        }
 
         // 3b. Full-res gyro warp on the STORED-ORIENTATION buffer (gyro
         //     Phase 5): measured 44.9832 ms/frame at 3840x2160 (commit b's
@@ -2044,6 +2127,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         //     preview path's pre-rotation placement. maxDim 0 = full res:
         //     the debug log line fires per export frame (settle-class).
         applyStabilization(stab.input, img, /*maxDim=*/0);
+        if (timing) {
+            tOetf0 = SteadyClock::now();
+            gExportFrameTiming.warpMs = elapsedMs(tWarp0, tOetf0);
+        }
 
         // 3. linearToRec709 -> clamp -> 8-bit RGB888, row-major, 3 bytes
         //    per pixel, NOT rotated here: the Kotlin exporter rotates the
@@ -2062,9 +2149,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
             out[static_cast<size_t>(i) * 3 + 2] = static_cast<jbyte>(
                 toByte(rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 2])));
         }
+        if (timing) {
+            tCopy0 = SteadyClock::now();
+            gExportFrameTiming.oetfPackMs = elapsedMs(tOetf0, tCopy0);
+        }
         jbyteArray arr = env->NewByteArray(n);
         if (arr == nullptr) return nullptr;
         env->SetByteArrayRegion(arr, 0, n, out.data());
+        if (timing) {
+            gExportFrameTiming.jniCopyMs = elapsedMs(tCopy0, SteadyClock::now());
+        }
         return arr;
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
@@ -2193,6 +2287,133 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfo(
                  std::string("audio info: ") + e.what() + " (recovery: reopen the clip)");
         return nullptr;
     }
+}
+
+// RGB888 -> I420 (MP4 export YUV step) -----------------------------------------
+//
+// Stateless entry (the nativeEncodedDevelop precedent — no handle registry):
+// converts one packed row-major RGB888 frame into the tightly packed I420
+// layout YuvConverter.toI420 produces (Y plane, then U, then V), via the
+// byte-exact native twin in core/src/Yuv.cpp (the contract lives in
+// core/include/rawedit/Yuv.h). This library links rawedit, and Yuv.cpp's
+// per-source-file -ffp-contract=off (core/CMakeLists.txt) is inherited
+// unchanged — the FMA hazard the header documents cannot reappear here.
+// matrix is the Kotlin YuvMatrix ordinal: 0 = BT.601, else BT.709.
+//
+// The pipeline calls this per frame AFTER the upright rotation and crop
+// (the Kotlin side owns those), so the frame is stateless input. Returns
+// null only on a malformed request (empty frame / short rgb buffer) with
+// the error state set; the Kotlin dispatcher then falls back to
+// YuvConverter.toI420, which produces the same bytes — or the same
+// require() failure — the export always had, so a native refusal never
+// changes the encoded output or the failure mode. No C++ allocations on
+// this path (the converter writes straight into the output array), so
+// there is no bad_alloc case; JNI OOM surfaces as a null return with the
+// pending Java exception.
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRgbToI420(
+        JNIEnv* env, jclass, jbyteArray rgb, jint width, jint height,
+        jint matrix) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    if (rgb == nullptr || width <= 0 || height <= 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "rgbToI420: unsupported — the frame is empty or malformed "
+                 "(recovery: re-export the clip)");
+        return nullptr;
+    }
+    if (static_cast<long long>(env->GetArrayLength(rgb)) <
+        static_cast<long long>(width) * height * 3) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "rgbToI420: unsupported — the rgb buffer is smaller than the "
+                 "frame (recovery: re-export the clip)");
+        return nullptr;
+    }
+    const rawedit::RgbToYuvMatrix& m =
+        matrix == 0 ? rawedit::kYuvMatrixBt601 : rawedit::kYuvMatrixBt709;
+    const jsize outLen = static_cast<jsize>(rawedit::i420PackedSize(width, height));
+    jbyte* in = env->GetByteArrayElements(rgb, nullptr);
+    if (in == nullptr) return nullptr; // OOM pending
+    jbyteArray out = env->NewByteArray(outLen);
+    if (out == nullptr) {
+        env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+        return nullptr; // OOM pending
+    }
+    jbyte* dst = env->GetByteArrayElements(out, nullptr);
+    if (dst == nullptr) {
+        env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+        return nullptr; // OOM pending
+    }
+    rawedit::rgb888ToI420Packed(
+        reinterpret_cast<const uint8_t*>(in), width, height, m,
+        reinterpret_cast<uint8_t*>(dst));
+    env->ReleaseByteArrayElements(out, dst, 0); // write back / unpin
+    env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+    return out;
+}
+
+// RGB888 -> I420, direct into the encoder Image's planes (commit (c)) ------
+//
+// The same byte-exact twin as nativeRgbToI420 above, writing STRAIGHT into
+// the MediaCodec input Image's plane ByteBuffers (GetDirectBufferAddress —
+// zero copies, zero intermediates: the per-frame packed I420 allocation and
+// the Kotlin plane copy both disappear). Kotlin hands over the buffers the
+// writer dequeued and the strides it read from Image.Plane; the C++ side
+// fills a rawedit::YuvPlanes and calls rgb888ToI420, whose scalar/NEON
+// kernels honor any rowStride/pixelStride pair (planar, NV12, padded).
+//
+// Returns JNI_TRUE when the planes hold the frame, JNI_FALSE when Kotlin
+// must take the packed fallback (which produces the same bytes through
+// YuvConverter.toI420 + the writer's copy): null/non-direct buffers,
+// library-level refusals (empty frame / short rgb), or a stride geometry
+// the converter cannot address (row/pixel strides < the frame's row bytes).
+// A JNI_FALSE is NOT an error state: the fallback is the designed path for
+// every refusal, so the error accessors stay untouched.
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRgbToI420Planes(
+        JNIEnv* env, jclass, jbyteArray rgb, jint width, jint height,
+        jint matrix, jobject yBuf, jint yStride,
+        jobject uBuf, jint uStride, jint uPixelStride,
+        jobject vBuf, jint vStride, jint vPixelStride) {
+    if (rgb == nullptr || width <= 0 || height <= 0) return JNI_FALSE;
+    if (static_cast<long long>(env->GetArrayLength(rgb)) <
+        static_cast<long long>(width) * height * 3) {
+        return JNI_FALSE;
+    }
+    uint8_t* y = static_cast<uint8_t*>(env->GetDirectBufferAddress(yBuf));
+    uint8_t* u = static_cast<uint8_t*>(env->GetDirectBufferAddress(uBuf));
+    uint8_t* v = static_cast<uint8_t*>(env->GetDirectBufferAddress(vBuf));
+    if (y == nullptr || u == nullptr || v == nullptr) return JNI_FALSE;
+    const int cw = (width + 1) / 2;
+    const int ch = (height + 1) / 2;
+    // Stride sanity: each row must fit inside its plane buffer, and the
+    // last sample of the last row must be addressable. The writer hands
+    // over the Image's strides unvalidated (they come from MediaCodec and
+    // are trusted there), so this check is the single gate — a refusal is
+    // the designed fallback, never an error.
+    if (yStride < width || uStride < cw * uPixelStride ||
+        vStride < cw * vPixelStride) {
+        return JNI_FALSE;
+    }
+    jbyte* in = env->GetByteArrayElements(rgb, nullptr);
+    if (in == nullptr) return JNI_FALSE; // OOM: take the packed fallback
+    rawedit::YuvPlanes planes;
+    planes.y = y;
+    planes.yStride = yStride;
+    planes.u = u;
+    planes.uStride = uStride;
+    planes.uPixelStride = uPixelStride;
+    planes.v = v;
+    planes.vStride = vStride;
+    planes.vPixelStride = vPixelStride;
+    const rawedit::RgbToYuvMatrix& m =
+        matrix == 0 ? rawedit::kYuvMatrixBt601 : rawedit::kYuvMatrixBt709;
+    rawedit::rgb888ToI420(
+        reinterpret_cast<const uint8_t*>(in), width, height, m, planes);
+    env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+    return JNI_TRUE;
 }
 
 // DNG export -------------------------------------------------------------------

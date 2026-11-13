@@ -239,6 +239,109 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         )
     }
 
+    // ---- direct-to-plane path (commit (c)) ----
+    //
+    // The pipeline asks for the encoder input Image's plane buffers BEFORE
+    // the conversion; the native twin then writes them directly (one pass,
+    // no packed intermediate, no second copy). The writer holds the
+    // dequeued input buffer between acquire and queue/abandon — the same
+    // buffer index writeVideoFrame would have used, so the packed fallback
+    // (acquire -> refuse -> abandon -> writeVideoFrame) re-dequeues a
+    // fresh buffer and stays byte-identical to the pre-(c) stream.
+
+    /** The dequeued input buffer awaiting its frame (null = none held). */
+    private var heldInputIndex: Int = -1
+
+    /** The Image of [heldInputIndex] (kept for the size computation at queue). */
+    private var heldImage: Image? = null
+
+    /**
+     * How long the acquire for the held buffer waited for the codec to
+     * free an input buffer (reported as enc_wait at queue time).
+     */
+    private var heldAcquireWaitNanos: Long = 0
+
+    override fun acquireVideoFramePlanes(): YuvFramePlanes? {
+        val codec = videoCodec ?: throw notStarted()
+        if (heldInputIndex >= 0) {
+            throw encodeFailure("acquireVideoFramePlanes called twice without queue/abandon")
+        }
+        val tWait0 = System.nanoTime()
+        val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
+        if (index < 0) {
+            throw encodeFailure("$MIME_AVC returned no input buffer")
+        }
+        val image = codec.getInputImage(index)
+            ?: throw encodeFailure("$MIME_AVC gave no input Image for this frame")
+        heldInputIndex = index
+        heldImage = image
+        heldAcquireWaitNanos = System.nanoTime() - tWait0
+        val y = image.planes[0]
+        val u = image.planes[1]
+        val v = image.planes[2]
+        return YuvFramePlanes(
+            y = y.buffer,
+            yStride = y.rowStride,
+            u = u.buffer,
+            uStride = u.rowStride,
+            uPixelStride = u.pixelStride,
+            v = v.buffer,
+            vStride = v.rowStride,
+            vPixelStride = v.pixelStride,
+        )
+    }
+
+    override fun queueVideoFrame(ptsUs: Long) {
+        val codec = videoCodec ?: throw notStarted()
+        val index = heldInputIndex
+        val image = heldImage
+        if (index < 0 || image == null) {
+            throw encodeFailure("queueVideoFrame called without a held input buffer")
+        }
+        heldInputIndex = -1
+        heldImage = null
+        // The size must carry the frame's filled byte count computed from
+        // the same plane strides the conversion just honored — the codec
+        // does NOT infer it from the Image (imageInputSize).
+        val size = imageInputSize(
+            width = width,
+            height = height,
+            yRowStride = image.planes[0].rowStride,
+            uRowStride = image.planes[1].rowStride,
+            uPixelStride = image.planes[1].pixelStride,
+            vRowStride = image.planes[2].rowStride,
+            vPixelStride = image.planes[2].pixelStride,
+        )
+        codec.queueInputBuffer(index, 0, size, ptsUs, 0)
+        val tDrain0 = System.nanoTime()
+        drain(codec, isVideo = true, timeoutUs = 0)
+        // Stage timing: the acquire wait lands in enc_wait; the conversion's
+        // own cost lives in the pipeline's yuv slot (it ran before queue,
+        // outside this writer), and the drain is the drain. plane_copy is
+        // an honest zero on the direct path — that is the whole point.
+        timing?.markWriterStages(
+            encWaitNanos = heldAcquireWaitNanos,
+            planeCopyNanos = 0,
+            drainNanos = System.nanoTime() - tDrain0,
+        )
+        heldAcquireWaitNanos = 0
+    }
+
+    override fun abandonVideoFrame() {
+        // The conversion refused the planes: hand the buffer back to the
+        // codec without queueing a frame (size 0 = empty, the same
+        // handback signalEos uses), then clear the stash. The packed
+        // fallback's writeVideoFrame dequeues a fresh buffer next.
+        val codec = videoCodec ?: return
+        val index = heldInputIndex
+        if (index >= 0) {
+            heldInputIndex = -1
+            heldImage = null
+            heldAcquireWaitNanos = 0
+            codec.queueInputBuffer(index, 0, 0, 0, 0)
+        }
+    }
+
     override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {
         val codec = audioCodec ?: throw notStarted()
         val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)

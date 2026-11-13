@@ -37,14 +37,31 @@ The full frame path, native then Kotlin, as it exists at 553f324:
    rotates the RGB888 pixels by the effective orientation
    (container + manual, Mp4Exporter.kt:496).
 7. Crop — `CropState.applyToRgb` (Mp4Exporter.kt:539), even-snapped dims.
-8. YUV — `YuvConverter.toI420` (Mp4Exporter.kt:550), BT.709 limited range
-   (Y [16,235], C [16,240]), chroma from averaged 2x2 RGB blocks.
-9. Encode — `MediaCodecMp4Writer.writeVideoFrame` feeds I420 into the
-   encoder's input Image (COLOR_FormatYUV420Flexible, video/avc, High
-   profile, 30 fps, i-frame 1 s, bitrate (w*h*24/10).coerceIn(2M, 25M)).
+8. YUV — the RGB888 -> I420 seam (the `RgbToI420` fun interface,
+   Mp4Exporter.kt): the native twin first (nativeRgbToI420 /
+   nativeRgbToI420Planes, jni_bridge.cpp over core/src/Yuv.cpp — scalar +
+   NEON, byte-exact against `YuvConverter.toI420` by doctest AND a JVM
+   cross-implementation oracle), the Kotlin `YuvConverter.toI420` as the
+   packed fallback. BT.709 limited range (Y [16,235], C [16,240]), chroma
+   from averaged 2x2 RGB blocks; the BYTES are identical either way.
+9. Encode — the writer offers its dequeued input Image's plane buffers
+   (`acquireVideoFramePlanes`); when the offer is taken, the native twin
+   writes the planes DIRECTLY at their rowStride/pixelStride (no packed
+   intermediate, no copy — commit (c)); any refusal falls back to packed
+   I420 through `writeVideoFrame` (YuvPlaneIo.copyPackedToPlanes, the
+   writer's original strided copy). COLOR_FormatYUV420Flexible, video/avc,
+   High profile, 30 fps, i-frame 1 s, bitrate (w*h*24/10).coerceIn(2M, 25M).
 10. Mux — MediaMuxer. The writer is started with orientationDeg = 0
     (Mp4Exporter.kt:507) because the pixels are already upright — the
     container hint is intentionally dropped.
+
+Timing (commit (d)): the export stage-timing sample lines split the native
+call's wall time into its six internals — the bridge times decode, temporal,
+develop, warp, oetf+pack, and the JNI copy into thread-local slots (gated by
+BuildConfig.DEBUG at library load, the gStabDebugLog pattern) and the pipeline
+reads them right after the call. Debug builds render
+"native=472.3ms(decode=..ms temporal=..ms develop=..ms warp=..ms oetf=..ms
+copy=..ms)"; release builds and JVM fakes keep the plain "native=..ms" pair.
 
 ### Baseline finding: stale orientation comments
 
