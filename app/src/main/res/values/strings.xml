@@ -330,6 +330,27 @@
     <string name="timeline_add_empty">No readable sources in the library. Import a clip first.</string>
     <string name="timeline_add_cancel">Cancel</string>
 
+    <!-- Timeline: audio settings sheet (AUD-02/AUD-03) -->
+    <string name="timeline_audio">Audio</string>
+    <string name="timeline_audio_settings">Audio settings</string>
+    <string name="timeline_audio_gain">Gain</string>
+    <string name="timeline_audio_fade_in">Fade in</string>
+    <string name="timeline_audio_fade_out">Fade out</string>
+    <string name="timeline_audio_unknown_rate">The sample rate of this clip is not known yet. Audio settings open once the source is scanned.</string>
+    <string name="timeline_audio_link_title">Linked audio</string>
+    <string name="timeline_audio_state_attached">Attached</string>
+    <string name="timeline_audio_state_attached_hint">This clip\'s audio plays and exports with the video.</string>
+    <string name="timeline_audio_state_detached">Detached</string>
+    <string name="timeline_audio_state_detached_hint">The audio is set aside. Restore it to use it again.</string>
+    <string name="timeline_audio_state_removed">Removed</string>
+    <string name="timeline_audio_state_removed_hint">The audio is removed for this source. This cannot be undone here.</string>
+    <string name="timeline_audio_state_linked_edited">Linked to an edited recording</string>
+    <string name="timeline_audio_state_linked_edited_hint">An edited audio recording plays in place of the original.</string>
+    <string name="timeline_audio_detach">Detach</string>
+    <string name="timeline_audio_restore">Restore</string>
+    <string name="timeline_audio_relink">Link edited audio</string>
+    <string name="timeline_audio_relink_hint">Linking an edited audio recording arrives with the audio editing milestone (later).</string>
+
     <!-- Settings -->
     <string name="settings_title">Settings</string>
     <string name="settings_device_report">Device report</string>

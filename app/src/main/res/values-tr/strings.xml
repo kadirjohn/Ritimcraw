@@ -327,6 +327,27 @@
     <string name="timeline_add_empty">Kitaplıkta okunabilir kaynak yok. Önce bir klip içe aktarın.</string>
     <string name="timeline_add_cancel">İptal</string>
 
+    <!-- Timeline: audio settings sheet (AUD-02/AUD-03) -->
+    <string name="timeline_audio">Ses</string>
+    <string name="timeline_audio_settings">Ses ayarları</string>
+    <string name="timeline_audio_gain">Kazanç</string>
+    <string name="timeline_audio_fade_in">Açılış geçişi</string>
+    <string name="timeline_audio_fade_out">Kapanış geçişi</string>
+    <string name="timeline_audio_unknown_rate">Bu klibin örnek hızı henüz bilinmiyor. Kaynak tarandığında ses ayarları açılır.</string>
+    <string name="timeline_audio_link_title">Bağlı ses</string>
+    <string name="timeline_audio_state_attached">Bağlı</string>
+    <string name="timeline_audio_state_attached_hint">Bu klibin sesi videoyla birlikte oynar ve dışa aktarılır.</string>
+    <string name="timeline_audio_state_detached">Ayrılmış</string>
+    <string name="timeline_audio_state_detached_hint">Ses kenara ayrıldı. Yeniden kullanmak için geri yükleyin.</string>
+    <string name="timeline_audio_state_removed">Kaldırılmış</string>
+    <string name="timeline_audio_state_removed_hint">Bu kaynak için ses kaldırıldı. Bu, buradan geri alınamaz.</string>
+    <string name="timeline_audio_state_linked_edited">Düzenlenmiş bir kayda bağlı</string>
+    <string name="timeline_audio_state_linked_edited_hint">Özgün ses yerine düzenlenmiş bir ses kaydı oynar.</string>
+    <string name="timeline_audio_detach">Ayır</string>
+    <string name="timeline_audio_restore">Geri yükle</string>
+    <string name="timeline_audio_relink">Düzenlenmiş sesi bağla</string>
+    <string name="timeline_audio_relink_hint">Düzenlenmiş bir ses kaydını bağlama, ses düzenleme aşamasıyla gelecek (sonrası).</string>
+
     <!-- Settings -->
     <string name="settings_title">Ayarlar</string>
     <string name="settings_device_report">Cihaz raporu</string>
