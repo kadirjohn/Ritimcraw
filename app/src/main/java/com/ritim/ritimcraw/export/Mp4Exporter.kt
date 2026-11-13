@@ -255,6 +255,35 @@ internal object NativeMp4Session : Mp4Session {
 }
 
 /**
+ * The production RGB888 -> I420 dispatch (the [RgbToI420] seam's default):
+ * the native twin first (the byte-exact converter in core/src/Yuv.cpp,
+ * reached through NativeSource.jniRgbToI420), the Kotlin
+ * [YuvConverter.toI420] as the fallback. The fallback keeps the export
+ * working wherever the native entry refuses — a non-NDK build
+ * (nativeAvailable false), a malformed frame (the native entry's
+ * null-return with the error state set; the Kotlin require() then fails
+ * the export the same way it always did, never a silent wrong frame).
+ *
+ * JVM tests never touch this object: the pipeline's default is injectable
+ * (ExportPipeline's converter parameter), and the fakes stay pure.
+ */
+object NativeRgbToI420 : RgbToI420 {
+
+    private const val MATRIX_BT709 = 1
+
+    override fun convert(rgb: ByteArray, width: Int, height: Int): RgbToI420Result {
+        if (NativeSource.nativeAvailable) {
+            val native = NativeSource.jniRgbToI420(rgb, width, height, MATRIX_BT709)
+            if (native != null) return RgbToI420Result(native, fromNative = true)
+            // A null return with the library loaded is a malformed request
+            // (empty frame / short buffer): fall through to Kotlin, whose
+            // require() turns it into the export's existing failure mode.
+        }
+        return RgbToI420Result(YuvConverter.toI420(rgb, width, height), fromNative = false)
+    }
+}
+
+/**
  * The encoder + muxer boundary (MediaCodec + MediaMuxer in the real app),
  * as an interface so the pipeline is JVM-testable with a fake codec.
  *
@@ -538,7 +567,7 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         const val STAGE_ROTATE = 1
         /** Kotlin crop/straighten (CropState.applyToRgb). */
         const val STAGE_CROP = 2
-        /** Kotlin I420 conversion (YuvConverter.toI420). */
+        /** RGB888 -> I420 conversion (the RgbToI420 seam: native twin, Kotlin fallback). */
         const val STAGE_YUV = 3
         /** Writer: the dequeueInputBuffer wait for a free encoder input buffer. */
         const val STAGE_ENC_WAIT = 4
@@ -605,6 +634,14 @@ class ExportPipeline(
      * are identical (see ExportStageTiming).
      */
     private val stageLog: ((String) -> Unit)? = null,
+    /**
+     * The RGB888 -> I420 conversion seam (the native YUV step): the
+     * default dispatches to the byte-exact native twin with the Kotlin
+     * YuvConverter.toI420 as fallback (see [NativeRgbToI420]); JVM tests
+     * inject a pure fake. The conversion's BYTES are identical either
+     * way — that is the seam's whole contract (core/src/Yuv.cpp).
+     */
+    private val converter: RgbToI420 = NativeRgbToI420,
 ) {
 
     /**
@@ -763,12 +800,12 @@ class ExportPipeline(
                         )
                         timing?.mark(ExportStageTiming.STAGE_CROP, System.nanoTime() - t2)
                         val t3 = System.nanoTime()
-                        val i420 = YuvConverter.toI420(cropped.rgb, cropped.width, cropped.height)
+                        val converted = convertFrame(cropped.rgb, cropped.width, cropped.height)
                         timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3)
                         // The writer's own stages (enc_wait / plane_copy /
                         // drain_mux) are marked INTO this timing object while
                         // writeVideoFrame runs, before endFrame reads them.
-                        writer.writeVideoFrame(s.ptsUs, i420)
+                        writer.writeVideoFrame(s.ptsUs, converted.i420)
                         timing?.endFrame()
                         done++
                         onProgress?.invoke(done, videoPts.size)
@@ -802,6 +839,28 @@ class ExportPipeline(
             writer.release()
         }
     }
+
+    /**
+     * One frame's conversion through the seam, plus the debug dual-run
+     * (the byte-exactness affordance): the FIRST frame produced by the
+     * native path of an export is converted by Kotlin too, and the
+     * comparison lands in the stage-timing sink (the app wires it to
+     * Log.i under "ritim-export", DEBUG builds only — a null stageLog
+     * means the dual-run never runs, so release exports pay nothing).
+     * The native bytes always win: a mismatch is logged, never applied.
+     */
+    private fun convertFrame(rgb: ByteArray, width: Int, height: Int): RgbToI420Result {
+        val traced = converter.convert(rgb, width, height)
+        if (stageLog != null && RgbToI420Verify.shouldDualRun(nativeFramesSeen, traced.fromNative)) {
+            val kt = YuvConverter.toI420(rgb, width, height)
+            RgbToI420Verify.line(width, height, traced.i420, kt)?.let { stageLog(it) }
+        }
+        if (traced.fromNative) nativeFramesSeen++
+        return traced
+    }
+
+    /** Native-produced frames so far this export (the dual-run counter). */
+    private var nativeFramesSeen = 0
 
     /** Splits interleaved PCM into AAC-sized blocks (last one may be short). */
     private fun chunk(pcm: ShortArray, channels: Int): List<ShortArray> {

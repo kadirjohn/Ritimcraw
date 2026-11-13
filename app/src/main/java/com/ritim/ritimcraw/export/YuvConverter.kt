@@ -168,3 +168,77 @@ object YuvConverter {
 
     private fun clamp(v: Int, lo: Int, hi: Int): Int = max(lo, min(hi, v))
 }
+
+/**
+ * The pipeline's RGB888 -> I420 conversion seam: the pipeline calls through
+ * this so the encode loop stays JVM-testable while production dispatches to
+ * the native twin (Mp4Exporter's NativeRgbToI420). The result carries the
+ * bytes' ORIGIN (native vs Kotlin) so the pipeline's debug dual-run knows
+ * when it has a native frame to compare against — without sniffing the
+ * implementation. The BYTES are identical either way; that is the seam's
+ * whole contract (core/src/Yuv.cpp).
+ */
+fun interface RgbToI420 {
+    /** Converts packed row-major RGB888 to tightly packed I420 (toI420 layout). */
+    fun convert(rgb: ByteArray, width: Int, height: Int): RgbToI420Result
+}
+
+/** One conversion outcome: the bytes plus where they came from. */
+class RgbToI420Result(
+    /** The tightly packed I420 frame (YuvConverter.toI420 layout). */
+    val i420: ByteArray,
+    /** True when [i420] came from the native twin, false from Kotlin. */
+    val fromNative: Boolean,
+)
+
+/**
+ * Pure decision object for the debug dual-run (the byte-exactness
+ * affordance that ships in debug builds): WHEN to run both paths and WHAT
+ * to log. No Android imports — fully JVM-testable.
+ *
+ * The rule: dual-run the FIRST frame produced by the native path of an
+ * export. One frame is enough to prove the two implementations agree (the
+ * cross-implementation oracle already proved byte-exactness across sizes
+ * and matrices; this is the on-device confirmation), and re-running the
+ * Kotlin conversion per frame would burn the exact per-frame cost this
+ * mission removes. A Kotlin fallback frame never dual-runs — there is no
+ * native output to compare against.
+ */
+object RgbToI420Verify {
+
+    /**
+     * Whether this frame should be dual-run. True exactly once per export:
+     * on the first frame that came from the native path ([fromNative] true,
+     * [nativeFramesSeen] 0 — the count BEFORE this frame).
+     */
+    fun shouldDualRun(nativeFramesSeen: Int, fromNative: Boolean): Boolean =
+        fromNative && nativeFramesSeen == 0
+
+    /**
+     * The line logged after a dual-run, or null when nothing should be
+     * logged (the sizes differ — a bug that cannot happen: both paths
+     * produce i420PackedSize bytes — but a missing line is better than a
+     * crash mid-export).
+     */
+    fun line(
+        width: Int,
+        height: Int,
+        native: ByteArray,
+        kotlin: ByteArray,
+    ): String? {
+        if (native.size != kotlin.size) return null
+        var mismatch = -1
+        for (i in native.indices) {
+            if (native[i] != kotlin[i]) {
+                mismatch = i
+                break
+            }
+        }
+        return if (mismatch < 0) {
+            "rgbToI420 dual-run ${width}x$height: native == kotlin (${native.size} bytes)"
+        } else {
+            "rgbToI420 dual-run ${width}x$height: MISMATCH at byte $mismatch of ${native.size} " +
+                "(native=${native[mismatch]} kotlin=${kotlin[mismatch]})"
+        }
+    }
+}

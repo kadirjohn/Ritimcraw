@@ -41,6 +41,7 @@
 #include <rawedit/Thumbnail.h>
 #include <rawedit/Transfer.h>
 #include <rawedit/Warp.h>
+#include <rawedit/Yuv.h>
 
 #include "gles/GlesPipeline.h"
 
@@ -2135,6 +2136,70 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfo(
                  std::string("audio info: ") + e.what() + " (recovery: reopen the clip)");
         return nullptr;
     }
+}
+
+// RGB888 -> I420 (MP4 export YUV step) -----------------------------------------
+//
+// Stateless entry (the nativeEncodedDevelop precedent — no handle registry):
+// converts one packed row-major RGB888 frame into the tightly packed I420
+// layout YuvConverter.toI420 produces (Y plane, then U, then V), via the
+// byte-exact native twin in core/src/Yuv.cpp (the contract lives in
+// core/include/rawedit/Yuv.h). This library links rawedit, and Yuv.cpp's
+// per-source-file -ffp-contract=off (core/CMakeLists.txt) is inherited
+// unchanged — the FMA hazard the header documents cannot reappear here.
+// matrix is the Kotlin YuvMatrix ordinal: 0 = BT.601, else BT.709.
+//
+// The pipeline calls this per frame AFTER the upright rotation and crop
+// (the Kotlin side owns those), so the frame is stateless input. Returns
+// null only on a malformed request (empty frame / short rgb buffer) with
+// the error state set; the Kotlin dispatcher then falls back to
+// YuvConverter.toI420, which produces the same bytes — or the same
+// require() failure — the export always had, so a native refusal never
+// changes the encoded output or the failure mode. No C++ allocations on
+// this path (the converter writes straight into the output array), so
+// there is no bad_alloc case; JNI OOM surfaces as a null return with the
+// pending Java exception.
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRgbToI420(
+        JNIEnv* env, jclass, jbyteArray rgb, jint width, jint height,
+        jint matrix) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    if (rgb == nullptr || width <= 0 || height <= 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "rgbToI420: unsupported — the frame is empty or malformed "
+                 "(recovery: re-export the clip)");
+        return nullptr;
+    }
+    if (static_cast<long long>(env->GetArrayLength(rgb)) <
+        static_cast<long long>(width) * height * 3) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "rgbToI420: unsupported — the rgb buffer is smaller than the "
+                 "frame (recovery: re-export the clip)");
+        return nullptr;
+    }
+    const rawedit::RgbToYuvMatrix& m =
+        matrix == 0 ? rawedit::kYuvMatrixBt601 : rawedit::kYuvMatrixBt709;
+    const jsize outLen = static_cast<jsize>(rawedit::i420PackedSize(width, height));
+    jbyte* in = env->GetByteArrayElements(rgb, nullptr);
+    if (in == nullptr) return nullptr; // OOM pending
+    jbyteArray out = env->NewByteArray(outLen);
+    if (out == nullptr) {
+        env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+        return nullptr; // OOM pending
+    }
+    jbyte* dst = env->GetByteArrayElements(out, nullptr);
+    if (dst == nullptr) {
+        env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+        return nullptr; // OOM pending
+    }
+    rawedit::rgb888ToI420Packed(
+        reinterpret_cast<const uint8_t*>(in), width, height, m,
+        reinterpret_cast<uint8_t*>(dst));
+    env->ReleaseByteArrayElements(out, dst, 0); // write back / unpin
+    env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+    return out;
 }
 
 // DNG export -------------------------------------------------------------------

@@ -472,6 +472,24 @@ class NativeSource private constructor(
          */
         @JvmStatic private external fun nativeAudioInfo(handle: Long): IntArray?
 
+        /**
+         * Stateless RGB888 -> I420 conversion (MP4 export YUV step): the
+         * byte-exact native twin of export/YuvConverter.kt's toI420 (the
+         * contract lives in core/include/rawedit/Yuv.h). [matrix] is the
+         * YuvMatrix ordinal: 0 = BT.601, else BT.709. Returns the tightly
+         * packed I420 frame (YuvConverter.toI420 layout), or null on a
+         * malformed request (empty frame / short rgb buffer — read the
+         * error accessors from the same thread); the Kotlin dispatcher
+         * falls back to YuvConverter.toI420, whose require() fails the
+         * export the same way it always did.
+         */
+        @JvmStatic private external fun nativeRgbToI420(
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            matrix: Int,
+        ): ByteArray?
+
         // ---- Encoded (Mi-Log MP4) develop JNI (developEncoded -> Rec709 -> ARGB) ----
 
         /**
@@ -840,6 +858,14 @@ class NativeSource private constructor(
 
         /** JNI bridge: [sampleRate, channels] or null. */
         internal fun jniAudioInfo(handle: Long): IntArray? = nativeAudioInfo(handle)
+
+        /** JNI bridge: see nativeRgbToI420 (byte-exact toI420 twin). */
+        internal fun jniRgbToI420(
+            rgb: ByteArray,
+            width: Int,
+            height: Int,
+            matrix: Int,
+        ): ByteArray? = nativeRgbToI420(rgb, width, height, matrix)
 
         /** JNI bridge: see nativeEncodedDevelop. */
         internal fun jniEncodedDevelop(

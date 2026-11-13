@@ -723,6 +723,129 @@ class Mp4ExporterTest {
         assertEquals(1, session.closed.get()) // session closed even on failure
     }
 
+    // ---- RgbToI420 seam: the native YUV step's dispatch + debug dual-run ----
+
+    @Test
+    fun rgb_to_i420_seam_default_is_the_native_dispatcher() {
+        // The pipeline's default converter is the native dispatch (the
+        // seam's whole point: production goes native, bytes unchanged).
+        // On the JVM the library is unavailable, so the dispatch falls
+        // back to the Kotlin toI420 — and the writer still receives the
+        // exact YuvConverter bytes (the fallback wiring's proof).
+        val session = FakeSession(frames = 1, width = 4, height = 4, audio = false)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer).run(7, GradeK(), "/tmp/out.partial")
+        val expected = YuvConverter.toI420(
+            ByteArray(4 * 4 * 3) { 128.toByte() }, 4, 4,
+        )
+        assertTrue(writer.lastVideoFrame!!.contentEquals(expected))
+    }
+
+    @Test
+    fun rgb_to_i420_injected_converter_feeds_the_writer() {
+        // A fake converter proves the pipeline calls THROUGH the seam and
+        // feeds the writer what the seam returned (not a re-conversion).
+        var calls = 0
+        val marker = ByteArray(4 * 4 + 2 * 2 * 2) { 7.toByte() }
+        val converter = RgbToI420 { _, _, _ ->
+            calls++
+            RgbToI420Result(marker, fromNative = false)
+        }
+        val session = FakeSession(frames = 2, width = 4, height = 4, audio = false)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, converter = converter).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(2, calls)
+        assertTrue(writer.lastVideoFrame!!.contentEquals(marker))
+    }
+
+    @Test
+    fun rgb_to_i420_dual_run_rule_fires_on_first_native_frame_only() {
+        // The pure decision rule: dual-run exactly once per export, on the
+        // FIRST frame that came from the native path.
+        assertTrue(RgbToI420Verify.shouldDualRun(nativeFramesSeen = 0, fromNative = true))
+        // Later native frames: never again.
+        assertFalse(RgbToI420Verify.shouldDualRun(nativeFramesSeen = 1, fromNative = true))
+        assertFalse(RgbToI420Verify.shouldDualRun(nativeFramesSeen = 30, fromNative = true))
+        // Kotlin frames (native unavailable / fallback): never — there is
+        // no native output to compare against.
+        assertFalse(RgbToI420Verify.shouldDualRun(nativeFramesSeen = 0, fromNative = false))
+        assertFalse(RgbToI420Verify.shouldDualRun(nativeFramesSeen = 5, fromNative = false))
+    }
+
+    @Test
+    fun rgb_to_i420_dual_run_line_reports_match_and_mismatch() {
+        // A matching pair logs the byte-count confirmation.
+        val bytes = YuvConverter.toI420(ByteArray(2 * 2 * 3) { 9.toByte() }, 2, 2)
+        val match = RgbToI420Verify.line(2, 2, bytes, bytes.copyOf())
+        assertNotNull(match)
+        assertTrue(match!!.startsWith("rgbToI420 dual-run 2x2: native == kotlin"))
+        assertTrue(match.contains("6 bytes"))
+        // A one-byte difference logs the mismatch with its index and the
+        // two disagreeing values.
+        val kt = bytes.copyOf()
+        kt[3] = (kt[3] + 1).toByte()
+        val mismatch = RgbToI420Verify.line(2, 2, bytes, kt)
+        assertNotNull(mismatch)
+        assertTrue(mismatch!!.contains("MISMATCH at byte 3"))
+        assertTrue(mismatch.contains("native=${bytes[3]} kotlin=${kt[3]}"))
+        // A size disagreement logs nothing (cannot happen; no crash).
+        assertNull(RgbToI420Verify.line(2, 2, bytes, ByteArray(bytes.size + 1)))
+    }
+
+    @Test
+    fun rgb_to_i420_pipeline_dual_run_logs_through_the_stage_sink() {
+        // A converter that claims native origin drives the pipeline's
+        // dual-run: the first frame logs the comparison line through the
+        // stage sink, the second does not.
+        val converter = RgbToI420 { rgb, w, h ->
+            RgbToI420Result(YuvConverter.toI420(rgb, w, h), fromNative = true)
+        }
+        val session = FakeSession(frames = 2, width = 4, height = 4, audio = false)
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(session, writer, lines::add, converter).run(7, GradeK(), "/tmp/out.partial")
+        // Exactly ONE dual-run line (the timing sample/avg/summary lines
+        // are the timing test's domain; here the dual-run line is the
+        // first line of the export).
+        assertEquals(1, lines.count { it.startsWith("rgbToI420 dual-run") })
+        val dual = lines.first { it.startsWith("rgbToI420 dual-run") }
+        assertTrue(dual.contains("native == kotlin"))
+        // The writer received the converter's bytes: the toI420 of the
+        // session's 128-gray frame (what the fake session renders).
+        val expected = YuvConverter.toI420(
+            ByteArray(4 * 4 * 3) { 128.toByte() }, 4, 4,
+        )
+        assertTrue(writer.lastVideoFrame!!.contentEquals(expected))
+    }
+
+    @Test
+    fun rgb_to_i420_pipeline_dual_run_skipped_for_kotlin_frames() {
+        // fromNative false (the JVM fallback, any pure fake): no dual-run
+        // line, even with the sink wired.
+        val converter = RgbToI420 { rgb, w, h ->
+            RgbToI420Result(YuvConverter.toI420(rgb, w, h), fromNative = false)
+        }
+        val session = FakeSession(frames = 2, width = 4, height = 4, audio = false)
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(session, writer, lines::add, converter).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, lines.count { it.startsWith("rgbToI420 dual-run") })
+    }
+
+    @Test
+    fun rgb_to_i420_pipeline_dual_run_skipped_without_sink() {
+        // A null stage sink (release builds, timing off): the dual-run
+        // never runs — the guard is the sink itself, so release exports
+        // pay zero.
+        val converter = RgbToI420 { rgb, w, h ->
+            RgbToI420Result(YuvConverter.toI420(rgb, w, h), fromNative = true)
+        }
+        val session = FakeSession(frames = 1, width = 4, height = 4, audio = false)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, converter = converter).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, writer.videoFrames) // the export ran, conversion included
+    }
+
     @Test
     fun rejected_encoder_leaves_no_file() {
         val session = FakeSession(frames = 2)
