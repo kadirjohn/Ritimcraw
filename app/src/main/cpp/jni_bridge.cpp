@@ -1761,6 +1761,64 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGyroSyncProbe(
     return result;
 }
 
+// Container identity probe (IN-13 metadata extraction) --------------------------
+//
+// STATELESS (the nativeGyroSyncProbe contract): no handle, no cache, no
+// render-path state; the fd is dup'd inside Source::open so the caller's
+// copy is untouched; safe from any thread (the import flow probes right
+// after a copy, off the render path). Opens a throwaway Source and reads
+// the container's camera/lens identity keys — the fields no develop or
+// export consumer touches, so this probe is their ONLY exposure (the
+// mission's "add a native function only if a field is genuinely
+// unreachable" rule: every other IN-13 fact reuses an existing seam).
+//
+// Returns a ContainerIdentityK with the container's own spellings:
+//   uniqueCameraModel, deviceModel (deviceSpecificProfile.deviceModel),
+//   manufacturer + buildModel (extraData.postProcessSettings.metadata
+//   "build.manufacturer"/"build.model"), apertureMm (apertures[0]),
+//   focalLengthMm (RawMeta's 35mm-equivalent; 0 = absent) — absent keys
+//   arrive as ""/0, and the Kotlin layer maps that to UNKNOWN, never a
+//   guess. nullptr = the open itself failed (error state set).
+
+JNIEXPORT jobject JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeContainerIdentity(
+        JNIEnv* env, jclass, jint fd) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("identity: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail +
+                     " (recovery: reopen the clip and retry)");
+        return nullptr;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+    const rawedit::ContainerIdentity& id = src->containerIdentity();
+
+    jclass cls = env->FindClass("com/ritim/ritimcraw/engine/ContainerIdentityK");
+    if (cls == nullptr) return nullptr;
+    jmethodID ctor = env->GetMethodID(
+        cls, "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+        "Ljava/lang/String;DD)V");
+    if (ctor == nullptr) return nullptr;
+    auto str = [&](const std::string& s) -> jstring {
+        return env->NewStringUTF(s.c_str());
+    };
+    const jstring ucm = str(id.uniqueCameraModel);
+    const jstring dm = str(id.deviceModel);
+    const jstring man = str(id.manufacturer);
+    const jstring bm = str(id.buildModel);
+    if (ucm == nullptr || dm == nullptr || man == nullptr || bm == nullptr)
+        return nullptr;
+    return env->NewObject(
+        cls, ctor,
+        ucm, dm, man, bm,
+        static_cast<jdouble>(id.aperture),
+        static_cast<jdouble>(src->rawMeta().focalLengthMm));
+}
+
 // GLES capability probe + single-frame demosaic parity (owner request
 // 2026-11-12, deliverable C) ---------------------------------------------------
 //

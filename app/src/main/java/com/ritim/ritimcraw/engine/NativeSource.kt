@@ -21,6 +21,23 @@ data class FrameInfoK(
 )
 
 /**
+ * Kotlin view of rawedit::ContainerIdentity (IN-13 metadata extraction):
+ * the container's camera/lens identity keys, with the container's own
+ * spellings. Empty string / 0 mean the key is absent — UNKNOWN, never a
+ * guess; the extractor maps that onto Field.unknown(). focalLengthMm is
+ * RawMeta's 35mm-EQUIVALENT focal (0 = absent), carried here so the
+ * identity probe is one read.
+ */
+data class ContainerIdentityK(
+    val uniqueCameraModel: String,
+    val deviceModel: String,
+    val manufacturer: String,
+    val buildModel: String,
+    val apertureMm: Double,
+    val focalLengthMm: Double,
+)
+
+/**
  * Result of a native call. `ok` mirrors rawedit::Result: value is meaningful
  * only when code == 0 (ErrorCode::Ok).
  *
@@ -568,6 +585,18 @@ class NativeSource private constructor(
         ): DoubleArray?
 
         /**
+         * Container identity probe (IN-13 metadata extraction): statelessly
+         * opens the clip behind [fd] and returns the container's
+         * camera/lens identity keys as a [ContainerIdentityK] — the fields
+         * no other seam exposes (see the bridge comment). Absent keys
+         * arrive as ""/0 = UNKNOWN, never a guess. Null = the open failed
+         * (the error accessors say why). No handle, no render-cache touch;
+         * the fd is dup'd by Source::open so the caller's copy is
+         * untouched, safe from any thread.
+         */
+        @JvmStatic private external fun nativeContainerIdentity(fd: Int): ContainerIdentityK?
+
+        /**
          * Stabilization zoom probe (audit fix 2026-11-12, Fix 5): evaluates
          * the clip-wide stabilization plan for the six flat request params —
          * the identical plan the renders run — and returns
@@ -923,6 +952,19 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeGyroSyncProbe(fd, gyroPath)
+        }
+
+        /**
+         * JNI bridge: see nativeContainerIdentity. Throws
+         * IllegalStateException when the .so is absent; null otherwise
+         * means the open failed (the extractor maps that to UNKNOWN
+         * fields, never a fabricated identity).
+         */
+        internal fun jniContainerIdentity(fd: Int): ContainerIdentityK? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeContainerIdentity(fd)
         }
 
         /**
