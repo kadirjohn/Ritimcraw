@@ -19,8 +19,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace rawedit;
@@ -336,4 +338,52 @@ TEST_CASE("container_identity_reads_real_fixture" * doctest::description("real c
     CHECK_FALSE(id.deviceModel.empty());
     CHECK(id.aperture > 0.0);
     CHECK((*s)->rawMeta().focalLengthMm > 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// fd-offset independence (P0 2026-11-13: every GPU-experimental MP4 export
+// failed "not a supported clip / bad header / invalid container version")
+// ---------------------------------------------------------------------------
+
+TEST_CASE("open_fd_rewinds_an_advanced_offset_and_leaves_the_callers_fd_alone"
+          * doctest::description("needs the real clip; skipped when absent")) {
+    // Regression, owner report 2026-11-13 ~13:30: with GPU Experimental
+    // selected, Mp4Exporter's honest CPU restart re-opens the SAME fd that
+    // attempt 1's decoder already read/seeks through — dup() shares the file
+    // offset, so attempt 2's Decoder::init() read mid-file bytes as the
+    // header and every export died as "invalid container version". Open
+    // must be position-independent: rewind whatever offset the fd arrives
+    // with. And it must be polite about it: never drag the caller's own fd
+    // offset back to 0 (on POSIX the dup shares the offset, so open saves
+    // and restores it).
+    const std::string clip = realclipPath();
+    std::FILE* probe = std::fopen(clip.c_str(), "rb");
+    if (!probe) {
+        MESSAGE("SKIP: " << clip << " not present");
+        return;
+    }
+    std::fclose(probe);
+
+    const int fd = ::open(clip.c_str(), O_RDONLY);
+    REQUIRE(fd >= 0);
+
+    // Advance the offset the way attempt 1's consumer left it: mid-file.
+    // 4096 bytes is well past the 8-byte container header and the metadata
+    // item header, so an un-rewound open reads garbage as the header.
+    REQUIRE(::lseek(fd, 4096, SEEK_SET) == 4096);
+
+    auto res = Source::open(fd);
+    REQUIRE(res.isOk()); // the fix: open succeeds from an advanced offset
+
+    // The caller's own fd offset is untouched by our open: still the
+    // advanced offset we set, not 0. (Checked before any decode reads —
+    // later reads through the Source legitimately move the shared offset.)
+    CHECK(::lseek(fd, 0, SEEK_CUR) == 4096);
+
+    REQUIRE((*res)->frameCount() > 0);
+    auto frame = (*res)->readFrame(0);
+    REQUIRE(frame.isOk()); // and the first frame decodes
+    CHECK(frame->size() > 0);
+
+    ::close(fd);
 }
