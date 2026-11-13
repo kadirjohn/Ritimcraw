@@ -59,6 +59,9 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.MediaSource
+import com.ritim.ritimcraw.data.audio.AudioStore
+import com.ritim.ritimcraw.data.metadata.FieldStatus
+import com.ritim.ritimcraw.data.metadata.MetadataStore
 import com.ritim.ritimcraw.data.timeline.FrameRange
 import com.ritim.ritimcraw.data.timeline.TimelineClip
 import com.ritim.ritimcraw.data.timeline.TimelineEdit
@@ -127,9 +130,21 @@ import com.ritim.ritimcraw.util.Format
  * top bar's add action opens a picker of the app's imported sources
  * and appends the picked one to the video track at
  * [TimelineGeometry.appendStart], with a [TimelineIds.newId]-minted
- * id, through [TimelineEdit.AddClip] (recorded like every edit). The
- * clip's duration is the source's probed frameCount, or the documented
- * placeholder when the stats pass has not probed it yet.
+ * id, through a recorded edit. The clip's duration is the source's
+ * probed frameCount, or the documented placeholder when the stats
+ * pass has not probed it yet.
+ *
+ * LINKED-AUDIO PAIR (AUD-02's add path): when the source's metadata
+ * record says audio is KNOWN-present with a real sample rate, the
+ * add creates a LINKED PAIR in ONE transaction ([TimelineEdit.AddClipPair])
+ * — the video clip on the video track plus an audio clip (same
+ * source, same ranges) on the audio track, the video's
+ * linkedAudioId pointing at the audio clip's id. One undo step
+ * unwinds the whole pair. The gate is HONEST by construction
+ * (AUD-06): anything short of KNOWN-present with a positive rate —
+ * no metadata record, UNKNOWN audio, KNOWN-absent, or a zero rate —
+ * adds the video clip alone (the current behavior, never a guessed
+ * audio clip).
  *
  * TEXT TRACKS: deliberately not rendered in v1 (the mission's carve-
  * out) — no text clip can exist through any current UI, so a TEXT
@@ -161,12 +176,21 @@ import com.ritim.ritimcraw.util.Format
  *   "timeline" section — the same file the shell's other stores use).
  * @param sources the app's imported sources (Library), for the add
  *   picker and the clip block labels.
+ * @param metadata the app's MetadataStore — the ONLY honest source
+ *   of audio presence/rate facts (AUD-06); the add path's pair gate
+ *   reads it per source.
+ * @param audio the app's AudioStore (the shared project.json's
+ *   "audio" section) — the audio model's store; this screen's add
+ *   path is its first consumer (later commits hang the AUD-03
+ *   settings sheet off it).
  * @param onBack closes the screen (the screen persists first).
  */
 @Composable
 fun TimelineScreen(
     store: TimelineStore,
     sources: List<MediaSource>,
+    metadata: MetadataStore,
+    audio: AudioStore,
     onBack: () -> Unit,
 ) {
     RitimTheme(editor = true) {
@@ -215,7 +239,34 @@ fun TimelineScreen(
                 sourceRange = FrameRange(0.0, duration),
                 timelineRange = FrameRange(start, start + duration),
             )
-            applyEdit(TimelineEdit.AddClip(clip))
+            // The honest audio gate (AUD-06): ONLY a KNOWN-present
+            // audio field with a real sample rate mints the pair —
+            // never a guess. Everything else adds the video clip
+            // alone, exactly as before.
+            val audioTrackId = project.tracks
+                .firstOrNull { it.kind == TrackKind.AUDIO }?.id
+            val audioField = metadata.get(source.id)?.audio
+            val audioSummary = audioField?.value
+            val hasAudio = audioTrackId != null &&
+                audioField?.status == FieldStatus.KNOWN &&
+                audioSummary != null &&
+                audioSummary.present &&
+                audioSummary.sampleRateHz > 0
+            if (hasAudio) {
+                // The pair (AUD-02's add path): same source, same
+                // ranges, fresh id — the video's link is set BY the
+                // transaction, one undo step.
+                val audioClip = TimelineClip(
+                    id = TimelineIds.newId(),
+                    trackId = audioTrackId,
+                    sourceId = source.id,
+                    sourceRange = clip.sourceRange,
+                    timelineRange = clip.timelineRange,
+                )
+                applyEdit(TimelineEdit.AddClipPair(video = clip, audio = audioClip))
+            } else {
+                applyEdit(TimelineEdit.AddClip(clip))
+            }
             selectedClipId = clip.id
         }
 

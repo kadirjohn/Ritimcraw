@@ -180,6 +180,55 @@ class TimelineEditTest {
         assertTrue(h.project.clips.isEmpty())
     }
 
+    // ---------------------------------------------------------------
+    // Linked pair add (AUD-02's add path): one edit, two clips
+    // ---------------------------------------------------------------
+
+    @Test
+    fun add_pair_links_and_one_undo_removes_both() {
+        val h = TimelineHistory(project(emptyList()))
+        val video = clip("v1", "v", 0.0, 0.0, 90.0)
+        val audio = clip("a1", "a", 0.0, 0.0, 90.0)
+        h.apply(TimelineEdit.AddClipPair(video, audio))
+
+        // Both clips exist and the video's link was set BY the apply.
+        assertEquals(2, h.project.clips.size)
+        assertEquals("a1", h.project.clip("v1")!!.linkedAudioId)
+        // The caller never assembles the link by hand: the caller's
+        // video object stays unlinked, the project's is linked.
+        assertNull(video.linkedAudioId)
+
+        // ONE undo unwinds the WHOLE pair — no orphan audio remains.
+        h.undo()
+        assertTrue(h.project.clips.isEmpty())
+    }
+
+    @Test
+    fun add_pair_undo_then_redo_round_trips() {
+        val h = TimelineHistory(project(emptyList()))
+        val video = clip("v1", "v", 0.0, 10.0, 50.0)
+        val audio = clip("a1", "a", 0.0, 10.0, 50.0)
+        h.apply(TimelineEdit.AddClipPair(video, audio))
+        val afterAdd = h.project
+        h.undo()
+        h.redo()
+        // Redo re-applies the ORIGINAL transaction: the same pair,
+        // the same ids, the same link.
+        assertEquals(afterAdd, h.project)
+        assertEquals("a1", h.project.clip("v1")!!.linkedAudioId)
+        assertEquals(audio, h.project.clip("a1"))
+    }
+
+    @Test
+    fun add_pair_records_exactly_one_undo_step() {
+        val h = TimelineHistory(project(emptyList()))
+        h.apply(TimelineEdit.AddClipPair(clip("v1", "v"), clip("a1", "a")))
+        assertTrue(h.canUndo)
+        h.undo()
+        // One apply = one step: undoing once bottoms out.
+        assertFalse(h.canUndo)
+    }
+
     @Test
     fun delete_then_undo_restores_exact_clip() {
         val original = clip("c1", "v", sourceStart = 7.0, timelineStart = 3.0, duration = 40.0)

@@ -54,6 +54,7 @@ import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
+import com.ritim.ritimcraw.data.audio.AudioStore
 import com.ritim.ritimcraw.data.CollectionRefresh
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.GyroFolderStore
@@ -192,6 +193,11 @@ fun AppNav() {
             // own top-level "timeline" section (TimelineStore) — the
             // timeline core model's own store, opened from Projects.
             timeline = TimelineStore(project),
+            // The audio track state (spec AUD-02/AUD-03): the same
+            // shared project.json, own "audio" section (AudioStore)
+            // — the audio model's own store, same file as every other
+            // section-scoped store.
+            audio = AudioStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -812,6 +818,8 @@ fun AppNav() {
                 TimelineScreen(
                     store = stores.timeline,
                     sources = sources,
+                    metadata = stores.metadata,
+                    audio = stores.audio,
                     onBack = { timelineOpen = false },
                 )
             } else if (route != null) {
@@ -1582,4 +1590,10 @@ private class Stores(
     // The timeline (spec TL-01): same shared project.json, own
     // top-level "timeline" section (TimelineStore).
     val timeline: TimelineStore,
+    // The audio track state (spec AUD-02/AUD-03): same shared
+    // project.json, own "audio" section (AudioStore) — link states
+    // and per-clip audio settings. The timeline's add path reads it
+    // through the metadata gate; the audio settings sheet (AUD-03)
+    // is the same store's UI.
+    val audio: AudioStore,
 )
