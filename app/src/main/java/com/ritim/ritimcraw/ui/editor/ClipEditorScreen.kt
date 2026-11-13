@@ -1401,6 +1401,31 @@ fun ClipEditorScreen(
             )
         }
 
+        // Quarter-turn re-fold (owner request 2026-11-13 §1): rotation is
+        // applied in the PUBLISH fold (effectiveDims + the crop's space
+        // mapping), never in the native render — so a rotation change
+        // with no other trigger would leave the published frame and the
+        // aspect-preset dims in the OLD space. This effect re-renders the
+        // CURRENT position on every manual-rotation change: a discrete
+        // tap (never mid-drag), so the settle tier; the frame itself is
+        // unchanged (the native pixels do not depend on the rotation),
+        // so the cached CFA path serves it. The renderSeq guard skips
+        // the initial composition (the first-render effect owns that
+        // one) — and a rotation tapped before the session opens is
+        // picked up by that first render, whose fold reads the mirrored
+        // value fresh.
+        LaunchedEffect(manualRotationDeg) {
+            if (!canRender || renderSeq == 0L) return@LaunchedEffect
+            requestRender(
+                positionFrame, grade,
+                SliderTiers.tierFor(
+                    dragActive, previewQuality.scrubMaxDim,
+                    zoomed = previewZoomed,
+                ),
+                cached = true,
+            )
+        }
+
         // Zoom-limit honesty probe (audit fix 2026-11-12, Fix 5): one
         // native plan evaluation per stab-grade change — the clip-wide
         // required/applied zoom does not depend on the frame or the
@@ -1473,6 +1498,11 @@ fun ClipEditorScreen(
         // is picked up on the next render without restarting the pump.
         val currentGyroPathFor by rememberUpdatedState(gyroPathFor)
         val currentGyroId by rememberUpdatedState(gyroId)
+        // Manual rotation (owner request 2026-11-13 §1): the publish fold
+        // reads it for effectiveDims and the crop's space mapping, so it
+        // is mirrored the same way — a quarter-turn tapped mid-session
+        // must re-crop in the NEW space, not the launch-time one.
+        val currentManualRotationDeg by rememberUpdatedState(manualRotationDeg)
 
         LaunchedEffect(sourceId) {
             // Monotonic publication: the pump is serial and the gate is
@@ -1546,7 +1576,7 @@ fun ClipEditorScreen(
                                 // against this pair, never the cropped
                                 // `frame` dims.
                                 effectiveDims = RotationState.rotatedDims(
-                                    f.width, f.height, manualRotationDeg,
+                                    f.width, f.height, currentManualRotationDeg,
                                 )
                                 // Crop + straighten (RAW-09): the
                                 // published preview is the GRADED frame
@@ -1570,7 +1600,7 @@ fun ClipEditorScreen(
                                         req.grade.cropH,
                                     ),
                                     straightenDeg = req.grade.straightenDeg,
-                                    spaceDeltaDeg = manualRotationDeg,
+                                    spaceDeltaDeg = currentManualRotationDeg,
                                 )
                                 frame = PreviewFrame(
                                     width = cropped.width,
@@ -2818,6 +2848,13 @@ fun ClipEditorScreen(
                     onCropEdit = { g ->
                         applyGradeEdit(g)
                     },
+                    // Quarter-turn rotate (owner request 2026-11-13 §1):
+                    // the screen's existing route — AppNav's
+                    // RotationState.applyManual + setManualRotation
+                    // persistence. MediaSource state, not grade state:
+                    // no gradeHistory involvement, one discrete persisted
+                    // edit per tap.
+                    onRotate = onRotate,
                 )
             }
         }
@@ -4246,6 +4283,10 @@ private fun FramePanel(
     // RAW toggles): they settle IMMEDIATELY at the full tier and record
     // as their own undo step, never coalesced into a slider gesture.
     onCropEdit: (GradeK) -> Unit = {},
+    // Quarter-turn rotate (owner request 2026-11-13 §1): the Crop body's
+    // button pair, driving the SAME AppNav route the clip-info sheet's
+    // rows drive.
+    onRotate: (byDeg: Int) -> Unit = {},
 ) {
     when (subTab) {
         EditorCategories.FRAME_CROP -> FrameCropBody(
@@ -4256,6 +4297,7 @@ private fun FramePanel(
             onDragActiveChange = onDragActiveChange,
             onReset = onReset,
             onCropEdit = onCropEdit,
+            onRotate = onRotate,
         )
         // The gate is double-armed (row + this guard — see KDoc): the
         // body keeps the panel honest even if a stale saved sub-tab
@@ -4321,6 +4363,9 @@ private fun FrameSubTabRow(
 
 /**
  * The Crop sub-tab body (RAW-09, moved from DetailPanel verbatim): the
+ * quarter-turn rotate pair (owner request 2026-11-13 §1 — the SAME
+ * AppNav route the clip-info sheet's rows drive; MediaSource state, so
+ * each tap is one discrete persisted edit, outside gradeHistory), the
  * Aspect choice (Free / 16:9 / 9:16 / 4:3 / 1:1 — a preset replaces the
  * rect with the largest centered on-ratio rect, FREE keeps it), the
  * Straighten dial (±15°, half-degree ticks, edge-preserving auto zoom),
@@ -4343,6 +4388,13 @@ private fun FrameCropBody(
     onDragActiveChange: (Boolean) -> Unit = {},
     onReset: (GradeK) -> Unit = {},
     onCropEdit: (GradeK) -> Unit = {},
+    // Quarter-turn rotate (owner request 2026-11-13 §1): the SAME route
+    // the clip-info sheet's rows drive — RotationState.applyManual in
+    // AppNav. Manual rotation is MediaSource state, NOT grade state, so
+    // it lives outside gradeHistory undo: each tap is one discrete
+    // persisted edit (the quarter-turn accumulation itself is
+    // JVM-tested in RotationStateTest).
+    onRotate: (byDeg: Int) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -4350,6 +4402,29 @@ private fun FrameCropBody(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // Quarter-turn pair: two 48dp IconButtons (stock M3 touch
+        // target), the vendored official Material Symbols Rounded
+        // glyphs (ic_undo precedent — material-icons-core 1.7.3 ships
+        // no rotate pair). A compact row above the aspect choice; the
+        // icons are self-describing, contentDescriptions reuse the
+        // info sheet's rotate strings.
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            IconButton(onClick = { onRotate(-90) }) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_rotate_left),
+                    contentDescription = stringResource(R.string.editor_rotate_left),
+                )
+            }
+            IconButton(onClick = { onRotate(90) }) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_rotate_right),
+                    contentDescription = stringResource(R.string.editor_rotate_right),
+                )
+            }
+        }
         // Aspect: one choice row (Free / 16:9 / 9:16 / 4:3 / 1:1). A preset
         // REPLACES the rect with the largest centered on-ratio rect
         // (CropState.aspectRect); FREE keeps the rect as it is.
