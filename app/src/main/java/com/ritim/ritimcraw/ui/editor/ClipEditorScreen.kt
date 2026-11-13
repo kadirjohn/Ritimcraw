@@ -2159,9 +2159,6 @@ fun ClipEditorScreen(
             // stay 0 on both counts).
             rawSampleFormat = if (sourcePath == SourcePath.MCRAW) "raw16" else null,
             rawWhiteLevel = session?.rawWhiteLevel ?: 0,
-            // Manual rotation (§5): the persisted delta; the sheet's
-            // rotation row shows it and the two rotate actions tap it.
-            manualRotationDeg = manualRotationDeg,
         )
 
         // ---- Landscape workspace decision (owner request 2026-11-11d
@@ -3226,8 +3223,6 @@ fun ClipEditorScreen(
                     presets = presets,
                     onSavePreset = onSavePreset,
                     onRemovePreset = onRemovePreset,
-                    // Manual rotation (§5): the sheet's rotate rows.
-                    onRotate = onRotate,
                 )
             }
             // ---- Workspace branch (owner request 2026-11-11d sections 11
