@@ -91,11 +91,13 @@ import com.ritim.ritimcraw.export.PhotoDevelop
 import com.ritim.ritimcraw.export.PhotoExporter
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
+import com.ritim.ritimcraw.data.timeline.TimelineStore
 import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
 import com.ritim.ritimcraw.ui.exports.ExportsScreen
 import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
+import com.ritim.ritimcraw.ui.timeline.TimelineScreen
 import kotlinx.coroutines.launch
 import androidx.core.content.FileProvider
 import java.io.File
@@ -185,6 +187,10 @@ fun AppNav() {
             // the probe launched alongside generateThumbnail on import
             // and relink; the UI surface is a later stage's.
             metadata = MetadataStore(project),
+            // The timeline (spec TL-01): the same shared project.json,
+            // own top-level "timeline" section (TimelineStore) — the
+            // timeline core model's own store, opened from Projects.
+            timeline = TimelineStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -306,6 +312,11 @@ fun AppNav() {
     // the route object is derived from it.
     var editorSourceId by rememberSaveable { mutableStateOf<String?>(null) }
     val editorRoute: EditorRoute? = editorSourceId?.let { EditorRoute(it) }
+    // The timeline route (spec TL-01): the same derived-route pattern —
+    // a Boolean flag is rememberSaveable (rotation keeps the timeline
+    // open), and the full-screen branch below composes TimelineScreen
+    // exactly like the editor branch above.
+    var timelineOpen by rememberSaveable { mutableStateOf(false) }
     // Debug-only measurement harness state (PreviewMetrics): one run at a
     // time, kicked from Settings' Measure action.
     var measuring by remember { mutableStateOf(false) }
@@ -758,8 +769,9 @@ fun AppNav() {
         // time (the inner host renders when its screen is composed).
         snackbarHost = { SnackbarHost(exportSnackbar) },
         bottomBar = {
-            // Editors are full screen without nav (DESIGN.md Layout).
-            if (editorRoute == null) {
+            // Editors — and the timeline — are full screen without nav
+            // (DESIGN.md Layout).
+            if (editorRoute == null && !timelineOpen) {
                 NavigationBar {
                     Destination.entries.forEach { d ->
                         val selected = destination == d
@@ -789,7 +801,19 @@ fun AppNav() {
                 .padding(innerPadding)
         ) {
             val route = editorRoute
-            if (route != null) {
+            if (timelineOpen) {
+                // The timeline (spec TL-01): a full-screen sibling of the
+                // editor branch above — entered instantly like the editor
+                // (the branch swap, not a Crossfade: there is one timeline
+                // route, nothing to crossfade between), TimelineScreen
+                // owns its own back handling (save + close), and the
+                // sources list feeds the add-clip picker.
+                TimelineScreen(
+                    store = stores.timeline,
+                    sources = sources,
+                    onBack = { timelineOpen = false },
+                )
+            } else if (route != null) {
                 // Fade between browse and editor (DESIGN.md Motion).
                 Crossfade(targetState = route, animationSpec = tween(220), label = "editor") { r ->
                     // Open the clip read-only for the preview pipeline:
@@ -1361,7 +1385,9 @@ fun AppNav() {
                                 sources = stores.sources.all()
                             },
                         )
-                        Destination.PROJECTS -> ProjectsScreen()
+                        Destination.PROJECTS -> ProjectsScreen(
+                            onOpenTimeline = { timelineOpen = true },
+                        )
                         Destination.EXPORTS -> ExportsScreen(
                             jobs = exportJobs,
                             // Rows show the clip's display name (§2b); the
@@ -1509,4 +1535,7 @@ private class Stores(
     // Per-source metadata records (spec IN-13, Stage A): same shared
     // project.json, own "metadata" section keyed by sourceId.
     val metadata: MetadataStore,
+    // The timeline (spec TL-01): same shared project.json, own
+    // top-level "timeline" section (TimelineStore).
+    val timeline: TimelineStore,
 )
