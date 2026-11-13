@@ -309,29 +309,45 @@ void frameTransform(const double qRel[4], double focalLengthPx,
 double focalLengthPxFromEquivalent(double focalLengthMm35, int width);
 
 // ---------------------------------------------------------------------------
-// Static crop (deliverable 4)
+// Static crop (deliverable 4; conventions RECONCILED with the sampler,
+// audit fix 2026-11-13)
 //
 // The minimal uniform zoom factor Z >= 1 (about the principal point)
-// such that, for EVERY q_rel in the list, all four corners of the
-// output rectangle map INSIDE the source rectangle [0,w]x[0,h] through
-// the composite output->source map
+// such that, for EVERY q_rel in the list, warpFrame's composite
+// output->source map
 //     p_src = H⁻¹( c + (p_out - c)/Z )
-// (the displayed output rect [0,w]x[0,h] samples the warped image over
-// the window centered at c with half-extents (w/2Z, h/2Z); the corners
-// of that window are the four p_out corners). A projective map takes
-// the window's corners to the extreme points of its image, so checking
-// the four corners is exact, and the constraint is monotone in Z (a
-// larger Z shrinks the window, hence its image), which the numeric
-// solver relies on. Zoom semantics: Z = 1 no crop; Z = 1.1 = the
-// output is the source shrunk 10% about the principal point.
+// keeps the four OUTPUT pixel-center rect corners (0,0)..(w-1,h-1)
+// inside the sampler's valid domain [0,w-1]x[0,h-1] INCLUSIVE, with
+// POSITIVE homogeneous denominators — the coordinates warpFrame
+// actually samples. The old checker used the continuous bounds
+// [0,w]x[0,h] while the sampler clamps out-of-source samples to the
+// w-1/h-1 edge pixel; a checker looser than the sampler is how edge
+// smear shipped (the audit's finding). Under positive denominators
+// the corner check is EXACT: for a rotation homography the composite
+// denominator is AFFINE over the rect, so positivity at the four
+// corners means positivity everywhere (no horizon crossing, nothing
+// behind the plane), and the image of the rect is the convex hull of
+// the corner images — the corners are the extreme points. The
+// constraint is monotone in Z (the pre-image rect shrinks about c,
+// nested as Z grows), which the numeric solver relies on. Zoom
+// semantics: Z = 1 no crop; Z = 1.1 = the output is the source shrunk
+// 10% about the principal point.
 //
-// Roll-only closed form (doctest-pinned): for a rotation by theta of a
-// w x h rectangle about its center, the minimal shrink factor is
-//   Z(theta) = (w·|sin| + h·|cos|) / h  vs  (w·|cos| + h·|sin|) / w,
-// max of the two expressions (corner coverage), where sin/cos are of
-// theta; the numeric path must reproduce it. The general case runs the
-// corner map per quaternion and takes the max over frames — the value
-// the clip needs so no frame ever samples outside the source.
+// Roll-only closed form (doctest-pinned), clean at the PIXEL-RECT
+// center c = ((w-1)/2, (h-1)/2):
+//   Z(theta) = max( ((w-1)|sin| + (h-1)|cos|) / (h-1),
+//                   ((w-1)|cos| + (h-1)|sin|) / (w-1) ).
+// At the DEFAULT principal point (w/2, h/2 — half a pixel off the
+// pixel rect's center) the four corner constraints are asymmetric;
+// for a roll of theta in (0, 90) deg they are (c = cos, s = sin):
+//   max of [(w/2-1)c + (h/2)s] / (w/2-1),
+//          [(w/2)c + (h/2-1)s] / (w/2),
+//          [(w/2-1)s + (h/2-1)c] / (h/2-1),
+//          [(w/2)s + (h/2)c] / (h/2)
+// (the doctest derives and pins all four; at typical aspect ratios
+// the height pair binds). The general case runs the corner map per
+// quaternion and takes the max over frames — the value the clip
+// needs so no frame ever samples outside the source.
 double staticCropZoom(const std::vector<double>& quatsRel, // 4 * n
                       double focalLengthPx, double cx, double cy,
                       int width, int height);
@@ -360,11 +376,24 @@ struct StabilizationFrame {
 
 struct StabilizationResult {
     std::vector<StabilizationFrame> frames; // per frameTimestampsNs
-    double requiredZoom = 1.0; // unclamped static-crop need
+    double requiredZoom = 1.0; // unclamped static-crop need (full correction)
     double appliedZoom = 1.0;  // after the user zoomLimit clamp
     bool intrinsicsAssumed = false; // any frame on the fallback focal
     bool horizonLockDegraded = false; // lock asked, gravity unavailable
     std::vector<double> relativeAngleDeg; // per-frame |q_rel| angle
+
+    // --- Crop-constrained correction (audit fix 2026-11-13) ---
+    // When requiredZoom <= zoomLimit every scale below is 1.0 and the
+    // plan is bit-identical to the pre-fix behavior. When the budget
+    // is short the CORRECTION is scaled (never the zoom past the
+    // limit, never edge-clamped pixels presented as imagery):
+    std::vector<double> correctionScale; // per frame: applied a_i in [0,1]
+    double clipCorrectionScale = 1.0; // clip-wide constant baseline a
+    double minCorrectionScale = 1.0;  // effective reduction, worst frame
+    double meanCorrectionScale = 1.0; // effective reduction, clip mean
+    size_t invalidSampleFrames = 0;   // frames whose final warp still
+                                     // samples outside the source
+                                     // (honest counter; expected 0)
 };
 
 // The clip-level pipeline:
@@ -395,7 +424,33 @@ struct StabilizationResult {
 //   6. q_rel = conj(q_target) * q_actual per frame.
 //   7. staticCropZoom over the q_rel list -> requiredZoom, clamped by
 //      params.zoomLimit (applied >= 1) -> appliedZoom.
-//   8. H = K·D·R(q_rel)·D·K⁻¹ per frame (the flip D at frameTransform).
+//   7b. CROP-CONSTRAINED CORRECTION (audit fix 2026-11-13): when
+//      requiredZoom > appliedZoom the full correction does not fit the
+//      zoom budget, so the CORRECTION is scaled back — never the zoom
+//      past the limit, never edge-clamped pixels presented as
+//      imagery. q_rel_i(a) = slerp(identity, q_rel_i, a) (the slerp
+//      path; never linear scaling of components/Euler/matrix
+//      entries). Ship order:
+//        a) a_clip: the clip-wide constant max a with every frame
+//           fitting at appliedZoom (bracketed search from a=0, which
+//           always fits — identity maps the output rect onto
+//           itself) — the guaranteed baseline.
+//        b) b_i per frame: the max a with frame i fitting at
+//           appliedZoom (same bracketed search per frame).
+//        c) a_i: a sliding-minimum envelope of b over the ACTUAL
+//           frame PTS (not an assumed fps), then a nonnegative
+//           normalized smoothing kernel with support no wider than
+//           the envelope window — so a_i <= b_i holds (the
+//           weighted average of neighbors' envelopes, each of which
+//           bounds b_i, cannot exceed b_i).
+//      The final a_i are revalidated at appliedZoom; a frame that
+//      fails falls back to a_clip, then to 0. a_i is additionally
+//      clamped from below at a_clip (the clip-wide baseline always
+//      fits, so a smoothing rounding dip below it is pure loss),
+//      giving the ordering a_clip <= min(a_i). The scaled q_rel is
+//      slerpToward(identity, q_rel_i, a_i) and H is rebuilt from it.
+//   8. H = K·D·R(q_rel_scaled)·D·K⁻¹ per frame (the flip D at
+//      frameTransform).
 // Statuses per frame (precedence, highest first): NoImu > Unsynced >
 // IntrinsicsAssumed > LowOverlap > Ok (Off never coexists with these
 // — mode Off short-circuits the whole pipeline into a uniform

@@ -30,23 +30,48 @@
 //     bit-identical to the centered call; f = 0 -> identity fallback.
 //   - focalLengthPxFromEquivalent: width·mm/36 bit-exact; non-positive
 //     inputs -> 0 (unknown, never a guess).
-//   - staticCropZoom: empty/identity/degenerate -> exactly 1.0; the
-//     numeric bisection reproduces the roll closed form
-//     Z(θ) = max((w|sinθ|+h|cosθ|)/h, (w|cosθ|+h|sinθ|)/w) at
-//     5/10/20/45 deg and takes the max over frames; at 8 deg pitch
+//   - staticCropZoom (SAMPLER-EXACT since the 2026-11-13 audit fix):
+//     empty/identity/degenerate -> exactly 1.0; the checked domain is
+//     warpFrame's own — the OUTPUT pixel-center rect corners mapped
+//     through the composite with POSITIVE homogeneous denominators,
+//     valid inside [0,w-1]x[0,h-1] INCLUSIVE (the old checker used
+//     the looser continuous [0,w]x[0,h] window corners, which is how
+//     plans the sampler then edge-clamped into smear passed it); the
+//     numeric bisection reproduces the roll closed form at the
+//     PIXEL-RECT center c = ((w-1)/2, (h-1)/2):
+//       Z(θ) = max(((w-1)|sinθ|+(h-1)|cosθ|)/(h-1),
+//                  ((w-1)|cosθ|+(h-1)|sinθ|)/(w-1))
+//     at 5/10/20/45 deg and takes the max over frames; at 8 deg pitch
 //     costs strictly more zoom than roll (perspective stretch on top
-//     of the f·tanθ shift).
+//     of the f·tanθ shift); the boundary conventions are pinned
+//     directly (identity fits at Z = 1 exactly — the inclusive
+//     pixel-center domain; an ε roll does not; a denominator sign
+//     change inside the rect never fits at that zoom — the sampler
+//     would mirror-sample past the vanishing line).
 //   - computeStabilization (clip API): mode Off = identity + zoom 1 +
 //     status Off for every frame, zero cost; the refusal ladder
 //     (empty series -> NoImu, unknown offset -> Unsynced, missing
-//     intrinsics -> NoImu, no frames -> empty); LowOverlap flags
-//     frames outside the gyro span (finite H still); Smooth at the
-//     default strength on the 30 fps frame grid is a near no-op;
-//     Smooth at the default strength on the 30 fps frame grid is a
-//     real (visible) correction since the 2026-11-12 tau redesign;
-//     LockFirstFrame pins frame 0; HorizonLock levels a rolled
-//     camera and degrades to plain Smooth (flagged) without gravity;
-//     the zoom-limit clamp keeps requiredZoom honest.
+//     intrinsics -> NoImu, no frames -> empty) reports correctionScale
+//     0 (no correction applied); LowOverlap flags frames outside the
+//     gyro span (finite H still); Smooth at the default strength on
+//     the 30 fps frame grid is a near no-op; Smooth at the default
+//     strength on the 30 fps frame grid is a real (visible)
+//     correction since the 2026-11-12 tau redesign; LockFirstFrame
+//     pins frame 0; HorizonLock levels a rolled camera and degrades
+//     to plain Smooth (flagged) without gravity; the zoom-limit clamp
+//     keeps requiredZoom honest.
+//   - Crop-constrained correction (audit fix 2026-11-13, Step 7b):
+//     when requiredZoom <= appliedZoom the plan is BIT-IDENTICAL to
+//     the pre-fix behavior (correctionScale exactly 1 everywhere —
+//     the compatibility regression pin); when the budget is short
+//     the CORRECTION scales on the slerp geodesic (never the zoom
+//     past the limit, never edge-clamped pixels): zero budget ->
+//     identity warp (scales exactly 0); a short budget -> scales in
+//     [0,1], non-increasing on a growing pan, clip-wide a_clip <=
+//     min <= mean <= 1, and EVERY frame's shipped H re-verified to
+//     fit at appliedZoom under the sampler-exact footprint check
+//     (the anti-smear executable proof — on synthetic yaw/pitch/
+//     roll and on both real fixtures); invalidSampleFrames == 0.
 //   - Real-fixture evidence (both fixtures, from the FILES): anchored
 //     sync -> VQF orientation -> focal from the container ->
 //     computeStabilization at several modes/strengths; the numbers
@@ -72,6 +97,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -136,9 +162,92 @@ void applyH(const double h[9], double x, double y, double& ox, double& oy) {
     oy = v / w;
 }
 
+// Test-side adjugate inverse — the same body Warp.cpp and
+// Stabilization.cpp use (their copies are anonymous-namespace; the
+// doctests pin all three to the same values).
+bool stMatInv(const double m[9], double out[9]) {
+    const double c00 = m[4] * m[8] - m[5] * m[7];
+    const double c01 = m[5] * m[6] - m[3] * m[8];
+    const double c02 = m[3] * m[7] - m[4] * m[6];
+    const double det = m[0] * c00 + m[1] * c01 + m[2] * c02;
+    if (!std::isfinite(det) || std::fabs(det) < 1e-12)
+        return false;
+    const double inv = 1.0 / det;
+    out[0] = c00 * inv;
+    out[1] = (m[2] * m[7] - m[1] * m[8]) * inv;
+    out[2] = (m[1] * m[5] - m[2] * m[4]) * inv;
+    out[3] = c01 * inv;
+    out[4] = (m[0] * m[8] - m[2] * m[6]) * inv;
+    out[5] = (m[2] * m[3] - m[0] * m[5]) * inv;
+    out[6] = c02 * inv;
+    out[7] = (m[1] * m[6] - m[0] * m[7]) * inv;
+    out[8] = (m[0] * m[4] - m[1] * m[3]) * inv;
+    return true;
+}
+
+// Test-side twin of warpFrame's sampler footprint — the anti-smear
+// proof (audit fix 2026-11-13). warpFootprintViolation is internal
+// to Stabilization.cpp, so this REBUILDS the exact chain warpFrame
+// runs on a SHIPPED plan frame: matInv, the composite M = Hinv * S
+// bit-for-bit as Warp.cpp builds it, the four OUTPUT pixel-center
+// rect corners, FINITE POSITIVE homogeneous denominators (a negative
+// w would mirror the sample across the vanishing line), and
+// [0,w-1]x[0,h-1] INCLUSIVE validity (the x1/y1 bilinear guards make
+// the boundary itself safe; anything past it clamps = smear).
+// Returns the worst corner excursion in pixels (<= 0: nothing the
+// sampler touches would clamp), or +inf when a corner is unmappable
+// or behind the vanishing plane.
+double samplerFootprintViolation(const double h[9], double zoom,
+                                 double cx, double cy, int width, int height) {
+    if (width <= 0 || height <= 0 || !(zoom >= 1.0) || !std::isfinite(zoom))
+        return std::numeric_limits<double>::infinity();
+    double hInv[9];
+    if (!stMatInv(h, hInv))
+        return std::numeric_limits<double>::infinity();
+    const double s = 1.0 / zoom;
+    double m[9];
+    for (int i = 0; i < 3; ++i) {
+        m[i * 3 + 0] = hInv[i * 3 + 0] * s;
+        m[i * 3 + 1] = hInv[i * 3 + 1] * s;
+        m[i * 3 + 2] = hInv[i * 3 + 0] * (cx - cx * s)
+                     + hInv[i * 3 + 1] * (cy - cy * s)
+                     + hInv[i * 3 + 2];
+    }
+    const double maxU = static_cast<double>(width) - 1.0;
+    const double maxV = static_cast<double>(height) - 1.0;
+    const double corners[4][2] = {{0.0, 0.0}, {maxU, 0.0},
+                                  {0.0, maxV}, {maxU, maxV}};
+    double worst = 0.0;
+    for (int c = 0; c < 4; ++c) {
+        const double x = corners[c][0], y = corners[c][1];
+        const double wd = m[6] * x + m[7] * y + m[8];
+        if (!std::isfinite(wd) || wd <= 0.0)
+            return std::numeric_limits<double>::infinity();
+        const double u = m[0] * x + m[1] * y + m[2];
+        const double v = m[3] * x + m[4] * y + m[5];
+        if (!std::isfinite(u) || !std::isfinite(v))
+            return std::numeric_limits<double>::infinity();
+        const double sx = u / wd, sy = v / wd;
+        if (!std::isfinite(sx) || !std::isfinite(sy))
+            return std::numeric_limits<double>::infinity();
+        worst = std::fmax(worst, std::fmax(std::fmax(-sx, sx - maxU),
+                                           std::fmax(-sy, sy - maxV)));
+    }
+    return worst;
+}
+
 // The 4-component quaternion as the flat vector the crop API takes.
 std::vector<double> quatVec(const double q[4]) {
     return {q[0], q[1], q[2], q[3]};
+}
+
+// Largest REQUESTED correction angle in a plan, degrees (used by the
+// acceptance tests and the fixture evidence tests).
+double stMaxAngle(const StabilizationResult& r) {
+    double m = 0.0;
+    for (double a : r.relativeAngleDeg)
+        m = std::fmax(m, a);
+    return m;
 }
 
 } // namespace
@@ -530,18 +639,24 @@ TEST_CASE("staticCropZoom: empty, identity, and degenerate inputs") {
 }
 
 TEST_CASE("staticCropZoom: numeric path reproduces the roll closed form") {
-    // Roll-only closed form (Stabilization.h):
-    //   Z(θ) = max((w|sinθ| + h|cosθ|)/h, (w|cosθ| + h|sinθ|)/w).
-    // The numeric bisection must reproduce it to 1e-9 (the bisection's
-    // own stopping tolerance) at several angles.
+    // Roll-only closed form (Stabilization.h), clean at the PIXEL-RECT
+    // center c = ((w-1)/2, (h-1)/2):
+    //   Z(θ) = max(((w-1)|sinθ| + (h-1)|cosθ|)/(h-1),
+    //               ((w-1)|cosθ| + (h-1)|sinθ|)/(w-1)).
+    // Derivation: H for a roll is the 2D rotation about c (pinned at
+    // frameTransform), so H⁻¹∘S maps the output corner (x,y) to
+    // c + R(-θ)·((x,y) - c)/Z; the four |·| terms are the corner
+    // extents. The numeric bisection must reproduce it to 1e-9 (the
+    // bisection's own stopping tolerance) at several angles.
     const double w = 3840.0, h = 2160.0;
-    const double cx = w / 2.0, cy = h / 2.0;
+    const double cx = (w - 1.0) / 2.0, cy = (h - 1.0) / 2.0;
     for (double theta : {5.0, 10.0, 20.0, 45.0}) {
         double q[4];
         quatAxisDeg(2, theta, q);
         const double s = std::fabs(std::sin(deg2rad(theta)));
         const double cc = std::fabs(std::cos(deg2rad(theta)));
-        const double closed = std::fmax((w * s + h * cc) / h, (w * cc + h * s) / w);
+        const double closed = std::fmax(((w - 1.0) * s + (h - 1.0) * cc) / (h - 1.0),
+                                        ((w - 1.0) * cc + (h - 1.0) * s) / (w - 1.0));
         const double numeric = staticCropZoom(quatVec(q),
                                               2554.6877034505208, cx, cy,
                                               3840, 2160);
@@ -556,22 +671,444 @@ TEST_CASE("staticCropZoom: pitch costs more zoom than roll at 8 deg") {
     // roll closed form is focal-independent). Numbers quoted by the
     // run (MESSAGE); the pin is the ORDERING plus sane bounds.
     const double f = 2554.6877034505208;
-    const double cx = 1920.0, cy = 1080.0;
+    const double cx = 1920.0, cy = 1080.0; // the DEFAULT principal point
     double qRoll[4], qPitch[4];
     quatAxisDeg(2, 8.0, qRoll);
     quatAxisDeg(0, -8.0, qPitch);
     const double zRoll = staticCropZoom(quatVec(qRoll), f, cx, cy, 3840, 2160);
     const double zPitch = staticCropZoom(quatVec(qPitch), f, cx, cy, 3840, 2160);
     MESSAGE("crop at 8 deg: roll=" << zRoll << " pitch=" << zPitch);
-    // Roll: the closed form at 8 deg (independent of f).
+    // Roll at the DEFAULT center (w/2, h/2 — half a pixel off the
+    // pixel-rect center): the four corner constraints are asymmetric;
+    // the derivation (H roll block [[c,s],[-s,c]] about c, composite
+    // M = H⁻¹∘S) gives the four binding constraints below, and the
+    // other four corner/constraint pairs are dominated (Stabilization.h
+    // documents the same list). At typical aspect ratios the height
+    // pair (denominators h/2-1, h/2) binds.
     const double s8 = std::sin(deg2rad(8.0));
     const double c8 = std::cos(deg2rad(8.0));
-    const double rollClosed = std::fmax((3840.0 * s8 + 2160.0 * c8) / 2160.0,
-                                       (3840.0 * c8 + 2160.0 * s8) / 3840.0);
+    const double hw = 3840.0 / 2.0, hh = 2160.0 / 2.0;
+    const double rollClosed = std::fmax(
+        std::fmax(((hw - 1.0) * c8 + hh * s8) / (hw - 1.0),
+                  (hw * c8 + (hh - 1.0) * s8) / hw),
+        std::fmax(((hw - 1.0) * s8 + (hh - 1.0) * c8) / (hh - 1.0),
+                  (hw * s8 + hh * c8) / hh));
     CHECK(zRoll == doctest::Approx(rollClosed).epsilon(1e-9));
     CHECK(zPitch > zRoll);            // perspective on top of the shift
     CHECK(zPitch > 1.50);            // beyond the shift-only bound
     CHECK(zPitch < 1.70);            // sane for a 4K frame at 8 deg
+}
+
+TEST_CASE("sampler conventions: identity fits at Z=1, an epsilon roll does not") {
+    // The reconciled boundary pins (audit fix 2026-11-13). The old
+    // checker used the CONTINUOUS [0,w]x[0,h] window while warpFrame
+    // clamps to [0,w-1]x[0,h-1]; the reconciled check is the
+    // PIXEL-CENTER rect. Three boundary facts:
+    //   1. The identity warp fits at Z = 1 EXACTLY: M = S maps the
+    //      output rect onto itself, and the INCLUSIVE domain makes the
+    //      boundary itself valid (the x1/y1 bilinear guards tap the
+    //      edge pixel at fx == w-1 exactly).
+    //   2. An epsilon roll does NOT fit at Z = 1: the rotated corners
+    //      fall outside the pixel-center rect by O(theta) — the
+    //      continuous-window checker would have accepted it, the
+    //      sampler would have clamped (smear).
+    //   3. A denominator sign change inside the rect never fits AT THAT
+    //      ZOOM: warpFrame perspective-divides with the negative w
+    //      (mirroring the sample across the vanishing line), so the
+    //      check must refuse it even though the divided coordinates
+    //      might land inside — a check on divided coordinates alone
+    //      (mapPoint) would pass it.
+    double ident[4] = {1.0, 0.0, 0.0, 0.0};
+    double h[9], hInv[9];
+    frameTransform(ident, 2554.0, 1920.0, 1080.0, h);
+    REQUIRE(stMatInv(h, hInv));
+    // (1) identity fits at Z = 1 exactly.
+    CHECK(samplerFootprintViolation(h, 1.0, 1920.0, 1080.0, 3840, 2160) <= 0.0);
+
+    // (2) an epsilon roll does not fit at Z = 1.
+    double qEps[4], hEps[9], hInvEps[9];
+    quatAxisDeg(2, 0.01, qEps);
+    frameTransform(qEps, 2554.0, 1920.0, 1080.0, hEps);
+    REQUIRE(stMatInv(hEps, hInvEps));
+    CHECK(samplerFootprintViolation(hEps, 1.0, 1920.0, 1080.0,
+                                     3840, 2160) > 0.0);
+    // ...but a small zoom (the roll closed form) makes it fit: the
+    // excursion is O(theta), the remedy is O(theta) too.
+    const double zEps = staticCropZoom(quatVec(qEps), 2554.0, 1920.0, 1080.0,
+                                       3840, 2160);
+    CHECK(zEps > 1.0);
+    CHECK(zEps < 1.001);
+    CHECK(samplerFootprintViolation(hEps, zEps, 1920.0, 1080.0,
+                                    3840, 2160) <= 0.0);
+
+    // (3) a denominator sign change inside the rect never fits at that
+    // zoom. A PURE ROLL cannot do it (its H has third row (0,0,1), so
+    // w = 1 everywhere — a 180-deg roll is refused on COORDINATES, not
+    // the denominator); the trap is the genuinely projective warp: a
+    // pitch close to 90 deg puts the vanishing line INSIDE the rect,
+    // so w(x,y) = m[6]x + m[7]y + m[8] is positive at some corners and
+    // negative at others. warpFrame perspective-divides with the
+    // negative w (mirroring the sample across the vanishing line), so
+    // the check must refuse it even though the divided coordinates of
+    // the positive-w corners might land inside — a check on divided
+    // coordinates alone (mapPoint) would pass those corners.
+    double qPitch[4], hPitch[9], hInvPitch[9];
+    quatAxisDeg(0, -89.0, qPitch);
+    frameTransform(qPitch, 2554.0, 1920.0, 1080.0, hPitch);
+    REQUIRE(stMatInv(hPitch, hInvPitch));
+    CHECK(std::isinf(samplerFootprintViolation(hPitch, 1.0, 1920.0, 1080.0,
+                                               3840, 2160)));
+    // ...and it never fits at ANY zoom: the violation is +inf for
+    // every Z >= 1 (the vanishing line stays inside the rect; zooming
+    // only scales the pre-division numerators).
+    for (double z = 1.0; z < 4.0; z += 0.5)
+        CHECK(std::isinf(samplerFootprintViolation(hPitch, z, 1920.0, 1080.0,
+                                                   3840, 2160)));
+    // The center still maps fine (the trap: applyH alone would pass).
+    double px, py;
+    applyH(hPitch, 1920.0, 1080.0, px, py);
+    CHECK(px == doctest::Approx(1920.0).epsilon(1e-6));
+    CHECK(py > 1080.0);            // pitched down: center lands below
+    CHECK(std::isfinite(py));
+}
+
+TEST_CASE("computeStabilization: acceptance — identity and fixed camera") {
+    // The acceptance suite (audit fix 2026-11-13). Identity: a static
+    // camera needs NO correction — q_rel is the identity, the crop is
+    // 1.0, every scale stays 1.0 (nothing to reduce: the compatibility
+    // contract), and the plan is the identity warp.
+    const int n = 20;
+    const OrientationSeries raw = seriesFromAngles(std::vector<double>(n, 0.0),
+                                                   0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    const StabilizationResult r = computeStabilization(raw, sync,
+                                                      raw.timestampsNs,
+                                                      nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    CHECK(r.requiredZoom == 1.0);
+    CHECK(r.appliedZoom == 1.0);
+    for (int i = 0; i < n; ++i) {
+        CHECK(r.relativeAngleDeg[i] == doctest::Approx(0.0).epsilon(1e-12));
+        CHECK(r.correctionScale[i] == 1.0); // nothing asked, nothing reduced
+        for (int k = 0; k < 9; ++k) {
+            const double want = k == 0 || k == 4 || k == 8 ? 1.0 : 0.0;
+            CHECK(r.frames[i].h[k] == want);
+        }
+        CHECK(r.frames[i].zoom == 1.0);
+        CHECK(r.frames[i].status == StabilizationStatus::Ok);
+    }
+    CHECK(r.clipCorrectionScale == 1.0);
+    CHECK(r.minCorrectionScale == 1.0);
+    CHECK(r.meanCorrectionScale == 1.0);
+    CHECK(r.invalidSampleFrames == 0);
+}
+
+TEST_CASE("computeStabilization: acceptance — known yaw/pitch/roll fits the budget") {
+    // A known composite rotation (10 deg yaw + 5 deg pitch + 3 deg
+    // roll). LockFirstFrame anchors the target at frame 0 (identity),
+    // so every later frame's q_rel IS the composite — the known-input
+    // acceptance fixture. At a GENEROUS limit (2.0) the budget
+    // suffices — every scale stays exactly 1.0 (the compatibility
+    // contract), the warp is the full correction, and the sampler
+    // footprint is clean at appliedZoom. (The default 1.3 with a
+    // borderline clip is pinned in the zoom-limit test.)
+    const int n = 10;
+    double qYaw[4], qPitch[4], qRoll[4], qTmp[4], qFull[4];
+    quatAxisDeg(1, 10.0, qYaw);
+    quatAxisDeg(0, 5.0, qPitch);
+    quatAxisDeg(2, 3.0, qRoll);
+    quatMultiply(qYaw, qPitch, qTmp);
+    quatMultiply(qTmp, qRoll, qFull);
+    const double qIdent[4] = {1.0, 0.0, 0.0, 0.0};
+    OrientationSeries raw;
+    raw.timestampsNs.reserve(n);
+    raw.quats.reserve(4 * n);
+    for (int i = 0; i < n; ++i) {
+        raw.timestampsNs.push_back(int64_t(i) * 33333333);
+        for (int k = 0; k < 4; ++k)
+            raw.quats.push_back(i == 0 ? qIdent[k] : qFull[k]);
+    }
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::LockFirstFrame;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    p.zoomLimit = 2.0;
+    const StabilizationResult r = computeStabilization(raw, sync,
+                                                      raw.timestampsNs,
+                                                      nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    MESSAGE("yaw/pitch/roll: requiredZoom=" << r.requiredZoom
+            << " appliedZoom=" << r.appliedZoom);
+    CHECK(r.requiredZoom > 1.0);      // the composite really needs a crop
+    CHECK(r.requiredZoom < 2.0);      // ...within the generous budget
+    CHECK(r.appliedZoom == r.requiredZoom);
+    for (int i = 0; i < n; ++i) {
+        if (i == 0)
+            continue; // the anchor frame: q_rel is the identity
+        CHECK(r.relativeAngleDeg[i] == doctest::Approx(
+                  quatAngleDeg(qFull)).epsilon(1e-9));
+        CHECK(r.correctionScale[i] == 1.0);
+        CHECK(r.frames[i].status == StabilizationStatus::Ok);
+        CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                        1920.0, 1080.0, 3840, 2160) <= 0.0);
+    }
+    CHECK(r.clipCorrectionScale == 1.0);
+    CHECK(r.minCorrectionScale == 1.0);
+    CHECK(r.meanCorrectionScale == 1.0);
+    CHECK(r.invalidSampleFrames == 0);
+}
+
+TEST_CASE("computeStabilization: acceptance — pan+jitter under a short budget") {
+    // A realistic handheld clip: a 0.5 deg/frame pan with 2 deg jitter
+    // on top (LockFirstFrame so the correction is the accumulated
+    // pan+jitter), under a deliberately SHORT limit (1.05). The audit
+    // fix's headline behavior: the correction visibly scales down
+    // (min/mean strictly inside (0,1)), stays smooth over time (the
+    // smoothing contract: no frame's scale exceeds its neighbors' by
+    // a visible jump), and every shipped H re-checks clean at
+    // appliedZoom — warpFrame never edge-clamps this plan.
+    const int n = 60;
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i)
+        angles[i] = 0.5 * double(i)
+                  + 2.0 * std::sin(2.0 * kPi * 3.0 * double(i) / 30.0);
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::LockFirstFrame;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    p.zoomLimit = 1.05;
+    const StabilizationResult r = computeStabilization(raw, sync,
+                                                      raw.timestampsNs,
+                                                      nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    MESSAGE("pan+jitter: requiredZoom=" << r.requiredZoom
+            << " appliedZoom=" << r.appliedZoom
+            << " minScale=" << r.minCorrectionScale
+            << " meanScale=" << r.meanCorrectionScale);
+    CHECK(r.requiredZoom > r.appliedZoom);   // the budget really is short
+    CHECK(r.appliedZoom == 1.05);
+    REQUIRE(r.correctionScale.size() == size_t(n));
+    for (int i = 0; i < n; ++i) {
+        CHECK(r.correctionScale[i] > 0.0);
+        CHECK(r.correctionScale[i] < 1.0);
+        CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                        1920.0, 1080.0, 3840, 2160) <= 0.0);
+    }
+    CHECK(r.minCorrectionScale > 0.0);
+    CHECK(r.minCorrectionScale < 1.0);
+    CHECK(r.meanCorrectionScale > 0.0);
+    CHECK(r.meanCorrectionScale < 1.0);
+    CHECK(r.invalidSampleFrames == 0);
+    // Smooth over time: the scales vary gently (the sliding-min
+    // envelope + triangular kernel), never a frame-to-frame cliff —
+    // the audit's "smoothly over time" requirement, executable.
+    double jump = 0.0;
+    for (int i = 1; i < n; ++i)
+        jump = std::fmax(jump, std::fabs(r.correctionScale[i]
+                                         - r.correctionScale[i - 1]));
+    MESSAGE("pan+jitter: max frame-to-frame scale jump=" << jump);
+    CHECK(jump < 0.05);
+}
+
+TEST_CASE("computeStabilization: acceptance — very low crop budget and high strength") {
+    // The two extreme operands of the audit finding. (a) A very low
+    // budget (limit 1.001 on a clip needing ~1.24): the correction
+    // collapses toward identity but stays > 0 and smooth, and the
+    // sampler footprint is still clean — the plan degrades HONESTLY
+    // (visible reduction), never to edge-clamped smear.
+    // (b) High strength (0.99) on a jittery clip: the smoothing asks
+    // for a big correction; with the default limit the budget may or
+    // may not suffice, but either way the invariants hold (scales in
+    // [0,1], footprint clean, invalidSampleFrames == 0).
+    const int n = 60;
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i)
+        angles[i] = 8.0 * double(i) / double(n - 1);
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::LockFirstFrame;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+
+    // (a) very low budget.
+    p.zoomLimit = 1.001;
+    StabilizationResult r = computeStabilization(raw, sync,
+                                                raw.timestampsNs,
+                                                nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    MESSAGE("low-budget: requiredZoom=" << r.requiredZoom
+            << " appliedZoom=" << r.appliedZoom
+            << " minScale=" << r.minCorrectionScale
+            << " meanScale=" << r.meanCorrectionScale);
+    CHECK(r.requiredZoom > r.appliedZoom);
+    CHECK(r.appliedZoom == doctest::Approx(1.001).epsilon(1e-12));
+    REQUIRE(r.correctionScale.size() == size_t(n));
+    for (int i = 0; i < n; ++i) {
+        CHECK(r.correctionScale[i] >= 0.0);
+        CHECK(r.correctionScale[i] < 1.0);
+        CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                        1920.0, 1080.0, 3840, 2160) <= 0.0);
+    }
+    CHECK(r.minCorrectionScale < 0.2);  // the budget is nearly zero...
+    CHECK(r.invalidSampleFrames == 0);
+    double jump = 0.0;
+    for (int i = 1; i < n; ++i)
+        jump = std::fmax(jump, std::fabs(r.correctionScale[i]
+                                         - r.correctionScale[i - 1]));
+    CHECK(jump < 0.05);                // ...and still smooth over time
+
+    // (a') a TRUE zero budget (limit 1.0): no correction at all fits,
+    // so every scale is exactly 0 and the plan is the identity warp —
+    // the honest floor, never edge-clamped pixels.
+    p.zoomLimit = 1.0;
+    r = computeStabilization(raw, sync, raw.timestampsNs,
+                            nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    CHECK(r.appliedZoom == 1.0);
+    REQUIRE(r.correctionScale.size() == size_t(n));
+    for (int i = 0; i < n; ++i) {
+        CHECK(r.correctionScale[i] == 0.0);
+        for (int k = 0; k < 9; ++k) {
+            const double want = k == 0 || k == 4 || k == 8 ? 1.0 : 0.0;
+            CHECK(r.frames[i].h[k] == want); // identity warp exactly
+        }
+        CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                        1920.0, 1080.0, 3840, 2160) <= 0.0);
+    }
+    CHECK(r.clipCorrectionScale == 0.0);
+    CHECK(r.minCorrectionScale == 0.0);
+    CHECK(r.meanCorrectionScale == 0.0);
+    CHECK(r.invalidSampleFrames == 0);
+    MESSAGE("zero-budget: all scales exactly 0, identity warp");
+
+    // (b) high strength: the correction asked for is large; the plan
+    // stays honest whatever the budget decides.
+    p.zoomLimit = 1.3;
+    p.mode = StabilizationMode::Smooth;
+    p.strength = 0.99;
+    r = computeStabilization(raw, sync, raw.timestampsNs,
+                            nullptr, true, false, p);
+    REQUIRE(r.frames.size() == size_t(n));
+    MESSAGE("high-strength: maxAngle=" << stMaxAngle(r)
+            << " requiredZoom=" << r.requiredZoom
+            << " appliedZoom=" << r.appliedZoom
+            << " minScale=" << r.minCorrectionScale);
+    REQUIRE(r.correctionScale.size() == size_t(n));
+    for (int i = 0; i < n; ++i) {
+        CHECK(r.correctionScale[i] >= 0.0);
+        CHECK(r.correctionScale[i] <= 1.0);
+        CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                        1920.0, 1080.0, 3840, 2160) <= 0.0);
+    }
+    CHECK(r.minCorrectionScale >= 0.0);
+    CHECK(r.minCorrectionScale <= 1.0);
+    CHECK(r.invalidSampleFrames == 0);
+    CHECK(stMaxAngle(r) > 0.05);  // the high strength really corrects
+}
+
+TEST_CASE("computeStabilization: acceptance — orientation variants and partial gyro coverage") {
+    // Orientation variants: the same correction asked for under YAW
+    // and under PITCH must both fit honestly at a generous limit, and
+    // at a short limit both degrade smoothly (the slerp scale is
+    // axis-agnostic — it scales the geodesic, not the axis).
+    const int n = 30;
+    SyncModel sync;
+    StabilizationParams p;
+    p.mode = StabilizationMode::LockFirstFrame;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    for (int axis : {0, 1, 2}) {
+        std::vector<double> angles(n);
+        for (int i = 0; i < n; ++i)
+            angles[i] = 6.0 * double(i) / double(n - 1);
+        const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, axis);
+        // Generous budget: full correction, all scales 1.0. (The 6-deg
+        // PITCH needs ~1.39 crop — perspective on top of the shift —
+        // so the limit must sit above that: 2.0.)
+        StabilizationParams generous = p;
+        generous.zoomLimit = 2.0;
+        StabilizationResult r = computeStabilization(raw, sync,
+                                                    raw.timestampsNs,
+                                                    nullptr, true, false, generous);
+        REQUIRE(r.frames.size() == size_t(n));
+        MESSAGE("axis-" << axis << " generous: requiredZoom=" << r.requiredZoom
+                << " minScale=" << r.minCorrectionScale);
+        CHECK(r.requiredZoom > 1.0);
+        CHECK(r.requiredZoom <= 2.0);
+        CHECK(r.appliedZoom == r.requiredZoom);
+        for (int i = 0; i < n; ++i)
+            CHECK(r.correctionScale[i] == 1.0);
+        // Short budget: smooth honest reduction, footprint clean.
+        StabilizationParams tight = p;
+        tight.zoomLimit = 1.05;
+        r = computeStabilization(raw, sync, raw.timestampsNs,
+                                 nullptr, true, false, tight);
+        REQUIRE(r.correctionScale.size() == size_t(n));
+        MESSAGE("axis-" << axis << " tight: requiredZoom=" << r.requiredZoom
+                << " minScale=" << r.minCorrectionScale
+                << " meanScale=" << r.meanCorrectionScale);
+        CHECK(r.requiredZoom > r.appliedZoom);
+        for (int i = 0; i < n; ++i) {
+            CHECK(r.correctionScale[i] > 0.0);
+            CHECK(r.correctionScale[i] < 1.0);
+            CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                            1920.0, 1080.0, 3840, 2160) <= 0.0);
+        }
+        CHECK(r.invalidSampleFrames == 0);
+    }
+
+    // Partial gyro coverage: frames beyond the gyro span still get a
+    // plan (the clamped orientation), the covered frames carry the
+    // full contract, and the reduction is smooth across the coverage
+    // boundary — the envelope's job. Gyro span [1000, 21000] (21
+    // samples, 0 -> 8 deg ramp); frames at ts 0..29000: frame 0 (ts 0)
+    // and frames 22..29 (ts > 21000) are outside (LowOverlap, clamped
+    // orientations), frames 1..21 inside. The clip needs the 8-deg
+    // roll crop (~1.238); at limit 1.05 the budget is short and the
+    // correction scales — everywhere, including the clamped frames.
+    std::vector<double> ramp(21);
+    for (int i = 0; i < 21; ++i)
+        ramp[i] = 8.0 * double(i) / 20.0;
+    const OrientationSeries part = seriesFromAngles(ramp, 1000, 1000, 2);
+    std::vector<int64_t> frames;
+    for (int i = 0; i < 30; ++i)
+        frames.push_back(int64_t(i) * 1000);
+    StabilizationParams partial = p;
+    partial.zoomLimit = 1.05;
+    StabilizationResult r = computeStabilization(part, sync, frames,
+                                                 nullptr, true, false, partial);
+    REQUIRE(r.frames.size() == 30);
+    CHECK(r.frames[0].status == StabilizationStatus::LowOverlap);
+    CHECK(r.frames[10].status == StabilizationStatus::Ok);
+    CHECK(r.frames[21].status == StabilizationStatus::Ok);
+    CHECK(r.frames[22].status == StabilizationStatus::LowOverlap);
+    CHECK(r.frames[29].status == StabilizationStatus::LowOverlap);
+    MESSAGE("partial: requiredZoom=" << r.requiredZoom
+            << " minScale=" << r.minCorrectionScale
+            << " meanScale=" << r.meanCorrectionScale);
+    CHECK(r.requiredZoom > r.appliedZoom);
+    REQUIRE(r.correctionScale.size() == 30);
+    for (int i = 0; i < 30; ++i) {
+        CHECK(r.correctionScale[i] > 0.0);
+        CHECK(r.correctionScale[i] < 1.0);
+        CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                        1920.0, 1080.0, 3840, 2160) <= 0.0);
+    }
+    CHECK(r.invalidSampleFrames == 0);
+    // Smooth across the coverage boundary (frames 21 -> 22): no cliff.
+    CHECK(std::fabs(r.correctionScale[22] - r.correctionScale[21]) < 0.05);
 }
 
 // ---------------------------------------------------------------------------
@@ -601,6 +1138,15 @@ TEST_CASE("computeStabilization: mode Off is identity, zoom 1, zero cost") {
     CHECK(r.appliedZoom == 1.0);
     for (double a : r.relativeAngleDeg)
         CHECK(a == 0.0);
+    // Off refuses before any correction exists: the applied-scale
+    // numbers report the identity plan (all 0).
+    REQUIRE(r.correctionScale.size() == 4);
+    for (double a : r.correctionScale)
+        CHECK(a == 0.0);
+    CHECK(r.clipCorrectionScale == 0.0);
+    CHECK(r.minCorrectionScale == 0.0);
+    CHECK(r.meanCorrectionScale == 0.0);
+    CHECK(r.invalidSampleFrames == 0);
 }
 
 TEST_CASE("computeStabilization: refusal ladder and status names") {
@@ -621,12 +1167,28 @@ TEST_CASE("computeStabilization: refusal ladder and status names") {
         CHECK(f.zoom == 1.0);
         CHECK(f.h[0] == 1.0);
     }
+    // A refusal applies NO correction: the applied-scale numbers report
+    // the identity plan (all 0; Stabilization.h's Step 7b contract).
+    REQUIRE(r.correctionScale.size() == 3);
+    for (double a : r.correctionScale)
+        CHECK(a == 0.0);
+    CHECK(r.clipCorrectionScale == 0.0);
+    CHECK(r.minCorrectionScale == 0.0);
+    CHECK(r.meanCorrectionScale == 0.0);
+    CHECK(r.invalidSampleFrames == 0);
 
     // Unknown offset -> Unsynced (refuses to guess the clock bridge).
     r = computeStabilization(raw, sync, frames, nullptr, false, false, p);
     REQUIRE(r.frames.size() == 3);
     for (const auto& f : r.frames)
         CHECK(f.status == StabilizationStatus::Unsynced);
+    REQUIRE(r.correctionScale.size() == 3);
+    for (double a : r.correctionScale)
+        CHECK(a == 0.0);
+    CHECK(r.clipCorrectionScale == 0.0);
+    CHECK(r.minCorrectionScale == 0.0);
+    CHECK(r.meanCorrectionScale == 0.0);
+    CHECK(r.invalidSampleFrames == 0);
 
     // Missing intrinsics (focal 0 / width 0) -> NoImu-class refusal.
     StabilizationParams noFocal = p;
@@ -634,16 +1196,29 @@ TEST_CASE("computeStabilization: refusal ladder and status names") {
     r = computeStabilization(raw, sync, frames, nullptr, true, false, noFocal);
     for (const auto& f : r.frames)
         CHECK(f.status == StabilizationStatus::NoImu);
+    REQUIRE(r.correctionScale.size() == 3);
+    for (double a : r.correctionScale)
+        CHECK(a == 0.0);
     StabilizationParams noDims = p;
     noDims.width = 0;
     r = computeStabilization(raw, sync, frames, nullptr, true, false, noDims);
     for (const auto& f : r.frames)
         CHECK(f.status == StabilizationStatus::NoImu);
+    REQUIRE(r.correctionScale.size() == 3);
+    for (double a : r.correctionScale)
+        CHECK(a == 0.0);
 
-    // No frames -> empty result, flags clean.
+    // No frames -> empty result, flags clean. The struct defaults carry
+    // the new fields: empty correctionScale, 1.0 scalars (nothing was
+    // reduced; there was nothing to reduce).
     r = computeStabilization(raw, sync, {}, nullptr, true, false, p);
     CHECK(r.frames.empty());
     CHECK(r.relativeAngleDeg.empty());
+    CHECK(r.correctionScale.empty());
+    CHECK(r.clipCorrectionScale == 1.0);
+    CHECK(r.minCorrectionScale == 1.0);
+    CHECK(r.meanCorrectionScale == 1.0);
+    CHECK(r.invalidSampleFrames == 0);
     CHECK(r.requiredZoom == 1.0);
     CHECK_FALSE(r.intrinsicsAssumed);
 
@@ -846,14 +1421,55 @@ TEST_CASE("computeStabilization: HorizonLock levels a rolled camera") {
         CHECK(r.frames[i].h[8] == doctest::Approx(1.0).epsilon(1e-12));
         CHECK(r.frames[i].status == StabilizationStatus::Ok);
     }
-    // The crop is the roll closed form at 20 deg.
+    // The crop is the roll closed form at 20 deg — the four corner
+    // constraints at the DEFAULT principal point (w/2, h/2; the same
+    // derivation as "pitch costs more zoom than roll": H roll block
+    // [[c,s],[-s,c]] about c, composite M = Hinv * S, the four binding
+    // |corner extent| terms; the height pair binds at 16:9).
     const double s20 = std::sin(deg2rad(20.0));
     const double c20 = std::cos(deg2rad(20.0));
-    const double rollClosed = std::fmax((3840.0 * s20 + 2160.0 * c20) / 2160.0,
-                                       (3840.0 * c20 + 2160.0 * s20) / 3840.0);
+    const double hw = 3840.0 / 2.0, hh = 2160.0 / 2.0;
+    const double rollClosed = std::fmax(
+        std::fmax(((hw - 1.0) * c20 + hh * s20) / (hw - 1.0),
+                  (hw * c20 + (hh - 1.0) * s20) / hw),
+        std::fmax(((hw - 1.0) * s20 + (hh - 1.0) * c20) / (hh - 1.0),
+                  (hw * s20 + hh * c20) / hh));
     CHECK(r.requiredZoom == doctest::Approx(rollClosed).epsilon(1e-9));
     MESSAGE("horizon-lock: requiredZoom=" << r.requiredZoom
             << " (roll closed form " << rollClosed << ")");
+
+    // Budget-short: required (~1.55) exceeds the default limit (1.3),
+    // so the correction scales down — the audit fix's core contract.
+    // Every frame's scale lands strictly inside (0,1) (a real, visible
+    // reduction, never the full correction and never identity), the
+    // clip-wide a_clip and the min/mean reductions order as pinned in
+    // Stabilization.h, and the anti-smear re-verification holds: every
+    // SHIPPED H re-checks clean at appliedZoom under the sampler-exact
+    // footprint (invalidSampleFrames == 0 — the executable proof that
+    // warpFrame never edge-clamps this plan).
+    CHECK(r.requiredZoom > r.appliedZoom);
+    CHECK(r.appliedZoom == 1.3);
+    REQUIRE(r.correctionScale.size() == size_t(n));
+    for (int i = 0; i < n; ++i) {
+        CHECK(r.correctionScale[i] > 0.0);
+        CHECK(r.correctionScale[i] < 1.0);
+    }
+    CHECK(r.clipCorrectionScale > 0.0);
+    CHECK(r.clipCorrectionScale < 1.0);
+    CHECK(r.minCorrectionScale > 0.0);
+    CHECK(r.minCorrectionScale < 1.0);
+    CHECK(r.meanCorrectionScale > 0.0);
+    CHECK(r.meanCorrectionScale < 1.0);
+    CHECK(r.clipCorrectionScale <= r.minCorrectionScale);
+    CHECK(r.minCorrectionScale <= r.meanCorrectionScale);
+    CHECK(r.meanCorrectionScale <= 1.0);
+    CHECK(r.invalidSampleFrames == 0);
+    for (int i = 0; i < n; ++i)
+        CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                        1920.0, 1080.0, 3840, 2160) <= 0.0);
+    MESSAGE("horizon-lock: clipScale=" << r.clipCorrectionScale
+            << " minScale=" << r.minCorrectionScale
+            << " meanScale=" << r.meanCorrectionScale);
 }
 
 TEST_CASE("computeStabilization: HorizonLock degrades without gravity") {
@@ -921,10 +1537,16 @@ TEST_CASE("computeStabilization: zoom limit clamps applied, required stays hones
     StabilizationResult r = computeStabilization(raw, sync, raw.timestampsNs,
                                                  nullptr, true, false, p);
     const double rollClosed8 = [&] {
+        // The four-constraint default-center form (same derivation as
+        // the "pitch costs more zoom" pin; the height pair binds).
         const double s8 = std::sin(deg2rad(8.0));
         const double c8 = std::cos(deg2rad(8.0));
-        return std::fmax((3840.0 * s8 + 2160.0 * c8) / 2160.0,
-                         (3840.0 * c8 + 2160.0 * s8) / 3840.0);
+        const double hw = 3840.0 / 2.0, hh = 2160.0 / 2.0;
+        return std::fmax(
+            std::fmax(((hw - 1.0) * c8 + hh * s8) / (hw - 1.0),
+                      (hw * c8 + (hh - 1.0) * s8) / hw),
+            std::fmax(((hw - 1.0) * s8 + (hh - 1.0) * c8) / (hh - 1.0),
+                      (hw * s8 + hh * c8) / hh));
     }();
     MESSAGE("zoom-limit: required=" << r.requiredZoom
             << " applied=" << r.appliedZoom);
@@ -934,6 +1556,73 @@ TEST_CASE("computeStabilization: zoom limit clamps applied, required stays hones
     CHECK(r.requiredZoom > r.appliedZoom);
     for (const auto& f : r.frames)
         CHECK(f.zoom == 1.1);
+
+    // Budget-short (required ~1.238 > limit 1.1): the correction SCALES
+    // DOWN to fit the budget instead of edge-clamping out-of-source
+    // samples into smear — the audit fix's core contract. The pan grows
+    // to 8 deg, so the late frames need the most reduction (their
+    // scale is the smallest); frame 0's q_rel is the identity (0 deg),
+    // so its scale stays 1.0 (nothing to reduce). Scales live in
+    // (0,1], min/mean in (0,1), every shipped H re-checks clean at
+    // appliedZoom under the sampler-exact footprint, and the same clip
+    // at a GENEROUS limit needs strictly less reduction (monotone in
+    // the budget: scales non-decreasing as the limit grows, with the
+    // sufficient limit 1.3 leaving everything exactly 1.0 — the
+    // compatibility pin).
+    REQUIRE(r.correctionScale.size() == size_t(n));
+    for (int i = 0; i < n; ++i) {
+        CHECK(r.correctionScale[i] > 0.0);
+        CHECK(r.correctionScale[i] <= 1.0);
+    }
+    // The reduction follows the pan: bCap is non-increasing along the
+    // 0 -> 8 deg ramp, and the sliding-min envelope + symmetric
+    // triangular kernel preserve that ordering (a moving average of a
+    // monotone sequence under a symmetric non-negative kernel is
+    // monotone the same way) — so the scales are non-increasing and
+    // the LAST frame (the full 8 deg pan) carries the minimum. Frame
+    // 0's own q_rel is the identity, but its scale is still < 1: the
+    // time window (0.5 s > the clip's whole 0.3 s span) pulls every
+    // frame toward the clip's worst cap — smoothing is the point.
+    for (int i = 1; i < n; ++i)
+        CHECK(r.correctionScale[i] <= r.correctionScale[i - 1] + 1e-12);
+    CHECK(r.minCorrectionScale > 0.0);
+    CHECK(r.minCorrectionScale < 1.0);
+    CHECK(r.meanCorrectionScale > 0.0);
+    CHECK(r.meanCorrectionScale < 1.0);
+    CHECK(r.invalidSampleFrames == 0);
+    for (const auto& f : r.frames)
+        CHECK(samplerFootprintViolation(f.h, f.zoom, 1920.0, 1080.0,
+                                        3840, 2160) <= 0.0);
+    MESSAGE("zoom-limit: minScale=" << r.minCorrectionScale
+            << " meanScale=" << r.meanCorrectionScale
+            << " clipScale=" << r.clipCorrectionScale);
+    // The reduction follows the pan: the last frame needs the most.
+    CHECK(r.correctionScale[n - 1] == doctest::Approx(r.minCorrectionScale).epsilon(1e-12));
+    // Monotone in the budget: raising the limit never reduces a scale.
+    StabilizationParams looser = p;
+    looser.zoomLimit = 1.2;
+    const StabilizationResult rLoose =
+        computeStabilization(raw, sync, raw.timestampsNs,
+                             nullptr, true, false, looser);
+    REQUIRE(rLoose.correctionScale.size() == size_t(n));
+    for (int i = 0; i < n; ++i)
+        CHECK(rLoose.correctionScale[i] >= r.correctionScale[i] - 1e-12);
+    CHECK(rLoose.minCorrectionScale >= r.minCorrectionScale - 1e-12);
+    // A SUFFICIENT budget (limit >= required ~1.238) leaves every
+    // scale exactly 1.0 — the bit-identical compatibility contract.
+    StabilizationParams ample = p;
+    ample.zoomLimit = 1.3;
+    const StabilizationResult rAmple =
+        computeStabilization(raw, sync, raw.timestampsNs,
+                             nullptr, true, false, ample);
+    REQUIRE(rAmple.correctionScale.size() == size_t(n));
+    CHECK(rAmple.appliedZoom == rAmple.requiredZoom);
+    for (int i = 0; i < n; ++i)
+        CHECK(rAmple.correctionScale[i] == 1.0);
+    CHECK(rAmple.clipCorrectionScale == 1.0);
+    CHECK(rAmple.minCorrectionScale == 1.0);
+    CHECK(rAmple.meanCorrectionScale == 1.0);
+    CHECK(rAmple.invalidSampleFrames == 0);
     // A limit below 1 is treated as 1 (never zoom OUT).
     StabilizationParams weird = p;
     weird.zoomLimit = 0.5;
@@ -1098,11 +1787,32 @@ StFixturePipeline stRunPipeline(const char* gcsvPath, const char* mcrawPath) {
     return p;
 }
 
-double stMaxAngle(const StabilizationResult& r) {
-    double m = 0.0;
-    for (double a : r.relativeAngleDeg)
-        m = std::fmax(m, a);
-    return m;
+// The anti-smear proof shared by the fixture tests (audit fix
+// 2026-11-13): every SHIPPED frame's H, at the zoom the plan ships,
+// keeps every sampled source coordinate inside [0,w-1]x[0,h-1] with a
+// finite positive homogeneous denominator — warpFrame never
+// edge-clamps a single tap of this plan. Also pins the scale honesty:
+// in [0,1] per frame, min/mean/clip consistent with the fields, and
+// the invalidSampleFrames counter exactly 0.
+void stCheckPlanHonesty(const StabilizationResult& r, int width, int height) {
+    REQUIRE(r.frames.size() == r.correctionScale.size());
+    const double cx = static_cast<double>(width) / 2.0;
+    const double cy = static_cast<double>(height) / 2.0;
+    double aMin = 1.0, aSum = 0.0;
+    for (size_t i = 0; i < r.frames.size(); ++i) {
+        CHECK(r.correctionScale[i] >= 0.0);
+        CHECK(r.correctionScale[i] <= 1.0);
+        CHECK(r.frames[i].zoom == r.appliedZoom);
+        CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
+                                        cx, cy, width, height) <= 0.0);
+        aMin = std::fmin(aMin, r.correctionScale[i]);
+        aSum += r.correctionScale[i];
+    }
+    CHECK(r.invalidSampleFrames == 0);
+    CHECK(r.minCorrectionScale == doctest::Approx(aMin).epsilon(1e-12));
+    if (!r.frames.empty())
+        CHECK(r.meanCorrectionScale
+              == doctest::Approx(aSum / double(r.frames.size())).epsilon(1e-12));
 }
 
 } // namespace
@@ -1184,6 +1894,15 @@ TEST_CASE("fixture evidence: 261110_004150 stabilization numbers") {
     CHECK(r.requiredZoom > 1.0);
     CHECK(r.requiredZoom < 1.5);
     CHECK(r.appliedZoom == std::fmin(r.requiredZoom, par.zoomLimit));
+    // The anti-smear proof on the REAL fixture (audit fix 2026-11-13):
+    // whatever the budget decides, every SHIPPED H re-checks clean at
+    // its applied zoom under the sampler-exact footprint — warpFrame
+    // never edge-clamps this plan — and the scales report honestly
+    // (all 1.0 when the budget suffices; in (0,1] when it is short).
+    stCheckPlanHonesty(r, p.width, p.height);
+    MESSAGE("004150 smooth-0.95 scales: clip=" << r.clipCorrectionScale
+            << " min=" << r.minCorrectionScale
+            << " mean=" << r.meanCorrectionScale);
 
     // LockFirstFrame: what it measures is the start-to-end DISPLACEMENT
     // from the first frame's pose, NOT the clip's path length. The VQF
@@ -1290,6 +2009,12 @@ TEST_CASE("fixture evidence: 261110_004208 stabilization numbers") {
     CHECK(stMaxAngle(r) < 10.0);
     CHECK(r.requiredZoom > 1.0);
     CHECK(r.requiredZoom < 1.5);
+    // The anti-smear proof on the REAL fixture (same contract as
+    // 004150 above): every shipped H clean at its zoom, scales honest.
+    stCheckPlanHonesty(r, p.width, p.height);
+    MESSAGE("004208 smooth-0.95 scales: clip=" << r.clipCorrectionScale
+            << " min=" << r.minCorrectionScale
+            << " mean=" << r.meanCorrectionScale);
 
     // Same displacement-vs-path story as 004150: VQF path ~56.0 deg,
     // start-to-end displacement ~1.5 deg (handheld wobble around a
