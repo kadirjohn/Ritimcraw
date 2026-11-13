@@ -219,6 +219,16 @@ fun AppNav() {
             mp4 = Mp4Exporter(
                 lutPathFor = { id -> stores.luts.pathFor(id) },
                 gyroPathFor = { sourceId -> stores.gyros.pathFor(stores.sources.get(sourceId)?.gyroId) },
+                // AUD-02: the job's sourceId -> the source's CURRENT link
+                // state, resolved once per export (AudioProject.link's
+                // absent-record default is ATTACHED, so a source without
+                // a record — an unmanaged project, an old import — keeps
+                // the byte-identical audio-carrying export). The exporter
+                // muxes the clip's audio only for ATTACHED; DETACHED,
+                // REMOVED and LINKED_EDITED export video-only.
+                audioLinkFor = { sourceId ->
+                    stores.audio.load().link(sourceId).state
+                },
                 // Export stage timing (owner request 2026-11-13): one
                 // sample/average/summary line set per export under the
                 // app's export-diagnostics tag, DEBUG builds only — the
@@ -877,6 +887,16 @@ fun AppNav() {
                     var gyroSync by remember(r.sourceId, gyroId) {
                         mutableStateOf<DoubleArray?>(null)
                     }
+                    // AUD-02: the source's CURRENT audio link state, read
+                    // per clip from the AudioStore (the same shape as the
+                    // gyroId read above). The editor's audio transport and
+                    // its honesty row render from this; an absent record is
+                    // ATTACHED (AudioProject.link's default), so a source
+                    // the audio model never touched previews exactly as
+                    // before.
+                    val audioLinkState by remember(r.sourceId) {
+                        mutableStateOf(stores.audio.load().link(r.sourceId).state)
+                    }
                     val sourceUri by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.uri)
                     }
@@ -1294,6 +1314,9 @@ fun AppNav() {
                                 gyroSync = null
                             }
                         },
+                        // AUD-02: the per-clip link state read above — the
+                        // editor's audio transport gate + honesty row.
+                        audioLinkState = audioLinkState,
                     )
                 }
             } else {

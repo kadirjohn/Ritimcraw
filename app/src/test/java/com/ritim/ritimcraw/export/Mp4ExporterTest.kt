@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
 import kotlinx.coroutines.runBlocking
@@ -829,6 +830,38 @@ class Mp4ExporterTest {
     }
 
     @Test
+    fun pipeline_link_gate_detached_exports_video_only() {
+        // AUD-02's export gate: the clip HAS an audio track (FakeSession
+        // audio=true), but the source's link state is not ATTACHED — the
+        // encode must skip the audioInfo/readAudio branch and produce the
+        // same video-only file a clip with no audio track produces.
+        val session = FakeSession(frames = 2, audio = true)
+        val writer = FakeWriter()
+        ExportPipeline(
+            session, writer,
+            renderBackend = RenderBackend.CPU,
+            audioAttached = false,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(2, writer.videoFrames)
+        assertEquals(0, writer.audioBlocks)
+        assertEquals(0, writer.startArgs!![4]) // sampleRate 0 = no audio track
+    }
+
+    @Test
+    fun pipeline_link_gate_attached_keeps_audio_bytes() {
+        // The default (audioAttached=true) keeps the byte-identical current
+        // output: a clip with an audio track still muxes it — the same
+        // counts pipeline_success_feeds_writer_in_presentation_order pins.
+        val session = FakeSession(frames = 3, audio = true)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(3, writer.videoFrames)
+        assertEquals(47, writer.audioBlocks)
+        assertEquals(48000, writer.startArgs!![4])
+        assertEquals(2, writer.startArgs!![5])
+    }
+
+    @Test
     fun pipeline_rotates_pixels_upright_and_swaps_writer_dims() {
         // §5 (owner request 2026-11-11): an 8x4 clip with container
         // orientation 90 exports 4x8 — the pixels are pre-rotated upright
@@ -1284,6 +1317,52 @@ class Mp4ExporterTest {
             File(out.parentFile, out.name + ".partial").absolutePath,
             writer.startArgs!![0],
         )
+    }
+
+    @Test
+    fun export_link_seam_detached_source_exports_video_only() {
+        // AUD-02's seam: audioLinkFor turns the job's sourceId into the
+        // source's link state. DETACHED -> the export still succeeds (a
+        // detached source is a normal export), but the file carries no
+        // audio track — the gate resolved once in export() before the
+        // engine ran.
+        val session = FakeSession(frames = 2, audio = true)
+        val writer = FakeWriter()
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = { writer },
+            engine = freshEngine(),
+            audioLinkFor = { AudioLinkState.DETACHED },
+        )
+        val out = File(tmp.root, "clip.mp4")
+        val result = runBlocking { exporter.export(job(), 7, out) }
+        assertEquals(State.DONE, result.state)
+        assertEquals(2, writer.videoFrames)
+        assertEquals(0, writer.audioBlocks)
+        assertEquals(0, writer.startArgs!![4]) // sampleRate 0 = no audio track
+    }
+
+    @Test
+    fun export_link_seam_default_attached_keeps_audio() {
+        // The default seam (audioLinkFor = { ATTACHED }) keeps the current
+    // output byte-identical for a source with audio: the clip's audio
+    // track is still read and muxed. An unmanaged project (no link
+    // record at all) lands here too — AudioProject.link's absent-record
+    // default is ATTACHED.
+        val session = FakeSession(frames = 2, audio = true)
+        val writer = FakeWriter()
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = { writer },
+            engine = freshEngine(),
+        )
+        val out = File(tmp.root, "clip.mp4")
+        val result = runBlocking { exporter.export(job(), 7, out) }
+        assertEquals(State.DONE, result.state)
+        assertEquals(2, writer.videoFrames)
+        assertTrue(writer.audioBlocks > 0)
+        assertEquals(48000, writer.startArgs!![4])
+        assertEquals(2, writer.startArgs!![5])
     }
 
     @Test

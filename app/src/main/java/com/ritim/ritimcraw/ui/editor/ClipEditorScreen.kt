@@ -91,6 +91,7 @@ import com.ritim.ritimcraw.data.LutRole
 import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
 import com.ritim.ritimcraw.engine.GradeMapping
@@ -733,6 +734,13 @@ fun ClipEditorScreen(
         { _, _ -> Result.failure(IllegalStateException()) },
     // Detaches the log (AppNav: setGyro(id, "") + refresh).
     onRemoveGyro: () -> Unit = {},
+    // AUD-02: the source's CURRENT audio link state (AppNav reads it from
+    // the AudioStore per clip — AudioProject.link's absent-record default
+    // is ATTACHED). Gates the audio transport: only ATTACHED starts the
+    // audio; DETACHED/REMOVED/LINKED_EDITED play silent, with the state
+    // shown honestly in the transport row. The default keeps every
+    // existing caller byte-identical (audio always on, no chip).
+    audioLinkState: AudioLinkState = AudioLinkState.ATTACHED,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -818,6 +826,14 @@ fun ClipEditorScreen(
         var editorColumnHeight by remember { mutableStateOf(0) }
         var transportHeight by remember { mutableStateOf(0) }
         var navHeight by remember { mutableStateOf(0) }
+        // AUD-02 honesty row height: measured ONLY while the row composes
+        // (non-ATTACHED sources), zeroed otherwise — the scope strip's
+        // zeroing rule (leaving composition fires no onSizeChanged, so a
+        // hidden row must actively reset its measurement). ATTACHED clips
+        // never compose the row, so their anchor math is untouched.
+        var audioStateRowHeight by remember { mutableStateOf(0) }
+        val audioStateRowHeightPx =
+            if (audioLinkState != AudioLinkState.ATTACHED) audioStateRowHeight else 0
         // The preview region's measured width (owner spec 2026-11-12
         // section 2, the preview-claim math): the width a width-bound
         // video would fill. The preview Box is fillMaxWidth inside the
@@ -940,7 +956,8 @@ fun ClipEditorScreen(
         // draggable sheet never composes there, so this region only
         // ever bounds the portrait sheet's anchors.)
         val freeRegionPx = (editorColumnHeight - topBarHeightPx.toInt() -
-            transportHeight - navHeight - scopeStripHeightPx).coerceAtLeast(0)
+            transportHeight - navHeight - scopeStripHeightPx -
+            audioStateRowHeightPx).coerceAtLeast(0)
         // The panel anchors update one block below the frame declaration:
         // the 2026-11-12 preview-claim cap (owner layout-refactor spec
         // section 2) needs the clip's display ratio — the rendered frame's
@@ -2045,8 +2062,14 @@ fun ClipEditorScreen(
         // position provider runs on the audio thread at start handling, so a
         // slow first open (the MCRAW whole-clip PCM read) still begins in
         // sync.
-        LaunchedEffect(isPlaying) {
-            if (isPlaying) {
+        // AUD-02 gate: only an ATTACHED source plays its audio — DETACHED,
+        // REMOVED, and LINKED_EDITED stay silent (the same honesty rule the
+        // export applies; LINKED_EDITED's edited recording is not played
+        // here — that needs the edited-audio playback, a later milestone).
+        // The pause() on the non-ATTACHED path is a no-op when the thread
+        // never started, and a real pause when the state changed mid-play.
+        LaunchedEffect(isPlaying, audioLinkState) {
+            if (isPlaying && audioLinkState == AudioLinkState.ATTACHED) {
                 audio.start(session, sourceFdProvider) {
                     val p = ptsUs ?: return@start 0L
                     PtsTimeline.positionUs(p, positionFrame)
@@ -2719,6 +2742,25 @@ fun ClipEditorScreen(
                     }
                 },
             )
+            // AUD-02 honesty row: a non-ATTACHED source shows its state
+            // under the transport (the user sees WHY the preview is silent
+            // — DESIGN.md's honest-state language, minimal). ATTACHED (the
+            // default) composes NOTHING, so the default layout is
+            // byte-identical and the panel anchor math never shifts for
+            // an attached clip. The onSizeChanged feeds the anchor math
+            // (§11.3) with the same measured-not-assumed rule as the
+            // transport row above.
+            if (audioLinkState != AudioLinkState.ATTACHED) {
+                Text(
+                    text = stringResource(audioLinkStateLabel(audioLinkState)),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onSizeChanged { audioStateRowHeight = it.height }
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                )
+            }
             }
         }
 
@@ -5832,4 +5874,17 @@ private fun CropOverlay(
             drawCircle(color = primaryColor, radius = handleRadius, center = p)
         }
     }
+}
+
+/**
+ * AUD-02's link-state label for the editor's honesty row: the same
+ * timeline_audio_state_* strings the audio settings sheet shows, so the
+ * two surfaces name a state identically (AudioSettingsSheet keeps its own
+ * private twin — the sheet and the editor each stay self-contained).
+ */
+private fun audioLinkStateLabel(state: AudioLinkState): Int = when (state) {
+    AudioLinkState.ATTACHED -> R.string.timeline_audio_state_attached
+    AudioLinkState.DETACHED -> R.string.timeline_audio_state_detached
+    AudioLinkState.REMOVED -> R.string.timeline_audio_state_removed
+    AudioLinkState.LINKED_EDITED -> R.string.timeline_audio_state_linked_edited
 }
