@@ -225,9 +225,11 @@ class RenderBackendTest {
     @Test
     fun fragment_uncovered_stages_match_the_cpu_guards() {
         // The map is the single uncovered list the line tokens come from.
-        assertEquals(19, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
+        // Stages 2 and 3 left it when they were ported into the fragment
+        // pass (they are covered now, map-state gate included).
+        assertEquals(17, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
         assertEquals(
-            setOf(2, 3, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24),
+            setOf(7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24),
             BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
         )
         // Covered + uncovered = the full 24-stage contract, no overlap.
@@ -239,14 +241,20 @@ class RenderBackendTest {
     }
 
     @Test
-    fun default_grade_has_active_uncovered_stages() {
-        // The DEFAULT grade runs stages 2+3 (both toggles default true),
-        // so the fragment leg honestly falls back to CPU — the mission's
-        // own pinned example of the no-silent-skip rule.
-        val active = BackendRules.fragmentUncoveredStages(GradeK())
+    fun default_grade_covers_the_fragment_path() {
+        // The DEFAULT grade (keepVignetting + highlightReconstruction both
+        // true) used to force the CPU fallback; stages 2+3 are ported into
+        // the fragment pass now, so a default grade with NO other edits
+        // has NO active uncovered stage — the pinned new truth this
+        // mission exists for (a default-grade GPU request stays on GPU).
+        assertTrue(BackendRules.fragmentUncoveredStages(GradeK()).isEmpty())
+        assertTrue(BackendRules.fragmentUncoveredPreStages(GradeK()).isEmpty())
         assertEquals(
-            listOf(2 to "lens-shading", 3 to "highlight-reconstruction"),
-            active,
+            EffectiveRenderBackend.GLES,
+            BackendRules.fragmentEffectiveBackend(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), GradeK(),
+                gyroWarpActive = false,
+            ),
         )
     }
 
@@ -260,9 +268,9 @@ class RenderBackendTest {
     fun every_uncovered_stage_guard_mirrors_the_cpu() {
         // One grade per stage: the field that activates CPU stage N must
         // activate the Kotlin rule's stage N (same guard, same number).
+        // Stages 2 and 3 are gone from the list (covered by the fragment
+        // pass), so their cases are gone with them.
         val cases = listOf(
-            2 to GradeK(keepVignetting = true),
-            3 to GradeK(highlightReconstruction = true),
             7 to GradeK(chromaDenoise = 25f),
             8 to GradeK(noiseReduction = 25f),
             9 to GradeK(blackPoint = 5f),
@@ -285,7 +293,8 @@ class RenderBackendTest {
             val active = BackendRules.fragmentUncoveredStages(grade).map { it.first }
             assertTrue("stage $stage not active for $grade", stage in active)
         }
-        // And the neutral twins of the toggle stages stay inactive.
+        // And the fully neutral grade (every uncovered field at its
+        // neutral value) stays inactive.
         assertTrue(
             BackendRules.fragmentUncoveredStages(
                 GradeK(keepVignetting = false, highlightReconstruction = false),
@@ -339,9 +348,10 @@ class RenderBackendTest {
                 gyroWarpActive = false,
             ),
         )
-        // Default grade (stages 2+3 active): CPU, honestly.
+        // Default grade (stages 2+3 toggles true): GLES too now — both
+        // stages are covered, so the default grade no longer forces CPU.
         assertEquals(
-            EffectiveRenderBackend.CPU,
+            EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), GradeK(),
                 gyroWarpActive = false,
@@ -375,17 +385,77 @@ class RenderBackendTest {
 
     @Test
     fun fragment_fallback_line_names_gates_and_stages_honestly() {
-        // Gates red + default grade: the line names BOTH the missing gates
-        // and the active uncovered stages — never silent.
+        // Gates red + a grade with an active uncovered stage: the line
+        // names BOTH the missing gates and the active stages — never
+        // silent. (The default grade no longer carries stage tokens —
+        // stages 2+3 are covered — so the stage leg of this test uses a
+        // grade that genuinely has one active.)
+        val grade = GradeK(keepVignetting = true, chromaDenoise = 25f)
         val line = BackendRules.fragmentFallbackLine(
-            RenderBackend.GPU_EXPERIMENTAL, BackendGates(), GradeK(),
+            RenderBackend.GPU_EXPERIMENTAL, BackendGates(), grade,
             gyroWarpActive = false,
         )!!
         assertTrue("requested missing: $line", line.contains("requested=GPU_EXPERIMENTAL"))
         assertTrue("effective missing: $line", line.contains("effective=CPU"))
         assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
-        assertTrue("stage reason missing: $line", line.contains("lens-shading"))
-        assertTrue("stage reason missing: $line", line.contains("highlight-reconstruction"))
+        assertTrue("stage reason missing: $line", line.contains("chroma-denoise"))
+    }
+
+    @Test
+    fun fragment_fallback_line_names_no_stage_for_the_default_grade() {
+        // The pinned new truth: gates green + default grade -> the
+        // fragment path runs, no fallback line at all. Gates red +
+        // default grade -> the line names ONLY the gates (the grade
+        // contributes no stage token anymore).
+        assertNull(
+            BackendRules.fragmentFallbackLine(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), GradeK(),
+                gyroWarpActive = false,
+            ),
+        )
+        val line = BackendRules.fragmentFallbackLine(
+            RenderBackend.GPU_EXPERIMENTAL, BackendGates(), GradeK(),
+            gyroWarpActive = false,
+        )!!
+        assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
+        assertTrue("lens-shading must be gone: $line", !line.contains("lens-shading"))
+        assertTrue(
+            "highlight-reconstruction must be gone: $line",
+            !line.contains("highlight-reconstruction"),
+        )
+    }
+
+    @Test
+    fun fragment_shading_applies_mirrors_the_cpu_stage2_gate() {
+        // The fragment path's stage-2 APPLICATION gate, as a truth table:
+        // keepVignetting && the clip's map present. The map state is the
+        // caller's fact (the C++ harness reads the clip's RawMeta); the
+        // CPU path keeps the same guard inside developCpu.
+        assertTrue(
+            BackendRules.fragmentShadingApplies(GradeK(), hasShadingMap = true),
+        )
+        assertTrue(
+            BackendRules.fragmentShadingApplies(
+                GradeK(keepVignetting = true), hasShadingMap = true,
+            ),
+        )
+        assertTrue(
+            "keepVignetting=false must skip stage 2",
+            !BackendRules.fragmentShadingApplies(
+                GradeK(keepVignetting = false), hasShadingMap = true,
+            ),
+        )
+        assertTrue(
+            "no map must skip stage 2",
+            !BackendRules.fragmentShadingApplies(
+                GradeK(keepVignetting = true), hasShadingMap = false,
+            ),
+        )
+        assertTrue(
+            !BackendRules.fragmentShadingApplies(
+                GradeK(keepVignetting = false), hasShadingMap = false,
+            ),
+        )
     }
 
     @Test

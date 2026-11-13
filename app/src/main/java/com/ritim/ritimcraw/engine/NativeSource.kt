@@ -768,8 +768,15 @@ class NativeSource private constructor(
          * runs the CALLER-PROVIDED four-shader fragment chain (the Kotlin
          * single source of truth: FULLSCREEN_VERTEX + DEVELOP_FRAGMENT as
          * the develop program, FULLSCREEN_VERTEX_310 + STORE_FRAGMENT as
-         * the readback program) against developLinear, the DNG path's own
-         * reference, on the same frame. Returns
+         * the readback program). [caseIndex] selects the parity case
+         * (gles/GlesPipeline.h documents both): 0 — the developLinear
+         * shape (uHasShading=0, uHr=0) against developLinear itself, the
+         * DNG path's own reference, byte-honest regardless of the clip's
+         * real metadata; 1 — the DEFAULT grade's real stage list
+         * (uHasShading = the clip's map-present gate with the real
+         * 4-plane map uploaded, uHr=1 with uHrGain = meta.wbGains with
+         * the >0 guard) against a C++-side reference computed from the
+         * exported rawedit primitives. Returns
          * [ran, maxDiffLsb, mismatchCount, samples] (see the bridge
          * comment); ran=0 means a GPU stage failed and the error detail
          * names it (EGL step, extension gate, compile log, link log, FBO
@@ -785,6 +792,7 @@ class NativeSource private constructor(
             vertex310Source: String,
             fragmentSource: String,
             storeFragmentSource: String,
+            caseIndex: Int,
         ): DoubleArray?
 
         // ---- Cross-module wrappers (external decls stay private; see the
@@ -1210,10 +1218,11 @@ class NativeSource private constructor(
         }
 
         /**
-         * JNI bridge: see nativeGlesFragmentParity. Throws
-         * IllegalStateException when the .so is absent; ran=0 otherwise
-         * means "the GPU fragment pass failed at a named stage"
-         * (previewLastError) — never a fabricated verdict.
+         * JNI bridge: see nativeGlesFragmentParity ([caseIndex] selects the
+         * parity case: 0 developLinear shape, 1 the default grade's real
+         * stage list). Throws IllegalStateException when the .so is
+         * absent; ran=0 otherwise means "the GPU fragment pass failed at
+         * a named stage" (previewLastError) — never a fabricated verdict.
          */
         internal fun jniGlesFragmentParity(
             fd: Int,
@@ -1221,12 +1230,14 @@ class NativeSource private constructor(
             vertex310Source: String,
             fragmentSource: String,
             storeFragmentSource: String,
+            caseIndex: Int,
         ): DoubleArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeGlesFragmentParity(
                 fd, vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+                caseIndex,
             )
         }
 

@@ -162,6 +162,11 @@ object GlesShaderValidator {
             "uniform ivec4 uCell;",
             "uniform vec4 uBlack;",
             "uniform vec4 uRange;",
+            "uniform int uHasShading;",
+            "uniform highp sampler2D uShading;",
+            "uniform ivec2 uShadingSize;",
+            "uniform int uHr;",
+            "uniform vec3 uHrGain;",
             "uniform vec3 uWb;",
             "uniform mat3 uCam2rgb;",
             "uniform int uHasProfile;",
@@ -196,9 +201,9 @@ object GlesShaderValidator {
         if (!s.contains("if (t == ownSite)")) {
             out += "missing the own-site passthrough (`if (t == ownSite)`)"
         }
-        if (!s.contains("n > 0 ? sum / float(n) : stage1(g)")) {
+        if (!s.contains("n > 0 ? sum / float(n) : hrAt(g)")) {
             out += "missing the n==0 center fallback " +
-                "(`n > 0 ? sum / float(n) : stage1(g)`)"
+                "(`n > 0 ? sum / float(n) : hrAt(g)`)"
         }
         // Stage 1: the slot order and the clamp the CPU applies.
         if (!s.contains("int slot = (p.y & 1) * 2 + (p.x & 1);")) {
@@ -208,6 +213,61 @@ object GlesShaderValidator {
         }
         if (!s.contains("clamp(v, 0.0, 1.0)")) {
             out += "missing the stage-1 clamp (`clamp(v, 0.0, 1.0)`)"
+        }
+        // Stage 2: the CPU rawedit::sampleShading bilinear, verbatim — the
+        // clamped normalized coordinates, the edge-clamped x1/y1, the
+        // plane-stacked texelFetch layout the C++ upload builds, and the
+        // two-lerp tail. A silent edit of either copy (shader or CPU)
+        // surfaces here.
+        if (!s.contains(
+                "min(max(u, 0.0), 1.0) * (float(uShadingSize.x) - 1.0)"
+            )
+        ) {
+            out += "missing the shading bilinear's clamped fx " +
+                "(`min(max(u, 0.0), 1.0) * (float(uShadingSize.x) - 1.0)` — " +
+                "rawedit::sampleShading)"
+        }
+        if (!s.contains("int planeOffset = plane * uShadingSize.y;")) {
+            out += "missing the shading plane stacking " +
+                "(`int planeOffset = plane * uShadingSize.y;` — the C++ upload " +
+                "stacks the 4 planes vertically, texel y = plane*shadingH + row)"
+        }
+        if (!s.contains("return a + (b - a) * ty;")) {
+            out += "missing the shading bilinear tail " +
+                "(`return a + (b - a) * ty;` — rawedit::sampleShading)"
+        }
+        if (!s.contains(
+                "v *= sampleShading(float(p.x) * du, float(p.y) * dv, slot);"
+            )
+        ) {
+            out += "missing the stage-2 gain multiply " +
+                "(`v *= sampleShading(float(p.x) * du, float(p.y) * dv, slot);` " +
+                "— the CPU stage-2 loop, gain on the post-stage-1 value)"
+        }
+        if (!s.contains("if (uHr != 1) return normAt(p);")) {
+            out += "missing the stage-3 gate " +
+                "(`if (uHr != 1) return normAt(p);` — grade.highlightReconstruction " +
+                "off skips the whole stage, exactly like the CPU)"
+        }
+        // Stage 3: the CPU highlight-reconstruction cell pass, verbatim —
+        // the clipped criterion, the ceiling level, the unclipped passthrough,
+        // and the cap.
+        if (!s.contains("if (v >= 1.0) clipped[color] = true;")) {
+            out += "missing the stage-3 clipped criterion " +
+                "(`if (v >= 1.0) clipped[color] = true;` — the CPU's >= 1.0 test)"
+        }
+        if (!s.contains("float level = minV[c] * uHrGain[c];")) {
+            out += "missing the stage-3 ceiling level " +
+                "(`float level = minV[c] * uHrGain[c];` — the CPU's minV * gain)"
+        }
+        if (!s.contains("if (v < 1.0) return v;")) {
+            out += "missing the stage-3 unclipped passthrough " +
+                "(`if (v < 1.0) return v;` — unclipped sites keep their real level)"
+        }
+        if (!s.contains("float cap = ceiling / uHrGain[siteAt(p)];")) {
+            out += "missing the stage-3 cap " +
+                "(`float cap = ceiling / uHrGain[siteAt(p)];` — the CPU's " +
+                "ceiling / gain[wbIndex(color)] with wbIndex(site) = site)"
         }
         // The OETF constants — rawedit::linearToRec709 (Transfer.cpp).
         if (!s.contains("if (lin < 0.018) return 4.5 * lin;")) {

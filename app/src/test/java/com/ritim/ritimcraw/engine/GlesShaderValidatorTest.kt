@@ -417,6 +417,11 @@ class GlesShaderValidatorTest {
             "uniform ivec4 uCell;",
             "uniform vec4 uBlack;",
             "uniform vec4 uRange;",
+            "uniform int uHasShading;",
+            "uniform highp sampler2D uShading;",
+            "uniform ivec2 uShadingSize;",
+            "uniform int uHr;",
+            "uniform vec3 uHrGain;",
             "uniform vec3 uWb;",
             "uniform mat3 uCam2rgb;",
             "uniform int uHasProfile;",
@@ -425,6 +430,144 @@ class GlesShaderValidatorTest {
         ).forEach { u ->
             assertTrue("missing uniform: $u", src.contains(u))
         }
+    }
+
+    // ---- stages 2+3 (the default grade's own stages) are locked to the
+    // CPU kernels they mirror (rawedit::sampleShading + the stage-3 cell
+    // pass, core/src/Develop.cpp) ----
+
+    @Test
+    fun develop_fragment_carries_the_stage2_shading_bilinear() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The CPU sampleShading bilinear, verbatim: clamped normalized
+        // coordinates, edge-clamped x1/y1, the two-lerp tail.
+        assertTrue(
+            "clamped fx missing",
+            src.contains("min(max(u, 0.0), 1.0) * (float(uShadingSize.x) - 1.0)"),
+        )
+        assertTrue(
+            "clamped fy missing",
+            src.contains("min(max(v, 0.0), 1.0) * (float(uShadingSize.y) - 1.0)"),
+        )
+        assertTrue(
+            "x1 edge clamp missing",
+            src.contains("int x1 = min(x0 + 1, uShadingSize.x - 1);"),
+        )
+        assertTrue(
+            "y1 edge clamp missing",
+            src.contains("int y1 = min(y0 + 1, uShadingSize.y - 1);"),
+        )
+        assertTrue(
+            "bilinear tail missing",
+            src.contains("return a + (b - a) * ty;"),
+        )
+        // The stage-2 loop: the gain multiplies the post-stage-1 value,
+        // with the CPU's du/dv normalized sensor coordinates and the
+        // cellSlot plane order.
+        assertTrue(
+            "stage-2 gain multiply missing",
+            src.contains("v *= sampleShading(float(p.x) * du, float(p.y) * dv, slot);"),
+        )
+        assertTrue(
+            "du guard missing",
+            src.contains("float du = uSize.x > 1 ? 1.0 / float(uSize.x - 1) : 0.0;"),
+        )
+        assertTrue(
+            "dv guard missing",
+            src.contains("float dv = uSize.y > 1 ? 1.0 / float(uSize.y - 1) : 0.0;"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_carries_the_stage3_cell_pass() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The CPU stage-3 cell pass, verbatim: the toggle gate, the
+        // per-color clipped criterion, the ceiling level, the unclipped
+        // passthrough, and the cap.
+        assertTrue(
+            "stage-3 gate missing",
+            src.contains("if (uHr != 1) return normAt(p);"),
+        )
+        assertTrue(
+            "clipped criterion missing",
+            src.contains("if (v >= 1.0) clipped[color] = true;"),
+        )
+        assertTrue(
+            "ceiling level missing",
+            src.contains("float level = minV[c] * uHrGain[c];"),
+        )
+        assertTrue(
+            "unclipped passthrough missing",
+            src.contains("if (v < 1.0) return v;"),
+        )
+        assertTrue(
+            "cap missing",
+            src.contains("float cap = ceiling / uHrGain[siteAt(p)];"),
+        )
+        assertTrue(
+            "cap application missing",
+            src.contains("return v > cap ? cap : v;"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_demosaic_reads_the_post_stage3_value() {
+        // The demosaic must read hrAt (post-stage-3), not stage1: the
+        // CPU demosaics the capped norm buffer. All three read sites.
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        assertTrue("own site wrong", src.contains("px[t] = hrAt(g);"))
+        assertTrue("neighbor accumulation wrong", src.contains("sum += hrAt(np);"))
+        assertTrue(
+            "n==0 fallback wrong",
+            src.contains("px[t] = n > 0 ? sum / float(n) : hrAt(g);"),
+        )
+    }
+
+    @Test
+    fun a_renamed_shading_uniform_is_reported() {
+        val renamed = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("uniform int uHasShading;", "uniform int uHasLensShading;")
+        assertTrue(
+            GlesShaderValidator.problems(renamed, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("uHasShading") },
+        )
+    }
+
+    @Test
+    fun a_broken_shading_bilinear_is_reported() {
+        // The two-lerp tail is the CPU's exact interpolation; a
+        // nearest-neighbor rewrite would silently change every gain.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("return a + (b - a) * ty;", "return a;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("shading bilinear tail") },
+        )
+    }
+
+    @Test
+    fun a_wrong_stage3_cap_is_reported() {
+        // cap = ceiling / gain[site] is the CPU's pre-WB inverse; a
+        // direct ceiling cap would double-apply the WB gain.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("float cap = ceiling / uHrGain[siteAt(p)];", "float cap = ceiling;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("stage-3 cap") },
+        )
+    }
+
+    @Test
+    fun a_stage3_gate_removed_is_reported() {
+        // grade.highlightReconstruction false must skip the whole stage
+        // (RAW-04): losing the gate would cap frames the grade asked to
+        // keep raw.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("if (uHr != 1) return normAt(p);", "if (uHr < 0) return normAt(p);")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("stage-3 gate") },
+        )
     }
 
     // ---- each new check catches its own defect ----

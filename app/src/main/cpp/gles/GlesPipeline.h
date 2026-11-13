@@ -135,7 +135,7 @@ ParityReport demosaicParity(const std::string& computeSource,
 
 // Single-frame FRAGMENT develop parity (deliverable D) — the first REAL
 // GPU render path: the fused fragment pass (GlesShaderSources
-// DEVELOP_FRAGMENT) runs stages 1+4+5 (+6/14/OETF behind runtime
+// DEVELOP_FRAGMENT) runs stages 1+2+3+4+5 (+6/14/OETF behind runtime
 // uniforms) as a draw, not a compute dispatch, and the readback goes
 // through a second fragment pass that writes an SSBO (STORE_FRAGMENT —
 // glReadPixels is banned, the recorded baseline invariant). The device
@@ -148,12 +148,34 @@ ParityReport demosaicParity(const std::string& computeSource,
 //                       write needs 3.1 fragment-shader SSBO access)
 //   [fragmentSource]    DEVELOP_FRAGMENT (300 es)
 //   [storeFragmentSource] STORE_FRAGMENT (310 es)
+//   [caseIndex]         0 = the developLinear shape (see below);
+//                       1 = the default grade's real stage list
 //
-// The pipeline (parity shape — uHasProfile=0, uExposure=1.0, uOetf=0, so
-// the pass computes exactly developLinear's stage list 1+4+5, WB applied
-// in-shader):
+// TWO parity cases (the fragment pass covers stages 1+2+3+4+5 now, so
+// ONE reference no longer fits both shapes):
 //
-//   CPU reference — rawedit::developLinear itself (untouched, exported);
+//   case 0 — the developLinear shape, byte-honest regardless of the
+//       clip's real metadata: uHasShading=0, uHr=0, uHasProfile=0,
+//       uExposure=1.0, uOetf=0 — the pass computes exactly stages 1+4+5,
+//       and the reference is rawedit::developLinear itself (untouched,
+//       exported), so this case keeps its original meaning and verdict.
+//
+//   case 1 — the DEFAULT grade's real stage list: uHasShading=1 with the
+//       clip's actual 4-plane map uploaded as a GL_R32F texture (planes
+//       stacked vertically, texel y = plane*shadingH + row — the layout
+//       the shader's texelFetch reads), uHr=1 with uHrGain = meta.wbGains
+//       with the >0 guard (a DIFFERENT vector from uWb's 1/asShotNeutral),
+//       uHasProfile=0, uExposure=1.0, uOetf=0. developLinear CANNOT serve
+//       as this case's reference (it runs stages 1+4+5 only), so the
+//       reference is computed HERE in C++ from the exported rawedit
+//       primitives — a local stage-1 copy (frame-preferred levels), the
+//       stage-2 loop through rawedit::sampleShading, a verbatim copy of
+//       the stage-3 cell pass, rawedit::demosaicBilinear, the WB multiply
+//       (1/asShotNeutral with the >0 guard), clamp [0,1], quantize
+//       uint16 — core/src/Develop.cpp itself stays untouched.
+//
+// The pipeline (both cases):
+//
 //   CPU-computed uniforms — frame-preferred stage-1 levels (uBlack/
 //       uRange, the developLinear stage-1 rule), WB gains (uWb, the
 //       1/asShotNeutral vector with the >0 guard);
@@ -181,6 +203,7 @@ ParityReport developFragmentParity(const std::string& vertexSource,
                                     const std::string& vertex310Source,
                                     const std::string& fragmentSource,
                                     const std::string& storeFragmentSource,
+                                    int caseIndex,
                                     const std::vector<uint16_t>& cfa,
                                     const rawedit::FrameInfo& info,
                                     const rawedit::RawMeta& meta);

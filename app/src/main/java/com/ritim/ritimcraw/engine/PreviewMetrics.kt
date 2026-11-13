@@ -309,6 +309,13 @@ object PreviewMetrics {
                     GlesShaderSources.FULLSCREEN_VERTEX_310,
                     GlesShaderSources.DEVELOP_FRAGMENT,
                     GlesShaderSources.STORE_FRAGMENT,
+                    // case 0 — the developLinear shape: uHasShading=0,
+                    // uHr=0, reference developLinear. The default grade's
+                    // real stage list (case 1) is the harness capability
+                    // this Measure leg can adopt once its verdict is
+                    // device-verified; keeping 0 preserves this line's
+                    // existing meaning byte-for-byte.
+                    0,
                 )
                 val frag = if (fragRaw != null) {
                     GlesParityResult.fromArray(fragRaw)

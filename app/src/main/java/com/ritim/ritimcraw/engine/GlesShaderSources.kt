@@ -178,6 +178,24 @@ void main() {
      *      the container RawMeta black/white — the exact stage-1 fallback
      *      the baseline doc pins as parity-relevant), and the per-slot
      *      range guard (white > black ? white - black : 1.0);
+     *   2  lens shading — the exact rawedit::sampleShading bilinear on
+     *      the clip's 4-plane map (uShading, GL_R32F, planes stacked
+     *      vertically, read with texelFetch: R32F is not texture-
+     *      filterable in ES 3.0, and the CPU's own bilinear is carried
+     *      verbatim anyway). Applied only when uHasShading = 1 — the
+     *      CPU's own stage-2 gate (grade.keepVignetting && map present)
+     *      computed CPU-side, because the fragment path KNOWS the map
+     *      state (BackendRules.fragmentShadingApplies; the CPU path
+     *      keeps its own identical guard — the asymmetry is documented
+     *      there);
+     *   3  highlight reconstruction — the CPU stage-3 cell pass
+     *      verbatim (per-color minV/clipped/present over the site's own
+     *      2x2 cell, ceiling from unclipped colors with the all-clipped
+     *      fallback, cap = ceiling / gain[color] applied only to sites
+     *      >= 1.0), gated by uHr (grade.highlightReconstruction); the
+     *      per-color stats are recomputed for each site's own cell —
+     *      identical math to the CPU's once-per-cell computation, which
+     *      the same cell's sites all read;
      *   4  bilinear demosaic — the exact demosaicBilinear kernel (own
      *      site through, 8-neighborhood same-color average, clamp FIRST
      *      then site test, n==0 center fallback, all four CFA patterns
@@ -199,23 +217,33 @@ void main() {
      *      0.018, else 1.099*pow(lin, 0.45) - 0.099), unclamped, exactly
      *      as the CPU tail leaves it; applied only when uOetf == 1.
      *
-     * Stages NOT covered (honest): 2 lens shading, 3 highlight
-     * reconstruction, 7-8 denoise, 9-13 tone controls, 15-24 highlights/
-     * temp-tint/wheel/split/saturation/sharpness/detail/tonemap/LUT, and
-     * the gyro warp — the BackendRules stage-coverage rules (commit d)
-     * fall back to CPU with a reason line whenever one of those is active
-     * in the grade.
+     * Stages NOT covered (honest): 7-8 denoise, 9-13 tone controls,
+     * 15-24 highlights/temp-tint/wheel/split/saturation/sharpness/
+     * detail/tonemap/LUT, and the gyro warp — the BackendRules
+     * stage-coverage rules fall back to CPU with a reason line whenever
+     * one of those is active in the grade.
      *
-     * Parity shape: the harness runs THIS pass with uHasProfile = 0,
-     * uExposure = 1.0, uOetf = 0 — stages 1+4+5, developLinear's exact
-     * stage list — into an RGBA32F attachment, whose contents the
-     * STORE_FRAGMENT pass moves to an SSBO for glMapBufferRange; the CPU
-     * then clamps [0,1] and quantizes uint16 exactly like the
-     * developLinear tail and compares (PASS <= 1 LSB, <= 0.01% mismatch,
-     * the same verdict rules as the compute harness). The WB output is
-     * deliberately NOT clamped in-shader (the baseline rule: do not
-     * early-clamp scene-linear values) — the harness tail does the
-     * clamp, matching developLinear's clamp-after-WB order.
+     * Parity shape: the harness runs TWO cases against THIS pass. Case
+     * 0 pins uHasShading = 0, uHr = 0, uHasProfile = 0, uExposure = 1.0,
+     * uOetf = 0 — stages 1+4+5, developLinear's exact stage list (the
+     * case must stay byte-honest regardless of the clip's real map, so
+     * the existing verdict keeps its meaning). Case 1 runs the DEFAULT
+     * grade's real stage list — uHasShading = 1 with the clip's actual
+     * 4-plane map uploaded as a GL_R32F texture, uHr = 1 with
+     * uHrGain = guarded wbGains (meta.wbGains with the >0 fallback — a
+     * DIFFERENT vector from uWb's 1/asShotNeutral), uHasProfile = 0,
+     * uExposure = 1.0, uOetf = 0 — against a CPU reference the harness
+     * computes in C++ from the exported rawedit primitives (stage 1 +
+     * sampleShading + the stage-3 pass + demosaicBilinear + the WB
+     * tail), so core/src/Develop.cpp stays untouched. Both cases land
+     * in an RGBA32F attachment, whose contents the STORE_FRAGMENT pass
+     * moves to an SSBO for glMapBufferRange; the CPU then clamps [0,1]
+     * and quantizes uint16 exactly like the developLinear tail and
+     * compares (PASS <= 1 LSB, <= 0.01% mismatch, the same verdict
+     * rules as the compute harness). The WB output is deliberately NOT
+     * clamped in-shader (the baseline rule: do not early-clamp
+     * scene-linear values) — the harness tail does the clamp, matching
+     * developLinear's clamp-after-WB order.
      *
      * Input: uCfa — the RAW (NOT stage-1-normalized) CFA as a 2D integer
      * texture: GL_R16UI, uint16 samples 0..65535 in their native values,
@@ -240,8 +268,8 @@ void main() {
      */
     const val DEVELOP_FRAGMENT: String = """#version 300 es
 
-// Fused develop pass - stages 1+4+5+6+14+OETF of rawedit::developCpu
-// (core/src/Develop.cpp) for a neutral grade. See the Kotlin doc above.
+// Fused develop pass - stages 1+2+3+4+5+6+14+OETF of rawedit::developCpu
+// (core/src/Develop.cpp). See the Kotlin doc above.
 
 precision highp float;
 precision highp int;
@@ -251,6 +279,11 @@ uniform ivec2 uSize;            // CFA width/height in pixels
 uniform ivec4 uCell;            // layoutFor cell: (cell[0][0], cell[0][1], cell[1][0], cell[1][1])
 uniform vec4 uBlack;            // per-slot black levels, frame-preferred (CPU-computed)
 uniform vec4 uRange;            // per-slot white-black ranges, guard included (CPU-computed)
+uniform int uHasShading;        // 1 = apply stage 2 (the CPU gate keepVignetting && map present, CPU-computed)
+uniform highp sampler2D uShading; // the clip's 4-plane shading map: GL_R32F, planes stacked vertically
+uniform ivec2 uShadingSize;     // one plane's size: (shadingW, shadingH)
+uniform int uHr;                // 1 = apply stage 3 (grade.highlightReconstruction)
+uniform vec3 uHrGain;           // stage-3 WB gains = meta.wbGains with the >0 guard (CPU-computed)
 uniform vec3 uWb;               // WB gains = 1/asShotNeutral, >0 guard included (CPU-computed)
 uniform mat3 uCam2rgb;          // camera->Rec.709, the CPU row-major matrix uploaded with transpose=GL_TRUE
 uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (no profile / parity shape)
@@ -275,6 +308,121 @@ float stage1(ivec2 p) {
     return clamp(v, 0.0, 1.0);
 }
 
+// Stage 2: the CPU rawedit::sampleShading bilinear, verbatim (core/src/
+// Develop.cpp). u/v are the CPU's normalized sensor coordinates (x*du,
+// y*dv with du = 1/(w-1) guard), plane is the CPU cellSlot order the map
+// is stored in. The map rides uShading as GL_R32F with the 4 planes
+// stacked vertically (texel y = plane * shadingH + row), so texelFetch
+// reads p[plane * shadingW * shadingH + y * shadingW + x] exactly like
+// the CPU's row-major, plane-major indexing - R32F is not texture-
+// filterable in ES 3.0, and the CPU bilinear is carried verbatim anyway.
+// The CPU's two data-shape guards are carried by the uniform gate, not
+// duplicated in-shader: the empty-map guard (return 1.0) is uHasShading
+// = 0 (the CPU-side gate computed the map state), and the plane-range
+// guard is structurally satisfied - cellSlot is always 0..3 and the
+// container populates exactly 4 planes whenever it populates the map
+// (core/src/Source.cpp), so the harness uploads the texture only in
+// that shape and plane is never out of range.
+float sampleShading(float u, float v, int plane) {
+    float fx = min(max(u, 0.0), 1.0) * (float(uShadingSize.x) - 1.0);
+    float fy = min(max(v, 0.0), 1.0) * (float(uShadingSize.y) - 1.0);
+    int x0 = int(fx);
+    int y0 = int(fy);
+    int x1 = min(x0 + 1, uShadingSize.x - 1);
+    int y1 = min(y0 + 1, uShadingSize.y - 1);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+    int planeOffset = plane * uShadingSize.y;
+    float a = texelFetch(uShading, ivec2(x0, planeOffset + y0), 0).r
+        + (texelFetch(uShading, ivec2(x1, planeOffset + y0), 0).r
+        - texelFetch(uShading, ivec2(x0, planeOffset + y0), 0).r) * tx;
+    float b = texelFetch(uShading, ivec2(x0, planeOffset + y1), 0).r
+        + (texelFetch(uShading, ivec2(x1, planeOffset + y1), 0).r
+        - texelFetch(uShading, ivec2(x0, planeOffset + y1), 0).r) * tx;
+    return a + (b - a) * ty;
+}
+
+// The post-stage-2 CFA value at p: stage 1 clamped [0,1], then the
+// shading gain (which may push it above 1.0 - the CPU multiplies the
+// normalized buffer, and the stage-3 cap reads exactly these values).
+// uHasShading carries the CPU's own stage-2 gate (keepVignetting && map
+// present) computed CPU-side; 0 skips the gain exactly like the CPU.
+float normAt(ivec2 p) {
+    float v = stage1(p);
+    if (uHasShading == 1) {
+        float du = uSize.x > 1 ? 1.0 / float(uSize.x - 1) : 0.0;
+        float dv = uSize.y > 1 ? 1.0 / float(uSize.y - 1) : 0.0;
+        int slot = (p.y & 1) * 2 + (p.x & 1);
+        v *= sampleShading(float(p.x) * du, float(p.y) * dv, slot);
+    }
+    return v;
+}
+
+// Stage 3: highlight reconstruction - the CPU stage-3 cell pass,
+// verbatim (core/src/Develop.cpp). The CPU computes the per-color stats
+// once per 2x2 cell and applies the cap in a second pass over the same
+// cell; a fragment invocation sees only its own pixel, so hrAt
+// recomputes ITS OWN cell's stats (the same four normAt reads the CPU
+// made) - identical math, identical answers, just recomputed per site.
+// A neighbor in a DIFFERENT cell gets that neighbor's own cell ceiling,
+// exactly like the CPU (stage 3 caps the whole norm buffer before the
+// demosaic reads it).
+float hrAt(ivec2 p) {
+    if (uHr != 1) return normAt(p);
+    int x0 = (p.x / 2) * 2;
+    int y0 = (p.y / 2) * 2;
+    int x1 = min(x0 + 1, uSize.x - 1);
+    int y1 = min(y0 + 1, uSize.y - 1);
+
+    // First pass: per-color minV / clipped / present over the cell's
+    // sites (the CPU's exact loop, colors from layout.cell[yy&1][xx&1]).
+    float minV[3];
+    bool clipped[3];
+    bool present[3];
+    for (int c = 0; c < 3; ++c) {
+        minV[c] = -1.0;
+        clipped[c] = false;
+        present[c] = false;
+    }
+    for (int yy = y0; yy <= y1; ++yy) {
+        for (int xx = x0; xx <= x1; ++xx) {
+            int color = siteAt(ivec2(xx, yy));
+            float v = normAt(ivec2(xx, yy));
+            present[color] = true;
+            if (minV[color] < 0.0 || v < minV[color]) minV[color] = v;
+            if (v >= 1.0) clipped[color] = true;
+        }
+    }
+
+    // Ceiling from colors that still have unclipped sites.
+    float ceiling = -1.0;
+    for (int c = 0; c < 3; ++c) {
+        if (!present[c] || clipped[c]) continue;
+        float level = minV[c] * uHrGain[c];
+        if (ceiling < 0.0 || level < ceiling) ceiling = level;
+    }
+    // Every color clipped: fall back to the lowest level overall
+    // (uniform fully-clipped patches stay at 1.0).
+    if (ceiling < 0.0) {
+        for (int c = 0; c < 3; ++c) {
+            if (!present[c]) continue;
+            float level = minV[c] * uHrGain[c];
+            if (ceiling < 0.0 || level < ceiling) ceiling = level;
+        }
+    }
+    if (ceiling < 0.0) return normAt(p);
+
+    // Second pass: cap only the clipped sites of this cell. The CPU caps
+    // the whole buffer's clipped sites; every site of this cell is one
+    // invocation of its own, so capping THIS site reproduces the CPU's
+    // buffer exactly. cap = ceiling / gain[wbIndex(color)] with the CPU's
+    // wbIndex(siteColor) = siteColor.
+    float v = normAt(p);
+    if (v < 1.0) return v;
+    float cap = ceiling / uHrGain[siteAt(p)];
+    return v > cap ? cap : v;
+}
+
 // The CPU kernel's 8-neighborhood offsets, same order (kDx, kDy).
 const int kDx[8] = int[8](-1, 1, 0, 0, -1, -1, 1, 1);
 const int kDy[8] = int[8](0, 0, -1, 1, -1, 1, -1, 1);
@@ -296,7 +444,7 @@ void main() {
     float px[3];
     for (int t = 0; t < 3; ++t) {
         if (t == ownSite) {
-            px[t] = stage1(g);
+            px[t] = hrAt(g);
         } else {
             float sum = 0.0;
             int n = 0;
@@ -305,11 +453,11 @@ void main() {
                 int ny = min(max(g.y + kDy[k], 0), maxJ);
                 ivec2 np = ivec2(nx, ny);
                 if (siteAt(np) == t) {
-                    sum += stage1(np);
+                    sum += hrAt(np);
                     n += 1;
                 }
             }
-            px[t] = n > 0 ? sum / float(n) : stage1(g);
+            px[t] = n > 0 ? sum / float(n) : hrAt(g);
         }
     }
     vec3 c = vec3(px[0], px[1], px[2]) * uWb;

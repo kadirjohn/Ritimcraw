@@ -493,6 +493,7 @@ ParityReport developFragmentParity(const std::string& vertexSource,
                                     const std::string& vertex310Source,
                                     const std::string& fragmentSource,
                                     const std::string& storeFragmentSource,
+                                    int caseIndex,
                                     const std::vector<uint16_t>& cfa,
                                     const rawedit::FrameInfo& info,
                                     const rawedit::RawMeta& meta) {
@@ -503,17 +504,11 @@ ParityReport developFragmentParity(const std::string& vertexSource,
         rep.detail = "input: cfa size != w*h";
         return rep;
     }
-    const size_t n = static_cast<size_t>(w) * h;
-
-    // --- CPU reference: developLinear itself, untouched ------------------
-    const std::vector<uint16_t> ref =
-        rawedit::developLinear(cfa.data(), info, meta);
-    if (ref.size() != n * 3) {
-        rep.detail = "cpu-reference: developLinear returned " +
-                     std::to_string(ref.size()) + " samples (expected " +
-                     std::to_string(n * 3) + ")";
+    if (caseIndex != 0 && caseIndex != 1) {
+        rep.detail = "input: caseIndex must be 0 or 1";
         return rep;
     }
+    const size_t n = static_cast<size_t>(w) * h;
 
     // --- CPU-computed uniforms (documented copies of developLinear's own
     // stage-1 / stage-5 math — the shader applies them in-hardware) ------
@@ -536,6 +531,139 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     };
     int cell[4];
     cellFor(info, cell);
+
+    // --- CPU reference, per case (GlesPipeline.h documents both) ---------
+    // case 0: rawedit::developLinear itself — the exact function the DNG
+    // path ships (stages 1+4+5 + quantize), zero drift risk, so this case
+    // keeps its original meaning and verdict.
+    // case 1: the DEFAULT grade's real stage list (1+2+3+4+5 + quantize).
+    // developLinear cannot serve (it runs no stage 2/3), and developCpu is
+    // not called here because its stage list is grade-driven and wider
+    // than the fragment pass's coverage — the reference is computed BELOW
+    // from the exported rawedit primitives (sampleShading,
+    // demosaicBilinear) plus documented copies of the stage-1/2/3/5 loops,
+    // each line mirrored from core/src/Develop.cpp (which stays
+    // untouched). Any drift between the two copies shows up as a parity
+    // mismatch — exactly what this harness exists to catch.
+    std::vector<uint16_t> ref;
+    if (caseIndex == 0) {
+        ref = rawedit::developLinear(cfa.data(), info, meta);
+    } else {
+        // Stage 1 (documented copy of developCpu stage 1 / developLinear
+        // stage 1 — same frame-preferred rule, same slot mapping, same
+        // clamp; the same levels the uBlack/uRange uniforms carry).
+        std::vector<float> norm(n);
+        for (uint32_t y = 0; y < h; ++y) {
+            for (uint32_t x = 0; x < w; ++x) {
+                const int slot = (static_cast<int>(y & 1) << 1) + static_cast<int>(x & 1);
+                const float v =
+                    (static_cast<float>(cfa[y * static_cast<size_t>(w) + x]) -
+                     black[slot]) / range[slot];
+                norm[y * static_cast<size_t>(w) + x] =
+                    std::min(std::max(v, 0.0f), 1.0f);
+            }
+        }
+        // Stage 2 (documented copy of developCpu stage 2): the default
+        // grade keeps vignetting, so the gate is the map's own presence —
+        // the SAME gate the uHasShading uniform carries below, and the
+        // same bilinear rawedit::sampleShading implements.
+        const bool hasShading = !meta.lensShading.empty() &&
+                                 meta.shadingW > 0 && meta.shadingH > 0;
+        if (hasShading) {
+            const float du = w > 1 ? 1.0f / static_cast<float>(w - 1) : 0.0f;
+            const float dv = h > 1 ? 1.0f / static_cast<float>(h - 1) : 0.0f;
+            for (uint32_t y = 0; y < h; ++y) {
+                for (uint32_t x = 0; x < w; ++x) {
+                    const int slot = (static_cast<int>(y & 1) << 1) + static_cast<int>(x & 1);
+                    const float gain = rawedit::sampleShading(
+                        meta, static_cast<float>(x) * du,
+                        static_cast<float>(y) * dv, slot);
+                    norm[y * static_cast<size_t>(w) + x] *= gain;
+                }
+            }
+        }
+        // Stage 3 (documented copy of developCpu stage 3): the default
+        // grade reconstructs highlights. cell[] is cellFor's flattened
+        // layout.cell, so cell[(yy & 1) * 2 + (xx & 1)] is the CPU's
+        // layout.cell[yy & 1][xx & 1]; wbIndex(siteColor) = siteColor.
+        {
+            const float gain[3] = {
+                meta.wbGains[0] > 0.0f ? meta.wbGains[0] : 1.0f,
+                meta.wbGains[1] > 0.0f ? meta.wbGains[1] : 1.0f,
+                meta.wbGains[2] > 0.0f ? meta.wbGains[2] : 1.0f,
+            };
+            const uint32_t cellCols = (w + 1) / 2;
+            const uint32_t cellRows = (h + 1) / 2;
+            for (uint32_t cy = 0; cy < cellRows; ++cy) {
+                for (uint32_t cx = 0; cx < cellCols; ++cx) {
+                    const int x0 = static_cast<int>(cx * 2);
+                    const int y0 = static_cast<int>(cy * 2);
+                    const int x1 = std::min(x0 + 1, static_cast<int>(w) - 1);
+                    const int y1 = std::min(y0 + 1, static_cast<int>(h) - 1);
+
+                    float minV[3] = {-1.0f, -1.0f, -1.0f};
+                    bool clipped[3] = {false, false, false};
+                    bool present[3] = {false, false, false};
+                    for (int yy = y0; yy <= y1; ++yy) {
+                        for (int xx = x0; xx <= x1; ++xx) {
+                            const int color = cell[(yy & 1) * 2 + (xx & 1)];
+                            const float v = norm[static_cast<size_t>(yy) * w + xx];
+                            present[color] = true;
+                            if (minV[color] < 0.0f || v < minV[color])
+                                minV[color] = v;
+                            if (v >= 1.0f)
+                                clipped[color] = true;
+                        }
+                    }
+                    float ceiling = -1.0f;
+                    for (int c = 0; c < 3; ++c) {
+                        if (!present[c] || clipped[c])
+                            continue;
+                        const float level = minV[c] * gain[c];
+                        if (ceiling < 0.0f || level < ceiling)
+                            ceiling = level;
+                    }
+                    if (ceiling < 0.0f) {
+                        for (int c = 0; c < 3; ++c) {
+                            if (!present[c])
+                                continue;
+                            const float level = minV[c] * gain[c];
+                            if (ceiling < 0.0f || level < ceiling)
+                                ceiling = level;
+                        }
+                    }
+                    if (ceiling < 0.0f)
+                        continue;
+                    for (int yy = y0; yy <= y1; ++yy) {
+                        for (int xx = x0; xx <= x1; ++xx) {
+                            const size_t idx = static_cast<size_t>(yy) * w + xx;
+                            if (norm[idx] < 1.0f)
+                                continue;
+                            const float cap = ceiling / gain[cell[(yy & 1) * 2 + (xx & 1)]];
+                            if (norm[idx] > cap)
+                                norm[idx] = cap;
+                        }
+                    }
+                }
+            }
+        }
+        // Stage 4 + 5 + quantize (documented copies of developLinear's own
+        // tail — the shared demosaic, the 1/asShotNeutral multiply, the
+        // clamp, x65535, lround).
+        const rawedit::ImageF img =
+            rawedit::demosaicBilinear(norm, w, h, info.cfa);
+        ref.resize(img.rgb.size());
+        for (size_t i = 0; i < img.rgb.size(); ++i) {
+            float v = img.rgb[i] * invNeutral[i % 3];
+            v = std::min(std::max(v, 0.0f), 1.0f);
+            ref[i] = static_cast<uint16_t>(std::lround(v * 65535.0f));
+        }
+    }
+    if (ref.size() != n * 3) {
+        rep.detail = "cpu-reference: returned " + std::to_string(ref.size()) +
+                     " samples (expected " + std::to_string(n * 3) + ")";
+        return rep;
+    }
 
     // --- EGL + capability gates (THIS context, not the probe's) ----------
     EglSession egl;
@@ -601,6 +729,41 @@ ParityReport developFragmentParity(const std::string& vertexSource,
                  cfa.data());
     if (glErrorAfter("glTexImage2D(R16UI)", &rep.detail) != GL_NO_ERROR) return rep;
 
+    // --- shading map texture: GL_R32F, the 4 planes stacked vertically --
+    // (plane p occupies rows [p*shadingH, (p+1)*shadingH) — exactly the
+    // layout the shader's texelFetch reads: texel y = plane*uShadingSize.y
+    // + row; rawedit populates 4 planes whenever it populates the map at
+    // all). GL_R32F is not filterable in ES 3.0, so NEAREST + the shader's
+    // explicit bilinear (texelFetch x4 + the two-lerp tail) is the CPU
+    // sampleShading's exact counterpart.
+    // case 0 pins uHasShading=0 regardless of the clip's real map — the
+    // developLinear shape — so a missing map matters not; case 1 uploads
+    // the real map when present and a 1x1 dummy otherwise (the shader
+    // only fetches when uHasShading==1, so the dummy is never read; the
+    // sampler uniform is always set, keeping the program's uniform set
+    // complete either way).
+    const bool shadingPresent = !meta.lensShading.empty() &&
+                                meta.shadingW > 0 && meta.shadingH > 0;
+    GLuint shadingTex = 0;
+    glGenTextures(1, &shadingTex);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, shadingTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (shadingPresent) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F,
+                     static_cast<GLsizei>(meta.shadingW),
+                     static_cast<GLsizei>(meta.shadingH * 4), 0,
+                     GL_RED, GL_FLOAT, meta.lensShading.data());
+    } else {
+        const float dummy = 1.0f;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 1, 1, 0,
+                     GL_RED, GL_FLOAT, &dummy);
+    }
+    if (glErrorAfter("glTexImage2D(R32F shading)", &rep.detail) != GL_NO_ERROR) return rep;
+
     // --- develop FBO: RGBA32F attachment --------------------------------
     GLuint developTex = 0;
     glGenTextures(1, &developTex);
@@ -624,8 +787,9 @@ ParityReport developFragmentParity(const std::string& vertexSource,
         return rep;
     }
 
-    // --- draw 1: the develop pass (parity shape: profile off, exposure
-    // neutral, no OETF — exactly developLinear's stage list) -------------
+    // --- draw 1: the develop pass (case 0: developLinear's stage list;
+    // case 1: the default grade's real stage list — profile off, exposure
+    // neutral, no OETF in BOTH cases) --------------------------------------
     glUseProgram(developProgram.id);
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
     const GLint cfaLoc = glGetUniformLocation(developProgram.id, "uCfa");
@@ -633,14 +797,20 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     const GLint cellLoc = glGetUniformLocation(developProgram.id, "uCell");
     const GLint blackLoc = glGetUniformLocation(developProgram.id, "uBlack");
     const GLint rangeLoc = glGetUniformLocation(developProgram.id, "uRange");
+    const GLint hasShadingLoc = glGetUniformLocation(developProgram.id, "uHasShading");
+    const GLint shadingLoc = glGetUniformLocation(developProgram.id, "uShading");
+    const GLint shadingSizeLoc = glGetUniformLocation(developProgram.id, "uShadingSize");
+    const GLint hrLoc = glGetUniformLocation(developProgram.id, "uHr");
+    const GLint hrGainLoc = glGetUniformLocation(developProgram.id, "uHrGain");
     const GLint wbLoc = glGetUniformLocation(developProgram.id, "uWb");
     const GLint camLoc = glGetUniformLocation(developProgram.id, "uCam2rgb");
     const GLint hasProfileLoc = glGetUniformLocation(developProgram.id, "uHasProfile");
     const GLint exposureLoc = glGetUniformLocation(developProgram.id, "uExposure");
     const GLint oetfLoc = glGetUniformLocation(developProgram.id, "uOetf");
     if (cfaLoc < 0 || sizeLoc < 0 || cellLoc < 0 || blackLoc < 0 ||
-        rangeLoc < 0 || wbLoc < 0 || camLoc < 0 || hasProfileLoc < 0 ||
-        exposureLoc < 0 || oetfLoc < 0) {
+        rangeLoc < 0 || hasShadingLoc < 0 || shadingLoc < 0 ||
+        shadingSizeLoc < 0 || hrLoc < 0 || hrGainLoc < 0 || wbLoc < 0 ||
+        camLoc < 0 || hasProfileLoc < 0 || exposureLoc < 0 || oetfLoc < 0) {
         rep.detail = "shader-contract: missing a develop uniform";
         return rep;
     }
@@ -649,6 +819,31 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     glUniform4i(cellLoc, cell[0], cell[1], cell[2], cell[3]);
     glUniform4f(blackLoc, black[0], black[1], black[2], black[3]);
     glUniform4f(rangeLoc, range[0], range[1], range[2], range[3]);
+    glUniform1i(shadingLoc, 3);  // texture unit 3 (GL_TEXTURE3 above)
+    // The stage-2/3 uniform gates, per case. case 0 pins both OFF (the
+    // developLinear shape — byte-honest regardless of the clip's real
+    // metadata, so this case keeps its original meaning and verdict);
+    // case 1 carries the CPU's own gates: uHasShading = the map-present
+    // guard from developCpu stage 2 (the default grade keeps vignetting),
+    // uHr = the default grade's highlightReconstruction, uHrGain =
+    // meta.wbGains with the >0 guard (developCpu stage 3's own gain[3]
+    // — a DIFFERENT vector from uWb's 1/asShotNeutral).
+    if (caseIndex == 0) {
+        glUniform1i(hasShadingLoc, 0);
+        glUniform2i(shadingSizeLoc, 1, 1);
+        glUniform1i(hrLoc, 0);
+        glUniform3f(hrGainLoc, 1.0f, 1.0f, 1.0f);
+    } else {
+        glUniform1i(hasShadingLoc, shadingPresent ? 1 : 0);
+        glUniform2i(shadingSizeLoc,
+                    static_cast<GLint>(meta.shadingW),
+                    static_cast<GLint>(meta.shadingH));
+        glUniform1i(hrLoc, 1);
+        glUniform3f(hrGainLoc,
+                    meta.wbGains[0] > 0.0f ? meta.wbGains[0] : 1.0f,
+                    meta.wbGains[1] > 0.0f ? meta.wbGains[1] : 1.0f,
+                    meta.wbGains[2] > 0.0f ? meta.wbGains[2] : 1.0f);
+    }
     glUniform3f(wbLoc, invNeutral[0], invNeutral[1], invNeutral[2]);
     const float identity[9] = {1.0f, 0.0f, 0.0f,
                                0.0f, 1.0f, 0.0f,
@@ -739,6 +934,7 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     glDeleteFramebuffers(1, &developFbo);
     glDeleteTextures(1, &scratchTex);
     glDeleteTextures(1, &developTex);
+    glDeleteTextures(1, &shadingTex);
     glDeleteTextures(1, &cfaTex);
 
     rep.ran = true;
