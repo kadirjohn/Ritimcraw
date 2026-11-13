@@ -59,6 +59,11 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.MediaSource
+import com.ritim.ritimcraw.data.audio.AudioProject
+import com.ritim.ritimcraw.data.audio.AudioStore
+import com.ritim.ritimcraw.data.audio.AudioTrackOps
+import com.ritim.ritimcraw.data.metadata.FieldStatus
+import com.ritim.ritimcraw.data.metadata.MetadataStore
 import com.ritim.ritimcraw.data.timeline.FrameRange
 import com.ritim.ritimcraw.data.timeline.TimelineClip
 import com.ritim.ritimcraw.data.timeline.TimelineEdit
@@ -127,9 +132,21 @@ import com.ritim.ritimcraw.util.Format
  * top bar's add action opens a picker of the app's imported sources
  * and appends the picked one to the video track at
  * [TimelineGeometry.appendStart], with a [TimelineIds.newId]-minted
- * id, through [TimelineEdit.AddClip] (recorded like every edit). The
- * clip's duration is the source's probed frameCount, or the documented
- * placeholder when the stats pass has not probed it yet.
+ * id, through a recorded edit. The clip's duration is the source's
+ * probed frameCount, or the documented placeholder when the stats
+ * pass has not probed it yet.
+ *
+ * LINKED-AUDIO PAIR (AUD-02's add path): when the source's metadata
+ * record says audio is KNOWN-present with a real sample rate, the
+ * add creates a LINKED PAIR in ONE transaction ([TimelineEdit.AddClipPair])
+ * — the video clip on the video track plus an audio clip (same
+ * source, same ranges) on the audio track, the video's
+ * linkedAudioId pointing at the audio clip's id. One undo step
+ * unwinds the whole pair. The gate is HONEST by construction
+ * (AUD-06): anything short of KNOWN-present with a positive rate —
+ * no metadata record, UNKNOWN audio, KNOWN-absent, or a zero rate —
+ * adds the video clip alone (the current behavior, never a guessed
+ * audio clip).
  *
  * TEXT TRACKS: deliberately not rendered in v1 (the mission's carve-
  * out) — no text clip can exist through any current UI, so a TEXT
@@ -161,12 +178,21 @@ import com.ritim.ritimcraw.util.Format
  *   "timeline" section — the same file the shell's other stores use).
  * @param sources the app's imported sources (Library), for the add
  *   picker and the clip block labels.
+ * @param metadata the app's MetadataStore — the ONLY honest source
+ *   of audio presence/rate facts (AUD-06); the add path's pair gate
+ *   reads it per source.
+ * @param audio the app's AudioStore (the shared project.json's
+ *   "audio" section) — the audio model's store; this screen's add
+ *   path is its first consumer (later commits hang the AUD-03
+ *   settings sheet off it).
  * @param onBack closes the screen (the screen persists first).
  */
 @Composable
 fun TimelineScreen(
     store: TimelineStore,
     sources: List<MediaSource>,
+    metadata: MetadataStore,
+    audio: AudioStore,
     onBack: () -> Unit,
 ) {
     RitimTheme(editor = true) {
@@ -178,6 +204,15 @@ fun TimelineScreen(
         var selectedClipId by rememberSaveable { mutableStateOf<String?>(null) }
         var playheadFrame by rememberSaveable { mutableStateOf(0.0) }
         var showAddDialog by rememberSaveable { mutableStateOf(false) }
+        // The audio settings sheet (AUD-02/AUD-03): true while open.
+        // NOT saveable — a process death mid-sheet reopens honestly
+        // with no sheet (every action already saved; nothing is lost;
+        // the saveable selection makes one tap reopen it).
+        var showAudioSheet by remember { mutableStateOf(false) }
+        // The CURRENT audio state, reloaded from the store after every
+        // audio write so the sheet always renders the record on disk
+        // (the sheet's honesty rule). One state write per action.
+        var audioProject by remember { mutableStateOf(audio.load()) }
 
         fun applyEdit(edit: TimelineEdit) {
             project = history.apply(edit)
@@ -215,8 +250,48 @@ fun TimelineScreen(
                 sourceRange = FrameRange(0.0, duration),
                 timelineRange = FrameRange(start, start + duration),
             )
-            applyEdit(TimelineEdit.AddClip(clip))
+            // The honest audio gate (AUD-06): ONLY a KNOWN-present
+            // audio field with a real sample rate mints the pair —
+            // never a guess. Everything else adds the video clip
+            // alone, exactly as before.
+            val audioTrackId = project.tracks
+                .firstOrNull { it.kind == TrackKind.AUDIO }?.id
+            val audioField = metadata.get(source.id)?.audio
+            val audioSummary = audioField?.value
+            val hasAudio = audioTrackId != null &&
+                audioField?.status == FieldStatus.KNOWN &&
+                audioSummary != null &&
+                audioSummary.present &&
+                audioSummary.sampleRateHz > 0
+            if (hasAudio) {
+                // The pair (AUD-02's add path): same source, same
+                // ranges, fresh id — the video's link is set BY the
+                // transaction, one undo step.
+                val audioClip = TimelineClip(
+                    id = TimelineIds.newId(),
+                    trackId = audioTrackId,
+                    sourceId = source.id,
+                    sourceRange = clip.sourceRange,
+                    timelineRange = clip.timelineRange,
+                )
+                applyEdit(TimelineEdit.AddClipPair(video = clip, audio = audioClip))
+            } else {
+                applyEdit(TimelineEdit.AddClip(clip))
+            }
             selectedClipId = clip.id
+        }
+
+        // ---- audio actions (AUD-02/AUD-03, the sheet's appliers) ----
+        // Every action is the same honest shape: load the CURRENT
+        // record, apply the pure op, save, reload into state — so the
+        // sheet always renders what is on disk. These writes are NOT
+        // recorded as timeline undo steps (the v1 rule the sheet's
+        // KDoc documents): they are explicit state-machine transitions
+        // and settings writes into the AudioStore, not timeline edits.
+        fun applyAudio(action: (AudioProject) -> AudioProject) {
+            val next = action(audio.load())
+            audio.save(next)
+            audioProject = next
         }
 
         val density = LocalDensity.current
@@ -288,6 +363,24 @@ fun TimelineScreen(
         val displayProject = dragPreview ?: project
         val length = TimelineOps.resolveLength(displayProject)
         val selected = displayProject.clip(selectedClipId ?: "")
+
+        // The audio sheet's join keys, derived from the SELECTION: an
+        // audio clip addresses its own settings row; a video clip with a
+        // linked audio addresses the pair's audio clip (the same id the
+        // video's linkedAudioId points at). Both halves share the
+        // sourceId (the pair-add's construction), so the AUD-02 link
+        // record's key is the same either way. A video clip with NO
+        // linked audio — or a DANGLING link (the audio half was
+        // removed individually) — offers nothing audio-shaped: null,
+        // no button, honestly.
+        val selectedAudioClipId: String? = when {
+            selected == null -> null
+            selected.trackId == audioTrackIdOf(displayProject) -> selected.id
+            else -> selected.linkedAudioId?.let { linkedId ->
+                if (displayProject.clip(linkedId) != null) linkedId else null
+            }
+        }
+        val selectedSourceId = selected?.sourceId
         val sourceNames = remember(sources) {
             sources.associate { it.id to it.displayOrId }
         }
@@ -478,7 +571,9 @@ fun TimelineScreen(
                 // mission's "select clip → operation row": Split cuts
                 // at the playhead, Duplicate and Remove act on the
                 // selection. Trim and Move are direct gestures on the
-                // block.
+                // block. An audio clip (or a video clip with a linked
+                // audio) ALSO offers Audio — the settings sheet's
+                // entry (AUD-02/AUD-03).
                 if (selected != null) {
                     Row(
                         modifier = Modifier
@@ -487,6 +582,25 @@ fun TimelineScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // The audio settings entry: present ONLY for a
+                        // selection with an audio half (an audio clip,
+                        // or a video clip whose pair carries audio) —
+                        // a video-only clip honestly offers nothing
+                        // audio-shaped.
+                        if (selectedAudioClipId != null && selectedSourceId != null) {
+                            OperationButton(
+                                label = stringResource(R.string.timeline_audio),
+                                icon = {
+                                    Icon(
+                                        painterResource(R.drawable.ic_track_audio),
+                                        contentDescription = null,
+                                    )
+                                },
+                                enabled = true,
+                                modifier = Modifier.weight(1f),
+                                onClick = { showAudioSheet = true },
+                            )
+                        }
                         OperationButton(
                             label = stringResource(R.string.timeline_split),
                             icon = {
@@ -513,6 +627,52 @@ fun TimelineScreen(
                                         audioRightId = audioRightId,
                                     ),
                                 )
+                                // SPLIT SETTINGS INHERITANCE (AUD-03):
+                                // the audio right piece inherits the
+                                // left piece's settings row — the same
+                                // "mevcut ayarlar korunur" rule at split
+                                // time. A missing left row means unity
+                                // — afterSplit is a no-op, honestly.
+                                // NOT an undo step (the audio write
+                                // rule); undoing the split removes the
+                                // right piece, and its row rides the
+                                // removed id harmlessly.
+                                //
+                                // WHICH pieces exist is the SPLIT's
+                                // decision, checked against the
+                                // COMMITTED project after the apply —
+                                // never assumed from the minted ids: a
+                                // VIDEO split maps the edit point onto
+                                // the linked audio and may leave it
+                                // UNSPLIT (TimelineOps.split's honest
+                                // rule), in which case NO audio right
+                                // piece exists and minting its row
+                                // would be dishonest state; a directly
+                                // split AUDIO clip is its own left
+                                // piece (the right piece's id is
+                                // [rightId]).
+                                val splitAudioLeft = selected.linkedAudioId
+                                if (splitAudioLeft != null && audioRightId != null) {
+                                    // The linked pair split: only if the
+                                    // audio right piece REALLY exists.
+                                    if (project.clip(audioRightId) != null) {
+                                        applyAudio { current ->
+                                            AudioTrackOps.afterSplit(current, splitAudioLeft, audioRightId)
+                                        }
+                                    }
+                                } else if (splitAudioLeft == null && audioRightId == null &&
+                                    selected.trackId == audioTrackIdOf(project)
+                                ) {
+                                    // A directly-split AUDIO clip (a
+                                    // video-only clip split mints no
+                                    // row — its id is not an audio
+                                    // clip's): the selected clip IS
+                                    // the audio, its left piece keeps
+                                    // the id.
+                                    applyAudio { current ->
+                                        AudioTrackOps.afterSplit(current, selected.id, rightId)
+                                    }
+                                }
                             },
                         )
                         OperationButton(
@@ -558,6 +718,64 @@ fun TimelineScreen(
                     showAddDialog = false
                     addClip(source)
                 },
+            )
+        }
+        // The audio settings sheet (AUD-02/AUD-03): opens only for a
+        // selection with an audio half. The metadata record's KNOWN
+        // sample rate is the sheet's rate gate (AUD-06) — the honest
+        // source of the rate fact, the same gate the pair-add reads.
+        if (showAudioSheet && selectedAudioClipId != null && selectedSourceId != null) {
+            val audioField = metadata.get(selectedSourceId)?.audio
+            val audioSummary = audioField?.value
+            val knownRate = if (
+                audioField?.status == FieldStatus.KNOWN &&
+                audioSummary != null &&
+                audioSummary.present &&
+                audioSummary.sampleRateHz > 0
+            ) {
+                audioSummary.sampleRateHz
+            } else {
+                0 // UNKNOWN — the sheet disables its controls honestly.
+            }
+            AudioSettingsSheet(
+                clipId = selectedAudioClipId,
+                sourceId = selectedSourceId,
+                sampleRateHz = knownRate,
+                audioProject = audioProject,
+                onSettings = { gainDb, fadeInMs, fadeOutMs ->
+                    // The row's rate: an existing row keeps its own
+                    // (pass 0 = "keep", the setSettings contract); a
+                    // NEW row needs the KNOWN rate — the sheet's
+                    // enabled gate already guarantees it is > 0 here.
+                    val existingRate = audioProject.clip(selectedAudioClipId)?.sampleRateHz ?: 0
+                    applyAudio { current ->
+                        AudioTrackOps.setSettings(
+                            project = current,
+                            clipId = selectedAudioClipId,
+                            sourceId = selectedSourceId,
+                            sampleRateHz = if (existingRate > 0) 0 else knownRate,
+                            gainDb = gainDb,
+                            fadeInMs = fadeInMs,
+                            fadeOutMs = fadeOutMs,
+                        )
+                    }
+                },
+                onDetach = {
+                    applyAudio { current ->
+                        AudioTrackOps.detach(current, selectedSourceId)
+                    }
+                },
+                onRestore = {
+                    applyAudio { current ->
+                        AudioTrackOps.restore(current, selectedSourceId)
+                    }
+                },
+                onRemove = {
+                    applyAudio { current ->
+                        AudioTrackOps.remove(current, selectedSourceId)
+                    }
+                },
+                onDismiss = { showAudioSheet = false },
             )
         }
     }
@@ -609,6 +827,10 @@ private fun timelineTracks(project: TimelineProject) =
     project.tracks
         .filter { it.kind == TrackKind.VIDEO || it.kind == TrackKind.AUDIO }
         .sortedBy { it.index }
+
+/** The audio track's id, or null when the project has no audio track. */
+private fun audioTrackIdOf(project: TimelineProject): String? =
+    project.tracks.firstOrNull { it.kind == TrackKind.AUDIO }?.id
 
 // ---------------------------------------------------------------------------
 // Ruler (TL-17 + TL-07 scrub)

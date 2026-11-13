@@ -62,6 +62,42 @@ sealed interface TimelineEdit {
         override fun inverse(project: TimelineProject) = RemoveClip(clip.id)
     }
 
+    /**
+     * Adds a LINKED PAIR — the video clip and its audio clip — in ONE
+     * transaction (AUD-02's add path): a source whose metadata says
+     * audio is KNOWN-present enters the timeline as a pair, one undo
+     * step, the SplitClip precedent of one edit producing two clips.
+     * The apply sets the video clip's linkedAudioId to the audio
+     * clip's id itself, so the pair is linked BY CONSTRUCTION — the
+     * caller mints both clips (ids, tracks, ranges) and never
+     * assembles the link by hand. The inverse removes BOTH clips:
+     * one undo unwinds the whole pair, never leaving an orphan audio
+     * clip on the audio lane.
+     */
+    data class AddClipPair(val video: TimelineClip, val audio: TimelineClip) : TimelineEdit {
+        override fun apply(project: TimelineProject): TimelineProject =
+            TimelineOps.add(TimelineOps.add(project, video.copy(linkedAudioId = audio.id)), audio)
+
+        override fun inverse(project: TimelineProject): TimelineEdit =
+            RemoveClipPair(video.id, audio.id)
+    }
+
+    /**
+     * The pair-add undo: removes both clips of an AddClipPair by id.
+     * Missing ids (one half already removed individually) are simply
+     * not there — the undo cleans up whatever of the pair remains.
+     * Internal to AddClipPair.inverse — a user never constructs one;
+     * redo re-applies the stored original AddClipPair.
+     */
+    data class RemoveClipPair(val videoId: String, val audioId: String) : TimelineEdit {
+        override fun apply(project: TimelineProject): TimelineProject =
+            project.copy(
+                clips = project.clips.filterNot { it.id == videoId || it.id == audioId },
+            )
+
+        override fun inverse(project: TimelineProject): TimelineEdit = NoOp
+    }
+
     /** Removes a clip by id; missing id is a no-op. */
     data class RemoveClip(val clipId: String) : TimelineEdit {
         override fun apply(project: TimelineProject) = TimelineOps.delete(project, clipId)

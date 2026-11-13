@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.export
 import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.RotationState
+import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
 import java.io.File
@@ -859,6 +860,21 @@ class ExportPipeline(
      * that into a clean whole-export CPU restart.
      */
     private val renderBackend: RenderBackend = RenderBackend.CPU,
+    /**
+     * AUD-02's export gate: true (the default) = the source's audio link
+     * state is ATTACHED, so the encode reads the clip's audio track exactly
+     * as before — the encoded bytes are identical. False = DETACHED,
+     * REMOVED, or LINKED_EDITED: the encode skips the audioInfo/readAudio
+     * branch entirely (the same path a clip with no audio track takes),
+     * producing a video-only file — the honest output for a source whose
+     * audio the user has detached, removed, or replaced with an edited
+     * recording (the edited recording itself is NOT muxed here; binding
+     * edited audio needs the TIMELINE export, a later milestone — AUD-03's
+     * exportStartMs truth rides that future export, not this clip export).
+     * The exporter resolves this ONCE from the source's link record before
+     * the engine runs; tests inject it directly.
+     */
+    private val audioAttached: Boolean = true,
 ) {
 
     /**
@@ -924,11 +940,14 @@ class ExportPipeline(
         val videoPts = PtsTimeline.videoPts(rawPts)
 
         // 2. Audio description + PCM (absent audio = video-only file).
+        // AUD-02: audioAttached=false (DETACHED/REMOVED/LINKED_EDITED)
+        // takes the null path on purpose — same as a clip with no audio
+        // track, the writer gets sampleRate 0 and muxes no audio track.
         var sampleRate = 0
         var channels = 0
         var blocks: List<ShortArray> = emptyList()
         var audioPts: List<Long> = emptyList()
-        val audio = session.audioInfo(info.handle)
+        val audio = if (audioAttached) session.audioInfo(info.handle) else null
         if (audio != null && audio.size >= 2 && audio[0] > 0 && audio[1] > 0) {
             sampleRate = audio[0]
             channels = audio[1]
@@ -1193,6 +1212,17 @@ class Mp4Exporter(
     private val lutPathFor: (String?) -> String? = { null },
     private val gyroPathFor: (String) -> String? = { null },
     /**
+     * AUD-02's link-state seam (the lut/gyro pattern again): turns the
+     * job's sourceId into the source's CURRENT audio link state. The app
+     * wires it to the AudioStore's record (AudioProject.link — an absent
+     * record is ATTACHED, the default, so an unmanaged project keeps the
+     * byte-identical current output); tests inject a fake. Only ATTACHED
+     * exports the clip's audio track — DETACHED, REMOVED, and
+     * LINKED_EDITED export video-only (the edited recording is not muxed
+     * here; that needs the TIMELINE export, a later milestone).
+     */
+    private val audioLinkFor: (String) -> AudioLinkState = { AudioLinkState.ATTACHED },
+    /**
      * Per-export stage-timing log sink (owner request 2026-11-13): each
      * line the timing emits lands here (the app wires it to Log.i under
      * the "ritim-export" tag, DEBUG builds only — see [ExportStageTiming]
@@ -1230,6 +1260,9 @@ class Mp4Exporter(
     ): ExportJob {
         val lutPath = lutPathFor(job.snapshot.lutId)
         val gyroPath = gyroPathFor(job.sourceId)
+        // AUD-02 gate, resolved ONCE before the engine runs (the same
+        // rule as lut/gyro): only ATTACHED carries the audio track.
+        val audioAttached = audioLinkFor(job.sourceId) == AudioLinkState.ATTACHED
         val partial = ExportStaging.partial(out)
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
@@ -1239,7 +1272,7 @@ class Mp4Exporter(
                             exportOnce(
                                 job.renderBackend, sourceFd, job.snapshot,
                                 partial.absolutePath, lutPath, gyroPath,
-                                job.manualRotationDeg, onProgress,
+                                job.manualRotationDeg, audioAttached, onProgress,
                             )
                         } catch (e: SurfaceInputUnavailable) {
                             // §10: the writer could not bring its
@@ -1262,7 +1295,7 @@ class Mp4Exporter(
                             exportOnce(
                                 RenderBackend.CPU, sourceFd, job.snapshot,
                                 partial.absolutePath, lutPath, gyroPath,
-                                job.manualRotationDeg, onProgress,
+                                job.manualRotationDeg, audioAttached, onProgress,
                             )
                         }
                         if (ExportStaging.finalize(partial, out)) {
@@ -1311,7 +1344,9 @@ class Mp4Exporter(
      * 0, never a mid-stream continuation, so the writer (its codecs, its
      * muxer, its EGL state) is never reused across attempts. [renderBackend]
      * is the attempt's backend: the job's snapshot for the first attempt,
-     * CPU for the restart.
+     * CPU for the restart. [audioAttached] is AUD-02's resolved gate —
+     * the same value for BOTH attempts (a backend restart never changes
+     * what audio the export carries).
      */
     private fun exportOnce(
         renderBackend: RenderBackend,
@@ -1321,6 +1356,7 @@ class Mp4Exporter(
         lutPath: String?,
         gyroPath: String?,
         manualRotationDeg: Int,
+        audioAttached: Boolean,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
     ) {
         ExportPipeline(
@@ -1328,6 +1364,7 @@ class Mp4Exporter(
             writerFactory(),
             stageLog,
             renderBackend = renderBackend,
+            audioAttached = audioAttached,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )

@@ -54,6 +54,7 @@ import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
+import com.ritim.ritimcraw.data.audio.AudioStore
 import com.ritim.ritimcraw.data.CollectionRefresh
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.GyroFolderStore
@@ -192,6 +193,11 @@ fun AppNav() {
             // own top-level "timeline" section (TimelineStore) — the
             // timeline core model's own store, opened from Projects.
             timeline = TimelineStore(project),
+            // The audio track state (spec AUD-02/AUD-03): the same
+            // shared project.json, own "audio" section (AudioStore)
+            // — the audio model's own store, same file as every other
+            // section-scoped store.
+            audio = AudioStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -213,6 +219,16 @@ fun AppNav() {
             mp4 = Mp4Exporter(
                 lutPathFor = { id -> stores.luts.pathFor(id) },
                 gyroPathFor = { sourceId -> stores.gyros.pathFor(stores.sources.get(sourceId)?.gyroId) },
+                // AUD-02: the job's sourceId -> the source's CURRENT link
+                // state, resolved once per export (AudioProject.link's
+                // absent-record default is ATTACHED, so a source without
+                // a record — an unmanaged project, an old import — keeps
+                // the byte-identical audio-carrying export). The exporter
+                // muxes the clip's audio only for ATTACHED; DETACHED,
+                // REMOVED and LINKED_EDITED export video-only.
+                audioLinkFor = { sourceId ->
+                    stores.audio.load().link(sourceId).state
+                },
                 // Export stage timing (owner request 2026-11-13): one
                 // sample/average/summary line set per export under the
                 // app's export-diagnostics tag, DEBUG builds only — the
@@ -812,6 +828,8 @@ fun AppNav() {
                 TimelineScreen(
                     store = stores.timeline,
                     sources = sources,
+                    metadata = stores.metadata,
+                    audio = stores.audio,
                     onBack = { timelineOpen = false },
                 )
             } else if (route != null) {
@@ -868,6 +886,16 @@ fun AppNav() {
                     }
                     var gyroSync by remember(r.sourceId, gyroId) {
                         mutableStateOf<DoubleArray?>(null)
+                    }
+                    // AUD-02: the source's CURRENT audio link state, read
+                    // per clip from the AudioStore (the same shape as the
+                    // gyroId read above). The editor's audio transport and
+                    // its honesty row render from this; an absent record is
+                    // ATTACHED (AudioProject.link's default), so a source
+                    // the audio model never touched previews exactly as
+                    // before.
+                    val audioLinkState by remember(r.sourceId) {
+                        mutableStateOf(stores.audio.load().link(r.sourceId).state)
                     }
                     val sourceUri by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.uri)
@@ -1286,6 +1314,9 @@ fun AppNav() {
                                 gyroSync = null
                             }
                         },
+                        // AUD-02: the per-clip link state read above — the
+                        // editor's audio transport gate + honesty row.
+                        audioLinkState = audioLinkState,
                     )
                 }
             } else {
@@ -1582,4 +1613,10 @@ private class Stores(
     // The timeline (spec TL-01): same shared project.json, own
     // top-level "timeline" section (TimelineStore).
     val timeline: TimelineStore,
+    // The audio track state (spec AUD-02/AUD-03): same shared
+    // project.json, own "audio" section (AudioStore) — link states
+    // and per-clip audio settings. The timeline's add path reads it
+    // through the metadata gate; the audio settings sheet (AUD-03)
+    // is the same store's UI.
+    val audio: AudioStore,
 )
