@@ -107,6 +107,8 @@
     <string name="editor_lut_none">Yok</string>
     <string name="editor_lut_edit_interp">Yorumu düzenle</string>
     <string name="editor_lut_interp_title">LUT yorumu</string>
+    <string name="editor_lut_interp_window_source">Kaynak</string>
+    <string name="editor_lut_interp_window_transform">Dönüşüm</string>
     <string name="editor_lut_interp_name_label">Ad</string>
     <string name="editor_lut_interp_preset">Hazır yorum</string>
     <string name="editor_lut_preset_srgb_creative">sRGB yaratıcı</string>

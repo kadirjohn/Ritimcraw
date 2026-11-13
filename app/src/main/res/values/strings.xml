@@ -107,6 +107,8 @@
     <string name="editor_lut_none">None</string>
     <string name="editor_lut_edit_interp">Edit interpretation</string>
     <string name="editor_lut_interp_title">LUT interpretation</string>
+    <string name="editor_lut_interp_window_source">Source</string>
+    <string name="editor_lut_interp_window_transform">Transform</string>
     <string name="editor_lut_interp_name_label">Name</string>
     <string name="editor_lut_interp_preset">Preset</string>
     <string name="editor_lut_preset_srgb_creative">sRGB creative</string>
