@@ -298,3 +298,77 @@ parity — device-independent portion complete:
   device-test-pending. Owner device test: run Measure on a clip, read
   the "ritim-pm" gles block — probe line, then either a parity line +
   verdict or an honest skip/failure line.
+
+## 8. Deliverable D status (implemented this stage)
+
+Fragment-shader develop pipeline + encoder Surface export connection —
+the first REAL GPU render path (a draw, not a compute dispatch):
+
+- Native (Android-only, compiled by :app:assembleDebug): the two-pass
+  fragment parity harness in `app/src/main/cpp/gles/GlesPipeline.{h,cpp}`
+  — DEVELOP_FRAGMENT (one ES 3.00 fused pass, stages 1+4+5+6+14+OETF
+  behind uniforms) renders into an RGBA32F attachment (EXT_color_buffer_
+  float, gated at runtime), STORE_FRAGMENT (ES 3.10 + SSBO) moves the
+  attachment to a buffer for glMapBufferRange readback; the CPU tail
+  clamps + quantizes uint16 exactly like developLinear and compares
+  against rawedit::developLinear itself (untouched). glReadPixels is
+  used NOWHERE (the recorded baseline invariant). The parity shape runs
+  uHasProfile=0, uExposure=1.0, uOetf=0 — developLinear's exact stage
+  list.
+- JNI seam: `nativeGlesFragmentParity(fd, vs, vs310, developFs, storeFs)`
+  -> [ran, maxDiffLsb, mismatchCount, samples]; the device compiles the
+  exact Kotlin shader text (GlesShaderSources is the single source of
+  truth; GlesShaderValidator host-checks the same text in JVM tests —
+  the host has no GLSL compiler, so the real compile is
+  device-test-pending, honestly).
+- Fragment-leg gate (RenderBackend.BackendGates.fragmentAllowed):
+  context + floatFbo + parity — NOT compute (the chain is a draw
+  pipeline; a compute-less ES 3.1 device can still pass this leg). The
+  compute leg's four-gate gpuAllowed() math is untouched (locked by
+  RenderBackendTest); the fragment rules are ADDED alongside.
+- Stage coverage (BackendRules, pure JVM, host-tested): the fragment
+  pass covers stages 1+4+5 fused (+6/14/OETF behind uniforms);
+  FRAGMENT_UNCOVERED_STAGES lists every other stage with its CPU guard
+  mirrored exactly (field != neutral / toggle). The DEFAULT grade keeps
+  keepVignetting + highlightReconstruction TRUE, so stages 2+3 are
+  ACTIVE on a default grade and the fragment leg honestly falls back to
+  CPU with a reason line (owner rule: no active effect is silently
+  skipped). Stage 2's Kotlin guard is conservative (keepVignetting=true
+  counts as active without knowing the clip's shading-map state — a
+  false negative would skip an active effect, the exact forbidden
+  shape; the empty-map case loses only opportunity, never correctness).
+  The full 24-stage grade chain (denoise, tone controls, wheel/split,
+  tonemap, LUT) is D+ and NOT ported; active uncovered stages force CPU
+  with their token in the line.
+- Encoder Surface export (deliverable F's core, MediaCodecMp4Writer):
+  COLOR_FormatSurface + createInputSurface + an EGL window surface
+  (grafika EglCore topology, Kotlin EGL14/EGLExt); the developed frame
+  draws to the encoder surface with eglPresentationTimeANDROID
+  (PtsTimeline.ptsNs — ptsUs*1000 with the overflow check, never
+  wall-clock) before eglSwapBuffers; drain/mux/audio unchanged. Mode
+  selection is EXPLICIT: only renderBackend == GPU_EXPERIMENTAL requests
+  the mode (requestEncoderSurfaceInput before start) and only it makes
+  the per-frame offer (writeVideoFrameRgb); CPU/AUTO exports make NO
+  dispatch at all, byte-identical to before. Writer start failure =
+  SurfaceInputUnavailable -> the exporter discards the partial, logs
+  the fallback line, and restarts the WHOLE export on CPU with a FRESH
+  writer (never a mid-file format switch, never a partial DONE);
+  mid-stream GL failure is a plain encode failure (the restart contract
+  covers writer START only). RenderBackend.GPU_EXPERIMENTAL is
+  snapshotted per export job (ExportJob -> ExportStore omit-when-default
+  -> AppNav enqueue -> Mp4Exporter), so a settings change never affects
+  a running job.
+- Preview stays CPU (preview GPU is deliverable E, device-test-pending,
+  documented separately); export jobs pick the backend per the snapshot.
+- Status: fragment develop pipeline — implemented + compiled +
+  host-tested (parity rules, validator, coverage rules: RenderBackendTest
+  30/30, GpuParityTest 22/22); EGL/GLSL runtime behavior
+  device-test-pending (no GL on this host). Encoder Surface mode —
+  implemented + compiled, JVM seam-tested (Mp4ExporterTest 70/70);
+  device-test-pending. Owner device test: Settings -> GPU Experimental,
+  export a clip whose grade has keepVignetting/highlightReconstruction
+  toggled OFF (the covered shape) — expect the Surface-input encoder
+  path; a default-grade export honestly logs the fragment fallback line
+  and runs CPU. Run Measure for the probe + both parity legs (the
+  fixed indexed probe should now report compute=1 on the owner's
+  Xiaomi 15 Ultra / Adreno 830).
