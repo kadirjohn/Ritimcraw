@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.timeline
 
 import com.ritim.ritimcraw.data.timeline.TimelineClip
+import com.ritim.ritimcraw.data.timeline.TimelineEdit
 import com.ritim.ritimcraw.data.timeline.TimelineOps
 import com.ritim.ritimcraw.data.timeline.TimelineOps.TrimEdge
 import com.ritim.ritimcraw.data.timeline.TimelineProject
@@ -122,6 +123,45 @@ object TimelineGeometry {
         }
         if (extending) return current
         return target.coerceIn(range.start + 1.0, range.end - 1.0)
+    }
+
+    /**
+     * The edit a move drag commits (TL-03) — or null when the drag
+     * moved nothing. The guard is load-bearing: TimelineOps.move
+     * ALWAYS allocates a new project instance (even for a same-
+     * position move), so the history's applied === before no-op rule
+     * cannot catch a drop-at-origin — without this check a zero
+     * drag would record a bogus undo step. Null here means the
+     * gesture commits nothing, honestly.
+     */
+    fun moveEdit(
+        clip: TimelineClip,
+        newTimelineStart: Double,
+    ): TimelineEdit? =
+        if (newTimelineStart == clip.timelineRange.start) null
+        else TimelineEdit.MoveClip(clip.id, newTimelineStart)
+
+    /**
+     * The edit a trim drag commits (TL-04) — or null when there is
+     * nothing to commit: null position (sub-2-frame clip) or the
+     * EXTEND FREEZE (position equals the edge's current position).
+     * The freeze is the model's refused trim; committing nothing is
+     * the same end state as committing the refused edit (the history
+     * records no either way) minus the pointless apply — and it keeps
+     * the rule testable: a freeze NEVER creates an undo step.
+     */
+    fun trimEdit(
+        clip: TimelineClip,
+        edge: TrimEdge,
+        position: Double?,
+    ): TimelineEdit? {
+        if (position == null) return null
+        val current = when (edge) {
+            TrimEdge.START -> clip.sourceRange.start
+            TrimEdge.END -> clip.sourceRange.end
+        }
+        if (position == current) return null
+        return TimelineEdit.TrimClip(clip.id, edge, position)
     }
 
     /**

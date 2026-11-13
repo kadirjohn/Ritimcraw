@@ -65,6 +65,7 @@ import com.ritim.ritimcraw.data.timeline.TimelineEdit
 import com.ritim.ritimcraw.data.timeline.TimelineHistory
 import com.ritim.ritimcraw.data.timeline.TimelineIds
 import com.ritim.ritimcraw.data.timeline.TimelineOps
+import com.ritim.ritimcraw.data.timeline.TimelineOps.TrimEdge
 import com.ritim.ritimcraw.data.timeline.TimelineProject
 import com.ritim.ritimcraw.data.timeline.TimelineStore
 import com.ritim.ritimcraw.data.timeline.TrackKind
@@ -135,6 +136,27 @@ import com.ritim.ritimcraw.util.Format
  * track row would always be an empty lane. The model renders it the
  * day text clips can be created.
  *
+ * GESTURE RULE (the mission's "every gesture = ONE TimelineEdit
+ * apply"): a drag never touches the history while the finger is down.
+ * Each drag frame computes the edit the drop would commit and applies
+ * it OUTSIDE the history (TimelineEdit.apply directly — pure, records
+ * nothing) as the visual PREVIEW; on drag END the one edit goes
+ * through TimelineHistory.apply — one gesture, one recorded
+ * transaction, one undo step. A drag cancelled (finger lost, gesture
+ * stolen) discards the preview and commits nothing. The preview is
+ * exactly what the drop does, by construction: both run the same pure
+ * functions on the same inputs, and the drag's base is the COMMITTED
+ * project (previews never feed previews), so the commit lands where
+ * the preview showed.
+ *
+ * POINTER DISPATCH (the two-gesture problem): a clip block carries
+ * both a body-move drag and two edge-trim drags. The edge zones are
+ * composed AFTER the body's pointerInput so they win the dispatch
+ * (children before parents in Compose), and every handler takes the
+ * clip ID, resolving the CURRENT committed clip per call — a
+ * pointerInput(clip.id) closure survives clip moves (same id), and a
+ * stale clip instance would drag from the wrong base.
+ *
  * @param store the app's TimelineStore (the shared project.json's
  *   "timeline" section — the same file the shell's other stores use).
  * @param sources the app's imported sources (Library), for the add
@@ -199,8 +221,73 @@ fun TimelineScreen(
 
         val density = LocalDensity.current
         val pxPerFrame = with(density) { PixelsPerFrame.toPx() }
-        val length = TimelineOps.resolveLength(project)
-        val selected = project.clip(selectedClipId ?: "")
+
+        // ---- the drag gesture layer (see KDoc, GESTURE RULE) ----
+        // The in-flight gesture's bookkeeping: a plain remembered
+        // object mutated in place — it never recomposes anything
+        // itself; the PREVIEW state below drives recomposition. The
+        // token pins one gesture to one target (clip, or clip+edge):
+        // a stray event from a cancelled gesture cannot pollute the
+        // active one, and gestureEnd/Cancel check the token before
+        // committing.
+        val drag = remember { DragGestureState() }
+        // The preview: the project as the in-flight gesture would
+        // leave it, or null when no gesture is running. Everything
+        // renders from displayProject.
+        var dragPreview by remember { mutableStateOf<TimelineProject?>(null) }
+        // The one edit the drop will commit (computed on the last
+        // drag frame; the drop commits it).
+        var pendingEdit by remember { mutableStateOf<TimelineEdit?>(null) }
+
+        fun gestureStart(token: String, candidates: List<Double>) {
+            if (drag.token != null) return // one gesture at a time
+            drag.begin(token, candidates)
+        }
+
+        fun moveDrag(clipId: String, dxPx: Float) {
+            if (drag.token != "m:$clipId") return
+            drag.accumulatedPx += dxPx
+            val clip = project.clip(clipId) ?: return
+            val delta = TimelineGeometry.dragDeltaFrames(drag.accumulatedPx, pxPerFrame)
+            val start = TimelineGeometry.moveDragStart(clip, delta, drag.candidates, SnapThresholdFrames)
+            val edit = TimelineGeometry.moveEdit(clip, start)
+            pendingEdit = edit
+            dragPreview = edit?.apply(project) ?: project
+        }
+
+        fun trimDrag(clipId: String, edge: TrimEdge, dxPx: Float) {
+            if (drag.token != "t:$clipId:${edge.name}") return
+            drag.accumulatedPx += dxPx
+            val clip = project.clip(clipId) ?: return
+            val delta = TimelineGeometry.dragDeltaFrames(drag.accumulatedPx, pxPerFrame)
+            val position = TimelineGeometry.trimDragPosition(clip, edge, delta)
+            val edit = TimelineGeometry.trimEdit(clip, edge, position)
+            pendingEdit = edit
+            dragPreview = edit?.apply(project) ?: project
+        }
+
+        /** Drag end: the ONE history apply the gesture costs. */
+        fun gestureEnd(token: String) {
+            if (drag.token != token) return
+            pendingEdit?.let { applyEdit(it) }
+            pendingEdit = null
+            dragPreview = null
+            drag.reset()
+        }
+
+        /** Drag cancel: discard the preview, commit nothing. */
+        fun gestureCancel(token: String) {
+            if (drag.token != token) return
+            pendingEdit = null
+            dragPreview = null
+            drag.reset()
+        }
+
+        // Everything renders the DISPLAY project — the preview during a
+        // gesture, the committed project otherwise (see GESTURE RULE).
+        val displayProject = dragPreview ?: project
+        val length = TimelineOps.resolveLength(displayProject)
+        val selected = displayProject.clip(selectedClipId ?: "")
         val sourceNames = remember(sources) {
             sources.associate { it.id to it.displayOrId }
         }
@@ -275,7 +362,7 @@ fun TimelineScreen(
                         )
                     }
                 }
-                if (project.clips.isEmpty()) {
+                if (displayProject.clips.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -305,7 +392,7 @@ fun TimelineScreen(
                             verticalArrangement = Arrangement.spacedBy(LaneSpacing),
                         ) {
                             Spacer(Modifier.height(RulerHeight))
-                            timelineTracks(project).forEach { track ->
+                            timelineTracks(displayProject).forEach { track ->
                                 TrackHeader(kind = track.kind)
                             }
                         }
@@ -329,17 +416,17 @@ fun TimelineScreen(
                                 ) {
                                     TimelineRuler(
                                         lengthFrames = length,
-                                        fps = project.output.fps,
+                                        fps = displayProject.output.fps,
                                         pxPerFrame = pxPerFrame,
                                         onScrub = scrub,
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(RulerHeight),
                                     )
-                                    timelineTracks(project).forEach { track ->
+                                    timelineTracks(displayProject).forEach { track ->
                                         TimelineTrackLane(
                                             clips = TimelineGeometry.trackClips(
-                                                project,
+                                                displayProject,
                                                 track.id,
                                             ),
                                             pxPerFrame = pxPerFrame,
@@ -349,6 +436,19 @@ fun TimelineScreen(
                                                 selectedClipId =
                                                     if (selectedClipId == id) null else id
                                             },
+                                            onMoveStart = { clipId ->
+                                                gestureStart(
+                                                    "m:$clipId",
+                                                    TimelineOps.snapCandidates(project),
+                                                )
+                                            },
+                                            onMoveDrag = ::moveDrag,
+                                            onTrimStart = { clipId, edge ->
+                                                gestureStart("t:$clipId:${edge.name}", emptyList())
+                                            },
+                                            onTrimDrag = ::trimDrag,
+                                            onGestureEnd = ::gestureEnd,
+                                            onGestureCancel = ::gestureCancel,
                                         )
                                     }
                                 }
@@ -477,6 +577,13 @@ private val LaneHeight = 56.dp
 
 /** One clip block's height. */
 private val ClipHeight = 48.dp
+
+/**
+ * The trim edge strips' width (TL-04): the invisible grab area at a
+ * block's left/right edge. Wide enough to grab with a finger, narrow
+ * enough that the block's body (the move drag) stays the easy default.
+ */
+private val TrimZoneWidth = 16.dp
 
 /** The pinned track header column's width. */
 private val TrackHeaderWidth = 88.dp
@@ -623,6 +730,12 @@ private fun TimelineTrackLane(
     selectedClipId: String?,
     sourceNames: Map<String, String>,
     onSelect: (String) -> Unit,
+    onMoveStart: (String) -> Unit,
+    onMoveDrag: (String, Float) -> Unit,
+    onTrimStart: (String, TrimEdge) -> Unit,
+    onTrimDrag: (String, TrimEdge, Float) -> Unit,
+    onGestureEnd: (String) -> Unit,
+    onGestureCancel: (String) -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -641,6 +754,12 @@ private fun TimelineTrackLane(
                     ?.let { sourceNames[it] ?: it }
                     ?: clip.id,
                 onSelect = onSelect,
+                onMoveStart = onMoveStart,
+                onMoveDrag = onMoveDrag,
+                onTrimStart = onTrimStart,
+                onTrimDrag = onTrimDrag,
+                onGestureEnd = onGestureEnd,
+                onGestureCancel = onGestureCancel,
             )
         }
     }
@@ -650,7 +769,12 @@ private fun TimelineTrackLane(
  * One clip block: positioned by timelineRange.start, sized by the
  * range duration, the source's display name truncating inside. Tap
  * toggles selection; the selected block gets the visible selected
- * state (primaryContainer fill + primary border).
+ * state (primaryContainer fill + primary border). Gestures (see
+ * TimelineScreen KDoc, GESTURE RULE + POINTER DISPATCH): dragging the
+ * body moves the clip (TL-03); the 16dp edge strips trim that edge
+ * (TL-04) — they are composed AFTER the body's handlers so they win
+ * the pointer dispatch, and every handler passes the clip ID, which
+ * the screen resolves against the committed project per call.
  */
 @Composable
 private fun ClipBlock(
@@ -659,6 +783,12 @@ private fun ClipBlock(
     selected: Boolean,
     label: String,
     onSelect: (String) -> Unit,
+    onMoveStart: (String) -> Unit,
+    onMoveDrag: (String, Float) -> Unit,
+    onTrimStart: (String, TrimEdge) -> Unit,
+    onTrimDrag: (String, TrimEdge, Float) -> Unit,
+    onGestureEnd: (String) -> Unit,
+    onGestureCancel: (String) -> Unit,
 ) {
     val density = LocalDensity.current
     val startDp = with(density) {
@@ -689,6 +819,17 @@ private fun ClipBlock(
             )
             .pointerInput(clip.id) {
                 detectTapGestures { onSelect(clip.id) }
+            }
+            .pointerInput(clip.id) {
+                detectDragGestures(
+                    onDragStart = { onMoveStart(clip.id) },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        onMoveDrag(clip.id, dragAmount.x)
+                    },
+                    onDragEnd = { onGestureEnd("m:${clip.id}") },
+                    onDragCancel = { onGestureCancel("m:${clip.id}") },
+                )
             },
     ) {
         Text(
@@ -705,7 +846,58 @@ private fun ClipBlock(
                 .align(Alignment.CenterStart)
                 .padding(horizontal = 6.dp),
         )
+        // The trim edge strips (TL-04): transparent grab areas at the
+        // block's left and right, composed AFTER the body's handlers so
+        // they win the pointer dispatch — an edge drag never becomes a
+        // move.
+        TrimZone(
+            edge = TrimEdge.START,
+            modifier = Modifier.align(Alignment.CenterStart),
+            onTrimStart = { onTrimStart(clip.id, TrimEdge.START) },
+            onTrimDrag = { dxPx -> onTrimDrag(clip.id, TrimEdge.START, dxPx) },
+            onGestureEnd = { onGestureEnd("t:${clip.id}:${TrimEdge.START.name}") },
+            onGestureCancel = { onGestureCancel("t:${clip.id}:${TrimEdge.START.name}") },
+        )
+        TrimZone(
+            edge = TrimEdge.END,
+            modifier = Modifier.align(Alignment.CenterEnd),
+            onTrimStart = { onTrimStart(clip.id, TrimEdge.END) },
+            onTrimDrag = { dxPx -> onTrimDrag(clip.id, TrimEdge.END, dxPx) },
+            onGestureEnd = { onGestureEnd("t:${clip.id}:${TrimEdge.END.name}") },
+            onGestureCancel = { onGestureCancel("t:${clip.id}:${TrimEdge.END.name}") },
+        )
     }
+}
+
+/**
+ * One trim edge strip (see ClipBlock): a transparent drag area pinned
+ * to the block's start/end edge. [TrimZoneWidth] wide — a touch
+ * target within the 48dp block height.
+ */
+@Composable
+private fun TrimZone(
+    edge: TrimEdge,
+    modifier: Modifier = Modifier,
+    onTrimStart: () -> Unit,
+    onTrimDrag: (Float) -> Unit,
+    onGestureEnd: () -> Unit,
+    onGestureCancel: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(width = TrimZoneWidth, height = ClipHeight)
+            .pointerInput(edge) {
+                detectDragGestures(
+                    onDragStart = { onTrimStart() },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        onTrimDrag(dragAmount.x)
+                    },
+                    onDragEnd = { onGestureEnd() },
+                    onDragCancel = { onGestureCancel() },
+                )
+            },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -799,4 +991,37 @@ private fun TimelineAddDialog(
             }
         },
     )
+}
+
+/**
+ * The in-flight gesture's bookkeeping (see TimelineScreen KDoc,
+ * GESTURE RULE): which gesture owns the pointer (the token — one
+ * gesture at a time), the accumulated drag px so far, and the snap
+ * candidates frozen at gesture start (the PRE-DRAG committed
+ * project's edit points, so the snap targets stay stable through the
+ * gesture). A plain class, NOT Compose state: it is mutated inside
+ * pointer handlers where recomposition must not read it mid-gesture —
+ * the preview [TimelineProject] state drives all recomposition.
+ */
+private class DragGestureState {
+    /** "m:<clipId>" or "t:<clipId>:<EDGE>" — null when no gesture runs. */
+    var token: String? = null
+
+    /** Total drag px accumulated since gesture start. */
+    var accumulatedPx: Float = 0f
+
+    /** Snap candidates frozen at gesture start (TL-07). */
+    var candidates: List<Double> = emptyList()
+
+    fun begin(token: String, candidates: List<Double>) {
+        this.token = token
+        this.candidates = candidates
+        accumulatedPx = 0f
+    }
+
+    fun reset() {
+        token = null
+        accumulatedPx = 0f
+        candidates = emptyList()
+    }
 }

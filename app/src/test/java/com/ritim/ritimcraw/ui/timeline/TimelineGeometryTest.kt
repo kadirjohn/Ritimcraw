@@ -226,6 +226,46 @@ class TimelineGeometryTest {
         assertFalse(history.canRedo)
     }
 
+    // ---- the edits a drag commits (the no-op guards) ----
+
+    @Test
+    fun move_edit_is_null_when_the_drag_moved_nothing() {
+        // The load-bearing guard: TimelineOps.move ALWAYS allocates a
+        // new project (even for a same-position move), so the
+        // history's applied === before no-op rule CANNOT catch a
+        // drop-at-origin — moveEdit must. Without it a zero drag
+        // would record a bogus undo step.
+        val c = clip(start = 0.0, end = 90.0, timelineStart = 50.0)
+        assertNull(TimelineGeometry.moveEdit(c, 50.0))
+        // A real move is the MoveClip edit for the new timeline start.
+        val edit = TimelineGeometry.moveEdit(c, 75.0)
+        assertEquals(TimelineEdit.MoveClip(c.id, 75.0), edit)
+    }
+
+    @Test
+    fun trim_edit_is_null_for_freezes_and_untrimmable_clips() {
+        val c = clip(start = 10.0, end = 100.0)
+        // The EXTEND freeze (position == the edge's current position):
+        // the model refuses it, so committing nothing is the same end
+        // state minus the pointless apply — a freeze NEVER creates an
+        // undo step.
+        assertNull(TimelineGeometry.trimEdit(c, TrimEdge.START, 10.0))
+        assertNull(TimelineGeometry.trimEdit(c, TrimEdge.END, 100.0))
+        // A sub-2-frame clip has no legal trim: null position in,
+        // null edit out.
+        val one = clip(start = 10.0, end = 11.0)
+        assertNull(TimelineGeometry.trimEdit(one, TrimEdge.END, null))
+        // A real shrink is the TrimClip edit for the new position.
+        assertEquals(
+            TimelineEdit.TrimClip(c.id, TrimEdge.END, 75.0),
+            TimelineGeometry.trimEdit(c, TrimEdge.END, 75.0),
+        )
+        assertEquals(
+            TimelineEdit.TrimClip(c.id, TrimEdge.START, 25.0),
+            TimelineGeometry.trimEdit(c, TrimEdge.START, 25.0),
+        )
+    }
+
     // ---- operation-row enable rules ----
 
     @Test
