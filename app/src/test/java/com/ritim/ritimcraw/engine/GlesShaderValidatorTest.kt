@@ -417,14 +417,318 @@ class GlesShaderValidatorTest {
             "uniform ivec4 uCell;",
             "uniform vec4 uBlack;",
             "uniform vec4 uRange;",
+            "uniform int uHasShading;",
+            "uniform highp sampler2D uShading;",
+            "uniform ivec2 uShadingSize;",
+            "uniform int uHr;",
+            "uniform vec3 uHrGain;",
             "uniform vec3 uWb;",
             "uniform mat3 uCam2rgb;",
             "uniform int uHasProfile;",
             "uniform float uExposure;",
+            "uniform int uTonemap;",
             "uniform int uOetf;",
         ).forEach { u ->
             assertTrue("missing uniform: $u", src.contains(u))
         }
+    }
+
+    // ---- stages 2+3 (the default grade's own stages) are locked to the
+    // CPU kernels they mirror (rawedit::sampleShading + the stage-3 cell
+    // pass, core/src/Develop.cpp) ----
+
+    @Test
+    fun develop_fragment_carries_the_stage2_shading_bilinear() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The CPU sampleShading bilinear, verbatim: clamped normalized
+        // coordinates, edge-clamped x1/y1, the two-lerp tail.
+        assertTrue(
+            "clamped fx missing",
+            src.contains("min(max(u, 0.0), 1.0) * (float(uShadingSize.x) - 1.0)"),
+        )
+        assertTrue(
+            "clamped fy missing",
+            src.contains("min(max(v, 0.0), 1.0) * (float(uShadingSize.y) - 1.0)"),
+        )
+        assertTrue(
+            "x1 edge clamp missing",
+            src.contains("int x1 = min(x0 + 1, uShadingSize.x - 1);"),
+        )
+        assertTrue(
+            "y1 edge clamp missing",
+            src.contains("int y1 = min(y0 + 1, uShadingSize.y - 1);"),
+        )
+        assertTrue(
+            "bilinear tail missing",
+            src.contains("return a + (b - a) * ty;"),
+        )
+        // The stage-2 loop: the gain multiplies the post-stage-1 value,
+        // with the CPU's du/dv normalized sensor coordinates and the
+        // cellSlot plane order.
+        assertTrue(
+            "stage-2 gain multiply missing",
+            src.contains("v *= sampleShading(float(p.x) * du, float(p.y) * dv, slot);"),
+        )
+        assertTrue(
+            "du guard missing",
+            src.contains("float du = uSize.x > 1 ? 1.0 / float(uSize.x - 1) : 0.0;"),
+        )
+        assertTrue(
+            "dv guard missing",
+            src.contains("float dv = uSize.y > 1 ? 1.0 / float(uSize.y - 1) : 0.0;"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_carries_the_stage3_cell_pass() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The CPU stage-3 cell pass, verbatim: the toggle gate, the
+        // per-color clipped criterion, the ceiling level, the unclipped
+        // passthrough, and the cap.
+        assertTrue(
+            "stage-3 gate missing",
+            src.contains("if (uHr != 1) return normAt(p);"),
+        )
+        assertTrue(
+            "clipped criterion missing",
+            src.contains("if (v >= 1.0) clipped[color] = true;"),
+        )
+        assertTrue(
+            "ceiling level missing",
+            src.contains("float level = minV[c] * uHrGain[c];"),
+        )
+        assertTrue(
+            "unclipped passthrough missing",
+            src.contains("if (v < 1.0) return v;"),
+        )
+        assertTrue(
+            "cap missing",
+            src.contains("float cap = ceiling / uHrGain[siteAt(p)];"),
+        )
+        assertTrue(
+            "cap application missing",
+            src.contains("return v > cap ? cap : v;"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_demosaic_reads_the_post_stage3_value() {
+        // The demosaic must read hrAt (post-stage-3), not stage1: the
+        // CPU demosaics the capped norm buffer. All three read sites.
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        assertTrue("own site wrong", src.contains("px[t] = hrAt(g);"))
+        assertTrue("neighbor accumulation wrong", src.contains("sum += hrAt(np);"))
+        assertTrue(
+            "n==0 fallback wrong",
+            src.contains("px[t] = n > 0 ? sum / float(n) : hrAt(g);"),
+        )
+    }
+
+    // ---- stage 23 (tonemap) is locked to the CPU math it mirrors
+    // (rawedit::tonemapFrameImpl, core/src/Develop.cpp): the ACES fit, the
+    // AgX encode window, the look table, the two evaluation orders and the
+    // clamp-then-pow tail ----
+
+    @Test
+    fun develop_fragment_carries_the_cpu_aces_fit() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The Narkowicz 2015 fit verbatim: the five constants, the
+        // rational function with the den>0 guard, the [0,1] clamp.
+        assertTrue(
+            "ACES constants missing",
+            src.contains("const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;"),
+        )
+        assertTrue(
+            "ACES numerator missing",
+            src.contains("float num = x * (a * x + b);"),
+        )
+        assertTrue(
+            "ACES denominator missing",
+            src.contains("float den = x * (c * x + d) + e;"),
+        )
+        assertTrue(
+            "ACES den>0 guard missing",
+            src.contains("float y = den > 0.0 ? num / den : 0.0;"),
+        )
+        assertTrue(
+            "ACES clamp missing",
+            src.contains("return min(max(y, 0.0), 1.0);"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_carries_the_cpu_agx_encode() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The 6th-order contrast polynomial and the encode window, both
+        // verbatim: the v<=0 log2 guard, the EV clamps, the [0,1] clamp of
+        // the contrast result BEFORE any pow (the polynomial dips to
+        // -0.00232 at t=0; the Punchy pow must never see a negative base).
+        assertTrue(
+            "contrast polynomial head missing",
+            src.contains("15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4"),
+        )
+        assertTrue(
+            "contrast polynomial tail missing",
+            src.contains("- 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;"),
+        )
+        assertTrue(
+            "log2 guard missing",
+            src.contains("if (v <= 0.0) return 0.0;"),
+        )
+        assertTrue(
+            "EV window floor missing",
+            src.contains("const float minEv = -12.47393;"),
+        )
+        assertTrue(
+            "EV window ceiling missing",
+            src.contains("const float maxEv = 4.026069;"),
+        )
+        assertTrue(
+            "pre-pow clamp missing",
+            src.contains("return min(max(agxContrastApprox(t), 0.0), 1.0);"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_carries_the_cpu_agx_matrices_and_looks() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The inset/outset rows and the look table, verbatim: Golden's
+        // slope, the sat table, Greyscale's BT.2020 luma weights, Punchy's
+        // power.
+        assertTrue(
+            "inset row 0 missing",
+            src.contains("const vec3 kAgxInsetR = vec3(0.856627153315983, 0.0951212405381588, 0.0482516061458583);"),
+        )
+        assertTrue(
+            "inset row 1 missing",
+            src.contains("const vec3 kAgxInsetG = vec3(0.137318972929847, 0.761241990602591, 0.101439036467562);"),
+        )
+        assertTrue(
+            "inset row 2 missing",
+            src.contains("const vec3 kAgxInsetB = vec3(0.11189821299995, 0.0767994186031903, 0.811302368396859);"),
+        )
+        assertTrue(
+            "outset row 0 missing",
+            src.contains("const vec3 kAgxOutsetR = vec3(1.1271005818144366432, -0.1106066430966032116, -0.016493938717834568157);"),
+        )
+        assertTrue(
+            "outset row 1 missing",
+            src.contains("const vec3 kAgxOutsetG = vec3(-0.14132976349843826565, 1.1578237022162717623, -0.01649393871783425265);"),
+        )
+        assertTrue(
+            "outset row 2 missing",
+            src.contains("const vec3 kAgxOutsetB = vec3(-0.14132976349843824772, -0.11060664309660291788, 1.2519364065950402828);"),
+        )
+        assertTrue(
+            "Golden slope missing",
+            src.contains("vec3(1.0, 0.9, 0.5),"),
+        )
+        assertTrue(
+            "sat table missing",
+            src.contains("const float kAgxSat[4] = float[4](1.4, 1.3, 0.0, 1.0);"),
+        )
+        assertTrue(
+            "Greyscale BT.2020 luma weights missing",
+            src.contains("vec3(0.2589235355689848, 0.6104985346066525, 0.13057792982436284),"),
+        )
+        assertTrue(
+            "Punchy power missing",
+            src.contains("vec3(1.35, 1.35, 1.35),"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_carries_the_two_look_orders_and_the_tail() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // Punchy's legacy order: the luma line must PRECEDE the pow line
+        // (luma from PRE-power sigmoid values). The ASC CDL order: the
+        // slope+power line first, then the luma of the powered values.
+        // The tail: clamp BEFORE the pow-2.2 (NaN guard).
+        val punchyLuma = src.indexOf("float luma = dot(kAgxLumaW[look], v);")
+        val punchyPow = src.indexOf("v = luma + kAgxSat[look] * (pow(v, kAgxPower[look]) - luma);")
+        assertTrue(
+            "Punchy legacy order broken (luma must precede the pow)",
+            punchyLuma in 0..punchyPow,
+        )
+        val cdlPow = src.indexOf("v = pow(v * kAgxSlope[look], kAgxPower[look]);")
+        val cdlLuma = src.indexOf("float luma = dot(kAgxLumaW[look], v);", cdlPow + 1)
+        assertTrue(
+            "ASC CDL order broken (luma of the powered values must follow the pow)",
+            cdlPow >= 0 && cdlLuma > cdlPow,
+        )
+        assertTrue(
+            "Punchy branch gate missing",
+            src.contains("if (uTonemap == 2) {"),
+        )
+        assertTrue(
+            "outset clamp missing",
+            src.contains("o = clamp(o, 0.0, 1.0);"),
+        )
+        assertTrue(
+            "gamma-2.2 tail missing",
+            src.contains("return pow(o, vec3(2.2));"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_applies_tonemap_between_exposure_and_oetf() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The CPU stage order 14 -> 23 -> OETF: the tonemap application
+        // must sit between the exposure multiply and the OETF block.
+        val exposure = src.indexOf("c *= uExposure;")
+        val tonemap = src.indexOf("if (uTonemap != 0) {")
+        val oetf = src.indexOf("if (uOetf == 1) {")
+        assertTrue(
+            "tonemap application point wrong (must sit between exposure and OETF)",
+            exposure in 0..tonemap && tonemap in 0..oetf,
+        )
+    }
+
+    @Test
+    fun a_renamed_shading_uniform_is_reported() {
+        val renamed = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("uniform int uHasShading;", "uniform int uHasLensShading;")
+        assertTrue(
+            GlesShaderValidator.problems(renamed, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("uHasShading") },
+        )
+    }
+
+    @Test
+    fun a_broken_shading_bilinear_is_reported() {
+        // The two-lerp tail is the CPU's exact interpolation; a
+        // nearest-neighbor rewrite would silently change every gain.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("return a + (b - a) * ty;", "return a;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("shading bilinear tail") },
+        )
+    }
+
+    @Test
+    fun a_wrong_stage3_cap_is_reported() {
+        // cap = ceiling / gain[site] is the CPU's pre-WB inverse; a
+        // direct ceiling cap would double-apply the WB gain.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("float cap = ceiling / uHrGain[siteAt(p)];", "float cap = ceiling;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("stage-3 cap") },
+        )
+    }
+
+    @Test
+    fun a_stage3_gate_removed_is_reported() {
+        // grade.highlightReconstruction false must skip the whole stage
+        // (RAW-04): losing the gate would cap frames the grade asked to
+        // keep raw.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("if (uHr != 1) return normAt(p);", "if (uHr < 0) return normAt(p);")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("stage-3 gate") },
+        )
     }
 
     // ---- each new check catches its own defect ----
@@ -469,6 +773,146 @@ class GlesShaderValidatorTest {
         assertTrue(
             GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
                 .any { it.contains("OETF power segment") },
+        )
+    }
+
+    @Test
+    fun a_wrong_aces_constant_is_reported() {
+        // One ACES coefficient off by a digit: the fit curve silently
+        // changes everywhere.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;",
+                     "const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.15;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("ACES fit constants") },
+        )
+    }
+
+    @Test
+    fun a_missing_aces_den_guard_is_reported() {
+        // The den>0 guard keeps the rational function defined at x=0;
+        // dropping it can produce NaN/Inf at the black point.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("float y = den > 0.0 ? num / den : 0.0;", "float y = num / den;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("ACES den>0 guard") },
+        )
+    }
+
+    @Test
+    fun a_wrong_agx_ev_window_is_reported() {
+        // The EV window defines the encode's dynamic range; a shifted
+        // ceiling changes where highlights roll off.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("const float maxEv = 4.026069;", "const float maxEv = 4.026070;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("AgX EV window ceiling") },
+        )
+    }
+
+    @Test
+    fun a_missing_agx_prepow_clamp_is_reported() {
+        // The polynomial dips to -0.00232 at t=0; without the [0,1]
+        // clamp the Punchy pow() sees a negative base (NaN).
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("return min(max(agxContrastApprox(t), 0.0), 1.0);",
+                     "return agxContrastApprox(t);")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("clamp before any pow") },
+        )
+    }
+
+    @Test
+    fun a_wrong_greyscale_luma_weights_are_reported() {
+        // Greyscale's luma weights are BT.2020, not the Rec.709 triple
+        // every other look uses; swapping them changes the grey axis.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("vec3(0.2589235355689848, 0.6104985346066525, 0.13057792982436284),",
+                     "vec3(0.2126, 0.7152, 0.0722),")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("BT.2020 luma weights") },
+        )
+    }
+
+    @Test
+    fun a_punchy_order_swap_is_reported() {
+        // Swap the Punchy branch to the ASC CDL order: the validator must
+        // reject the evaluation-order change (byte-identical old grades).
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        val legacy = "float luma = dot(kAgxLumaW[look], v);\n" +
+            "        v = luma + kAgxSat[look] * (pow(v, kAgxPower[look]) - luma);"
+        val swapped = "v = pow(v * kAgxSlope[look], kAgxPower[look]);\n" +
+            "        float luma = dot(kAgxLumaW[look], v);\n" +
+            "        v = luma + kAgxSat[look] * (v - luma);"
+        val mutated = src.replace(legacy, swapped)
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != src,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("Punchy legacy order is broken") },
+        )
+    }
+
+    @Test
+    fun a_missing_agx_gamma_tail_is_reported() {
+        // The pow(o, 2.2) tail is the look's output encoding; dropping it
+        // double-encodes on the OETF side (a dark, contrasty render).
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("return pow(o, vec3(2.2));", "return o;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("gamma-2.2 tail") },
+        )
+    }
+
+    @Test
+    fun a_tonemap_local_with_const_initializer_is_reported() {
+        // GLSL ES 3.00 const requires a constant-expression initializer;
+        // the CPU's read-only const does not carry. A reintroduced `const`
+        // on a parameter/uniform-derived local is a device compile error.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("float luma = dot(kAgxLumaW[look], v);",
+                     "const float luma = dot(kAgxLumaW[look], v);")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("non-constant") },
+        )
+    }
+
+    @Test
+    fun a_tonemap_applied_after_the_oetf_is_reported() {
+        // Tonemap after the OETF double-encodes: the CPU stage order is
+        // 14 -> 23 -> OETF, never 14 -> OETF -> 23. The swap moves the
+        // whole tonemap block past the whole OETF block, byte-identical
+        // bodies, only the order changes.
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        val tonemap = "if (uTonemap != 0) {\n" +
+            "        c = tonemapPixel(c);\n" +
+            "    }"
+        val oetf = "if (uOetf == 1) {\n" +
+            "        c = vec3(linearToRec709(c.r), linearToRec709(c.g), linearToRec709(c.b));\n" +
+            "    }"
+        val original = tonemap + "\n    " + oetf
+        val reordered = oetf + "\n    " + tonemap
+        assertTrue(
+            "mutation setup wrong: the blocks are not adjacent as shipped",
+            src.contains(original),
+        )
+        val mutated = src.replace(original, reordered)
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != src,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("application point is wrong") },
         )
     }
 

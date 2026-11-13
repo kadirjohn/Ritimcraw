@@ -4,6 +4,8 @@ import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.engine.BackendRules
+import com.ritim.ritimcraw.engine.EffectiveRenderBackend
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
 import java.io.File
@@ -993,6 +995,50 @@ class ExportPipeline(
         } catch (e: Throwable) {
             writer.release()
             throw e
+        }
+        // Render-backend visibility (owner request 2026-11-13, deliverable
+        // (c)): ONE honest line per export, emitted after start() so the
+        // encoder-input mode is knowable. The EFFECTIVE value is the axis the
+        // export actually has: the encoder-Surface input mode is this
+        // pipeline's GPU leg (the develop itself always runs the CPU
+        // reference per frame — the fragment develop pass is not wired into
+        // the export yet), so effective=GLES means the writer took the
+        // Surface mode and the frames feed the encoder through its EGL
+        // surface; every other shape is effective=CPU, including a
+        // GPU_EXPERIMENTAL request whose Surface mode did not come up (the
+        // exporter's restart covers the start throw; a per-frame offer
+        // refusal logs CPU here honestly). The unsupported= tokens are the
+        // exact BackendRules fragment vocabulary for THIS grade — the stages
+        // the fragment develop pass does not cover that the grade activates
+        // (plus gyro-warp when stabilization is on AND a log is attached —
+        // the same gate the timing summary uses) — so the line doubles as
+        // the coverage statement for the day the fragment develop is wired
+        // in: "none" is the default grade after the stage 2+3+23 ports.
+        // CPU exports log the same line (effective=CPU): the requested axis
+        // is visible per export, never only on fallback. Null stageLog =
+        // nothing emitted, bytes identical, release pays nothing.
+        if (stageLog != null) {
+            val effective = if (writer.surfaceInputActive()) {
+                EffectiveRenderBackend.GLES
+            } else {
+                EffectiveRenderBackend.CPU
+            }
+            val unsupported = mutableListOf<String>()
+            unsupported += BackendRules.fragmentUncoveredStages(grade).map { it.second }
+            unsupported += BackendRules.fragmentUncoveredPreStages(grade)
+            if (grade.stabilization && gyroPath != null) unsupported += "gyro-warp"
+            stageLog(
+                "render backend: requested=${renderBackend.name} " +
+                    "effective=${effective.name} " +
+                    "unsupported=${unsupported.joinToString(",").ifEmpty { "none" }}"
+            )
+            // The encoder input mode, logged only when a GPU request actually
+            // engaged the GPU leg (the Surface mode came up — only a
+            // GPU_EXPERIMENTAL request ever asks for it) — the byte mode is
+            // the reference path and needs no extra line.
+            if (effective == EffectiveRenderBackend.GLES) {
+                stageLog("encoder input: surface")
+            }
         }
         try {
             // 4. Encode loop, in presentation order across both tracks.

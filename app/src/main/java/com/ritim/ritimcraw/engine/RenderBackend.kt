@@ -198,12 +198,17 @@ object BackendRules {
     /**
      * The stage-coverage set of the FRAGMENT develop pass (deliverable D,
      * GlesShaderSources.DEVELOP_FRAGMENT): the per-pixel pure stages fused
-     * into the one ES 3.00 draw — normalization (1), demosaic (4), WB (5),
-     * color transform (6), exposure (14) and the OETF tail. Everything
-     * else in the 24-stage CPU contract falls back to CPU when active
-     * (see [fragmentUncoveredStages]).
+     * into the one ES 3.00 draw — normalization (1), lens shading (2),
+     * highlight reconstruction (3), demosaic (4), WB (5), color transform
+     * (6), exposure (14), tonemapping (23) and the OETF tail. Stages 2 and
+     * 3 are the DEFAULT grade's own toggles (keepVignetting and
+     * highlightReconstruction both default true), so porting them is what
+     * lets a default-grade GPU request actually stay on GPU; stage 23 is
+     * the ACES fit plus the full AgX family (modes 1-5, the CPU's exact
+     * math behind uTonemap). Everything else in the 24-stage CPU contract
+     * falls back to CPU when active (see [fragmentUncoveredStages]).
      */
-    val FRAGMENT_COVERED_STAGES: Set<Int> = setOf(1, 4, 5, 6, 14)
+    val FRAGMENT_COVERED_STAGES: Set<Int> = setOf(1, 2, 3, 4, 5, 6, 14, 23)
 
     /**
      * The fragment path's honest uncovered list, as stage number ->
@@ -213,10 +218,17 @@ object BackendRules {
      * forced it). Mirrors GlesShaderSources.DEVELOP_FRAGMENT's "Stages
      * NOT covered" doc and the CPU guards in core/src/Develop.cpp
      * exactly — the same field != neutral / toggle checks the CPU runs.
+     * Stages 2 and 3 left this list when they were ported into the
+     * fragment pass: the shader applies stage 2 only when the uniform
+     * gate says the clip has a map (the CPU's own guard, computed
+     * CPU-side — see [fragmentShadingApplies]) and stage 3 when the
+     * grade toggles it, so coverage no longer depends on the clip's
+     * metadata shape. Stage 23 left it with the tonemap port: the shader
+     * carries the ACES fit and every AgX mode (1-5) behind uTonemap,
+     * the CPU's exact math, so an active tonemap grade no longer forces
+     * the CPU path.
      */
     val FRAGMENT_UNCOVERED_STAGES: Map<Int, String> = linkedMapOf(
-        2 to "lens-shading",          // grade.keepVignetting && shading map non-empty
-        3 to "highlight-reconstruction", // grade.highlightReconstruction
         7 to "chroma-denoise",        // grade.chromaDenoise != 0
         8 to "noise-reduction",       // grade.noiseReduction != 0
         9 to "black-point",           // grade.blackPoint != 0
@@ -232,7 +244,6 @@ object BackendRules {
         20 to "saturation",           // grade.saturation != 0
         21 to "sharpness",            // grade.sharpness != 0
         22 to "detail",               // grade.detail != 0
-        23 to "tonemap",              // grade.tonemap != 0
         24 to "lut",                  // lut selected && grade.lutStrength > 0
     )
 
@@ -254,19 +265,17 @@ object BackendRules {
      * deliverable D: no active effect is silently skipped; the GPU path
      * only takes a frame when EVERY active stage is covered).
      *
-     * Stage 2's guard is the CPU's own: keepVignetting toggles it, but the
-     * stage is also skipped when the clip's shading map is empty — the
-     * Kotlin rule conservatively treats keepVignetting=true (the DEFAULT)
-     * as active, because the Kotlin side does not know the map state
-     * without the metadata; a false negative (GPU takes a frame whose clip
-     * has a shading map) would skip an active effect, the exact thing the
-     * rule forbids. The clip-with-empty-map case loses only the
-     * opportunity, never correctness.
+     * Stages 2, 3 and 23 are no longer listed: all three are covered by the
+     * fragment pass. Stage 2's map-state guard moved into the shader's
+     * uniform (uHasShading — the CPU-side gate computed where the map
+     * state is known; see [fragmentShadingApplies]), stage 3's toggle
+     * moved into uHr, and stage 23's mode moved into uTonemap (the ACES
+     * fit and every AgX look, the CPU's exact math). A
+     * keepVignetting/highlightReconstruction/tonemap grade is therefore
+     * NOT an uncovered-stage fallback anymore.
      */
     fun fragmentUncoveredStages(grade: GradeK): List<Pair<Int, String>> {
         val active = mutableListOf<Pair<Int, String>>()
-        if (grade.keepVignetting) active += 2 to "lens-shading"
-        if (grade.highlightReconstruction) active += 3 to "highlight-reconstruction"
         if (grade.chromaDenoise != 0f) active += 7 to "chroma-denoise"
         if (grade.noiseReduction != 0f) active += 8 to "noise-reduction"
         if (grade.blackPoint != 0f) active += 9 to "black-point"
@@ -289,7 +298,6 @@ object BackendRules {
         if (grade.saturation != 0f) active += 20 to "saturation"
         if (grade.sharpness != 0f) active += 21 to "sharpness"
         if (grade.detail != 0f) active += 22 to "detail"
-        if (grade.tonemap != 0) active += 23 to "tonemap"
         if (grade.lutId != null && grade.lutStrength > 0f) active += 24 to "lut"
         return active
     }
@@ -304,6 +312,25 @@ object BackendRules {
         if (grade.temporalNr && grade.temporalStrength > 0f) active += "temporal-nr"
         return active
     }
+
+    /**
+     * Whether the FRAGMENT path actually applies stage 2 (lens shading)
+     * for this grade on this clip: the CPU's own stage-2 gate
+     * (grade.keepVignetting && the clip's shading map non-empty), with
+     * the map state supplied by the caller — the fragment path KNOWS it
+     * (the C++ harness reads the clip's RawMeta directly), while the CPU
+     * path keeps its own identical guard inside developCpu. Pure.
+     *
+     * The asymmetry is deliberate and honest: this helper does NOT decide
+     * coverage (stage 2 is covered either way — the shader handles the
+     * no-map case through uHasShading = 0); it decides whether the
+     * uniform gate tells the shader to multiply the gains in. The old
+     * conservative Kotlin guess (treat keepVignetting=true as an
+     * uncovered stage because the map state was unknown) is gone because
+     * the stage is covered; what replaced it is exact.
+     */
+    fun fragmentShadingApplies(grade: GradeK, hasShadingMap: Boolean): Boolean =
+        grade.keepVignetting && hasShadingMap
 
     /**
      * The effective backend for the FRAGMENT develop leg of one export:

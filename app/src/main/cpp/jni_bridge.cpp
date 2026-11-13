@@ -2295,13 +2295,29 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesParity(
 // FULLSCREEN_VERTEX_310, DEVELOP_FRAGMENT, STORE_FRAGMENT — the device
 // compiles the exact text the host validator checked):
 //
-//   GL_R16UI CFA texture -> fused develop fragment pass (stages 1+4+5,
-//   parity shape: uHasProfile=0, uExposure=1.0, uOetf=0) into an RGBA32F
-//   attachment (EXT_color_buffer_float, gated in-context) -> store
+//   GL_R16UI CFA texture -> fused develop fragment pass (stages 1+2+3+4+5
+//   behind uniform gates: uHasProfile=0, uExposure=1.0, uOetf=0) into an
+//   RGBA32F attachment (EXT_color_buffer_float, gated in-context) -> store
 //   fragment pass -> SSBO -> glMapBufferRange (never glReadPixels) ->
 //   clamp + uint16 quantize exactly like the developLinear tail.
 //
-// Reference: rawedit::developLinear itself, same frame. Returns
+// [caseIndex] selects the parity case (gles/GlesPipeline.h documents all
+// three):
+//   0 — the developLinear shape (uHasShading=0, uHr=0): the reference is
+//       rawedit::developLinear itself, same frame, byte-honest regardless
+//       of the clip's real metadata (the Measure leg keeps this case).
+//   1 — the DEFAULT grade's real stage list (uHasShading = the clip's
+//       map-present gate with the real 4-plane map uploaded, uHr=1 with
+//       uHrGain = meta.wbGains with the >0 guard): the reference is
+//       computed C++-side from the exported rawedit primitives.
+//   2 — the TONEMAP sweep (stage 23): uTonemap runs modes 1 (ACES) through
+//       5 (AgX Base), one develop+store+readback pass per mode; each
+//       mode's reference is rawedit::developCpu itself with a default
+//       Grade (tonemap=mode only) and an identity-matrices meta copy, so
+//       the reference is the real exported stage list (1+2+3+4+5+23).
+//       The report carries the WORST case across the five modes and
+//       samples = 5 * w * h * 3.
+// Returns
 //
 //   [0] ran           1 when the GPU pass produced real numbers
 //   [1] maxDiffLsb    largest |gpu - cpu| in 16-bit LSB units
@@ -2318,7 +2334,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesParity(
 JNIEXPORT jdoubleArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
         JNIEnv* env, jclass, jint fd, jstring vertexSource, jstring vertex310Source,
-        jstring fragmentSource, jstring storeFragmentSource) {
+        jstring fragmentSource, jstring storeFragmentSource, jint caseIndex) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
@@ -2383,8 +2399,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
         return nullptr;
     }
     const gles::ParityReport rep =
-        gles::developFragmentParity(v300, v310, frag, store, *frame.value, info,
-                                     src->rawMeta());
+        gles::developFragmentParity(v300, v310, frag, store, caseIndex,
+                                     *frame.value, info, src->rawMeta());
     if (!rep.ran) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                  "gles fragment parity: " + rep.detail +
