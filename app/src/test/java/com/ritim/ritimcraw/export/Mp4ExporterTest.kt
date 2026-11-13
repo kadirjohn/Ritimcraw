@@ -512,10 +512,123 @@ class Mp4ExporterTest {
         assertTrue(lines[2].startsWith("EXPORT SUMMARY: "))
     }
 
+    // ---- native sub-stage timing (commit (d)) ----
+
+    @Test
+    fun timing_native_sub_stages_render_the_parenthetical() {
+        val lines = ArrayList<String>()
+        val t = ExportStageTiming(lines::add)
+        t.startFrame()
+        t.mark(ExportStageTiming.STAGE_NATIVE, 472_300_000L)
+        t.markNativeSubStages(doubleArrayOf(210.5, 12.3, 180.4, 45.0, 15.1, 9.0))
+        t.endFrame()
+        // Frame 1 is a checkpoint: the sample line splits the native pair.
+        assertEquals(1, lines.size)
+        val line = lines[0]
+        assertTrue(line.contains("native=472.3ms("))
+        assertTrue(line.contains("decode=210.5ms"))
+        assertTrue(line.contains("temporal=12.3ms"))
+        assertTrue(line.contains("develop=180.4ms"))
+        assertTrue(line.contains("warp=45.0ms"))
+        assertTrue(line.contains("oetf=15.1ms"))
+        assertTrue(line.contains("copy=9.0ms"))
+        // The parenthetical closes right before the next stage pair.
+        assertTrue(line.contains(") rotate="))
+        // The six tokens appear once each, in the fixed order. The \b
+        // matters for "copy": "plane_copy=0.0ms" contains the substring
+        // "copy=0.0ms", and the underscore is a word character so \bcopy
+        // does not match inside it.
+        assertTrue(Regex("\\bdecode=[0-9.]+ms").findAll(line).count() == 1)
+        assertTrue(Regex("\\btemporal=[0-9.]+ms").findAll(line).count() == 1)
+        assertTrue(Regex("\\bdevelop=[0-9.]+ms").findAll(line).count() == 1)
+        assertTrue(Regex("\\bcopy=[0-9.]+ms").findAll(line).count() == 1)
+    }
+
+    @Test
+    fun timing_no_sub_stages_keeps_the_plain_native_pair() {
+        // Each case on its own timing object: frame 1 is the only checkpoint
+        // per object, so exactly one sample line lands per case.
+        fun sampleLine(subStages: DoubleArray?): String {
+            val lines = ArrayList<String>()
+            val t = ExportStageTiming(lines::add)
+            t.startFrame()
+            t.mark(ExportStageTiming.STAGE_NATIVE, 3_000_000L)
+            t.markNativeSubStages(subStages)
+            t.endFrame()
+            assertEquals(1, lines.size)
+            return lines[0]
+        }
+
+        // No markNativeSubStages call, null, or wrong length: the line is
+        // exactly what it always was — no parenthetical, no "()" either.
+        run {
+            val lines = ArrayList<String>()
+            val t = ExportStageTiming(lines::add)
+            t.startFrame()
+            t.mark(ExportStageTiming.STAGE_NATIVE, 3_000_000L)
+            t.endFrame()
+            assertEquals(1, lines.size)
+            assertTrue(lines[0].contains("native=3.0ms rotate="))
+            assertFalse(lines[0].contains("("))
+        }
+        assertTrue(sampleLine(null).contains("native=3.0ms rotate="))
+        assertFalse(sampleLine(null).contains("("))
+        val wrongLength = sampleLine(doubleArrayOf(1.0)) // wrong length = no data
+        assertTrue(wrongLength.contains("native=3.0ms rotate="))
+        assertFalse(wrongLength.contains("("))
+    }
+
+    @Test
+    fun timing_sub_stages_clear_per_frame() {
+        val lines = ArrayList<String>()
+        val t = ExportStageTiming(lines::add)
+        t.startFrame()
+        t.mark(ExportStageTiming.STAGE_NATIVE, 472_300_000L)
+        t.markNativeSubStages(doubleArrayOf(210.5, 12.3, 180.4, 45.0, 15.1, 9.0))
+        t.endFrame()
+        // Frame 2 reports nothing: startFrame must clear the slot so the
+        // previous frame's split never bleeds into a plain frame's line.
+        t.startFrame()
+        t.mark(ExportStageTiming.STAGE_NATIVE, 3_000_000L)
+        t.endFrame()
+        // Only frame 1 (a checkpoint) logs; frame 2 is not. close() emits
+        // the averages line, which never carries the parenthetical.
+        t.close(4, 4, 4, 4, 4, 4, GradeK(), false, 500_000_000L)
+        assertEquals(3, lines.size)
+        assertTrue(lines[1].startsWith("export stages avg over 2 frames: "))
+        assertFalse(lines[1].contains("decode="))
+    }
+
+    @Test
+    fun pipeline_passes_sub_stages_through_when_the_session_reports() {
+        // A session whose lastFrameSubStagesMs() reports the fixed-order
+        // slots: the pipeline must hand them to the timing object right
+        // after renderFrame, so frame 1's sample line carries the split.
+        val session = object : FakeSession(frames = 2, audio = false) {
+            override fun lastFrameSubStagesMs(): DoubleArray =
+                doubleArrayOf(210.5, 12.3, 180.4, 45.0, 15.1, 9.0)
+        }
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(session, writer, lines::add).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(3, lines.size)
+        assertTrue(lines[0].contains("native="))
+        assertTrue(lines[0].contains("decode=210.5ms"))
+        assertTrue(lines[0].contains("copy=9.0ms"))
+        // The default session (FakeSession without the override) reports
+        // null — the same export's line stays plain.
+        val plainSession = FakeSession(frames = 2, audio = false)
+        val plainLines = ArrayList<String>()
+        ExportPipeline(plainSession, FakeWriter(), plainLines::add).run(7, GradeK(), "/tmp/out.partial")
+        assertTrue(plainLines[0].contains("native="))
+        assertFalse(plainLines[0].contains("decode="))
+    }
+
     // ---- ExportPipeline + Mp4Exporter flow (fakes) ----
 
-    /** A fake session: N frames of solid color, optional audio. */
-    private class FakeSession(
+    /** A fake session: N frames of solid color, optional audio. Open so the
+     * sub-stage pipeline test can report lastFrameSubStagesMs(). */
+    private open class FakeSession(
         private val frames: Int = 2,
         private val width: Int = 4,
         private val height: Int = 4,

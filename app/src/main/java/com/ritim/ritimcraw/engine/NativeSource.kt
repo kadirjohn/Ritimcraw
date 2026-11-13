@@ -110,6 +110,12 @@ class NativeSource private constructor(
                 // skip reason); release keeps the native default (off) and
                 // never logs.
                 if (BuildConfig.DEBUG) nativeSetStabDebugLog(true)
+                // Export sub-stage timing (commit (d)): same gate — debug
+                // builds collect the six nativeExportFrame sub-stage slots
+                // (decode/temporal/develop/warp/oetf/copy) so the export
+                // sample lines can split "native=..ms"; release reads one
+                // relaxed atomic per boundary and collects nothing.
+                if (BuildConfig.DEBUG) nativeSetExportTiming(true)
             } catch (e: UnsatisfiedLinkError) {
                 nativeAvailable = false
             } catch (e: SecurityException) {
@@ -184,6 +190,27 @@ class NativeSource private constructor(
          * BuildConfig.DEBUG, so release builds stay silent.
          */
         @JvmStatic private external fun nativeSetStabDebugLog(enabled: Boolean)
+
+        /**
+         * Toggles the export sub-stage timing collection (commit (d)):
+         * when on, nativeExportFrame records its six internals — decode,
+         * temporal NR, develop, gyro warp, OETF+pack, JNI copy — into
+         * thread-local slots read by [nativeExportFrameTimingMs]. Called
+         * once from the companion init with BuildConfig.DEBUG (the
+         * nativeSetStabDebugLog pattern), so release builds collect
+         * nothing.
+         */
+        @JvmStatic private external fun nativeSetExportTiming(enabled: Boolean)
+
+        /**
+         * The six sub-stage slots of the frame nativeExportFrame just
+         * produced, in milliseconds, in the fixed order
+         * [decode, temporal, develop, warp, oetf_pack, jni_copy] — or null
+         * when the gate is off (release) or nothing was collected.
+         * Thread-local like the error accessors: call on the export thread
+         * right after a successful nativeExportFrame.
+         */
+        @JvmStatic private external fun nativeExportFrameTimingMs(): DoubleArray?
 
         // ---- Preview JNI (decoder -> developThumbnail -> Rec709 -> ARGB) ----
         // Every call must run on the renderer's single engine thread
@@ -912,6 +939,14 @@ class NativeSource private constructor(
             rgb, width, height, matrix,
             yBuf, yStride, uBuf, uStride, uPixelStride, vBuf, vStride, vPixelStride,
         )
+
+        /**
+         * JNI bridge: see nativeExportFrameTimingMs — the six sub-stage
+         * slots of the frame nativeExportFrame just produced, read on the
+         * export thread right after a successful call.
+         */
+        internal fun jniExportFrameTimingMs(): DoubleArray? =
+            nativeExportFrameTimingMs()
 
         /** JNI bridge: see nativeEncodedDevelop. */
         internal fun jniEncodedDevelop(

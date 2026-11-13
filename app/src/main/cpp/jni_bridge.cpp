@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -81,6 +82,33 @@ thread_local int gLastErrorStage = kStageOpen;
 // when on is one snprintf + one __android_log_print — the plan is already
 // computed at that point, nothing is re-run for the log.
 std::atomic<bool> gStabDebugLog{false};
+
+// Export sub-stage timing (commit (d), owner request 2026-11-13): the
+// export frame's native wall time splits into its six internals so the
+// owner's "native=472ms" sample line becomes
+// "native=472ms(decode=.. temporal=.. develop=.. warp=.. oetf=.. copy=..)".
+// Collection is gated by the SAME BuildConfig.DEBUG flag as gStabDebugLog
+// (set at library load) — a release build reads one relaxed atomic per
+// branch and collects nothing. The slots are thread-local: the export
+// engine owns one thread, and the getter is read from that thread right
+// after the call (the error accessors' thread contract).
+struct ExportFrameTiming {
+    double decodeMs = 0;
+    double temporalMs = 0;
+    double developMs = 0;
+    double warpMs = 0;
+    double oetfPackMs = 0;
+    double jniCopyMs = 0;
+};
+std::atomic<bool> gExportTiming{false};
+thread_local ExportFrameTiming gExportFrameTiming;
+
+// Milliseconds between two steady_clock points — the only arithmetic the
+// sub-stage boundaries do (kept out of nativeExportFrame's body).
+inline double elapsedMs(const std::chrono::steady_clock::time_point& a,
+                        const std::chrono::steady_clock::time_point& b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+}
 
 void setError(const std::string& message) {
     gLastError = message;
@@ -1237,6 +1265,35 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetStabDebugLog(
     gStabDebugLog.store(enabled == JNI_TRUE, std::memory_order_relaxed);
 }
 
+// Export sub-stage timing toggle (commit (d)): same companion-init pattern
+// as nativeSetStabDebugLog — the gate flips on only in debug builds, and a
+// release build reads it once per boundary as a relaxed load.
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetExportTiming(
+        JNIEnv*, jclass, jboolean enabled) {
+    gExportTiming.store(enabled == JNI_TRUE, std::memory_order_relaxed);
+}
+
+// The six sub-stage slots of the frame nativeExportFrame just produced, in
+// the fixed order the Kotlin side renders:
+//   [decode, temporal, develop, warp, oetf_pack, jni_copy] (milliseconds).
+// Thread-local like the error accessors: call on the export thread right
+// after a successful nativeExportFrame — that is the only writer. Null when
+// the gate is off (nothing was collected); the Kotlin side treats that as
+// "no sub-stage data" and keeps the plain "native=..ms" line.
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrameTimingMs(
+        JNIEnv* env, jclass) {
+    if (!gExportTiming.load(std::memory_order_relaxed)) return nullptr;
+    const ExportFrameTiming& t = gExportFrameTiming;
+    const double slots[6] = {t.decodeMs, t.temporalMs, t.developMs,
+                             t.warpMs, t.oetfPackMs, t.jniCopyMs};
+    jdoubleArray out = env->NewDoubleArray(6);
+    if (out == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(out, 0, 6, slots);
+    return out;
+}
+
 // Preview pipeline -------------------------------------------------------------
 
 JNIEXPORT jintArray JNICALL
@@ -1939,6 +1996,19 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                                  s, frameIndex);
         if (!stab.ok) return nullptr;
 
+        // Sub-stage timing (commit (d)): one steady_clock read at each of
+        // the six boundaries, collected only when the debug gate is on.
+        // Release builds pay one relaxed atomic load per boundary and
+        // nothing else (the gStabDebugLog pattern). The slots are read by
+        // nativeExportFrameTimingMs on this same thread right after a
+        // SUCCESSFUL call; a failure return leaves the previous frame's
+        // numbers, which the Kotlin side never reads on a failed frame.
+        const bool timing = gExportTiming.load(std::memory_order_relaxed);
+        using SteadyClock = std::chrono::steady_clock;
+        SteadyClock::time_point tDecode0{}, tTemporal0{}, tDevelop0{},
+            tWarp0{}, tOetf0{}, tCopy0{};
+        if (timing) tDecode0 = SteadyClock::now();
+
         // 1. Frame read — through the ring, like the preview paths (sequential
         //    export amortizes to ~1 decode per frame with temporal NR on).
         Entry& e = gEntries[handle - 1];
@@ -1946,12 +2016,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
+        if (timing) {
+            tTemporal0 = SteadyClock::now();
+            gExportFrameTiming.decodeMs = elapsedMs(tDecode0, tTemporal0);
+        }
 
         // 2. Temporal NR on the CFA (pristine buffer back when off).
         const CfaBuffer cfa = temporalMergedCfa(
             *s, e, frameIndex, center, info,
             temporalNr == JNI_TRUE, temporalStrength);
         if (cfa == nullptr) return nullptr; // neighbor decode failed
+        if (timing) {
+            tDevelop0 = SteadyClock::now();
+            gExportFrameTiming.temporalMs = elapsedMs(tTemporal0, tDevelop0);
+        }
 
         // 3. Full-res develop with the job's grade snapshot (core/Develop.h).
         gLastErrorStage = kStageDevelop;
@@ -1976,6 +2054,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
                      "(recovery: re-import the clip)");
             return nullptr;
         }
+        if (timing) {
+            tWarp0 = SteadyClock::now();
+            gExportFrameTiming.developMs = elapsedMs(tDevelop0, tWarp0);
+        }
 
         // 3b. Full-res gyro warp on the STORED-ORIENTATION buffer (gyro
         //     Phase 5): measured 44.9832 ms/frame at 3840x2160 (commit b's
@@ -1987,6 +2069,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         //     preview path's pre-rotation placement. maxDim 0 = full res:
         //     the debug log line fires per export frame (settle-class).
         applyStabilization(stab.input, img, /*maxDim=*/0);
+        if (timing) {
+            tOetf0 = SteadyClock::now();
+            gExportFrameTiming.warpMs = elapsedMs(tWarp0, tOetf0);
+        }
 
         // 3. linearToRec709 -> clamp -> 8-bit RGB888, row-major, 3 bytes
         //    per pixel, NOT rotated here: the Kotlin exporter rotates the
@@ -2005,9 +2091,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
             out[static_cast<size_t>(i) * 3 + 2] = static_cast<jbyte>(
                 toByte(rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 2])));
         }
+        if (timing) {
+            tCopy0 = SteadyClock::now();
+            gExportFrameTiming.oetfPackMs = elapsedMs(tOetf0, tCopy0);
+        }
         jbyteArray arr = env->NewByteArray(n);
         if (arr == nullptr) return nullptr;
         env->SetByteArrayRegion(arr, 0, n, out.data());
+        if (timing) {
+            gExportFrameTiming.jniCopyMs = elapsedMs(tCopy0, SteadyClock::now());
+        }
         return arr;
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,

@@ -136,6 +136,20 @@ interface Mp4Session {
     /** ptsUs of frame [frameIndex] (-1 on a bad handle). */
     fun framePts(handle: Long, frameIndex: Int): Long
 
+    /**
+     * The six native sub-stage times of the frame [renderFrame] just
+     * produced, in milliseconds, in the fixed order
+     * [decode, temporal, develop, warp, oetf_pack, jni_copy] — or null
+     * when there is nothing to report (a fake, a non-NDK build, or a
+     * release build's gate off). Commit (d): the ExportStageTiming sample
+     * lines use this to split "native=..ms" into its internals. Default
+     * null so every JVM fake stays untouched — only NativeMp4Session
+     * reports. The pipeline reads this only after a SUCCESSFUL renderFrame:
+     * a failed frame leaves the previous frame's slots in place, which
+     * nobody reads.
+     */
+    fun lastFrameSubStagesMs(): DoubleArray? = null
+
     /** [sampleRate, channels], or null/0-0 when the clip has no audio. */
     fun audioInfo(handle: Long): IntArray?
 
@@ -238,6 +252,17 @@ internal object NativeMp4Session : Mp4Session {
 
     override fun framePts(handle: Long, frameIndex: Int): Long =
         NativeSource.jniFramePtsUs(handle, frameIndex)
+
+    override fun lastFrameSubStagesMs(): DoubleArray? {
+        // The gate is off in release builds (null from the bridge), and the
+        // pipeline only calls this after a successful renderFrame — the
+        // slots then hold THIS frame's numbers (thread-local, same thread).
+        return if (NativeSource.nativeAvailable) {
+            NativeSource.jniExportFrameTimingMs()
+        } else {
+            null
+        }
+    }
 
     override fun audioInfo(handle: Long): IntArray? = NativeSource.jniAudioInfo(handle)
 
@@ -501,13 +526,19 @@ fun imageInputSize(
  * BOUNDARY HONESTY: the "native" stage times ONE JNI call,
  * Mp4Session.renderFrame. Inside that single call the bridge runs the
  * MCRAW decode (+ temporal NR when on) + the 24-stage developCpu + the
- * gyro warp (when on) + the Rec.709 OETF + the RGB888 pack — and
- * jni_bridge.cpp is outside this mission's file boundary, so those
- * sub-stages are NOT separable here. The call is timed as one number and
- * the boundary is documented, never guessed. The separable stages are
- * the Kotlin ones (rotate / crop / yuv) and the writer internals
- * (encoder input wait / plane copy / drain-mux, reported by the writer
- * through [markWriterStages]).
+ * gyro warp (when on) + the Rec.709 OETF + the RGB888 pack. Commit (d)
+ * made those sub-stages separable: the bridge times its six internals
+ * into thread-local slots (gated by the same BuildConfig.DEBUG flag as
+ * the stab debug log) and the pipeline reads them through
+ * [Mp4Session.lastFrameSubStagesMs] right after the call, handing them
+ * to [markNativeSubStages]. When the slots exist (a debug build with the
+ * native library), the native pair renders as
+ * "native=472.3ms(decode=..ms temporal=..ms develop=..ms warp=..ms
+ * oetf=..ms copy=..ms)"; when they do not (a JVM fake, a release build,
+ * a non-NDK build), the line is exactly what it always was. The other
+ * stages are the Kotlin ones (rotate / crop / yuv) and the writer
+ * internals (encoder input wait / plane copy / drain-mux, reported by
+ * the writer through [markWriterStages]).
  *
  * OUTPUT — all through the injected sink, one line each (never one line
  * per frame):
@@ -528,6 +559,7 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
     /** Clears the per-frame slots at the top of a video frame iteration. */
     fun startFrame() {
         for (i in frameNanos.indices) frameNanos[i] = 0
+        nativeSubStagesMs = null
         frameWallStartNanos = System.nanoTime()
     }
 
@@ -548,6 +580,22 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         frameNanos[STAGE_ENC_WAIT] += encWaitNanos
         frameNanos[STAGE_PLANE_COPY] += planeCopyNanos
         frameNanos[STAGE_DRAIN_MUX] += drainNanos
+    }
+
+    /**
+     * The native call's own sub-stage split, read through
+     * [Mp4Session.lastFrameSubStagesMs] right after a successful
+     * renderFrame (commit (d)). Null / wrong length = no data (a fake,
+     * release build, or non-NDK build): the frame's native pair renders
+     * without the parenthetical, exactly as before. The slots are
+     * milliseconds — the native side already did the conversion.
+     */
+    fun markNativeSubStages(subStagesMs: DoubleArray?) {
+        nativeSubStagesMs = if (subStagesMs != null && subStagesMs.size == SUB_STAGE_COUNT) {
+            subStagesMs.copyOf()
+        } else {
+            null
+        }
     }
 
     /** Closes one video frame: accumulates, emits a sample line at checkpoints. */
@@ -598,6 +646,8 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
     private val sums = LongArray(STAGE_COUNT)
     private var frames = 0
     private var frameWallStartNanos = 0L
+    /** The native call's sub-stage split for THIS frame, or null (see [markNativeSubStages]). */
+    private var nativeSubStagesMs: DoubleArray? = null
 
     private fun isSampleFrame(f: Int): Boolean =
         f == SAMPLE_FRAMES[0] || f == SAMPLE_FRAMES[1] ||
@@ -609,7 +659,31 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         for (s in 0 until STAGE_COUNT) {
             if (s > 0) sb.append(' ')
             sb.append(stageName(s)).append('=').append(ms(nanos(s))).append("ms")
+            if (s == STAGE_NATIVE) sb.append(nativeSubStagesSuffix())
         }
+        return sb.toString()
+    }
+
+    /**
+     * The native pair's parenthetical — "(decode=..ms temporal=..ms
+     * develop=..ms warp=..ms oetf=..ms copy=..ms)" — or empty when this
+     * frame has no sub-stage data (see [markNativeSubStages]). Per-frame
+     * values only: the averages line stays the plain stage pairs, because
+     * a sum over frames where some frames report and others do not is a
+     * guess, not a measurement.
+     */
+    private fun nativeSubStagesSuffix(): String {
+        val t = nativeSubStagesMs ?: return ""
+        val sb = StringBuilder(64)
+        sb.append('(')
+        for (i in 0 until SUB_STAGE_COUNT) {
+            if (i > 0) sb.append(' ')
+            // The slots are already milliseconds (the native side did the
+            // conversion) — format directly, never through ms().
+            sb.append(subStageName(i)).append('=')
+                .append(String.format(Locale.ROOT, "%.1f", t[i])).append("ms")
+        }
+        sb.append(')')
         return sb.toString()
     }
 
@@ -639,6 +713,27 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         /** Writer: drain — encoded packets out of the codec into the muxer. */
         const val STAGE_DRAIN_MUX = 6
         const val STAGE_COUNT = 7
+
+        /**
+         * The native call's internal split (commit (d)) — the bridge's own
+         * sub-stage slots, in the FIXED order both sides render/read:
+         * decode (MCRAW decode + frame info), temporal (temporal NR merge),
+         * develop (the 24-stage developCpu), warp (gyro stabilization),
+         * oetf (Rec.709 OETF + RGB888 pack), copy (the JNI ByteArray
+         * copy). A debug build with the native library reports all six;
+         * anything else reports null and the sample line stays plain.
+         */
+        const val SUB_STAGE_COUNT = 6
+
+        fun subStageName(i: Int): String = when (i) {
+            0 -> "decode"
+            1 -> "temporal"
+            2 -> "develop"
+            3 -> "warp"
+            4 -> "oetf"
+            5 -> "copy"
+            else -> "sub$i"
+        }
 
         /** Per-frame sample checkpoints: the first frame + steady-state points. */
         val SAMPLE_FRAMES = intArrayOf(1, 30, 60, 90)
@@ -838,6 +933,13 @@ class ExportPipeline(
                                 )
                             )
                         timing?.mark(ExportStageTiming.STAGE_NATIVE, System.nanoTime() - t0)
+                        // Commit (d): the bridge timed its six internals
+                        // into thread-local slots during that call (debug
+                        // builds only) — read them NOW, on this same
+                        // thread, before anything else can overwrite them.
+                        // Null (fake / release / non-NDK) renders the
+                        // sample line exactly as before.
+                        timing?.markNativeSubStages(session.lastFrameSubStagesMs())
                         // Section 5: renderFrame returns NOT-rotated RGB888;
                         // rotating by the EFFECTIVE orientation makes the
                         // pixels themselves upright (the encoder wants
