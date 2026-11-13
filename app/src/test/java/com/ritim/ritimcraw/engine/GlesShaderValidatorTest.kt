@@ -232,4 +232,240 @@ class GlesShaderValidatorTest {
         // Terminates and reports the imbalance the truncation causes.
         GlesShaderValidator.problems(src)
     }
+
+    // ====================================================================
+    // Deliverable D: the fragment chain (fullscreen vertex, fused develop
+    // fragment, SSBO readback fragment). Same honesty as above: syntax +
+    // contract on the exact device text; the real compile is
+    // device-test-pending.
+    // ====================================================================
+
+    // ---- the shipped sources pass their own kinds ----
+
+    @Test
+    fun shipped_fullscreen_vertex_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.FULLSCREEN_VERTEX,
+                GlesShaderValidator.Kind.FULLSCREEN_VERTEX,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_develop_fragment_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.DEVELOP_FRAGMENT,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_store_fragment_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.STORE_FRAGMENT,
+                GlesShaderValidator.Kind.STORE_FRAGMENT,
+            ),
+        )
+    }
+
+    @Test
+    fun every_shipped_source_passes_validate_with_its_kind() {
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.FULLSCREEN_VERTEX,
+                GlesShaderValidator.Kind.FULLSCREEN_VERTEX,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.DEVELOP_FRAGMENT,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.STORE_FRAGMENT,
+                GlesShaderValidator.Kind.STORE_FRAGMENT,
+            ),
+        )
+    }
+
+    // ---- the wrong-kind version is reported ----
+
+    @Test
+    fun a_310_source_checked_as_fragment_300_is_reported() {
+        // The compute source under the fragment-chain kind: the version
+        // check must fire (310 es is not the 300 es this kind requires).
+        val problems = GlesShaderValidator.problems(
+            GlesShaderSources.DEMOSAIC_COMPUTE,
+            GlesShaderValidator.Kind.DEVELOP_FRAGMENT,
+        )
+        assertTrue(problems.any { it.contains("#version 300 es") })
+    }
+
+    @Test
+    fun a_300_source_checked_as_310_is_reported() {
+        val problems = GlesShaderValidator.problems(
+            GlesShaderSources.DEVELOP_FRAGMENT,
+            GlesShaderValidator.Kind.STORE_FRAGMENT,
+        )
+        assertTrue(problems.any { it.contains("#version 310 es") })
+    }
+
+    // ---- glReadPixels is banned in every kind (baseline invariant) ----
+
+    @Test
+    fun glreadpixels_is_reported_in_every_kind() {
+        val withRead = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("vec3 c = vec3(px[0], px[1], px[2]) * uWb;", "vec3 c = vec3(px[0], px[1], px[2]) * uWb; glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, c);")
+        listOf(
+            GlesShaderValidator.Kind.COMPUTE to withRead,
+            GlesShaderValidator.Kind.DEVELOP_FRAGMENT to withRead,
+            GlesShaderValidator.Kind.STORE_FRAGMENT to withRead,
+        ).forEach { (kind, src) ->
+            assertTrue(
+                "kind=$kind",
+                GlesShaderValidator.problems(src, kind).any { it.contains("glReadPixels is banned") },
+            )
+        }
+    }
+
+    // ---- the develop fragment is locked to the CPU stages it mirrors ----
+    // (rawedit::developCpu / demosaicBilinear / linearToRec709,
+    // core/src/Develop.cpp + core/src/Transfer.cpp).
+
+    @Test
+    fun develop_fragment_carries_the_cpu_kernel_offsets_in_order() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        assertTrue("kDx missing/wrong: $src", src.contains("int[8](-1, 1, 0, 0, -1, -1, 1, 1)"))
+        assertTrue("kDy missing/wrong: $src", src.contains("int[8](0, 0, -1, 1, -1, 1, -1, 1)"))
+    }
+
+    @Test
+    fun develop_fragment_clamps_before_the_site_test() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        val clampIdx = src.indexOf("min(max(g.x + kDx[k], 0), maxI)")
+        val testIdx = src.indexOf("if (siteAt(np) == t)")
+        assertTrue("clamp-first missing", clampIdx >= 0)
+        assertTrue("site test missing", testIdx >= 0)
+        assertTrue("clamp must precede the site test", clampIdx < testIdx)
+    }
+
+    @Test
+    fun develop_fragment_carries_the_stage1_slot_order_and_clamp() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        assertTrue(
+            "cellSlot order missing",
+            src.contains("int slot = (p.y & 1) * 2 + (p.x & 1);"),
+        )
+        assertTrue("stage-1 clamp missing", src.contains("clamp(v, 0.0, 1.0)"))
+    }
+
+    @Test
+    fun develop_fragment_carries_the_cpu_oetf_constants() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        assertTrue(
+            "linear segment missing",
+            src.contains("if (lin < 0.018) return 4.5 * lin;"),
+        )
+        assertTrue(
+            "power segment missing",
+            src.contains("1.099 * pow(lin, 0.45) - 0.099"),
+        )
+    }
+
+    @Test
+    fun develop_fragment_declares_every_harness_uniform() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        listOf(
+            "uniform highp usampler2D uCfa;",
+            "uniform ivec2 uSize;",
+            "uniform ivec4 uCell;",
+            "uniform vec4 uBlack;",
+            "uniform vec4 uRange;",
+            "uniform vec3 uWb;",
+            "uniform mat3 uCam2rgb;",
+            "uniform int uHasProfile;",
+            "uniform float uExposure;",
+            "uniform int uOetf;",
+        ).forEach { u ->
+            assertTrue("missing uniform: $u", src.contains(u))
+        }
+    }
+
+    // ---- each new check catches its own defect ----
+
+    @Test
+    fun a_renamed_develop_uniform_is_reported() {
+        val renamed = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("uniform vec4 uBlack;", "uniform vec4 uBlackLevel;")
+        assertTrue(
+            GlesShaderValidator.problems(renamed, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("uBlack") },
+        )
+    }
+
+    @Test
+    fun a_wrong_kernel_offset_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("int[8](-1, 1, 0, 0, -1, -1, 1, 1)", "int[8](-1, 1, 0, 0, -1, -1, 1, 2)")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("kDx") },
+        )
+    }
+
+    @Test
+    fun a_wrap_first_demosaic_is_reported() {
+        // Swap the clamp and the site test: the validator must reject the
+        // order change (border pixels would diverge from the CPU kernel).
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        val clamp = "int nx = min(max(g.x + kDx[k], 0), maxI);"
+        val wrapped = src.replace(clamp, "ivec2 np0 = ivec2(g.x + kDx[k], g.y + kDy[k]);")
+        assertTrue(
+            GlesShaderValidator.problems(wrapped, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("clamp must precede the site test") },
+        )
+    }
+
+    @Test
+    fun a_wrong_oetf_constant_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("1.099 * pow(lin, 0.45) - 0.099", "1.099 * pow(lin, 0.45) - 0.1")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("OETF power segment") },
+        )
+    }
+
+    @Test
+    fun a_missing_store_binding_is_reported() {
+        val oldForm = GlesShaderSources.STORE_FRAGMENT
+            .replace(
+                "layout(std430, binding = 0) writeonly buffer OutBuf",
+                "buffer OutBuf",
+            )
+        assertTrue(
+            GlesShaderValidator.problems(oldForm, GlesShaderValidator.Kind.STORE_FRAGMENT)
+                .any { it.contains("layout(std430, binding = 0) writeonly buffer OutBuf") },
+        )
+    }
+
+    @Test
+    fun a_vertex_uniform_is_reported() {
+        // The harness sets NO vertex uniforms; one appearing is a drift.
+        val withUniform = GlesShaderSources.FULLSCREEN_VERTEX
+            .replace("precision highp float;", "precision highp float;\nuniform vec2 uHalfViewport;")
+        assertTrue(
+            GlesShaderValidator.problems(withUniform, GlesShaderValidator.Kind.FULLSCREEN_VERTEX)
+                .any { it.contains("uniform") },
+        )
+    }
 }
