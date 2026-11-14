@@ -63,6 +63,8 @@ import com.ritim.ritimcraw.data.GyroMatcher
 import com.ritim.ritimcraw.data.GyroStore
 import com.ritim.ritimcraw.data.GyroTree
 import com.ritim.ritimcraw.data.PreviewQualityStore
+import com.ritim.ritimcraw.data.PreviewStatsStore
+import com.ritim.ritimcraw.data.PreviewStatsToggle
 import com.ritim.ritimcraw.data.RenderBackendStore
 import com.ritim.ritimcraw.data.LutStore
 import com.ritim.ritimcraw.data.MediaSource
@@ -186,6 +188,22 @@ fun AppNav() {
             // top-level "gyroFolder" scalar, omit-when-absent — the
             // PreviewQualityStore pattern.
             gyroFolder = GyroFolderStore(project),
+            // The debug stats-readback A/B toggle (2026-11-14): same
+            // shared project.json, own top-level "previewStats" boolean
+            // scalar, omit-when-default(true). The toggle object pairs
+            // the store with the native apply (jniSetPreviewStatsEnabled)
+            // — the constructor-injected seam PreviewStatsStoreTest
+            // locks with a recording fake. Release never invokes the
+            // applier (the row is debug-only and the apply-on-start is
+            // BuildConfig.DEBUG-gated), so the native default (on) is
+            // exactly the pre-toggle behavior there.
+            previewStats = PreviewStatsToggle(
+                PreviewStatsStore(project),
+            ) { enabled ->
+                if (NativeSource.nativeAvailable) {
+                    NativeSource.jniSetPreviewStatsEnabled(enabled)
+                }
+            },
             // Per-source metadata records (spec IN-13, Stage A): same
             // shared project.json, own "metadata" section keyed by
             // sourceId — the join with the sources section. Filled by
@@ -370,6 +388,28 @@ fun AppNav() {
     // only what the user asked for. Export jobs snapshot it at job start
     // (§14: an ongoing export never changes backend mid-run).
     var renderBackend by remember { mutableStateOf(stores.renderBackend.get()) }
+    // The debug stats-readback toggle's UI state (2026-11-14): the row's
+    // checked value, read once at composition and refreshed on every
+    // change — the previewQuality/renderBackend pattern. The PERSISTED
+    // value is applied to the engine at start below (the native toggle
+    // is process state: a restarted process must re-apply it or the row
+    // would show the stored state while the bridge still ran the
+    // default); every change applies immediately through the toggle's
+    // own seam (persist + apply, one call per flip).
+    var previewStats by remember { mutableStateOf(stores.previewStats.current()) }
+    // App start: apply the persisted choice to the engine (the restart
+    // lock, run once per composition entry — the previewQuality pattern
+    // has no equivalent because the editor re-reads the store; THIS
+    // value lives in a bridge static). Debug builds only — release
+    // never calls the setter and the native default (on) is exactly the
+    // pre-toggle behavior. The nativeAvailable guard keeps the JVM and
+    // any lib-load failure safe (silently no-op, the wrapper's own
+    // guard never fires from here).
+    if (BuildConfig.DEBUG) {
+        LaunchedEffect(Unit) {
+            stores.previewStats.applyPersisted()
+        }
+    }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     // EditorRoute is a data class — rememberSaveable cannot put it in a
     // Bundle (owner finding 2026-11-10: backgrounding the app with the
@@ -1668,6 +1708,17 @@ fun AppNav() {
                             // too — one grant, one place to change it.
                             gyroFolderLabel = gyroFolder?.let { GyroTree.folderLabel(it) },
                             onPickGyroFolder = { gyroFolderPicker.launch(null) },
+                            // ---- Preview stats readback (debug A/B) ----
+                            // The row renders only inside the screen's
+                            // BuildConfig.DEBUG block (beside Measure);
+                            // the change callback persists + applies in
+                            // one step through the toggle's seam, then
+                            // refreshes the checked state.
+                            previewStats = previewStats,
+                            onPreviewStatsChange = { enabled ->
+                                stores.previewStats.change(enabled)
+                                previewStats = enabled
+                            },
                         )
                     }
                 }
@@ -1744,6 +1795,10 @@ private class Stores(
     // The granted gyro-folder tree URI (owner request 2026-11-12, G1):
     // same shared project.json, own top-level "gyroFolder" scalar.
     val gyroFolder: GyroFolderStore,
+    // The debug stats-readback A/B toggle (2026-11-14): the store +
+    // native-apply seam (PreviewStatsToggle) over the same shared
+    // project.json's "previewStats" boolean scalar.
+    val previewStats: PreviewStatsToggle,
     // Per-source metadata records (spec IN-13, Stage A): same shared
     // project.json, own "metadata" section keyed by sourceId.
     val metadata: MetadataStore,
