@@ -190,6 +190,28 @@ struct DevelopFrameRequest {
     // keeps commit (a)'s sessions byte-identical to the pre-NR chain.
     float chromaDenoise = 0.0f;  // raw grade.chromaDenoise
     float noiseReduction = 0.0f;  // raw grade.noiseReduction
+    // Stage 24 LUT, the LUT port's session-side shape (commit (a) of the LUT
+    // mission). lutStrength is the RAW grade value on rawedit's own [0,1]
+    // scale (GradeK's percent / 100, mapped Kotlin-side before the seam —
+    // the CPU seam's own contract); 0.0f is the CPU call site's own skip
+    // and keeps commit (a)'s sessions byte-identical to the pre-LUT chain.
+    // lutPath empty = no LUT. The session parses the .cube ONCE per LUT
+    // revision (core's parseCubeFile, cached by path), compiles the
+    // managed binding (rawedit::compileLutBinding) and uploads the table
+    // as a 3D RGBA16F texture — hardware trilinear, one mip, GL_LINEAR +
+    // CLAMP_TO_EDGE on all three axes — through the texel-center mapping
+    // the shader carries (uLutSize/uLutDomainMin/uLutDomainMax). The five
+    // interpretation ordinals are the rawedit enum ordinals (LutRole,
+    // GamutId, TransferId); all five -1 = the legacy stage-24 shape.
+    // Populated through the JNI seam in commit (b); the neutral defaults
+    // here keep commit (a) honest.
+    float lutStrength = 0.0f;  // raw grade.lutStrength, already [0,1]
+    std::string lutPath;       // the resolved .cube path; empty = no LUT
+    int lutRole = 0;
+    int lutInGamut = 0;
+    int lutInTransfer = 0;
+    int lutOutGamut = 0;
+    int lutOutTransfer = 0;
 };
 
 // One render result. ok=false means the step named in [detail] failed (or
