@@ -991,26 +991,43 @@ void DevelopSession::Impl::runSurfaceJob(ANativeWindow* window, bool* ok,
 
     // The session's OWN config (opened window-capable + recordable at init)
     // — the SAME config the context was created with, which is what makes
-    // eglCreateWindowSurface legal here. The surface attribs mirror the
-    // device-PROVEN writer path (configureSurfaceVideoCodec's
-    // eglCreateWindowSurface): EGL_RECORDABLE_ANDROID=1 is what the
-    // MediaCodec input Surface's BufferQueue consumer needs to accept the
-    // producer — without it some devices reject the surface outright.
-    const EGLint surfAttribs[] = {
-        EGL_RECORDABLE_ANDROID, 1,
-        EGL_NONE,
-    };
+    // eglCreateWindowSurface legal here. EGL_RECORDABLE_ANDROID is a
+    // config-selection attribute only (EGL_ANDROID_recordable defines it
+    // for eglChooseConfig/eglGetConfigAttrib lists): passing it in the
+    // SURFACE attribs is invalid, and the Xiaomi 15 Ultra's EGL rejects
+    // the call with EGL_BAD_ATTRIBUTE. The flag rides the CONFIG — the
+    // recordable=true egl.open at init already gave the codec's
+    // BufferQueue consumer what it needs from the producer config. Null
+    // surface attribs, matching the writer path and the preview session's
+    // device-proven wrap.
     EGLSurface created = eglCreateWindowSurface(egl.display, egl.config,
-                                                 window, surfAttribs);
+                                                 window, nullptr);
     if (created == EGL_NO_SURFACE) {
-        if (detail != nullptr) *detail = "eglCreateWindowSurface(encoder) failed";
+        // Read the thread-local EGL error HERE, before any cleanup —
+        // it does not survive later calls on this thread.
+        const EGLint eglErr = eglGetError();
+        if (detail != nullptr) {
+            char buf[96];
+            snprintf(buf, sizeof(buf),
+                     "eglCreateWindowSurface(encoder) failed eglError=0x%04x",
+                     (unsigned)eglErr);
+            *detail = buf;
+        }
         ANativeWindow_release(window);
         return;
     }
     // Probe make-current on the new surface BEFORE accepting it: an
     // unusable surface must be refused now, not discovered mid-render.
     if (!eglMakeCurrent(egl.display, created, created, egl.context)) {
-        if (detail != nullptr) *detail = "eglMakeCurrent(encoder) failed";
+        // Same-thread, pre-cleanup eglGetError (thread-local state).
+        const EGLint eglErr = eglGetError();
+        if (detail != nullptr) {
+            char buf[96];
+            snprintf(buf, sizeof(buf),
+                     "eglMakeCurrent(encoder) failed eglError=0x%04x",
+                     (unsigned)eglErr);
+            *detail = buf;
+        }
         eglDestroySurface(egl.display, created);
         ANativeWindow_release(window);
         return;
