@@ -227,10 +227,13 @@ class RenderBackendTest {
         // The map is the single uncovered list the line tokens come from.
         // Stages 2, 3, 15 and 23 left it when they were ported into the
         // fragment pass (they are covered now, map-state gate, the stage-15
-        // highlights shoulder and all five tonemap modes included).
-        assertEquals(15, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
+        // highlights shoulder and all five tonemap modes included). The ten
+        // pointwise grade stages (9-13, 16-20) left it with the pointwise
+        // port: each CPU loop's exact math sits behind its raw-value
+        // uniform in the shader.
+        assertEquals(5, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
         assertEquals(
-            setOf(7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 24),
+            setOf(7, 8, 21, 22, 24),
             BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
         )
         // Covered + uncovered = the full 24-stage contract, no overlap.
@@ -269,21 +272,12 @@ class RenderBackendTest {
     fun every_uncovered_stage_guard_mirrors_the_cpu() {
         // One grade per stage: the field that activates CPU stage N must
         // activate the Kotlin rule's stage N (same guard, same number).
-        // Stages 2, 3, 15 and 23 are gone from the list (covered by the
-        // fragment pass), so their cases are gone with them.
+        // Stages 2, 3, 15, 23 and the ten pointwise grade stages (9-13,
+        // 16-20) are gone from the list (covered by the fragment pass),
+        // so their cases are gone with them.
         val cases = listOf(
             7 to GradeK(chromaDenoise = 25f),
             8 to GradeK(noiseReduction = 25f),
-            9 to GradeK(blackPoint = 5f),
-            10 to GradeK(whitePoint = 5f),
-            11 to GradeK(shadows = 5f),
-            12 to GradeK(midtones = 5f),
-            13 to GradeK(contrast = 5f),
-            16 to GradeK(asShot = false, tempK = 6500f),
-            17 to GradeK(asShot = false, tint = 5f),
-            18 to GradeK(wheelShadowX = 0.2f),
-            19 to GradeK(splitShadowHue = 30f),
-            20 to GradeK(saturation = 5f),
             21 to GradeK(sharpness = 5f),
             22 to GradeK(detail = 5f),
             24 to GradeK(lutId = "l1", lutStrength = 100f),
@@ -298,6 +292,109 @@ class RenderBackendTest {
             BackendRules.fragmentUncoveredStages(
                 GradeK(keepVignetting = false, highlightReconstruction = false),
             ).isEmpty(),
+        )
+    }
+
+    @Test
+    fun pointwise_grades_cover_the_fragment_path() {
+        // The ten pointwise grade stages (9-13, 16-20) are ported into the
+        // fragment pass (the CPU loops' exact math behind raw-value
+        // uniforms, the 16/17 asShot gate hoisted to uWbManual and the 19
+        // split gate to uSplitActive), so each control's own grade — the
+        // exact shape its parity case measures — is NOT an
+        // uncovered-stage fallback anymore: gates green -> the fragment
+        // leg runs.
+        val cases = listOf(
+            "black-point" to GradeK(blackPoint = 5f),
+            "white-point" to GradeK(whitePoint = 5f),
+            "shadows" to GradeK(shadows = -5f),
+            "midtones" to GradeK(midtones = 5f),
+            "contrast" to GradeK(contrast = 5f),
+            "temperature" to GradeK(asShot = false, tempK = 6500f),
+            "tint" to GradeK(asShot = false, tint = 5f),
+            "color-wheel" to GradeK(wheelShadowX = 0.2f),
+            "split-tone" to GradeK(splitShadowHue = 30f),
+            "saturation" to GradeK(saturation = 5f),
+        )
+        cases.forEach { (name, grade) ->
+            assertTrue(
+                "$name must be covered",
+                BackendRules.fragmentUncoveredStages(grade).isEmpty(),
+            )
+            assertTrue(BackendRules.fragmentUncoveredPreStages(grade).isEmpty())
+            assertEquals(
+                "$name must run the fragment leg",
+                EffectiveRenderBackend.GLES,
+                BackendRules.fragmentEffectiveBackend(
+                    RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+                    gyroWarpActive = false,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun pointwise_tokens_are_gone_from_the_fallback_vocabulary() {
+        // Coverage table, vocabulary leg: the ten pointwise stage numbers
+        // and their reason TOKENS are gone from the uncovered map, and a
+        // gates-red multi-control grade produces a fallback line naming
+        // ONLY the gates — no per-control token left to force it.
+        val goneKeys = setOf(9, 10, 11, 12, 13, 16, 17, 18, 19, 20)
+        goneKeys.forEach { stage ->
+            assertTrue(
+                "stage $stage must be covered",
+                stage in BackendRules.FRAGMENT_COVERED_STAGES,
+            )
+            assertTrue(
+                "stage $stage must be gone from the uncovered map",
+                stage !in BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
+            )
+        }
+        val goneTokens = listOf(
+            "black-point", "white-point", "shadows", "midtones", "contrast",
+            "temperature", "tint", "color-wheel", "split-tone", "saturation",
+        )
+        val line = BackendRules.fragmentFallbackLine(
+            RenderBackend.GPU_EXPERIMENTAL, BackendGates(),
+            GradeK(
+                blackPoint = 5f, whitePoint = 5f, shadows = -5f,
+                midtones = 5f, contrast = 5f, asShot = false, tempK = 6500f,
+                tint = 5f, wheelShadowX = 0.2f, splitShadowHue = 30f,
+                saturation = 5f,
+            ),
+            gyroWarpActive = false,
+        )!!
+        goneTokens.forEach { token ->
+            assertTrue("$token must be gone: $line", !line.contains(token))
+        }
+        assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
+    }
+
+    @Test
+    fun a_multi_control_grade_stays_gpu_eligible() {
+        // The mission's own gate matrix: a grade with several of the ten
+        // pointwise controls active at once (the owner's device-test
+        // shape — shadows + temperature + saturation, plus the routine
+        // highlights recovery on top) is GPU-ELIGIBLE: every active stage
+        // is covered, so the fragment leg takes the whole frame. Before
+        // the pointwise port this exact grade forced the CPU path three
+        // times over.
+        val grade = GradeK(
+            shadows = -5f,
+            asShot = false,
+            tempK = 6500f,
+            saturation = 5f,
+            highlights = -55f,
+        )
+        assertTrue(
+            BackendRules.fragmentUncoveredStages(grade).isEmpty(),
+        )
+        assertEquals(
+            EffectiveRenderBackend.GLES,
+            BackendRules.fragmentEffectiveBackend(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+                gyroWarpActive = false,
+            ),
         )
     }
 
@@ -353,8 +450,12 @@ class RenderBackendTest {
     @Test
     fun as_shot_grade_with_manual_values_still_covers_temp_and_tint() {
         // CPU stages 16-17 are guarded by !asShot: manual temp/tint values
-        // stored while asShot=true are inert (Develop.h), so the Kotlin
-        // rule must NOT treat them as active.
+        // stored while asShot=true are inert (Develop.h). Stages 16-17 are
+        // covered by the fragment pass now, so the uncovered list never
+        // names them either way — the asShot gate lives in the uWbManual
+        // hoist (CPU-computed, bound 0 when asShot), which keeps the
+        // stored-but-inert values out of the shader exactly as the CPU
+        // loop's own guard does.
         val active = BackendRules.fragmentUncoveredStages(
             GradeK(asShot = true, tempK = 6500f, tint = 5f),
         )

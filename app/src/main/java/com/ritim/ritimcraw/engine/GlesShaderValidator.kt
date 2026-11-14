@@ -158,8 +158,13 @@ object GlesShaderValidator {
     }
 
     private fun developFragmentProblems(s: String, out: MutableList<String>) {
-        // The uniforms the harness looks up and sets (gles/GlesPipeline.cpp
-        // fragment path). Names double as the C++ lookup contract.
+        // The uniforms the pipeline looks up and sets. Names double as the
+        // C++ lookup contract. Honest split: the gles/GlesPipeline.cpp parity
+        // harness binds the stage 1-6 + uExposure/uTonemap/uOetf entries
+        // (and ONLY those — the grade uniforms' GLSL defaults must be the
+        // exact neutral fast path so the frozen harness stays byte-honest);
+        // the develop/preview SESSIONS (GlesDevelopSession,
+        // GlesPreviewSession) bind the grade entries per frame.
         val uniforms = listOf(
             "uniform highp usampler2D uCfa;",
             "uniform ivec2 uSize;",
@@ -176,6 +181,25 @@ object GlesShaderValidator {
             "uniform int uHasProfile;",
             "uniform float uExposure;",
             "uniform float uHighlights;",
+            "uniform float uBlackPoint;",
+            "uniform float uWhitePoint;",
+            "uniform float uShadows;",
+            "uniform float uMidtones;",
+            "uniform float uContrast;",
+            "uniform int uWbManual;",
+            "uniform float uTempK;",
+            "uniform float uTint;",
+            "uniform float uWheelShadowX;",
+            "uniform float uWheelShadowY;",
+            "uniform float uWheelMidX;",
+            "uniform float uWheelMidY;",
+            "uniform float uWheelHighX;",
+            "uniform float uWheelHighY;",
+            "uniform int uSplitActive;",
+            "uniform float uSplitShadowHue;",
+            "uniform float uSplitHighlightHue;",
+            "uniform float uSplitBalance;",
+            "uniform float uSaturation;",
             "uniform int uTonemap;",
             "uniform int uOetf;",
         )
@@ -275,6 +299,121 @@ object GlesShaderValidator {
                 "(`float cap = ceiling / uHrGain[siteAt(p)];` — the CPU's " +
                 "ceiling / gain[wbIndex(color)] with wbIndex(site) = site)"
         }
+        // The CPU rawedit::smoothstepf helper (core/src/Develop.cpp), which
+        // the tone stages (11, 12) and the color stages (18, 19) blend
+        // their band remaps in with. A silent edit of the Hermite form
+        // surfaces here (the CPU side is pinned by core's own doctests).
+        if (!s.contains(
+                "float t = min(max((x - e0) / (e1 - e0), 0.0), 1.0);"
+            )
+        ) {
+            out += "missing the smoothstepf clamp " +
+                "(`float t = min(max((x - e0) / (e1 - e0), 0.0), 1.0);` — " +
+                "rawedit::smoothstepf, the shared band-weight helper)"
+        }
+        if (!s.contains("return t * t * (3.0 - 2.0 * t);")) {
+            out += "missing the smoothstepf Hermite tail " +
+                "(`return t * t * (3.0 - 2.0 * t);` — rawedit::smoothstepf)"
+        }
+        // Stages 9-13: the CPU pointwise grade loop, verbatim (each in its
+        // own `!= 0.0` gate — the CPU's own skip; the uniforms carry RAW
+        // grade values and the shader computes the same intermediates).
+        // The stage-13 local c (contrast/100) is renamed slopeC because
+        // the pixel vector is c here — the rename is honest and locked.
+        if (!s.contains("if (uBlackPoint != 0.0) {")) {
+            out += "missing the stage-9 gate " +
+                "(`if (uBlackPoint != 0.0) {` — grade.blackPoint == 0 skips " +
+                "the whole stage, exactly like the CPU's own " +
+                "`if (grade.blackPoint != 0.0f)`)"
+        }
+        if (!s.contains("float lift = -0.25 * (uBlackPoint / 100.0);")) {
+            out += "missing the stage-9 lift " +
+                "(`float lift = -0.25 * (uBlackPoint / 100.0);` — the CPU's " +
+                "-0.25 * blackPoint/100 endpoint remap)"
+        }
+        if (!s.contains("c = lift + (1.0 - lift) * c;")) {
+            out += "missing the stage-9 remap " +
+                "(`c = lift + (1.0 - lift) * c;` — the CPU stage-9 " +
+                "lift + (1 - lift) * v form)"
+        }
+        if (!s.contains("if (uWhitePoint != 0.0) {")) {
+            out += "missing the stage-10 gate " +
+                "(`if (uWhitePoint != 0.0) {` — grade.whitePoint == 0 skips " +
+                "the whole stage, exactly like the CPU)"
+        }
+        if (!s.contains(
+                "float scale = uWhitePoint > 0.0"
+            )
+        ) {
+            out += "missing the stage-10 scale head " +
+                "(`float scale = uWhitePoint > 0.0` — the CPU's sign split)"
+        }
+        if (!s.contains("? 1.0 / (1.0 - 0.25 * (uWhitePoint / 100.0))")) {
+            out += "missing the stage-10 positive scale " +
+                "(`? 1.0 / (1.0 - 0.25 * (uWhitePoint / 100.0))` — the CPU's " +
+                "wp > 0 arm)"
+        }
+        if (!s.contains(": 1.0 + 0.25 * (uWhitePoint / 100.0);")) {
+            out += "missing the stage-10 negative scale " +
+                "(`: 1.0 + 0.25 * (uWhitePoint / 100.0);` — the CPU's " +
+                "wp <= 0 arm)"
+        }
+        if (!s.contains("c *= scale;")) {
+            out += "missing the stage-10 scale multiply " +
+                "(`c *= scale;` — the CPU stage-10 uniform scale)"
+        }
+        if (!s.contains("if (uShadows != 0.0) {")) {
+            out += "missing the stage-11 gate " +
+                "(`if (uShadows != 0.0) {` — grade.shadows == 0 skips the " +
+                "whole stage, exactly like the CPU)"
+        }
+        if (!s.contains("float wDark = smoothstepf(0.18, 0.0, mx);")) {
+            out += "missing the stage-11 dark-band weight " +
+                "(`float wDark = smoothstepf(0.18, 0.0, mx);` — the CPU's " +
+                "smoothstepf(0.18, 0, mx), 1 at black)"
+        }
+        if (!s.contains("float gain = pow(2.0, strength * wDark);")) {
+            out += "missing the stage-11 gain " +
+                "(`float gain = pow(2.0, strength * wDark);` — the CPU's " +
+                "pow(2, strength * wDark))"
+        }
+        if (!s.contains("if (uMidtones != 0.0) {")) {
+            out += "missing the stage-12 gate " +
+                "(`if (uMidtones != 0.0) {` — grade.midtones == 0 skips the " +
+                "whole stage, exactly like the CPU)"
+        }
+        if (!s.contains(
+                "* (1.0 - smoothstepf(0.18, 0.72, mx));"
+            )
+        ) {
+            out += "missing the stage-12 tent tail " +
+                "(`* (1.0 - smoothstepf(0.18, 0.72, mx));` — the CPU's " +
+                "(1 - smoothstepf(0.18, 0.72, mx)) falloff)"
+        }
+        if (!s.contains("float gain = pow(2.0, strength * wMid);")) {
+            out += "missing the stage-12 gain " +
+                "(`float gain = pow(2.0, strength * wMid);` — the CPU's " +
+                "pow(2, strength * wMid))"
+        }
+        if (!s.contains("if (uContrast != 0.0) {")) {
+            out += "missing the stage-13 gate " +
+                "(`if (uContrast != 0.0) {` — grade.contrast == 0 skips the " +
+                "whole stage, exactly like the CPU)"
+        }
+        if (!s.contains("float slopeC = uContrast / 100.0;")) {
+            out += "missing the stage-13 slope head " +
+                "(`float slopeC = uContrast / 100.0;` — the CPU's c = " +
+                "contrast/100, renamed slopeC because the pixel vector is c)"
+        }
+        if (!s.contains("float slope = 1.0 + slopeC;")) {
+            out += "missing the stage-13 slope " +
+                "(`float slope = 1.0 + slopeC;` — the CPU's slope = 1 + c)"
+        }
+        if (!s.contains("c = pivot + (c - pivot) * slope;")) {
+            out += "missing the stage-13 pivot remap " +
+                "(`c = pivot + (c - pivot) * slope;` — the CPU stage-13 " +
+                "pivot + (v - pivot) * slope form)"
+        }
         // The OETF constants — rawedit::linearToRec709 (Transfer.cpp).
         if (!s.contains("if (lin < 0.018) return 4.5 * lin;")) {
             out += "missing the OETF linear segment " +
@@ -340,6 +479,163 @@ object GlesShaderValidator {
             out += "missing the stage-15 gain multiply " +
                 "(`c *= gain;` — the uniform per-pixel gain, neutrals stay " +
                 "neutral)"
+        }
+        // Stages 16-20: the CPU pointwise color grade loop, verbatim. The
+        // 16/17 asShot gate is hoisted to the CPU-computed int uWbManual
+        // and the 19 split gate to uSplitActive (the GLSL default of an
+        // unset int uniform is 0, which must be the exact CPU skip so the
+        // frozen device parity harness — which never binds these — stays
+        // byte-honest). The uniforms carry RAW grade values; the shader
+        // computes the same intermediates the CPU loops compute.
+        if (!s.contains("if (uWbManual == 1) {")) {
+            out += "missing the stage-16 gate " +
+                "(`if (uWbManual == 1) {` — uWbManual carries the " +
+                "CPU-computed !grade.asShot; 0 skips both 16 and 17, " +
+                "exactly like the CPU's `if (!grade.asShot)`)"
+        }
+        if (!s.contains(
+                "float tempShift = uTempK > 0.0 ? log2(uTempK / 5600.0) : 0.0;"
+            )
+        ) {
+            out += "missing the stage-16 tempShift " +
+                "(`float tempShift = uTempK > 0.0 ? log2(uTempK / 5600.0) : ` " +
+                "`0.0;` — the CPU's tempK > 0 guard and log2(tempK/5600))"
+        }
+        if (!s.contains("if (abs(tempShift) > 1e-4) {")) {
+            out += "missing the stage-16 threshold " +
+                "(`if (abs(tempShift) > 1e-4) {` — the CPU's own " +
+                "|tempShift| > 1e-4 skip)"
+        }
+        if (!s.contains("float warmGain = pow(2.0, 0.35 * tempShift);")) {
+            out += "missing the stage-16 warm gain " +
+                "(`float warmGain = pow(2.0, 0.35 * tempShift);` — the CPU's " +
+                "pow(2, 0.35*tempShift) on red)"
+        }
+        if (!s.contains("float coolGain = pow(2.0, -0.35 * tempShift);")) {
+            out += "missing the stage-16 cool gain " +
+                "(`float coolGain = pow(2.0, -0.35 * tempShift);` — the CPU's " +
+                "pow(2, -0.35*tempShift) on blue)"
+        }
+        if (!s.contains("c.g *= sqrt(warmGain * coolGain);")) {
+            out += "missing the stage-16 green geometric mean " +
+                "(`c.g *= sqrt(warmGain * coolGain);` — the CPU's " +
+                "g *= sqrt(warmGain*coolGain), luminance-preserving)"
+        }
+        if (!s.contains("if (uWbManual == 1 && uTint != 0.0) {")) {
+            out += "missing the stage-17 gate " +
+                "(`if (uWbManual == 1 && uTint != 0.0) {` — the CPU's " +
+                "`!grade.asShot && grade.tint != 0.0f` split across the " +
+                "hoisted gate and the raw value)"
+        }
+        if (!s.contains("float greenGain = pow(2.0, 0.4 * (uTint / 100.0));")) {
+            out += "missing the stage-17 green gain " +
+                "(`float greenGain = pow(2.0, 0.4 * (uTint / 100.0));` — " +
+                "the CPU's pow(2, 0.4*(tint/100)))"
+        }
+        if (!s.contains(
+                "if (uWheelShadowX != 0.0 || uWheelShadowY != 0.0 ||"
+            )
+        ) {
+            out += "missing the stage-18 gate head " +
+                "(`if (uWheelShadowX != 0.0 || uWheelShadowY != 0.0 ||` — " +
+                "the CPU's wheelActive any-of-six check, one raw value per " +
+                "wheel offset)"
+        }
+        if (!s.contains("float wHigh = smoothstepf(0.18, 0.72, mx);")) {
+            out += "missing the stage-18 high-band weight " +
+                "(`float wHigh = smoothstepf(0.18, 0.72, mx);` — the CPU's " +
+                "high band, completing the exact partition of unity with " +
+                "wDark + wMid)"
+        }
+        if (!s.contains(
+                "float xBlend = wDark * uWheelShadowX"
+            )
+        ) {
+            out += "missing the stage-18 xBlend head " +
+                "(`float xBlend = wDark * uWheelShadowX` — the CPU's " +
+                "wDark*shadowX + wMid*midX + wHigh*highX warm/cool blend)"
+        }
+        if (!s.contains("c.g *= pow(2.0,  0.5 * yBlend);")) {
+            out += "missing the stage-18 green ride " +
+                "(`c.g *= pow(2.0,  0.5 * yBlend);` — the CPU's green rides " +
+                "the tint axis; this locks the exact per-axis pow(2, 0.5*x) " +
+                "form and that it is GREEN that moves with yBlend)"
+        }
+        if (!s.contains("c.b *= pow(2.0, -0.5 * xBlend);")) {
+            out += "missing the stage-18 blue counter " +
+                "(`c.b *= pow(2.0, -0.5 * xBlend);` — the CPU's blue moves " +
+                "OPPOSITE the warm axis, the -0.5 sign is load-bearing)"
+        }
+        if (!s.contains("if (uSplitActive == 1) {")) {
+            out += "missing the stage-19 gate " +
+                "(`if (uSplitActive == 1) {` — uSplitActive carries the " +
+                "CPU-computed splitShadowHue >= 0 || splitHighlightHue >= 0; " +
+                "the raw -1 = off sentinel cannot live on the hue uniforms " +
+                "because 0.0 is a VALID hue and the GLSL default of an unset " +
+                "float uniform is 0.0)"
+        }
+        if (!s.contains("vec3 gains;")) {
+            out += "missing the hueGains declaration " +
+                "(`vec3 gains;` — the CPU hueGains lambda's gains array, " +
+                "renamed honestly (c is the pixel vector))"
+        }
+        if (!s.contains("gains[ch] = 2.0 * (0.5 + 0.5 * cos(d * 3.14159265 / 180.0));")) {
+            out += "missing the hueGains raised-cosine window " +
+                "(`gains[ch] = 2.0 * (0.5 + 0.5 * cos(d * 3.14159265 / ` " +
+                "`180.0));` — the CPU's 2*(0.5 + 0.5*cos(d*pi/180)), rescaled " +
+                "by 2 so the average over the circle is 1)"
+        }
+        if (!s.contains("float m = 0.18 * pow(2.0, uSplitBalance / 100.0);")) {
+            out += "missing the stage-19 balance pivot " +
+                "(`float m = 0.18 * pow(2.0, uSplitBalance / 100.0);` — the " +
+                "CPU's m = 0.18*pow(2, splitBalance/100) shadow/highlight " +
+                "crossover)"
+        }
+        if (!s.contains("const float tintAmount = 0.35;")) {
+            out += "missing the stage-19 tint amount " +
+                "(`const float tintAmount = 0.35;` — the CPU's 0.35 stop, " +
+                "literal-only so it keeps const)"
+        }
+        if (!s.contains("float wShadow = smoothstepf(m, 0.0, mx);")) {
+            out += "missing the stage-19 shadow band " +
+                "(`float wShadow = smoothstepf(m, 0.0, mx);` — the CPU's " +
+                "smoothstepf(m, 0, mx), 1 at black, 0 at m)"
+        }
+        if (!s.contains("float wHighlight = smoothstepf(m, 1.0, mx);")) {
+            out += "missing the stage-19 highlight band " +
+                "(`float wHighlight = smoothstepf(m, 1.0, mx);` — the CPU's " +
+                "smoothstepf(m, 1, mx), 0 at m, 1 at white)"
+        }
+        if (!s.contains(
+                "float gain = pow(\n" +
+                    "                2.0, tintAmount * (wShadow * (sh[ch] - 1.0)"
+            )
+        ) {
+            out += "missing the stage-19 per-channel gain " +
+                "(`float gain = pow(2.0, tintAmount * (wShadow * (sh[ch] - ` " +
+                "`1.0) + wHighlight * (hl[ch] - 1.0)));` — the CPU's " +
+                "pow(2, tintAmount*(wShadow*(sh[c]-1) + wHighlight*(hl[c]-1))) " +
+                "with the channel index renamed ch)"
+        }
+        if (!s.contains("if (uSaturation != 0.0) {")) {
+            out += "missing the stage-20 gate " +
+                "(`if (uSaturation != 0.0) {` — grade.saturation == 0 skips " +
+                "the whole stage, exactly like the CPU)"
+        }
+        if (!s.contains("float f = pow(2.0, 0.75 * (uSaturation / 100.0));")) {
+            out += "missing the stage-20 chroma factor " +
+                "(`float f = pow(2.0, 0.75 * (uSaturation / 100.0));` — the " +
+                "CPU's pow(2, 0.75*(sat/100)))"
+        }
+        if (!s.contains("float luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;")) {
+            out += "missing the stage-20 luma " +
+                "(`float luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;` " +
+                "— the CPU's Rec.709 luma weights)"
+        }
+        if (!s.contains("c = luma + (c - luma) * f;")) {
+            out += "missing the stage-20 chroma scaling " +
+                "(`c = luma + (c - luma) * f;` — the CPU stage-20 " +
+                "luma + (v - luma) * f form)"
         }
         // Stage 23: the CPU tonemap math verbatim — rawedit::
         // tonemapFrameImpl (core/src/Develop.cpp). The rational-function
@@ -482,20 +778,32 @@ object GlesShaderValidator {
         // GLSL ES 3.00 const requires a CONSTANT-expression initializer.
         // The CPU's `const` is read-only, NOT the GLSL meaning — a `const` on
         // a parameter/uniform-derived local is a device compile error. The
-        // literal-only declarations (the ACES a/b/c/d/e, minEv/maxEv and the
-        // global look tables) keep const; these must not.
+        // literal-only declarations (the ACES a/b/c/d/e, minEv/maxEv, the
+        // stage-13 pivot, the stage-19 tintAmount and the global look
+        // tables) keep const; these must not.
         if (s.contains("const float num") || s.contains("const float den") ||
             s.contains("const float y = den") || s.contains("const float x2") ||
             s.contains("const float x4") || s.contains("const int look") ||
             s.contains("const float luma") || s.contains("const float s =") ||
             s.contains("const float mx") || s.contains("const float over") ||
             s.contains("const float t =") || s.contains("const float shoulder") ||
-            s.contains("const float newMx") || s.contains("const float gain")
+            s.contains("const float newMx") || s.contains("const float gain") ||
+            s.contains("const float lift") || s.contains("const float scale") ||
+            s.contains("const float strength") || s.contains("const float wDark") ||
+            s.contains("const float wMid") || s.contains("const float slopeC") ||
+            s.contains("const float slope =") || s.contains("const float tempShift") ||
+            s.contains("const float warmGain") || s.contains("const float coolGain") ||
+            s.contains("const float greenGain") || s.contains("const float xBlend") ||
+            s.contains("const float yBlend") || s.contains("const float wHigh") ||
+            s.contains("const float m =") || s.contains("const vec3 sh") ||
+            s.contains("const vec3 hl") || s.contains("const float wShadow") ||
+            s.contains("const float wHighlight") || s.contains("const float f =") ||
+            s.contains("const vec3 gains")
         ) {
-            out += "a tonemap or highlights local uses `const` with a " +
-                "non-constant initializer (GLSL ES 3.00 requires constant " +
-                "expressions for const; the CPU's read-only const does " +
-                "not carry — drop the qualifier, keep the literal-only " +
+            out += "a tonemap, highlights or pointwise-stage local uses `const` " +
+                "with a non-constant initializer (GLSL ES 3.00 requires " +
+                "constant expressions for const; the CPU's read-only const " +
+                "does not carry — drop the qualifier, keep the literal-only " +
                 "declarations)"
         }
         // The tail: clamp BEFORE the pow-2.2 (NaN guard) and the pow
@@ -511,22 +819,39 @@ object GlesShaderValidator {
                 "(`return pow(o, vec3(2.2));` — the look's output " +
                 "encoding, rawedit::tonemapFrameImpl's last line)"
         }
-        // The application point: highlights and tonemap sit in the CPU's
-        // stage order between the exposure multiply (stage 14) and the
-        // OETF (the JNI tail's position) — 14 -> 15 -> 23 -> OETF.
+        // The application point: the whole pointwise grade chain sits in
+        // the CPU's stage order — 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 ->
+        // 16 -> 17 -> 18 -> 19 -> 20 -> 23 -> OETF (core/src/Develop.cpp
+        // developCpu, then the JNI tail's OETF). Any stage moved across a
+        // neighbor is a different image, not a refactor.
+        val cam2rgbIdx = s.indexOf("c = uCam2rgb * c;")
+        val blackPointIdx = s.indexOf("if (uBlackPoint != 0.0) {")
+        val whitePointIdx = s.indexOf("if (uWhitePoint != 0.0) {")
+        val shadowsIdx = s.indexOf("if (uShadows != 0.0) {")
+        val midtonesIdx = s.indexOf("if (uMidtones != 0.0) {")
+        val contrastIdx = s.indexOf("if (uContrast != 0.0) {")
         val exposureIdx = s.indexOf("c *= uExposure;")
         val highlightsIdx = s.indexOf("if (uHighlights != 0.0) {")
+        val wbIdx = s.indexOf("if (uWbManual == 1) {")
+        val tintIdx = s.indexOf("if (uWbManual == 1 && uTint != 0.0) {")
+        val wheelIdx = s.indexOf(
+            "if (uWheelShadowX != 0.0 || uWheelShadowY != 0.0 ||"
+        )
+        val splitIdx = s.indexOf("if (uSplitActive == 1) {")
+        val saturationIdx = s.indexOf("if (uSaturation != 0.0) {")
         val tonemapIdx = s.indexOf("if (uTonemap != 0) {")
         val oetfIdx = s.indexOf("if (uOetf == 1) {")
-        if (exposureIdx < 0 || highlightsIdx < 0 || tonemapIdx < 0 ||
-            oetfIdx < 0 ||
-            !(exposureIdx < highlightsIdx && highlightsIdx < tonemapIdx &&
-                tonemapIdx < oetfIdx)
-        ) {
+        val order = listOf(
+            cam2rgbIdx, blackPointIdx, whitePointIdx, shadowsIdx,
+            midtonesIdx, contrastIdx, exposureIdx, highlightsIdx, wbIdx,
+            tintIdx, wheelIdx, splitIdx, saturationIdx, tonemapIdx, oetfIdx,
+        )
+        if (order.any { it < 0 } || order.zipWithNext().any { (a, b) -> a >= b }) {
             out += "the highlights/tonemap application point is wrong " +
-                "(both must sit between `c *= uExposure;` and the OETF " +
-                "block, highlights first — the CPU stage order " +
-                "14 -> 15 -> 23 -> OETF)"
+                "(the pointwise grade chain must sit in the CPU stage order " +
+                "9 -> 10 -> 11 -> 12 -> 13 -> 14 (exposure) -> 15 -> 16 -> " +
+                "17 -> 18 -> 19 -> 20 -> 23 (tonemap) -> OETF, each block " +
+                "between its CPU neighbors — developCpu's exact order)"
         }
     }
 

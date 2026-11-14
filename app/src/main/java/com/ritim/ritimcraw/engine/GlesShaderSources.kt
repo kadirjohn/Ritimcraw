@@ -211,6 +211,30 @@ void main() {
      *      SAME mathematical matrix, so `uCam2rgb * c` reproduces the
      *      CPU row-major multiply exactly. uHasProfile = 0 skips the
      *      multiply (no-profile clips / the parity shape);
+     *   9  black point — uBlackPoint carries the RAW grade.blackPoint
+     *      value (0.0 = the CPU's own `if (grade.blackPoint != 0.0f)`
+     *      skip, so the unset uniform's 0.0 default is exactly the fast
+     *      path), and the shader runs the CPU stage-9 endpoint remap
+     *      verbatim: lift = -0.25 * bp/100, x' = lift + (1 - lift) * x
+     *      (toe remap pinned at white);
+     *  10  white point — uWhitePoint carries the RAW grade.whitePoint
+     *      value and the shader runs the CPU stage-10 uniform scale
+     *      verbatim: x' = x / (1 - 0.25*wp/100) for wp > 0, x' = x *
+     *      (1 + 0.25*wp/100) for wp <= 0 (shoulder remap pinned at
+     *      black);
+     *  11  shadows — uShadows carries the RAW grade.shadows value and the
+     *      shader runs the CPU stage-11 dark-band gain verbatim: wDark =
+     *      smoothstepf(0.18, 0, mx), gain = 2^(strength * wDark) with
+     *      strength = shadows/100 (the same smoothstepf helper the CPU
+     *      core/src/Develop.cpp ships, ported verbatim);
+     *  12  midtones — uMidtones carries the RAW grade.midtones value and
+     *      the shader runs the CPU stage-12 midgray tent verbatim: wMid
+     *      = smoothstepf(0, 0.18, mx) * (1 - smoothstepf(0.18, 0.72,
+     *      mx)), gain = 2^(strength * wMid);
+     *  13  contrast — uContrast carries the RAW grade.contrast value and
+     *      the shader runs the CPU stage-13 slope verbatim: x' = 0.18 +
+     *      (x - 0.18) * (1 + contrast/100) around the midgray pivot (the
+     *      CPU local c renamed for the pixel vector c);
      *  14  exposure 2^ev — uExposure (1.0 = neutral; the CPU guard
      *      exposureEv != 0 maps to exactly 1.0);
      *  15  highlights — uHighlights carries the RAW grade.highlights value
@@ -222,6 +246,42 @@ void main() {
      *      shoulder knee + span * (t / (1 + t)) on pixels whose mx >
      *      knee, the blend mx + s * (shoulder - mx), and the uniform
      *      per-pixel gain newMx / mx (neutrals stay neutral);
+     *  16  temperature — uWbManual carries the CPU-computed !grade.asShot
+     *      gate (an unset int uniform defaults to 0 = as-shot = the CPU's
+     *      own skip, so the frozen parity harness never trips the stage),
+     *      uTempK carries the RAW grade.tempK value, and the shader runs
+     *      the CPU stage-16 math verbatim: tempShift = log2(tempK/5600)
+     *      with the tempK > 0 guard and the |tempShift| > 1e-4 threshold,
+     *      r *= 2^(0.35*shift), g *= sqrt(warm*cool), b *= 2^(-0.35*shift);
+     *  17  tint — uTint carries the RAW grade.tint value behind the same
+     *      uWbManual gate, and the shader runs the CPU stage-17 math
+     *      verbatim: g *= 2^(0.4 * tint/100);
+     *  18  color wheel — the six uWheel* uniforms carry the RAW grade
+     *      offsets (each 0.0 default is the CPU's own neutral, so the
+     *      unset-uniform shape skips the stage exactly like the CPU's
+     *      wheelActive check), and the shader runs the CPU stage-18 blend
+     *      verbatim: the tone-slider band weights (an exact partition of
+     *      unity), the weighted x/y blends, then r *= 2^(0.5*xBlend),
+     *      g *= 2^(0.5*yBlend), b *= 2^(-0.5*xBlend);
+     *  19  split tone — uSplitActive carries the CPU-computed
+     *      splitShadowHue >= 0 || splitHighlightHue >= 0 gate. The -1 =
+     *      off sentinel CANNOT live on the raw hue uniforms: the GLSL
+     *      default of an unset float uniform is 0.0, a VALID hue that
+     *      would flip the CPU's `>= 0.0` gate on and break the frozen
+     *      parity harness, so the gate is hoisted CPU-side exactly like
+     *      uWbManual/uHr. Inside the gate uSplitShadowHue /
+     *      uSplitHighlightHue / uSplitBalance carry the RAW grade values
+     *      and the shader runs the CPU stage-19 math verbatim: m = 0.18 *
+     *      2^(balance/100), the hueGains raised-cosine windows (120
+     *      degrees apart, average 1; the CPU lambda's channel index
+     *      renamed for the pixel vector c), the per-side >= 0 fallback to
+     *      unity gains, wShadow/wHighlight smoothstepf bands, and the
+     *      diagonal per-channel gain 2^(0.35 * (wShadow*(sh-1) +
+     *      wHighlight*(hl-1)));
+     *  20  saturation — uSaturation carries the RAW grade.saturation
+     *      value and the shader runs the CPU stage-20 chroma scaling
+     *      verbatim: f = 2^(0.75 * sat/100), luma = 0.2126r + 0.7152g +
+     *      0.0722b, x' = luma + (x - luma) * f;
      *  23  tonemap — uTonemap, the exact tonemapFrameImpl math
      *      (core/src/Develop.cpp): 1 = ACES (the project's Narkowicz
      *      2015 fit, per-component, [0,1]-clamped); 2-5 = AgX (the
@@ -241,9 +301,8 @@ void main() {
      *      0.018, else 1.099*pow(lin, 0.45) - 0.099), unclamped, exactly
      *      as the CPU tail leaves it; applied only when uOetf == 1.
      *
-     * Stages NOT covered (honest): 7-8 denoise, 9-13 tone controls,
-     * 16-22 temp-tint/wheel/split/saturation/sharpness/detail, 24 LUT,
-     * and the gyro warp — the BackendRules
+     * Stages NOT covered (honest): 7-8 denoise, 21-22 sharpness/detail,
+     * 24 LUT, and the gyro warp — the BackendRules
      * stage-coverage rules fall back to CPU with a reason line whenever
      * one of those is active in the grade.
      *
@@ -282,6 +341,15 @@ void main() {
      * scene-linear values) — the harness tail does the clamp, matching
      * developLinear's clamp-after-WB order.
      *
+     * The ten pointwise grade stages (9-13, 16-20) keep that verdict
+     * byte-honest by construction: the harness NEVER binds their
+     * uniforms, and every one of those uniforms' GLSL defaults (0.0 for
+     * the raw values, 0 for the CPU-computed gates uWbManual and
+     * uSplitActive) is the EXACT neutral fast path the CPU's own guards
+     * skip — no stage fires on an unset uniform, so the harness's cases
+     * 0/1/2 still measure exactly the stage lists they pinned before
+     * the port.
+     *
      * Input: uCfa — the RAW (NOT stage-1-normalized) CFA as a 2D integer
      * texture: GL_R16UI, uint16 samples 0..65535 in their native values,
      * uploaded row-major CPU order (texture row y = CFA row y).
@@ -305,8 +373,8 @@ void main() {
      */
     const val DEVELOP_FRAGMENT: String = """#version 300 es
 
-// Fused develop pass - stages 1+2+3+4+5+6+14+15+23+OETF of rawedit::developCpu
-// (core/src/Develop.cpp). See the Kotlin doc above.
+// Fused develop pass - stages 1+2+3+4+5+6+9+10+11+12+13+14+15+16+17+18+19+20+23+OETF
+// of rawedit::developCpu (core/src/Develop.cpp). See the Kotlin doc above.
 
 precision highp float;
 precision highp int;
@@ -326,6 +394,25 @@ uniform mat3 uCam2rgb;          // camera->Rec.709, the CPU row-major matrix upl
 uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (no profile / parity shape)
 uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
 uniform float uHighlights;      // raw grade.highlights (stage 15); 0.0 = the CPU's own skip
+uniform float uBlackPoint;      // raw grade.blackPoint (stage 9); 0.0 = the CPU's own skip
+uniform float uWhitePoint;      // raw grade.whitePoint (stage 10); 0.0 = the CPU's own skip
+uniform float uShadows;         // raw grade.shadows (stage 11); 0.0 = the CPU's own skip
+uniform float uMidtones;        // raw grade.midtones (stage 12); 0.0 = the CPU's own skip
+uniform float uContrast;        // raw grade.contrast (stage 13); 0.0 = the CPU's own skip
+uniform int uWbManual;          // 1 = !grade.asShot (stages 16+17 gate, CPU-computed); 0 = as-shot, skip both
+uniform float uTempK;           // raw grade.tempK (stage 16); the shader computes tempShift = log2(uTempK/5600)
+uniform float uTint;            // raw grade.tint (stage 17); 0.0 = the CPU's own skip
+uniform float uWheelShadowX;    // raw grade.wheelShadowX (stage 18); the shader blends the three bands
+uniform float uWheelShadowY;
+uniform float uWheelMidX;
+uniform float uWheelMidY;
+uniform float uWheelHighX;
+uniform float uWheelHighY;
+uniform int uSplitActive;       // 1 = splitShadowHue >= 0 || splitHighlightHue >= 0 (stage 19 gate, CPU-computed)
+uniform float uSplitShadowHue;      // raw grade.splitShadowHue; -1 = off (only read when uSplitActive == 1)
+uniform float uSplitHighlightHue;   // raw grade.splitHighlightHue; -1 = off (only read when uSplitActive == 1)
+uniform float uSplitBalance;       // raw grade.splitBalance
+uniform float uSaturation;     // raw grade.saturation (stage 20); 0.0 = the CPU's own skip
 uniform int uTonemap;           // grade.tonemap (stage 23): 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base
 uniform int uOetf;              // 1 = apply linearToRec709 (export shape); 0 = linear endpoint (parity)
 
@@ -474,6 +561,32 @@ float linearToRec709(float lin) {
     return 1.099 * pow(lin, 0.45) - 0.099;
 }
 
+// The CPU rawedit::smoothstepf (core/src/Develop.cpp), verbatim: Hermite
+// smoothstep with clamped edges, 0 for x <= e0, 1 for x >= e1. The tone
+// stages (11, 12) and the color stages (18, 19) blend their band remaps in
+// with this so each control stays inside its tonal region.
+float smoothstepf(float e0, float e1, float x) {
+    float t = min(max((x - e0) / (e1 - e0), 0.0), 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Stage 19's hue -> per-channel gain windows, the CPU's hueGains lambda
+// verbatim (core/src/Develop.cpp): raised-cosine windows 120 degrees apart
+// (red peaks at 0, green 120, blue 240), each rescaled by 2 so its average
+// over the circle is 1 - the tint pushes around unity instead of lifting
+// the whole band. The CPU's loop counter is named c (the pixel vector is c
+// here); this helper's channel index is ch - same loop, renamed honestly.
+vec3 hueGains(float hueDeg) {
+    vec3 gains;
+    for (int ch = 0; ch < 3; ++ch) {
+        float center = 120.0 * ch;  // r, g, b peaks
+        float d = abs(hueDeg - center);
+        if (d > 180.0) d = 360.0 - d;  // circular distance
+        gains[ch] = 2.0 * (0.5 + 0.5 * cos(d * 3.14159265 / 180.0));
+    }
+    return gains;
+}
+
 // Stage 23: tonemap - the CPU rawedit::tonemapFrameImpl math verbatim
 // (core/src/Develop.cpp). Every constant, guard and evaluation order is
 // the CPU's; no GLSL built-in substitutions (the CPU helpers carry
@@ -618,6 +731,53 @@ void main() {
     if (uHasProfile == 1) {
         c = uCam2rgb * c;
     }
+    // Stage 9: black point - the CPU stage-9 endpoint remap, verbatim
+    // (core/src/Develop.cpp). uBlackPoint carries the RAW grade.blackPoint
+    // value; 0.0 skips the whole stage exactly like the CPU's `if
+    // (grade.blackPoint != 0.0f)`. lift is uniform-derived so it must NOT
+    // be const (GLSL ES 3.00).
+    if (uBlackPoint != 0.0) {
+        float lift = -0.25 * (uBlackPoint / 100.0);
+        c = lift + (1.0 - lift) * c;
+    }
+    // Stage 10: white point - the CPU stage-10 uniform scale, verbatim.
+    // uWhitePoint carries the RAW grade.whitePoint value; 0.0 skips the
+    // stage exactly like the CPU. scale is uniform-derived (no const).
+    if (uWhitePoint != 0.0) {
+        float scale = uWhitePoint > 0.0
+            ? 1.0 / (1.0 - 0.25 * (uWhitePoint / 100.0))
+            : 1.0 + 0.25 * (uWhitePoint / 100.0);
+        c *= scale;
+    }
+    // Stage 11: shadows - the CPU stage-11 dark-band gain, verbatim
+    // (smoothstepf above is the CPU smoothstepf). strength/mx/wDark/gain
+    // are uniform-derived (no const).
+    if (uShadows != 0.0) {
+        float strength = uShadows / 100.0;
+        float mx = max(c.r, max(c.g, c.b));
+        float wDark = smoothstepf(0.18, 0.0, mx);  // 1 at black
+        float gain = pow(2.0, strength * wDark);
+        c *= gain;
+    }
+    // Stage 12: midtones - the CPU stage-12 midgray tent, verbatim.
+    if (uMidtones != 0.0) {
+        float strength = uMidtones / 100.0;
+        float mx = max(c.r, max(c.g, c.b));
+        float wMid = smoothstepf(0.0, 0.18, mx)
+                   * (1.0 - smoothstepf(0.18, 0.72, mx));
+        float gain = pow(2.0, strength * wMid);
+        c *= gain;
+    }
+    // Stage 13: contrast - the CPU stage-13 slope around the midgray
+    // pivot, verbatim. The CPU local c (contrast/100) collides with the
+    // pixel vector c here, so it is renamed slopeC - same math, renamed
+    // honestly. pivot is literal-only so it keeps const.
+    if (uContrast != 0.0) {
+        float slopeC = uContrast / 100.0;
+        float slope = 1.0 + slopeC;
+        const float pivot = 0.18;
+        c = pivot + (c - pivot) * slope;
+    }
     c *= uExposure;
     // Stage 15: highlights - the CPU stage-15 shoulder, verbatim (core/src/
     // Develop.cpp). uHighlights carries the RAW grade.highlights value; 0.0
@@ -639,6 +799,95 @@ void main() {
             float gain = mx > 0.0 ? newMx / mx : 1.0;
             c *= gain;
         }
+    }
+    // Stage 16: temperature - the CPU stage-16 warm/cool diagonal gain,
+    // verbatim (core/src/Develop.cpp). uWbManual carries the CPU-computed
+    // !grade.asShot gate (0 = as-shot: skip both 16 and 17 exactly like
+    // the CPU's `if (!grade.asShot)`); uTempK carries the RAW grade.tempK
+    // value and the shader computes tempShift = log2(uTempK/5600) with the
+    // CPU's own tempK > 0 guard and |tempShift| > 1e-4 threshold. The raw
+    // hue sentinel question does not arise here, but the gate hoist is the
+    // same idiom as stage 19's uSplitActive: the GLSL default of an unset
+    // int uniform is 0, which must be the exact CPU skip so the frozen
+    // device parity harness (which never binds these uniforms) stays
+    // byte-honest.
+    if (uWbManual == 1) {
+        float tempShift = uTempK > 0.0 ? log2(uTempK / 5600.0) : 0.0;
+        if (abs(tempShift) > 1e-4) {
+            float warmGain = pow(2.0, 0.35 * tempShift);   // red up when warm
+            float coolGain = pow(2.0, -0.35 * tempShift);  // blue up when cool
+            c.r *= warmGain;
+            // Green rides the geometric mean so luminance is preserved.
+            c.g *= sqrt(warmGain * coolGain);
+            c.b *= coolGain;
+        }
+    }
+    // Stage 17: tint - the CPU stage-17 green-channel gain, verbatim.
+    // The CPU guard is `!grade.asShot && grade.tint != 0.0f`; uWbManual
+    // carries the asShot half (CPU-computed) and the 0.0 GLSL default of
+    // uTint carries the tint half.
+    if (uWbManual == 1 && uTint != 0.0) {
+        float greenGain = pow(2.0, 0.4 * (uTint / 100.0));
+        c.g *= greenGain;
+    }
+    // Stage 18: color wheel - the CPU stage-18 tonal-band blend, verbatim
+    // (COL-13). The band weights reuse the tone-slider bands (an exact
+    // partition of unity); the six offsets are RAW grade values, and the
+    // GLSL 0.0 default of each is the CPU's own neutral, so an unset
+    // uniform block skips the stage exactly like the CPU's wheelActive
+    // check.
+    if (uWheelShadowX != 0.0 || uWheelShadowY != 0.0 ||
+        uWheelMidX != 0.0 || uWheelMidY != 0.0 ||
+        uWheelHighX != 0.0 || uWheelHighY != 0.0) {
+        float mx = max(c.r, max(c.g, c.b));
+        float wDark = smoothstepf(0.18, 0.0, mx);
+        float wMid = smoothstepf(0.0, 0.18, mx)
+                   * (1.0 - smoothstepf(0.18, 0.72, mx));
+        float wHigh = smoothstepf(0.18, 0.72, mx);
+        float xBlend = wDark * uWheelShadowX
+                     + wMid  * uWheelMidX
+                     + wHigh * uWheelHighX;
+        float yBlend = wDark * uWheelShadowY
+                     + wMid  * uWheelMidY
+                     + wHigh * uWheelHighY;
+        c.r *= pow(2.0,  0.5 * xBlend);  // red: warm axis
+        c.g *= pow(2.0,  0.5 * yBlend);  // green: tint axis
+        c.b *= pow(2.0, -0.5 * xBlend);  // blue: cool axis
+    }
+    // Stage 19: split tone - the CPU stage-19 band tints, verbatim
+    // (COL-13). uSplitActive carries the CPU-computed splitShadowHue >= 0
+    // || splitHighlightHue >= 0 gate: the CPU's -1 = off sentinel CANNOT
+    // live on the raw hue uniforms here, because the GLSL default of an
+    // unset float uniform is 0.0 - a VALID hue that would flip the gate
+    // on and break the frozen device parity harness (which never binds
+    // these uniforms). Inside the gate the shader keeps the CPU's own
+    // per-side `>= 0.0` fallback (hueGains above is the CPU lambda, with
+    // the channel index renamed ch because c is the pixel vector here).
+    if (uSplitActive == 1) {
+        float m = 0.18 * pow(2.0, uSplitBalance / 100.0);
+        vec3 sh = uSplitShadowHue >= 0.0
+            ? hueGains(uSplitShadowHue) : vec3(1.0, 1.0, 1.0);
+        vec3 hl = uSplitHighlightHue >= 0.0
+            ? hueGains(uSplitHighlightHue) : vec3(1.0, 1.0, 1.0);
+        const float tintAmount = 0.35;  // stops at full weight (literal-only: const)
+        float mx = max(c.r, max(c.g, c.b));
+        float wShadow = smoothstepf(m, 0.0, mx);   // 1 at black, 0 at m
+        float wHighlight = smoothstepf(m, 1.0, mx); // 0 at m, 1 at white
+        for (int ch = 0; ch < 3; ++ch) {
+            float gain = pow(
+                2.0, tintAmount * (wShadow * (sh[ch] - 1.0)
+                                 + wHighlight * (hl[ch] - 1.0)));
+            c[ch] *= gain;
+        }
+    }
+    // Stage 20: saturation - the CPU stage-20 chroma scaling around
+    // luma, verbatim. uSaturation carries the RAW grade.saturation value;
+    // 0.0 skips the stage exactly like the CPU's `if (grade.saturation
+    // != 0.0f)`.
+    if (uSaturation != 0.0) {
+        float f = pow(2.0, 0.75 * (uSaturation / 100.0));
+        float luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+        c = luma + (c - luma) * f;
     }
     if (uTonemap != 0) {
         c = tonemapPixel(c);
