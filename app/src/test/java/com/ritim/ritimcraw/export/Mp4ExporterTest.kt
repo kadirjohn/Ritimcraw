@@ -499,10 +499,11 @@ class Mp4ExporterTest {
         // Each active effect group adds its token; neutral = "none".
         assertEquals("none", ExportStageTiming.effects(GradeK(), gyroActive = false))
         assertEquals(
-            "nr+temporal+gyro+tonemap+lut",
+            "nr+unsharp+temporal+gyro+tonemap+lut",
             ExportStageTiming.effects(
                 GradeK(
                     noiseReduction = 40f,
+                    sharpness = 30f,
                     temporalNr = true,
                     stabilization = true,
                     tonemap = 2,
@@ -523,6 +524,12 @@ class Mp4ExporterTest {
         )
         // Chroma-only NR still counts as "nr" (the same native stage group).
         assertEquals("nr", ExportStageTiming.effects(GradeK(chromaDenoise = 25f), gyroActive = false))
+        // Detail-only unsharp still counts as "unsharp" (either percent
+        // nonzero rides the same four-pass chain, matching the session's
+        // own raw != 0 gate); NEGATIVE sharpness too — softening is the
+        // same per-frame cost as sharpening.
+        assertEquals("unsharp", ExportStageTiming.effects(GradeK(detail = 15f), gyroActive = false))
+        assertEquals("unsharp", ExportStageTiming.effects(GradeK(sharpness = -20f), gyroActive = false))
         // LUT selected but lutId null = no LUT — "lut" absent.
         assertEquals("none", ExportStageTiming.effects(GradeK(lutStrength = 50f), gyroActive = false))
     }
@@ -2201,6 +2208,11 @@ class Mp4ExporterTest {
         // (same shape as the pointwise recorder below).
         var lastNr: NrControls? = null
 
+        // The two unsharp stages' raw percents the last READBACK render
+        // carried — the stages-21/22 verbatim pass-through lock's snapshot
+        // (no clamp: negative sharpness is valid softening).
+        var lastSharpnessDetail: SharpnessDetailControls? = null
+
         // The ten pointwise stages' raw values the last READBACK render
         // carried, in the seam's parameter order — the verbatim
         // pass-through lock's snapshot (a swapped or dropped parameter in
@@ -2226,6 +2238,10 @@ class Mp4ExporterTest {
         // multi-pass chain included), so the stages-7/8 recorder rides it
         // too — the encoder pass-through lock's snapshot.
         var lastEncoderNr: NrControls? = null
+
+        // Same for the unsharp pair: the encoder blit runs the same
+        // four-pass chain, so the stages-21/22 recorder rides it too.
+        var lastEncoderSharpnessDetail: SharpnessDetailControls? = null
 
         // The seven LUT controls (stage 24) the last READBACK render
         // carried, in the seam's parameter order — the verbatim
@@ -2260,6 +2276,8 @@ class Mp4ExporterTest {
             frameIndex: Int,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -2304,6 +2322,7 @@ class Mp4ExporterTest {
             lastKeepVignetting = keepVignetting
             lastTonemap = tonemap
             lastNr = NrControls(chromaDenoise, noiseReduction)
+            lastSharpnessDetail = SharpnessDetailControls(sharpness, detail)
             lastPointwise = PointwiseControls(
                 blackPoint, whitePoint, shadows, midtones, contrast,
                 tempK, tint, saturation, asShot,
@@ -2331,6 +2350,8 @@ class Mp4ExporterTest {
             ptsUs: Long,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -2371,6 +2392,7 @@ class Mp4ExporterTest {
             lastEncoderSessionHandle = sessionHandle
             lastEncoderRotationDeg = rotationDeg
             lastEncoderNr = NrControls(chromaDenoise, noiseReduction)
+            lastEncoderSharpnessDetail = SharpnessDetailControls(sharpness, detail)
             lastEncoderPointwise = PointwiseControls(
                 blackPoint, whitePoint, shadows, midtones, contrast,
                 tempK, tint, saturation, asShot,
@@ -2401,6 +2423,19 @@ class Mp4ExporterTest {
     private data class NrControls(
         val chromaDenoise: Float,
         val noiseReduction: Float,
+    )
+
+    /**
+     * The two unsharp stages' raw percents one render carried, in the
+     * seam's parameter order — shared by the readback and the encoder
+     * recorders so a swapped or dropped parameter fails the equality with
+     * the field named (stages 21/22 ride the four-pass unsharp chain;
+     * threaded VERBATIM with no clamp, because negative values are valid
+     * softening).
+     */
+    private data class SharpnessDetailControls(
+        val sharpness: Float,
+        val detail: Float,
     )
 
     /**
@@ -2457,7 +2492,9 @@ class Mp4ExporterTest {
         // lock's Kotlin mirror) — highlights rides through at the stage-15
         // value, since the pointwise port the ten stages' raw values ride
         // too, and since the spatial-NR port the two stages-7/8 raw values
-        // ride as well, so a multi-control grade stays on GPU end to end.
+        // ride as well, and since the sharpness/detail port the two
+        // stages-21/22 raw values ride too, so a multi-control grade
+        // stays on GPU end to end.
         val session = FakeSession(frames = 2, audio = false)
         val writer = FakeWriter()
         val gpu = FakeGpuDevelop()
@@ -2473,6 +2510,8 @@ class Mp4ExporterTest {
                 highlights = -55f,
                 chromaDenoise = 25f,
                 noiseReduction = 40f,
+                sharpness = 35f,
+                detail = -15f,
                 highlightReconstruction = false,
                 keepVignetting = false,
                 tonemap = 2,
@@ -2512,6 +2551,10 @@ class Mp4ExporterTest {
         // The two spatial-NR stages ride the dispatch verbatim too — the
         // stages-7/8 raw values in the seam's parameter order.
         assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastNr)
+        // The two unsharp stages ride the dispatch verbatim too — the
+        // stages-21/22 raw percents in the seam's parameter order, the
+        // NEGATIVE detail carrying through unclamped (softening is valid).
+        assertEquals(SharpnessDetailControls(sharpness = 35f, detail = -15f), gpu.lastSharpnessDetail)
         // The ten pointwise stages ride the dispatch verbatim, each raw
         // grade value in the established order — a swapped pair or a
         // dropped stage fails this equality with the field named.
@@ -2931,10 +2974,12 @@ class Mp4ExporterTest {
             gpuDevelop = gpu,
         ).run(
             7,
-            // The grade carries the two spatial-NR stages' raw values too —
-            // the blit reuses the SAME develop program family, so the
-            // encoder pass-through lock must see them verbatim.
-            GradeK(chromaDenoise = 25f, noiseReduction = 40f),
+            // The grade carries the two spatial-NR stages' raw values and
+            // the two unsharp stages' raw percents too — the blit reuses
+            // the SAME develop program family (the four-pass unsharp chain
+            // included), so the encoder pass-through lock must see them
+            // verbatim.
+            GradeK(chromaDenoise = 25f, noiseReduction = 40f, sharpness = 45f, detail = 20f),
             "/tmp/out.partial",
             manualRotationDeg = 270,
         )
@@ -2973,6 +3018,9 @@ class Mp4ExporterTest {
         // The two spatial-NR stages ride the blit verbatim too — the
         // stages-7/8 raw values in the seam's parameter order.
         assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastEncoderNr)
+        // The two unsharp stages ride the blit verbatim too — the
+        // stages-21/22 raw percents in the seam's parameter order.
+        assertEquals(SharpnessDetailControls(sharpness = 45f, detail = 20f), gpu.lastEncoderSharpnessDetail)
         // No LUT in this grade: the blit's seven LUT controls ride as the
         // neutral legacy shape (null path, -1 ordinals; the strength is
         // the default 100 percent mapped to [0,1] — the faithful

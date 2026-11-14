@@ -877,7 +877,10 @@ class NativeSource private constructor(
          * the same byte shape nativeExportFrame returns. The render takes
          * the fragment-covered grade controls (the five base ones, the
          * two spatial-NR stages' raw values since the spatial-NR port —
-         * stages 7/8 — plus the ten pointwise stages' raw values); an
+         * stages 7/8 — the two unsharp stages' raw values since the
+         * sharpness/detail port — stages 21/22, threaded with NO clamp
+         * because the CPU's amount mapping makes negative values valid
+         * (softening) — plus the ten pointwise stages' raw values); an
          * uncovered grade cannot express itself through this signature.
          * Close is idempotent. Device-test-pending (the owner's
          * covered-grade GPU export is the production proof).
@@ -913,6 +916,8 @@ class NativeSource private constructor(
             frameIndex: Int,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -976,6 +981,8 @@ class NativeSource private constructor(
             ptsUs: Long,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1038,7 +1045,10 @@ class NativeSource private constructor(
          * fragment-covered grade controls (the five base ones — exposure,
          * highlights, highlight reconstruction, vignetting, tonemap — the
          * two spatial-NR stages' raw values since the spatial-NR port
-         * (chroma denoise, noise reduction — stages 7/8), plus the ten
+         * (chroma denoise, noise reduction — stages 7/8), the two unsharp
+         * stages' raw values since the sharpness/detail port (sharpness,
+         * detail — stages 21/22, threaded with NO clamp because the CPU's
+         * amount mapping makes negative values valid), plus the ten
          * pointwise stages' raw values, highlights joined with the
          * stage-15 port). Close is idempotent.
          * Device-test-pending (the owner's morning playback run is the
@@ -1073,6 +1083,8 @@ class NativeSource private constructor(
             maxDim: Int,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1653,6 +1665,8 @@ class NativeSource private constructor(
             frameIndex: Int,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1689,7 +1703,7 @@ class NativeSource private constructor(
             }
             return nativeDevelopSessionRenderFrame(
                 sessionHandle, clipHandle, frameIndex, chromaDenoise,
-                noiseReduction, exposureEv, highlights,
+                noiseReduction, sharpness, detail, exposureEv, highlights,
                 blackPoint, whitePoint, shadows, midtones, contrast, tempK,
                 tint, saturation, asShot, wheelShadowX, wheelShadowY,
                 wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
@@ -1733,6 +1747,8 @@ class NativeSource private constructor(
             ptsUs: Long,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1770,7 +1786,7 @@ class NativeSource private constructor(
             }
             return nativeDevelopSessionRenderFrameToEncoder(
                 sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise,
-                noiseReduction, exposureEv, highlights,
+                noiseReduction, sharpness, detail, exposureEv, highlights,
                 blackPoint, whitePoint, shadows, midtones,
                 contrast, tempK, tint, saturation, asShot, wheelShadowX,
                 wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
@@ -1845,6 +1861,8 @@ class NativeSource private constructor(
             maxDim: Int,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1881,7 +1899,7 @@ class NativeSource private constructor(
             }
             return nativePreviewSessionRenderFrame(
                 sessionHandle, clipHandle, frameIndex, maxDim, chromaDenoise,
-                noiseReduction, exposureEv, highlights,
+                noiseReduction, sharpness, detail, exposureEv, highlights,
                 blackPoint, whitePoint, shadows, midtones,
                 contrast, tempK, tint, saturation, asShot, wheelShadowX,
                 wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,

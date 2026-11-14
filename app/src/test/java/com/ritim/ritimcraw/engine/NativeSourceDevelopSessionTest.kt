@@ -22,7 +22,11 @@ import org.junit.Test
  *      reconstruction, vignetting, tonemap) plus the two spatial-NR
  *      stages' raw values since the spatial-NR port (chroma denoise,
  *      noise reduction — stages 7/8, the multi-pass fragment chain) plus
- *      the ten pointwise stages' raw values since the pointwise port
+ *      the two unsharp stages' raw values since the sharpness/detail
+ *      port (sharpness, detail — stages 21/22, the four-pass unsharp
+ *      chain, threaded with NO clamp because the CPU's amount mapping
+ *      makes negative values valid softening) plus the ten pointwise
+ *      stages' raw values since the pointwise port
  *      (black point, white point, shadows, midtones, contrast,
  *      temperature, tint, saturation, the color wheel, split tone, with
  *      asShot as the 16/17 gate's input) plus — since the stage-24 GPU
@@ -41,7 +45,7 @@ import org.junit.Test
  *      the three NR fragments), and renderFrameToEncoder adds ptsUs (the
  *      encoder Surface's presentation time) and rotationDeg (the frame's
  *      effective orientation — the blit's uRotation fold) to the
- *      readback render's thirty-five.
+ *      readback render's thirty-seven.
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -87,6 +91,8 @@ class NativeSourceDevelopSessionTest {
                 frameIndex = 0,
                 chromaDenoise = 0.0f,
                 noiseReduction = 0.0f,
+                sharpness = 0.0f,
+                detail = 0.0f,
                 exposureEv = 0.0f,
                 highlights = 0.0f,
                 blackPoint = 0.0f,
@@ -157,6 +163,8 @@ class NativeSourceDevelopSessionTest {
                 ptsUs = 0L,
                 chromaDenoise = 0.0f,
                 noiseReduction = 0.0f,
+                sharpness = 0.0f,
+                detail = 0.0f,
                 exposureEv = 0.0f,
                 highlights = 0.0f,
                 blackPoint = 0.0f,
@@ -230,37 +238,39 @@ class NativeSourceDevelopSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 35 parameters: sessionHandle, clipHandle, frameIndex (the three
+        // 37 parameters: sessionHandle, clipHandle, frameIndex (the three
         // plumbing values) + chromaDenoise, noiseReduction (the two
         // spatial-NR stages' raw values since the spatial-NR port — stages
         // 7/8, the multi-pass fragment chain behind uChromaDenoise/
-        // uNoiseReduction) + exposureEv, highlights, highlightReconstruction,
-        // keepVignetting, tonemap (the five base fragment-covered grade
-        // knobs) + the ten pointwise stages' raw values since the pointwise
-        // port (blackPoint, whitePoint, shadows, midtones, contrast, tempK,
-        // tint, saturation, the six color-wheel offsets, the three
-        // split-tone values, with asShot as the 16/17 gate's input) + the
-        // seven LUT controls since the stage-24 GPU port (lutPath,
-        // lutStrength and the five interpretation ordinals — the SAME
-        // layout the CPU seam's develop call threads, -1 = legacy).
-        // Temporal NR and tone-band controls remain deliberately absent —
-        // those stages are NOT fragment-covered, so a grade using any of
-        // them must take the CPU path wholesale; adding such a parameter
-        // here widens the session's promise and must fail this test until
-        // the coverage gate is taught the new stage. Sharpness and detail
-        // (stages 21/22) ARE fragment-covered since this port — the session
-        // renders the four unsharp passes — but their raw values cross
-        // these seams in the follow-up seam commit, so the signature
-        // stays at thirty-five here and that commit re-counts it.
+        // uNoiseReduction) + sharpness, detail (the two unsharp stages'
+        // raw values since the sharpness/detail port — stages 21/22, the
+        // four-pass unsharp chain behind uSharpness/uDetail, threaded
+        // VERBATIM with no clamp because the CPU's amount mapping makes
+        // negative values valid softening) + exposureEv, highlights,
+        // highlightReconstruction, keepVignetting, tonemap (the five base
+        // fragment-covered grade knobs) + the ten pointwise stages' raw
+        // values since the pointwise port (blackPoint, whitePoint,
+        // shadows, midtones, contrast, tempK, tint, saturation, the six
+        // color-wheel offsets, the three split-tone values, with asShot as
+        // the 16/17 gate's input) + the seven LUT controls since the
+        // stage-24 GPU port (lutPath, lutStrength and the five
+        // interpretation ordinals — the SAME layout the CPU seam's develop
+        // call threads, -1 = legacy). Temporal NR and tone-band controls
+        // remain deliberately absent — those stages are NOT
+        // fragment-covered, so a grade using any of them must take the CPU
+        // path wholesale; adding such a parameter here widens the session's
+        // promise and must fail this test until the coverage gate is
+        // taught the new stage.
         val render = method("jniDevelopSessionRenderFrame")
-        assertEquals(35, render.parameterCount)
+        assertEquals(37, render.parameterCount)
     }
 
     @Test
     fun render_to_encoder_adds_only_the_presentation_time() {
-        // 37 parameters: the readback render's thirty-five (sessionHandle,
+        // 39 parameters: the readback render's thirty-seven (sessionHandle,
         // clipHandle, frameIndex + the two spatial-NR stages' raw values +
-        // the fragment-covered grade controls + the seven LUT controls)
+        // the two unsharp stages' raw values + the fragment-covered grade
+        // controls + the seven LUT controls)
         // plus ptsUs (the encoder Surface's presentation time, which the
         // readback path never needs — the CPU path carries pts on
         // writeVideoFrameRgb) plus rotationDeg (the surface-gpu vertical
@@ -268,13 +278,13 @@ class NativeSourceDevelopSessionTest {
         // blit's uRotation fold — 0/90/180/270, no default value so this
         // reflection lock sees exactly one wrapper; the LUT controls sit
         // BEFORE it, keeping rotationDeg the tail parameter). The blit
-        // reuses the SAME develop program family (the NR multi-pass chain
-        // and the LUT 3D-texture sampler included), so the grade controls
-        // are the same fragment-covered set; a THIRTY-EIGHTH parameter
-        // would widen the encoder blit's promise beyond the covered-grade
-        // contract and must fail here.
+        // reuses the SAME develop program family (the NR multi-pass chain,
+        // the four-pass unsharp chain, and the LUT 3D-texture sampler
+        // included), so the grade controls are the same fragment-covered
+        // set; a FORTIETH parameter would widen the encoder blit's promise
+        // beyond the covered-grade contract and must fail here.
         val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoder")
-        assertEquals(37, renderToEncoder.parameterCount)
+        assertEquals(39, renderToEncoder.parameterCount)
     }
 
     @Test

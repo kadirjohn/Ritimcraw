@@ -21,7 +21,11 @@ import org.junit.Test
  *      reconstruction, vignetting, tonemap — highlights joined with the
  *      stage-15 port) plus the two spatial-NR stages' raw values since
  *      the spatial-NR port (chroma denoise, noise reduction — stages 7/8,
- *      the multi-pass fragment chain) plus the ten pointwise stages' raw
+ *      the multi-pass fragment chain) plus the two unsharp stages' raw
+ *      values since the sharpness/detail port (sharpness, detail —
+ *      stages 21/22, the four-pass unsharp chain, threaded with NO clamp
+ *      because the CPU's amount mapping makes negative values valid
+ *      softening) plus the ten pointwise stages' raw
  *      values since the pointwise port (black point, white point,
  *      shadows, midtones, contrast, temperature, tint, saturation, the
  *      color wheel, split tone, with asShot as the 16/17 gate's input)
@@ -97,6 +101,8 @@ class NativeSourcePreviewSessionTest {
                 maxDim = 1280,
                 chromaDenoise = 0.0f,
                 noiseReduction = 0.0f,
+                sharpness = 0.0f,
+                detail = 0.0f,
                 exposureEv = 0.0f,
                 highlights = 0.0f,
                 blackPoint = 0.0f,
@@ -172,11 +178,15 @@ class NativeSourcePreviewSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 36 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+        // 38 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
         // four plumbing values) + chromaDenoise, noiseReduction (the two
         // spatial-NR stages' raw values since the spatial-NR port — stages
         // 7/8, the multi-pass fragment chain behind uChromaDenoise/
-        // uNoiseReduction) + exposureEv, highlights,
+        // uNoiseReduction) + sharpness, detail (the two unsharp stages'
+        // raw values since the sharpness/detail port — stages 21/22, the
+        // four-pass unsharp chain behind uSharpness/uDetail, threaded
+        // VERBATIM with no clamp because the CPU's amount mapping makes
+        // negative values valid softening) + exposureEv, highlights,
         // highlightReconstruction, keepVignetting, tonemap (the five base
         // fragment-covered grade knobs — highlights joined with the
         // stage-15 port) + the ten pointwise stages' raw values since the
@@ -190,13 +200,9 @@ class NativeSourcePreviewSessionTest {
         // NOT fragment-covered, so a grade using any of them must take the
         // CPU path wholesale; adding such a parameter here widens the
         // session's promise and must fail this test until the coverage
-        // gate is taught the new stage. Sharpness and detail (stages
-        // 21/22) ARE fragment-covered since this port — the session
-        // renders the four unsharp passes — but their raw values cross
-        // this seam in the follow-up seam commit, so the signature stays
-        // at thirty-six here and that commit re-counts it.
+        // gate is taught the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(36, render.parameterCount)
+        assertEquals(38, render.parameterCount)
     }
 
     @Test
