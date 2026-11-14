@@ -22,6 +22,13 @@ import org.junit.Test
  *      reconstruction, vignetting, tonemap) plus the two spatial-NR
  *      stages' raw values since the spatial-NR port (chroma denoise,
  *      noise reduction — stages 7/8, the multi-pass fragment chain) plus
+ *      the temporal pair since the temporal-hybrid routing (temporalNr,
+ *      temporalStrength — the SAME raw values the CPU export's temporal
+ *      merge receives; the pair dies at the bridge, consumed by the
+ *      bridge's own temporalMergedCfa to produce the CFA the request
+ *      uploads — routing, not porting; the merge math stays
+ *      core/Temporal.cpp's, frozen, and the session request itself never
+ *      sees the pair) plus
  *      the two unsharp stages' raw values since the sharpness/detail
  *      port (sharpness, detail — stages 21/22, the four-pass unsharp
  *      chain, threaded with NO clamp because the CPU's amount mapping
@@ -37,8 +44,8 @@ import org.junit.Test
  *      inverse-sampling map; false skips the draw entirely, the identity
  *      no-draw rule).
  *      That narrow signature is the second lock against uncovered grades
- *      (the Kotlin coverage gate is the first): a stage the fragment pass
- *      does not cover — temporal NR strength, a tone-band knob — cannot
+ *      (the Kotlin coverage gate is the first): a stage the render path
+ *      does not cover — a tone-band knob — cannot
  *      even be expressed into the session, so widening this signature
  *      must be a deliberate act that edits this test too;
  *   3. the encoder-surface pair's shapes: open carries the fifteen
@@ -48,7 +55,7 @@ import org.junit.Test
  *      port — the warp fragment), and renderFrameToEncoder adds ptsUs (the
  *      encoder Surface's presentation time) and rotationDeg (the frame's
  *      effective orientation — the blit's uRotation fold) to the
- *      readback render's thirty-nine.
+ *      readback render's forty-one.
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -95,6 +102,8 @@ class NativeSourceDevelopSessionTest {
                 frameIndex = 0,
                 chromaDenoise = 0.0f,
                 noiseReduction = 0.0f,
+                temporalNr = false,
+                temporalStrength = 0.0f,
                 sharpness = 0.0f,
                 detail = 0.0f,
                 exposureEv = 0.0f,
@@ -169,6 +178,8 @@ class NativeSourceDevelopSessionTest {
                 ptsUs = 0L,
                 chromaDenoise = 0.0f,
                 noiseReduction = 0.0f,
+                temporalNr = false,
+                temporalStrength = 0.0f,
                 sharpness = 0.0f,
                 detail = 0.0f,
                 exposureEv = 0.0f,
@@ -274,11 +285,18 @@ class NativeSourceDevelopSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 39 parameters: sessionHandle, clipHandle, frameIndex (the three
+        // 41 parameters: sessionHandle, clipHandle, frameIndex (the three
         // plumbing values) + chromaDenoise, noiseReduction (the two
         // spatial-NR stages' raw values since the spatial-NR port — stages
         // 7/8, the multi-pass fragment chain behind uChromaDenoise/
-        // uNoiseReduction) + sharpness, detail (the two unsharp stages'
+        // uNoiseReduction) + temporalNr, temporalStrength (the temporal
+        // pair since the temporal-hybrid routing — the SAME raw values
+        // the CPU export's temporal merge receives; the pair dies at the
+        // bridge, consumed by the bridge's own temporalMergedCfa to
+        // produce the CFA the request uploads — routing, not porting; the
+        // merge math stays core/Temporal.cpp's, frozen, and the session
+        // request itself never sees the pair) + sharpness, detail (the two
+        // unsharp stages'
         // raw values since the sharpness/detail port — stages 21/22, the
         // four-pass unsharp chain behind uSharpness/uDetail, threaded
         // VERBATIM with no clamp because the CPU's amount mapping makes
@@ -295,22 +313,23 @@ class NativeSourceDevelopSessionTest {
         // warp port (the per-frame verdict the resolver produced at the
         // caller — the Boolean locks the draw, the nine floats lock the
         // composite inverse-sampling map; false skips draw 10 entirely,
-        // the identity no-draw rule). Temporal NR and tone-band controls
-        // remain deliberately absent — those stages are NOT
-        // fragment-covered, so a grade using any of them must take the CPU
+        // the identity no-draw rule). Tone-band controls
+        // remain deliberately absent — that stage is NOT
+        // fragment-covered, so a grade using it must take the CPU
         // path wholesale; adding such a parameter here widens the session's
         // promise and must fail this test until the coverage gate is
         // taught the new stage.
         val render = method("jniDevelopSessionRenderFrame")
-        assertEquals(39, render.parameterCount)
+        assertEquals(41, render.parameterCount)
     }
 
     @Test
     fun render_to_encoder_adds_only_the_presentation_time() {
-        // 41 parameters: the readback render's thirty-nine (sessionHandle,
+        // 43 parameters: the readback render's forty-one (sessionHandle,
         // clipHandle, frameIndex + the two spatial-NR stages' raw values +
-        // the two unsharp stages' raw values + the fragment-covered grade
-        // controls + the seven LUT controls + the warp pair)
+        // the temporal pair + the two unsharp stages' raw values + the
+        // fragment-covered grade controls + the seven LUT controls + the
+        // warp pair)
         // plus ptsUs (the encoder Surface's presentation time, which the
         // readback path never needs — the CPU path carries pts on
         // writeVideoFrameRgb) plus rotationDeg (the surface-gpu vertical
@@ -321,11 +340,13 @@ class NativeSourceDevelopSessionTest {
         // precedent). The blit reuses the SAME develop program family (the
         // NR multi-pass chain, the four-pass unsharp chain, the LUT
         // 3D-texture sampler, and the warp pass included), so the grade
-        // controls are the same fragment-covered set; a FORTY-SECOND
+        // controls are the same covered set — the temporal pair rides the
+        // SAME bridge merge the readback rides (the encoder's CFA comes
+        // from the same temporalMergedCfa); a FORTY-FOURTH
         // parameter would widen the encoder blit's promise beyond the
         // covered-grade contract and must fail here.
         val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoder")
-        assertEquals(41, renderToEncoder.parameterCount)
+        assertEquals(43, renderToEncoder.parameterCount)
     }
 
     @Test

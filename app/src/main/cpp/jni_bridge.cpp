@@ -2991,6 +2991,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //                            nrChromaV, nrLuma, store, blit) -> handle
 //   nativeDevelopSessionRenderFrame(handle, clipHandle, frameIndex,
 //                                   chromaDenoise, noiseReduction,
+//                                   temporalNr, temporalStrength,
 //                                   sharpness, detail,
 //                                   exposureEv, highlights,
 //                                   blackPoint, whitePoint, shadows,
@@ -3006,7 +3007,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //   nativeDevelopSessionSetEncoderSurface(handle, surface) -> ok
 //   nativeDevelopSessionRenderFrameToEncoder(handle, clipHandle, frameIndex,
 //                                            ptsUs, chromaDenoise,
-//                                            noiseReduction, sharpness,
+//                                            noiseReduction, temporalNr,
+//                                            temporalStrength, sharpness,
 //                                            detail, exposureEv,
 //                                            highlights,
 //                                            blackPoint, whitePoint, shadows,
@@ -3046,10 +3048,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // stages 21/22, the four-pass unsharp chain), plus the ten pointwise
 // stages' raw values (black point, white point, shadows, midtones,
 // contrast, temperature, tint, the color wheel, split tone, saturation)
-// with asShot as the 16/17 gate's input. An uncovered grade still cannot
-// even express itself here (the Kotlin coverage gate is the upstream
-// guard; this signature stays the second lock — every parameter names a
-// stage the shader covers).
+// with asShot as the 16/17 gate's input. The temporal pair (temporalNr,
+// temporalStrength — the same raw values nativeExportFrame receives)
+// rides the SAME rule the CPU path rides: the pair dies at this bridge
+// (the session never sees it), consumed by temporalMergedCfa to produce
+// the CFA the request uploads — routing, not porting; the merge math
+// stays core/Temporal.cpp's, frozen. Every parameter names a stage the
+// shader covers OR a pre-stage the bridge's own merge covers.
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
@@ -3257,6 +3262,7 @@ JNIEXPORT jbyteArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jfloat chromaDenoise, jfloat noiseReduction,
+        jboolean temporalNr, jfloat temporalStrength,
         jfloat sharpness, jfloat detail,
         jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
@@ -3298,10 +3304,27 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         // rule; the ring amortizes sequential export frames exactly like
         // nativeExportFrame's step 1). Only the GL work marshals.
         Entry& e = gEntries[clipHandle - 1];
-        const CfaBuffer cfa = loadRingFrame(*s, e, frameIndex);
-        if (cfa == nullptr) return nullptr; // decode failed (error set)
+        const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
+        if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
+
+        // Temporal NR (the hybrid's routing, nativeExportFrame's step 2
+        // verbatim): the SAME temporalMergedCfa the CPU export rides —
+        // the session render shares the per-Entry caches with it (the
+        // Entry is keyed by clipHandle and this body already held it):
+        // the ring LRU the neighbors decode into, the frame+strength-
+        // keyed merged-CFA cache a grade-only re-render at the same
+        // frame hits, the MAFD pair cache the trend gate reads. Off
+        // (false or strength <= 0) hands back the pristine center and
+        // DROPS the temporal caches — this render is byte-identical to
+        // the pre-hybrid session render. A neighbor decode failure
+        // fails the render (error set), never a silent pristine
+        // fallback — the same rule nativeExportFrame rides.
+        const CfaBuffer cfa = temporalMergedCfa(
+            *s, e, frameIndex, center, info,
+            temporalNr == JNI_TRUE, temporalStrength);
+        if (cfa == nullptr) return nullptr; // neighbor decode failed
 
         gles::DevelopFrameRequest req;
         req.cfa = cfa.get();
@@ -3467,7 +3490,8 @@ JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoder(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jlong ptsUs, jfloat chromaDenoise,
-        jfloat noiseReduction, jfloat sharpness, jfloat detail,
+        jfloat noiseReduction, jboolean temporalNr, jfloat temporalStrength,
+        jfloat sharpness, jfloat detail,
         jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
         jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
@@ -3505,10 +3529,25 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
     if (!s) return JNI_FALSE;
     try {
         Entry& e = gEntries[clipHandle - 1];
-        const CfaBuffer cfa = loadRingFrame(*s, e, frameIndex);
-        if (cfa == nullptr) return JNI_FALSE; // decode failed (error set)
+        const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
+        if (center == nullptr) return JNI_FALSE; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
+
+        // Temporal NR (the hybrid's routing), same shape as the readback
+        // entry above: the SAME temporalMergedCfa the CPU export rides,
+        // the SAME per-Entry caches (this is the same clipHandle's Entry,
+        // so whichever entry renders a frame first, the next render of
+        // that frame at the same strength — readback, encoder, or the
+        // CPU path itself — hits the merged-CFA cache).
+        // Off hands back the pristine center and drops the temporal
+        // caches — byte-identical to the pre-hybrid render. A neighbor
+        // decode failure fails the render (error set), never a silent
+        // pristine fallback.
+        const CfaBuffer cfa = temporalMergedCfa(
+            *s, e, frameIndex, center, info,
+            temporalNr == JNI_TRUE, temporalStrength);
+        if (cfa == nullptr) return JNI_FALSE; // neighbor decode failed
 
         gles::DevelopFrameRequest req;
         req.cfa = cfa.get();
@@ -3608,7 +3647,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //                            nrChromaV, nrLuma, store, window) -> handle
 //   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
 //   nativePreviewSessionRenderFrame(handle, clipHandle, frameIndex, maxDim,
-//       chromaDenoise, noiseReduction, sharpness, detail, exposureEv,
+//       chromaDenoise, noiseReduction, temporalNr, temporalStrength,
+//       sharpness, detail, exposureEv,
 //       highlights, blackPoint, whitePoint, shadows, midtones, contrast,
 //       tempK, tint, saturation, asShot, wheelShadowX, wheelShadowY,
 //       wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
@@ -3639,7 +3679,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 // NR port plus the two unsharp stages' raw values since the
 // sharpness/detail port plus the ten pointwise stages' raw values since
 // the pointwise port — the same narrow-signature lock as the export
-// seam: an uncovered grade cannot even be expressed here).
+// seam: an uncovered grade cannot even be expressed here). The temporal
+// pair rides the hybrid's routing rule: it dies at this bridge,
+// consumed by temporalMergedCfa BEFORE the CFA reduction, so the reduced
+// mosaic samples the MERGED CFA (the merge math stays core/Temporal.cpp's,
+// frozen — routing, not porting).
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
@@ -3897,7 +3941,8 @@ JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jint maxDim, jfloat chromaDenoise,
-        jfloat noiseReduction, jfloat sharpness, jfloat detail,
+        jfloat noiseReduction, jboolean temporalNr, jfloat temporalStrength,
+        jfloat sharpness, jfloat detail,
         jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
         jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
@@ -3947,10 +3992,27 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         using SteadyClock = std::chrono::steady_clock;
         const SteadyClock::time_point tDecode0 = SteadyClock::now();
         Entry& e = gEntries[clipHandle - 1];
-        const CfaBuffer cfa = loadRingFrame(*s, e, frameIndex);
-        if (cfa == nullptr) return nullptr; // decode failed (error set)
+        const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
+        if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
+        // Temporal NR (the hybrid's routing), same shape as the export
+        // seams above: the SAME temporalMergedCfa the CPU preview rides
+        // (nativePreviewRender's step 2), the SAME per-Entry caches —
+        // the preview pump and a GPU export of the same clip share the
+        // ring LRU, the frame+strength-keyed merged-CFA cache, and the
+        // MAFD pair cache. Off hands back the pristine center and drops
+        // the temporal caches (the interactive cachedCfa is untouched —
+        // the off-branch never touches it). A neighbor decode failure
+        // fails the render (error set), never a silent pristine
+        // fallback. The merge runs BEFORE the reduction below, so the
+        // reduced mosaic samples the MERGED CFA; its cost lands inside
+        // the decUs span (tDecode1 is read after it) — the honest
+        // placement, matching the export path's temporal= span shape.
+        const CfaBuffer cfa = temporalMergedCfa(
+            *s, e, frameIndex, center, info,
+            temporalNr == JNI_TRUE, temporalStrength);
+        if (cfa == nullptr) return nullptr; // neighbor decode failed
         const SteadyClock::time_point tDecode1 = SteadyClock::now();
         const double decodeUs = elapsedUs(tDecode0, tDecode1);
 

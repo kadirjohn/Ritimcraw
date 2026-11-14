@@ -42,6 +42,18 @@ class GpuPreviewSessionTest {
     )
 
     /**
+     * The temporal pair ONE render carried, in the seam's parameter order —
+     * the pass-through lock's snapshot. The pair never reaches the session
+     * request: it dies at the bridge, consumed by the bridge's own
+     * temporalMergedCfa to produce the CFA the request uploads (the
+     * hybrid's routing, not a shader stage).
+     */
+    private data class TemporalCall(
+        val temporalNr: Boolean,
+        val temporalStrength: Float,
+    )
+
+    /**
      * The two unsharp stages' raw percents ONE render carried, in the
      * seam's parameter order — the verbatim pass-through lock's snapshot
      * for the stages-21/22 pair (a swapped or dropped parameter in
@@ -124,6 +136,7 @@ class GpuPreviewSessionTest {
         val rendered = mutableListOf<Long>() // the session handles rendered
         val renderedHighlights = mutableListOf<Float>() // grade.highlights per render
         val renderedNr = mutableListOf<NrCall>() // the two spatial-NR stages per render
+        val renderedTemporal = mutableListOf<TemporalCall>() // the temporal pair per render
         val renderedSharpnessDetail = mutableListOf<SharpnessDetailCall>() // the two unsharp stages per render
         val renderedPointwise = mutableListOf<PointwiseCall>() // the ten stages per render
         val renderedLut = mutableListOf<LutCall>() // the seven LUT controls per render
@@ -161,6 +174,8 @@ class GpuPreviewSessionTest {
             maxDim: Int,
             chromaDenoise: Float,
             noiseReduction: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
             sharpness: Float,
             detail: Float,
             exposureEv: Float,
@@ -199,6 +214,7 @@ class GpuPreviewSessionTest {
             rendered += sessionHandle
             renderedHighlights += highlights
             renderedNr += NrCall(chromaDenoise, noiseReduction)
+            renderedTemporal += TemporalCall(temporalNr, temporalStrength)
             renderedSharpnessDetail += SharpnessDetailCall(sharpness, detail)
             renderedPointwise += PointwiseCall(
                 blackPoint, whitePoint, shadows, midtones, contrast,
@@ -297,6 +313,7 @@ class GpuPreviewSessionTest {
         val out = session.render(
             clipHandle = 11L, frameIndex = 5, maxDim = 1280,
             chromaDenoise = 25f, noiseReduction = 40f,
+            temporalNr = false, temporalStrength = 0f,
             sharpness = 35f, detail = -15f,
             exposureEv = 0.5f, highlights = -55f, highlightReconstruction = true,
             keepVignetting = true, tonemap = 1,
@@ -331,6 +348,12 @@ class GpuPreviewSessionTest {
         // uNoiseReduction binds need (the stages-7/8 port's own
         // pass-through lock, same shape as the pointwise one below).
         assertEquals(listOf(NrCall(chromaDenoise = 25f, noiseReduction = 40f)), develop.renderedNr)
+        // The temporal pair rides the seam INERT in commit (a) — the
+        // coverage gate still routes temporal grades to the CPU preview,
+        // so a GPU render here is temporal-off by construction; commit (b)
+        // switches the caller to the grade values verbatim and this lock
+        // flips with it.
+        assertEquals(listOf(TemporalCall(temporalNr = false, temporalStrength = 0f)), develop.renderedTemporal)
         // The two unsharp stages ride the seam verbatim too — the raw
         // grade percents the four-pass unsharp chain's uSharpness/uDetail
         // binds need, the NEGATIVE detail carrying through unclamped
@@ -401,6 +424,7 @@ class GpuPreviewSessionTest {
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 chromaDenoise = 0f, noiseReduction = 0f,
+                temporalNr = false, temporalStrength = 0f,
                 sharpness = 0f, detail = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
@@ -432,6 +456,7 @@ class GpuPreviewSessionTest {
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 chromaDenoise = 0f, noiseReduction = 0f,
+                temporalNr = false, temporalStrength = 0f,
                 sharpness = 0f, detail = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
@@ -485,6 +510,7 @@ class GpuPreviewSessionTest {
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 chromaDenoise = 0f, noiseReduction = 0f,
+                temporalNr = false, temporalStrength = 0f,
                 sharpness = 0f, detail = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
@@ -500,7 +526,7 @@ class GpuPreviewSessionTest {
                 lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
                 lutOutGamut = -1, lutOutTransfer = -1,
                 warpActive = false, warpM = floatArrayOf(
-                    1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
+                    1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
                 ),
             )
         )
@@ -530,6 +556,8 @@ class GpuPreviewSessionTest {
                 maxDim: Int,
                 chromaDenoise: Float,
                 noiseReduction: Float,
+                temporalNr: Boolean,
+                temporalStrength: Float,
                 sharpness: Float,
                 detail: Float,
                 exposureEv: Float,

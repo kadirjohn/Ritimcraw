@@ -403,6 +403,8 @@ interface GpuDevelop {
         frameIndex: Int,
         chromaDenoise: Float,
         noiseReduction: Float,
+        temporalNr: Boolean,
+        temporalStrength: Float,
         sharpness: Float,
         detail: Float,
         exposureEv: Float,
@@ -469,6 +471,8 @@ interface GpuDevelop {
         ptsUs: Long,
         chromaDenoise: Float,
         noiseReduction: Float,
+        temporalNr: Boolean,
+        temporalStrength: Float,
         sharpness: Float,
         detail: Float,
         exposureEv: Float,
@@ -568,6 +572,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         frameIndex: Int,
         chromaDenoise: Float,
         noiseReduction: Float,
+        temporalNr: Boolean,
+        temporalStrength: Float,
         sharpness: Float,
         detail: Float,
         exposureEv: Float,
@@ -604,6 +610,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         warpM: FloatArray,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
         sessionHandle, clipHandle, frameIndex, chromaDenoise, noiseReduction,
+        temporalNr, temporalStrength,
         sharpness, detail,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
@@ -624,6 +631,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         ptsUs: Long,
         chromaDenoise: Float,
         noiseReduction: Float,
+        temporalNr: Boolean,
+        temporalStrength: Float,
         sharpness: Float,
         detail: Float,
         exposureEv: Float,
@@ -661,6 +670,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
         sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise, noiseReduction,
+        temporalNr, temporalStrength,
         sharpness, detail,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
@@ -1818,6 +1828,14 @@ class ExportPipeline(
                                 gpuDevelop.renderFrameToEncoder(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
                                     grade.chromaDenoise, grade.noiseReduction,
+                                    // Commit (a) threads the temporal pair
+                                    // INERT (false/0) — the coverage gate
+                                    // still routes temporal grades to CPU,
+                                    // so a GPU dispatch here is temporal-
+                                    // off by construction; commit (b)
+                                    // switches this to grade.temporalNr +
+                                    // grade.temporalStrength verbatim.
+                                    false, 0f,
                                     grade.sharpness, grade.detail,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,
@@ -1887,6 +1905,14 @@ class ExportPipeline(
                                 gpuDevelop.renderFrame(
                                     gpuSessionHandle, info.handle, s.frameIndex,
                                     grade.chromaDenoise, grade.noiseReduction,
+                                    // Commit (a) threads the temporal pair
+                                    // INERT (false/0) — the coverage gate
+                                    // still routes temporal grades to CPU,
+                                    // so a GPU dispatch here is temporal-
+                                    // off by construction; commit (b)
+                                    // switches this to grade.temporalNr +
+                                    // grade.temporalStrength verbatim.
+                                    false, 0f,
                                     grade.sharpness, grade.detail,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,

@@ -2289,6 +2289,14 @@ fun ClipEditorScreen(
                             maxDim = req.maxDim,
                             chromaDenoise = req.grade.chromaDenoise,
                             noiseReduction = req.grade.noiseReduction,
+                            // Commit (a) threads the temporal pair INERT
+                            // (false/0) — the coverage gate still routes
+                            // temporal grades to the CPU preview, so a GPU
+                            // render here is temporal-off by construction;
+                            // commit (b) switches this to the grade values
+                            // verbatim.
+                            temporalNr = false,
+                            temporalStrength = 0f,
                             // Stages 21/22 (commit b): the unsharp pair's raw
                             // percents ride the render seam exactly like the
                             // CPU preview — verbatim, NO clamp, because the

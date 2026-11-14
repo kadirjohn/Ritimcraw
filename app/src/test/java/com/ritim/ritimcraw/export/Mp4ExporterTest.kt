@@ -2220,6 +2220,14 @@ class Mp4ExporterTest {
         // (same shape as the pointwise recorder below).
         var lastNr: NrControls? = null
 
+        // The temporal pair the last READBACK render carried — the hybrid's
+        // routing lock's snapshot. In commit (a) the dispatcher threads the
+        // INERT pair (false/0) — the coverage gate still routes temporal
+        // grades to CPU, so a GPU dispatch is temporal-off by construction;
+        // commit (b) switches to the grade values verbatim and this
+        // recorder locks THAT pass-through.
+        var lastTemporal: TemporalControls? = null
+
         // The two unsharp stages' raw percents the last READBACK render
         // carried — the stages-21/22 verbatim pass-through lock's snapshot
         // (no clamp: negative sharpness is valid softening).
@@ -2250,6 +2258,11 @@ class Mp4ExporterTest {
         // multi-pass chain included), so the stages-7/8 recorder rides it
         // too — the encoder pass-through lock's snapshot.
         var lastEncoderNr: NrControls? = null
+
+        // Same for the temporal pair: the encoder blit's CFA comes from the
+        // SAME bridge merge, so the encoder pass-through lock rides it too
+        // (INERT in commit (a), the grade values verbatim in commit (b)).
+        var lastEncoderTemporal: TemporalControls? = null
 
         // Same for the unsharp pair: the encoder blit runs the same
         // four-pass chain, so the stages-21/22 recorder rides it too.
@@ -2304,6 +2317,8 @@ class Mp4ExporterTest {
             frameIndex: Int,
             chromaDenoise: Float,
             noiseReduction: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
             sharpness: Float,
             detail: Float,
             exposureEv: Float,
@@ -2352,6 +2367,7 @@ class Mp4ExporterTest {
             lastKeepVignetting = keepVignetting
             lastTonemap = tonemap
             lastNr = NrControls(chromaDenoise, noiseReduction)
+            lastTemporal = TemporalControls(temporalNr, temporalStrength)
             lastSharpnessDetail = SharpnessDetailControls(sharpness, detail)
             lastPointwise = PointwiseControls(
                 blackPoint, whitePoint, shadows, midtones, contrast,
@@ -2381,6 +2397,8 @@ class Mp4ExporterTest {
             ptsUs: Long,
             chromaDenoise: Float,
             noiseReduction: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
             sharpness: Float,
             detail: Float,
             exposureEv: Float,
@@ -2425,6 +2443,7 @@ class Mp4ExporterTest {
             lastEncoderSessionHandle = sessionHandle
             lastEncoderRotationDeg = rotationDeg
             lastEncoderNr = NrControls(chromaDenoise, noiseReduction)
+            lastEncoderTemporal = TemporalControls(temporalNr, temporalStrength)
             lastEncoderSharpnessDetail = SharpnessDetailControls(sharpness, detail)
             lastEncoderPointwise = PointwiseControls(
                 blackPoint, whitePoint, shadows, midtones, contrast,
@@ -2478,6 +2497,19 @@ class Mp4ExporterTest {
     private data class NrControls(
         val chromaDenoise: Float,
         val noiseReduction: Float,
+    )
+
+    /**
+     * The temporal pair one render carried, in the seam's parameter order —
+     * shared by the readback and the encoder recorders so a swapped or
+     * dropped parameter fails the equality with the field named. The pair
+     * never reaches the session request: it dies at the bridge, consumed
+     * by the bridge's own temporalMergedCfa to produce the CFA the request
+     * uploads (the hybrid's routing, not a shader stage).
+     */
+    private data class TemporalControls(
+        val temporalNr: Boolean,
+        val temporalStrength: Float,
     )
 
     /**
@@ -2623,6 +2655,12 @@ class Mp4ExporterTest {
         // The two spatial-NR stages ride the dispatch verbatim too — the
         // stages-7/8 raw values in the seam's parameter order.
         assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastNr)
+        // The temporal pair rides the dispatch INERT in commit (a) — the
+        // coverage gate still routes temporal grades to CPU, so a GPU
+        // dispatch here is temporal-off by construction; commit (b)
+        // switches the dispatcher to the grade values verbatim and this
+        // lock flips with it.
+        assertEquals(TemporalControls(temporalNr = false, temporalStrength = 0f), gpu.lastTemporal)
         // The two unsharp stages ride the dispatch verbatim too — the
         // stages-21/22 raw percents in the seam's parameter order, the
         // NEGATIVE detail carrying through unclamped (softening is valid).
@@ -3215,6 +3253,12 @@ class Mp4ExporterTest {
         // The two spatial-NR stages ride the blit verbatim too — the
         // stages-7/8 raw values in the seam's parameter order.
         assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastEncoderNr)
+        // The temporal pair rides the blit INERT in commit (a) — the
+        // coverage gate still routes temporal grades to CPU, so a GPU
+        // blit here is temporal-off by construction; commit (b) switches
+        // the dispatcher to the grade values verbatim and this lock
+        // flips with it.
+        assertEquals(TemporalControls(temporalNr = false, temporalStrength = 0f), gpu.lastEncoderTemporal)
         // The two unsharp stages ride the blit verbatim too — the
         // stages-21/22 raw percents in the seam's parameter order.
         assertEquals(SharpnessDetailControls(sharpness = 45f, detail = 20f), gpu.lastEncoderSharpnessDetail)
