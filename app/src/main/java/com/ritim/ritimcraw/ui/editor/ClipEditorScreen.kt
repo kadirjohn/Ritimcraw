@@ -94,8 +94,12 @@ import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
+import com.ritim.ritimcraw.engine.BackendGates
 import com.ritim.ritimcraw.engine.BackendRules
+import com.ritim.ritimcraw.engine.GlesParityResult
+import com.ritim.ritimcraw.engine.GlesProbeResult
 import com.ritim.ritimcraw.engine.GradeMapping
+import com.ritim.ritimcraw.engine.GpuParityRules
 import com.ritim.ritimcraw.engine.GpuPreviewSession
 import com.ritim.ritimcraw.engine.NativeGpuPreviewDevelop
 import com.ritim.ritimcraw.engine.NativeSource
@@ -555,6 +559,88 @@ object EditorPreviewLogic {
         if (BackendRules.fragmentUncoveredPreStages(grade).isNotEmpty()) return false
         return true
     }
+
+    // ---- The preview capability gate (M4 commit c) ----
+
+    /**
+     * Whether the probe's verdicts justify paying the parity leg (the M3
+     * export gate's order, mirrored for the preview): the parity run is
+     * paid only when the probe created a context AND the float-FBO
+     * extension is present — a red gate never pays the parity (it would
+     * only produce a predictable failure). A compute-less device still
+     * pays: the fragment chain is a DRAW pipeline and needs no compute.
+     *
+     * Pure; a malformed probe array throws (the fromArray contract — a
+     * contract drift must be loud, never papered over) and the caller's
+     * gate block catches it into the honest all-false gates.
+     */
+    fun probePaysParity(probeRaw: DoubleArray?): Boolean {
+        if (probeRaw == null) return false
+        val probe = GlesProbeResult.fromArray(probeRaw)
+        return probe.contextOk && probe.floatFboOk
+    }
+
+    /**
+     * The preview capability gate's assembly (M4 commit c) — the M3
+     * export gate (Mp4Exporter's develop dispatch), mirrored for the
+     * editor's session open as a pure function so the JVM suite locks
+     * the exact assembly without a device. The screen supplies the RAW
+     * seam arrays ([probeRaw] from GpuPreviewDevelop.probe, [parityRaw]
+     * from GpuPreviewDevelop.fragmentParity — null is the seam's honest
+     * no-result: unavailable guard, engine down, or a JNI failure) and
+     * the parity detail for the NOT_RUN verdict's reason.
+     *
+     * The M3 assembly, verbatim in shape:
+     * - probe null -> the all-false default gates (the conservative
+     *   direction; the M3 catch shape).
+     * - a probe that ran but missed the context/float-FBO gates reports
+     *   its own partial gates — the parity leg was never paid, so
+     *   parityOk stays false.
+     * - a probe with both gates green assembles the FULL gates:
+     *   parityOk filled DIRECTLY from [GpuParityRules.verdict] — NEVER
+     *   GpuParityRules.gatesFrom, which keeps parityOk false on purpose
+     *   (parity comes only from a real run).
+     * - a malformed array throws (the fromArray contract: loud, never
+     *   papered over); the caller's gate block catches Throwable into
+     *   the all-false gates, so a contract drift costs the GPU path,
+     *   never the preview.
+     */
+    fun previewCapabilityGates(
+        probeRaw: DoubleArray?,
+        parityRaw: DoubleArray?,
+        parityDetail: String?,
+    ): BackendGates {
+        if (probeRaw == null) return BackendGates()
+        val probe = GlesProbeResult.fromArray(probeRaw)
+        if (!probe.contextOk || !probe.floatFboOk) {
+            // Parity is skipped when the context/float-FBO gates are red
+            // (running it would only produce a predictable failure) —
+            // parityOk stays false (the M3 shape).
+            return BackendGates(
+                contextOk = probe.contextOk,
+                computeOk = probe.computeOk,
+                floatFboOk = probe.floatFboOk,
+            )
+        }
+        val parity = parityRaw?.let { GlesParityResult.fromArray(it) }
+        return BackendGates(
+            contextOk = true,
+            computeOk = probe.computeOk,
+            floatFboOk = true,
+            parityOk = parity != null &&
+                GpuParityRules.verdict(parity, parityDetail).pass,
+        )
+    }
+
+    /**
+     * The fallback line the preview logs when the GPU path is not taken —
+     * the M3 export's developFallbackLine format, verbatim, so ONE grep
+     * covers the export and the preview logs. Pure; the JVM tests pin the
+     * exact strings (the AUTO policy leg and the gate-failure leg).
+     */
+    fun backendFallbackLine(requested: RenderBackend, reason: String): String =
+        "render backend fallback: requested=${requested.name} " +
+            "effective=CPU reason=$reason"
 
     // ---- Zoom-limit honesty readout (audit fix 2026-11-12, Fix 5) ----
 
@@ -1654,24 +1740,102 @@ fun ClipEditorScreen(
             }
         }
 
-        // GPU preview session open (M4 commit b): only when the backend
+        // GPU preview session open (M4 commits b+c): only when the backend
         // setting asks for GPU_EXPERIMENTAL AND the CPU session opened WITH
         // a native clip handle (the GPU dispatch decodes the CFA through
         // that handle; an encoded clip reports 0 and stays CPU). Keyed to
         // the clip like the CPU session above; runs AFTER it in the same
-        // composition so the handle exists. A failed open (handle 0) latches
-        // the path off for the clip's lifetime — ONE honest fallback line
-        // in the error text (the M3 session-open pattern), never a silent
+        // composition so the handle exists. Commit c adds the capability
+        // gate BEFORE the open — the M3 export gate (probe + case-0
+        // fragment parity), mirrored for the preview: a request that
+        // cannot honestly serve on GPU never opens the session, with ONE
+        // fallback line in the M3 vocabulary. AUTO stays CPU until the
+        // owner's device verdict moves the picker (the honest policy
+        // line, never silent). A failed open (handle 0) latches the path
+        // off for the clip's lifetime — ONE honest fallback line in the
+        // error text (the M3 session-open pattern), never a silent
         // stay-on-CPU.
         LaunchedEffect(session, renderBackend) {
             val s = session
-            if (renderBackend != RenderBackend.GPU_EXPERIMENTAL) return@LaunchedEffect
+            if (renderBackend != RenderBackend.GPU_EXPERIMENTAL) {
+                // AUTO stays CPU for the preview until the owner's device
+                // verdict moves the picker — the honest policy line (the
+                // M3 export's AUTO shape), on logcat because it is normal
+                // operation, not a failure: the error text renders ONLY in
+                // the FAILED state and AUTO-on-CPU is a healthy preview.
+                if (renderBackend == RenderBackend.AUTO) {
+                    Log.d(
+                        RenderTrace.TAG,
+                        EditorPreviewLogic.backendFallbackLine(
+                            RenderBackend.AUTO, "auto-stays-cpu",
+                        ),
+                    )
+                }
+                return@LaunchedEffect
+            }
             if (s == null || s.nativeClipHandle == 0L) return@LaunchedEffect
             // One session per editor open: a renderBackend toggle away and
             // back re-runs this effect, and a second open would leak the
             // first session's bridge slot until process exit.
             if (gpuSession != null) return@LaunchedEffect
-            val gpu = GpuPreviewSession(NativeGpuPreviewDevelop)
+            // ---- The capability gate (M4 commit c) ----
+            // The M3 export gate's order, mirrored: probe -> (context +
+            // float-FBO green) -> ONE case-0 fragment parity run (the
+            // developLinear shape the device PROVED at 1 LSB) -> the
+            // BackendGates verdict. Both legs ride the preview engine
+            // thread BEFORE the session opens (the harness brings its own
+            // one-shot EGL context up and down inside the call — running
+            // the parity after the open would put two contexts on one
+            // thread). The parity leg needs the clip's fd: the harness
+            // DUPs it natively, so this copy closes here either way. A
+            // red gate (or a seam that never answered) never opens the
+            // session: ONE fallback line names the missing gates, never a
+            // fabricated measurement — a null probe names all of them
+            // (no leg ran), and the line's reason tokens come from the
+            // gates the assembly reported, never gatesFrom.
+            var gates = BackendGates()
+            val parityFd = sourceFdProvider()
+            try {
+                val develop = NativeGpuPreviewDevelop
+                val probeRaw = develop.probe()
+                // The parity leg is paid only when the probe's verdicts
+                // justify it AND the clip's fd opened — a doomed run is
+                // waste; the honest null keeps parityOk false either way.
+                val parityRaw = if (parityFd >= 0 &&
+                    EditorPreviewLogic.probePaysParity(probeRaw)
+                ) {
+                    develop.fragmentParity(parityFd)
+                } else {
+                    null
+                }
+                gates = EditorPreviewLogic.previewCapabilityGates(
+                    probeRaw = probeRaw,
+                    parityRaw = parityRaw,
+                    parityDetail = develop.lastDetail(),
+                )
+            } catch (t: Throwable) {
+                // A malformed seam array (the fromArray contract: loud,
+                // never papered over) costs the GPU path, never the
+                // preview — the honest all-false gates.
+                gates = BackendGates()
+            } finally {
+                PreviewRenderer.closeFdQuietly(parityFd)
+            }
+            if (!gates.fragmentAllowed()) {
+                // Non-null exactly when the fragment gates are red — this
+                // branch; the elvis arm is the invariant's belt-and-braces.
+                val reason = gates.fragmentFallbackReason()
+                    ?: "no-egl-context,no-float-fbo,parity-not-verified"
+                Log.d(
+                    RenderTrace.TAG,
+                    EditorPreviewLogic.backendFallbackLine(
+                        RenderBackend.GPU_EXPERIMENTAL, reason,
+                    ),
+                )
+                errorText = "GPU preview unavailable: $reason — recovery: the CPU preview path stays the default"
+                return@LaunchedEffect
+            }
+            val gpu = GpuPreviewSession(develop = NativeGpuPreviewDevelop)
             val opened = gpu.open()
             if (opened) {
                 gpuSession = gpu
@@ -2089,8 +2253,12 @@ fun ClipEditorScreen(
                                 // render (class + tier, the M0 SOURCE fix
                                 // visible in the trace), not the grade's
                                 // toggle; stab only when a gyro log was
-                                // actually attached and carried. Debug builds
-                                // only — no-op in release.
+                                // actually attached and carried. M4 commit c:
+                                // backend= names the pipeline that ACTUALLY
+                                // served — gles when the GPU window path
+                                // produced this frame, cpu otherwise (the
+                                // served verdict captured before this fold).
+                                // Debug builds only — no-op in release.
                                 RenderTrace.log(
                                     RenderTrace.Record(
                                         sequence = req.sequence,
@@ -2107,6 +2275,7 @@ fun ClipEditorScreen(
                                             ),
                                         stabilizationApplied = req.grade.stabilization &&
                                             gyroPath != null,
+                                        servedByGpu = servedByGpuWindow,
                                     )
                                 )
                                 lastRenderFailed = false

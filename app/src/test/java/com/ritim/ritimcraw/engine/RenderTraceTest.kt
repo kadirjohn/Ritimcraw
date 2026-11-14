@@ -29,9 +29,11 @@ class RenderTraceTest {
         renderMs: Long = 62L,
         temporalNrApplied: Boolean = false,
         stabilizationApplied: Boolean = false,
+        servedByGpu: Boolean = false,
     ) = RenderTrace.Record(
         sequence, frameIndex, renderClass, requestedMaxDim,
         outW, outH, renderMs, grade, temporalNrApplied, stabilizationApplied,
+        servedByGpu,
     )
 
     // ---- the line: field order and naming ----
@@ -83,6 +85,30 @@ class RenderTraceTest {
     }
 
     // ---- the grade summary: the A/B legs ----
+
+    @Test
+    fun gpu_served_frame_reads_backend_gles() {
+        // M4 commit c: the same line tells the two pipelines apart — the
+        // owner's morning A/B reads backend=gles from the GPU window path
+        // next to the CPU anchor legs, with no format change elsewhere.
+        assertEquals(
+            "seq=12 frame=34 class=settle req=1280 out=1280x720 " +
+                "backend=gles ms=62 grade=neutral",
+            RenderTrace.line(record(servedByGpu = true)),
+        )
+    }
+
+    @Test
+    fun gpu_served_keeps_the_grade_summary_untouched() {
+        // The backend verdict rides the line's own field; the grade legs
+        // (the A/B's per-stage story) stay exactly what the CPU legs pin.
+        assertEquals(
+            "tonemap=agx",
+            RenderTrace.line(record(grade = GradeK(tonemap = 2), servedByGpu = true))
+                .substringAfter("grade="),
+        )
+    }
+
 
     @Test
     fun agx_leg_lists_tonemap_only() {

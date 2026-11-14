@@ -14,9 +14,10 @@ import kotlin.coroutines.suspendCoroutine
  * wholesale — the CPU path stays the default, exactly as the M3 gate keeps
  * the CPU develop the default.
  *
- * THREAD RULE (the binding one): every native call — open, setSurface,
- * renderFrame, close — is submitted to the SAME single preview engine
- * thread the CPU [PreviewSession] renders through. The bridge's
+ * THREAD RULE (the binding one): every native call — probe, parity,
+ * open, setSurface, renderFrame, close — is submitted to the SAME
+ * single preview engine thread the CPU [PreviewSession] renders
+ * through. The bridge's
  * nativePreviewSessionRenderFrame decodes the RAW CFA on the CALLING
  * thread (Source's one-thread rule + the ring buffer), so the GPU render
  * must run where the CPU renders run, and the bridge's thread-local error
@@ -25,6 +26,28 @@ import kotlin.coroutines.suspendCoroutine
  * dispose runs after every render submitted before it.
  */
 interface GpuPreviewDevelop {
+    /**
+     * The capability probe (the M3 export gate's first leg, mirrored for
+     * the preview): the raw [contextOk, glesMajor, glesMinor, computeOk,
+     * floatFboOk, maxTextureSize] array, or null on a JNI failure. Runs
+     * BEFORE the preview session opens, on the engine thread — the
+     * harness brings its own one-shot EGL context up and down inside the
+     * call (the PreviewMetrics precedent), so it must not share a thread
+     * with a live session's context.
+     */
+    suspend fun probe(): DoubleArray?
+
+    /**
+     * The FRAGMENT develop-parity leg (the M3 export gate's second leg):
+     * one GPU-vs-CPU frame through the clip at [fd] (dup'd for the call —
+     * the caller's copy stays theirs), case 0 — the developLinear shape
+     * the device-PROVEN parity case rides. Raw [ran, maxDiffLsb,
+     * mismatchCount, samples], or null on a JNI failure. Runs on the
+     * engine thread, before the session opens (same one-shot-context
+     * rule as [probe]).
+     */
+    suspend fun fragmentParity(fd: Int): DoubleArray?
+
     /**
      * Opens the GPU preview session: a nonzero handle, or 0 on failure
      * ([lastDetail] then names the step — the caller logs ONE fallback
@@ -87,6 +110,48 @@ interface GpuPreviewDevelop {
  * bound to the shared preview engine thread.
  */
 internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
+
+    override suspend fun probe(): DoubleArray? = suspendCoroutine { cont ->
+        try {
+            PreviewRenderer.previewEngine.execute {
+                cont.resume(
+                    try {
+                        NativeSource.jniGlesProbe()
+                    } catch (t: Throwable) {
+                        null // unavailable guard / engine-side failure: honest no-probe
+                    }
+                )
+            }
+        } catch (e: RejectedExecutionException) {
+            cont.resume(null)
+        }
+    }
+
+    override suspend fun fragmentParity(fd: Int): DoubleArray? = suspendCoroutine { cont ->
+        try {
+            PreviewRenderer.previewEngine.execute {
+                cont.resume(
+                    try {
+                        NativeSource.jniGlesFragmentParity(
+                            fd,
+                            GlesShaderSources.FULLSCREEN_VERTEX,
+                            GlesShaderSources.FULLSCREEN_VERTEX_310,
+                            GlesShaderSources.DEVELOP_FRAGMENT,
+                            GlesShaderSources.STORE_FRAGMENT,
+                            // case 0 — the developLinear shape: the
+                            // device-PROVEN parity case (the M3 export
+                            // gate rides the same one).
+                            0,
+                        )
+                    } catch (t: Throwable) {
+                        null // unavailable guard / engine-side failure
+                    }
+                )
+            }
+        } catch (e: RejectedExecutionException) {
+            cont.resume(null)
+        }
+    }
 
     override suspend fun openSession(): Long = suspendCoroutine { cont ->
         try {

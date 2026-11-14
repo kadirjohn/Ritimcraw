@@ -34,10 +34,24 @@ class GpuPreviewSessionTest {
         var renderThrows: Boolean = false,
     ) : GpuPreviewDevelop {
         val opened = mutableListOf<Unit>()
+        val probed = mutableListOf<Unit>()
+        val parities = mutableListOf<Int>() // the fds the parity leg saw
         val surfaces = mutableListOf<Any?>()
         val rendered = mutableListOf<Long>() // the session handles rendered
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
+        var probeResult: DoubleArray? = null
+        var parityResult: DoubleArray? = null
+
+        override suspend fun probe(): DoubleArray? {
+            probed += Unit
+            return probeResult
+        }
+
+        override suspend fun fragmentParity(fd: Int): DoubleArray? {
+            parities += fd
+            return parityResult
+        }
 
         override suspend fun openSession(): Long {
             opened += Unit
@@ -234,6 +248,8 @@ class GpuPreviewSessionTest {
     @Test
     fun last_detail_absorbs_a_seam_throw() = runBlocking {
         val session = GpuPreviewSession(object : GpuPreviewDevelop {
+            override suspend fun probe(): DoubleArray? = null
+            override suspend fun fragmentParity(fd: Int): DoubleArray? = null
             override suspend fun openSession(): Long = 1L
             override suspend fun setSurface(sessionHandle: Long, surface: Any?): Boolean = true
             override suspend fun renderFrame(

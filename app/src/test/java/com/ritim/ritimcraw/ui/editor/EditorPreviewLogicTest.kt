@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.engine.SourcePath
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -684,6 +685,169 @@ class EditorPreviewLogicTest {
                 cropActive = false,
                 zebraOn = false,
             )
+        )
+    }
+
+    // ---- the preview capability gate (M4 commit c) ----
+
+    /** [contextOk, glesMajor, glesMinor, computeOk, floatFboOk, maxTextureSize]. */
+    private fun probePass() = doubleArrayOf(1.0, 3.0, 1.0, 1.0, 1.0, 8192.0)
+
+    /** [ran, maxDiffLsb, mismatchCount, samples] — a parity run inside tolerance. */
+    private fun parityPass() = doubleArrayOf(1.0, 1.0, 0.0, 1_000_000.0)
+
+    @Test
+    fun gates_assemble_from_a_passing_probe_and_parity() {
+        // The M3 export gate's assembly, mirrored: a probe with context +
+        // float-FBO green pays the parity, the parity passes inside the
+        // 1-LSB tolerance, and the fragment gates allow the GPU path.
+        val gates = EditorPreviewLogic.previewCapabilityGates(
+            probeRaw = probePass(),
+            parityRaw = parityPass(),
+            parityDetail = null,
+        )
+        assertTrue(gates.contextOk)
+        assertTrue(gates.computeOk)
+        assertTrue(gates.floatFboOk)
+        assertTrue(gates.parityOk)
+        assertTrue(gates.fragmentAllowed())
+    }
+
+    @Test
+    fun a_null_probe_keeps_the_all_false_default_gates() {
+        // The seam's honest no-result (unavailable guard, engine down, a
+        // JNI failure) never fabricates a gate — the conservative
+        // direction: the GPU path stays closed and the fallback line
+        // names every gate (no leg ran).
+        val gates = EditorPreviewLogic.previewCapabilityGates(
+            probeRaw = null,
+            parityRaw = null,
+            parityDetail = null,
+        )
+        assertFalse(gates.fragmentAllowed())
+        assertEquals(
+            "no-egl-context,no-compute,no-float-fbo,parity-not-verified",
+            gates.fallbackReason(),
+        )
+    }
+
+    @Test
+    fun a_red_probe_reports_partial_gates_and_skips_the_parity_verdict() {
+        // Context green but float-FBO red: the parity leg was never paid
+        // (running it would only produce a predictable failure), so the
+        // gates report the probe's own partial verdict — parityOk stays
+        // false even though a parity array was passed (a caller that
+        // ignored the probe's verdict would be fabricating a run).
+        val probeNoFbo = doubleArrayOf(1.0, 3.0, 1.0, 1.0, 0.0, 8192.0)
+        val gates = EditorPreviewLogic.previewCapabilityGates(
+            probeRaw = probeNoFbo,
+            parityRaw = parityPass(),
+            parityDetail = null,
+        )
+        assertTrue(gates.contextOk)
+        assertTrue(gates.computeOk)
+        assertFalse(gates.floatFboOk)
+        assertFalse(gates.parityOk)
+        assertFalse(gates.fragmentAllowed())
+    }
+
+    @Test
+    fun a_parity_mismatch_fails_the_gate() {
+        // A real run with real numbers beyond the tolerance (2 LSB) is a
+        // FAIL verdict — parityOk false, the GPU path stays closed. The
+        // gates never paper over a measured deviation.
+        val gates = EditorPreviewLogic.previewCapabilityGates(
+            probeRaw = probePass(),
+            parityRaw = doubleArrayOf(1.0, 2.0, 5000.0, 1_000_000.0),
+            parityDetail = null,
+        )
+        assertTrue(gates.contextOk)
+        assertTrue(gates.floatFboOk)
+        assertFalse(gates.parityOk)
+        assertFalse(gates.fragmentAllowed())
+    }
+
+    @Test
+    fun a_parity_that_never_ran_fails_the_gate() {
+        // ran=false is NOT_RUN (the harness failed before the compare);
+        // parityOk false — parity comes only from a real, completed run.
+        val gates = EditorPreviewLogic.previewCapabilityGates(
+            probeRaw = probePass(),
+            parityRaw = doubleArrayOf(0.0, 0.0, 0.0, 0.0),
+            parityDetail = "eglCreateContext",
+        )
+        assertFalse(gates.parityOk)
+        assertFalse(gates.fragmentAllowed())
+    }
+
+    @Test
+    fun a_null_parity_after_a_green_probe_fails_the_gate() {
+        // The parity seam's honest null (a JNI failure after a green
+        // probe) is NOT a pass — parityOk false, the fallback line names
+        // parity-not-verified.
+        val gates = EditorPreviewLogic.previewCapabilityGates(
+            probeRaw = probePass(),
+            parityRaw = null,
+            parityDetail = null,
+        )
+        assertTrue(gates.contextOk)
+        assertTrue(gates.floatFboOk)
+        assertFalse(gates.parityOk)
+        assertEquals(
+            "parity-not-verified",
+            gates.fragmentFallbackReason(),
+        )
+    }
+
+    @Test
+    fun a_malformed_probe_array_throws_the_contract_drift() {
+        // fromArray's require: a contract drift must be loud, never
+        // papered over — the screen's gate block catches it into the
+        // all-false gates, so the drift costs the GPU path, never the
+        // preview.
+        try {
+            EditorPreviewLogic.previewCapabilityGates(
+                probeRaw = doubleArrayOf(1.0, 3.0, 1.0),
+                parityRaw = null,
+                parityDetail = null,
+            )
+            org.junit.Assert.fail("expected IllegalArgumentException")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("6 values"))
+        }
+    }
+
+    @Test
+    fun probe_pays_the_parity_only_on_the_context_and_float_fbo_gates() {
+        // The cost-aware order, mirrored: a red probe never pays the
+        // parity run. The fragment chain is a DRAW pipeline — compute is
+        // NOT in the predicate (a compute-less device still pays).
+        assertTrue(EditorPreviewLogic.probePaysParity(probePass()))
+        assertFalse(EditorPreviewLogic.probePaysParity(null))
+        assertFalse(EditorPreviewLogic.probePaysParity(doubleArrayOf(0.0, 3.0, 1.0, 1.0, 1.0, 8192.0)))
+        assertFalse(EditorPreviewLogic.probePaysParity(doubleArrayOf(1.0, 3.0, 1.0, 1.0, 0.0, 8192.0)))
+        // Compute red, both real gates green: the parity still runs.
+        assertTrue(
+            EditorPreviewLogic.probePaysParity(doubleArrayOf(1.0, 3.0, 1.0, 0.0, 1.0, 8192.0))
+        )
+    }
+
+    @Test
+    fun fallback_lines_carry_the_m3_vocabulary() {
+        // ONE grep covers the export and the preview logs: the M3
+        // developFallbackLine format, verbatim, for the AUTO policy leg
+        // and the gate-failure leg.
+        assertEquals(
+            "render backend fallback: requested=AUTO effective=CPU reason=auto-stays-cpu",
+            EditorPreviewLogic.backendFallbackLine(RenderBackend.AUTO, "auto-stays-cpu"),
+        )
+        assertEquals(
+            "render backend fallback: requested=GPU_EXPERIMENTAL effective=CPU " +
+                "reason=no-egl-context,no-float-fbo,parity-not-verified",
+            EditorPreviewLogic.backendFallbackLine(
+                RenderBackend.GPU_EXPERIMENTAL,
+                "no-egl-context,no-float-fbo,parity-not-verified",
+            ),
         )
     }
 }
