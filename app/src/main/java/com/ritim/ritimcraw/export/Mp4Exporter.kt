@@ -1203,53 +1203,6 @@ class ExportPipeline(
             writer.release()
             throw e
         }
-        // Render-backend visibility (owner request 2026-11-13, deliverable
-        // (c)): ONE honest line per export, emitted after start() so the
-        // encoder-input mode is knowable. The EFFECTIVE value this line
-        // reports is the ENCODER-INPUT axis: effective=GLES means the
-        // writer took the Surface mode and the frames feed the encoder
-        // through its EGL surface; every other shape is effective=CPU,
-        // including a GPU_EXPERIMENTAL request whose Surface mode did not
-        // come up (the exporter's restart covers the start throw; a
-        // per-frame offer refusal logs CPU here honestly). The develop
-        // dispatch above (commit b) is its OWN axis with its OWN fallback
-        // line — a GPU-developed export whose writer never took the
-        // Surface mode logs effective=CPU here while the develop honestly
-        // ran GLES; commit (c) makes THIS line's effective= the develop
-        // axis and moves the encoder-input mode to its own unconditional
-        // line. The unsupported= tokens are the exact BackendRules
-        // fragment vocabulary for THIS grade — the SAME [uncoveredTokens]
-        // list the develop dispatch gated on (no second truth) — so the
-        // line doubles as the coverage statement: "none" is the default
-        // grade after the stage 2+3+23 ports.
-        // CPU exports log the same line (effective=CPU): the requested axis
-        // is visible per export, never only on fallback. Null stageLog =
-        // nothing emitted, bytes identical, release pays nothing.
-        if (stageLog != null) {
-            val effective = if (writer.surfaceInputActive()) {
-                EffectiveRenderBackend.GLES
-            } else {
-                EffectiveRenderBackend.CPU
-            }
-            stageLog(
-                "render backend: requested=${renderBackend.name} " +
-                    "effective=${effective.name} " +
-                    "unsupported=${uncoveredTokens.joinToString(",").ifEmpty { "none" }}"
-            )
-            // The develop dispatch's honest fallback line (commit b): null
-            // when the GPU develop runs (or CPU was requested — no
-            // fallback happened). The reason names the coverage tokens,
-            // the gate tokens, or the AUTO policy — whichever forced the
-            // CPU develop, never silently.
-            developFallback?.let { stageLog(it) }
-            // The encoder input mode, logged only when a GPU request actually
-            // engaged the GPU leg (the Surface mode came up — only a
-            // GPU_EXPERIMENTAL request ever asks for it) — the byte mode is
-            // the reference path and needs no extra line.
-            if (effective == EffectiveRenderBackend.GLES) {
-                stageLog("encoder input: surface")
-            }
-        }
         // M3 commit b — the GPU develop session: opened ONCE per export
         // when the dispatch chose GLES (compile/allocate happen there —
         // per-frame work is uploads and uniforms only, the commit-a
@@ -1477,6 +1430,53 @@ class ExportPipeline(
                 encodeNanos = System.nanoTime() - tEncode0,
             )
         } finally {
+            // Render-backend visibility (owner request 2026-11-13, deliverable
+            // (c)): ONE honest line per export, emitted HERE — after the
+            // encode loop — because the develop axis is only knowable then:
+            // effective=GLES means the GPU develop session rendered the
+            // frames (gpuDevelopActive survived to the end); effective=CPU
+            // covers every other shape, including a GPU request whose probe,
+            // parity, session open, or a mid-render failure latched the CPU
+            // develop (each of those already logged its own fallback line
+            // with the reason — this line reports the final state, the two
+            // are complementary, never duplicated truth). The finally covers
+            // success, mid-encode failure, and finish() failure alike; the
+            // one path it stays silent on is a writer.start() throw — that
+            // export attempt never began, and the exporter's
+            // SurfaceInputUnavailable restart re-runs with its own line, so
+            // the restart still reads one line per export. The unsupported=
+            // tokens are the exact BackendRules fragment vocabulary for THIS
+            // grade — the SAME [uncoveredTokens] list the develop dispatch
+            // gated on (no second truth) — so the line doubles as the
+            // coverage statement: "none" is the default grade after the
+            // stage 2+3+23 ports. CPU exports log the same line
+            // (effective=CPU): the requested axis is visible per export,
+            // never only on fallback. The encoder-input mode is its OWN
+            // unconditional line — surface when the writer took the Surface
+            // mode, bytes otherwise — read BEFORE writer.release() below
+            // (release tears the mode down). Null stageLog = nothing
+            // emitted, bytes identical, release pays nothing.
+            if (stageLog != null) {
+                val effective = if (gpuDevelopActive) {
+                    EffectiveRenderBackend.GLES
+                } else {
+                    EffectiveRenderBackend.CPU
+                }
+                stageLog(
+                    "render backend: requested=${renderBackend.name} " +
+                        "effective=${effective.name} " +
+                        "unsupported=${uncoveredTokens.joinToString(",").ifEmpty { "none" }}"
+                )
+                // The develop dispatch's honest fallback line (commit b):
+                // null when the GPU develop ran (or CPU was requested — no
+                // fallback happened). The reason names the coverage tokens,
+                // the gate tokens, or the AUTO policy — whichever forced the
+                // CPU develop, never silently.
+                developFallback?.let { stageLog(it) }
+                stageLog(
+                    if (writer.surfaceInputActive()) "encoder input: surface" else "encoder input: bytes"
+                )
+            }
             // The GPU develop session closes on EVERY path — success,
             // mid-encode failure, writer failure — beside the writer's
             // release (the commit-a contract: close drains the one

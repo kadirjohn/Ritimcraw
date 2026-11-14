@@ -542,16 +542,18 @@ class Mp4ExporterTest {
         val writer = FakeWriter()
         val lines = ArrayList<String>()
         ExportPipeline(session, writer, lines::add).run(7, GradeK(), "/tmp/out.partial")
-        // The visibility line lands first (one per export, before the loop),
-        // then frame 1's checkpoint sample line, then the close() pair
-        // (averages + summary). The fake writer never calls attachTiming's
-        // sink (default no-op), so its stages read 0.0ms — honest zeros,
-        // not fabricated numbers.
-        assertEquals(4, lines.size)
-        assertTrue(lines[0].startsWith("render backend: "))
-        assertTrue(lines[1].startsWith("export frame 1: "))
-        assertTrue(lines[2].startsWith("export stages avg over 2 frames: "))
-        assertTrue(lines[3].startsWith("EXPORT SUMMARY: "))
+        // Frame 1's checkpoint sample line lands first, then the close()
+        // pair (averages + summary), then the render-backend pair from the
+        // finally (the develop axis is only knowable AFTER the loop —
+        // commit (c)). The fake writer never calls attachTiming's sink
+        // (default no-op), so its stages read 0.0ms — honest zeros, not
+        // fabricated numbers.
+        assertEquals(5, lines.size)
+        assertTrue(lines[0].startsWith("export frame 1: "))
+        assertTrue(lines[1].startsWith("export stages avg over 2 frames: "))
+        assertTrue(lines[2].startsWith("EXPORT SUMMARY: "))
+        assertTrue(lines[3].startsWith("render backend: "))
+        assertTrue(lines[4] == "encoder input: bytes")
     }
 
     // ---- native sub-stage timing (commit (d)) ----
@@ -653,17 +655,17 @@ class Mp4ExporterTest {
         val writer = FakeWriter()
         val lines = ArrayList<String>()
         ExportPipeline(session, writer, lines::add).run(7, GradeK(), "/tmp/out.partial")
-        assertEquals(4, lines.size)
-        assertTrue(lines[1].contains("native="))
-        assertTrue(lines[1].contains("decode=210.5ms"))
-        assertTrue(lines[1].contains("copy=9.0ms"))
+        assertEquals(5, lines.size)
+        assertTrue(lines[0].contains("native="))
+        assertTrue(lines[0].contains("decode=210.5ms"))
+        assertTrue(lines[0].contains("copy=9.0ms"))
         // The default session (FakeSession without the override) reports
         // null — the same export's line stays plain.
         val plainSession = FakeSession(frames = 2, audio = false)
         val plainLines = ArrayList<String>()
         ExportPipeline(plainSession, FakeWriter(), plainLines::add).run(7, GradeK(), "/tmp/out.partial")
-        assertTrue(plainLines[1].contains("native="))
-        assertFalse(plainLines[1].contains("decode="))
+        assertTrue(plainLines[0].contains("native="))
+        assertFalse(plainLines[0].contains("decode="))
     }
 
     // ---- ExportPipeline + Mp4Exporter flow (fakes) ----
@@ -1763,7 +1765,8 @@ class Mp4ExporterTest {
     fun render_backend_line_reports_every_export_honestly() {
         // CPU requested: the same line, effective=CPU, and the grade's
         // active uncovered stages as tokens — the line is per-export
-        // visibility, not a fallback-only report.
+        // visibility, not a fallback-only report. The encoder-input line is
+        // unconditional now (commit (c)): a CPU export says bytes.
         val cpuLines = ArrayList<String>()
         ExportPipeline(
             FakeSession(frames = 2, audio = false),
@@ -1775,18 +1778,21 @@ class Mp4ExporterTest {
         assertTrue("requested missing: $cpuLine", cpuLine.contains("requested=CPU"))
         assertTrue("effective missing: $cpuLine", cpuLine.contains("effective=CPU"))
         assertTrue("unsupported must be none: $cpuLine", cpuLine.contains("unsupported=none"))
-        // CPU never engages the Surface mode, so no encoder-input line.
-        assertTrue(cpuLines.none { it.startsWith("encoder input: ") })
+        assertTrue("cpu must say bytes: $cpuLines", cpuLines.any { it == "encoder input: bytes" })
 
-        // GPU_EXPERIMENTAL + a writer that took the Surface mode: the line
-        // says effective=GLES (the encoder-input axis engaged — the export's
-        // GPU leg) and the encoder input mode is logged too.
+        // GPU_EXPERIMENTAL + a green GPU develop seam + a writer that took
+        // the Surface mode: the line says effective=GLES — the DEVELOP axis
+        // (the session rendered the frames; the JVM default seam would have
+        // caught IllegalStateException and stayed CPU, so the green fake is
+        // what makes the GLES shape reachable here) — and both encoder-input
+        // and develop axes are visible on their own lines.
         val gpuLines = ArrayList<String>()
         ExportPipeline(
             FakeSession(frames = 2, audio = false),
             SurfaceWriter(),
             gpuLines::add,
             renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = FakeGpuDevelop(),
         ).run(7, GradeK(), "/tmp/out.partial")
         val gpuLine = gpuLines.first { it.startsWith("render backend: ") }
         assertTrue("requested missing: $gpuLine", gpuLine.contains("requested=GPU_EXPERIMENTAL"))
@@ -1833,9 +1839,11 @@ class Mp4ExporterTest {
 
     @Test
     fun render_backend_line_gpu_request_without_surface_mode_is_cpu() {
-        // GPU_EXPERIMENTAL + a writer that never brought the Surface mode up
-        // (the per-frame offer refuses): the line reports effective=CPU —
-        // the GPU leg did not engage, never silently claimed.
+        // GPU_EXPERIMENTAL + the JVM's default seam (no .so: the probe
+        // throws, the honest all-false gates keep the develop on CPU): the
+        // line reports effective=CPU on the DEVELOP axis — the GPU develop
+        // never engaged, never silently claimed — and the encoder-input
+        // line says bytes (the writer never took the Surface mode).
         val lines = ArrayList<String>()
         ExportPipeline(
             FakeSession(frames = 2, audio = false),
@@ -1846,7 +1854,33 @@ class Mp4ExporterTest {
         val line = lines.first { it.startsWith("render backend: ") }
         assertTrue("requested missing: $line", line.contains("requested=GPU_EXPERIMENTAL"))
         assertTrue("effective must be CPU: $line", line.contains("effective=CPU"))
-        assertTrue(lines.none { it.startsWith("encoder input: ") })
+        assertTrue(lines.any { it == "encoder input: bytes" })
+    }
+
+    @Test
+    fun render_backend_line_develop_axis_is_independent_of_encoder_input() {
+        // Commit (c)'s core fix: the develop axis and the encoder-input mode
+        // are SEPARATE lines because they are separate truths. A GPU-developed
+        // export whose writer never took the Surface mode (GPU_EXPERIMENTAL,
+        // a green seam, a plain writer whose per-frame offer refuses) reports
+        // effective=GLES on the develop axis while the encoder-input line
+        // honestly says bytes — the pre-(c) line collapsed both axes into a
+        // misleading effective=CPU.
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            FakeSession(frames = 2, audio = false),
+            FakeWriter(),
+            lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = FakeGpuDevelop(),
+        ).run(7, GradeK(), "/tmp/out.partial")
+        val line = lines.first { it.startsWith("render backend: ") }
+        assertTrue("requested missing: $line", line.contains("requested=GPU_EXPERIMENTAL"))
+        assertTrue("develop axis must be GLES: $line", line.contains("effective=GLES"))
+        assertTrue("encoder input must say bytes: $lines", lines.any { it == "encoder input: bytes" })
+        assertFalse(lines.any { it == "encoder input: surface" })
+        // No develop fallback: the GPU develop ran end to end.
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
     }
 
     // ---- GPU develop dispatch (M3 commit b) ----
