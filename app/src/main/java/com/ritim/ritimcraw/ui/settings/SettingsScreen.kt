@@ -8,8 +8,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -70,6 +72,20 @@ import com.ritim.ritimcraw.ui.theme.Tnum
  * store: the level and the change callback are parameters, so the pure
  * mapping stays in PreviewQuality and the persistence in AppNav's
  * PreviewQualityStore.
+ *
+ * The body scrolls (owner finding 2026-11-14: "settings'te scroll
+ * edilmiyor, ekran dolmuş" — Settings did not scroll, the screen was
+ * full): rows had outgrown the fixed Column, so the bottom ones (the
+ * debug Measure action and the stats-readback toggle) were unreachable
+ * and clipped. The body Column now carries verticalScroll (the same
+ * modifier pattern the codec-report FlowRow below already used), so
+ * every row is reachable and the long supporting texts read in full. The
+ * old weight(1f) spacer that pinned the version footer to the screen
+ * bottom is gone: a scrollable column measures children unbounded, so a
+ * weight-based spacer collapses to nothing and would leave no gap. The
+ * footer now flows after the content behind a fixed 16dp spacer and
+ * scrolls with it — the standard Android settings pattern (a pinned
+ * footer would need Scaffold/LazyColumn restructuring, out of scope).
  */
 // FlowRow (the codec pills' wrap layout) is stable API since foundation
 // 1.7 but still carries the @ExperimentalLayoutApi marker in this
@@ -129,12 +145,18 @@ fun SettingsScreen(
         ScreenHeader(title = stringResource(R.string.settings_title))
         // The 16dp screen gutter (DESIGN.md Layout) that used to pad the
         // root Column: moved here so it no longer shifts the title. The
-        // body fills the remaining height, so the LazyColumn's weight(1f)
-        // keeps working exactly as before.
+        // body fills the remaining height AND scrolls (owner finding
+        // 2026-11-14: the rows outgrew the screen and the bottom ones were
+        // unreachable) — verticalScroll with the same pattern the codec
+        // dialog's FlowRow uses below, so every row is reachable on any
+        // screen height. The weight(1f) is kept: inside a non-scrolling
+        // parent it still sizes this column to the remaining height, it
+        // only no longer stretches the content.
         Column(
             Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
         ) {
             // Preview quality row (owner request 2026-11-11b section 3): the
@@ -309,9 +331,13 @@ fun SettingsScreen(
                 )
             }
             // The codec list's new home (see the screen KDoc): the dialog
-            // below. This spacer keeps the version footer pinned to the
-            // screen bottom exactly as before.
-            Column(Modifier.weight(1f)) { }
+            // below. The old weight(1f) spacer pinned the version footer to
+            // the screen bottom; inside this now-scrollable column a
+            // weight-based spacer measures unbounded and collapses to
+            // nothing, so the footer flows after the content behind a fixed
+            // 16dp gap instead (DESIGN.md Layout's group scale) and scrolls
+            // with it — the standard Android settings pattern.
+            Spacer(Modifier.height(16.dp))
             HorizontalDivider()
             Text(
                 stringResource(R.string.settings_version, versionName),
