@@ -91,6 +91,18 @@ class ExportQueue(
      * persisted format).
      */
     private val timeline: TimelineMp4Exporter? = null,
+    /**
+     * (Export foreground, owner finding 2026-11-14: Android froze the
+     * process mid-export once backgrounded) the foreground-priority seam,
+     * notified on THIS queue's own state transitions — see [ExportForeground]:
+     * start rides the pick-to-RUNNING flip below, progress rides the
+     * queue-owned progress callback, stop rides the terminal write. The
+     * default resolves the REAL adapter when an app context is installed
+     * (see [ExportApp]) and [ExportForeground.None] otherwise, so every
+     * existing construction — the app's named-args site and every test —
+     * compiles and runs unchanged.
+     */
+    private val foreground: ExportForeground = ExportForeground.processDefault(),
 ) {
 
     /**
@@ -315,6 +327,14 @@ class ExportQueue(
             publishRevision()
             started
         }
+        // Foreground priority from the first moment the job is really
+        // RUNNING (owner finding 2026-11-14: the process must never be
+        // frozen mid-export). Called OUTSIDE controlLock — the seam makes
+        // its own binder calls, which the control lock must never span.
+        // The early return above (a row cancelled/cleared before the
+        // start) never reaches this, so a never-started job never gains
+        // the priority.
+        foreground.start(running.id, running.fileName)
 
         // Progress callback the queue owns: the exporter reports frame
         // counts; writes are THROTTLED (project.json is rewritten on every
@@ -339,6 +359,15 @@ class ExportQueue(
                 }
                 progress.report(done, total)
             }
+            // The notification rides the SAME frame counts the UI row
+            // shows, behind the seam's own >=1s throttle (coarser than
+            // the store's 500ms write throttle — a notification needs
+            // less). OUTSIDE controlLock: the seam posts, and a post
+            // must never hold the control lock. A cancel lands at the
+            // check above (the next report throws there); the one report
+            // already past it may post a last update, and the terminal
+            // stop below removes the notification regardless.
+            foreground.progress(job.id, done, total)
         }
 
         // The runner owns the source fd's lifetime: acquire once, close in
@@ -441,6 +470,12 @@ class ExportQueue(
             store.update(terminal)
             publishRevision()
         }
+        // The job left RUNNING (DONE/CANCELLED/FAILED — the terminal write
+        // above always lands for a started job): drop the foreground
+        // priority. OUTSIDE controlLock, like the start above. This is the
+        // ONLY stop — [cancel]'s optimistic CANCELLED flip never touches
+        // the seam, because the actual cooperative stop lands here.
+        foreground.stop(job.id)
 
         // A finished export is ALSO published to the system media store
         // (owner finding 2026-11-10: exports were invisible outside the
