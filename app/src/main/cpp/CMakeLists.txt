@@ -29,6 +29,11 @@ add_library(rawedit_jni SHARED jni_bridge.cpp)
 # Android-only (EGL/GLES headers exist only in the NDK) — the desktop
 # build never compiles this target.
 target_sources(rawedit_jni PRIVATE gles/GlesPipeline.cpp)
+# gles/GlesDevelopSession.cpp is M3 commit (a): the production develop
+# session (persistent EGL context + programs on one dedicated GL thread,
+# immutable storage, per-frame glTexSubImage2D uploads) beside the
+# one-shot parity harness. Same Android-only rule as GlesPipeline.cpp.
+target_sources(rawedit_jni PRIVATE gles/GlesDevelopSession.cpp)
 # log is the Android log library: the bridge's debug-gated "ritim-stab"
 # stabilization measurement line (__android_log_print, audit fix
 # 2026-11-12) needs it. Release builds never call it (the flag stays

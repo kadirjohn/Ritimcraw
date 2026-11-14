@@ -44,6 +44,7 @@
 #include <rawedit/Warp.h>
 #include <rawedit/Yuv.h>
 
+#include "gles/GlesDevelopSession.h"
 #include "gles/GlesPipeline.h"
 
 namespace {
@@ -1440,6 +1441,29 @@ CfaBuffer temporalMergedCfa(
     return e.mergedCfa;
 }
 
+// GPU develop session registry (M3 commit a) ---------------------------------
+//
+// The production seam's whole native side. The Kotlin dispatcher (commit b)
+// opens ONE session per export job when the grade is fragment-covered and
+// renderBackend=GPU_EXPERIMENTAL, renders every frame through it, then
+// closes it. The registry mirrors the clip handle registry's shape: a fixed
+// slot array + a mutex for slot bookkeeping ONLY. The session pointer itself
+// is confined to the export engine thread (the same thread that calls
+// nativeDevelopSessionOpen / RenderFrame / Close — Source's own threading
+// rule: one Source belongs to one thread, and the session is opened and
+// served from that same thread), so the slot read after open is unguarded
+// exactly like sourceFor's returned pointer.
+//
+// A session is NOT tied to a clip handle on purpose: the session owns only
+// GL state (programs/textures/FBOs keyed by resolution + the shading map);
+// the clip's bytes flow through it per frame. One session could serve two
+// clips back-to-back; the registry keeps slots anyway so a leaked session
+// (an export job that never closed) is visible in the slot array, not
+// silent. Slots are never reused while occupied — the fixed size bounds the
+// leak to kMaxDevelopSessions.
+constexpr int kMaxDevelopSessions = 4;
+std::unique_ptr<gles::DevelopSession> gDevelopSessions[kMaxDevelopSessions];
+
 } // namespace
 
 extern "C" {
@@ -2659,6 +2683,196 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
     // frameInfo returns a zeroed FrameInfo for out-of-range indices (no
     // throw), so this is always safe; the exporter only walks 0..frameCount.
     return static_cast<jlong>(s->frameInfo(static_cast<size_t>(index)).ptsUs);
+}
+
+// GPU develop session entry points (M3 commit a) ------------------------------
+//
+// The production counterpart of nativeGlesFragmentParity: where that
+// function built the whole pipeline one-shot per call, these hold it. The
+// Kotlin exporter (commit b) drives one session per export job:
+//
+//   nativeDevelopSessionOpen(vertex, vertex310, develop, store) -> handle
+//   nativeDevelopSessionRenderFrame(handle, clipHandle, frameIndex,
+//                                   exposureEv, highlightReconstruction,
+//                                   keepVignetting, tonemap) -> RGB888 bytes
+//   nativeDevelopSessionClose(handle)
+//
+// Open compiles the caller-provided Kotlin shader texts (the single source
+// of truth, host-validated — the same contract the parity harness rides).
+// RenderFrame reuses the export handle's OWN Source on the CALLING thread
+// for the decode (loadRingFrame — the ring amortizes sequential frames),
+// then hands the decoded CFA to the session's GL thread: only the GL work
+// marshals. Close is idempotent; the destructor also closes.
+//
+// The render takes ONLY the four covered grade controls — an uncovered
+// grade cannot even express itself here (the Kotlin coverage gate is the
+// upstream guard; this narrow signature is the second lock).
+
+JNIEXPORT jlong JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
+        JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
+        jstring fragmentSource, jstring storeFragmentSource) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+
+    // The four sources, each read with the nativeGlesFragmentParity pattern
+    // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
+    const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
+    if (v300Chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the vertex source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string v300(v300Chars);
+    env->ReleaseStringUTFChars(vertexSource, v300Chars);
+
+    const char* v310Chars = env->GetStringUTFChars(vertex310Source, nullptr);
+    if (v310Chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the 310 vertex source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string v310(v310Chars);
+    env->ReleaseStringUTFChars(vertex310Source, v310Chars);
+
+    const char* fragChars = env->GetStringUTFChars(fragmentSource, nullptr);
+    if (fragChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the develop source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string frag(fragChars);
+    env->ReleaseStringUTFChars(fragmentSource, fragChars);
+
+    const char* storeChars = env->GetStringUTFChars(storeFragmentSource, nullptr);
+    if (storeChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the store source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string store(storeChars);
+    env->ReleaseStringUTFChars(storeFragmentSource, storeChars);
+
+    // Find a free slot (the registry's fixed array bounds the leak surface).
+    int slot = -1;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        for (int i = 0; i < kMaxDevelopSessions; ++i) {
+            if (gDevelopSessions[i] == nullptr) {
+                slot = i;
+                break;
+            }
+        }
+    }
+    if (slot < 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: too many open sessions "
+                 "(recovery: close a session and retry)");
+        return 0;
+    }
+
+    std::string detail;
+    std::unique_ptr<gles::DevelopSession> session =
+        gles::DevelopSession::open(v300, v310, frag, store, &detail);
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "develop session: " + detail +
+                     " (recovery: the CPU develop path stays the default)");
+        return 0;
+    }
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        gDevelopSessions[slot] = std::move(session);
+    }
+    return static_cast<jlong>(slot) + 1;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
+        JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
+        jint frameIndex, jfloat exposureEv, jboolean highlightReconstruction,
+        jboolean keepVignetting, jint tonemap) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "develop session: invalid session handle "
+                 "(recovery: reopen the export)");
+        return nullptr;
+    }
+    gles::DevelopSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        session = gDevelopSessions[sessionHandle - 1].get();
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "develop session: session is closed "
+                 "(recovery: reopen the export)");
+        return nullptr;
+    }
+    rawedit::Source* s = sourceFor(clipHandle);
+    if (!s) return nullptr;
+    try {
+        // Decode + frame info on the CALLING thread (Source's one-thread
+        // rule; the ring amortizes sequential export frames exactly like
+        // nativeExportFrame's step 1). Only the GL work marshals.
+        Entry& e = gEntries[clipHandle - 1];
+        const CfaBuffer cfa = loadRingFrame(*s, e, frameIndex);
+        if (cfa == nullptr) return nullptr; // decode failed (error set)
+        const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
+        const rawedit::RawMeta& meta = s->rawMeta();
+
+        gles::DevelopFrameRequest req;
+        req.cfa = cfa.get();
+        req.info = info;
+        req.meta = &meta;
+        req.exposureEv = exposureEv;
+        req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
+        req.keepVignetting = keepVignetting == JNI_TRUE;
+        req.tonemap = tonemap;
+        const gles::DevelopFrameResult res = session->renderFrame(req);
+        if (!res.ok) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop session render: " + res.detail +
+                         " (recovery: the export falls back to the CPU develop)");
+            return nullptr;
+        }
+        const jsize n = static_cast<jsize>(res.rgb888.size());
+        if (n <= 0 || static_cast<size_t>(n) != res.rgb888.size()) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop session render: empty output "
+                     "(recovery: reopen the export)");
+            return nullptr;
+        }
+        jbyteArray arr = env->NewByteArray(n);
+        if (arr == nullptr) return nullptr;
+        env->SetByteArrayRegion(arr, 0, n,
+            reinterpret_cast<const jbyte*>(res.rgb888.data()));
+        return arr;
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "develop session render: out of memory decoding the frame "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("develop session render: ") + e.what() +
+                     " (recovery: reopen the export)");
+        return nullptr;
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
+        JNIEnv*, jclass, jlong sessionHandle) {
+    if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) return;
+    std::lock_guard<std::mutex> lock(gRegistryMutex);
+    gDevelopSessions[sessionHandle - 1].reset();
 }
 
 // Stabilization zoom probe (audit fix 2026-11-12, Fix 5) -----------------------
