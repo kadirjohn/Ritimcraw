@@ -527,6 +527,25 @@ fun PreviewSurface(
                 )
                 // First render in flight and nothing to show yet.
                 state == PreviewState.RENDERING -> CircularProgressIndicator()
+                // The GPU session-open window before its first frame (owner
+                // finding 2026-11-14): spinner + the honest preparing line —
+                // NEVER the idle "No preview yet" text, which reads broken
+                // while the editor is in fact preparing (seconds-class on a
+                // fresh 12MP clip). A stale frame never reaches here
+                // (stateOf keeps it FRAME).
+                state == PreviewState.PREPARING -> Column(
+                    Modifier.padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator()
+                    Text(
+                        stringResource(R.string.editor_preview_preparing),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
                 else -> Text(
                     stringResource(R.string.editor_preview_device_pending),
                     style = MaterialTheme.typography.bodyMedium,

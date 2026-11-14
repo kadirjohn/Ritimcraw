@@ -309,16 +309,29 @@ object EditorPreviewLogic {
      * render keeps the last good frame when there is one (grading continues
      * on the stale frame rather than yanking the image away); with no frame
      * at all the SAME placeholder shows as before this path existed.
+     *
+     * gpuPreparing (owner finding 2026-11-14) covers the GPU session-open
+     * window: true from the session-open request until its first frame or
+     * its fallback verdict. On a fresh 12MP clip that window is
+     * seconds-class (probe + parity + open + first develop), and before
+     * this input it read as IDLE — the "No preview yet" text over a
+     * spinner, which reads broken when the editor is in fact preparing.
+     * PREPARING shows only when there is no frame to keep (a stale frame
+     * keeps showing); a CPU render in flight and a real render failure
+     * both outrank it — the existing states keep their behavior
+     * byte-identical.
      */
     fun stateOf(
         renderRequested: Boolean,
         renderInFlight: Boolean,
         hasFrame: Boolean,
         lastRenderFailed: Boolean,
+        gpuPreparing: Boolean = false,
     ): PreviewState = when {
         renderInFlight -> PreviewState.RENDERING
         hasFrame -> PreviewState.FRAME
         renderRequested && lastRenderFailed -> PreviewState.FAILED
+        gpuPreparing -> PreviewState.PREPARING
         else -> PreviewState.IDLE
     }
 
@@ -764,7 +777,15 @@ enum class GyroSyncStatus { ANCHORED, REFINED, MANUAL, NO_DATA }
  */
 enum class StabZoomVerdict { APPLIED, LIMITED }
 
-enum class PreviewState { IDLE, RENDERING, FRAME, FAILED }
+/**
+ * The preview area's state (the pure result of
+ * [EditorPreviewLogic.stateOf]): IDLE (nothing requested — the "No preview
+ * yet" placeholder), RENDERING (a CPU render in flight — the spinner),
+ * FRAME (an image on screen), FAILED (a render failed with nothing to
+ * show — the error text), PREPARING (the GPU session-open window before
+ * its first frame — spinner + "Preparing preview…", never the idle text).
+ */
+enum class PreviewState { IDLE, RENDERING, FRAME, FAILED, PREPARING }
 
 /**
  * Where one system back press lands while the editor is open: the pure
@@ -1351,6 +1372,15 @@ fun ClipEditorScreen(
         // frame AND a live surface) — never black-holes the preview on a
         // surface that died before its first frame.
         var gpuSurfaceLive by remember(sourceId) { mutableStateOf(false) }
+        // The GPU session-open window's honesty flag (owner finding
+        // 2026-11-14): true from the session-open request (the capability
+        // gate's start) until its verdict — the first frame published by
+        // the pump, or a fallback (red gates, failed open, the render
+        // latch). stateOf maps it to PREPARING when no frame exists yet,
+        // so the placeholder says "Preparing preview…" with the spinner
+        // instead of the idle "No preview yet" over the seconds-class
+        // open on a fresh 12MP clip.
+        var gpuPreparing by remember(sourceId) { mutableStateOf(false) }
         // Editor audio (owner request 2026-11-11 section 4): one controller per
         // clip, released at dispose. Audio follows the transport: play starts
         // it at the current position, pause/seek stop it, the clip end ends
@@ -1859,6 +1889,12 @@ fun ClipEditorScreen(
             // back re-runs this effect, and a second open would leak the
             // first session's bridge slot until process exit.
             if (gpuSession != null) return@LaunchedEffect
+            // The open window starts HERE (every guard passed, the
+            // capability gate is about to run): the placeholder turns
+            // PREPARING for its whole seconds-class duration on a fresh
+            // 12MP clip, and every early return above (AUTO stays CPU,
+            // no native handle, session already open) never arms it.
+            gpuPreparing = true
             // ---- The capability gate (M4 commit c) ----
             // The M3 export gate's order, mirrored: probe -> (context +
             // float-FBO green) -> ONE case-0 fragment parity run (the
@@ -1914,6 +1950,7 @@ fun ClipEditorScreen(
                     ),
                 )
                 errorText = "GPU preview unavailable: $reason — recovery: the CPU preview path stays the default"
+                gpuPreparing = false
                 return@LaunchedEffect
             }
             val gpu = GpuPreviewSession(develop = NativeGpuPreviewDevelop)
@@ -1921,9 +1958,13 @@ fun ClipEditorScreen(
             if (opened) {
                 gpuSession = gpu
                 gpuActive = true
+                // The open SUCCEEDED but the window is not done: the first
+                // pump render (or its failure latch) clears the flag —
+                // until then the placeholder keeps saying PREPARING.
             } else {
                 val detail = gpu.lastDetail() ?: "gpu preview session open failed"
                 errorText = "GPU preview unavailable: $detail — recovery: the CPU preview path stays the default"
+                gpuPreparing = false
                 gpu.close()
             }
         }
@@ -2192,9 +2233,11 @@ fun ClipEditorScreen(
                             // The latch: one failure turns the path off for
                             // the clip's lifetime, with the honest detail
                             // line (the M3 fallback-line pattern). The
-                            // window stops serving with the latch.
+                            // window stops serving with the latch — and
+                            // the preparing window ends with the verdict.
                             gpuActive = false
                             gpuWindowLive = false
+                            gpuPreparing = false
                             val detail = gpu.lastDetail() ?: "gpu preview render failed"
                             errorText = "GPU preview fallback: $detail — recovery: the CPU preview path stays the default"
                         }
@@ -2272,6 +2315,12 @@ fun ClipEditorScreen(
                                 // serving — no black hole, no blocky flash
                                 // of the 256 stats pack through the Image.
                                 gpuWindowLive = servedByGpuWindow && gpuSurfaceLive
+                                // The first frame lands: the preparing
+                                // window is over (the frame itself shows
+                                // from here — FRAME outranks PREPARING,
+                                // this clear is the belt-and-braces end
+                                // of the flag's lifecycle).
+                                gpuPreparing = false
                                 // The uncropped effective dims, captured
                                 // BEFORE the crop fold (see the state
                                 // declaration): the aspect presets math
@@ -2681,6 +2730,7 @@ fun ClipEditorScreen(
             renderInFlight = renderInFlight,
             hasFrame = frame != null,
             lastRenderFailed = lastRenderFailed,
+            gpuPreparing = gpuPreparing,
         )
 
         // Clip facts for the top bar's info sheet (review phase 1: name,
