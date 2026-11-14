@@ -337,13 +337,14 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         if (display == null || config == null || context == null) {
             throw surfaceInputUnavailable("the EGL context is missing (setupEgl must run first)", SurfaceInputStep.EGL_CONTEXT)
         }
-        // §10: an EGL window surface ON the codec's input Surface, with the
-        // recordable flag in the surface attribs too.
-        val surfaceAttribs = intArrayOf(
-            EGLExt.EGL_RECORDABLE_ANDROID, 1,
-            EGL14.EGL_NONE,
-        )
-        val window = EGL14.eglCreateWindowSurface(display, config, surface, surfaceAttribs, 0)
+        // §10: an EGL window surface ON the codec's input Surface, with NO
+        // surface attribs: the recordable flag rides the CONFIG setupEgl
+        // chose (it requires EGL_RECORDABLE_ANDROID), and repeating it in
+        // the window-surface attribs returned EGL_NO_SURFACE on the
+        // Xiaomi 15 Ultra (owner bug report 2026-11-14). The M4 preview
+        // session wraps its window with a null attrib list on the same
+        // device and works; Grafika does the same.
+        val window = EGL14.eglCreateWindowSurface(display, config, surface, null, 0)
         if (window == null || window == EGL14.EGL_NO_SURFACE) {
             throw surfaceInputUnavailable(
                 "no EGL window surface could be created on the input Surface",
@@ -466,7 +467,8 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
      * surface, so the writer does the steps [configureSessionSurfaceCodec]
      * skipped — the exact §10 steps [configureSurfaceVideoCodec] runs
      * AFTER createInputSurface: wrap the SAME input surface in the
-     * writer's own EGL (recordable attribs), make it current, probe
+     * writer's own EGL (no surface attribs — the recordable flag rides
+     * the config), make it current, probe
      * eglPresentationTimeANDROID, build the blit program. After a
      * successful adopt [surfaceInputActive] is true and frames flow
      * through the EXISTING [writeVideoFrameRgb] offer — the CPU-RGB
@@ -487,14 +489,12 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         if (display == null || config == null || context == null) {
             throw surfaceInputUnavailable("the EGL context is missing (setupEgl must run first)", SurfaceInputStep.EGL_CONTEXT)
         }
-        // §10: an EGL window surface ON the codec's input Surface, with the
-        // recordable flag in the surface attribs too (the exact attribs
-        // configureSurfaceVideoCodec proved on device).
-        val surfaceAttribs = intArrayOf(
-            EGLExt.EGL_RECORDABLE_ANDROID, 1,
-            EGL14.EGL_NONE,
-        )
-        val window = EGL14.eglCreateWindowSurface(display, config, surface, surfaceAttribs, 0)
+        // §10: an EGL window surface ON the codec's input Surface, with NO
+        // surface attribs — the exact call configureSurfaceVideoCodec makes
+        // (the device DISPROVED the recordable-in-attribs form: it returned
+        // EGL_NO_SURFACE on the Xiaomi 15 Ultra, owner bug report
+        // 2026-11-14; the flag rides the CONFIG setupEgl chose).
+        val window = EGL14.eglCreateWindowSurface(display, config, surface, null, 0)
         if (window == null || window == EGL14.EGL_NO_SURFACE) {
             throw surfaceInputUnavailable(
                 "no EGL window surface could be created on the input Surface",
