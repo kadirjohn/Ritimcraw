@@ -34,31 +34,30 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.ui.theme.Tnum
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
  * Thumbnail-first media row for the main screens (owner request
- * 2026-11-11d §4.3, the 2026-11-14 aspect-ratio extension): rounded
- * thumbnail, width fixed at 76dp and height from the clip's recorded
- * frame ratio ([frameWidth]/[frameHeight] through [ThumbnailRow] — a
- * vertical clip shows a vertical thumbnail; unknown dims keep the
- * square), filename to the right limited to two lines with ellipsis,
- * supporting metadata line beneath it. A plain Row (not ListItem) so
- * the thumbnail and text block size themselves; the caller supplies
- * the supporting line through the pure LibraryRowModel (existing
- * metadata only — nothing is invented).
+ * 2026-11-11d §4.3; the 2026-11-14 uniform-slot extension): rounded
+ * thumbnail in ONE FIXED 76dp square slot ([ThumbnailRow]) for every
+ * frame ratio — a vertical, a horizontal and an open-gate clip all
+ * render rows of the same height, the icon fitted INSIDE the slot at
+ * its own ratio (ContentScale.Fit — letterboxed on the slot's
+ * surfaceVariant background, never cropped, never distorted), filename
+ * to the right limited to two lines with ellipsis, supporting metadata
+ * line beneath it. A plain Row (not ListItem) so the thumbnail and text
+ * block size themselves; the caller supplies the supporting line
+ * through the pure LibraryRowModel (existing metadata only — nothing
+ * is invented).
  *
- * The 2026-11-14 manual-rotation extension (owner request: the icon
- * must match the rotated look the user chose in the editor):
- * [manualRotationDeg] is the clip's PERSISTED manual rotation — a
- * quarter turn swaps the box's displayed ratio ([ThumbnailRow] maps
- * the recorded dims through [RotationState.rotatedDims] first, the
- * same quarter-turn swap the regenerated icon file carries). The
- * default 0 keeps every existing caller's square/ratio math exactly
- * as before.
+ * Manual rotation (owner request 2026-11-14: the icon must match the
+ * rotated look the user chose in the editor) lives in the ICON FILE,
+ * not the row: the icon is re-developed on every rotation change (the
+ * da763c9 contract), so the upright pixels display correctly inside
+ * the uniform slot as-is — the row passes no dims and no rotation, and
+ * the box never swaps its ratio.
  *
  * Selection (E2) keeps its exact behavior: long-press enters selection
  * with this row checked, taps toggle while selecting (never open), and
@@ -76,11 +75,6 @@ fun FileListRow(
     supportingLine: String?,
     thumbnailPath: String?,
     modifier: Modifier = Modifier,
-    frameWidth: Int = 0,
-    frameHeight: Int = 0,
-    // The clip's persisted manual rotation (owner request 2026-11-14): a
-    // quarter turn swaps the displayed ratio. Default 0 = unrotated.
-    manualRotationDeg: Int = 0,
     supportingFallback: (@Composable () -> Unit)? = null,
     accessLostLine: String? = null,
     accessLost: Boolean = false,
@@ -113,17 +107,19 @@ fun FileListRow(
         ) {
             ClipThumbnail(
                 path = thumbnailPath,
-                frameWidth = frameWidth,
-                frameHeight = frameHeight,
-                manualRotationDeg = manualRotationDeg,
                 accessLost = accessLost,
                 // The thumbnail carries the screen's 16dp gutter (owner
                 // request 2026-11-14: the icons sat flush against the left
                 // edge — "sadece thumbnail'ler için" margin, ONLY the
-                // thumbnails). This makes the divider's start padding true
-                // (16 + 76 + 16 = 108dp, its comment's own math — the
-                // WIDTH stays 76dp; only the height became ratio-true).
-                modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
+                // thumbnails) — the SAME [ThumbnailRow.GUTTER_DP] the
+                // divider below starts at (owner finding 2026-11-14: a
+                // divider that runs to the screen's edge must also begin
+                // at the thumbnail's edge).
+                modifier = Modifier.padding(
+                    start = ThumbnailRow.GUTTER_DP.dp,
+                    top = 8.dp,
+                    bottom = 8.dp,
+                ),
             )
             Column(
                 Modifier
@@ -180,10 +176,14 @@ fun FileListRow(
             }
         }
         if (showDivider) {
-            // Aligned with the text block (16dp screen padding + 76dp
-            // thumbnail + 16dp gap), not the thumbnail's left edge.
+            // Starts at the THUMBNAIL's edge, not the text block's (owner
+            // finding 2026-11-14: "ekranın sonuna kadar ilerliyorsa
+            // thumbnail için de ilerlemeli" — a divider that runs all the
+            // way to the screen's edge must begin at the thumbnail's
+            // gutter, [ThumbnailRow.GUTTER_DP]), and keeps running to the
+            // screen's edge (no end padding).
             HorizontalDivider(
-                modifier = Modifier.padding(start = 108.dp),
+                modifier = Modifier.padding(start = ThumbnailRow.GUTTER_DP.dp),
                 color = MaterialTheme.colorScheme.outlineVariant,
             )
         }
@@ -191,83 +191,55 @@ fun FileListRow(
 }
 
 /**
- * Pure thumbnail-height arithmetic (unit-tested in ThumbnailRowTest, the
- * [ChipWidths] precedent): the row's thumbnail keeps the WIDTH fixed at
- * 76dp and derives its height from the clip's recorded frame ratio
- * (owner request 2026-11-14: a vertical clip shows a vertical thumbnail,
- * a 4:3 open gate a 4:3 one — the icon FILE is already long-edge
- * proportional, the row box just stopped square-cropping it).
+ * Pure thumbnail-slot arithmetic (unit-tested in ThumbnailRowTest, the
+ * [ChipWidths] precedent): the row's thumbnail slot is ONE FIXED 76x76dp
+ * SQUARE for every frame ratio (owner finding 2026-11-14: the ratio-true
+ * 40..120dp band made a 9:16 row 120dp tall while a 16:9 row sat at
+ * 43dp — the list's rhythm broke between vertical, horizontal and
+ * open-gate clips, and the vertical rows ate the screen).
  *
- * The height clamps to [MIN_HEIGHT_DP]..[MAX_HEIGHT_DP] so the LIST stays
- * scannable: an extreme 9:16 vertical would ask for ~135dp (taller than
- * two text rows) — it shows at 120dp and letterboxes slightly instead;
- * a 21:9 anamorphic would ask for ~33dp — it shows at 40dp. The band
- * keeps every row within roughly one text block of the 76dp square the
- * list shipped with, whatever the source's ratio. Unknown dims (0x0 —
- * never probed) keep the square: the placeholder must not guess a ratio
- * the record does not know.
+ * The uniform slot is the standard gallery pattern over a tighter clamp
+ * band: only a fixed height makes the rhythm literally identical between
+ * ratios (a band still leaves every row a different height), and 76dp is
+ * the square the list shipped with — inside the 76-96dp band the finding
+ * allowed, and it keeps the divider/text geometry stable. The icon stays
+ * RATIO-TRUE inside the slot (ContentScale.Fit: a 9:16 icon letterboxes
+ * on the surfaceVariant background, a 16:9 one letterboxes top and
+ * bottom, neither crops or distorts), so the clip's look survives —
+ * only the box stops announcing the ratio.
  */
 internal object ThumbnailRow {
 
-    /** The fixed thumbnail width (the shipped 76dp square's width). */
+    /** The fixed thumbnail slot's width (the shipped 76dp square's width). */
     const val WIDTH_DP = 76f
 
-    /** The tallest a row thumbnail may be (9:16 clamps here, at 120dp). */
-    const val MAX_HEIGHT_DP = 120f
+    /** The fixed thumbnail slot's height: the square, for every ratio. */
+    const val HEIGHT_DP = 76f
 
-    /** The shortest a row thumbnail may be (21:9 clamps here, at 40dp). */
-    const val MIN_HEIGHT_DP = 40f
-
-    /**
-     * The thumbnail box's height in dp for a [width]x[height] recorded
-     * frame: 76dp * (frameH / frameW), clamped to the band; the square
-     * 76dp when the dims are unknown (<= 0) — never a divide by zero.
-     */
-    fun heightDp(frameWidth: Int, frameHeight: Int): Float {
-        if (frameWidth <= 0 || frameHeight <= 0) return WIDTH_DP
-        val raw = WIDTH_DP * frameHeight / frameWidth
-        return raw.coerceIn(MIN_HEIGHT_DP, MAX_HEIGHT_DP)
-    }
-
-    /**
-     * The rotation-aware height (owner request 2026-11-14: the icon must
-     * match the rotated look the user chose in the editor): the recorded
-     * dims map through [RotationState.rotatedDims] FIRST — a quarter turn
-     * swaps width and height, so a landscape clip the user rotated 90
-     * displays its vertical ratio — then the same ratio math and clamps as
-     * [heightDp]. The icon file carries the same swap (it is re-developed
-     * on every rotation change), so box and icon stay in agreement.
-     */
-    fun heightDp(frameWidth: Int, frameHeight: Int, manualRotationDeg: Int): Float {
-        val dims = RotationState.rotatedDims(frameWidth, frameHeight, manualRotationDeg)
-        return heightDp(dims.width, dims.height)
-    }
+    /** The screen's 16dp gutter the slot (and the divider) starts at. */
+    const val GUTTER_DP = 16f
 }
 
 /**
- * The row's leading thumbnail (owner request 2026-11-11d §4.3, the
- * 2026-11-14 aspect-ratio extension): rounded box, WIDTH fixed at 76dp
- * and height from the clip's recorded frame ratio ([ThumbnailRow] — a
- * vertical clip shows a vertical thumbnail), the persisted first-frame
- * PNG fitted inside (ContentScale.Fit — at the frame's own ratio the
- * icon fills the box exactly; a clamped extreme letterboxes slightly
- * rather than crop), or the ratio-true placeholder box while missing —
- * decoded off the UI thread (produceState cancels the load when the row
- * leaves composition). The box keeps the extraSmall shape and the
- * surfaceVariant background: the ratio-true rounded thumbnail IS the
- * modern look, no added chrome.
+ * The row's leading thumbnail (owner request 2026-11-11d §4.3; the
+ * 2026-11-14 uniform-slot extension): rounded FIXED 76x76dp square slot
+ * ([ThumbnailRow] — the gallery pattern: one row height for every frame
+ * ratio), the persisted first-frame PNG fitted INSIDE at its own ratio
+ * (ContentScale.Fit — the icon letterboxes on the slot's surfaceVariant
+ * background, never cropped, never distorted), or the same square
+ * placeholder while missing — decoded off the UI thread (produceState
+ * cancels the load when the row leaves composition). The box keeps the
+ * extraSmall shape and the surfaceVariant background: the rounded
+ * square thumbnail IS the modern look, no added chrome.
  *
- * [manualRotationDeg] (owner request 2026-11-14: the icon must match the
- * rotated look the user chose in the editor) swaps the box's ratio on a
- * quarter turn — the same swap the regenerated icon file carries, so
- * the rotated icon fills the box exactly like the upright one did.
+ * The icon's own pixels carry the manual rotation (the da763c9
+ * contract: the icon is re-developed on every rotation change), so the
+ * row passes no dims and no rotation — the upright icon displays
+ * correctly inside the uniform slot as-is.
  */
 @Composable
 private fun ClipThumbnail(
     path: String?,
-    frameWidth: Int,
-    frameHeight: Int,
-    manualRotationDeg: Int,
     accessLost: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -286,7 +258,7 @@ private fun ClipThumbnail(
         modifier = modifier
             .size(
                 width = ThumbnailRow.WIDTH_DP.dp,
-                height = ThumbnailRow.heightDp(frameWidth, frameHeight, manualRotationDeg).dp,
+                height = ThumbnailRow.HEIGHT_DP.dp,
             )
             .clip(MaterialTheme.shapes.extraSmall)
             .background(MaterialTheme.colorScheme.surfaceVariant),
