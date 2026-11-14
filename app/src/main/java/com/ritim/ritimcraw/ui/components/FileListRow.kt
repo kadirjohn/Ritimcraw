@@ -45,7 +45,8 @@ import kotlinx.coroutines.withContext
  * frame ratio — a vertical, a horizontal and an open-gate clip all
  * render rows of the same height, the icon fitted INSIDE the slot at
  * its own ratio (ContentScale.Fit — letterboxed on the slot's
- * surfaceVariant background, never cropped, never distorted), filename
+ * surfaceContainerHighest background, never cropped, never
+ * distorted), filename
  * to the right limited to two lines with ellipsis, supporting metadata
  * line beneath it. A plain Row (not ListItem) so the thumbnail and text
  * block size themselves; the caller supplies the supporting line
@@ -204,8 +205,8 @@ fun FileListRow(
  * the square the list shipped with — inside the 76-96dp band the finding
  * allowed, and it keeps the divider/text geometry stable. The icon stays
  * RATIO-TRUE inside the slot (ContentScale.Fit: a 9:16 icon letterboxes
- * on the surfaceVariant background, a 16:9 one letterboxes top and
- * bottom, neither crops or distorts), so the clip's look survives —
+ * on the surfaceContainerHighest background, a 16:9 one letterboxes top
+ * and bottom, neither crops or distorts), so the clip's look survives —
  * only the box stops announcing the ratio.
  */
 internal object ThumbnailRow {
@@ -225,11 +226,12 @@ internal object ThumbnailRow {
  * 2026-11-14 uniform-slot extension): rounded FIXED 76x76dp square slot
  * ([ThumbnailRow] — the gallery pattern: one row height for every frame
  * ratio), the persisted first-frame PNG fitted INSIDE at its own ratio
- * (ContentScale.Fit — the icon letterboxes on the slot's surfaceVariant
- * background, never cropped, never distorted), or the same square
- * placeholder while missing — decoded off the UI thread (produceState
- * cancels the load when the row leaves composition). The box keeps the
- * extraSmall shape and the surfaceVariant background: the rounded
+ * (ContentScale.Fit — the icon letterboxes on the slot's
+ * surfaceContainerHighest background, never cropped, never distorted),
+ * or the same square placeholder while missing — decoded off the UI
+ * thread (produceState cancels the load when the row leaves
+ * composition). The box keeps the extraSmall shape and the
+ * surfaceContainerHighest background: the rounded
  * square thumbnail IS the modern look, no added chrome.
  *
  * The icon's own pixels carry the manual rotation (the da763c9
@@ -261,7 +263,18 @@ private fun ClipThumbnail(
                 height = ThumbnailRow.HEIGHT_DP.dp,
             )
             .clip(MaterialTheme.shapes.extraSmall)
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            // Owner request 2026-11-14: the letterbox area behind the
+            // ratio-true icon reads as a PLAIN GRAY, not the Monet tone.
+            // surfaceVariant rides the NeutralVariant palette, which
+            // carries the wallpaper's hue (dynamic color) — the slot
+            // tinted itself with whatever the wallpaper was.
+            // surfaceContainerHighest rides the NEUTRAL palette (the
+            // container family the editor scheme already proves gray:
+            // 0xFF3b3b3b): light mode keeps the exact tone surfaceVariant
+            // had (NeutralVariant90 -> Neutral90), dark mode drops from
+            // NV30 to N22 — still clearly a step above the dark surface,
+            // now chroma-free in BOTH modes.
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
     ) {
         val b = bitmap
         if (b != null) {
