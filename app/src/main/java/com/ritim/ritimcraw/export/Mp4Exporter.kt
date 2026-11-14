@@ -2000,12 +2000,18 @@ class Mp4Exporter(
                             // mid-stream in an incompatible format. The
                             // discard + fresh writerFactory() below is
                             // that clean restart; the fallback is logged,
-                            // never silent.
+                            // never silent. The reason names the failing
+                            // BRING-UP STEP (owner bug report 2026-11-13):
+                            // reason=surface-input-unavailable:<step>, one
+                            // line — and exactly the legacy reason string
+                            // when the step is unknown, so the owner's
+                            // existing greps and the tests stay
+                            // byte-identical.
                             ExportStaging.discard(partial)
                             stageLog?.invoke(
                                 "render backend fallback: " +
                                     "requested=${job.renderBackend.name} " +
-                                    "effective=CPU reason=surface-input-unavailable"
+                                    "effective=CPU reason=" + SurfaceInputUnavailable.reason(e.step)
                             )
                             exportOnce(
                                 RenderBackend.CPU, sourceFd, job.snapshot,
