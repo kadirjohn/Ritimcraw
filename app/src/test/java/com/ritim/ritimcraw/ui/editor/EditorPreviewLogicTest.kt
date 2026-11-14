@@ -913,6 +913,37 @@ class EditorPreviewLogicTest {
         )
     }
 
+    @Test
+    fun a_lut_grade_is_eligible_only_when_the_texture_path_is_healthy() {
+        // Stage 24 (LUT) is the RUNTIME-CONDITIONAL stage: the preview
+        // eligibility mirrors the export gate's runtime leg, with the
+        // latch from the editor's capability gate (the probe-derived
+        // fact, latched once per editor open) standing in for the
+        // dispatch site's probe. A LUT-active grade is INELIGIBLE while
+        // the default-false fact holds — the honest no-silent-skip rule:
+        // the GPU window must not serve a frame whose look it could not
+        // apply — and eligible once the fact says the device's 3D-texture
+        // path is healthy.
+        assertFalse(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(lutId = "milog", lutStrength = 85f),
+                gyroWarpActive = false,
+                cropActive = false,
+                zebraOn = false,
+                lutTexturePathOk = false,
+            )
+        )
+        assertTrue(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(lutId = "milog", lutStrength = 85f),
+                gyroWarpActive = false,
+                cropActive = false,
+                zebraOn = false,
+                lutTexturePathOk = true,
+            )
+        )
+    }
+
     // ---- the preview capability gate (M4 commit c) ----
 
     /** [contextOk, glesMajor, glesMinor, computeOk, floatFboOk, maxTextureSize]. */

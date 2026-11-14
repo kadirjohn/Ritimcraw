@@ -426,6 +426,13 @@ interface GpuDevelop {
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
     ): ByteArray?
 
     /** Closes the session (idempotent; absorbs context loss at teardown). */
@@ -481,6 +488,13 @@ interface GpuDevelop {
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
         rotationDeg: Int = 0,
     ): Boolean = false
 
@@ -543,13 +557,21 @@ internal object NativeGpuDevelop : GpuDevelop {
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
         sessionHandle, clipHandle, frameIndex, chromaDenoise, noiseReduction,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
         wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
         wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
-        highlightReconstruction, keepVignetting, tonemap,
+        highlightReconstruction, keepVignetting, tonemap, lutPath, lutStrength,
+        lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
     )
 
     override fun setEncoderSurface(sessionHandle: Long, surface: Any?): Boolean =
@@ -585,6 +607,13 @@ internal object NativeGpuDevelop : GpuDevelop {
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
         rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
         sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise, noiseReduction,
@@ -592,7 +621,9 @@ internal object NativeGpuDevelop : GpuDevelop {
         contrast, tempK, tint, saturation, asShot,
         wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
         wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
-        highlightReconstruction, keepVignetting, tonemap, rotationDeg,
+        highlightReconstruction, keepVignetting, tonemap, lutPath, lutStrength,
+        lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+        rotationDeg,
     )
 
     override fun closeSession(sessionHandle: Long) =
@@ -1356,7 +1387,9 @@ class ExportPipeline(
         // warp is off develops through the GPU session; every other
         // shape develops through the CPU session. The order is
         // cost-aware: the coverage check is FREE and runs first (an
-        // uncovered grade never pays the probe or the parity run); only a
+        // uncovered grade never pays the probe or the parity run — the
+        // ONE exception is stage 24's runtime leg above, where the LUT
+        // fact can only come from the probe itself); only a
         // covered grade pays the probe, then ONE case-0 fragment parity
         // run (the developLinear shape — the case the device PROVED at
         // 1 LSB; the grade's own shape is gated by the coverage check, so
@@ -1373,8 +1406,38 @@ class ExportPipeline(
         // context only in start() — running the parity after start would
         // put two contexts on one thread.
         val gyroWarpActive = grade.stabilization && gyroPath != null
+        // Stage 24's runtime leg (commit b): a LUT-active grade's coverage
+        // depends on a fact only the probe knows — the RGBA16F 3D-texture
+        // path is GLES 3.0 core, so contextOk && glesMajor >= 3. A
+        // GPU_EXPERIMENTAL + LUT-active grade therefore pays the probe
+        // BEFORE the coverage decision and the SAME fetched probe feeds
+        // the gate block below (paid exactly once). Every other grade
+        // keeps the M3 order: the coverage check is FREE and runs first,
+        // so a non-LUT uncovered grade never pays the probe. The fact
+        // defaults to false (CPU) and is flipped only by a real, parseable
+        // probe — a malformed array never fabricates a healthy path.
+        val lutActive = grade.lutId != null && grade.lutStrength > 0f
+        var lutTexturePathOk = false
+        var lutProbeRaw: DoubleArray? = null
+        var lutProbeFetched = false
+        if (renderBackend == RenderBackend.GPU_EXPERIMENTAL && lutActive) {
+            lutProbeFetched = true
+            try {
+                lutProbeRaw = gpuDevelop.probe()
+                if (lutProbeRaw != null) {
+                    lutTexturePathOk = try {
+                        val probe = GlesProbeResult.fromArray(lutProbeRaw)
+                        probe.contextOk && probe.glesMajor >= 3
+                    } catch (e: IllegalArgumentException) {
+                        false
+                    }
+                }
+            } catch (e: IllegalStateException) {
+                lutProbeRaw = null // no .so: the fact stays false, gate re-guards
+            }
+        }
         val uncoveredTokens = mutableListOf<String>()
-        uncoveredTokens += BackendRules.fragmentUncoveredStages(grade).map { it.second }
+        uncoveredTokens += BackendRules.fragmentUncoveredStages(grade, lutTexturePathOk).map { it.second }
         uncoveredTokens += BackendRules.fragmentUncoveredPreStages(grade)
         if (gyroWarpActive) uncoveredTokens += "gyro-warp"
         var developBackend = EffectiveRenderBackend.CPU
@@ -1382,7 +1445,7 @@ class ExportPipeline(
         if (renderBackend == RenderBackend.GPU_EXPERIMENTAL && uncoveredTokens.isEmpty()) {
             var gates = BackendGates()
             try {
-                val probeRaw = gpuDevelop.probe()
+                val probeRaw = if (lutProbeFetched) lutProbeRaw else gpuDevelop.probe()
                 if (probeRaw != null) {
                     val probe = GlesProbeResult.fromArray(probeRaw)
                     if (probe.contextOk && probe.floatFboOk) {
@@ -1413,10 +1476,10 @@ class ExportPipeline(
                 gates = BackendGates()
             }
             developBackend = BackendRules.fragmentEffectiveBackend(
-                renderBackend, gates, grade, gyroWarpActive,
+                renderBackend, gates, grade, gyroWarpActive, lutTexturePathOk,
             )
             developFallback = BackendRules.fragmentFallbackLine(
-                renderBackend, gates, grade, gyroWarpActive,
+                renderBackend, gates, grade, gyroWarpActive, lutTexturePathOk,
             )
         } else if (renderBackend == RenderBackend.GPU_EXPERIMENTAL) {
             // An active uncovered stage/pre-stage/gyro warp forces CPU
@@ -1645,7 +1708,14 @@ class ExportPipeline(
                                     grade.splitShadowHue, grade.splitHighlightHue,
                                     grade.splitBalance,
                                     grade.highlightReconstruction,
-                                    grade.keepVignetting, grade.tonemap, effectiveDeg,
+                                    grade.keepVignetting, grade.tonemap,
+                                    lutPath, grade.lutStrength / 100f,
+                                    grade.lutInterp?.role?.value ?: -1,
+                                    grade.lutInterp?.input?.gamut?.value ?: -1,
+                                    grade.lutInterp?.input?.transfer?.value ?: -1,
+                                    grade.lutInterp?.output?.gamut?.value ?: -1,
+                                    grade.lutInterp?.output?.transfer?.value ?: -1,
+                                    effectiveDeg,
                                 )
                             } catch (e: IllegalStateException) {
                                 false // no .so mid-export: latch below
@@ -1706,6 +1776,12 @@ class ExportPipeline(
                                     grade.splitBalance,
                                     grade.highlightReconstruction,
                                     grade.keepVignetting, grade.tonemap,
+                                    lutPath, grade.lutStrength / 100f,
+                                    grade.lutInterp?.role?.value ?: -1,
+                                    grade.lutInterp?.input?.gamut?.value ?: -1,
+                                    grade.lutInterp?.input?.transfer?.value ?: -1,
+                                    grade.lutInterp?.output?.gamut?.value ?: -1,
+                                    grade.lutInterp?.output?.transfer?.value ?: -1,
                                 )
                             } catch (e: IllegalStateException) {
                                 null // no .so mid-export: latch CPU below

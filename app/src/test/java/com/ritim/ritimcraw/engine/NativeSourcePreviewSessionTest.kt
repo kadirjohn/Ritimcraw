@@ -24,9 +24,12 @@ import org.junit.Test
  *      the multi-pass fragment chain) plus the ten pointwise stages' raw
  *      values since the pointwise port (black point, white point,
  *      shadows, midtones, contrast, temperature, tint, saturation, the
- *      color wheel, split tone, with asShot as the 16/17 gate's input) —
- *      beside the four plumbing values (session handle, clip handle,
- *      frame index, max dim). That narrow signature is the second lock against
+ *      color wheel, split tone, with asShot as the 16/17 gate's input)
+ *      plus — since the stage-24 GPU port — the seven LUT controls (the
+ *      resolved .cube path, the [0,1] strength, and the five
+ *      interpretation ordinals, -1 = legacy) beside the four plumbing
+ *      values (session handle, clip handle, frame index, max dim). That
+ *      narrow signature is the second lock against
  *      uncovered grades (the Kotlin coverage gate is the first): a stage
  *      the fragment pass does not cover cannot even be expressed into the
  *      session, so widening this signature must be a deliberate act that
@@ -112,6 +115,13 @@ class NativeSourcePreviewSessionTest {
                 highlightReconstruction = true,
                 keepVignetting = true,
                 tonemap = 0,
+                lutPath = null,
+                lutStrength = 0.0f,
+                lutRole = -1,
+                lutInGamut = -1,
+                lutInTransfer = -1,
+                lutOutGamut = -1,
+                lutOutTransfer = -1,
             )
             throw AssertionError("expected IllegalStateException")
         } catch (expected: IllegalStateException) {
@@ -157,7 +167,7 @@ class NativeSourcePreviewSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 29 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+        // 36 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
         // four plumbing values) + chromaDenoise, noiseReduction (the two
         // spatial-NR stages' raw values since the spatial-NR port — stages
         // 7/8, the multi-pass fragment chain behind uChromaDenoise/
@@ -168,14 +178,16 @@ class NativeSourcePreviewSessionTest {
         // pointwise port (blackPoint, whitePoint, shadows, midtones,
         // contrast, tempK, tint, saturation, the six color-wheel offsets,
         // the three split-tone values, with asShot as the 16/17 gate's
-        // input). Temporal NR, tone-band, sharpening, detail and LUT
-        // controls are deliberately absent — those stages are NOT
-        // fragment-covered, so a grade using any of them must take the CPU
-        // path wholesale; adding such a parameter here widens the session's
-        // promise and must fail this test until the coverage gate is taught
-        // the new stage.
+        // input) + the seven LUT controls since the stage-24 GPU port
+        // (lutPath, lutStrength and the five interpretation ordinals — the
+        // SAME layout the CPU seam threads, -1 = legacy). Temporal NR,
+        // tone-band, sharpening and detail controls are deliberately
+        // absent — those stages are NOT fragment-covered, so a grade using
+        // any of them must take the CPU path wholesale; adding such a
+        // parameter here widens the session's promise and must fail this
+        // test until the coverage gate is taught the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(29, render.parameterCount)
+        assertEquals(36, render.parameterCount)
     }
 
     @Test

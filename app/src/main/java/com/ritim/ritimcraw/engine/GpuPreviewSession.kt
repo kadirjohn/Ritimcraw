@@ -109,6 +109,13 @@ interface GpuPreviewDevelop {
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
     ): PreviewFrame?
 
     /**
@@ -248,6 +255,13 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
     ): PreviewFrame? = suspendCoroutine { cont ->
         try {
             PreviewRenderer.previewEngine.execute {
@@ -264,6 +278,8 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                                 wheelHighX, wheelHighY,
                                 splitShadowHue, splitHighlightHue, splitBalance,
                                 highlightReconstruction, keepVignetting, tonemap,
+                                lutPath, lutStrength, lutRole, lutInGamut,
+                                lutInTransfer, lutOutGamut, lutOutTransfer,
                             )
                         )
                     } catch (t: Throwable) {
@@ -452,6 +468,13 @@ class GpuPreviewSession(
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
     ): PreviewFrame? {
         val h = handle
         if (h == 0L || closed.get()) return null
@@ -466,6 +489,8 @@ class GpuPreviewSession(
                 wheelHighX, wheelHighY,
                 splitShadowHue, splitHighlightHue, splitBalance,
                 highlightReconstruction, keepVignetting, tonemap,
+                lutPath, lutStrength, lutRole, lutInGamut,
+                lutInTransfer, lutOutGamut, lutOutTransfer,
             )
         } catch (t: Throwable) {
             null
