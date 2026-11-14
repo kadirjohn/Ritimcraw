@@ -73,9 +73,11 @@
 //   When either anchor is missing the verdict is MANUAL-REQUIRED and
 //   NO offset is fabricated.
 //
-// WHAT IS NOT HERE: optical-flow sync refinement (planned follow-up
-// GY-04; needs decoded frames to match image motion against the gyro) and
-// any JNI/UI exposure (Phase 4). Embedded-MCRAW IMU needs no bridge at
+// WHAT IS NOT HERE: any JNI/UI exposure (Phase 4; the optical refinement
+// itself landed as GY-04 in rawedit/OpticalSync.h, a separate unit on
+// purpose — this file stays the I/O-free clock model, the refinement
+// consumes decoded frames and folds back into SyncEstimate additively).
+// Embedded-MCRAW IMU needs no bridge at
 // all — it shares the frame clock by construction (Gyro.h) — so this
 // model is for the SIDE-CAR GCSV case.
 
@@ -125,16 +127,36 @@ struct SyncModel {
 // ---------------------------------------------------------------------------
 enum class SyncConfidence {
     Anchored,      // coarse wall-clock-anchor estimate; ±tens-of-ms class
+    Refined,       // optically refined from an anchored estimate (GY-04,
+                   // rawedit/OpticalSync.h): image-vs-gyro reprojection
+                   // residual minimized around the anchor; bound measured
+                   // from the cost curve. Ordering: Anchored < Refined.
     ManualRequired // no anchor (or anchors unusable); user must set offset
 };
 
 // One offset candidate. source names how it was obtained (for the Phase 4
-// UI's status line): "anchored:recvdMs-vs-gcsvHeader", "manual", "zero".
+// UI's status line): "anchored:recvdMs-vs-gcsvHeader", "manual", "zero",
+// "refined:optical windows=... offsetMs=..." (OpticalSync provenance).
 struct SyncEstimate {
     SyncModel model;
     SyncConfidence confidence = SyncConfidence::ManualRequired;
     std::string source;   // provenance string above
     double errorBoundMs = 0.0; // symmetric bound, 0 when unknown (manual)
+
+    // GY-04 (additive, default-preserving): the optically refined offset,
+    // set ONLY when the refinement ran and confidence == Refined (see
+    // rawedit/OpticalSync.h's applyOpticalRefinement; 0 otherwise, and
+    // model.offsetNs keeps the anchor untouched either way). MAPPING
+    // CONTRACT: unlike model.offsetNs (defined against the raw capture
+    // stamp, t_imu = captureNs + offsetNs), refinedOffsetNs is defined
+    // against the frame's REPRESENTATIVE time (t_imu = repTimeNs +
+    // refinedOffsetNs, where repTimeNs = captureNs + 0.5*frameInterval
+    // under the documented fallback — the container carries no
+    // exposure/readout keys). A consumer must use the same repTime
+    // formation the refinement used (the OpticalSync provenance string
+    // names it); swapping the two mappings injects the half-interval
+    // lag as sync error.
+    int64_t refinedOffsetNs = 0;
 
     bool isAnchored() const { return confidence == SyncConfidence::Anchored; }
 };
