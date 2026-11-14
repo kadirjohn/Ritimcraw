@@ -880,11 +880,21 @@ class NativeSource private constructor(
          * cannot express itself through this signature. Close is
          * idempotent. Device-test-pending (the owner's covered-grade GPU
          * export is the production proof).
+         *
+         * Spatial-NR port: the develop fragment is now the SPLIT pair
+         * (pre/post) plus the three NR fragments — nine sources total
+         * (vertex, 310 vertex, pre, post, nr-chroma-h, nr-chroma-v,
+         * nr-luma, store, blit). The fused text stays the parity
+         * harness's own source.
          */
         @JvmStatic private external fun nativeDevelopSessionOpen(
             vertexSource: String,
             vertex310Source: String,
-            fragmentSource: String,
+            preFragmentSource: String,
+            postFragmentSource: String,
+            nrChromaHSource: String,
+            nrChromaVSource: String,
+            nrLumaSource: String,
             storeFragmentSource: String,
             blitFragmentSource: String,
         ): Long
@@ -978,8 +988,10 @@ class NativeSource private constructor(
         /**
          * M4 commit (a): the GPU preview session's four entry points —
          * the SAME production session pattern M3 built for export, wired
-         * into PREVIEW. Open compiles the five shader texts (the four M3
-         * sources plus the window pass's WINDOW_FRAGMENT) and returns a
+         * into PREVIEW. Open compiles the nine shader texts (the two
+         * vertices, the SPLIT develop pair pre/post, the three spatial-NR
+         * fragments, the store pass, plus the window pass's
+         * WINDOW_FRAGMENT) and returns a
          * session handle (0 = failure; previewLastError names the step).
          * SetSurface attaches ([surface] non-null) or detaches (null) the
          * SurfaceView's window on the session's GL thread; the surface is
@@ -1006,7 +1018,11 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativePreviewSessionOpen(
             vertexSource: String,
             vertex310Source: String,
-            fragmentSource: String,
+            preFragmentSource: String,
+            postFragmentSource: String,
+            nrChromaHSource: String,
+            nrChromaVSource: String,
+            nrLumaSource: String,
             storeFragmentSource: String,
             windowFragmentSource: String,
         ): Long
@@ -1564,7 +1580,11 @@ class NativeSource private constructor(
         internal fun jniDevelopSessionOpen(
             vertexSource: String,
             vertex310Source: String,
-            fragmentSource: String,
+            preFragmentSource: String,
+            postFragmentSource: String,
+            nrChromaHSource: String,
+            nrChromaVSource: String,
+            nrLumaSource: String,
             storeFragmentSource: String,
             blitFragmentSource: String,
         ): Long {
@@ -1572,7 +1592,8 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeDevelopSessionOpen(
-                vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+                vertexSource, vertex310Source, preFragmentSource, postFragmentSource,
+                nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
                 blitFragmentSource)
         }
 
@@ -1710,7 +1731,11 @@ class NativeSource private constructor(
         internal fun jniPreviewSessionOpen(
             vertexSource: String,
             vertex310Source: String,
-            fragmentSource: String,
+            preFragmentSource: String,
+            postFragmentSource: String,
+            nrChromaHSource: String,
+            nrChromaVSource: String,
+            nrLumaSource: String,
             storeFragmentSource: String,
             windowFragmentSource: String,
         ): Long {
@@ -1718,7 +1743,8 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativePreviewSessionOpen(
-                vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+                vertexSource, vertex310Source, preFragmentSource, postFragmentSource,
+                nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
                 windowFragmentSource)
         }
 

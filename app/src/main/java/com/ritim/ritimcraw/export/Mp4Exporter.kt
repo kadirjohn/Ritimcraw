@@ -499,7 +499,11 @@ internal object NativeGpuDevelop : GpuDevelop {
     override fun openSession(): Long = NativeSource.jniDevelopSessionOpen(
         GlesShaderSources.FULLSCREEN_VERTEX,
         GlesShaderSources.FULLSCREEN_VERTEX_310,
-        GlesShaderSources.DEVELOP_FRAGMENT,
+        GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+        GlesShaderSources.DEVELOP_FRAGMENT_POST,
+        GlesShaderSources.NR_CHROMA_H,
+        GlesShaderSources.NR_CHROMA_V,
+        GlesShaderSources.NR_LUMA,
         GlesShaderSources.STORE_FRAGMENT,
         GlesShaderSources.BLIT_FRAGMENT,
     )

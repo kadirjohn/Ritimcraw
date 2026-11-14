@@ -302,6 +302,85 @@ class GlesShaderValidatorTest {
         )
     }
 
+    // ---- the split chain's five new sources pass their own kinds ----
+
+    @Test
+    fun shipped_develop_fragment_pre_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_PRE,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_develop_fragment_post_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.DEVELOP_FRAGMENT_POST,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_POST,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_nr_chroma_h_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.NR_CHROMA_H,
+                GlesShaderValidator.Kind.NR_CHROMA_H,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_nr_chroma_v_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.NR_CHROMA_V,
+                GlesShaderValidator.Kind.NR_CHROMA_V,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_nr_luma_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.NR_LUMA,
+                GlesShaderValidator.Kind.NR_LUMA,
+            ),
+        )
+    }
+
+    @Test
+    fun the_split_and_fused_develop_fragments_cannot_drift() {
+        // The fused DEVELOP_FRAGMENT is the frozen device-parity harness's
+        // program: it must stay BYTE-IDENTICAL to the stage bodies the
+        // split chain ships. The split sources compose from the same
+        // shared body fragments (kDevelopPreBody / kDevelopPostBody), so
+        // this locks the composition: PRE's body is the fused source's
+        // stage 1-6 segment, POST's body is its stage 9+ segment, and
+        // the fused source itself is unchanged by the split. The exact
+        // composition is validated per-kind above; here the load-bearing
+        // claim is that splitting introduced NO drift in the fused text.
+        val fused = GlesShaderSources.DEVELOP_FRAGMENT
+        // The fused source must still contain the stage-6 close and the
+        // stage-9 open — the split boundary markers — proving the split
+        // did not reorder or drop stage text. (The fused pass reads its
+        // input from the interpolated varying, never a uSrc texture — the
+        // uSrc fetch is POST's own chain-only preamble, so the stage-9
+        // OPEN marker here is the stage-9 body's own gate.)
+        assertTrue(fused.contains("c = uCam2rgb * c;"))
+        assertTrue(fused.contains("if (uBlackPoint != 0.0) {"))
+    }
+
     @Test
     fun every_shipped_source_passes_validate_with_its_kind() {
         assertTrue(
@@ -320,6 +399,42 @@ class GlesShaderValidatorTest {
             GlesShaderValidator.validate(
                 GlesShaderSources.STORE_FRAGMENT,
                 GlesShaderValidator.Kind.STORE_FRAGMENT,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.FULLSCREEN_VERTEX_310,
+                GlesShaderValidator.Kind.FULLSCREEN_VERTEX_310,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_PRE,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.DEVELOP_FRAGMENT_POST,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_POST,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_CHROMA_H,
+                GlesShaderValidator.Kind.NR_CHROMA_H,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_CHROMA_V,
+                GlesShaderValidator.Kind.NR_CHROMA_V,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_LUMA,
+                GlesShaderValidator.Kind.NR_LUMA,
             ),
         )
     }
@@ -1059,6 +1174,325 @@ class GlesShaderValidatorTest {
         )
     }
 
+    // ---- the split chain's PRE/POST pass mutations: the split boundary is
+    // load-bearing — a uniform crossing it, or the stage-6 close / stage-9
+    // fetch drifting out of their own pass, is a different chain ----
+
+    @Test
+    fun a_post_uniform_leaking_into_the_pre_pass_is_reported() {
+        // The PRE pass owns stages 1-6; a POST-stage uniform (uExposure)
+        // appearing in it means the split boundary drifted. The validator's
+        // negative check names the leak.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_PRE
+            .replace(
+                "uniform ivec2 uSize;            // CFA width/height in pixels",
+                "uniform ivec2 uSize;            // CFA width/height in pixels\nuniform float uExposure;",
+            )
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT_PRE)
+                .any { it.contains("a POST-stage uniform leaked into the PRE pass") },
+        )
+    }
+
+    @Test
+    fun a_pre_uniform_leaking_into_the_post_pass_is_reported() {
+        // The POST pass owns stages 9+; a PRE-stage uniform (uWb) appearing
+        // in it means the split boundary drifted the other way.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_POST
+            .replace(
+                "uniform ivec2 uSize;            // width/height in pixels (the intermediate; same dims as the CFA)",
+                "uniform ivec2 uSize;            // width/height in pixels (the intermediate; same dims as the CFA)\nuniform vec3 uWb;",
+            )
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.DEVELOP_FRAGMENT_POST,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT_POST)
+                .any { it.contains("a PRE-stage uniform leaked into the POST pass") },
+        )
+    }
+
+    @Test
+    fun a_missing_stage6_close_from_the_pre_pass_is_reported() {
+        // The PRE pass must END at the camera matrix close; dropping it is
+        // the split boundary eroding (the POST pass would then receive a
+        // pre-transform image and every pointwise stage would move).
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_PRE
+            .replace("        c = uCam2rgb * c;\n", "")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT_PRE)
+                .any { it.contains("missing the stage-6 camera matrix close") },
+        )
+    }
+
+    @Test
+    fun a_missing_intermediate_fetch_in_the_post_pass_is_reported() {
+        // The POST pass must fetch its input from uSrc (the chain's RGBA32F
+        // intermediate); typing the fetch wrong (or dropping it) is the
+        // chain's plumbing drifting.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_POST
+            .replace("    vec3 c = texelFetch(uSrc, g, 0).rgb;\n", "")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.DEVELOP_FRAGMENT_POST,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT_POST)
+                .any { it.contains("missing the intermediate fetch") },
+        )
+    }
+
+    // ---- NR pass mutations: the CPU's every constant, tap order, weight
+    // wiring, gate and pass-through are load-bearing — a rewrite that
+    // changes any of them changes the owner's routine NR look ----
+
+    @Test
+    fun a_wrong_chroma_nr_constant_is_reported() {
+        // kSr 0.10 is denoiseChromaImpl's own range sigma; 0.11 is a
+        // different filter. Every other check stays green (the constants
+        // still exist, the taps still accumulate) — only the value drifted.
+        val mutated = GlesShaderSources.NR_CHROMA_H
+            .replace("const float kSr = 0.10;", "const float kSr = 0.11;")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_CHROMA_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_CHROMA_H)
+                .any { it.contains("chroma-NR constants") },
+        )
+    }
+
+    @Test
+    fun a_wrong_chroma_nr_tap_order_is_reported() {
+        // The CPU's own tap(xm,c0); tap(xp,c0); tap(xm2,c1); tap(xp2,c1)
+        // order. Swapping xm2 ahead of xp makes a different accumulation
+        // order — byte-identical lines, different float sum.
+        val mutated = GlesShaderSources.NR_CHROMA_H
+            .replace(
+                "ivec2 p = ivec2(xm2, g.y);",
+                "ivec2 p = ivec2(xm2, g.y); // reorder sentinel",
+            )
+            .replace(
+                "ivec2 p = ivec2(xp, g.y);",
+                "ivec2 p = ivec2(xm2, g.y);",
+            )
+            .replace(
+                "ivec2 p = ivec2(xm2, g.y); // reorder sentinel",
+                "ivec2 p = ivec2(xp, g.y);",
+            )
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_CHROMA_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_CHROMA_H)
+                .any { it.contains("the horizontal tap order is wrong") },
+        )
+    }
+
+    @Test
+    fun a_miswired_chroma_nr_tap_weight_is_reported() {
+        // xm rides kC0 in the CPU; wiring it to kC1 keeps every other check
+        // green (the constants exist, the order holds, the accumulation
+        // text appears) while changing the blur of every pixel. The
+        // position-bound wiring check catches it.
+        val mutated = GlesShaderSources.NR_CHROMA_H
+            .replace(
+                "ivec2 p = ivec2(xm, g.y);\n" +
+                    "                float ly = lumaAt(p);\n" +
+                    "                vec3 t = texelFetch(uSrc, p, 0).rgb;\n" +
+                    "                float dl = ly - y;\n" +
+                    "                float rw = exp(-dl * dl * kInv2Sr2);\n" +
+                    "                sCr += (t.r - ly - cr) * kC0 * rw;\n" +
+                    "                sCb += (t.b - ly - cb) * kC0 * rw;\n" +
+                    "                sw += kC0 * rw;",
+                "ivec2 p = ivec2(xm, g.y);\n" +
+                    "                float ly = lumaAt(p);\n" +
+                    "                vec3 t = texelFetch(uSrc, p, 0).rgb;\n" +
+                    "                float dl = ly - y;\n" +
+                    "                float rw = exp(-dl * dl * kInv2Sr2);\n" +
+                    "                sCr += (t.r - ly - cr) * kC1 * rw;\n" +
+                    "                sCb += (t.b - ly - cb) * kC1 * rw;\n" +
+                    "                sw += kC1 * rw;",
+            )
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_CHROMA_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_CHROMA_H)
+                .any { it.contains("tap weights are miswired") },
+        )
+    }
+
+    @Test
+    fun a_missing_chroma_nr_gate_is_reported() {
+        // The gate rewrite `!= 1.0` leaves the pass running when the grade
+        // is neutral — a different default image. The validator locks the
+        // gate text.
+        val mutated = GlesShaderSources.NR_CHROMA_H
+            .replace("if (uChromaDenoise != 0.0) {", "if (uChromaDenoise != 1.0) {")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_CHROMA_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_CHROMA_H)
+                .any { it.contains("stage-7 gate") },
+        )
+    }
+
+    @Test
+    fun a_missing_chroma_nr_pass_through_is_reported() {
+        // Dropping the gate-closed write leaves oCol unwritten on the closed
+        // path — undefined output. The validator locks the pass-through.
+        val mutated = GlesShaderSources.NR_CHROMA_H
+            .replace("    oCol = vec4(orig, 1.0);\n", "")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_CHROMA_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_CHROMA_H)
+                .any { it.contains("gate-closed pass-through") },
+        )
+    }
+
+    @Test
+    fun a_wrong_chroma_nr_v_guide_source_is_reported() {
+        // The vertical pass must guide with the ORIGINAL luma (uGuide);
+        // guiding from uSrc (the horizontal output's .xy) changes every
+        // pixel's range weights. The validator locks the guide read.
+        val mutated = GlesShaderSources.NR_CHROMA_V
+            .replace("vec3 c = texelFetch(uGuide, p, 0).rgb;", "vec3 c = texelFetch(uSrc, p, 0).rgb;")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_CHROMA_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_CHROMA_V)
+                .any { it.contains("ORIGINAL-luma guide read") },
+        )
+    }
+
+    @Test
+    fun a_missing_chroma_nr_v_guide_uniform_is_reported() {
+        // Dropping the uGuide uniform declaration is the session having
+        // nothing to attach the ORIGINAL pre-NR texture to.
+        val mutated = GlesShaderSources.NR_CHROMA_V
+            .replace("uniform highp sampler2D uGuide;  // the develop PRE pass's output: the ORIGINAL pre-NR RGB\n", "")
+        assertTrue(
+            "mutation must apply (source text declared changed)",
+            mutated != GlesShaderSources.NR_CHROMA_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_CHROMA_V)
+                .any { it.contains("uGuide") },
+        )
+    }
+
+    @Test
+    fun a_missing_chroma_nr_v_flat_chroma_skip_is_reported() {
+        // The CPU `continue`s past the write when both deltas are zero —
+        // the original bytes are kept. Dropping the skip writes a
+        // reconstructed green that can differ by rounding.
+        val mutated = GlesShaderSources.NR_CHROMA_V
+            .replace("            if (dr == 0.0 && db == 0.0) {\n                oCol = vec4(orig, 1.0);\n                return;\n            }\n", "")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_CHROMA_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_CHROMA_V)
+                .any { it.contains("flat-chroma skip") },
+        )
+    }
+
+    @Test
+    fun a_wrong_luma_nr_constant_is_reported() {
+        // kSr 0.05 is denoiseLumaImpl's own range sigma; 0.06 is a
+        // different filter.
+        val mutated = GlesShaderSources.NR_LUMA
+            .replace("const float kSr = 0.05;", "const float kSr = 0.06;")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_LUMA,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_LUMA)
+                .any { it.contains("luma-NR constants") },
+        )
+    }
+
+    @Test
+    fun a_miswired_luma_nr_tap_weight_is_reported() {
+        // The first tap (ym,xm) is an EDGE tap and rides kWd in the CPU;
+        // wiring it to kWe keeps the 4/4 counts green while changing the
+        // bilateral's edge weighting. The position-bound check catches it.
+        val mutated = GlesShaderSources.NR_LUMA
+            .replace(
+                "ivec2 p = ivec2(xm, ym);\n" +
+                    "                float lv = lumaAt(p);\n" +
+                    "                float dl = lv - c;\n" +
+                    "                float rw = exp(-dl * dl * kInv2Sr2);\n" +
+                    "                s += (lv - c) * kWd * rw;\n" +
+                    "                sw += kWd * rw;",
+                "ivec2 p = ivec2(xm, ym);\n" +
+                    "                float lv = lumaAt(p);\n" +
+                    "                float dl = lv - c;\n" +
+                    "                float rw = exp(-dl * dl * kInv2Sr2);\n" +
+                    "                s += (lv - c) * kWe * rw;\n" +
+                    "                sw += kWe * rw;",
+            )
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_LUMA,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_LUMA)
+                .any { it.contains("spatial weight split is wrong") },
+        )
+    }
+
+    @Test
+    fun a_missing_luma_nr_gate_is_reported() {
+        val mutated = GlesShaderSources.NR_LUMA
+            .replace("if (uNoiseReduction != 0.0) {", "if (uNoiseReduction != 1.0) {")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_LUMA,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_LUMA)
+                .any { it.contains("stage-8 gate") },
+        )
+    }
+
+    @Test
+    fun a_missing_luma_nr_tail_is_reported() {
+        // Dropping the equally-lifted write is the strength delta lost.
+        val mutated = GlesShaderSources.NR_LUMA
+            .replace("            oCol = vec4(orig + vec3(d), 1.0);\n", "")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.NR_LUMA,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_LUMA)
+                .any { it.contains("luma-NR tail") },
+        )
+    }
+
     @Test
     fun a_missing_store_binding_is_reported() {
         val oldForm = GlesShaderSources.STORE_FRAGMENT
@@ -1753,5 +2187,447 @@ class GlesShaderValidatorTest {
                 } else Triple(r, g, b)
             },
         )
+    }
+
+    // ---- spatial-NR (stages 7+8) host numeric parity: the same TEXT-parity
+    // discipline as the pointwise cases, over a synthetic NEIGHBORHOOD
+    // instead of single pixels — the spatial filters read their neighbors,
+    // so the case must be an image. Each side transcribes its own shipped
+    // text verbatim (the CPU: rawedit::denoiseChromaImpl +
+    // denoiseLumaImpl from core/src/Develop.cpp; the GLSL: the NR_CHROMA_H
+    // pass, then the NR_CHROMA_V pass over its output, then the NR_LUMA
+    // pass — the session's own pass sequence) and the two outputs are
+    // compared after the readback quantize, every pixel, every branch.
+    // HONESTY: this locks that the two shipped TEXTS evaluate identically
+    // over each stage's every branch — it is NOT a device parity claim (no
+    // GLSL compiler runs here; the device harness's cases still ride the
+    // neutral defaults of these uniforms, and the owner's NR-grade
+    // preview/export is the production proof) ----
+
+    private fun expF(x: Float): Float = Math.exp(x.toDouble()).toFloat()
+
+    // 9x9: wide enough that the interior's +/-4 chroma taps run UNCLAMPED
+    // and the borders exercise every clamp (xm at x=0,1; xp2 at x=7,8; the
+    // same for rows), and cleared the CPU's own w<2/h<2 and w<3/h<3
+    // guards. Varied enough that every branch runs: a base gradient,
+    // deterministic per-pixel noise (the range weights live), a hard edge
+    // at x=6 (the range weights collapse), saturated corners and
+    // out-of-range headroom.
+    private fun nrMixedNeighborhood(): FloatArray {
+        val w = 9
+        val h = 9
+        val rgb = FloatArray(w * h * 3)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val base = 0.18f + 0.02f * x + 0.015f * y
+                val n = ((x * 7 + y * 13) % 11).toFloat() / 11.0f - 0.5f
+                var r = base + 0.03f * n
+                var g = base + 0.02f * n
+                var b = base - 0.03f * n
+                if (x >= 6) {
+                    r += 0.5f; g += 0.5f; b += 0.5f
+                }
+                if (x == 0 && y == 0) {
+                    r = 1.1f; g = 0.05f; b = 0.1f
+                }
+                if (x == 8 && y == 8) {
+                    r = 0.02f; g = 0.9f; b = 1.2f
+                }
+                val i = (y * w + x) * 3
+                rgb[i] = r; rgb[i + 1] = g; rgb[i + 2] = b
+            }
+        }
+        return rgb
+    }
+
+    // A flat image with NONZERO chroma offsets: every tap's range weight is
+    // 1, the blur reproduces the plane exactly, dr == db == 0 on every
+    // pixel and the CPU's flat-chroma `continue` (the GLSL's
+    // pass-through) keeps the original bytes — the branch the CPU's own
+    // comment calls out as bit-identical at any strength.
+    private fun nrFlatNeighborhood(): FloatArray {
+        val rgb = FloatArray(9 * 9 * 3)
+        for (i in 0 until 9 * 9) {
+            rgb[i * 3] = 0.35f
+            rgb[i * 3 + 1] = 0.2f
+            rgb[i * 3 + 2] = 0.5f
+        }
+        return rgb
+    }
+
+    private fun assertNrParity(
+        name: String,
+        w: Int,
+        h: Int,
+        cpuOut: FloatArray,
+        glslOut: FloatArray,
+    ) {
+        var mismatches = 0
+        var maxLsb = 0
+        for (i in 0 until w * h) {
+            for (c in 0..2) {
+                val cpuByte = toByte(cpuOut[i * 3 + c])
+                val glslByte = toByte(glslOut[i * 3 + c])
+                val lsb = Math.abs(cpuByte - glslByte)
+                if (lsb > 0) mismatches++
+                if (lsb > maxLsb) maxLsb = lsb
+            }
+        }
+        assertEquals("$name: mismatched bytes", 0, mismatches)
+        assertEquals("$name: max LSB", 0, maxLsb)
+    }
+
+    // The CPU's stage 7, verbatim (core/src/Develop.cpp denoiseChromaImpl
+    // + its call-site clamp): the luma/cr/cb planes, the blurPlane lambda
+    // run twice (cr then cb) with the SAME original luma guide, and the
+    // blend with the flat-chroma skip.
+    private fun cpuStage7(rgb: FloatArray, w: Int, h: Int, raw: Float): FloatArray {
+        val strength = raw.coerceIn(0.0f, 100.0f) / 100.0f
+        if (w < 2 || h < 2 || strength <= 0.0f) return rgb.copyOf()
+        val n = w * h
+        val luma = FloatArray(n)
+        val cr = FloatArray(n)
+        val cb = FloatArray(n)
+        for (i in 0 until n) {
+            val r = rgb[i * 3 + 0]
+            val g = rgb[i * 3 + 1]
+            val b = rgb[i * 3 + 2]
+            val y = 0.2126f * r + 0.7152f * g + 0.0722f * b
+            luma[i] = y
+            cr[i] = r - y
+            cb[i] = b - y
+        }
+        val step = 2
+        val radius = 2.0f
+        val c0 = expF(-0.5f / (radius * radius))
+        val c1 = expF(-2.0f / (radius * radius))
+        val sr = 0.10f
+        val inv2sr2 = 1.0f / (2.0f * sr * sr)
+        fun blurPlane(plane: FloatArray): FloatArray {
+            val tmp = FloatArray(n)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val xm = Math.max(x - step, 0)
+                    val xp = Math.min(x + step, w - 1)
+                    val xm2 = Math.max(x - 2 * step, 0)
+                    val xp2 = Math.min(x + 2 * step, w - 1)
+                    var sw = 1.0f
+                    var s = 0.0f
+                    fun tap(xx: Int, c: Float) {
+                        val dl = luma[y * w + xx] - luma[y * w + x]
+                        val rw = expF(-dl * dl * inv2sr2)
+                        s += (plane[y * w + xx] - plane[y * w + x]) * c * rw
+                        sw += c * rw
+                    }
+                    tap(xm, c0); tap(xp, c0); tap(xm2, c1); tap(xp2, c1)
+                    tmp[y * w + x] = plane[y * w + x] + s / sw
+                }
+            }
+            val out = FloatArray(n)
+            for (y in 0 until h) {
+                val ym = Math.max(y - step, 0)
+                val yp = Math.min(y + step, h - 1)
+                val ym2 = Math.max(y - 2 * step, 0)
+                val yp2 = Math.min(y + 2 * step, h - 1)
+                for (x in 0 until w) {
+                    val v = tmp[y * w + x]
+                    val yc = luma[y * w + x]
+                    var sw = 1.0f
+                    var s = 0.0f
+                    fun tap(yy: Int, c: Float) {
+                        val dl = luma[yy * w + x] - yc
+                        val rw = expF(-dl * dl * inv2sr2)
+                        s += (tmp[yy * w + x] - v) * c * rw
+                        sw += c * rw
+                    }
+                    tap(ym, c0); tap(yp, c0); tap(ym2, c1); tap(yp2, c1)
+                    out[y * w + x] = v + s / sw
+                }
+            }
+            return out
+        }
+        val bcr = blurPlane(cr)
+        val bcb = blurPlane(cb)
+        val out = rgb.copyOf()
+        for (i in 0 until n) {
+            val y = luma[i]
+            val dr = strength * (bcr[i] - cr[i])
+            val db = strength * (bcb[i] - cb[i])
+            if (dr == 0.0f && db == 0.0f) continue // flat chroma: keep the original pixel exactly
+            val newCr = cr[i] + dr
+            val newCb = cb[i] + db
+            val newCg = -(0.2126f * newCr + 0.0722f * newCb) / 0.7152f
+            out[i * 3 + 0] = y + newCr
+            out[i * 3 + 1] = y + newCg
+            out[i * 3 + 2] = y + newCb
+        }
+        return out
+    }
+
+    // The GLSL stage 7, verbatim (NR_CHROMA_H then NR_CHROMA_V over its
+    // output — the session's own two-draw pass sequence; V's uGuide is
+    // the ORIGINAL pre-NR pixels). The session skips both draws when the
+    // clamped strength is 0 (the C++ session's CPU-side skip; the
+    // in-shader gate is the second lock) — the pass-through is exact.
+    private fun glslStage7(rgb: FloatArray, w: Int, h: Int, raw: Float): FloatArray {
+        val strength = raw.coerceIn(0.0f, 100.0f) / 100.0f
+        if (strength <= 0.0f) return rgb.copyOf()
+        val kRadius = 2.0f
+        val kC0 = expF(-0.5f / (kRadius * kRadius))
+        val kC1 = expF(-2.0f / (kRadius * kRadius))
+        val kSr = 0.10f
+        val kInv2Sr2 = 1.0f / (2.0f * kSr * kSr)
+        // NR_CHROMA_H's lumaAt reads uSrc — the PRE pass's output.
+        fun lumaAtH(px: Int, py: Int): Float {
+            val i = (py * w + px) * 3
+            return 0.2126f * rgb[i] + 0.7152f * rgb[i + 1] + 0.0722f * rgb[i + 2]
+        }
+        // Pass 1 of 2 (NR_CHROMA_H): per pixel the original split, the
+        // clamped columns, the four taps in the CPU's own order, and the
+        // two blurred planes as .xy.
+        val tmp = Array(w * h) { FloatArray(2) }
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val ci = (y * w + x) * 3
+                val origR = rgb[ci]
+                val origG = rgb[ci + 1]
+                val origB = rgb[ci + 2]
+                val yv = lumaAtH(x, y)
+                val cr = origR - yv
+                val cb = origB - yv
+                val xm = Math.max(x - 2, 0)
+                val xp = Math.min(x + 2, w - 1)
+                val xm2 = Math.max(x - 4, 0)
+                val xp2 = Math.min(x + 4, w - 1)
+                var sw = 1.0f
+                var sCr = 0.0f
+                var sCb = 0.0f
+                fun tap(px: Int, c: Float) {
+                    val ly = lumaAtH(px, y)
+                    val i = (y * w + px) * 3
+                    val tR = rgb[i]
+                    val tB = rgb[i + 2]
+                    val dl = ly - yv
+                    val rw = expF(-dl * dl * kInv2Sr2)
+                    sCr += (tR - ly - cr) * c * rw
+                    sCb += (tB - ly - cb) * c * rw
+                    sw += c * rw
+                }
+                tap(xm, kC0); tap(xp, kC0); tap(xm2, kC1); tap(xp2, kC1)
+                tmp[y * w + x][0] = cr + sCr / sw
+                tmp[y * w + x][1] = cb + sCb / sw
+            }
+        }
+        // NR_CHROMA_V's lumaAt reads uGuide — the ORIGINAL pre-NR pixels
+        // (the CPU's vertical pass guides with the ORIGINAL luma).
+        fun lumaAtG(px: Int, py: Int): Float {
+            val i = (py * w + px) * 3
+            return 0.2126f * rgb[i] + 0.7152f * rgb[i + 1] + 0.0722f * rgb[i + 2]
+        }
+        // Pass 2 of 2 (NR_CHROMA_V): per pixel the ORIGINAL split, the
+        // clamped rows, the four taps (values from uSrc = H's .xy, range
+        // guide from uGuide), then the blend with the flat-chroma skip.
+        val out = FloatArray(w * h * 3)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val ci = (y * w + x) * 3
+                val origR = rgb[ci]
+                val origG = rgb[ci + 1]
+                val origB = rgb[ci + 2]
+                val yv = lumaAtG(x, y)
+                val cr = origR - yv
+                val cb = origB - yv
+                val ym = Math.max(y - 2, 0)
+                val yp = Math.min(y + 2, h - 1)
+                val ym2 = Math.max(y - 4, 0)
+                val yp2 = Math.min(y + 4, h - 1)
+                val v0 = tmp[y * w + x][0]
+                val v1 = tmp[y * w + x][1]
+                var sw = 1.0f
+                var sCr = 0.0f
+                var sCb = 0.0f
+                fun tap(py: Int, c: Float) {
+                    val ly = lumaAtG(x, py)
+                    val t0 = tmp[py * w + x][0]
+                    val t1 = tmp[py * w + x][1]
+                    val dl = ly - yv
+                    val rw = expF(-dl * dl * kInv2Sr2)
+                    sCr += (t0 - v0) * c * rw
+                    sCb += (t1 - v1) * c * rw
+                    sw += c * rw
+                }
+                tap(ym, kC0); tap(yp, kC0); tap(ym2, kC1); tap(yp2, kC1)
+                val bcr = v0 + sCr / sw
+                val bcb = v1 + sCb / sw
+                val dr = strength * (bcr - cr)
+                val db = strength * (bcb - cb)
+                if (dr == 0.0f && db == 0.0f) {
+                    out[ci] = origR; out[ci + 1] = origG; out[ci + 2] = origB
+                    continue
+                }
+                val newCr = cr + dr
+                val newCb = cb + db
+                val newCg = -(0.2126f * newCr + 0.0722f * newCb) / 0.7152f
+                out[ci] = yv + newCr
+                out[ci + 1] = yv + newCg
+                out[ci + 2] = yv + newCb
+            }
+        }
+        return out
+    }
+
+    // The CPU's stage 8, verbatim (core/src/Develop.cpp denoiseLumaImpl +
+    // its call-site clamp): the luma plane, the 3x3 bilateral in its exact
+    // tap order, and the equally-lifted blend.
+    private fun cpuStage8(rgb: FloatArray, w: Int, h: Int, raw: Float): FloatArray {
+        val strength = raw.coerceIn(0.0f, 100.0f) / 100.0f
+        if (w < 3 || h < 3 || strength <= 0.0f) return rgb.copyOf()
+        val n = w * h
+        val luma = FloatArray(n)
+        for (i in 0 until n) {
+            luma[i] = 0.2126f * rgb[i * 3 + 0] +
+                0.7152f * rgb[i * 3 + 1] +
+                0.0722f * rgb[i * 3 + 2]
+        }
+        val sr = 0.05f
+        val inv2sr2 = 1.0f / (2.0f * sr * sr)
+        val we = expF(-0.5f)
+        val wd = expF(-1.0f)
+        val smooth = FloatArray(n)
+        for (y in 0 until h) {
+            val ym = Math.max(y - 1, 0)
+            val yp = Math.min(y + 1, h - 1)
+            for (x in 0 until w) {
+                val xm = Math.max(x - 1, 0)
+                val xp = Math.min(x + 1, w - 1)
+                val c = luma[y * w + x]
+                var sw = 1.0f
+                var s = 0.0f
+                fun tap(yy: Int, xx: Int, ws: Float) {
+                    val dl = luma[yy * w + xx] - c
+                    val rw = expF(-dl * dl * inv2sr2)
+                    s += (luma[yy * w + xx] - c) * ws * rw
+                    sw += ws * rw
+                }
+                tap(ym, xm, wd); tap(ym, x, we); tap(ym, xp, wd)
+                tap(y, xm, we); tap(y, xp, we)
+                tap(yp, xm, wd); tap(yp, x, we); tap(yp, xp, wd)
+                smooth[y * w + x] = c + s / sw
+            }
+        }
+        val out = rgb.copyOf()
+        for (i in 0 until n) {
+            val d = strength * (smooth[i] - luma[i])
+            out[i * 3 + 0] += d
+            out[i * 3 + 1] += d
+            out[i * 3 + 2] += d
+        }
+        return out
+    }
+
+    // The GLSL stage 8, verbatim (NR_LUMA): the per-pixel lumaAt reads of
+    // uSrc (the chain's current input), the 3x3 clamped coordinates, the
+    // eight taps in the CPU's own order and weight split, and the
+    // equally-lifted tail. The session skips the draw for a clamped
+    // strength of 0 — the pass-through is exact.
+    private fun glslStage8(rgb: FloatArray, w: Int, h: Int, raw: Float): FloatArray {
+        val strength = raw.coerceIn(0.0f, 100.0f) / 100.0f
+        if (strength <= 0.0f) return rgb.copyOf()
+        val kSr = 0.05f
+        val kInv2Sr2 = 1.0f / (2.0f * kSr * kSr)
+        val kWe = expF(-0.5f)
+        val kWd = expF(-1.0f)
+        fun lumaAt(px: Int, py: Int): Float {
+            val i = (py * w + px) * 3
+            return 0.2126f * rgb[i] + 0.7152f * rgb[i + 1] + 0.0722f * rgb[i + 2]
+        }
+        val out = FloatArray(w * h * 3)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val ci = (y * w + x) * 3
+                val origR = rgb[ci]
+                val origG = rgb[ci + 1]
+                val origB = rgb[ci + 2]
+                val xm = Math.max(x - 1, 0)
+                val xp = Math.min(x + 1, w - 1)
+                val ym = Math.max(y - 1, 0)
+                val yp = Math.min(y + 1, h - 1)
+                val c = lumaAt(x, y)
+                var sw = 1.0f
+                var s = 0.0f
+                fun tap(px: Int, py: Int, ws: Float) {
+                    val lv = lumaAt(px, py)
+                    val dl = lv - c
+                    val rw = expF(-dl * dl * kInv2Sr2)
+                    s += (lv - c) * ws * rw
+                    sw += ws * rw
+                }
+                tap(xm, ym, kWd); tap(x, ym, kWe); tap(xp, ym, kWd)
+                tap(xm, y, kWe); tap(xp, y, kWe)
+                tap(xm, yp, kWd); tap(x, yp, kWe); tap(xp, yp, kWd)
+                val smoothV = c + s / sw
+                val d = strength * (smoothV - c)
+                out[ci] = origR + d
+                out[ci + 1] = origG + d
+                out[ci + 2] = origB + d
+            }
+        }
+        return out
+    }
+
+    @Test
+    fun stage7_host_parity_the_glsl_passes_match_the_cpu_filter() {
+        // The raw grade values: a routine strength, the maximum, a small
+        // one, a negative (the call-site clamp -> 0 -> the skip path) and
+        // the neutral 0 (the CPU call site's own skip / the session's
+        // skipped draw).
+        val strengths = listOf(25f, 100f, 0.5f, -25f, 0f)
+        for (v in strengths) {
+            assertNrParity(
+                "chroma NR mixed v=$v", 9, 9,
+                cpuStage7(nrMixedNeighborhood(), 9, 9, v),
+                glslStage7(nrMixedNeighborhood(), 9, 9, v),
+            )
+            assertNrParity(
+                "chroma NR flat v=$v", 9, 9,
+                cpuStage7(nrFlatNeighborhood(), 9, 9, v),
+                glslStage7(nrFlatNeighborhood(), 9, 9, v),
+            )
+        }
+    }
+
+    @Test
+    fun stage8_host_parity_the_glsl_pass_matches_the_cpu_bilateral() {
+        val strengths = listOf(25f, 100f, 0.5f, -25f, 0f)
+        for (v in strengths) {
+            assertNrParity(
+                "luma NR mixed v=$v", 9, 9,
+                cpuStage8(nrMixedNeighborhood(), 9, 9, v),
+                glslStage8(nrMixedNeighborhood(), 9, 9, v),
+            )
+            assertNrParity(
+                "luma NR flat v=$v", 9, 9,
+                cpuStage8(nrFlatNeighborhood(), 9, 9, v),
+                glslStage8(nrFlatNeighborhood(), 9, 9, v),
+            )
+        }
+    }
+
+    @Test
+    fun stages7_then_8_chained_host_parity_matches_the_cpu_chain() {
+        // The CPU runs stage 8 on the chroma-denoised image (its luma
+        // plane comes from the stage-7 OUTPUT); the GLSL chain feeds the
+        // luma pass the chroma-V pass's output. Both orders, active
+        // strengths.
+        for (v in listOf(25f, 100f)) {
+            val base = nrMixedNeighborhood()
+            val cpuChained = cpuStage8(cpuStage7(base, 9, 9, v), 9, 9, v)
+            val glslChained = glslStage8(glslStage7(base, 9, 9, v), 9, 9, v)
+            assertNrParity("chained NR v=$v", 9, 9, cpuChained, glslChained)
+            val flat = nrFlatNeighborhood()
+            val cpuFlat = cpuStage8(cpuStage7(flat, 9, 9, v), 9, 9, v)
+            val glslFlat = glslStage8(glslStage7(flat, 9, 9, v), 9, 9, v)
+            assertNrParity("chained NR flat v=$v", 9, 9, cpuFlat, glslFlat)
+        }
     }
 }

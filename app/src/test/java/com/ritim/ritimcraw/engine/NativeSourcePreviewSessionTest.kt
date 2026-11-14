@@ -48,7 +48,11 @@ class NativeSourcePreviewSessionTest {
             NativeSource.jniPreviewSessionOpen(
                 GlesShaderSources.FULLSCREEN_VERTEX,
                 GlesShaderSources.FULLSCREEN_VERTEX_310,
-                GlesShaderSources.DEVELOP_FRAGMENT,
+                GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+                GlesShaderSources.DEVELOP_FRAGMENT_POST,
+                GlesShaderSources.NR_CHROMA_H,
+                GlesShaderSources.NR_CHROMA_V,
+                GlesShaderSources.NR_LUMA,
                 GlesShaderSources.STORE_FRAGMENT,
                 GlesShaderSources.WINDOW_FRAGMENT,
             )
@@ -168,14 +172,17 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun open_carries_exactly_the_five_shader_sources() {
+    fun open_carries_exactly_the_nine_shader_sources() {
         // The session compiles the Kotlin single-source-of-truth texts —
         // the same four sources the M3 seam rides PLUS the window pass's
         // own WINDOW_FRAGMENT (the aspect-fit letterbox draw), host-validated
-        // by GlesShaderValidator before the device ever sees them. A sixth
-        // source would be a new program, which is a different session.
+        // by GlesShaderValidator before the device ever sees them. Since
+        // the spatial-NR port the fused develop fragment is the SPLIT pair
+        // (pre/post) plus the three NR fragments (chroma-h, chroma-v,
+        // luma) — nine sources total. A tenth source would be a new
+        // program, which is a different session.
         val open = method("jniPreviewSessionOpen")
-        assertEquals(5, open.parameterCount)
+        assertEquals(9, open.parameterCount)
     }
 
     @Test
@@ -201,12 +208,13 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun the_five_sources_are_the_validated_single_source_of_truth() {
+    fun the_nine_sources_are_the_validated_single_source_of_truth() {
         // The exact constants open() will be called with (commit b wires
         // them) pass the host validator under their own kinds — so the text
         // the production session compiles on device is the text the JVM
         // checked. Locked here so commit b cannot quietly swap in an
-        // unvalidated variant.
+        // unvalidated variant (the split pair and the three NR fragments
+        // joined the set with the spatial-NR port).
         assertTrue(
             GlesShaderValidator.validate(
                 GlesShaderSources.FULLSCREEN_VERTEX,
@@ -221,8 +229,32 @@ class NativeSourcePreviewSessionTest {
         )
         assertTrue(
             GlesShaderValidator.validate(
-                GlesShaderSources.DEVELOP_FRAGMENT,
-                GlesShaderValidator.Kind.DEVELOP_FRAGMENT,
+                GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_PRE,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.DEVELOP_FRAGMENT_POST,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_POST,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_CHROMA_H,
+                GlesShaderValidator.Kind.NR_CHROMA_H,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_CHROMA_V,
+                GlesShaderValidator.Kind.NR_CHROMA_V,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_LUMA,
+                GlesShaderValidator.Kind.NR_LUMA,
             ),
         )
         assertTrue(

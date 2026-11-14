@@ -2059,6 +2059,9 @@ class Mp4ExporterTest {
         // with an active uncovered stage names its token; the gyro warp adds
         // its own when a log is attached AND stabilization is on (the same
         // gate the timing summary uses); a neutral grade says "none".
+        // Chroma denoise is FRAGMENT-COVERED since the spatial-NR port
+        // (stages 7+8), so it can no longer appear as a token — the
+        // sharpening knob is the uncovered-stage stand-in now.
         val lines = ArrayList<String>()
         ExportPipeline(
             FakeSession(frames = 2, audio = false),
@@ -2066,13 +2069,17 @@ class Mp4ExporterTest {
             lines::add,
         ).run(
             7,
-            GradeK(chromaDenoise = 25f, stabilization = true),
+            GradeK(sharpness = 25f, stabilization = true),
             "/tmp/out.partial",
             gyroPath = "/tmp/gyro.log",
         )
         val line = lines.first { it.startsWith("render backend: ") }
-        assertTrue("chroma-denoise missing: $line", line.contains("chroma-denoise"))
+        assertTrue("sharpness missing: $line", line.contains("sharpness"))
         assertTrue("gyro-warp missing: $line", line.contains("gyro-warp"))
+        assertTrue(
+            "chroma-denoise must be absent (fragment-covered): $line",
+            !line.contains("chroma-denoise"),
+        )
         // Stabilization off: the attached log alone does not warp, so no
         // token — the line stays honest.
         val idleLines = ArrayList<String>()
@@ -2461,6 +2468,9 @@ class Mp4ExporterTest {
         // The FREE coverage check runs first: an uncovered grade never
         // pays the probe or the parity run, and the fallback line names
         // the STAGE tokens only — never gate tokens (no gate was measured).
+        // Sharpening is the uncovered stand-in (chroma denoise is
+        // fragment-covered since the spatial-NR port, so it can no longer
+        // force the CPU path).
         val session = FakeSession(frames = 2, audio = false)
         val gpu = FakeGpuDevelop()
         val lines = ArrayList<String>()
@@ -2468,7 +2478,7 @@ class Mp4ExporterTest {
             session, FakeWriter(), lines::add,
             renderBackend = RenderBackend.GPU_EXPERIMENTAL,
             gpuDevelop = gpu,
-        ).run(7, GradeK(chromaDenoise = 25f), "/tmp/out.partial")
+        ).run(7, GradeK(sharpness = 25f), "/tmp/out.partial")
         assertEquals(0, gpu.probeCalls)
         assertTrue(gpu.parityFds.isEmpty())
         assertEquals(0, gpu.openCalls)
@@ -2477,14 +2487,14 @@ class Mp4ExporterTest {
         val fallback = lines.first { it.startsWith("render backend fallback: ") }
         assertTrue("requested missing: $fallback", fallback.contains("requested=GPU_EXPERIMENTAL"))
         assertTrue("effective missing: $fallback", fallback.contains("effective=CPU"))
-        assertTrue("stage token missing: $fallback", fallback.contains("reason=chroma-denoise"))
+        assertTrue("stage token missing: $fallback", fallback.contains("reason=sharpness"))
         assertFalse(
             "gate tokens must be absent: $fallback",
             fallback.contains("no-egl-context"),
         )
         // The visibility line carries the SAME tokens (no second truth).
         val backend = lines.first { it.startsWith("render backend: ") }
-        assertTrue("same tokens expected: $backend", backend.contains("chroma-denoise"))
+        assertTrue("same tokens expected: $backend", backend.contains("sharpness"))
     }
 
     @Test
