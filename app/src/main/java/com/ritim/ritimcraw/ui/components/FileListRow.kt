@@ -95,7 +95,12 @@ fun FileListRow(
             ClipThumbnail(
                 path = thumbnailPath,
                 accessLost = accessLost,
-                modifier = Modifier.padding(top = 8.dp, bottom = 8.dp),
+                // The thumbnail carries the screen's 16dp gutter (owner
+                // request 2026-11-14: the icons sat flush against the left
+                // edge — "sadece thumbnail'ler için" margin, ONLY the
+                // thumbnails). This makes the divider's start padding true
+                // (16 + 76 + 16 = 108dp, its comment's own math).
+                modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
             )
             Column(
                 Modifier
