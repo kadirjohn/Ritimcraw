@@ -58,6 +58,15 @@ class PreviewSession private constructor(
     override val frames: Int get() = frameCount
 
     /**
+     * The seam's native-clip exposure (M4 GPU preview): the SAME private
+     * handle every render above already goes through — the GPU preview
+     * session's renderFrame dispatch needs it to decode the frame's RAW
+     * CFA. Overriding here (not exposing a new field) keeps ONE handle,
+     * ONE owner: no other surface of this class changes.
+     */
+    override val nativeClipHandle: Long get() = handle
+
+    /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
      * stage 24 bypassed, the old look; COL-07). [gyroPath] is the attached

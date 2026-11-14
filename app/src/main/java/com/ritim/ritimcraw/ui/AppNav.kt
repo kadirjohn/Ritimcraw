@@ -1430,6 +1430,14 @@ fun AppNav() {
                         // AUD-02: the per-clip link state read above — the
                         // editor's audio transport gate + honesty row.
                         audioLinkState = audioLinkState,
+                        // Render backend (M4 commit b): the settings
+                        // picker's CURRENT choice rides the editor's
+                        // preview dispatch — GPU_EXPERIMENTAL routes
+                        // eligible preview requests through the GPU preview
+                        // session (the SurfaceView window path); every
+                        // other value keeps the CPU preview path
+                        // byte-identical.
+                        renderBackend = renderBackend,
                     )
                 }
             } else {

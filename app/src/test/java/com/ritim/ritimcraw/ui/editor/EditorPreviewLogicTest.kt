@@ -555,4 +555,135 @@ class EditorPreviewLogicTest {
         val neutral = GradeK()
         assertEquals(neutral, EditorPreviewLogic.displayGradeForCropOverlay(neutral))
     }
+
+    // ---- GPU preview eligibility (M4 commit b) ----
+
+    @Test
+    fun gpu_eligible_for_a_neutral_covered_grade() {
+        // The fast path: a neutral grade (every fragment-covered stage at
+        // its default) with no warp, no crop, zebra off — the GPU window
+        // path may serve.
+        assertTrue(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(),
+                gyroWarpActive = false,
+                cropActive = false,
+                zebraOn = false,
+            )
+        )
+    }
+
+    @Test
+    fun gpu_eligible_for_the_fragment_covered_controls() {
+        // The four controls the GPU session's render signature carries
+        // (exposure 14, highlight reconstruction 3, vignetting 2, tonemap
+        // 23) — all fragment-covered, so the GPU path may serve. This is
+        // the eligibility the playback use case rides: grade at HIGH with
+        // AgX tonemap. Contrast stays 0 here: stage 13 is UNCOVERED, so a
+        // contrast move forces the CPU path (the test below).
+        assertTrue(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(
+                    exposureEv = 0.7f,
+                    highlightReconstruction = false,
+                    keepVignetting = false,
+                    tonemap = 1,
+                ),
+                gyroWarpActive = false,
+                cropActive = false,
+                zebraOn = false,
+            )
+        )
+    }
+
+    @Test
+    fun zebra_forces_the_cpu_path() {
+        // Zebra derives from the PUBLISHED frame; the GPU pack's 256
+        // long edge would paint blocky stripes, and with the Image
+        // suppressed they would be invisible anyway. Zebra is a display
+        // feature — its rule rides the request.
+        assertFalse(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(),
+                gyroWarpActive = false,
+                cropActive = false,
+                zebraOn = true,
+            )
+        )
+    }
+
+    @Test
+    fun an_active_crop_forces_the_cpu_path() {
+        // PublishCrop resamples an active crop and the GPU window draw is
+        // aspect-fit UNCROPPED — a display mismatch. The same inline test
+        // PublishCrop.plan runs (straighten or non-full rect).
+        assertFalse(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(cropW = 0.5f, cropH = 1f),
+                gyroWarpActive = false,
+                cropActive = true,
+                zebraOn = false,
+            )
+        )
+    }
+
+    @Test
+    fun a_gyro_warp_forces_the_cpu_path() {
+        // The GPU window draw is un-warped; an active stabilization warp
+        // (the grade's toggle with a resolved gyro path) takes the CPU
+        // wholesale.
+        assertFalse(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(stabilization = true),
+                gyroWarpActive = true,
+                cropActive = false,
+                zebraOn = false,
+            )
+        )
+    }
+
+    @Test
+    fun an_uncovered_stage_forces_the_cpu_path() {
+        // Stage 8 (spatial noise reduction) is NOT fragment-covered — the
+        // export gate's exact rule, mirrored for the preview: the grade
+        // takes the CPU path wholesale.
+        assertFalse(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(noiseReduction = 25f),
+                gyroWarpActive = false,
+                cropActive = false,
+                zebraOn = false,
+            )
+        )
+    }
+
+    @Test
+    fun an_uncovered_pre_stage_forces_the_cpu_path() {
+        // Temporal NR with a strength is a PRE-stage (the export gate's
+        // fragmentUncoveredPreStages) — CPU wholesale.
+        assertFalse(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(temporalNr = true, temporalStrength = 30f),
+                gyroWarpActive = false,
+                cropActive = false,
+                zebraOn = false,
+            )
+        )
+    }
+
+    @Test
+    fun a_stabilization_toggle_without_a_warp_stays_eligible() {
+        // The grade's toggle alone is inert for eligibility — the warp
+        // fact (a resolved gyro path) is what the export wiring computes,
+        // and the display grade renders un-warped when no log is
+        // attached. Mirrors the pump's per-request fact.
+        assertTrue(
+            EditorPreviewLogic.gpuPreviewEligible(
+                grade = GradeK(stabilization = true),
+                gyroWarpActive = false,
+                cropActive = false,
+                zebraOn = false,
+            )
+        )
+    }
 }
