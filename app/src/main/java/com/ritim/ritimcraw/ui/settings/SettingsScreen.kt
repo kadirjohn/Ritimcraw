@@ -390,11 +390,15 @@ fun SettingsScreen(
                     icon = Contrast,
                     title = stringResource(R.string.settings_theme),
                     hint = slotNames[themeSlots[displaySlot.coerceIn(0, 2)]],
-                    // Spec row: end padding 12dp (not the base 16dp) so
-                    // the 168dp pill fits the card at readable widths.
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(end = (-4).dp),
+                    // Spec row: the 168dp pill fits the card at readable
+                    // widths. The spec's "end padding 12dp (not 16dp)"
+                    // was expressed as a NEGATIVE padding on the row —
+                    // illegal in Compose (runtime assertion; the owner's
+                    // 02:51 Settings crash) — so the row keeps the base
+                    // component's own 16dp padding and no offset is
+                    // applied: the pill's trailing slot simply sits at
+                    // the standard inset.
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     ThemeSlider(
                         selectedIndex = themeSlots.indexOf(themeMode).coerceAtLeast(0),

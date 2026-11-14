@@ -229,8 +229,11 @@ fun SettingRowBase(
 /**
  * Expandable setting row (spec setting_row_expandable): the base row's
  * top line plus a trailing info IconButton (48dp target, 22dp icon,
- * tint onSurfaceVariant). The IconButton's 48dp target is offset with a
- * negative end padding so the card's visual padding looks unchanged.
+ * tint onSurfaceVariant). The button sits inside the row's own 16dp
+ * end padding (the spec's negative-padding offset idiom is illegal in
+ * Compose — padding() asserts non-negative at runtime; the owner's
+ * 02:51 Settings crash proved it on device — so the inset is the
+ * row's own padding, no button offset).
  * The button toggles a rememberSaveable local boolean and exposes the
  * expanded state via semantics (stateDescription Expanded/Collapsed
  * on the button).
@@ -266,11 +269,17 @@ fun SettingRowExpandable(
                     onClick = { expanded = !expanded },
                     modifier = Modifier
                         .size(48.dp)
-                        // Negative end padding pulls the 48dp target
-                        // back into the row's own 16dp end padding —
-                        // the card's visual padding stays unchanged
-                        // while the touch target keeps its full size.
-                        .padding(end = (-16).dp)
+                        // The 48dp target sits fully INSIDE the row's own
+                        // 16dp end padding (the row pads, the button does
+                        // not). The spec's "negative end padding" idiom is
+                        // ILLEGAL in Compose — padding() asserts non-
+                        // negative AT RUNTIME (PaddingElement, the
+                        // owner's 02:51 Settings-tab crash) — so the
+                        // visual inset is achieved by NOT offsetting the
+                        // button at all: the row's padding already
+                        // provides the 16dp inset, and the button's
+                        // ripple simply starts 16dp in, which is the
+                        // stock M3 row-button look.
                         .semantics {
                             stateDescription =
                                 if (expanded) expandedText else collapsedText
