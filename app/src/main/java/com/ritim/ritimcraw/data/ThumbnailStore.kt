@@ -57,17 +57,33 @@ class ThumbnailStore(private val dir: File) {
     /** The path the generation pass writes clip [id]'s PNG to. */
     fun targetPath(id: String): String = File(dir, "$id.png").absolutePath
 
+    /**
+     * The TRANSIENT full-res JPEG master of clip [id] (owner request
+     * 2026-11-14: the MCRAW import develops the first frame at FULL
+     * resolution and saves it as a JPEG before the icon is extracted).
+     * The master NEVER persists: the icon extraction consumes it and the
+     * pass deletes it (see [ClipThumbnails]); this path exists so the
+     * pass and [remove] agree on the name, and so a crash between write
+     * and delete leaves a file the NEXT pass or delete cleans up.
+     */
+    fun masterPath(id: String): File = File(dir, "$id.jpg")
+
     /** Creates the store's directory (idempotent). */
     fun ensureDir(): File = dir.apply { mkdirs() }
 
     /**
      * Deletes clip [id]'s persisted PNG (owner finding 2026-11-11 E2:
-     * Library delete). A no-op when none exists — deleting a clip that
-     * never got its thumbnail must not throw. Other ids' files are never
-     * touched (the id is the file name, so one delete cannot collide).
+     * Library delete) AND its stale JPEG master if one was left behind
+     * (a crash between master write and icon extraction — the master is
+     * transient by design). A no-op when neither exists — deleting a
+     * clip that never got its thumbnail must not throw. Other ids' files
+     * are never touched (the id is the file name, so one delete cannot
+     * collide).
      */
     fun remove(id: String) {
         val f = File(dir, "$id.png")
         if (f.exists()) f.delete()
+        val master = masterPath(id)
+        if (master.exists()) master.delete()
     }
 }
