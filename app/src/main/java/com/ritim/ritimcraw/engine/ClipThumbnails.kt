@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.engine
 
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.MediaSource
+import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.data.ThumbnailStore
 import com.ritim.ritimcraw.export.ExportEngine
@@ -61,8 +62,13 @@ object ThumbnailStats {
  *       math is the existing native stages — a second renderFrame
  *       applies it.
  *    4. Rotate upright ([PhotoPixels.rotate] — a JPEG carries no
- *       orientation hint, so the pixels must be; manual rotation is 0
- *       at import, so the container orientation alone decides).
+ *       orientation hint, so the pixels must be). renderFrame returns
+ *       NOT-rotated pixels, so the FULL effective angle applies:
+ *       [RotationState.effectiveDeg] of the container orientation and
+ *       the clip's PERSISTED manual rotation (owner request
+ *       2026-11-14: the thumbnail must match the rotated look the user
+ *       chose in the editor — the icon is re-developed on every
+ *       rotation change, so this is not just an import-time value).
  *    5. Write the JPEG master at quality ~90 (files/thumbnails/<id>.jpg
  *       — [ThumbnailStore.masterPath], the Bitmap.compress precedent
  *       the photo export's PNG adapter set).
@@ -74,11 +80,16 @@ object ThumbnailStats {
  *       A crash between 5 and 7 leaves a stale master the next pass or
  *       [ThumbnailStore.remove] cleans up.
  *
- *  - ENCODED clips keep the original path unchanged: the small neutral
- *    first frame through [PreviewSessions.open] (one uniform open for
- *    MCRAW and encoded alike) — the full-res develop is an MCRAW
- *    upgrade only, and even an MP4 keeps a properly developed first
- *    frame instead of a flat log frame.
+ *  - ENCODED clips keep the original path unchanged apart from the
+ *    manual rotation: the small neutral first frame through
+ *    [PreviewSessions.open] (one uniform open for MCRAW and encoded
+ *    alike) — the full-res develop is an MCRAW upgrade only, and even
+ *    an MP4 keeps a properly developed first frame instead of a flat
+ *    log frame. The session render is ALREADY upright (the container
+ *    orientation is baked in), so only the manual delta applies —
+ *    [PhotoPixels.rotate] with [MediaSource.manualRotationDeg] (0 is
+ *    the identity there, so the unrotated clip writes exactly as
+ *    before).
  *
  * Stats land through [PendingClip.onStats] in both branches from the
  * RECORDED open (width/height/frameCount as recorded, duration from the
@@ -142,9 +153,22 @@ class ClipThumbnails(
             val frame = s.render(frameIndex = 0, grade = GradeK(), maxDim = maxDim)
                 .getOrNull()
             if (frame != null) {
+                // Manual rotation (owner request 2026-11-14: the thumbnail
+                // must match the rotated look the user chose in the
+                // editor). The session render is ALREADY upright (the
+                // container orientation is baked in), so ONLY the manual
+                // delta applies — a quarter turn swaps the written dims,
+                // and 0 is PhotoPixels.rotate's identity, so an
+                // unrotated clip writes exactly as before.
+                val upright = PhotoPixels.rotate(
+                    frame.argb,
+                    frame.width,
+                    frame.height,
+                    clip.media.manualRotationDeg,
+                )
                 store.ensureDir()
                 pngWriter.write(
-                    frame.argb, frame.width, frame.height,
+                    upright.argb, upright.width, upright.height,
                     store.targetPath(clip.media.id),
                 )
             }
@@ -206,7 +230,13 @@ class ClipThumbnails(
                                     } else {
                                         neutral
                                     }
-                                    writeIconFromMaster(clip.media.id, info, rgb, master)
+                                    writeIconFromMaster(
+                                        clip.media.id,
+                                        clip.media.manualRotationDeg,
+                                        info,
+                                        rgb,
+                                        master,
+                                    )
                                 }
                                 // Recorded stats from the same open (the row's
                                 // resolution shows AS RECORDED; a single-frame
@@ -245,15 +275,27 @@ class ClipThumbnails(
 
     /**
      * Steps 4-6 of the MCRAW path: upright ARGB -> JPEG master -> scaled
-     * icon extract. A failed write or extract leaves no icon (the row
-     * shows the placeholder; the pass retries on the next Library open).
+     * icon extract. [manualRotationDeg] is the clip's PERSISTED manual
+     * rotation (owner request 2026-11-14): renderFrame returns
+     * NOT-rotated pixels, so the full effective angle —
+     * [RotationState.effectiveDeg] of the container orientation plus
+     * the manual delta — decides the upright pass (a JPEG carries no
+     * orientation hint, so the pixels must be). A failed write or
+     * extract leaves no icon (the row shows the placeholder; the pass
+     * retries on the next Library open).
      */
-    private fun writeIconFromMaster(id: String, info: Mp4SessionInfo, rgb: ByteArray, master: File) {
+    private fun writeIconFromMaster(
+        id: String,
+        manualRotationDeg: Int,
+        info: Mp4SessionInfo,
+        rgb: ByteArray,
+        master: File,
+    ) {
         val upright = PhotoPixels.rotate(
             PhotoPixels.toArgbInts(rgb, info.width, info.height),
             info.width,
             info.height,
-            info.orientationDeg, // manual rotation is 0 at import
+            RotationState.effectiveDeg(info.orientationDeg, manualRotationDeg),
         )
         store.ensureDir()
         if (!jpegWriter.write(upright.argb, upright.width, upright.height, master.absolutePath)) return

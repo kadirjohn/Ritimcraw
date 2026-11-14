@@ -392,4 +392,81 @@ class ClipThumbnailsMcrawTest {
         // The recorded stats stay AS RECORDED (the open's dims).
         assertStats(8, 4, 10, 9_000_000L)
     }
+
+    // --- manual rotation (owner request 2026-11-14) -----------------------
+    // renderFrame returns NOT-rotated pixels, so the MCRAW path applies the
+    // FULL effective angle — container orientation + the clip's PERSISTED
+    // manual rotation — through RotationState.effectiveDeg. The icon is
+    // re-developed on every rotation change (the editor's onRotate removes
+    // it), so these are the dims the regenerated icon carries.
+
+    @Test
+    fun manual_90_on_upright_clip_swaps_the_master_dims() = runBlocking {
+        // An upright 8x4 clip the user rotated 90 in the editor: the
+        // thumbnail must show the rotated look.
+        val session = FakeMp4Session(width = 8, height = 4, orientationDeg = 0)
+        val jpeg = FakeJpegWriter()
+        val rotated = mcrawSource().copy(manualRotationDeg = 90)
+        pass(session, jpeg, FakeIconExtractor(), store()).generate(clip(media = rotated))
+
+        // Effective 0 + 90 = 90: the JPEG pixels are rotated, dims swapped.
+        assertEquals(4, jpeg.lastW)
+        assertEquals(8, jpeg.lastH)
+        // The recorded stats stay AS RECORDED (the open's dims) — the row's
+        // ratio math applies the rotation itself.
+        assertStats(8, 4, 10, 9_000_000L)
+    }
+
+    @Test
+    fun manual_270_swaps_like_90() = runBlocking {
+        // The other quarter turn swaps the dims the same way.
+        val session = FakeMp4Session(width = 8, height = 4, orientationDeg = 0)
+        val jpeg = FakeJpegWriter()
+        val rotated = mcrawSource().copy(manualRotationDeg = 270)
+        pass(session, jpeg, FakeIconExtractor(), store()).generate(clip(media = rotated))
+
+        assertEquals(4, jpeg.lastW)
+        assertEquals(8, jpeg.lastH)
+    }
+
+    @Test
+    fun manual_180_keeps_the_master_dims() = runBlocking {
+        // A half turn flips the pixels but not the dims.
+        val session = FakeMp4Session(width = 8, height = 4, orientationDeg = 0)
+        val jpeg = FakeJpegWriter()
+        val rotated = mcrawSource().copy(manualRotationDeg = 180)
+        pass(session, jpeg, FakeIconExtractor(), store()).generate(clip(media = rotated))
+
+        assertEquals(8, jpeg.lastW)
+        assertEquals(4, jpeg.lastH)
+    }
+
+    @Test
+    fun container_90_plus_manual_90_compose_to_180_no_swap() = runBlocking {
+        // A container-rotated clip the user rotated BACK upright: the
+        // effective angle is 180 (dims unchanged) — the two angles COMPOSE,
+        // the manual delta never replaces the container one.
+        val session = FakeMp4Session(width = 8, height = 4, orientationDeg = 90)
+        val jpeg = FakeJpegWriter()
+        val rotated = mcrawSource().copy(manualRotationDeg = 90)
+        pass(session, jpeg, FakeIconExtractor(), store()).generate(clip(media = rotated))
+
+        assertEquals(8, jpeg.lastW)
+        assertEquals(4, jpeg.lastH)
+        assertStats(8, 4, 10, 9_000_000L)
+    }
+
+    @Test
+    fun full_turn_manual_rotation_is_the_identity() = runBlocking {
+        // 360 normalizes to 0: the master keeps the recorded dims (the
+        // store persists normalized values, but the pass is robust to
+        // any persisted number).
+        val session = FakeMp4Session(width = 8, height = 4, orientationDeg = 0)
+        val jpeg = FakeJpegWriter()
+        val rotated = mcrawSource().copy(manualRotationDeg = 360)
+        pass(session, jpeg, FakeIconExtractor(), store()).generate(clip(media = rotated))
+
+        assertEquals(8, jpeg.lastW)
+        assertEquals(4, jpeg.lastH)
+    }
 }

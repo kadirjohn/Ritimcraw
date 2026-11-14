@@ -410,6 +410,13 @@
     <string name="settings_render_backend_cpu">CPU</string>
     <string name="settings_render_backend_auto">Auto</string>
     <string name="settings_render_backend_gpu">GPU</string>
+
+    <!-- Theme (owner request 2026-11-14: follow the system + manual override) -->
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_body">Follow the system theme, or pin the app to light or dark. The editor screens keep their fixed neutral look either way.</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
     <string name="settings_gyro_folder">Gyro log folder</string>
     <string name="settings_gyro_folder_body">Pick the folder that holds your MotionCam .gcsv gyro logs. New imports matching a log\'s name attach it automatically.</string>
     <string name="settings_gyro_folder_none">Not set — tap to pick the folder holding your .gcsv gyro logs</string>

@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.ui.theme
 
 import androidx.compose.material3.ColorScheme
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,6 +69,26 @@ class ThemeTest {
         // worlds never collapse into one.
         assertTrue(FallbackPrimary != NeutralEditorScheme.primary)
         assertTrue(FallbackSurface != NeutralEditorScheme.surface)
+    }
+
+    @Test
+    fun fallbackLightTokensAreGenuinelyLight() {
+        // The light fallback (owner request 2026-11-14: the theme override
+        // made the light axis a first-class concern): a LIGHT theme must
+        // read as light — light surfaces carry DARK on-colors and a
+        // high-luminance surface, the opposite polarity of the dark set.
+        // This locks the pre-existing bug the override surfaced: the light
+        // scheme used to be built from the DARK tokens (darkColorScheme
+        // over the dark surface values), so a "light" theme rendered dark.
+        assertTrue(FallbackLightSurface.luminance() > 0.9f)
+        assertTrue(FallbackLightOnSurface.luminance() < 0.1f)
+        assertTrue(FallbackLightOnPrimary.luminance() > 0.9f)
+        assertTrue(FallbackLightPrimary.luminance() < 0.5f)
+        // And the two fallbacks never collapse into one: dark stays dark
+        // (dark surface, clearly-light on-color — the dark set's
+        // on-surface is light gray, ~0.76 WCAG luminance, not near-white).
+        assertTrue(FallbackSurface.luminance() < 0.1f)
+        assertTrue(FallbackOnSurface.luminance() > 0.5f)
     }
 
     private fun checkNeutral(name: String, color: Color, t: Float, failures: MutableList<String>) {

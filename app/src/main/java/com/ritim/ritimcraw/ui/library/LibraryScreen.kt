@@ -478,6 +478,11 @@ private fun LibraryRow(
         // the row keeps the 76dp square then — never a guessed ratio.
         frameWidth = source.width,
         frameHeight = source.height,
+        // The persisted manual rotation swaps the displayed ratio on a
+        // quarter turn (owner request 2026-11-14: the icon must match the
+        // rotated look the user chose in the editor) — the same swap the
+        // regenerated icon file carries, so the box and icon agree.
+        manualRotationDeg = source.manualRotationDeg,
         accessLost = accessLost,
         accessLostLine = when (status) {
             LibraryRowModel.RowStatus.LOST -> stringResource(R.string.library_row_access_lost)

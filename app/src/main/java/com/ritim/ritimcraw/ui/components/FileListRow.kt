@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.ui.theme.Tnum
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -49,6 +50,15 @@ import kotlinx.coroutines.withContext
  * the thumbnail and text block size themselves; the caller supplies
  * the supporting line through the pure LibraryRowModel (existing
  * metadata only — nothing is invented).
+ *
+ * The 2026-11-14 manual-rotation extension (owner request: the icon
+ * must match the rotated look the user chose in the editor):
+ * [manualRotationDeg] is the clip's PERSISTED manual rotation — a
+ * quarter turn swaps the box's displayed ratio ([ThumbnailRow] maps
+ * the recorded dims through [RotationState.rotatedDims] first, the
+ * same quarter-turn swap the regenerated icon file carries). The
+ * default 0 keeps every existing caller's square/ratio math exactly
+ * as before.
  *
  * Selection (E2) keeps its exact behavior: long-press enters selection
  * with this row checked, taps toggle while selecting (never open), and
@@ -68,6 +78,9 @@ fun FileListRow(
     modifier: Modifier = Modifier,
     frameWidth: Int = 0,
     frameHeight: Int = 0,
+    // The clip's persisted manual rotation (owner request 2026-11-14): a
+    // quarter turn swaps the displayed ratio. Default 0 = unrotated.
+    manualRotationDeg: Int = 0,
     supportingFallback: (@Composable () -> Unit)? = null,
     accessLostLine: String? = null,
     accessLost: Boolean = false,
@@ -102,6 +115,7 @@ fun FileListRow(
                 path = thumbnailPath,
                 frameWidth = frameWidth,
                 frameHeight = frameHeight,
+                manualRotationDeg = manualRotationDeg,
                 accessLost = accessLost,
                 // The thumbnail carries the screen's 16dp gutter (owner
                 // request 2026-11-14: the icons sat flush against the left
@@ -214,6 +228,20 @@ internal object ThumbnailRow {
         val raw = WIDTH_DP * frameHeight / frameWidth
         return raw.coerceIn(MIN_HEIGHT_DP, MAX_HEIGHT_DP)
     }
+
+    /**
+     * The rotation-aware height (owner request 2026-11-14: the icon must
+     * match the rotated look the user chose in the editor): the recorded
+     * dims map through [RotationState.rotatedDims] FIRST — a quarter turn
+     * swaps width and height, so a landscape clip the user rotated 90
+     * displays its vertical ratio — then the same ratio math and clamps as
+     * [heightDp]. The icon file carries the same swap (it is re-developed
+     * on every rotation change), so box and icon stay in agreement.
+     */
+    fun heightDp(frameWidth: Int, frameHeight: Int, manualRotationDeg: Int): Float {
+        val dims = RotationState.rotatedDims(frameWidth, frameHeight, manualRotationDeg)
+        return heightDp(dims.width, dims.height)
+    }
 }
 
 /**
@@ -228,12 +256,18 @@ internal object ThumbnailRow {
  * leaves composition). The box keeps the extraSmall shape and the
  * surfaceVariant background: the ratio-true rounded thumbnail IS the
  * modern look, no added chrome.
+ *
+ * [manualRotationDeg] (owner request 2026-11-14: the icon must match the
+ * rotated look the user chose in the editor) swaps the box's ratio on a
+ * quarter turn — the same swap the regenerated icon file carries, so
+ * the rotated icon fills the box exactly like the upright one did.
  */
 @Composable
 private fun ClipThumbnail(
     path: String?,
     frameWidth: Int,
     frameHeight: Int,
+    manualRotationDeg: Int,
     accessLost: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -250,7 +284,10 @@ private fun ClipThumbnail(
     } ?: remember { mutableStateOf<Bitmap?>(null) }
     Box(
         modifier = modifier
-            .size(width = ThumbnailRow.WIDTH_DP.dp, height = ThumbnailRow.heightDp(frameWidth, frameHeight).dp)
+            .size(
+                width = ThumbnailRow.WIDTH_DP.dp,
+                height = ThumbnailRow.heightDp(frameWidth, frameHeight, manualRotationDeg).dp,
+            )
             .clip(MaterialTheme.shapes.extraSmall)
             .background(MaterialTheme.colorScheme.surfaceVariant),
     ) {
