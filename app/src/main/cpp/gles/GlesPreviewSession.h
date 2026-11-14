@@ -62,11 +62,15 @@
 // (the editor's engine thread); both block on their job.
 //
 // COLOR CONTRACT: the develop chain is the develop session's SPLIT shape
-// (the same seven programs since the spatial-NR port): PRE runs stages
-// 1-6 into an RGBA32F intermediate, the three NR passes sit at the
-// CPU's exact stage 7/8 position (gated per grade — the preview shares
-// the develop program family, so chroma denoise and noise reduction
-// preview too), POST runs stages 9-20+23+OETF into the develop texture
+// (the same twelve programs since the sharpness/detail port): PRE runs
+// stages 1-6 into an RGBA32F intermediate, the three NR passes sit at
+// the CPU's exact stage 7/8 position (gated per grade — the preview
+// shares the develop program family, so chroma denoise and noise
+// reduction preview too), the pointwise POST runs stages 9-20 into a
+// chain slot, the four unsharp passes sit at the CPU's exact 21/22
+// position (sharpness radius 1.5, detail radius 0.75 — unsharpLumaImpl
+// verbatim as H+V pairs; gated per grade, so sharpness and detail
+// preview too), and TAIL runs stages 23+24+OETF into the develop texture
 // (uOetf=1 — the shader's linearToRec709 is the CPU tail's twin, so the
 // stats pack's toByte quantize reproduces developToArgb's pack:
 // toByte(linearToRec709(rgb)) with no second OETF). The grade controls
@@ -74,8 +78,9 @@
 // highlight reconstruction, vignetting, tonemap plus the ten pointwise
 // stages: black point, white point, shadows, midtones, contrast,
 // temperature, tint, the color wheel, split tone, saturation — and the
-// two NR strengths) — the same narrow-signature lock M3 rides (an
-// uncovered grade cannot even be expressed through this API).
+// two NR strengths, sharpness and detail) — the same narrow-signature
+// lock M3 rides (an uncovered grade cannot even be expressed through
+// this API).
 //
 // FAILURE SEMANTICS: a GL failure mid-render returns ok=false with the
 // step named in [detail] AND LATCHES the session unhealthy (M3's sticky
@@ -150,6 +155,17 @@ struct PreviewFrameRequest {
     // keeps commit (a)'s sessions byte-identical to the pre-NR chain.
     float chromaDenoise = 0.0f;  // raw grade.chromaDenoise
     float noiseReduction = 0.0f;  // raw grade.noiseReduction
+    // Unsharp (stages 21/22), RAW grade values — 0.0f is the CPU call
+    // site's own skip. NO clamp: the CPU's amount mapping
+    // min(max(0.5*(raw/100), -0.5), 0.5) runs in-shader, so NEGATIVE raw
+    // values are valid softening and a raw 0 is the only skip. The
+    // session skips the unsharp draws entirely for a raw 0 or a frame
+    // under the CPU's own w<2/h<2 guard; the in-shader gate is the
+    // second lock. Populated through the JNI seam in commit (b); 0.0f
+    // here keeps commit (a)'s sessions byte-identical to the pre-unsharp
+    // chain.
+    float sharpness = 0.0f;  // raw grade.sharpness (radius 1.5)
+    float detail = 0.0f;     // raw grade.detail (radius 0.75)
     // Stage 24 LUT, the LUT port's session-side shape (commit (a) of the LUT
     // mission). lutStrength is the RAW grade value on rawedit's own [0,1]
     // scale (GradeK's percent / 100, mapped Kotlin-side before the seam —
@@ -232,21 +248,29 @@ public:
     // GL_EXT_color_buffer_float, re-read in THIS context, never trusted
     // from a probe's throwaway one; OES_texture_float_linear is read the
     // same way to pick the develop texture's filter, NOT a gate),
-    // compiles the seven programs (pre = FULLSCREEN_VERTEX +
+    // compiles the twelve programs (pre = FULLSCREEN_VERTEX +
     // DEVELOP_FRAGMENT_PRE, post = FULLSCREEN_VERTEX +
-    // DEVELOP_FRAGMENT_POST, the three spatial-NR passes chromaH/chromaV/
-    // luma = FULLSCREEN_VERTEX + NR_CHROMA_H / NR_CHROMA_V / NR_LUMA,
-    // store = FULLSCREEN_VERTEX_310 + STORE_FRAGMENT, window =
-    // FULLSCREEN_VERTEX + WINDOW_FRAGMENT) and resolves every uniform
-    // location. Returns null with *detail naming the first failing step
-    // on any failure (the GL thread is joined; nothing leaks). The nine
-    // sources are the Kotlin single-source-of-truth texts
-    // (GlesShaderSources), host-validated.
+    // DEVELOP_FRAGMENT_POST, tail = FULLSCREEN_VERTEX +
+    // DEVELOP_FRAGMENT_TAIL, the four unsharp passes sharpnessH/
+    // sharpnessV/detailH/detailV = FULLSCREEN_VERTEX + SHARPNESS_H /
+    // SHARPNESS_V / DETAIL_H / DETAIL_V, the three spatial-NR passes
+    // chromaH/chromaV/luma = FULLSCREEN_VERTEX + NR_CHROMA_H /
+    // NR_CHROMA_V / NR_LUMA, store = FULLSCREEN_VERTEX_310 +
+    // STORE_FRAGMENT, window = FULLSCREEN_VERTEX + WINDOW_FRAGMENT) and
+    // resolves every uniform location. Returns null with *detail naming
+    // the first failing step on any failure (the GL thread is joined;
+    // nothing leaks). The fourteen sources are the Kotlin
+    // single-source-of-truth texts (GlesShaderSources), host-validated.
     static std::unique_ptr<PreviewSession> open(
         const std::string& vertexSource,
         const std::string& vertex310Source,
         const std::string& preFragmentSource,
         const std::string& postFragmentSource,
+        const std::string& tailFragmentSource,
+        const std::string& sharpnessHSource,
+        const std::string& sharpnessVSource,
+        const std::string& detailHSource,
+        const std::string& detailVSource,
         const std::string& nrChromaHSource,
         const std::string& nrChromaVSource,
         const std::string& nrLumaSource,

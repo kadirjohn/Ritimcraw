@@ -304,10 +304,17 @@ void main() {
      *      0.018, else 1.099*pow(lin, 0.45) - 0.099), unclamped, exactly
      *      as the CPU tail leaves it; applied only when uOetf == 1.
      *
-     * Stages NOT covered by THIS fused text (honest): 21-22
-     * sharpness/detail and the gyro warp — the BackendRules
-     * stage-coverage rules fall back to CPU with a reason line whenever
-     * one of those is active in the grade. Stage 24 (LUT) joined the
+     * Stages NOT covered by THIS fused text (honest): the gyro warp —
+     * the BackendRules stage-coverage rules fall back to CPU with a
+     * reason line whenever it is active in the grade. Stages 21-22
+     * (sharpness/detail) are fragment-covered since the sharpness/detail
+     * port, but NOT by this fused pass: they are neighborhood stages,
+     * so the session chain runs them as the separate SHARPNESS_H/
+     * SHARPNESS_V/DETAIL_H/DETAIL_V passes between
+     * DEVELOP_FRAGMENT_POST (the 9-20 pointwise draw) and
+     * DEVELOP_FRAGMENT_TAIL (the 23+24+OETF draw) below; the fused text
+     * keeps its no-unsharp shape because the frozen device parity
+     * harness compiles it as ONE draw. Stage 24 (LUT) joined the
      * covered set with the LUT port: the shader carries the CPU's exact
      * role/transfer contract behind uLutStrength, sampling the parsed
      * .cube through a 3D RGBA16F texture (hardware trilinear, the
@@ -389,13 +396,16 @@ void main() {
      */
     // ---- the develop chain's shared text fragments (the NR port's split) --
     //
-    // The session chain draws the develop stages as PRE -> [NR] -> POST
-    // through RGBA32F intermediates (DEVELOP_FRAGMENT_PRE, the NR_* passes
-    // and DEVELOP_FRAGMENT_POST below); the fused parity pass recomposes
+    // The session chain draws the develop stages as PRE -> [NR] ->
+    // POST(9-20) -> [SHARPNESS/DETAIL] -> TAIL(23+24+OETF) through RGBA32F
+    // intermediates (DEVELOP_FRAGMENT_PRE, the NR_* passes,
+    // DEVELOP_FRAGMENT_POST, the four unsharp passes and
+    // DEVELOP_FRAGMENT_TAIL below); the fused parity pass recomposes
     // THE SAME fragments, so the split chain and the frozen harness cannot
     // drift. Each fragment is the fused pass's own text, cut at a copy
     // boundary (the CPU's stage 6/9 boundary - the NR stages' position in
-    // rawedit::developCpu).
+    // rawedit::developCpu - and the 20/23 boundary, the unsharp stages'
+    // position).
 
     /** Stages 1-6's uniforms (the pre-pass set) - the fused pass's own text. */
     private const val kDevelopPreUniforms: String = """uniform highp usampler2D uCfa;  // RAW CFA: GL_R16UI, uint16 samples 0..65535, row-major CPU order
@@ -413,8 +423,13 @@ uniform mat3 uCam2rgb;          // camera->Rec.709, the CPU row-major matrix upl
 uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (no profile / parity shape)
 """
 
-    /** Stages 9-23+OETF's uniforms (the post-pass set) - the fused pass's own text. */
-    private const val kDevelopPostUniforms: String = """uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
+    /**
+     * Stages 9-20's uniforms (the pointwise post-pass set) - the fused
+     * pass's own text, cut at the 20/23 boundary (the CPU's stage-21/22
+     * position, where the unsharp passes sit between the pointwise stages
+     * and the tail).
+     */
+    private const val kDevelopPointwiseUniforms: String = """uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
 uniform float uHighlights;      // raw grade.highlights (stage 15); 0.0 = the CPU's own skip
 uniform float uBlackPoint;      // raw grade.blackPoint (stage 9); 0.0 = the CPU's own skip
 uniform float uWhitePoint;      // raw grade.whitePoint (stage 10); 0.0 = the CPU's own skip
@@ -435,7 +450,13 @@ uniform float uSplitShadowHue;      // raw grade.splitShadowHue; -1 = off (only 
 uniform float uSplitHighlightHue;   // raw grade.splitHighlightHue; -1 = off (only read when uSplitActive == 1)
 uniform float uSplitBalance;       // raw grade.splitBalance
 uniform float uSaturation;     // raw grade.saturation (stage 20); 0.0 = the CPU's own skip
-uniform int uTonemap;           // grade.tonemap (stage 23): 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base
+"""
+
+    /**
+     * Stages 23+24+OETF's uniforms (the tail-pass set) - the fused pass's
+     * own text, the 20/23 cut's other half.
+     */
+    private const val kDevelopTailUniforms: String = """uniform int uTonemap;           // grade.tonemap (stage 23): 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base
 uniform int uOetf;              // 1 = apply linearToRec709 (export shape); 0 = linear endpoint (parity)
 uniform float uLutStrength;      // raw grade.lutStrength (stage 24), ALREADY [0,1] (GradeK percent / 100, mapped Kotlin-side); 0.0 = the CPU's own skip
 uniform highp sampler3D uLut;    // the parsed .cube as RGBA16F (hardware trilinear); unit 5; a dummy 2x2x2 table when no LUT is bound
@@ -590,16 +611,23 @@ const int kDx[8] = int[8](-1, 1, 0, 0, -1, -1, 1, 1);
 const int kDy[8] = int[8](0, 0, -1, 1, -1, 1, -1, 1);
 """
 
-    /** The POST stages' helpers (linearToRec709 .. tonemapPixel) - the fused pass's own text. */
-    private const val kDevelopPostHelpers: String = """// The CPU OETF, rawedit::linearToRec709 (core/src/Transfer.cpp): 4.5*lin
+    /**
+     * The POST stages' OETF helper (linearToRec709) - the fused pass's own
+     * text, first piece of the 20/23 helpers cut. Pure math, no uniforms;
+     * only the tail pass's OETF block calls it (the pointwise stages 9-20
+     * never do), so it belongs to the TAIL pass's helper set.
+     */
+    private const val kDevelopOetfHelper: String = """// The CPU OETF, rawedit::linearToRec709 (core/src/Transfer.cpp): 4.5*lin
 // below 0.018, else 1.099*pow(lin, 0.45) - 0.099, UNCLAMPED (the CPU tail
 // clamps after, in toByte; this pass leaves it to the caller).
 float linearToRec709(float lin) {
     if (lin < 0.018) return 4.5 * lin;
     return 1.099 * pow(lin, 0.45) - 0.099;
 }
+"""
 
-// The CPU rawedit::smoothstepf (core/src/Develop.cpp), verbatim: Hermite
+    /** Stages 9-20's helpers (smoothstepf + hueGains) - the pointwise pass's own text. */
+    private const val kDevelopPointwiseHelpers: String = """// The CPU rawedit::smoothstepf (core/src/Develop.cpp), verbatim: Hermite
 // smoothstep with clamped edges, 0 for x <= e0, 1 for x >= e1. The tone
 // stages (11, 12) and the color stages (18, 19) blend their band remaps in
 // with this so each control stays inside its tonal region.
@@ -624,8 +652,15 @@ vec3 hueGains(float hueDeg) {
     }
     return gains;
 }
+"""
 
-// Stage 23: tonemap - the CPU rawedit::tonemapFrameImpl math verbatim
+    /**
+     * Stages 23+24's helpers (the tonemap block + the LUT block) - the
+     * fused pass's own text, the 20/23 helpers cut's tail half. The tonemap
+     * block reads uTonemap; the LUT block reads the uLut* uniforms - both
+     * are the tail pass's own set.
+     */
+    private const val kDevelopTailHelpers: String = """// Stage 23: tonemap - the CPU rawedit::tonemapFrameImpl math verbatim
 // (core/src/Develop.cpp). Every constant, guard and evaluation order is
 // the CPU's; no GLSL built-in substitutions (the CPU helpers carry
 // explicitly, including the clamps that keep pow() bases non-negative -
@@ -958,11 +993,13 @@ vec3 lutManagedPixel(vec3 px) {
 """
 
     /**
-     * main()'s POST body: stage 9 through the tonemap/OETF tail and the
-     * oCol write + main close (the fused tail's own final lines). PRE
-     * appends its own [kDevelopWriteOut] instead; POST ends here.
+     * main()'s pointwise POST body: stage 9 through the stage-20 saturation
+     * block, cut at the 20/23 boundary (the CPU's stage-21/22 position - the
+     * unsharp passes sit between the pointwise stages and the tail). The
+     * pointwise pass appends [kDevelopWriteOut]; the fused pass continues
+     * straight into [kDevelopTailBody].
      */
-    private const val kDevelopPostBody: String = """    // Stage 9: black point - the CPU stage-9 endpoint remap, verbatim
+    private const val kDevelopPointwiseBody: String = """    // Stage 9: black point - the CPU stage-9 endpoint remap, verbatim
     // (core/src/Develop.cpp). uBlackPoint carries the RAW grade.blackPoint
     // value; 0.0 skips the whole stage exactly like the CPU's `if
     // (grade.blackPoint != 0.0f)`. lift is uniform-derived so it must NOT
@@ -1120,7 +1157,15 @@ vec3 lutManagedPixel(vec3 px) {
         float luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
         c = luma + (c - luma) * f;
     }
-    // Stage 24: the LUT - the CPU rawedit::applyManagedLutStage role
+"""
+
+    /**
+     * main()'s TAIL body: the stage-24 LUT block, the tonemap, the OETF and
+     * the oCol write + main close (the fused tail's own final lines). The
+     * tail pass carries its own close because the fused pass's POST body
+     * ended with it; the pointwise pass appends [kDevelopWriteOut] instead.
+     */
+    private const val kDevelopTailBody: String = """    // Stage 24: the LUT - the CPU rawedit::applyManagedLutStage role
     // contract (core/src/Color.cpp), verbatim in each role's CPU order.
     // uLutStrength carries the RAW grade value ALREADY mapped to rawedit's
     // [0,1] scale (the Kotlin seam divides the GradeK percent by 100),
@@ -1207,14 +1252,33 @@ precision highp int;
 """
 
     /** POST's own banner + precision block. */
-    private const val kDevelopPostBanner: String = """// Develop post pass - stages 9+10+11+12+13+14+15+16+17+18+19+20+23+24+OETF
+    private const val kDevelopPostBanner: String = """// Develop post pass - stages 9+10+11+12+13+14+15+16+17+18+19+20
 // of rawedit::developCpu (core/src/Develop.cpp). The session chain's
-// last develop draw: reads the chain's RGBA32F intermediate (the pre
+// pointwise draw: reads the chain's RGBA32F intermediate (the pre
 // pass's output, or the NR passes' output when the grade uses spatial
 // NR - the CPU chain's stage 7/8 position), applies every per-pixel
-// stage, writes the developed frame. The stage text is byte-identical
-// to the fused pass's own POST fragments above, so the split chain and
-// the parity harness cannot drift.
+// stage up to saturation, writes the pointwise-graded pixel to the
+// chain's next intermediate (the CPU chain's stage-21/22 position -
+// the sharpness/detail passes read it when the grade uses them, else
+// the tail pass does). The stage text is byte-identical to the fused
+// pass's own pointwise fragments above, so the split chain and the
+// parity harness cannot drift.
+
+precision highp float;
+precision highp int;
+"""
+
+    /** TAIL's own banner + precision block. */
+    private const val kDevelopTailBanner: String = """// Develop tail pass - stages 23+24+OETF of rawedit::developCpu
+// (core/src/Develop.cpp). The session chain's last develop draw: reads
+// the chain's RGBA32F intermediate (the pointwise pass's output, or
+// the sharpness/detail passes' output when the grade uses them - the
+// CPU chain's stage-21/22 position), applies the tonemap, the LUT and
+// the OETF, writes the developed frame to the session's develop
+// texture (the store/blit/window/stats passes all read THAT texture -
+// the tail is always the develop chain's last draw). The stage text is
+// byte-identical to the fused pass's own tail fragments above, so the
+// split chain and the parity harness cannot drift.
 
 precision highp float;
 precision highp int;
@@ -1235,10 +1299,11 @@ precision highp int;
      */
     const val DEVELOP_FRAGMENT: String =
         "#version 300 es\n\n" + kDevelopFusedBanner + "\n" +
-            kDevelopPreUniforms + kDevelopPostUniforms + "\n" +
+            kDevelopPreUniforms + kDevelopPointwiseUniforms + kDevelopTailUniforms + "\n" +
             kDevelopOutDecl + "\n" + kDevelopPreHelpers + "\n" +
-            kDevelopPostHelpers + "\n" + kDevelopMainHead +
-            kDevelopPreBody + kDevelopPostBody
+            kDevelopOetfHelper + "\n" + kDevelopPointwiseHelpers + "\n" +
+            kDevelopTailHelpers + "\n" + kDevelopMainHead +
+            kDevelopPreBody + kDevelopPointwiseBody + kDevelopTailBody
 
     /**
      * The develop chain's PRE pass (the spatial-NR port's split) — stages
@@ -1270,28 +1335,57 @@ precision highp int;
             kDevelopPreBody + kDevelopWriteOut
 
     /**
-     * The develop chain's POST pass (the spatial-NR port's split) —
-     * stages 9-20 + 23 + OETF of the CPU develop chain as a STANDALONE
+     * The develop chain's POINTWISE POST pass (the sharpness/detail port's
+     * 20/23 cut) — stages 9-20 of the CPU develop chain as a STANDALONE
      * draw: reads the chain's RGBA32F intermediate 1:1 (uSrc — the PRE
-     * pass's output when no NR stage ran, else the last NR pass's
-     * output; the CPU chain's stage 7/8 output position), applies every
-     * per-pixel stage verbatim, writes the developed frame to the
-     * session's develop texture (the store/blit/window/stats passes all
-     * read THAT texture — POST is always the develop chain's last draw).
+     * pass's output when no NR stage ran, else the last NR pass's output;
+     * the CPU chain's stage 7/8 output position), applies every per-pixel
+     * stage up to saturation verbatim, writes the pointwise-graded pixel
+     * to the chain's next intermediate (the CPU chain's stage-21/22
+     * position — the sharpness/detail passes read it when the grade uses
+     * them, else the tail pass does).
      *
-     * The stage text is the fused pass's own POST fragments, so the split
-     * chain and the parity harness cannot drift; the validator locks the
-     * POST contract (Kind.DEVELOP_FRAGMENT_POST), including that NO
-     * pre-stage uniform (uCfa, uCam2rgb, the demosaic) leaks into this
-     * pass, and the stage application order.
+     * The stage text is the fused pass's own pointwise fragments, so the
+     * split chain and the parity harness cannot drift; the validator locks
+     * the POST contract (Kind.DEVELOP_FRAGMENT_POST), including that NO
+     * pre-stage uniform (uCfa, uCam2rgb, the demosaic) and NO tail-stage
+     * uniform (uTonemap, uOetf, the uLut* set) leaks into this pass, and
+     * the stage application order.
      */
     const val DEVELOP_FRAGMENT_POST: String =
         "#version 300 es\n\n" + kDevelopPostBanner + "\n" +
             "uniform highp sampler2D uSrc;  // the chain's RGBA32F intermediate: the pre pass's or the NR passes' output\n" +
             "uniform ivec2 uSize;            // width/height in pixels (the intermediate; same dims as the CFA)\n" +
-            kDevelopPostUniforms + "\n" + kDevelopOutDecl + "\n" +
-            kDevelopPostHelpers + "\n" + kDevelopMainHead +
-            kDevelopPostFetch + kDevelopPostBody
+            kDevelopPointwiseUniforms + "\n" + kDevelopOutDecl + "\n" +
+            kDevelopPointwiseHelpers + "\n" + kDevelopMainHead +
+            kDevelopPostFetch + kDevelopPointwiseBody + kDevelopWriteOut
+
+    /**
+     * The develop chain's TAIL pass (the sharpness/detail port's 20/23
+     * cut) — stages 23 + 24 + OETF of the CPU develop chain as a
+     * STANDALONE draw: reads the chain's RGBA32F intermediate 1:1 (uSrc —
+     * the pointwise pass's output when no unsharp stage ran, else the
+     * last sharpness/detail pass's output; the CPU chain's stage-21/22
+     * output position), applies the tonemap, the LUT and the OETF
+     * verbatim, writes the developed frame to the session's develop
+     * texture (the store/blit/window/stats passes all read THAT texture —
+     * the tail is always the develop chain's last draw).
+     *
+     * The stage text is the fused pass's own tail fragments (the OETF
+     * helper, the tonemap/LUT helpers and the tail body with its own oCol
+     * write + close), so the split chain and the parity harness cannot
+     * drift; the validator locks the TAIL contract
+     * (Kind.DEVELOP_FRAGMENT_TAIL), including that NO pointwise-stage
+     * uniform (uExposure .. uSaturation) and NO pre-stage uniform leaks
+     * into this pass, and the 23/24 application order.
+     */
+    const val DEVELOP_FRAGMENT_TAIL: String =
+        "#version 300 es\n\n" + kDevelopTailBanner + "\n" +
+            "uniform highp sampler2D uSrc;  // the chain's RGBA32F intermediate: the pointwise pass's or the unsharp passes' output\n" +
+            "uniform ivec2 uSize;            // width/height in pixels (the intermediate; same dims as the CFA)\n" +
+            kDevelopTailUniforms + "\n" + kDevelopOutDecl + "\n" +
+            kDevelopOetfHelper + "\n" + kDevelopTailHelpers + "\n" + kDevelopMainHead +
+            kDevelopPostFetch + kDevelopTailBody
 
     /**
      * Spatial chroma NR, the HORIZONTAL half (CPU stage 7, pass 1 of 2) —
@@ -1751,6 +1845,358 @@ void main() {
         }
     }
     // Gate closed (or a nonpositive clamp): exact pass-through.
+    oCol = vec4(orig, 1.0);
+}
+"""
+
+    /**
+     * Sharpness, the HORIZONTAL half (CPU stage 21, pass 1 of 2) —
+     * rawedit::unsharpLumaImpl's horizontal blur run at radius 1.5,
+     * verbatim (core/src/Develop.cpp). The CPU computes a luma plane
+     * once, blurs it horizontally into tmp (a 4-tap discrete Gaussian at
+     * floor(radius) spacing, clamped edges, norm-divided), then
+     * vertically, and finally adds the scaled high-pass delta to r, g
+     * *and* b equally. This pass reproduces the HORIZONTAL blur only:
+     * it writes the blurred-luma plane to .x (the CPU's tmp buffer) —
+     * a drawn pass with a closed gate writes the ORIGINAL luma to .x
+     * instead, so the vertical pass's center-relative math stays exact
+     * in both shapes. The vertical pass (SHARPNESS_V) reads .x back
+     * beside the stage's ORIGINAL RGB (uGuide) and finishes the CPU's
+     * tail — the two-pass shape is the CPU's own (its blur is a
+     * horizontal pass into tmp, then a vertical pass into blur;
+     * collapsing the directions would change the image).
+     *
+     * Input: uSrc — the pointwise POST pass's RGBA32F output (this
+     * pass's input position IS the CPU's stage-21 input: after the
+     * pointwise stages, before stage 22). uSharpness carries the RAW
+     * grade.sharpness value, gated `if (uSharpness != 0.0)` exactly
+     * like the CPU call site's own outer gate; the amount mapping is the
+     * CPU's own, computed in-shader: clamp(0.5 * (raw/100), -0.5, 0.5)
+     * — NEGATIVE values are valid (softening), so there is NO
+     * [0,100] clamp and NO strength sub-gate (unlike the NR passes);
+     * a drawn pass with a closed gate is an exact pass-through, and the
+     * C++ session skips the unsharp draws entirely for a raw value of 0
+     * or a frame under the CPU's w<2/h<2 guard. texelFetch does NOT
+     * clamp: the CPU's max/min coordinate guards are load-bearing and
+     * carried verbatim, as is the exact tap order (xm, xp, xm2, xp2).
+     */
+    const val SHARPNESS_H: String = """#version 300 es
+
+// Sharpness, the horizontal half (stage 21 pass 1 of 2) - the CPU
+// rawedit::unsharpLumaImpl's horizontal blur run at radius 1.5, verbatim
+// (core/src/Develop.cpp). Writes the horizontally blurred luma plane to
+// .x (the CPU's tmp buffer); the vertical pass (SHARPNESS_V) reads it back
+// beside the ORIGINAL pixels (uGuide) and finishes the CPU's tail. See the
+// Kotlin doc above for the full stage contract.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;   // the pointwise post pass's RGBA32F output (this stage's input)
+uniform ivec2 uSize;            // width/height in pixels
+uniform float uSharpness;       // raw grade.sharpness; 0.0 = the CPU call site's own skip
+
+out vec4 oCol;
+
+// The CPU's own constants, verbatim (radius 1.5 -> step 1 both directions;
+// exp() of constant arguments is a constant expression in ES 3.00, so they
+// keep const exactly like the CPU's).
+const float kRadius = 1.5;
+const float kC0 = exp(-0.5 / (kRadius * kRadius));
+const float kC1 = exp(-2.0 / (kRadius * kRadius));
+const float kNorm = 1.0 + 2.0 * (kC0 + kC1);
+
+// The CPU's luma split at p (the plane the CPU computes once per pixel;
+// recomputed per read - identical math, identical answers).
+float lumaAt(ivec2 p) {
+    vec3 c = texelFetch(uSrc, p, 0).rgb;
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    vec3 orig = texelFetch(uSrc, g, 0).rgb;
+    // The CPU call site gates the whole stage on grade.sharpness != 0;
+    // this in-shader gate keeps a drawn pass an exact pass-through (the
+    // pointwise stages' own gate idiom). The amount mapping is the CPU
+    // call site's own: 0.5 * (raw/100) clamped to [-0.5, 0.5] - NEGATIVE
+    // values are valid (softening), so no [0,100] clamp, no sub-gate.
+    if (uSharpness != 0.0) {
+        float amount = clamp(0.5 * (uSharpness / 100.0), -0.5, 0.5);
+        // The CPU's horizontal pass, verbatim: the clamped columns (step
+        // = 1 for radius 1.5 - floor(1.5)), the exact tap order xm, xp,
+        // xm2, xp2, and the norm division (taps sum to 1, so a flat
+        // region's blur equals its value and the CPU's delta is exactly
+        // 0 there).
+        float y = lumaAt(g);
+        int xm = max(g.x - 1, 0);
+        int xp = min(g.x + 1, uSize.x - 1);
+        int xm2 = max(g.x - 2, 0);
+        int xp2 = min(g.x + 2, uSize.x - 1);
+        float s = y
+            + (lumaAt(ivec2(xm, g.y)) + lumaAt(ivec2(xp, g.y))) * kC0
+            + (lumaAt(ivec2(xm2, g.y)) + lumaAt(ivec2(xp2, g.y))) * kC1;
+        oCol = vec4(s / kNorm, 0.0, 0.0, 1.0);
+        return;
+    }
+    // Gate closed: the ORIGINAL luma to .x, so the vertical pass's
+    // center-relative math stays exact (its blur degenerates to the
+    // original luma; the CPU's tail delta is exactly 0).
+    oCol = vec4(lumaAt(g), 0.0, 0.0, 1.0);
+}
+"""
+
+    /**
+     * Sharpness, the VERTICAL half + the difference (CPU stage 21, pass
+     * 2 of 2) — rawedit::unsharpLumaImpl's vertical blur run and its
+     * high-pass tail, verbatim (core/src/Develop.cpp).
+     *
+     * Inputs: uSrc — SHARPNESS_H's output (.x = the horizontally blurred
+     * luma plane, the CPU's tmp buffer); uGuide — this stage's ORIGINAL
+     * input (the pointwise POST pass's RGBA32F output). The CPU's
+     * vertical pass centers on the HORIZONTAL OUTPUT at the same pixel
+     * (its v = tmp[y*w+x]), guides with the same tmp plane's rows, and
+     * the tail's delta is amount * (ORIGINAL luma - blur) added to r, g
+     * and b equally — so BOTH textures are load-bearing. Output: the
+     * sharpened RGB (the CPU's tail writes orig.rgb + vec3(d)).
+     *
+     * uSharpness carries the RAW grade value with the same gate and
+     * amount mapping as SHARPNESS_H (both passes of one CPU stage share
+     * one grade control). The tap order (ym, yp, ym2, yp2) and the norm
+     * division are the CPU's own, verbatim.
+     */
+    const val SHARPNESS_V: String = """#version 300 es
+
+// Sharpness, the vertical half + the difference (stage 21 pass 2 of 2) -
+// the CPU rawedit::unsharpLumaImpl's vertical blur run and its high-pass
+// tail, verbatim (core/src/Develop.cpp). Reads the horizontal pass's
+// blurred luma plane from uSrc (.x) and the ORIGINAL pixels from uGuide
+// (the pointwise post pass's output): the CPU's vertical pass centers on
+// the HORIZONTAL OUTPUT at the same pixel, and its tail's delta is
+// amount * (ORIGINAL luma - blur) added to r, g and b equally. See the
+// Kotlin doc above for the full stage contract.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;    // SHARPNESS_H's output: .x = the horizontally blurred luma
+uniform highp sampler2D uGuide;  // the pointwise post pass's output: the ORIGINAL pre-sharpen RGB
+uniform ivec2 uSize;             // width/height in pixels
+uniform float uSharpness;        // raw grade.sharpness; 0.0 = the CPU call site's own skip
+
+out vec4 oCol;
+
+// The CPU's own constants, verbatim (same as the horizontal pass).
+const float kRadius = 1.5;
+const float kC0 = exp(-0.5 / (kRadius * kRadius));
+const float kC1 = exp(-2.0 / (kRadius * kRadius));
+const float kNorm = 1.0 + 2.0 * (kC0 + kC1);
+
+// The CPU's luma split at p of the ORIGINAL image (uGuide): the plane the
+// CPU computed once from its input, and the plane its tail's delta reads.
+float lumaAt(ivec2 p) {
+    vec3 c = texelFetch(uGuide, p, 0).rgb;
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    vec3 orig = texelFetch(uGuide, g, 0).rgb;
+    if (uSharpness != 0.0) {
+        float amount = clamp(0.5 * (uSharpness / 100.0), -0.5, 0.5);
+        // The CPU's vertical pass, verbatim: the clamped rows (step = 1
+        // for radius 1.5), the exact tap order ym, yp, ym2, yp2, the
+        // CENTER tap = the horizontal output at the SAME pixel (its
+        // v = tmp[y*w+x]), and the norm division.
+        int ym = max(g.y - 1, 0);
+        int yp = min(g.y + 1, uSize.y - 1);
+        int ym2 = max(g.y - 2, 0);
+        int yp2 = min(g.y + 2, uSize.y - 1);
+        float v = texelFetch(uSrc, g, 0).x;
+        float s = v
+            + (texelFetch(uSrc, ivec2(g.x, ym), 0).x
+                + texelFetch(uSrc, ivec2(g.x, yp), 0).x) * kC0
+            + (texelFetch(uSrc, ivec2(g.x, ym2), 0).x
+                + texelFetch(uSrc, ivec2(g.x, yp2), 0).x) * kC1;
+        float blur = s / kNorm;
+        // The CPU's tail, verbatim: the scaled high-pass delta from the
+        // ORIGINAL luma, added to r, g and b equally (chroma and hue
+        // are preserved - no chroma halos).
+        float d = amount * (lumaAt(g) - blur);
+        oCol = vec4(orig + vec3(d), 1.0);
+        return;
+    }
+    // Gate closed: exact pass-through (the CPU's amount-0 shape).
+    oCol = vec4(orig, 1.0);
+}
+"""
+
+    /**
+     * Detail, the HORIZONTAL half (CPU stage 22, pass 1 of 2) — the same
+     * rawedit::unsharpLumaImpl structure at radius 0.75 (the CPU call
+     * site reuses the same kernel for the fine-texture scale; only the
+     * radius — and therefore the Gaussian constants — differ from
+     * stage 21). Verbatim (core/src/Develop.cpp): the luma plane, the
+     * 4-tap discrete Gaussian at floor(radius) spacing (step 1 for
+     * 0.75 too: the CPU's `radius < 1.0f ? 1.0f : floor(radius)`), the
+     * clamped edges, the norm division. Writes the blurred-luma plane
+     * to .x (the CPU's tmp buffer); the vertical pass (DETAIL_V) reads
+     * it back beside the stage's ORIGINAL RGB (uGuide — the sharpness
+     * output when stage 21 ran, else the pointwise POST pass's output:
+     * the CPU runs stage 22 on the stage-21 output).
+     *
+     * uDetail carries the RAW grade.detail value with the same gate
+     * and amount mapping as SHARPNESS_H (the CPU call site's own:
+     * clamp(0.5 * (raw/100), -0.5, 0.5), negatives valid).
+     */
+    const val DETAIL_H: String = """#version 300 es
+
+// Detail, the horizontal half (stage 22 pass 1 of 2) - the CPU
+// rawedit::unsharpLumaImpl's horizontal blur run at radius 0.75, verbatim
+// (core/src/Develop.cpp): the same kernel as stage 21 at the fine-texture
+// scale. Writes the horizontally blurred luma plane to .x (the CPU's tmp
+// buffer); the vertical pass (DETAIL_V) reads it back beside the ORIGINAL
+// pixels (uGuide) and finishes the CPU's tail. See the Kotlin doc above
+// for the full stage contract.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;   // the sharpness output, or the pointwise post pass's output when stage 21 is off
+uniform ivec2 uSize;            // width/height in pixels
+uniform float uDetail;          // raw grade.detail; 0.0 = the CPU call site's own skip
+
+out vec4 oCol;
+
+// The CPU's own constants, verbatim (radius 0.75 -> step 1 both
+// directions, the CPU's `radius < 1.0f ? 1.0f : floor(radius)`; exp() of
+// constant arguments is a constant expression in ES 3.00, so they keep
+// const exactly like the CPU's).
+const float kRadius = 0.75;
+const float kC0 = exp(-0.5 / (kRadius * kRadius));
+const float kC1 = exp(-2.0 / (kRadius * kRadius));
+const float kNorm = 1.0 + 2.0 * (kC0 + kC1);
+
+// The CPU's luma split at p (the plane the CPU computes once per pixel;
+// recomputed per read - identical math, identical answers).
+float lumaAt(ivec2 p) {
+    vec3 c = texelFetch(uSrc, p, 0).rgb;
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    vec3 orig = texelFetch(uSrc, g, 0).rgb;
+    // The CPU call site gates the whole stage on grade.detail != 0; the
+    // amount mapping is the CPU call site's own: 0.5 * (raw/100) clamped
+    // to [-0.5, 0.5] - NEGATIVE values are valid (softening).
+    if (uDetail != 0.0) {
+        float amount = clamp(0.5 * (uDetail / 100.0), -0.5, 0.5);
+        // The CPU's horizontal pass, verbatim: the clamped columns (step
+        // = 1 for radius 0.75 - the CPU's own < 1 fallback), the exact
+        // tap order xm, xp, xm2, xp2, and the norm division.
+        float y = lumaAt(g);
+        int xm = max(g.x - 1, 0);
+        int xp = min(g.x + 1, uSize.x - 1);
+        int xm2 = max(g.x - 2, 0);
+        int xp2 = min(g.x + 2, uSize.x - 1);
+        float s = y
+            + (lumaAt(ivec2(xm, g.y)) + lumaAt(ivec2(xp, g.y))) * kC0
+            + (lumaAt(ivec2(xm2, g.y)) + lumaAt(ivec2(xp2, g.y))) * kC1;
+        oCol = vec4(s / kNorm, 0.0, 0.0, 1.0);
+        return;
+    }
+    // Gate closed: the ORIGINAL luma to .x, so the vertical pass's
+    // center-relative math stays exact (its blur degenerates to the
+    // original luma; the CPU's tail delta is exactly 0).
+    oCol = vec4(lumaAt(g), 0.0, 0.0, 1.0);
+}
+"""
+
+    /**
+     * Detail, the VERTICAL half + the difference (CPU stage 22, pass
+     * 2 of 2) — rawedit::unsharpLumaImpl's vertical blur run and its
+     * high-pass tail at radius 0.75, verbatim (core/src/Develop.cpp).
+     *
+     * Inputs: uSrc — DETAIL_H's output (.x = the horizontally blurred
+     * luma plane, the CPU's tmp buffer); uGuide — this stage's ORIGINAL
+     * input (the sharpness output when stage 21 ran, else the pointwise
+     * POST pass's output — the CPU runs stage 22 on the stage-21
+     * output). The center tap is the HORIZONTAL OUTPUT at the same
+     * pixel; the tail's delta is amount * (ORIGINAL luma - blur) added
+     * to r, g and b equally. Output: the detail-graded RGB.
+     *
+     * uDetail carries the RAW grade value with the same gate and
+     * amount mapping as DETAIL_H. The tap order (ym, yp, ym2, yp2) and
+     * the norm division are the CPU's own, verbatim.
+     */
+    const val DETAIL_V: String = """#version 300 es
+
+// Detail, the vertical half + the difference (stage 22 pass 2 of 2) - the
+// CPU rawedit::unsharpLumaImpl's vertical blur run and its high-pass tail
+// at radius 0.75, verbatim (core/src/Develop.cpp). Reads the horizontal
+// pass's blurred luma plane from uSrc (.x) and the ORIGINAL pixels from
+// uGuide (the sharpness output when stage 21 ran, else the pointwise post
+// pass's output): the CPU's vertical pass centers on the HORIZONTAL
+// OUTPUT at the same pixel, and its tail's delta is amount * (ORIGINAL
+// luma - blur) added to r, g and b equally. See the Kotlin doc above for
+// the full stage contract.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;    // DETAIL_H's output: .x = the horizontally blurred luma
+uniform highp sampler2D uGuide;  // the sharpness output, or the pointwise post pass's output when stage 21 is off
+uniform ivec2 uSize;             // width/height in pixels
+uniform float uDetail;           // raw grade.detail; 0.0 = the CPU call site's own skip
+
+out vec4 oCol;
+
+// The CPU's own constants, verbatim (same as the horizontal pass).
+const float kRadius = 0.75;
+const float kC0 = exp(-0.5 / (kRadius * kRadius));
+const float kC1 = exp(-2.0 / (kRadius * kRadius));
+const float kNorm = 1.0 + 2.0 * (kC0 + kC1);
+
+// The CPU's luma split at p of the ORIGINAL image (uGuide): the plane the
+// CPU computed once from its input, and the plane its tail's delta reads.
+float lumaAt(ivec2 p) {
+    vec3 c = texelFetch(uGuide, p, 0).rgb;
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    vec3 orig = texelFetch(uGuide, g, 0).rgb;
+    if (uDetail != 0.0) {
+        float amount = clamp(0.5 * (uDetail / 100.0), -0.5, 0.5);
+        // The CPU's vertical pass, verbatim: the clamped rows (step = 1
+        // for radius 0.75 - the CPU's own < 1 fallback), the exact tap
+        // order ym, yp, ym2, yp2, the CENTER tap = the horizontal output
+        // at the SAME pixel (its v = tmp[y*w+x]), and the norm division.
+        int ym = max(g.y - 1, 0);
+        int yp = min(g.y + 1, uSize.y - 1);
+        int ym2 = max(g.y - 2, 0);
+        int yp2 = min(g.y + 2, uSize.y - 1);
+        float v = texelFetch(uSrc, g, 0).x;
+        float s = v
+            + (texelFetch(uSrc, ivec2(g.x, ym), 0).x
+                + texelFetch(uSrc, ivec2(g.x, yp), 0).x) * kC0
+            + (texelFetch(uSrc, ivec2(g.x, ym2), 0).x
+                + texelFetch(uSrc, ivec2(g.x, yp2), 0).x) * kC1;
+        float blur = s / kNorm;
+        // The CPU's tail, verbatim: the scaled high-pass delta from the
+        // ORIGINAL luma, added to r, g and b equally (chroma and hue
+        // are preserved - no chroma halos).
+        float d = amount * (lumaAt(g) - blur);
+        oCol = vec4(orig + vec3(d), 1.0);
+        return;
+    }
+    // Gate closed: exact pass-through (the CPU's amount-0 shape).
     oCol = vec4(orig, 1.0);
 }
 """

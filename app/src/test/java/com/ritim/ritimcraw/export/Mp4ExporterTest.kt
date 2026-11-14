@@ -2065,8 +2065,10 @@ class Mp4ExporterTest {
         // its own when a log is attached AND stabilization is on (the same
         // gate the timing summary uses); a neutral grade says "none".
         // Chroma denoise is FRAGMENT-COVERED since the spatial-NR port
-        // (stages 7+8), so it can no longer appear as a token — the
-        // sharpening knob is the uncovered-stage stand-in now.
+        // (stages 7+8) and sharpness/detail since the sharpness/detail port
+        // (stages 21+22), so neither can appear as a token — a LUT grade
+        // with the texture path unavailable is the uncovered-stage
+        // stand-in now (the ONLY stage token left anywhere).
         val lines = ArrayList<String>()
         ExportPipeline(
             FakeSession(frames = 2, audio = false),
@@ -2074,16 +2076,20 @@ class Mp4ExporterTest {
             lines::add,
         ).run(
             7,
-            GradeK(sharpness = 25f, stabilization = true),
+            GradeK(lutId = "milog", lutStrength = 85f, stabilization = true),
             "/tmp/out.partial",
             gyroPath = "/tmp/gyro.log",
         )
         val line = lines.first { it.startsWith("render backend: ") }
-        assertTrue("sharpness missing: $line", line.contains("sharpness"))
+        assertTrue("lut missing: $line", line.contains("lut"))
         assertTrue("gyro-warp missing: $line", line.contains("gyro-warp"))
         assertTrue(
             "chroma-denoise must be absent (fragment-covered): $line",
             !line.contains("chroma-denoise"),
+        )
+        assertTrue(
+            "sharpness must be absent (fragment-covered): $line",
+            !line.contains("sharpness"),
         )
         // Stabilization off: the attached log alone does not warp, so no
         // token — the line stays honest.
@@ -2670,9 +2676,16 @@ class Mp4ExporterTest {
         // The FREE coverage check runs first: an uncovered grade never
         // pays the probe or the parity run, and the fallback line names
         // the STAGE tokens only — never gate tokens (no gate was measured).
-        // Sharpening is the uncovered stand-in (chroma denoise is
-        // fragment-covered since the spatial-NR port, so it can no longer
-        // force the CPU path).
+        // A temporal-NR grade is the never-probe stand-in: temporal NR is
+        // a PRE-develop stage (fragmentUncoveredPreStages), so its
+        // coverage check is FREE and runs before any probe is paid.
+        // The stage-token vocabulary is down to the runtime LUT leg
+        // (chroma denoise is fragment-covered since the spatial-NR port
+        // and sharpness/detail since the sharpness/detail port) — but a
+        // LUT grade is the ONE exception that pays the probe BEFORE the
+        // coverage decision (the LUT fact can only come from the probe
+        // itself), so it cannot stand in for never-probes; the
+        // lut_grade_falls_back test owns that leg.
         val session = FakeSession(frames = 2, audio = false)
         val gpu = FakeGpuDevelop()
         val lines = ArrayList<String>()
@@ -2680,7 +2693,7 @@ class Mp4ExporterTest {
             session, FakeWriter(), lines::add,
             renderBackend = RenderBackend.GPU_EXPERIMENTAL,
             gpuDevelop = gpu,
-        ).run(7, GradeK(sharpness = 25f), "/tmp/out.partial")
+        ).run(7, GradeK(temporalNr = true, temporalStrength = 5f), "/tmp/out.partial")
         assertEquals(0, gpu.probeCalls)
         assertTrue(gpu.parityFds.isEmpty())
         assertEquals(0, gpu.openCalls)
@@ -2689,14 +2702,14 @@ class Mp4ExporterTest {
         val fallback = lines.first { it.startsWith("render backend fallback: ") }
         assertTrue("requested missing: $fallback", fallback.contains("requested=GPU_EXPERIMENTAL"))
         assertTrue("effective missing: $fallback", fallback.contains("effective=CPU"))
-        assertTrue("stage token missing: $fallback", fallback.contains("reason=sharpness"))
+        assertTrue("stage token missing: $fallback", fallback.contains("reason=temporal-nr"))
         assertFalse(
             "gate tokens must be absent: $fallback",
             fallback.contains("no-egl-context"),
         )
         // The visibility line carries the SAME tokens (no second truth).
         val backend = lines.first { it.startsWith("render backend: ") }
-        assertTrue("same tokens expected: $backend", backend.contains("sharpness"))
+        assertTrue("same tokens expected: $backend", backend.contains("temporal-nr"))
     }
 
     @Test

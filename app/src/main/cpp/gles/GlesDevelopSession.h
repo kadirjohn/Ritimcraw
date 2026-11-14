@@ -10,20 +10,28 @@
 //   - one EGL context (gles::EglSession from GlesPipeline.h, the grafika
 //     topology: display -> RGBA8888/pbuffer config -> ES 3 context -> 1x1
 //     pbuffer), confined to ONE dedicated GL thread;
-//   - the seven programs (pre = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_PRE,
-//     post = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_POST, the three spatial-NR
-//     passes chromaH/chromaV/luma = FULLSCREEN_VERTEX + NR_CHROMA_H /
-//     NR_CHROMA_V / NR_LUMA, store = FULLSCREEN_VERTEX_310 + STORE_FRAGMENT,
-//     blit = FULLSCREEN_VERTEX + BLIT_FRAGMENT), compiled ONCE at open —
-//     the caller provides the Kotlin single-source-of-truth texts, exactly
-//     like the harness does. The develop pair is the SPLIT of the fused
-//     DEVELOP_FRAGMENT at the CPU's stage 6/9 boundary: pre runs stages
-//     1-6 into an RGBA32F intermediate, the NR passes (gated per grade)
-//     sit at the CPU's exact stage 7/8 position, post runs stages 9-20+23
-//     +OETF into the develop texture. The fused text itself stays the
-//     frozen parity harness's own source (GlesPipeline.cpp) — the split
-//     passes compose the same shared fragments, so the two chains cannot
-//     drift;
+//   - the twelve programs (pre = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_PRE,
+//     post = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_POST — the pointwise
+//     half — tail = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_TAIL, the four
+//     unsharp passes sharpnessH/sharpnessV/detailH/detailV =
+//     FULLSCREEN_VERTEX + SHARPNESS_H / SHARPNESS_V / DETAIL_H /
+//     DETAIL_V, the three spatial-NR passes chromaH/chromaV/luma =
+//     FULLSCREEN_VERTEX + NR_CHROMA_H / NR_CHROMA_V / NR_LUMA, store =
+//     FULLSCREEN_VERTEX_310 + STORE_FRAGMENT, blit = FULLSCREEN_VERTEX +
+//     BLIT_FRAGMENT), compiled ONCE at open — the caller provides the
+//     Kotlin single-source-of-truth texts, exactly like the harness does.
+//     The develop chain is the SPLIT of the fused DEVELOP_FRAGMENT at the
+//     CPU's stage 6/9 and 20/23 boundaries: pre runs stages 1-6 into an
+//     RGBA32F intermediate, the NR passes (gated per grade) sit at the
+//     CPU's exact stage 7/8 position, post runs the pointwise stages
+//     9-20, the four unsharp passes (gated per grade) run the CPU's
+//     stages 21/22 — H then V per stage, the V pass reading the stage's
+//     own input as its ORIGINAL-luma guide — and tail runs stages
+//     23+24+OETF into the develop texture. The three-way split
+//     recomposes the fused text BYTE-IDENTICALLY (the host-checked
+//     invariant), and the fused text itself stays the frozen parity
+//     harness's own source (GlesPipeline.cpp) — the split passes compose
+//     the same shared fragments, so the two chains cannot drift;
 //   - every uniform location, resolved ONCE at open;
 //   - the CFA (GL_R16UI), shading (GL_R32F), develop (RGBA32F), the three
 //     chain intermediates (RGBA32F ping-pong textures A/B/C + their FBOs —
@@ -72,10 +80,25 @@
 // point, 11 shadows, 12 midtones, 13 contrast, 16 temperature, 17 tint,
 // 18 color wheel, 19 split tone, 20 saturation — each the CPU loop's
 // exact math behind a raw-value uniform), 14 (exposure = 2^ev),
-// 15 (highlights = the CPU stage-15 shoulder behind uHighlights),
-// 23 (tonemap modes 0-5) and the OETF tail (uOetf=1 — the shader's
+// 15 (highlights = the CPU stage-15 shoulder behind uHighlights)
+// in the POINTWISE pass; 21 (sharpness) + 22 (detail) — the CPU's
+// unsharpLumaImpl verbatim as FOUR passes: the H pass blurs ONLY luma
+// (radius 1.5 for sharpness, 0.75 for detail — both step 1, the CPU's
+// own `radius < 1 ? 1 : floor(radius)` fallback; the gate-closed
+// writes keep the original luma), the V pass finishes the separable
+// blur and lifts all three channels by amount*(luma - blur) — reading
+// its blurred values from the H pass's output and its ORIGINAL luma +
+// RGB from the stage's own input via uGuide (the CPU's tail reads the
+// ORIGINAL luma, not the sharpened one). RAW uSharpness/uDetail
+// values, NO [0,100] clamp: the CPU's own amount mapping
+// min(max(0.5*(raw/100), -0.5), 0.5) runs in-shader, so NEGATIVE
+// values are valid softening; the session skips the four draws
+// entirely for a raw 0 or a frame under the CPU's own w<2/h<2 guard,
+// and the in-shader gate is the second lock — at the CPU's exact stage
+// position (AFTER the pointwise stages, BEFORE tonemap); and 23
+// (tonemap modes 0-5) and the OETF tail (uOetf=1 — the shader's
 // linearToRec709 is textually identical to core/src/Transfer.cpp's, the
-// commit-verified match) in the POST pass. The readback
+// commit-verified match) in the TAIL pass. The readback
 // quantize is the toByte tail verbatim (clamp [0,1], then v*255+0.5) —
 // linearToRec709 is NOT applied again: the shader already did. The
 // caller's grade must have every active stage inside the fragment-covered
@@ -190,6 +213,17 @@ struct DevelopFrameRequest {
     // keeps commit (a)'s sessions byte-identical to the pre-NR chain.
     float chromaDenoise = 0.0f;  // raw grade.chromaDenoise
     float noiseReduction = 0.0f;  // raw grade.noiseReduction
+    // Stages 21/22 (sharpness/detail), RAW grade values — 0.0f is the CPU
+    // call site's own skip, and NEGATIVE values are valid softening (the
+    // CPU's own amount mapping min(max(0.5*(raw/100), -0.5), 0.5) runs
+    // in-shader; there is NO [0,100] clamp here, unlike the NR controls).
+    // The session skips the four unsharp draws entirely for a raw 0 or a
+    // frame under the CPU's own w<2/h<2 guard; the in-shader gate is the
+    // second lock. Populated through the JNI seam in commit (b); 0.0f
+    // here keeps commit (a)'s sessions byte-identical to the pre-21/22
+    // chain.
+    float sharpness = 0.0f;  // raw grade.sharpness (stage 21)
+    float detail = 0.0f;      // raw grade.detail (stage 22)
     // Stage 24 LUT, the LUT port's session-side shape (commit (a) of the LUT
     // mission). lutStrength is the RAW grade value on rawedit's own [0,1]
     // scale (GradeK's percent / 100, mapped Kotlin-side before the seam —
@@ -229,18 +263,26 @@ public:
     // Spawns the GL thread, opens the EGL context on it, checks the gates
     // (ES 3.1+ — STORE_FRAGMENT is 310 es — and GL_EXT_color_buffer_float,
     // re-read in THIS context, never trusted from a probe's throwaway one),
-    // compiles the seven programs and resolves every uniform location.
+    // compiles the twelve programs and resolves every uniform location.
     // Returns null with *detail naming the first failing step on any
-    // failure (the GL thread is joined; nothing leaks). The nine sources
-    // are the Kotlin single-source-of-truth texts (GlesShaderSources),
-    // host-validated: vertex + the split develop pair (pre/post) + the
-    // three NR fragments + store + the blit fragment that draws the
-    // developed texture to the encoder surface.
+    // failure (the GL thread is joined; nothing leaks). The fourteen
+    // sources are the Kotlin single-source-of-truth texts
+    // (GlesShaderSources), host-validated: the two vertex variants
+    // (vertex + vertex310) + the three-way split develop chain (pre /
+    // pointwise post / tail) + the four unsharp fragments
+    // (sharpnessH/sharpnessV/detailH/detailV) + the three NR fragments +
+    // store + the blit fragment that draws the developed texture to
+    // the encoder surface.
     static std::unique_ptr<DevelopSession> open(
         const std::string& vertexSource,
         const std::string& vertex310Source,
         const std::string& preFragmentSource,
         const std::string& postFragmentSource,
+        const std::string& tailFragmentSource,
+        const std::string& sharpnessHSource,
+        const std::string& sharpnessVSource,
+        const std::string& detailHSource,
+        const std::string& detailVSource,
         const std::string& nrChromaHSource,
         const std::string& nrChromaVSource,
         const std::string& nrLumaSource,

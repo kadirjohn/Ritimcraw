@@ -48,8 +48,23 @@ object GlesShaderValidator {
         /** DEVELOP_FRAGMENT_PRE — GLSL ES 3.00 fragment, the split chain's stages 1-6 draw. */
         DEVELOP_FRAGMENT_PRE("#version 300 es"),
 
-        /** DEVELOP_FRAGMENT_POST — GLSL ES 3.00 fragment, the split chain's stages 9-23+OETF draw. */
+        /** DEVELOP_FRAGMENT_POST — GLSL ES 3.00 fragment, the split chain's stages 9-20 pointwise draw. */
         DEVELOP_FRAGMENT_POST("#version 300 es"),
+
+        /** DEVELOP_FRAGMENT_TAIL — GLSL ES 3.00 fragment, the split chain's stages 23+24+OETF draw. */
+        DEVELOP_FRAGMENT_TAIL("#version 300 es"),
+
+        /** SHARPNESS_H — GLSL ES 3.00 fragment, sharpness's horizontal half (stage 21, pass 1 of 2). */
+        SHARPNESS_H("#version 300 es"),
+
+        /** SHARPNESS_V — GLSL ES 3.00 fragment, sharpness's vertical half + difference (stage 21, pass 2 of 2). */
+        SHARPNESS_V("#version 300 es"),
+
+        /** DETAIL_H — GLSL ES 3.00 fragment, detail's horizontal half (stage 22, pass 1 of 2). */
+        DETAIL_H("#version 300 es"),
+
+        /** DETAIL_V — GLSL ES 3.00 fragment, detail's vertical half + difference (stage 22, pass 2 of 2). */
+        DETAIL_V("#version 300 es"),
 
         /** NR_CHROMA_H — GLSL ES 3.00 fragment, chroma NR's horizontal half (stage 7, pass 1 of 2). */
         NR_CHROMA_H("#version 300 es"),
@@ -117,6 +132,11 @@ object GlesShaderValidator {
             Kind.DEVELOP_FRAGMENT -> developFragmentProblems(stripped, out)
             Kind.DEVELOP_FRAGMENT_PRE -> developFragmentPreProblems(stripped, out)
             Kind.DEVELOP_FRAGMENT_POST -> developFragmentPostProblems(stripped, out)
+            Kind.DEVELOP_FRAGMENT_TAIL -> developFragmentTailProblems(stripped, out)
+            Kind.SHARPNESS_H -> sharpnessHProblems(stripped, out)
+            Kind.SHARPNESS_V -> sharpnessVProblems(stripped, out)
+            Kind.DETAIL_H -> detailHProblems(stripped, out)
+            Kind.DETAIL_V -> detailVProblems(stripped, out)
             Kind.NR_CHROMA_H -> nrChromaHProblems(stripped, out)
             Kind.NR_CHROMA_V -> nrChromaVProblems(stripped, out)
             Kind.NR_LUMA -> nrLumaProblems(stripped, out)
@@ -185,9 +205,9 @@ object GlesShaderValidator {
         // exact neutral fast path so the frozen harness stays byte-honest);
         // the develop/preview SESSIONS (GlesDevelopSession,
         // GlesPreviewSession) bind the grade entries per frame. The list is
-        // the PRE set + the POST set (the spatial-NR port's split shares
-        // the exact same declarations with the standalone PRE/POST passes).
-        for (u in kDevelopPreUniformDecls + kDevelopPostUniformDecls) {
+        // the PRE set + the pointwise set + the tail set (the split passes
+        // share the exact same declarations with the fused pass).
+        for (u in kDevelopPreUniformDecls + kDevelopPointwiseUniformDecls + kDevelopTailUniformDecls) {
             if (!s.contains(u)) {
                 out += "missing `$u` (the C++ harness sets it)"
             }
@@ -196,7 +216,8 @@ object GlesShaderValidator {
             out += "missing `out vec4 oCol;` (the single color attachment output)"
         }
         checkDevelopPreStageText(s, out)
-        checkDevelopPostStageText(s, out)
+        checkDevelopPointwiseStageText(s, out)
+        checkDevelopTailStageText(s, out)
         // The application point: the whole pointwise grade chain sits in
         // the CPU's stage order — 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 ->
         // 16 -> 17 -> 18 -> 19 -> 20 -> 23 -> 24 (LUT) -> OETF (core/src/
@@ -260,8 +281,8 @@ object GlesShaderValidator {
         "uniform int uHasProfile;",
     )
 
-    /** Stages 9-23+OETF's uniform declarations (the POST pass set; the fused pass's own text). */
-    private val kDevelopPostUniformDecls = listOf(
+    /** Stages 9-20's uniform declarations (the pointwise pass set; the fused pass's own text). */
+    private val kDevelopPointwiseUniformDecls = listOf(
         "uniform float uExposure;",
         "uniform float uHighlights;",
         "uniform float uBlackPoint;",
@@ -283,6 +304,10 @@ object GlesShaderValidator {
         "uniform float uSplitHighlightHue;",
         "uniform float uSplitBalance;",
         "uniform float uSaturation;",
+    )
+
+    /** Stages 23+24+OETF's uniform declarations (the tail pass set; the fused pass's own text). */
+    private val kDevelopTailUniformDecls = listOf(
         "uniform int uTonemap;",
         "uniform int uOetf;",
         // Stage 24 LUT (the LUT port, commit (a)): the raw strength ([0,1];
@@ -401,12 +426,12 @@ object GlesShaderValidator {
     }
 
     /**
-     * The POST stage text (stages 9-20 + 23 + OETF): smoothstepf, the
-     * pointwise stage gates and math, the AgX/ACES tonemap contracts and
-     * the const discipline. Shared by the fused pass and the standalone
-     * DEVELOP_FRAGMENT_POST — the same shared fragments, the same checks.
+     * The pointwise stage text (stages 9-20): smoothstepf's Hermite form,
+     * the stage gates and math, and the pointwise const discipline. Shared
+     * by the fused pass and the standalone DEVELOP_FRAGMENT_POST — the
+     * same shared fragments, the same checks.
      */
-    private fun checkDevelopPostStageText(s: String, out: MutableList<String>) {
+    private fun checkDevelopPointwiseStageText(s: String, out: MutableList<String>) {
         // The CPU rawedit::smoothstepf helper (core/src/Develop.cpp), which
         // the tone stages (11, 12) and the color stages (18, 19) blend
         // their band remaps in with. A silent edit of the Hermite form
@@ -521,15 +546,6 @@ object GlesShaderValidator {
             out += "missing the stage-13 pivot remap " +
                 "(`c = pivot + (c - pivot) * slope;` — the CPU stage-13 " +
                 "pivot + (v - pivot) * slope form)"
-        }
-        // The OETF constants — rawedit::linearToRec709 (Transfer.cpp).
-        if (!s.contains("if (lin < 0.018) return 4.5 * lin;")) {
-            out += "missing the OETF linear segment " +
-                "(`if (lin < 0.018) return 4.5 * lin;` — rawedit::linearToRec709)"
-        }
-        if (!s.contains("1.099 * pow(lin, 0.45) - 0.099")) {
-            out += "missing the OETF power segment " +
-                "(`1.099 * pow(lin, 0.45) - 0.099` — rawedit::linearToRec709)"
         }
         // Stage 15: the CPU highlights shoulder, verbatim — the stage-15
         // loop in rawedit::developCpu (core/src/Develop.cpp). The gate,
@@ -745,6 +761,53 @@ object GlesShaderValidator {
                 "(`c = luma + (c - luma) * f;` — the CPU stage-20 " +
                 "luma + (v - luma) * f form)"
         }
+        // GLSL ES 3.00 const requires a CONSTANT-expression initializer.
+        // The CPU's `const` is read-only, NOT the GLSL meaning — a `const` on
+        // a parameter/uniform-derived local is a device compile error. The
+        // literal-only declarations (the stage-13 pivot, the stage-19
+        // tintAmount, the stage-15 knee/span) keep const; these must not.
+        if (s.contains("const float lift") || s.contains("const float scale") ||
+            s.contains("const float strength") || s.contains("const float wDark") ||
+            s.contains("const float wMid") || s.contains("const float slopeC") ||
+            s.contains("const float slope =") || s.contains("const float tempShift") ||
+            s.contains("const float warmGain") || s.contains("const float coolGain") ||
+            s.contains("const float greenGain") || s.contains("const float xBlend") ||
+            s.contains("const float yBlend") || s.contains("const float wHigh") ||
+            s.contains("const float m =") || s.contains("const vec3 sh") ||
+            s.contains("const vec3 hl") || s.contains("const float wShadow") ||
+            s.contains("const float wHighlight") || s.contains("const float f =") ||
+            s.contains("const vec3 gains") || s.contains("const float s =") ||
+            s.contains("const float mx") || s.contains("const float over") ||
+            s.contains("const float t =") || s.contains("const float shoulder") ||
+            s.contains("const float newMx") || s.contains("const float gain") ||
+            s.contains("const float luma")
+        ) {
+            out += "a pointwise-stage local uses `const` " +
+                "with a non-constant initializer (GLSL ES 3.00 requires " +
+                "constant expressions for const; the CPU's read-only const " +
+                "does not carry — drop the qualifier, keep the literal-only " +
+                "declarations)"
+        }
+    }
+
+    /**
+     * The tail stage text (stages 23 + 24 + OETF): the AgX/ACES tonemap
+     * contracts, the LUT block, the const discipline and the 23/24
+     * application order. Shared by the fused pass and the standalone
+     * DEVELOP_FRAGMENT_TAIL — the same shared fragments, the same checks.
+     */
+    private fun checkDevelopTailStageText(s: String, out: MutableList<String>) {
+        // The OETF constants — rawedit::linearToRec709 (Transfer.cpp). The
+        // helper belongs to the tail pass (only the tail's OETF block calls
+        // it; the pointwise pass's stages 9-20 never do).
+        if (!s.contains("if (lin < 0.018) return 4.5 * lin;")) {
+            out += "missing the OETF linear segment " +
+                "(`if (lin < 0.018) return 4.5 * lin;` — rawedit::linearToRec709)"
+        }
+        if (!s.contains("1.099 * pow(lin, 0.45) - 0.099")) {
+            out += "missing the OETF power segment " +
+                "(`1.099 * pow(lin, 0.45) - 0.099` — rawedit::linearToRec709)"
+        }
         // Stage 23: the CPU tonemap math verbatim — rawedit::
         // tonemapFrameImpl (core/src/Develop.cpp). The rational-function
         // products and the cancelling polynomial terms are
@@ -886,29 +949,14 @@ object GlesShaderValidator {
         // GLSL ES 3.00 const requires a CONSTANT-expression initializer.
         // The CPU's `const` is read-only, NOT the GLSL meaning — a `const` on
         // a parameter/uniform-derived local is a device compile error. The
-        // literal-only declarations (the ACES a/b/c/d/e, minEv/maxEv, the
-        // stage-13 pivot, the stage-19 tintAmount and the global look
-        // tables) keep const; these must not.
+        // literal-only declarations (the ACES a/b/c/d/e, minEv/maxEv and the
+        // global look tables) keep const; these must not.
         if (s.contains("const float num") || s.contains("const float den") ||
             s.contains("const float y = den") || s.contains("const float x2") ||
             s.contains("const float x4") || s.contains("const int look") ||
-            s.contains("const float luma") || s.contains("const float s =") ||
-            s.contains("const float mx") || s.contains("const float over") ||
-            s.contains("const float t =") || s.contains("const float shoulder") ||
-            s.contains("const float newMx") || s.contains("const float gain") ||
-            s.contains("const float lift") || s.contains("const float scale") ||
-            s.contains("const float strength") || s.contains("const float wDark") ||
-            s.contains("const float wMid") || s.contains("const float slopeC") ||
-            s.contains("const float slope =") || s.contains("const float tempShift") ||
-            s.contains("const float warmGain") || s.contains("const float coolGain") ||
-            s.contains("const float greenGain") || s.contains("const float xBlend") ||
-            s.contains("const float yBlend") || s.contains("const float wHigh") ||
-            s.contains("const float m =") || s.contains("const vec3 sh") ||
-            s.contains("const vec3 hl") || s.contains("const float wShadow") ||
-            s.contains("const float wHighlight") || s.contains("const float f =") ||
-            s.contains("const vec3 gains")
+            s.contains("const float luma")
         ) {
-            out += "a tonemap, highlights or pointwise-stage local uses `const` " +
+            out += "a tonemap local uses `const` " +
                 "with a non-constant initializer (GLSL ES 3.00 requires " +
                 "constant expressions for const; the CPU's read-only const " +
                 "does not carry — drop the qualifier, keep the literal-only " +
@@ -1048,52 +1096,37 @@ object GlesShaderValidator {
                 "lutPx*s + baseline*(1-s) mix, the strength knob's whole " +
                 "effect)"
         }
-        // The application point: the pointwise grade chain sits in the
-        // CPU's stage order — 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16
-        // -> 17 -> 18 -> 19 -> 20 -> 23 -> 24 (LUT) -> OETF (core/src/
-        // Develop.cpp developCpu, then the JNI tail's OETF). Any stage
-        // moved across a neighbor is a different image, not a refactor.
-        // Stage 24's role-2 (SceneLook) block sits BEFORE tonemap and the
+        // The application point: the tail's own four blocks sit in the
+        // CPU's stage order — 24 (LUT, SceneLook) -> 23 (tonemap) -> 24
+        // (LUT, every other role) -> OETF (core/src/Develop.cpp
+        // developCpu, then the JNI tail's OETF). Any block moved across a
+        // neighbor is a different image, not a refactor. Stage 24's
+        // role-2 (SceneLook) block sits BEFORE tonemap and the
         // every-other-role block AFTER it — applyManagedLutStage's own
         // per-role order — so both LUT gates are pinned here around
-        // tonemap, between saturation and the OETF. The camera-matrix 6/9
-        // cut is deliberately NOT part of this check — the standalone
-        // POST pass never contains the PRE text; the fused pass checks the
-        // full chain including the cut (and rides this check too, where it
-        // is implied by the full-chain one).
-        val blackPointIdx = s.indexOf("if (uBlackPoint != 0.0) {")
-        val whitePointIdx = s.indexOf("if (uWhitePoint != 0.0) {")
-        val shadowsIdx = s.indexOf("if (uShadows != 0.0) {")
-        val midtonesIdx = s.indexOf("if (uMidtones != 0.0) {")
-        val contrastIdx = s.indexOf("if (uContrast != 0.0) {")
-        val exposureIdx = s.indexOf("c *= uExposure;")
-        val highlightsIdx = s.indexOf("if (uHighlights != 0.0) {")
-        val wbIdx = s.indexOf("if (uWbManual == 1) {")
-        val tintIdx = s.indexOf("if (uWbManual == 1 && uTint != 0.0) {")
-        val wheelIdx = s.indexOf(
-            "if (uWheelShadowX != 0.0 || uWheelShadowY != 0.0 ||"
-        )
-        val splitIdx = s.indexOf("if (uSplitActive == 1) {")
-        val saturationIdx = s.indexOf("if (uSaturation != 0.0) {")
+        // tonemap, between the fetch and the OETF. The pointwise gates
+        // (blackPoint..saturation) are deliberately NOT part of this
+        // check — the standalone TAIL pass never contains the pointwise
+        // text (the 20/23 cut lands before it); the fused pass checks the
+        // full chain including every pointwise gate in its own
+        // full-chain assertion (and rides this check too, where the
+        // pointwise blocks precede the tail's and the relative order is
+        // implied).
         val tonemapIdx = s.indexOf("if (uTonemap != 0) {")
         val lutSceneIdx = s.indexOf("if (uLutRole == 2 && uLutStrength != 0.0) {")
         val lutPostIdx = s.indexOf("if (uLutStrength != 0.0 && uLutRole != 2) {")
         val oetfIdx = s.indexOf("if (uOetf == 1) {")
         val order = listOf(
-            blackPointIdx, whitePointIdx, shadowsIdx, midtonesIdx,
-            contrastIdx, exposureIdx, highlightsIdx, wbIdx, tintIdx,
-            wheelIdx, splitIdx, saturationIdx, lutSceneIdx, tonemapIdx,
-            lutPostIdx, oetfIdx,
+            lutSceneIdx, tonemapIdx, lutPostIdx, oetfIdx,
         )
         if (order.any { it < 0 } || order.zipWithNext().any { (a, b) -> a >= b }) {
-            out += "the highlights/tonemap/LUT application point is wrong " +
-                "(the pointwise grade chain must sit in the CPU stage order " +
-                "9 -> 10 -> 11 -> 12 -> 13 -> 14 (exposure) -> 15 -> 16 -> " +
-                "17 -> 18 -> 19 -> 20 -> 23 (tonemap) -> 24 (LUT) -> OETF, " +
-                "each block between its CPU neighbors — developCpu's exact " +
-                "order, with stage 24's SceneLook block BEFORE tonemap and " +
-                "every other role's AFTER it, applyManagedLutStage's own " +
-                "per-role order)"
+            out += "the tonemap/LUT application point is wrong " +
+                "(the tail blocks must sit in the CPU stage order " +
+                "24 (LUT SceneLook) -> 23 (tonemap) -> 24 (LUT, every other " +
+                "role) -> OETF, each block between its CPU neighbors — " +
+                "developCpu's exact order, with stage 24's SceneLook block " +
+                "BEFORE tonemap and every other role's AFTER it, " +
+                "applyManagedLutStage's own per-role order)"
         }
     }
 
@@ -1128,7 +1161,7 @@ object GlesShaderValidator {
         // PRE pass. A leaked declaration would mean the cut landed inside
         // the pointwise chain, which would double-apply those stages
         // (once here, once in POST).
-        for (u in kDevelopPostUniformDecls) {
+        for (u in kDevelopPointwiseUniformDecls + kDevelopTailUniformDecls) {
             if (s.contains(u)) {
                 out += "a POST-stage uniform leaked into the PRE pass " +
                     "(`$u` — the 6/9 cut must land between stages 6 and 9; " +
@@ -1139,10 +1172,12 @@ object GlesShaderValidator {
 
     /**
      * DEVELOP_FRAGMENT_POST's contract: uSrc (the chain intermediate) +
-     * the fused pass's own POST uniform set + the POST stage text, PLUS
-     * the boundary honesty — NO pre-stage uniform or demosaic text may
-     * appear (this pass must be a complete, self-contained stages 9-23+
-     * OETF draw whose ONLY input is the intermediate texel).
+     * the pointwise uniform set (stages 9-20) + the pointwise stage
+     * text, PLUS the boundary honesty — NO pre-stage uniform, NO
+     * tail-stage uniform and no demosaic text may appear (this pass
+     * must be a complete, self-contained stages 9-20 pointwise draw
+     * whose ONLY input is the intermediate texel; the stages 23+24+OETF
+     * tail is the TAIL pass's, a separate draw).
      */
     private fun developFragmentPostProblems(s: String, out: MutableList<String>) {
         if (!s.contains("uniform highp sampler2D uSrc;")) {
@@ -1154,7 +1189,7 @@ object GlesShaderValidator {
             out += "missing `uniform ivec2 uSize;` (the session sets it — " +
                 "the intermediate's dims, same as the CFA's)"
         }
-        for (u in kDevelopPostUniformDecls) {
+        for (u in kDevelopPointwiseUniformDecls) {
             if (!s.contains(u)) {
                 out += "missing `$u` (the C++ session sets it)"
             }
@@ -1170,7 +1205,7 @@ object GlesShaderValidator {
                 "the demosaic/WB/matrix work is the PRE pass's, already " +
                 "baked into the intermediate)"
         }
-        checkDevelopPostStageText(s, out)
+        checkDevelopPointwiseStageText(s, out)
         // The boundary honesty: NO pre-stage uniform may appear in the
         // POST pass. A leaked declaration would mean the cut landed
         // inside the stages 1-6 chain (or the PRE fragments were pasted
@@ -1186,11 +1221,96 @@ object GlesShaderValidator {
                     "re-run on the intermediate)"
             }
         }
+        // And NO tail-stage uniform either: the 20/23 cut must land
+        // between the stage-20 saturation close and the stage-23 tonemap.
+        // A leaked tail uniform would mean the pointwise pass also runs
+        // the tonemap/LUT/OETF work, which would double-apply the tail
+        // (once here, once in the TAIL pass).
+        for (u in kDevelopTailUniformDecls) {
+            if (s.contains(u)) {
+                out += "a TAIL-stage uniform leaked into the POST pass " +
+                    "(`$u` — the 20/23 cut must land between the stage-20 " +
+                    "saturation close and the stage-23 tonemap; a tail " +
+                    "uniform in POST means the tail stages run TWICE)"
+            }
+        }
         // And no demosaic text: the kernel arrays exist only in the PRE
         // fragments.
         if (s.contains("int[8](-1, 1, 0, 0, -1, -1, 1, 1)")) {
             out += "the demosaic kernel leaked into the POST pass " +
                 "(the kDx offsets are PRE-text; POST's input is the " +
+                "intermediate texel, not the CFA)"
+        }
+    }
+
+    /**
+     * DEVELOP_FRAGMENT_TAIL's contract: uSrc (the chain intermediate —
+     * the pointwise pass's output, or the detail pass's when the grade
+     * uses sharpness/detail) + the tail uniform set (stages 23+24+OETF)
+     * + the tail stage text, PLUS the boundary honesty — NO pre-stage
+     * uniform, NO pointwise uniform and no demosaic text may appear
+     * (this pass must be a complete, self-contained stages 23+24+OETF
+     * draw whose ONLY input is the intermediate texel).
+     */
+    private fun developFragmentTailProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches the chain's RGBA32F intermediate — the pointwise " +
+                "pass's output, or the unsharp passes' when the grade uses " +
+                "sharpness/detail)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it — " +
+                "the intermediate's dims, same as the CFA's)"
+        }
+        for (u in kDevelopTailUniformDecls) {
+            if (!s.contains(u)) {
+                out += "missing `$u` (the C++ session sets it)"
+            }
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        // The 1:1 input read: TAIL's pixel comes from the intermediate,
+        // not from any RAW state.
+        if (!s.contains("vec3 c = texelFetch(uSrc, g, 0).rgb;")) {
+            out += "missing the intermediate fetch " +
+                "(`vec3 c = texelFetch(uSrc, g, 0).rgb;` — TAIL's ONLY input; " +
+                "the stages 9-20 pointwise work is the POST pass's, already " +
+                "baked into the intermediate)"
+        }
+        checkDevelopTailStageText(s, out)
+        // The boundary honesty: NO pre-stage uniform may appear in the
+        // TAIL pass. A leaked declaration would mean the cut landed
+        // inside the stages 1-6 chain (or the PRE fragments were pasted
+        // whole), which would re-run the demosaic on the intermediate.
+        // uSize is the one honest exception, same as the POST pass's.
+        for (u in kDevelopPreUniformDecls.filter { it != "uniform ivec2 uSize;" }) {
+            if (s.contains(u)) {
+                out += "a PRE-stage uniform leaked into the TAIL pass " +
+                    "(`$u` — the tail is a stages 23+24+OETF draw; a " +
+                    "stages 1-6 uniform in TAIL means the demosaic would " +
+                    "re-run on the intermediate)"
+            }
+        }
+        // And NO pointwise-stage uniform either: the 20/23 cut must land
+        // between the stage-20 saturation close and the stage-23 tonemap.
+        // A leaked pointwise uniform would mean the tail pass also runs
+        // the stages 9-20 chain, which would double-apply the pointwise
+        // work (once in POST, once here).
+        for (u in kDevelopPointwiseUniformDecls) {
+            if (s.contains(u)) {
+                out += "a POINTWISE-stage uniform leaked into the TAIL pass " +
+                    "(`$u` — the 20/23 cut must land between the stage-20 " +
+                    "saturation close and the stage-23 tonemap; a pointwise " +
+                    "uniform in TAIL means the stages 9-20 run TWICE)"
+            }
+        }
+        // And no demosaic text: the kernel arrays exist only in the PRE
+        // fragments.
+        if (s.contains("int[8](-1, 1, 0, 0, -1, -1, 1, 1)")) {
+            out += "the demosaic kernel leaked into the TAIL pass " +
+                "(the kDx offsets are PRE-text; TAIL's input is the " +
                 "intermediate texel, not the CFA)"
         }
     }
@@ -1579,6 +1699,522 @@ object GlesShaderValidator {
                 "`(smoothV - c);` + `oCol = vec4(orig + vec3(d), 1.0);` — " +
                 "the CPU's smooth = c + s/sw then the strength-scaled delta " +
                 "added to r, g, b equally)"
+        }
+        if (!s.contains("oCol = vec4(orig, 1.0);")) {
+            out += "missing the gate-closed pass-through " +
+                "(`oCol = vec4(orig, 1.0);` — a drawn pass with a closed " +
+                "gate writes the input through unchanged)"
+        }
+    }
+
+    /**
+     * SHARPNESS_H's contract — the CPU unsharpLumaImpl horizontal blur run
+     * at radius 1.5 (core/src/Develop.cpp), verbatim: the uniforms, the
+     * gate idiom, the amount mapping (NEGATIVES valid — no [0,100] clamp,
+     * unlike the NR passes), the constants, the luma helper, the clamped
+     * columns at step 1, the exact tap order xm, xp, xm2, xp2, the
+     * norm-divided .x output and the gate-closed original-luma fallback.
+     */
+    private fun sharpnessHProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches the pointwise POST pass's output — this stage's " +
+                "CPU-input position: after the pointwise stages, before " +
+                "stage 22)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it)"
+        }
+        if (!s.contains("uniform float uSharpness;")) {
+            out += "missing `uniform float uSharpness;` (the session passes " +
+                "the RAW grade value; the gate + amount idiom below is the " +
+                "second lock)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        if (!s.contains("if (uSharpness != 0.0) {")) {
+            out += "missing the stage-21 gate " +
+                "(`if (uSharpness != 0.0) {` — grade.sharpness == 0 skips " +
+                "the whole stage, exactly like the CPU call site's own " +
+                "`if (grade.sharpness != 0.0f || grade.detail != 0.0f)` " +
+                "outer gate's sharpness arm)"
+        }
+        if (!s.contains("float amount = clamp(0.5 * (uSharpness / 100.0), -0.5, 0.5);")) {
+            out += "missing the stage-21 amount mapping " +
+                "(`float amount = clamp(0.5 * (uSharpness / 100.0), -0.5, ` " +
+                "`0.5);` — the CPU call site's own min(max(0.5*(raw/100), " +
+                "-0.5), 0.5); NEGATIVE values are valid (softening), so " +
+                "there is NO [0,100] clamp and NO strength sub-gate, unlike " +
+                "the NR passes)"
+        }
+        // The CPU's own constants, verbatim (radius 1.5 — step = 1 for both
+        // directions, the CPU's `radius < 1.0f ? 1.0f : floor(radius)`
+        // resolving to floor(1.5); exp() of constant arguments is a
+        // constant expression in ES 3.00, so they keep const).
+        if (!s.contains("const float kRadius = 1.5;") ||
+            !s.contains("const float kC0 = exp(-0.5 / (kRadius * kRadius));") ||
+            !s.contains("const float kC1 = exp(-2.0 / (kRadius * kRadius));") ||
+            !s.contains("const float kNorm = 1.0 + 2.0 * (kC0 + kC1);")
+        ) {
+            out += "missing the CPU's sharpness constants " +
+                "(kRadius 1.5 / kC0 = exp(-0.5/r^2) / kC1 = exp(-2/r^2) / " +
+                "kNorm = 1 + 2*(c0+c1) — unsharpLumaImpl's own const block " +
+                "at radius 1.5, verbatim)"
+        }
+        // The luma split — the plane the CPU computes once per pixel
+        // (recomputed per read: identical math, identical answers).
+        if (!s.contains("vec3 c = texelFetch(uSrc, p, 0).rgb;") ||
+            !s.contains("return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;")
+        ) {
+            out += "missing the luma helper " +
+                "(`float lumaAt(ivec2 p)` reading uSrc with the CPU's own " +
+                "Rec.709 weights 0.2126/0.7152/0.0722 — unsharpLumaImpl's " +
+                "luma[i] split, verbatim)"
+        }
+        // The clamped columns at step 1 — texelFetch does NOT clamp, so
+        // the max/min guards are load-bearing (the CPU's own
+        // max(x - step, 0) / min(x + step, w - 1) at step = 1).
+        if (!s.contains("int xm = max(g.x - 1, 0);") ||
+            !s.contains("int xp = min(g.x + 1, uSize.x - 1);") ||
+            !s.contains("int xm2 = max(g.x - 2, 0);") ||
+            !s.contains("int xp2 = min(g.x + 2, uSize.x - 1);")
+        ) {
+            out += "missing the horizontal pass's clamped columns " +
+                "(`int xm = max(g.x - 1, 0);` … `int xp2 = min(g.x + 2, ` " +
+                "`uSize.x - 1);` — texelFetch does NOT clamp; the CPU's " +
+                "max/min guards at step 1 (radius 1.5 -> floor(1.5)) are " +
+                "load-bearing and carried verbatim)"
+        }
+        // The exact tap order xm, xp, xm2, xp2 — the accumulation order is
+        // part of the math (unsharpLumaImpl's own tap sequence).
+        val xmTapIdx = s.indexOf("lumaAt(ivec2(xm, g.y))")
+        val xpTapIdx = s.indexOf("lumaAt(ivec2(xp, g.y))")
+        val xm2TapIdx = s.indexOf("lumaAt(ivec2(xm2, g.y))")
+        val xp2TapIdx = s.indexOf("lumaAt(ivec2(xp2, g.y))")
+        if (listOf(xmTapIdx, xpTapIdx, xm2TapIdx, xp2TapIdx).any { it < 0 } ||
+            xmTapIdx >= xpTapIdx || xpTapIdx >= xm2TapIdx || xm2TapIdx >= xp2TapIdx
+        ) {
+            out += "the horizontal tap order is wrong " +
+                "(xm, xp, xm2, xp2 in that exact order — unsharpLumaImpl's " +
+                "own (row[xm]+row[xp])*c0 + (row[xm2]+row[xp2])*c1 " +
+                "sequence; the accumulation order is part of the math)"
+        }
+        // The tap-weight wiring: the xm/xp pair rides kC0 and the xm2/xp2
+        // pair kC1 — the CPU's own c0/c1 pairing, position-bound for the
+        // same reason as the NR passes (a wiring swap keeps every other
+        // check green while changing the blur of every pixel). The
+        // accumulation is ONE expression — the weight follows the pair's
+        // SECOND tap — so the check is pair-segment based, not per-tap.
+        // Skipped when the order check already fired.
+        val hTaps = listOf(xmTapIdx, xpTapIdx, xm2TapIdx, xp2TapIdx)
+        if (hTaps.first() >= 0 && hTaps.zipWithNext().all { (a, b) -> a < b }) {
+            if (!s.substring(hTaps[0], hTaps[2]).contains("* kC0") ||
+                !s.substring(hTaps[2]).contains("* kC1")
+            ) {
+                out += "the horizontal tap weights are miswired " +
+                    "(the xm/xp pair rides kC0 and the xm2/xp2 pair kC1 — " +
+                    "the CPU's own (row[xm]+row[xp])*c0 + (row[xm2]+row[xp2])" +
+                    "*c1 pairing; a swapped weight changes the blur of " +
+                    "every pixel)"
+            }
+        }
+        // The center + the norm division: the CPU's s = row[x] + ... then
+        // tmp = s/norm — written straight into .x (the CPU's tmp buffer).
+        if (!s.contains("float y = lumaAt(g);") ||
+            !s.contains("oCol = vec4(s / kNorm, 0.0, 0.0, 1.0);")
+        ) {
+            out += "missing the horizontal output " +
+                "(`float y = lumaAt(g);` + `oCol = vec4(s / kNorm, 0.0, ` " +
+                "`0.0, 1.0);` — the CPU's s = row[x] + (…)*c0 + (…)*c1 then " +
+                "tmp = s/norm, written to .x for the vertical pass to read " +
+                "back; the taps sum to 1, so a flat region's blur equals its " +
+                "value)"
+        }
+        // The gate-closed fallback: the ORIGINAL luma to .x, so the
+        // vertical pass's center-relative math stays exact in both shapes.
+        if (!s.contains("oCol = vec4(lumaAt(g), 0.0, 0.0, 1.0);")) {
+            out += "missing the gate-closed luma fallback " +
+                "(`oCol = vec4(lumaAt(g), 0.0, 0.0, 1.0);` — a drawn pass " +
+                "with a closed gate writes the ORIGINAL luma to .x, so the " +
+                "vertical pass's blur degenerates to the original luma and " +
+                "the tail delta is exactly 0)"
+        }
+    }
+
+    /**
+     * SHARPNESS_V's contract — the CPU unsharpLumaImpl vertical blur run +
+     * high-pass tail at radius 1.5 (core/src/Develop.cpp), verbatim: the
+     * two inputs (uSrc the horizontal output, uGuide the ORIGINAL
+     * pre-sharpen pixels), the gate, the amount mapping, the constants,
+     * the ORIGINAL-luma guide, the clamped rows at step 1, the exact tap
+     * order ym, yp, ym2, yp2, the HORIZONTAL-OUTPUT center fetch, the
+     * norm-divided blur, the scaled delta from the ORIGINAL luma and the
+     * equally-lifted RGB write.
+     */
+    private fun sharpnessVProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches SHARPNESS_H's output — .x = the horizontally " +
+                "blurred luma plane, the CPU's tmp buffer)"
+        }
+        if (!s.contains("uniform highp sampler2D uGuide;")) {
+            out += "missing `uniform highp sampler2D uGuide;` (the session " +
+                "attaches the pointwise POST pass's output — the ORIGINAL " +
+                "pre-sharpen RGB; the CPU's tail delta reads the ORIGINAL " +
+                "luma and the write needs the original pixel, so this " +
+                "texture is load-bearing, not a convenience)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it)"
+        }
+        if (!s.contains("uniform float uSharpness;")) {
+            out += "missing `uniform float uSharpness;` (the session passes " +
+                "the RAW grade value; both passes of one CPU stage share " +
+                "one grade control)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        if (!s.contains("if (uSharpness != 0.0) {")) {
+            out += "missing the stage-21 gate " +
+                "(`if (uSharpness != 0.0) {` — grade.sharpness == 0 skips " +
+                "the whole stage, exactly like the CPU call site's own gate)"
+        }
+        if (!s.contains("float amount = clamp(0.5 * (uSharpness / 100.0), -0.5, 0.5);")) {
+            out += "missing the stage-21 amount mapping " +
+                "(`float amount = clamp(0.5 * (uSharpness / 100.0), -0.5, ` " +
+                "`0.5);` — the CPU call site's own min(max(0.5*(raw/100), " +
+                "-0.5), 0.5), same mapping as SHARPNESS_H)"
+        }
+        // The CPU's own constants, verbatim (same as the horizontal pass).
+        if (!s.contains("const float kRadius = 1.5;") ||
+            !s.contains("const float kC0 = exp(-0.5 / (kRadius * kRadius));") ||
+            !s.contains("const float kC1 = exp(-2.0 / (kRadius * kRadius));") ||
+            !s.contains("const float kNorm = 1.0 + 2.0 * (kC0 + kC1);")
+        ) {
+            out += "missing the CPU's sharpness constants " +
+                "(kRadius 1.5 / kC0 / kC1 / kNorm — the same const block as " +
+                "the horizontal pass, verbatim)"
+        }
+        // The ORIGINAL-luma guide: lumaAt must read uGuide, not uSrc —
+        // the CPU's tail reads the ORIGINAL luma (luma[i] - blur[i]).
+        if (!s.contains("vec3 c = texelFetch(uGuide, p, 0).rgb;")) {
+            out += "missing the ORIGINAL-luma guide read " +
+                "(`vec3 c = texelFetch(uGuide, p, 0).rgb;` in lumaAt — the " +
+                "CPU's tail computes luma[i] - blur[i] against the " +
+                "ORIGINAL luma, NOT the blurred plane; guiding from uSrc " +
+                "would zero the delta of every pixel)"
+        }
+        // The clamped rows at step 1.
+        if (!s.contains("int ym = max(g.y - 1, 0);") ||
+            !s.contains("int yp = min(g.y + 1, uSize.y - 1);") ||
+            !s.contains("int ym2 = max(g.y - 2, 0);") ||
+            !s.contains("int yp2 = min(g.y + 2, uSize.y - 1);")
+        ) {
+            out += "missing the vertical pass's clamped rows " +
+                "(`int ym = max(g.y - 1, 0);` … `int yp2 = min(g.y + 2, ` " +
+                "`uSize.y - 1);` — texelFetch does NOT clamp; the CPU's " +
+                "max/min guards at step 1 are load-bearing and carried " +
+                "verbatim)"
+        }
+        // The exact tap order ym, yp, ym2, yp2.
+        val ymTapIdx = s.indexOf("texelFetch(uSrc, ivec2(g.x, ym), 0).x")
+        val ypTapIdx = s.indexOf("texelFetch(uSrc, ivec2(g.x, yp), 0).x")
+        val ym2TapIdx = s.indexOf("texelFetch(uSrc, ivec2(g.x, ym2), 0).x")
+        val yp2TapIdx = s.indexOf("texelFetch(uSrc, ivec2(g.x, yp2), 0).x")
+        if (listOf(ymTapIdx, ypTapIdx, ym2TapIdx, yp2TapIdx).any { it < 0 } ||
+            ymTapIdx >= ypTapIdx || ypTapIdx >= ym2TapIdx || ym2TapIdx >= yp2TapIdx
+        ) {
+            out += "the vertical tap order is wrong " +
+                "(ym, yp, ym2, yp2 in that exact order — unsharpLumaImpl's " +
+                "own (tmp[ym]+tmp[yp])*c0 + (tmp[ym2]+tmp[yp2])*c1 " +
+                "sequence)"
+        }
+        // The tap-weight wiring, pair-segment based (same reason as the
+        // horizontal pass — the weight follows the pair's second tap).
+        val vTaps = listOf(ymTapIdx, ypTapIdx, ym2TapIdx, yp2TapIdx)
+        if (vTaps.first() >= 0 && vTaps.zipWithNext().all { (a, b) -> a < b }) {
+            if (!s.substring(vTaps[0], vTaps[2]).contains("* kC0") ||
+                !s.substring(vTaps[2]).contains("* kC1")
+            ) {
+                out += "the vertical tap weights are miswired " +
+                    "(the ym/yp pair rides kC0 and the ym2/yp2 pair kC1 — " +
+                    "the CPU's own (tmp[ym]+tmp[yp])*c0 + (tmp[ym2]+tmp[yp2])" +
+                    "*c1 pairing; a swapped weight changes the blur of " +
+                    "every pixel)"
+            }
+        }
+        // The center fetch: the CPU's `v = tmp[y*w+x]` — the HORIZONTALLY
+        // blurred value the vertical pass centers on, NOT the original.
+        if (!s.contains("float v = texelFetch(uSrc, g, 0).x;")) {
+            out += "missing the vertical pass's center fetch " +
+                "(`float v = texelFetch(uSrc, g, 0).x;` — the CPU's " +
+                "v = tmp[y*w+x]: the HORIZONTALLY blurred center, not the " +
+                "original luma; values from uSrc, luma guide from uGuide)"
+        }
+        // The blur + the tail: the CPU's blur = s/norm then
+        // d = amount * (luma[i] - blur[i]), added to r, g and b equally.
+        if (!s.contains("float blur = s / kNorm;") ||
+            !s.contains("float d = amount * (lumaAt(g) - blur);") ||
+            !s.contains("oCol = vec4(orig + vec3(d), 1.0);")
+        ) {
+            out += "missing the sharpness tail " +
+                "(`float blur = s / kNorm;` + `float d = amount * (lumaAt(g) ` " +
+                "`- blur);` + `oCol = vec4(orig + vec3(d), 1.0);` — the " +
+                "CPU's blur = s/norm then the amount-scaled high-pass delta " +
+                "from the ORIGINAL luma, added to r, g, b equally (chroma " +
+                "and hue preserved — no chroma halos))"
+        }
+        if (!s.contains("oCol = vec4(orig, 1.0);")) {
+            out += "missing the gate-closed pass-through " +
+                "(`oCol = vec4(orig, 1.0);` — a drawn pass with a closed " +
+                "gate writes the input through unchanged)"
+        }
+    }
+
+    /**
+     * DETAIL_H's contract — the CPU unsharpLumaImpl horizontal blur run at
+     * radius 0.75 (core/src/Develop.cpp), verbatim: the same kernel as
+     * stage 21 at the fine-texture scale, so the same checks with the
+     * radius-0.75 constants (step still 1: the CPU's
+     * `radius < 1.0f ? 1.0f : floor(radius)` fallback) and the uDetail
+     * gate/amount.
+     */
+    private fun detailHProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches the chain's current RGBA32F input — the sharpness " +
+                "output when stage 21 ran, else the pointwise POST pass's " +
+                "output; the CPU runs stage 22 on the stage-21 output)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it)"
+        }
+        if (!s.contains("uniform float uDetail;")) {
+            out += "missing `uniform float uDetail;` (the session passes " +
+                "the RAW grade value; the gate + amount idiom below is the " +
+                "second lock)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        if (!s.contains("if (uDetail != 0.0) {")) {
+            out += "missing the stage-22 gate " +
+                "(`if (uDetail != 0.0) {` — grade.detail == 0 skips the " +
+                "whole stage, exactly like the CPU call site's own " +
+                "`if (grade.sharpness != 0.0f || grade.detail != 0.0f)` " +
+                "outer gate's detail arm)"
+        }
+        if (!s.contains("float amount = clamp(0.5 * (uDetail / 100.0), -0.5, 0.5);")) {
+            out += "missing the stage-22 amount mapping " +
+                "(`float amount = clamp(0.5 * (uDetail / 100.0), -0.5, ` " +
+                "`0.5);` — the CPU call site's own min(max(0.5*(raw/100), " +
+                "-0.5), 0.5); NEGATIVE values are valid (softening), so " +
+                "there is NO [0,100] clamp and NO strength sub-gate, unlike " +
+                "the NR passes)"
+        }
+        // The CPU's own constants, verbatim (radius 0.75 — step = 1 both
+        // directions, the CPU's `radius < 1.0f ? 1.0f : floor(radius)`
+        // fallback; exp() of constant arguments is a constant expression
+        // in ES 3.00, so they keep const).
+        if (!s.contains("const float kRadius = 0.75;") ||
+            !s.contains("const float kC0 = exp(-0.5 / (kRadius * kRadius));") ||
+            !s.contains("const float kC1 = exp(-2.0 / (kRadius * kRadius));") ||
+            !s.contains("const float kNorm = 1.0 + 2.0 * (kC0 + kC1);")
+        ) {
+            out += "missing the CPU's detail constants " +
+                "(kRadius 0.75 / kC0 = exp(-0.5/r^2) / kC1 = exp(-2/r^2) / " +
+                "kNorm = 1 + 2*(c0+c1) — unsharpLumaImpl's own const block " +
+                "at radius 0.75, verbatim; step is STILL 1: the CPU's own " +
+                "`radius < 1.0f ? 1.0f : floor(radius)` fallback)"
+        }
+        // The luma split — the same helper as SHARPNESS_H, reading uSrc.
+        if (!s.contains("vec3 c = texelFetch(uSrc, p, 0).rgb;") ||
+            !s.contains("return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;")
+        ) {
+            out += "missing the luma helper " +
+                "(`float lumaAt(ivec2 p)` reading uSrc with the CPU's own " +
+                "Rec.709 weights 0.2126/0.7152/0.0722 — unsharpLumaImpl's " +
+                "luma[i] split, verbatim)"
+        }
+        // The clamped columns at step 1 (radius 0.75 -> the CPU's own
+        // < 1 fallback, still step 1).
+        if (!s.contains("int xm = max(g.x - 1, 0);") ||
+            !s.contains("int xp = min(g.x + 1, uSize.x - 1);") ||
+            !s.contains("int xm2 = max(g.x - 2, 0);") ||
+            !s.contains("int xp2 = min(g.x + 2, uSize.x - 1);")
+        ) {
+            out += "missing the horizontal pass's clamped columns " +
+                "(`int xm = max(g.x - 1, 0);` … `int xp2 = min(g.x + 2, ` " +
+                "`uSize.x - 1);` — texelFetch does NOT clamp; the CPU's " +
+                "max/min guards at step 1 (radius 0.75 -> the CPU's own " +
+                "< 1 fallback) are load-bearing and carried verbatim)"
+        }
+        // The exact tap order xm, xp, xm2, xp2.
+        val xmTapIdx = s.indexOf("lumaAt(ivec2(xm, g.y))")
+        val xpTapIdx = s.indexOf("lumaAt(ivec2(xp, g.y))")
+        val xm2TapIdx = s.indexOf("lumaAt(ivec2(xm2, g.y))")
+        val xp2TapIdx = s.indexOf("lumaAt(ivec2(xp2, g.y))")
+        if (listOf(xmTapIdx, xpTapIdx, xm2TapIdx, xp2TapIdx).any { it < 0 } ||
+            xmTapIdx >= xpTapIdx || xpTapIdx >= xm2TapIdx || xm2TapIdx >= xp2TapIdx
+        ) {
+            out += "the horizontal tap order is wrong " +
+                "(xm, xp, xm2, xp2 in that exact order — unsharpLumaImpl's " +
+                "own (row[xm]+row[xp])*c0 + (row[xm2]+row[xp2])*c1 " +
+                "sequence; the accumulation order is part of the math)"
+        }
+        // The tap-weight wiring, pair-segment based (the accumulation is
+        // ONE expression — the weight follows the pair's second tap).
+        val hTaps = listOf(xmTapIdx, xpTapIdx, xm2TapIdx, xp2TapIdx)
+        if (hTaps.first() >= 0 && hTaps.zipWithNext().all { (a, b) -> a < b }) {
+            if (!s.substring(hTaps[0], hTaps[2]).contains("* kC0") ||
+                !s.substring(hTaps[2]).contains("* kC1")
+            ) {
+                out += "the horizontal tap weights are miswired " +
+                    "(the xm/xp pair rides kC0 and the xm2/xp2 pair kC1 — " +
+                    "the CPU's own c0/c1 pairing; a swapped weight changes " +
+                    "the blur of every pixel)"
+            }
+        }
+        // The center + the norm division, written to .x.
+        if (!s.contains("float y = lumaAt(g);") ||
+            !s.contains("oCol = vec4(s / kNorm, 0.0, 0.0, 1.0);")
+        ) {
+            out += "missing the horizontal output " +
+                "(`float y = lumaAt(g);` + `oCol = vec4(s / kNorm, 0.0, ` " +
+                "`0.0, 1.0);` — the CPU's s = row[x] + (…)*c0 + (…)*c1 then " +
+                "tmp = s/norm, written to .x for the vertical pass to read " +
+                "back; the taps sum to 1, so a flat region's blur equals its " +
+                "value)"
+        }
+        // The gate-closed fallback: the ORIGINAL luma to .x.
+        if (!s.contains("oCol = vec4(lumaAt(g), 0.0, 0.0, 1.0);")) {
+            out += "missing the gate-closed luma fallback " +
+                "(`oCol = vec4(lumaAt(g), 0.0, 0.0, 1.0);` — a drawn pass " +
+                "with a closed gate writes the ORIGINAL luma to .x, so the " +
+                "vertical pass's blur degenerates to the original luma and " +
+                "the tail delta is exactly 0)"
+        }
+    }
+
+    /**
+     * DETAIL_V's contract — the CPU unsharpLumaImpl vertical blur run +
+     * high-pass tail at radius 0.75 (core/src/Develop.cpp), verbatim: the
+     * same shape as SHARPNESS_V with the radius-0.75 constants and the
+     * uDetail gate/amount; uGuide is the stage's ORIGINAL input (the
+     * sharpness output when stage 21 ran, else the pointwise POST pass's
+     * output — the CPU runs stage 22 on the stage-21 output).
+     */
+    private fun detailVProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches DETAIL_H's output — .x = the horizontally " +
+                "blurred luma plane, the CPU's tmp buffer)"
+        }
+        if (!s.contains("uniform highp sampler2D uGuide;")) {
+            out += "missing `uniform highp sampler2D uGuide;` (the session " +
+                "attaches the stage's ORIGINAL input — the sharpness output " +
+                "when stage 21 ran, else the pointwise POST pass's output; " +
+                "the CPU's tail delta reads the ORIGINAL luma and the write " +
+                "needs the original pixel, so this texture is load-bearing, " +
+                "not a convenience)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it)"
+        }
+        if (!s.contains("uniform float uDetail;")) {
+            out += "missing `uniform float uDetail;` (the session passes " +
+                "the RAW grade value; both passes of one CPU stage share " +
+                "one grade control)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        if (!s.contains("if (uDetail != 0.0) {")) {
+            out += "missing the stage-22 gate " +
+                "(`if (uDetail != 0.0) {` — grade.detail == 0 skips the " +
+                "whole stage, exactly like the CPU call site's own gate)"
+        }
+        if (!s.contains("float amount = clamp(0.5 * (uDetail / 100.0), -0.5, 0.5);")) {
+            out += "missing the stage-22 amount mapping " +
+                "(`float amount = clamp(0.5 * (uDetail / 100.0), -0.5, ` " +
+                "`0.5);` — the CPU call site's own min(max(0.5*(raw/100), " +
+                "-0.5), 0.5), same mapping as DETAIL_H)"
+        }
+        // The CPU's own constants, verbatim (same as the horizontal pass).
+        if (!s.contains("const float kRadius = 0.75;") ||
+            !s.contains("const float kC0 = exp(-0.5 / (kRadius * kRadius));") ||
+            !s.contains("const float kC1 = exp(-2.0 / (kRadius * kRadius));") ||
+            !s.contains("const float kNorm = 1.0 + 2.0 * (kC0 + kC1);")
+        ) {
+            out += "missing the CPU's detail constants " +
+                "(kRadius 0.75 / kC0 / kC1 / kNorm — the same const block " +
+                "as the horizontal pass, verbatim)"
+        }
+        // The ORIGINAL-luma guide: lumaAt must read uGuide, not uSrc.
+        if (!s.contains("vec3 c = texelFetch(uGuide, p, 0).rgb;")) {
+            out += "missing the ORIGINAL-luma guide read " +
+                "(`vec3 c = texelFetch(uGuide, p, 0).rgb;` in lumaAt — the " +
+                "CPU's tail computes luma[i] - blur[i] against the " +
+                "ORIGINAL luma, NOT the blurred plane; guiding from uSrc " +
+                "would zero the delta of every pixel)"
+        }
+        // The clamped rows at step 1.
+        if (!s.contains("int ym = max(g.y - 1, 0);") ||
+            !s.contains("int yp = min(g.y + 1, uSize.y - 1);") ||
+            !s.contains("int ym2 = max(g.y - 2, 0);") ||
+            !s.contains("int yp2 = min(g.y + 2, uSize.y - 1);")
+        ) {
+            out += "missing the vertical pass's clamped rows " +
+                "(`int ym = max(g.y - 1, 0);` … `int yp2 = min(g.y + 2, ` " +
+                "`uSize.y - 1);` — texelFetch does NOT clamp; the CPU's " +
+                "max/min guards at step 1 are load-bearing and carried " +
+                "verbatim)"
+        }
+        // The exact tap order ym, yp, ym2, yp2.
+        val ymTapIdx = s.indexOf("texelFetch(uSrc, ivec2(g.x, ym), 0).x")
+        val ypTapIdx = s.indexOf("texelFetch(uSrc, ivec2(g.x, yp), 0).x")
+        val ym2TapIdx = s.indexOf("texelFetch(uSrc, ivec2(g.x, ym2), 0).x")
+        val yp2TapIdx = s.indexOf("texelFetch(uSrc, ivec2(g.x, yp2), 0).x")
+        if (listOf(ymTapIdx, ypTapIdx, ym2TapIdx, yp2TapIdx).any { it < 0 } ||
+            ymTapIdx >= ypTapIdx || ypTapIdx >= ym2TapIdx || ym2TapIdx >= yp2TapIdx
+        ) {
+            out += "the vertical tap order is wrong " +
+                "(ym, yp, ym2, yp2 in that exact order — unsharpLumaImpl's " +
+                "own (tmp[ym]+tmp[yp])*c0 + (tmp[ym2]+tmp[yp2])*c1 " +
+                "sequence)"
+        }
+        // The tap-weight wiring, pair-segment based.
+        val vTaps = listOf(ymTapIdx, ypTapIdx, ym2TapIdx, yp2TapIdx)
+        if (vTaps.first() >= 0 && vTaps.zipWithNext().all { (a, b) -> a < b }) {
+            if (!s.substring(vTaps[0], vTaps[2]).contains("* kC0") ||
+                !s.substring(vTaps[2]).contains("* kC1")
+            ) {
+                out += "the vertical tap weights are miswired " +
+                    "(the ym/yp pair rides kC0 and the ym2/yp2 pair kC1 — " +
+                    "the CPU's own c0/c1 pairing; a swapped weight changes " +
+                    "the blur of every pixel)"
+            }
+        }
+        // The center fetch: the CPU's `v = tmp[y*w+x]`.
+        if (!s.contains("float v = texelFetch(uSrc, g, 0).x;")) {
+            out += "missing the vertical pass's center fetch " +
+                "(`float v = texelFetch(uSrc, g, 0).x;` — the CPU's " +
+                "v = tmp[y*w+x]: the HORIZONTALLY blurred center, not the " +
+                "original luma; values from uSrc, luma guide from uGuide)"
+        }
+        // The blur + the tail.
+        if (!s.contains("float blur = s / kNorm;") ||
+            !s.contains("float d = amount * (lumaAt(g) - blur);") ||
+            !s.contains("oCol = vec4(orig + vec3(d), 1.0);")
+        ) {
+            out += "missing the detail tail " +
+                "(`float blur = s / kNorm;` + `float d = amount * (lumaAt(g) ` " +
+                "`- blur);` + `oCol = vec4(orig + vec3(d), 1.0);` — the " +
+                "CPU's blur = s/norm then the amount-scaled high-pass delta " +
+                "from the ORIGINAL luma, added to r, g, b equally (chroma " +
+                "and hue preserved — no chroma halos))"
         }
         if (!s.contains("oCol = vec4(orig, 1.0);")) {
             out += "missing the gate-closed pass-through " +

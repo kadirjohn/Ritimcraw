@@ -3021,13 +3021,15 @@ JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
         JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
         jstring preFragmentSource, jstring postFragmentSource,
+        jstring tailFragmentSource, jstring sharpnessHSource,
+        jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
         jstring nrChromaHSource, jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
         jstring blitFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The nine sources, each read with the nativeGlesFragmentParity pattern
+    // The fourteen sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -3068,6 +3070,56 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
     }
     const std::string post(postChars);
     env->ReleaseStringUTFChars(postFragmentSource, postChars);
+
+    const char* tailChars = env->GetStringUTFChars(tailFragmentSource, nullptr);
+    if (tailChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the tail source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string tail(tailChars);
+    env->ReleaseStringUTFChars(tailFragmentSource, tailChars);
+
+    const char* sharpnessHChars = env->GetStringUTFChars(sharpnessHSource, nullptr);
+    if (sharpnessHChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the sharpness-h source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string sharpnessH(sharpnessHChars);
+    env->ReleaseStringUTFChars(sharpnessHSource, sharpnessHChars);
+
+    const char* sharpnessVChars = env->GetStringUTFChars(sharpnessVSource, nullptr);
+    if (sharpnessVChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the sharpness-v source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string sharpnessV(sharpnessVChars);
+    env->ReleaseStringUTFChars(sharpnessVSource, sharpnessVChars);
+
+    const char* detailHChars = env->GetStringUTFChars(detailHSource, nullptr);
+    if (detailHChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the detail-h source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string detailH(detailHChars);
+    env->ReleaseStringUTFChars(detailHSource, detailHChars);
+
+    const char* detailVChars = env->GetStringUTFChars(detailVSource, nullptr);
+    if (detailVChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the detail-v source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string detailV(detailVChars);
+    env->ReleaseStringUTFChars(detailVSource, detailVChars);
 
     const char* nrChromaHChars = env->GetStringUTFChars(nrChromaHSource, nullptr);
     if (nrChromaHChars == nullptr) {
@@ -3139,8 +3191,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
 
     std::string detail;
     std::unique_ptr<gles::DevelopSession> session =
-        gles::DevelopSession::open(v300, v310, pre, post, nrChromaH, nrChromaV,
-                                   nrLuma, store, blit, &detail);
+        gles::DevelopSession::open(v300, v310, pre, post, tail, sharpnessH,
+                                   sharpnessV, detailH, detailV, nrChromaH,
+                                   nrChromaV, nrLuma, store, blit, &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "develop session: " + detail +
@@ -3471,7 +3524,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 // The preview counterpart of the M3 develop-session seam, wired to the
 // SurfaceView the editor mounts (commit b). One session per clip preview:
 //
-//   nativePreviewSessionOpen(vertex, vertex310, pre, post, nrChromaH,
+//   nativePreviewSessionOpen(vertex, vertex310, pre, post, tail, sharpnessH,
+//                            sharpnessV, detailH, detailV, nrChromaH,
 //                            nrChromaV, nrLuma, store, window) -> handle
 //   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
 //   nativePreviewSessionRenderFrame(handle, clipHandle, frameIndex, maxDim,
@@ -3510,13 +3564,15 @@ JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
         JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
         jstring preFragmentSource, jstring postFragmentSource,
+        jstring tailFragmentSource, jstring sharpnessHSource,
+        jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
         jstring nrChromaHSource, jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
         jstring windowFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The nine sources, each read with the nativeGlesFragmentParity pattern
+    // The fourteen sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -3557,6 +3613,56 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
     }
     const std::string post(postChars);
     env->ReleaseStringUTFChars(postFragmentSource, postChars);
+
+    const char* tailChars = env->GetStringUTFChars(tailFragmentSource, nullptr);
+    if (tailChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the tail source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string tail(tailChars);
+    env->ReleaseStringUTFChars(tailFragmentSource, tailChars);
+
+    const char* sharpnessHChars = env->GetStringUTFChars(sharpnessHSource, nullptr);
+    if (sharpnessHChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the sharpness-h source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string sharpnessH(sharpnessHChars);
+    env->ReleaseStringUTFChars(sharpnessHSource, sharpnessHChars);
+
+    const char* sharpnessVChars = env->GetStringUTFChars(sharpnessVSource, nullptr);
+    if (sharpnessVChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the sharpness-v source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string sharpnessV(sharpnessVChars);
+    env->ReleaseStringUTFChars(sharpnessVSource, sharpnessVChars);
+
+    const char* detailHChars = env->GetStringUTFChars(detailHSource, nullptr);
+    if (detailHChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the detail-h source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string detailH(detailHChars);
+    env->ReleaseStringUTFChars(detailHSource, detailHChars);
+
+    const char* detailVChars = env->GetStringUTFChars(detailVSource, nullptr);
+    if (detailVChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the detail-v source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string detailV(detailVChars);
+    env->ReleaseStringUTFChars(detailVSource, detailVChars);
 
     const char* nrChromaHChars = env->GetStringUTFChars(nrChromaHSource, nullptr);
     if (nrChromaHChars == nullptr) {
@@ -3628,8 +3734,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
 
     std::string detail;
     std::unique_ptr<gles::PreviewSession> session =
-        gles::PreviewSession::open(v300, v310, pre, post, nrChromaH, nrChromaV,
-                                   nrLuma, store, window, &detail);
+        gles::PreviewSession::open(v300, v310, pre, post, tail, sharpnessH,
+                                   sharpnessV, detailH, detailV, nrChromaH,
+                                   nrChromaV, nrLuma, store, window, &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "preview session: " + detail +

@@ -882,17 +882,24 @@ class NativeSource private constructor(
          * Close is idempotent. Device-test-pending (the owner's
          * covered-grade GPU export is the production proof).
          *
-         * Spatial-NR port: the develop fragment is now the SPLIT pair
-         * (pre/post) plus the three NR fragments — nine sources total
-         * (vertex, 310 vertex, pre, post, nr-chroma-h, nr-chroma-v,
-         * nr-luma, store, blit). The fused text stays the parity
-         * harness's own source.
+         * Sharpness/detail port: the develop fragment is now the SPLIT
+         * three-way pair (pre / pointwise post / tail) plus the four
+         * unsharp fragments and the three NR fragments — fourteen
+         * sources total (vertex, 310 vertex, pre, post, tail,
+         * sharpness-h, sharpness-v, detail-h, detail-v, nr-chroma-h,
+         * nr-chroma-v, nr-luma, store, blit). The fused text stays the
+         * parity harness's own source.
          */
         @JvmStatic private external fun nativeDevelopSessionOpen(
             vertexSource: String,
             vertex310Source: String,
             preFragmentSource: String,
             postFragmentSource: String,
+            tailFragmentSource: String,
+            sharpnessHSource: String,
+            sharpnessVSource: String,
+            detailHSource: String,
+            detailVSource: String,
             nrChromaHSource: String,
             nrChromaVSource: String,
             nrLumaSource: String,
@@ -1042,6 +1049,11 @@ class NativeSource private constructor(
             vertex310Source: String,
             preFragmentSource: String,
             postFragmentSource: String,
+            tailFragmentSource: String,
+            sharpnessHSource: String,
+            sharpnessVSource: String,
+            detailHSource: String,
+            detailVSource: String,
             nrChromaHSource: String,
             nrChromaVSource: String,
             nrLumaSource: String,
@@ -1613,6 +1625,11 @@ class NativeSource private constructor(
             vertex310Source: String,
             preFragmentSource: String,
             postFragmentSource: String,
+            tailFragmentSource: String,
+            sharpnessHSource: String,
+            sharpnessVSource: String,
+            detailHSource: String,
+            detailVSource: String,
             nrChromaHSource: String,
             nrChromaVSource: String,
             nrLumaSource: String,
@@ -1624,6 +1641,8 @@ class NativeSource private constructor(
             }
             return nativeDevelopSessionOpen(
                 vertexSource, vertex310Source, preFragmentSource, postFragmentSource,
+                tailFragmentSource, sharpnessHSource, sharpnessVSource,
+                detailHSource, detailVSource,
                 nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
                 blitFragmentSource)
         }
@@ -1787,6 +1806,11 @@ class NativeSource private constructor(
             vertex310Source: String,
             preFragmentSource: String,
             postFragmentSource: String,
+            tailFragmentSource: String,
+            sharpnessHSource: String,
+            sharpnessVSource: String,
+            detailHSource: String,
+            detailVSource: String,
             nrChromaHSource: String,
             nrChromaVSource: String,
             nrLumaSource: String,
@@ -1798,6 +1822,8 @@ class NativeSource private constructor(
             }
             return nativePreviewSessionOpen(
                 vertexSource, vertex310Source, preFragmentSource, postFragmentSource,
+                tailFragmentSource, sharpnessHSource, sharpnessVSource,
+                detailHSource, detailVSource,
                 nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
                 windowFragmentSource)
         }
