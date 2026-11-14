@@ -1531,6 +1531,8 @@ class Mp4ExporterTest {
     private class SurfaceWriter(
         /** When set, start() throws SurfaceInputUnavailable (the honest restart case). */
         private val unavailableAtStart: String? = null,
+        /** The bring-up step the throw names (null = the unknown-step legacy case). */
+        private val unavailableStep: SurfaceInputStep? = null,
     ) : Mp4MediaWriter {
         var requestCount = 0
         var started = false
@@ -1552,7 +1554,7 @@ class Mp4ExporterTest {
             channels: Int,
         ) {
             unavailableAtStart?.let {
-                throw SurfaceInputUnavailable(it)
+                throw SurfaceInputUnavailable(it, unavailableStep)
             }
             started = true
         }
@@ -1591,6 +1593,8 @@ class Mp4ExporterTest {
     private class SessionSurfaceWriter(
         /** When set, adoptEncoderSurface() throws SurfaceInputUnavailable. */
         private val adoptUnavailable: String? = null,
+        /** The bring-up step the adopt throw names (null = the unknown-step legacy case). */
+        private val adoptStep: SurfaceInputStep? = null,
     ) : Mp4MediaWriter {
         val sessionRequests = ArrayList<String>()
         var started = false
@@ -1617,7 +1621,7 @@ class Mp4ExporterTest {
         override fun encoderInputSurface(): Any? = inputSurface
 
         override fun adoptEncoderSurface() {
-            adoptUnavailable?.let { throw SurfaceInputUnavailable(it) }
+            adoptUnavailable?.let { throw SurfaceInputUnavailable(it, adoptStep) }
             adoptCalls.add(Unit)
         }
 
@@ -1829,6 +1833,128 @@ class Mp4ExporterTest {
         // The file landed: the restart produced the DONE output.
         assertTrue(out.exists())
         assertFalse(File(out.parentFile, out.name + ".partial").exists())
+    }
+
+    @Test
+    fun surface_unavailable_fallback_line_names_the_failing_step() {
+        // Owner bug report 2026-11-13: the fallback line said only
+        // reason=surface-input-unavailable and the diagnosis could not
+        // tell WHICH bring-up step failed — the Surface creation, the EGL
+        // wrap, or the recordable query. The writer now names its step
+        // (SurfaceInputStep) and the SAME one-line reason gains the
+        // step's token: reason=surface-input-unavailable:<step>.
+        val session = FakeSession(frames = 2, audio = false)
+        val failWriter = SurfaceWriter(
+            unavailableAtStart = Mp4ExportErrors.kotlinMessage(
+                Mp4ExportErrors.STAGE_CONFIGURE,
+                "no EGL window surface could be created on the input Surface",
+                "the export restarts on the CPU path",
+            ),
+            unavailableStep = SurfaceInputStep.EGL_WRAP,
+        )
+        val cpuWriter = FakeWriter()
+        val writers = ArrayDeque(listOf<Mp4MediaWriter>(failWriter, cpuWriter))
+        val lines = ArrayList<String>()
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = { writers.removeFirst() },
+            engine = freshEngine(),
+            stageLog = lines::add,
+        )
+        val out = File(tmp.root, "clip.mp4")
+        val gpuJob = job().copy(renderBackend = RenderBackend.GPU_EXPERIMENTAL)
+        val result = runBlocking { exporter.export(gpuJob, 7, out) }
+        assertEquals(State.DONE, result.state)
+        // The FULL fallback line, exactly — one line, both ends, the
+        // reason carrying the failing step's token.
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertEquals(
+            "render backend fallback: requested=GPU_EXPERIMENTAL effective=CPU " +
+                "reason=surface-input-unavailable:egl-wrap",
+            fallback,
+        )
+        // The line-format contract: ONE line, no newline inside it.
+        assertFalse(fallback.contains('\n'))
+    }
+
+    @Test
+    fun surface_unavailable_unknown_step_keeps_the_exact_legacy_reason() {
+        // The back-compat contract: a step-less SurfaceInputUnavailable
+        // (a legacy writer, or the writer's mode-confusion guard) keeps
+        // the EXACT legacy reason string — the owner's existing greps and
+        // every pre-step test stay byte-identical. No suffix, no second
+        // line.
+        val session = FakeSession(frames = 2, audio = false)
+        val failWriter = SurfaceWriter(
+            unavailableAtStart = Mp4ExportErrors.kotlinMessage(
+                Mp4ExportErrors.STAGE_CONFIGURE,
+                "no EGL display is available",
+                "the export restarts on the CPU path",
+            ),
+        )
+        val cpuWriter = FakeWriter()
+        val writers = ArrayDeque(listOf<Mp4MediaWriter>(failWriter, cpuWriter))
+        val lines = ArrayList<String>()
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = { writers.removeFirst() },
+            engine = freshEngine(),
+            stageLog = lines::add,
+        )
+        val out = File(tmp.root, "clip.mp4")
+        val gpuJob = job().copy(renderBackend = RenderBackend.GPU_EXPERIMENTAL)
+        val result = runBlocking { exporter.export(gpuJob, 7, out) }
+        assertEquals(State.DONE, result.state)
+        // The FULL line, exactly the legacy shape — reason= ends the line.
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertEquals(
+            "render backend fallback: requested=GPU_EXPERIMENTAL effective=CPU " +
+                "reason=surface-input-unavailable",
+            fallback,
+        )
+        assertFalse(fallback.contains('\n'))
+    }
+
+    @Test
+    fun every_surface_input_step_round_trips_into_the_fallback_reason() {
+        // The closed vocabulary is the contract: EVERY SurfaceInputStep
+        // token reaches the fallback line through the REAL emit site as
+        // reason=surface-input-unavailable:<token> — and every variant
+        // still contains the legacy reason string, so the owner's
+        // existing greps keep hitting every step.
+        for (step in SurfaceInputStep.entries) {
+            val session = FakeSession(frames = 2, audio = false)
+            val failWriter = SurfaceWriter(
+                unavailableAtStart = "configure: bring-up step failed",
+                unavailableStep = step,
+            )
+            val cpuWriter = FakeWriter()
+            val writers = ArrayDeque(listOf<Mp4MediaWriter>(failWriter, cpuWriter))
+            val lines = ArrayList<String>()
+            val exporter = Mp4Exporter(
+                session = session,
+                writerFactory = { writers.removeFirst() },
+                engine = freshEngine(),
+                stageLog = lines::add,
+            )
+            val out = File(tmp.root, "clip-${step.token}.mp4")
+            val gpuJob = job().copy(renderBackend = RenderBackend.GPU_EXPERIMENTAL)
+            val result = runBlocking { exporter.export(gpuJob, 7, out) }
+            assertEquals("step ${step.token} must restart on CPU", State.DONE, result.state)
+            val fallback = lines.first { it.startsWith("render backend fallback: ") }
+            assertEquals(
+                "step ${step.token} must name itself in the reason",
+                "render backend fallback: requested=GPU_EXPERIMENTAL effective=CPU " +
+                    "reason=surface-input-unavailable:${step.token}",
+                fallback,
+            )
+            // The owner's legacy grep still hits every step variant.
+            assertTrue(
+                "step ${step.token} must keep the legacy reason substring",
+                fallback.contains("reason=surface-input-unavailable"),
+            )
+            assertFalse(fallback.contains('\n'))
+        }
     }
 
     @Test
@@ -2717,6 +2843,7 @@ class Mp4ExporterTest {
                 "no EGL display is available",
                 "the export restarts on the CPU path",
             ),
+            adoptStep = SurfaceInputStep.EGL_DISPLAY,
         )
         val cpuWriter = FakeWriter()
         val writers = ArrayDeque(listOf<Mp4MediaWriter>(failWriter, cpuWriter))
@@ -2735,6 +2862,14 @@ class Mp4ExporterTest {
         )
         val result = runBlocking { exporter.export(gpuJob, 7, out) }
         assertEquals(State.DONE, result.state)
+        // The adopt-path fallback line names the failing step too (the
+        // same one-line reason contract; owner bug report 2026-11-13).
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertEquals(
+            "render backend fallback: requested=GPU_EXPERIMENTAL effective=CPU " +
+                "reason=surface-input-unavailable:egl-display",
+            fallback,
+        )
         // The CPU re-run encoded every frame through the packed path.
         assertEquals(2, cpuWriter.videoFrames)
         // The failing writer was released; the session ran twice.
