@@ -16,6 +16,10 @@
 //     shape developToArgb returns) that the Compose overlays (zebra,
 //     scopes) consume — through the SAME mapped-SSBO readback the
 //     export session uses, on a ~256x144x3-float buffer, NOT the frame.
+//     (The ONE exception: the debug-only stats-readback toggle — see
+//     PreviewFrameRequest::statsEnabled — skips draw 3 + the readback
+//     entirely for the measurement run, and the published frame becomes
+//     the honest 1x1 empty fallback.)
 //
 // THE NO-READBACK RULE (the audit's explicit demand): glReadPixels is
 // used NOWHERE on this path, and NO full-frame readback happens — the
@@ -111,6 +115,17 @@ struct PreviewFrameRequest {
     bool highlightReconstruction = true;
     bool keepVignetting = true;
     int tonemap = 0;  // 0 off, 1 ACES, 2-5 AgX (Grade::tonemap)
+    // The stats-readback measurement toggle (trace-dims fix 2026-11-14):
+    // true — the DEFAULT, and today's behavior — runs draw 3 + the
+    // mapped-SSBO readback and publishes the real stats pack; false skips
+    // BOTH entirely, and the published frame becomes the honest 1x1
+    // empty fallback (the zebra/scopes consumers degrade for the
+    // measurement run — the trace line reads stats=off). The flag RIDES
+    // the request (the gSyncRefine precedent) so the session reads it per
+    // render without a second native call; the JNI entry copies the
+    // bridge-level atomic onto every request. Release builds never flip
+    // the atomic, so the pack always publishes there.
+    bool statsEnabled = true;
 };
 
 // One render result. ok=false means the step named in [detail] failed (or
@@ -118,12 +133,38 @@ struct PreviewFrameRequest {
 // reason). ok=true may still carry a NON-FATAL window-present diagnostic
 // in [detail]: the published frame is the render's contract; the present
 // is best-effort (see the failure semantics above).
+//
+// The measurement fields (trace-dims fix 2026-11-14) carry the dims the
+// ritim-trace line logs on the GPU path — the develop/surface dims the
+// published pack hides — and the four GL-thread timing spans, measured
+// with steady_clock inside runJob. Every span is ALWAYS collected (the
+// cost is four clock reads per frame, negligible next to any draw; the
+// debug-only discipline lives in the trace gate that PRINTS them, the
+// RenderTrace.enabled precedent) so the JNI tail is one stable shape.
 struct PreviewFrameResult {
     bool ok = false;
     std::vector<uint32_t> argb8888;  // width*height pixels, row-major,
                                       // upright, top row first
     uint32_t width = 0;              // the published (stats) dims
     uint32_t height = 0;
+    // The develop pass's actual output dims (the develop texture — the
+    // reduced CFA's developed frame, what the window pass samples).
+    uint32_t developW = 0;
+    uint32_t developH = 0;
+    // The window surface's presented dims (0x0 when no surface attached
+    // or the query failed — the present is best-effort).
+    uint32_t surfaceW = 0;
+    uint32_t surfaceH = 0;
+    // The four GL-thread spans in MICROSECONDS (double; the JNI tail
+    // carries them as jints — microsecond resolution fits the per-frame
+    // scale): upload = the per-frame CFA glTexSubImage2D; develop = the
+    // develop draw; present = the window-present block including
+    // eglSwapBuffers; stats = draw 3 + the mapped-SSBO readback (0 when
+    // the toggle skipped the whole stats stage).
+    double uploadUs = 0.0;
+    double developUs = 0.0;
+    double presentUs = 0.0;
+    double statsUs = 0.0;
     std::string detail;
 };
 

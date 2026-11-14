@@ -234,6 +234,20 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeSetSyncRefine(enabled: Boolean)
 
         /**
+         * Toggles the preview stats readback (trace-dims fix 2026-11-14):
+         * when on — the DEFAULT, and today's behavior — the GPU preview
+         * session runs draw 3 + the mapped-SSBO readback and publishes the
+         * real stats pack; when off it skips BOTH entirely (the trace line
+         * reads stats=off, the published pack degrades to the honest 1x1
+         * fallback for the measurement run). RUNTIME toggle, the
+         * nativeSetSyncRefine pattern: the companion init never calls it —
+         * native flips the bridge-level atomic per render through the
+         * request. The owner's on-device A/B (the stats= ms span with the
+         * readback on vs off) isolates the synchronous readback's cost.
+         */
+        @JvmStatic private external fun nativeSetPreviewStatsEnabled(enabled: Boolean)
+
+        /**
          * The six sub-stage slots of the frame nativeExportFrame just
          * produced, in milliseconds, in the fixed order
          * [decode, temporal, develop, warp, oetf_pack, jni_copy] — or null
@@ -1409,6 +1423,21 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             nativeSetSyncRefine(enabled)
+        }
+
+        /**
+         * JNI bridge: see nativeSetPreviewStatsEnabled. Throws
+         * IllegalStateException when the .so is absent; otherwise the
+         * bridge-level atomic flips and the NEXT GPU preview render skips
+         * (or resumes) the stats draw + readback. The jniSetSyncRefine
+         * runtime-toggle pattern: internal because a UI caller (the
+         * measurement run's A/B switch) owns it, not the companion init.
+         */
+        internal fun jniSetPreviewStatsEnabled(enabled: Boolean) {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            nativeSetPreviewStatsEnabled(enabled)
         }
 
         /**

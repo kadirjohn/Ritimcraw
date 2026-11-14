@@ -2407,6 +2407,29 @@ fun ClipEditorScreen(
                                         stabilizationApplied = req.grade.stabilization &&
                                             gyroPath != null,
                                         servedByGpu = servedByGpuWindow,
+                                        // The GPU-path measurement fields
+                                        // (trace-dims fix 2026-11-14): out=
+                                        // is the published stats pack's
+                                        // dims on these frames — these ride
+                                        // the PreviewFrame's tail (the
+                                        // renderArrayBlocking parse) and
+                                        // carry the real dims + per-stage
+                                        // spans. Neutral defaults on the
+                                        // CPU path (f is the 3-arg form),
+                                        // so its line stays byte-identical.
+                                        sourceW = f.sourceW,
+                                        sourceH = f.sourceH,
+                                        developW = f.developW,
+                                        developH = f.developH,
+                                        surfaceW = f.surfaceW,
+                                        surfaceH = f.surfaceH,
+                                        statsEnabled = f.statsEnabled,
+                                        decMs = f.decMs,
+                                        cfaMs = f.cfaMs,
+                                        upMs = f.upMs,
+                                        devMs = f.devMs,
+                                        presentMs = f.presentMs,
+                                        statsMs = f.statsMs,
                                     )
                                 )
                                 lastRenderFailed = false

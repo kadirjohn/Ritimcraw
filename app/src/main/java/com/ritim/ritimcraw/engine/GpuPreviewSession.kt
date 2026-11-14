@@ -259,14 +259,52 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
     /**
      * Validates the published pack into a [PreviewFrame]; MUST run on the
      * engine thread. The SAME shape the CPU preview publishes ([w, h,
-     * pixels...]), so the publish fold downstream is engine-blind.
+     * pixels...]), so the publish fold downstream is engine-blind — PLUS
+     * the trace-dims fix's (2026-11-14) 13-int measurement tail the
+     * nativePreviewSessionRenderFrame appends after the pixels:
+     * [sourceW, sourceH, developW, developH, surfaceW, surfaceH,
+     * statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs] (the
+     * spans in MICROSECONDS; parsed into the PreviewFrame's ms fields).
+     * BOTH lengths are valid — the old (2 + w*h) tail-less array parses
+     * with the neutral defaults, the new (2 + w*h + 13) one parses the
+     * tail — so an old .so against this Kotlin (or vice versa) degrades
+     * honestly instead of dropping every frame. Internal, not private:
+     * the JVM suite locks this contract without the native lib.
      */
-    private fun renderArrayBlocking(out: IntArray?): PreviewFrame? {
+    internal fun renderArrayBlocking(out: IntArray?): PreviewFrame? {
         if (out == null || out.size < 2) return null
         val w = out[0]
         val h = out[1]
-        if (w <= 0 || h <= 0 || out.size != 2 + w * h) return null
-        return PreviewFrame(w, h, out.copyOfRange(2, out.size))
+        if (w <= 0 || h <= 0) return null
+        val pixelCount = w * h
+        val oldLength = 2 + pixelCount
+        val newLength = oldLength + 13
+        if (out.size == oldLength) {
+            return PreviewFrame(w, h, out.copyOfRange(2, out.size))
+        }
+        if (out.size != newLength) return null
+        // The measurement tail (GPU window path only): dims the published
+        // pack hides, the stats toggle's state, and the six per-stage
+        // spans — microseconds to milliseconds.
+        val t = out.size - 13
+        return PreviewFrame(
+            width = w,
+            height = h,
+            argb = out.copyOfRange(2, t),
+            sourceW = out[t],
+            sourceH = out[t + 1],
+            developW = out[t + 2],
+            developH = out[t + 3],
+            surfaceW = out[t + 4],
+            surfaceH = out[t + 5],
+            statsEnabled = out[t + 6] != 0,
+            decMs = out[t + 7] / 1000.0,
+            cfaMs = out[t + 8] / 1000.0,
+            upMs = out[t + 9] / 1000.0,
+            devMs = out[t + 10] / 1000.0,
+            presentMs = out[t + 11] / 1000.0,
+            statsMs = out[t + 12] / 1000.0,
+        )
     }
 }
 

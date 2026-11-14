@@ -275,4 +275,106 @@ class GpuPreviewSessionTest {
         })
         assertNull(session.lastDetail())
     }
+
+    // ---- the array contract (the trace-dims fix's tail, 2026-11-14) ------
+
+    /**
+     * The tail layout the JNI entry appends after the pixels (13 ints):
+     * [sourceW, sourceH, developW, developH, surfaceW, surfaceH,
+     * statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs] — the
+     * spans in MICROSECONDS, parsed into the PreviewFrame's ms fields.
+     */
+    private fun tail(
+        sourceW: Int = 4032, sourceH: Int = 3024,
+        developW: Int = 1280, developH: Int = 960,
+        surfaceW: Int = 1080, surfaceH: Int = 810,
+        statsEnabled: Int = 1,
+        decUs: Int = 18400, cfaUs: Int = 2700, upUs: Int = 1200,
+        devUs: Int = 3900, presentUs: Int = 1100, statsUs: Int = 800,
+    ) = intArrayOf(
+        sourceW, sourceH, developW, developH, surfaceW, surfaceH,
+        statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs,
+    )
+
+    @Test
+    fun old_tailless_array_parses_with_the_neutral_defaults() {
+        // BACK-COMPAT: the pre-fix shape (2 + w*h, no tail) is still a
+        // valid array — an old .so against this Kotlin degrades to
+        // neutral measurement defaults instead of dropping every frame.
+        // The parser lives on the develop object (the real boundary's
+        // own seam), not the lifecycle owner.
+        val out = NativeGpuPreviewDevelop.renderArrayBlocking(intArrayOf(2, 2, 0, 0, 0, 0))
+        assertEquals(PreviewFrame(2, 2, IntArray(4)), out)
+        assertEquals(0, out?.sourceW)
+        assertEquals(0, out?.developH)
+        assertEquals(0.0, out?.decMs)
+        assertEquals(0.0, out?.statsMs)
+        assertTrue(out?.statsEnabled == true)
+    }
+
+    @Test
+    fun new_tailed_array_parses_the_measurement_tail() {
+        // The GPU window path's real shape: 2 + w*h + 13. The dims and
+        // the toggle ride verbatim; the microsecond spans divide into
+        // the ms fields (18400us -> 18.4ms).
+        val out = NativeGpuPreviewDevelop.renderArrayBlocking(
+            intArrayOf(2, 2, 0, 0, 0, 0) + tail()
+        )
+        assertEquals(PreviewFrame(2, 2, IntArray(4)), out)
+        assertEquals(4032, out?.sourceW)
+        assertEquals(3024, out?.sourceH)
+        assertEquals(1280, out?.developW)
+        assertEquals(960, out?.developH)
+        assertEquals(1080, out?.surfaceW)
+        assertEquals(810, out?.surfaceH)
+        assertEquals(true, out?.statsEnabled)
+        val frame = out!!
+        assertEquals(18.4, frame.decMs, 1e-9)
+        assertEquals(2.7, frame.cfaMs, 1e-9)
+        assertEquals(1.2, frame.upMs, 1e-9)
+        assertEquals(3.9, frame.devMs, 1e-9)
+        assertEquals(1.1, frame.presentMs, 1e-9)
+        assertEquals(0.8, frame.statsMs, 1e-9)
+    }
+
+    @Test
+    fun tailed_array_with_stats_off_parses_the_toggle() {
+        // The A/B leg: statsEnabled=0 in the tail (the toggle skipped
+        // draw 3 + the readback) reads false on the frame — the trace
+        // line then prints stats=off.
+        val out = NativeGpuPreviewDevelop.renderArrayBlocking(
+            intArrayOf(1, 1, 0) + tail(statsEnabled = 0, statsUs = 0)
+        )
+        assertEquals(false, out?.statsEnabled)
+        assertEquals(0.0, out?.statsMs)
+    }
+
+    @Test
+    fun wrong_length_arrays_stay_null_verdicts() {
+        // The validation contract: neither the old nor the new length
+        // means a corrupt array — the null verdict (the CPU fallback).
+        assertNull(NativeGpuPreviewDevelop.renderArrayBlocking(null))
+        assertNull(NativeGpuPreviewDevelop.renderArrayBlocking(intArrayOf(2)))
+        assertNull(NativeGpuPreviewDevelop.renderArrayBlocking(intArrayOf(2, 2, 0, 0, 0))) // short pixels
+        assertNull(NativeGpuPreviewDevelop.renderArrayBlocking(intArrayOf(0, 2, 0, 0))) // bad dims
+        assertNull(NativeGpuPreviewDevelop.renderArrayBlocking(intArrayOf(2, 2, 0, 0, 0, 0, 1))) // 14 tail
+    }
+
+    @Test
+    fun the_pixels_stay_the_identity_for_the_publish_fold() {
+        // The custom equals/hashCode deliberately IGNORE the measurement
+        // fields (dims+pixels identity, the publish-fold contract): the
+        // tailed frame equals the tailless one with the same pixels, and
+        // two tailed frames with different timings but equal pixels are
+        // the SAME published frame.
+        val tailed = NativeGpuPreviewDevelop.renderArrayBlocking(
+            intArrayOf(2, 2, 0, 0, 0, 0) + tail()
+        )
+        assertEquals(PreviewFrame(2, 2, IntArray(4)), tailed)
+        assertEquals(PreviewFrame(2, 2, IntArray(4)).hashCode(), tailed?.hashCode())
+        val otherTimings = NativeGpuPreviewDevelop.renderArrayBlocking(
+            intArrayOf(2, 2, 0, 0, 0, 0) + tail(decUs = 1, statsUs = 2)
+        )
+        assertEquals(tailed, otherTimings)
+    }
 }
