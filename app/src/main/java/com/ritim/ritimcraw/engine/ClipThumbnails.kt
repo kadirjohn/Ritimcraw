@@ -4,8 +4,17 @@ import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.data.ThumbnailStore
+import com.ritim.ritimcraw.export.ExportEngine
+import com.ritim.ritimcraw.export.Mp4Session
+import com.ritim.ritimcraw.export.Mp4SessionInfo
+import com.ritim.ritimcraw.export.NativeMp4Session
+import com.ritim.ritimcraw.export.PhotoPixels
 import com.ritim.ritimcraw.export.PngWriter
+import java.io.File
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.RejectedExecutionException
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * Pure recorded-stats decisions for the thumbnail pass (owner request
@@ -28,35 +37,66 @@ object ThumbnailStats {
 
 /**
  * The Library thumbnail + stats generation pass (owner request
- * 2026-11-11 section 1). For ONE clip, through the SAME session seam the
- * editor uses ([PreviewSessions.open] — one uniform open for MCRAW and
- * encoded clips alike, so even an MP4 gets a properly developed first
- * frame instead of a flat log frame):
+ * 2026-11-11 section 1; the 2026-11-14 full-res MCRAW upgrade). For ONE
+ * clip, through the SAME session seams the rest of the app uses:
  *
- *  1. Open the clip read-only ONCE (the seam owns the fd's lifetime:
- *     MCRAW dup's it and the factory closes the caller's copy; the encoded
- *     source adopts it — the caller never touches a descriptor itself).
- *  2. Render frame 0 with a NEUTRAL [GradeK] — the owner ACCEPTS that the
- *     neutral develop looks dark; nothing here auto-brightens.
- *  3. Read the recorded first/last pts for the duration
- *     ([ThumbnailStats.durationUs] — hides at 0, never faked).
- *  4. Persist the PNG ONCE (files/thumbnails/<id>.png) — decode once,
- *     never redevelop per composition.
- *  5. Report the recorded stats (width/height/frameCount/duration) so the
- *     caller backfills the record — the row's resolution shows AS
- *     RECORDED (open-gate 4000x3000 and 3840x2160 both display as
- *     recorded).
+ *  - MCRAW (owner request 2026-11-14: the import thumbnail was too low
+ *    quality — "ilk frame'i FULL çözünürlükte al, DNG'yi develop et,
+ *    JPG olarak kaydet, icon'a küçült, ilk frame JPG'sini sil"): the
+ *    full-resolution develop the photo export uses ([Mp4Session] on
+ *    [ExportEngine.thread], whose one-thread contract the export seam
+ *    itself states), then a LIGHT histogram balance
+ *    ([ThumbnailBalance] — the EXISTING stage-15 highlights recovery /
+ *    stage-11 shadows lift at small strength, applied by a re-develop,
+ *    never new tone math), then the JPEG master and the icon:
  *
- * Every native/codec call runs on the shared preview engine thread (the
- * seam submits everything there — one decoder at a time, thread-local
- * error state). Never throws: a failed open or render degrades to "no
- * thumbnail this pass" (the row shows the placeholder; the stats still
- * land when the open succeeded), and the next Library open retries.
+ *    1. Acquire the fd ONCE, close it in finally (the native side dup's
+ *       per open — one fd per pass, never leaked; the ExportQueue
+ *       discipline).
+ *    2. Open + render frame 0 with a NEUTRAL [GradeK] at FULL recorded
+ *       resolution (developCpu -> linearToRec709 -> 8-bit RGB888).
+ *    3. Balance check on the developed frame's luma histogram
+ *       ([ThumbnailBalance.gradeFor]): the identity for a balanced
+ *       frame (no second develop), else a bounded grade whose tone
+ *       math is the existing native stages — a second renderFrame
+ *       applies it.
+ *    4. Rotate upright ([PhotoPixels.rotate] — a JPEG carries no
+ *       orientation hint, so the pixels must be; manual rotation is 0
+ *       at import, so the container orientation alone decides).
+ *    5. Write the JPEG master at quality ~90 (files/thumbnails/<id>.jpg
+ *       — [ThumbnailStore.masterPath], the Bitmap.compress precedent
+ *       the photo export's PNG adapter set).
+ *    6. Extract the icon from the master with a scaled decode
+ *       (inSampleSize — the full-res JPEG is NEVER loaded into a list
+ *       row) and persist it at the SAME <id>.png name every build has
+ *       used (existing icons never re-develop).
+ *    7. DELETE the master — the icon persists, the master never does.
+ *       A crash between 5 and 7 leaves a stale master the next pass or
+ *       [ThumbnailStore.remove] cleans up.
+ *
+ *  - ENCODED clips keep the original path unchanged: the 128px neutral
+ *    first frame through [PreviewSessions.open] (one uniform open for
+ *    MCRAW and encoded alike) — the full-res develop is an MCRAW
+ *    upgrade only, and even an MP4 keeps a properly developed first
+ *    frame instead of a flat log frame.
+ *
+ * Stats land through [PendingClip.onStats] in both branches from the
+ * RECORDED open (width/height/frameCount as recorded, duration from the
+ * recorded pts — the row's resolution shows AS RECORDED).
+ *
+ * Never throws: a failed open or render degrades to "no thumbnail this
+ * pass" (the row shows the placeholder; the stats still land when the
+ * open succeeded), and the next Library open retries. The pass runs OFF
+ * the UI thread (the engines); the row never blocks on it.
  */
 class ClipThumbnails(
     private val store: ThumbnailStore,
     private val pngWriter: PngWriter,
     private val engine: ExecutorService = PreviewRenderer.previewEngine,
+    private val mp4Session: Mp4Session = NativeMp4Session,
+    private val exportEngine: ExecutorService = ExportEngine.thread,
+    private val jpegWriter: JpegWriter = BitmapJpegWriter(),
+    private val iconExtractor: IconExtractor = BitmapIconExtractor(pngWriter),
 ) {
 
     /** The long-edge target of the developed thumbnail (fast, small PNG). */
@@ -71,6 +111,17 @@ class ClipThumbnails(
      */
     suspend fun generate(clip: PendingClip) {
         if (!ThumbnailRules.needsThumbnail(clip.media, store.has(clip.media.id))) return
+        when (clip.path) {
+            SourcePath.MCRAW -> generateMcraw(clip)
+            SourcePath.ENCODED -> generateEncoded(clip)
+        }
+    }
+
+    /**
+     * The ENCODED path, unchanged from the original pass: the 128px
+     * neutral first frame through the editor's preview seam.
+     */
+    private suspend fun generateEncoded(clip: PendingClip) {
         val session = PreviewSessions.open(
             path = clip.path,
             fdProvider = clip.fdProvider,
@@ -100,6 +151,104 @@ class ClipThumbnails(
                 ThumbnailStats.durationUs(first, last),
             )
         }
+    }
+
+    /**
+     * The MCRAW full-res path (owner request 2026-11-14): the photo
+     * export's develop seam, the light balance, the transient JPEG
+     * master, the persisted icon, the master deleted. The whole native
+     * sequence is confined to [exportEngine] — the Mp4Session one-thread
+     * contract (thread-local error state) — and the fd's lifetime is the
+     * caller's: acquired once, closed in finally.
+     */
+    private suspend fun generateMcraw(clip: PendingClip) {
+        val fd = clip.fdProvider()
+        if (fd < 0) return
+        val master = store.masterPath(clip.media.id)
+        suspendCoroutine { cont ->
+            try {
+                exportEngine.execute {
+                    val res = try {
+                        val info = mp4Session.open(fd)
+                        if (info == null) {
+                            // Failed open: no thumbnail this pass (the row
+                            // shows the placeholder); the next Library open
+                            // retries. Not a failure worth surfacing.
+                            Result.success(Unit)
+                        } else {
+                            try {
+                                // Full-res neutral develop of frame 0 — the
+                                // same 24-stage developCpu the export runs.
+                                val neutral = mp4Session.renderFrame(info.handle, 0, GradeK())
+                                if (neutral != null) {
+                                    // Light balance: the identity for a
+                                    // balanced frame (no second develop), else
+                                    // the bounded grade applied by the native
+                                    // re-develop (the existing stage-15/11
+                                    // math — never new tone math).
+                                    val balanced = ThumbnailBalance.gradeFor(
+                                        ThumbnailBalance.lumaHistogram(neutral)
+                                    )
+                                    val rgb = if (balanced.highlights != 0f || balanced.shadows != 0f) {
+                                        // A failed re-develop falls back to the
+                                        // neutral frame: the icon still lands,
+                                        // just unbalanced — better than none.
+                                        mp4Session.renderFrame(info.handle, 0, balanced) ?: neutral
+                                    } else {
+                                        neutral
+                                    }
+                                    writeIconFromMaster(clip.media.id, info, rgb, master)
+                                }
+                                // Recorded stats from the same open (the row's
+                                // resolution shows AS RECORDED; a single-frame
+                                // clip hides its duration, never fakes one).
+                                val first = mp4Session.framePts(info.handle, 0)
+                                val last = if (info.frameCount > 1) mp4Session.framePts(info.handle, info.frameCount - 1) else -1L
+                                clip.onStats(
+                                    info.width,
+                                    info.height,
+                                    info.frameCount,
+                                    ThumbnailStats.durationUs(first, last),
+                                )
+                                Result.success(Unit)
+                            } finally {
+                                mp4Session.close(info.handle)
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        // Never throws past this pass: a failed render or
+                        // write degrades to "no thumbnail this pass".
+                        Result.failure<Unit>(e)
+                    }
+                    cont.resume(res)
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(Result.failure<Unit>(e))
+            }
+        }
+        // The caller's fd closes on every path (the native side dup'd it
+        // per open — one fd per pass, never leaked), and the master NEVER
+        // persists: consumed by the icon extraction, then deleted (the
+        // icon is the only artifact kept).
+        PreviewRenderer.closeFdQuietly(fd)
+        if (master.exists()) master.delete()
+    }
+
+    /**
+     * Steps 4-6 of the MCRAW path: upright ARGB -> JPEG master -> scaled
+     * icon extract. A failed write or extract leaves no icon (the row
+     * shows the placeholder; the pass retries on the next Library open).
+     */
+    private fun writeIconFromMaster(id: String, info: Mp4SessionInfo, rgb: ByteArray, master: File) {
+        val upright = PhotoPixels.rotate(
+            PhotoPixels.toArgbInts(rgb, info.width, info.height),
+            info.width,
+            info.height,
+            info.orientationDeg, // manual rotation is 0 at import
+        )
+        store.ensureDir()
+        if (!jpegWriter.write(upright.argb, upright.width, upright.height, master.absolutePath)) return
+        iconExtractor.extract(master.absolutePath, store.targetPath(id), maxDim)
     }
 
     /**
