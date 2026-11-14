@@ -55,6 +55,7 @@ add_library(rawedit STATIC
     src/Orientation.cpp
     src/OrientationEstimate.cpp
     src/Sync.cpp
+    src/OpticalSync.cpp
     src/Temporal.cpp
     src/Stabilization.cpp
     src/Warp.cpp
@@ -93,6 +94,12 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_warp tests/test_warp.cpp)
     target_include_directories(test_warp PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_warp PRIVATE rawedit)
+    # test_optical_sync: GY-04 optical sync refinement; synthetic suites
+    # always run, the real-clip evidence case is RAWEDIT_REALCLIP-gated
+    # (mirrors tools/build-desktop.sh).
+    add_executable(test_optical_sync tests/test_optical_sync.cpp)
+    target_include_directories(test_optical_sync PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_optical_sync PRIVATE rawedit)
     # test_yuv: byte-exact RGB888->I420 contract with export/YuvConverter.kt
     # (on arm64 hosts the NEON path runs, so NEON-vs-scalar is proven too).
     # -ffp-contract=off matches the Yuv.cpp build: the reference formulas in
@@ -117,6 +124,7 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME temporal COMMAND test_temporal)
     add_test(NAME stabilization COMMAND test_stabilization)
     add_test(NAME warp COMMAND test_warp)
+    add_test(NAME optical_sync COMMAND test_optical_sync)
     add_test(NAME yuv COMMAND test_yuv)
     add_test(NAME color COMMAND test_color)
 endif()
