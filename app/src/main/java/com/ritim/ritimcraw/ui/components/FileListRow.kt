@@ -40,11 +40,15 @@ import kotlinx.coroutines.withContext
 
 /**
  * Thumbnail-first media row for the main screens (owner request
- * 2026-11-11d §4.3): rounded ~76dp square thumbnail, filename to the
- * right limited to two lines with ellipsis, supporting metadata line
- * beneath it. A plain Row (not ListItem) so the thumbnail and text block
- * size themselves; the caller supplies the supporting line through the
- * pure LibraryRowModel (existing metadata only — nothing is invented).
+ * 2026-11-11d §4.3, the 2026-11-14 aspect-ratio extension): rounded
+ * thumbnail, width fixed at 76dp and height from the clip's recorded
+ * frame ratio ([frameWidth]/[frameHeight] through [ThumbnailRow] — a
+ * vertical clip shows a vertical thumbnail; unknown dims keep the
+ * square), filename to the right limited to two lines with ellipsis,
+ * supporting metadata line beneath it. A plain Row (not ListItem) so
+ * the thumbnail and text block size themselves; the caller supplies
+ * the supporting line through the pure LibraryRowModel (existing
+ * metadata only — nothing is invented).
  *
  * Selection (E2) keeps its exact behavior: long-press enters selection
  * with this row checked, taps toggle while selecting (never open), and
@@ -62,6 +66,8 @@ fun FileListRow(
     supportingLine: String?,
     thumbnailPath: String?,
     modifier: Modifier = Modifier,
+    frameWidth: Int = 0,
+    frameHeight: Int = 0,
     supportingFallback: (@Composable () -> Unit)? = null,
     accessLostLine: String? = null,
     accessLost: Boolean = false,
@@ -94,12 +100,15 @@ fun FileListRow(
         ) {
             ClipThumbnail(
                 path = thumbnailPath,
+                frameWidth = frameWidth,
+                frameHeight = frameHeight,
                 accessLost = accessLost,
                 // The thumbnail carries the screen's 16dp gutter (owner
                 // request 2026-11-14: the icons sat flush against the left
                 // edge — "sadece thumbnail'ler için" margin, ONLY the
                 // thumbnails). This makes the divider's start padding true
-                // (16 + 76 + 16 = 108dp, its comment's own math).
+                // (16 + 76 + 16 = 108dp, its comment's own math — the
+                // WIDTH stays 76dp; only the height became ratio-true).
                 modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
             )
             Column(
@@ -168,14 +177,63 @@ fun FileListRow(
 }
 
 /**
- * The row's leading thumbnail (owner request 2026-11-11d §4.3): rounded
- * ~76dp square, the persisted first-frame PNG cropped to fill, or the
- * placeholder box while missing — decoded off the UI thread (produceState
- * cancels the load when the row leaves composition).
+ * Pure thumbnail-height arithmetic (unit-tested in ThumbnailRowTest, the
+ * [ChipWidths] precedent): the row's thumbnail keeps the WIDTH fixed at
+ * 76dp and derives its height from the clip's recorded frame ratio
+ * (owner request 2026-11-14: a vertical clip shows a vertical thumbnail,
+ * a 4:3 open gate a 4:3 one — the icon FILE is already long-edge
+ * proportional, the row box just stopped square-cropping it).
+ *
+ * The height clamps to [MIN_HEIGHT_DP]..[MAX_HEIGHT_DP] so the LIST stays
+ * scannable: an extreme 9:16 vertical would ask for ~135dp (taller than
+ * two text rows) — it shows at 120dp and letterboxes slightly instead;
+ * a 21:9 anamorphic would ask for ~33dp — it shows at 40dp. The band
+ * keeps every row within roughly one text block of the 76dp square the
+ * list shipped with, whatever the source's ratio. Unknown dims (0x0 —
+ * never probed) keep the square: the placeholder must not guess a ratio
+ * the record does not know.
+ */
+internal object ThumbnailRow {
+
+    /** The fixed thumbnail width (the shipped 76dp square's width). */
+    const val WIDTH_DP = 76f
+
+    /** The tallest a row thumbnail may be (9:16 clamps here, at 120dp). */
+    const val MAX_HEIGHT_DP = 120f
+
+    /** The shortest a row thumbnail may be (21:9 clamps here, at 40dp). */
+    const val MIN_HEIGHT_DP = 40f
+
+    /**
+     * The thumbnail box's height in dp for a [width]x[height] recorded
+     * frame: 76dp * (frameH / frameW), clamped to the band; the square
+     * 76dp when the dims are unknown (<= 0) — never a divide by zero.
+     */
+    fun heightDp(frameWidth: Int, frameHeight: Int): Float {
+        if (frameWidth <= 0 || frameHeight <= 0) return WIDTH_DP
+        val raw = WIDTH_DP * frameHeight / frameWidth
+        return raw.coerceIn(MIN_HEIGHT_DP, MAX_HEIGHT_DP)
+    }
+}
+
+/**
+ * The row's leading thumbnail (owner request 2026-11-11d §4.3, the
+ * 2026-11-14 aspect-ratio extension): rounded box, WIDTH fixed at 76dp
+ * and height from the clip's recorded frame ratio ([ThumbnailRow] — a
+ * vertical clip shows a vertical thumbnail), the persisted first-frame
+ * PNG fitted inside (ContentScale.Fit — at the frame's own ratio the
+ * icon fills the box exactly; a clamped extreme letterboxes slightly
+ * rather than crop), or the ratio-true placeholder box while missing —
+ * decoded off the UI thread (produceState cancels the load when the row
+ * leaves composition). The box keeps the extraSmall shape and the
+ * surfaceVariant background: the ratio-true rounded thumbnail IS the
+ * modern look, no added chrome.
  */
 @Composable
 private fun ClipThumbnail(
     path: String?,
+    frameWidth: Int,
+    frameHeight: Int,
     accessLost: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -192,7 +250,7 @@ private fun ClipThumbnail(
     } ?: remember { mutableStateOf<Bitmap?>(null) }
     Box(
         modifier = modifier
-            .size(76.dp)
+            .size(width = ThumbnailRow.WIDTH_DP.dp, height = ThumbnailRow.heightDp(frameWidth, frameHeight).dp)
             .clip(MaterialTheme.shapes.extraSmall)
             .background(MaterialTheme.colorScheme.surfaceVariant),
     ) {
@@ -202,7 +260,7 @@ private fun ClipThumbnail(
                 bitmap = b.asImageBitmap(),
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Fit,
             )
         } else if (accessLost) {
             // The access-lost marker rides the placeholder while the clip

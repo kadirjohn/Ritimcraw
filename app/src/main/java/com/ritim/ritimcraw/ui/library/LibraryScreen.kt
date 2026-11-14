@@ -472,6 +472,12 @@ private fun LibraryRow(
             LibraryRowModel.durationText(source),
         ),
         thumbnailPath = thumbnailPath,
+        // The recorded frame dims drive the thumbnail's ratio-true height
+        // (owner request 2026-11-14: a vertical clip shows a vertical
+        // thumbnail); 0x0 until the generation pass probes the clip, and
+        // the row keeps the 76dp square then — never a guessed ratio.
+        frameWidth = source.width,
+        frameHeight = source.height,
         accessLost = accessLost,
         accessLostLine = when (status) {
             LibraryRowModel.RowStatus.LOST -> stringResource(R.string.library_row_access_lost)

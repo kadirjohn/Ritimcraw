@@ -205,7 +205,9 @@ class ClipThumbnailsMcrawTest {
         assertEquals(1, iconX.extracts)
         assertEquals(st.masterPath("clip1").absolutePath, iconX.lastMaster)
         assertEquals(st.targetPath("clip1"), iconX.lastOut)
-        assertEquals(128, iconX.lastTarget)
+        // 256px long edge (owner finding 2026-11-14: the old 128px icon
+        // was upscaled at ~420dpi display and looked soft).
+        assertEquals(256, iconX.lastTarget)
         // ...and the master is DELETED after extraction.
         assertTrue(st.has("clip1"))
         assertFalse(st.masterPath("clip1").exists())

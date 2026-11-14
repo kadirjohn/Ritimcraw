@@ -74,7 +74,7 @@ object ThumbnailStats {
  *       A crash between 5 and 7 leaves a stale master the next pass or
  *       [ThumbnailStore.remove] cleans up.
  *
- *  - ENCODED clips keep the original path unchanged: the 128px neutral
+ *  - ENCODED clips keep the original path unchanged: the small neutral
  *    first frame through [PreviewSessions.open] (one uniform open for
  *    MCRAW and encoded alike) — the full-res develop is an MCRAW
  *    upgrade only, and even an MP4 keeps a properly developed first
@@ -99,8 +99,16 @@ class ClipThumbnails(
     private val iconExtractor: IconExtractor = BitmapIconExtractor(pngWriter),
 ) {
 
-    /** The long-edge target of the developed thumbnail (fast, small PNG). */
-    val maxDim: Int = 128
+    /**
+     * The long-edge target of the developed icon. 256px (owner finding
+     * 2026-11-14: the icon looked soft — the row shows 76dp at ~420dpi,
+     * ~200px physical, so the old 128px target was upscaled on
+     * display): a power of two above the display need, so the row's
+     * Image scales DOWN, never up. Icons that predate this stay soft
+     * until their clip is re-imported (existing icons are never
+     * re-developed — [ThumbnailRules.needsThumbnail]).
+     */
+    val maxDim: Int = 256
 
     /**
      * Generates the thumbnail for [clip] when it still needs one
@@ -118,7 +126,7 @@ class ClipThumbnails(
     }
 
     /**
-     * The ENCODED path, unchanged from the original pass: the 128px
+     * The ENCODED path, unchanged from the original pass: the small
      * neutral first frame through the editor's preview seam.
      */
     private suspend fun generateEncoded(clip: PendingClip) {
@@ -129,7 +137,8 @@ class ClipThumbnails(
         ).getOrNull() ?: return // failed open: retry the next Library open
         session.use { s ->
             // Neutral develop of frame 0 (owner accepts the dark look —
-            // no auto-brighten). 128px long edge: small PNG, fast load.
+            // no auto-brighten). Small long edge: fast load, still above
+            // the row's ~200px physical display need at 420dpi.
             val frame = s.render(frameIndex = 0, grade = GradeK(), maxDim = maxDim)
                 .getOrNull()
             if (frame != null) {

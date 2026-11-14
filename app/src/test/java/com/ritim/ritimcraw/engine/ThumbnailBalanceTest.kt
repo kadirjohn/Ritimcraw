@@ -166,7 +166,10 @@ class ThumbnailBalanceTest {
 /**
  * ThumbnailIcon tests: the pure decode-sizing math — the full-res JPEG
  * master is NEVER decoded whole into a list row (inSampleSize picks the
- * sample), and the icon's exact dims keep the long edge at the target.
+ * sample), and the icon's exact dims keep the long edge at the target
+ * (256px — the row shows 76dp at ~420dpi, ~200px physical, so the icon
+ * scales DOWN on display; owner finding 2026-11-14: the old 128px icon
+ * was upscaled and looked soft).
  */
 class ThumbnailIconTest {
 
@@ -174,29 +177,28 @@ class ThumbnailIconTest {
 
     @Test
     fun in_sample_size_is_one_when_master_fits() {
-        // A 128x96 master for a 128px icon: no subsampling.
-        assertEquals(1, ThumbnailIcon.inSampleSize(128, 96, 128, 128))
+        // A 256x192 master for a 256px icon: no subsampling.
+        assertEquals(1, ThumbnailIcon.inSampleSize(256, 192, 256, 256))
     }
 
     @Test
     fun in_sample_size_picks_power_of_two() {
-        // 4000x3000 master towards 128x128: the largest power of 2 whose
-        // halves still cover the request: 3000/2^5 = 93 < 128, so 16.
-        assertEquals(16, ThumbnailIcon.inSampleSize(4000, 3000, 128, 128))
+        // 4000x3000 master towards 256x256: the largest power of 2 whose
+        // halves still cover the request: 1500/2^3 = 187 < 256, so 8.
+        assertEquals(8, ThumbnailIcon.inSampleSize(4000, 3000, 256, 256))
     }
 
     @Test
     fun in_sample_size_never_upscales() {
         // A master SMALLER than the request: sample stays 1.
-        assertEquals(1, ThumbnailIcon.inSampleSize(64, 64, 128, 128))
+        assertEquals(1, ThumbnailIcon.inSampleSize(64, 64, 256, 256))
     }
 
     @Test
     fun in_sample_size_is_power_of_two() {
-        // 4032x3024 (12MP) towards 128: 3024/16 = 189 >= 128, /32 = 94
-        // < 128 -> 16.
-        val s = ThumbnailIcon.inSampleSize(4032, 3024, 128, 128)
-        assertEquals(16, s)
+        // 4032x3024 (12MP) towards 256: 2016/8 = 252 < 256 -> 8.
+        val s = ThumbnailIcon.inSampleSize(4032, 3024, 256, 256)
+        assertEquals(8, s)
         assertEquals(0, s and (s - 1)) // power of two
     }
 
@@ -204,25 +206,25 @@ class ThumbnailIconTest {
 
     @Test
     fun icon_dims_null_when_already_within_target() {
-        assertNull(ThumbnailIcon.iconDims(128, 96, 128))
-        assertNull(ThumbnailIcon.iconDims(96, 128, 128))
+        assertNull(ThumbnailIcon.iconDims(256, 192, 256))
+        assertNull(ThumbnailIcon.iconDims(192, 256, 256))
     }
 
     @Test
     fun icon_dims_scale_the_long_edge_to_target() {
-        // 252x189 (4000x3000 at sample 16) -> long edge 252 -> 128.
-        val dims = ThumbnailIcon.iconDims(252, 189, 128)
+        // 504x378 (4000x3000 at sample 8) -> long edge 504 -> 256.
+        val dims = ThumbnailIcon.iconDims(504, 378, 256)
         assertNotNull(dims)
-        assertEquals(128, dims!!.first)
-        assertEquals(96, dims.second)
+        assertEquals(256, dims!!.first)
+        assertEquals(192, dims.second)
     }
 
     @Test
     fun icon_dims_never_zero() {
         // A degenerate 1x10000 master: the short edge clamps to >= 1.
-        val dims = ThumbnailIcon.iconDims(1, 10_000, 128)
+        val dims = ThumbnailIcon.iconDims(1, 10_000, 256)
         assertNotNull(dims)
         assertTrue(dims!!.first >= 1)
-        assertEquals(128, dims.second)
+        assertEquals(256, dims.second)
     }
 }
