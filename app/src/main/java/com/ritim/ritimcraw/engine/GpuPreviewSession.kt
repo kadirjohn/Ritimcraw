@@ -84,6 +84,7 @@ interface GpuPreviewDevelop {
         frameIndex: Int,
         maxDim: Int,
         exposureEv: Float,
+        highlights: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
@@ -198,6 +199,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         frameIndex: Int,
         maxDim: Int,
         exposureEv: Float,
+        highlights: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
@@ -209,8 +211,8 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                         renderArrayBlocking(
                             NativeSource.jniPreviewSessionRenderFrame(
                                 sessionHandle, clipHandle, frameIndex, maxDim,
-                                exposureEv, highlightReconstruction, keepVignetting,
-                                tonemap,
+                                exposureEv, highlights, highlightReconstruction,
+                                keepVignetting, tonemap,
                             )
                         )
                     } catch (t: Throwable) {
@@ -337,6 +339,7 @@ class GpuPreviewSession(
         frameIndex: Int,
         maxDim: Int,
         exposureEv: Float,
+        highlights: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
@@ -346,7 +349,8 @@ class GpuPreviewSession(
         return try {
             develop.renderFrame(
                 h, clipHandle, frameIndex, maxDim,
-                exposureEv, highlightReconstruction, keepVignetting, tonemap,
+                exposureEv, highlights, highlightReconstruction, keepVignetting,
+                tonemap,
             )
         } catch (t: Throwable) {
             null

@@ -319,12 +319,12 @@ struct PreviewSession::Impl {
     GLuint developProgram = 0;
     GLuint storeProgram = 0;
     GLuint windowProgram = 0;
-    // Uniform locations, resolved ONCE at open (16 develop + 2 store +
+    // Uniform locations, resolved ONCE at open (17 develop + 2 store +
     // 4 window).
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
-          exposureLoc = -1, tonemapLoc = -1, oetfLoc = -1;
+          exposureLoc = -1, highlightsLoc = -1, tonemapLoc = -1, oetfLoc = -1;
     GLint storeSrcLoc = -1, storeSizeLoc = -1;
     GLint windowSrcLoc = -1, windowSrcSizeLoc = -1, windowRectLoc = -1,
           windowOrientationLoc = -1;
@@ -678,13 +678,14 @@ bool PreviewSession::Impl::initOnGlThread(
     camLoc = glGetUniformLocation(developProgram, "uCam2rgb");
     hasProfileLoc = glGetUniformLocation(developProgram, "uHasProfile");
     exposureLoc = glGetUniformLocation(developProgram, "uExposure");
+    highlightsLoc = glGetUniformLocation(developProgram, "uHighlights");
     tonemapLoc = glGetUniformLocation(developProgram, "uTonemap");
     oetfLoc = glGetUniformLocation(developProgram, "uOetf");
     if (cfaLoc < 0 || sizeLoc < 0 || cellLoc < 0 || blackLoc < 0 ||
         rangeLoc < 0 || hasShadingLoc < 0 || shadingLoc < 0 ||
         shadingSizeLoc < 0 || hrLoc < 0 || hrGainLoc < 0 || wbLoc < 0 ||
         camLoc < 0 || hasProfileLoc < 0 || exposureLoc < 0 ||
-        tonemapLoc < 0 || oetfLoc < 0) {
+        highlightsLoc < 0 || tonemapLoc < 0 || oetfLoc < 0) {
         *detail = "shader-contract: missing a develop uniform";
         return false;
     }
@@ -949,6 +950,7 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     glUniformMatrix3fv(camLoc, 1, GL_TRUE, cam2rgb);
     glUniform1i(hasProfileLoc, hasProfile ? 1 : 0);
     glUniform1f(exposureLoc, exposure);
+    glUniform1f(highlightsLoc, req.highlights);  // raw; the shader computes s
     glUniform1i(tonemapLoc, req.tonemap);
     glUniform1i(oetfLoc, 1);  // the preview shape: linearToRec709 in-shader
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);

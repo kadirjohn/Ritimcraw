@@ -946,7 +946,8 @@ class NativeSource private constructor(
          * so the Compose overlays consume either path unchanged). NO
          * full-frame readback exists on this path (the audit's explicit
          * rule; glReadPixels is used nowhere). The render takes ONLY the
-         * four fragment-covered grade controls. Close is idempotent.
+         * five fragment-covered grade controls (highlights joined with the
+         * stage-15 port). Close is idempotent.
          * Device-test-pending (the owner's morning playback run is the
          * production proof).
          */
@@ -969,6 +970,7 @@ class NativeSource private constructor(
             frameIndex: Int,
             maxDim: Int,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1607,6 +1609,7 @@ class NativeSource private constructor(
             frameIndex: Int,
             maxDim: Int,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1616,7 +1619,7 @@ class NativeSource private constructor(
             }
             return nativePreviewSessionRenderFrame(
                 sessionHandle, clipHandle, frameIndex, maxDim, exposureEv,
-                highlightReconstruction, keepVignetting, tonemap)
+                highlights, highlightReconstruction, keepVignetting, tonemap)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {

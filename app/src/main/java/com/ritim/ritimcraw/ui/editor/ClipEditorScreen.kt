@@ -2222,6 +2222,7 @@ fun ClipEditorScreen(
                             frameIndex = req.frameIndex,
                             maxDim = req.maxDim,
                             exposureEv = req.grade.exposureEv,
+                            highlights = req.grade.highlights,
                             highlightReconstruction = req.grade.highlightReconstruction,
                             keepVignetting = req.grade.keepVignetting,
                             tonemap = req.grade.tonemap,

@@ -767,16 +767,20 @@ class EditorPreviewLogicTest {
 
     @Test
     fun gpu_eligible_for_the_fragment_covered_controls() {
-        // The four controls the GPU session's render signature carries
-        // (exposure 14, highlight reconstruction 3, vignetting 2, tonemap
-        // 23) — all fragment-covered, so the GPU path may serve. This is
-        // the eligibility the playback use case rides: grade at HIGH with
-        // AgX tonemap. Contrast stays 0 here: stage 13 is UNCOVERED, so a
-        // contrast move forces the CPU path (the test below).
+        // The five controls the GPU session's render signature carries
+        // (exposure 14, highlights 15, highlight reconstruction 3,
+        // vignetting 2, tonemap 23) — all fragment-covered, so the GPU
+        // path may serve. This is the eligibility the playback use case
+        // rides: grade at HIGH with AgX tonemap and the owner's routine
+        // highlights recovery (-55 — the stage-15 shoulder behind
+        // uHighlights, the same covered knob the export gate rides).
+        // Contrast stays 0 here: stage 13 is UNCOVERED, so a contrast
+        // move forces the CPU path (the test below).
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(
                     exposureEv = 0.7f,
+                    highlights = -55f,
                     highlightReconstruction = false,
                     keepVignetting = false,
                     tonemap = 1,

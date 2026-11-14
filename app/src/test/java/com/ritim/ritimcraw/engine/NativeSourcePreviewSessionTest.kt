@@ -16,9 +16,11 @@ import org.junit.Test
  *      the standard recovery message, never UnsatisfiedLinkError leaking
  *      out of the seam. This is the same contract the M3 seam rides and the
  *      same one the commit-b/c dispatcher will catch;
- *   2. the render signature carries EXACTLY the four covered grade controls
- *      beside the four plumbing values (session handle, clip handle, frame
- *      index, max dim). That narrow signature is the second lock against
+ *   2. the render signature carries EXACTLY the five covered grade controls
+ *      (exposure, highlights, highlight reconstruction, vignetting,
+ *      tonemap — highlights joined with the stage-15 port) beside the
+ *      four plumbing values (session handle, clip handle, frame index,
+ *      max dim). That narrow signature is the second lock against
  *      uncovered grades (the Kotlin coverage gate is the first): a stage
  *      the fragment pass does not cover cannot even be expressed into the
  *      session, so widening this signature must be a deliberate act that
@@ -76,6 +78,7 @@ class NativeSourcePreviewSessionTest {
                 frameIndex = 0,
                 maxDim = 1280,
                 exposureEv = 0.0f,
+                highlights = 0.0f,
                 highlightReconstruction = true,
                 keepVignetting = true,
                 tonemap = 0,
@@ -109,17 +112,19 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun render_carries_exactly_the_four_covered_controls() {
-        // 8 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
-        // four plumbing values) + exposureEv, highlightReconstruction,
-        // keepVignetting, tonemap (the four fragment-covered grade knobs).
-        // Temporal NR, tone-band, sharpening, detail and LUT controls are
-        // deliberately absent — those stages are NOT fragment-covered, so a
-        // grade using any of them must take the CPU path wholesale; adding
-        // such a parameter here widens the session's promise and must fail
-        // this test until the coverage gate is taught the new stage.
+    fun render_carries_exactly_the_five_covered_controls() {
+        // 9 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+        // four plumbing values) + exposureEv, highlights,
+        // highlightReconstruction, keepVignetting, tonemap (the five
+        // fragment-covered grade knobs — highlights joined with the
+        // stage-15 port). Temporal NR, tone-band, sharpening, detail and
+        // LUT controls are deliberately absent — those stages are NOT
+        // fragment-covered, so a grade using any of them must take the CPU
+        // path wholesale; adding such a parameter here widens the session's
+        // promise and must fail this test until the coverage gate is taught
+        // the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(8, render.parameterCount)
+        assertEquals(9, render.parameterCount)
     }
 
     @Test
