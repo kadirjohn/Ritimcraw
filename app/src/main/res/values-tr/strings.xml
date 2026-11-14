@@ -44,7 +44,12 @@
     <!-- Clip editor -->
     <string name="editor_back">Kitaplığa dön</string>
     <string name="editor_preview_placeholder">Motor bağlandığında önizleme görünür</string>
-    <string name="editor_preview_device_pending">Henüz önizleme yok — cihaz geçişi bekleniyor</string>
+    <!-- 2026-11-14 preview placeholder honesty: the idle line lost its
+         "device pass pending" tail (its meaning is now ONLY the true idle —
+         nothing requested); the GPU session-open window renders
+         editor_preview_preparing instead, never this line. -->
+    <string name="editor_preview_device_pending">Henüz önizleme yok</string>
+    <string name="editor_preview_preparing">Önizleme hazırlanıyor…</string>
     <string name="editor_tab_light">Işık</string>
     <string name="editor_tab_color">Renk</string>
     <string name="editor_tab_detail">Detay</string>

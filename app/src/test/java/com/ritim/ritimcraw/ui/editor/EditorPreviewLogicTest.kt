@@ -78,6 +78,80 @@ class EditorPreviewLogicTest {
         )
     }
 
+    // ---- stateOf matrix: the GPU session-open window (owner finding
+    // 2026-11-14 — the seconds-class probe + parity + open + first
+    // develop on a fresh 12MP clip read as broken "No preview yet") ----
+
+    @Test
+    fun gpu_preparing_without_a_frame_is_preparing() {
+        // The open window with nothing on screen yet: PREPARING — the
+        // spinner + "Preparing preview…" placeholder, never the idle text.
+        assertEquals(
+            PreviewState.PREPARING,
+            EditorPreviewLogic.stateOf(
+                renderRequested = false, renderInFlight = false,
+                hasFrame = false, lastRenderFailed = false,
+                gpuPreparing = true,
+            ),
+        )
+    }
+
+    @Test
+    fun a_stale_frame_keeps_showing_while_gpu_reprepares() {
+        // A frame is on screen: it stays (grading continues on the stale
+        // frame) — the preparing window never yanks the image away.
+        assertEquals(
+            PreviewState.FRAME,
+            EditorPreviewLogic.stateOf(
+                renderRequested = true, renderInFlight = false,
+                hasFrame = true, lastRenderFailed = false,
+                gpuPreparing = true,
+            ),
+        )
+    }
+
+    @Test
+    fun cpu_rendering_wins_over_gpu_preparing() {
+        // A CPU render is in flight during the open window: the spinner
+        // state shows (the render is the live work, the open is parallel).
+        assertEquals(
+            PreviewState.RENDERING,
+            EditorPreviewLogic.stateOf(
+                renderRequested = true, renderInFlight = true,
+                hasFrame = false, lastRenderFailed = false,
+                gpuPreparing = true,
+            ),
+        )
+    }
+
+    @Test
+    fun a_failed_render_still_fails_while_gpu_prepares() {
+        // A real render failure is the honest verdict — the preparing
+        // window never masks it with a spinner.
+        assertEquals(
+            PreviewState.FAILED,
+            EditorPreviewLogic.stateOf(
+                renderRequested = true, renderInFlight = false,
+                hasFrame = false, lastRenderFailed = true,
+                gpuPreparing = true,
+            ),
+        )
+    }
+
+    @Test
+    fun idle_stays_idle_without_gpu_preparing() {
+        // The defaulted input: every pre-2026-11-14 call site (and the
+        // true idle — nothing requested, nothing preparing) keeps IDLE.
+        assertEquals(
+            PreviewState.IDLE,
+            EditorPreviewLogic.stateOf(
+                renderRequested = false, renderInFlight = false,
+                hasFrame = false, lastRenderFailed = false,
+                gpuPreparing = false,
+            ),
+        )
+    }
+
     // ---- canRender gate ----
 
     @Test
