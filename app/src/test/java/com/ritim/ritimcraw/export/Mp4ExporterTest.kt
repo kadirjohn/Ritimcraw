@@ -2173,6 +2173,7 @@ class Mp4ExporterTest {
         var lastSessionHandle = 0L
         var lastClipHandle = 0L
         var lastExposureEv = Float.NaN
+        var lastHighlights = Float.NaN
         var lastHighlightReconstruction = false
         var lastKeepVignetting = false
         var lastTonemap = -1
@@ -2208,6 +2209,7 @@ class Mp4ExporterTest {
             clipHandle: Long,
             frameIndex: Int,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -2220,6 +2222,7 @@ class Mp4ExporterTest {
             lastSessionHandle = sessionHandle
             lastClipHandle = clipHandle
             lastExposureEv = exposureEv
+            lastHighlights = highlights
             lastHighlightReconstruction = highlightReconstruction
             lastKeepVignetting = keepVignetting
             lastTonemap = tonemap
@@ -2238,6 +2241,7 @@ class Mp4ExporterTest {
             frameIndex: Int,
             ptsUs: Long,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -2266,8 +2270,9 @@ class Mp4ExporterTest {
         // green probe/parity -> the GPU session renders EVERY frame, the
         // CPU session's renderFrame is never called, and the session is
         // opened and closed exactly once. The render call carries EXACTLY
-        // the four fragment-covered grade controls (the NativeSource
-        // signature lock's Kotlin mirror).
+        // the five fragment-covered grade controls (the NativeSource
+        // signature lock's Kotlin mirror) — highlights rides through at
+        // the stage-15 value.
         val session = FakeSession(frames = 2, audio = false)
         val writer = FakeWriter()
         val gpu = FakeGpuDevelop()
@@ -2280,6 +2285,7 @@ class Mp4ExporterTest {
             7,
             GradeK(
                 exposureEv = 1.5f,
+                highlights = -55f,
                 highlightReconstruction = false,
                 keepVignetting = false,
                 tonemap = 2,
@@ -2294,12 +2300,14 @@ class Mp4ExporterTest {
         assertEquals(1L, gpu.lastSessionHandle)
         assertEquals(1L, gpu.lastClipHandle) // FakeSession's handle
         assertEquals(1.5f, gpu.lastExposureEv, 0f)
+        assertEquals(-55f, gpu.lastHighlights, 0f)
         assertFalse(gpu.lastHighlightReconstruction)
         assertFalse(gpu.lastKeepVignetting)
         assertEquals(2, gpu.lastTonemap)
         assertEquals(listOf(1L), gpu.closedHandles) // closed exactly once
         assertEquals(2, writer.videoFrames) // the packed tail consumed both
-        // No develop fallback: the dispatch chose GLES and it held.
+        // No develop fallback: the dispatch chose GLES and it held — the
+        // highlights grade is covered now, so it stays GPU.
         assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
     }
 

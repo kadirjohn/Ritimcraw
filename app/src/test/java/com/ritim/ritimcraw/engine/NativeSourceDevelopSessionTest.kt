@@ -17,19 +17,19 @@ import org.junit.Test
  *      the standard recovery message, never UnsatisfiedLinkError leaking
  *      out of the seam. This is the same contract jniGlesFragmentParity
  *      rides and the same one the commit-b dispatcher will catch;
- *   2. the render signatures carry EXACTLY the four covered grade controls
- *      (exposure, highlight reconstruction, vignetting, tonemap) beside
- *      the plumbing values. That narrow signature is the second lock
- *      against uncovered grades (the Kotlin coverage gate is the first): a
- *      stage the fragment pass does not cover — temporal NR strength, a
- *      tone-band knob, a LUT path — cannot even be expressed into the
- *      session, so widening this signature must be a deliberate act that
- *      edits this test too;
+ *   2. the render signatures carry EXACTLY the five covered grade controls
+ *      (exposure, highlights, highlight reconstruction, vignetting,
+ *      tonemap) beside the plumbing values. That narrow signature is the
+ *      second lock against uncovered grades (the Kotlin coverage gate is
+ *      the first): a stage the fragment pass does not cover — temporal NR
+ *      strength, a tone-band knob, a LUT path — cannot even be expressed
+ *      into the session, so widening this signature must be a deliberate
+ *      act that edits this test too;
  *   3. the encoder-surface pair's shapes: open now carries the fifth
  *      (blit) source, and renderFrameToEncoder adds ptsUs (the encoder
  *      Surface's presentation time) and rotationDeg (the frame's
  *      effective orientation — the blit's uRotation fold) to the
- *      readback render's seven.
+ *      readback render's eight.
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -65,6 +65,7 @@ class NativeSourceDevelopSessionTest {
                 clipHandle = 1L,
                 frameIndex = 0,
                 exposureEv = 0.0f,
+                highlights = 0.0f,
                 highlightReconstruction = true,
                 keepVignetting = true,
                 tonemap = 0,
@@ -107,6 +108,7 @@ class NativeSourceDevelopSessionTest {
                 frameIndex = 0,
                 ptsUs = 0L,
                 exposureEv = 0.0f,
+                highlights = 0.0f,
                 highlightReconstruction = true,
                 keepVignetting = true,
                 tonemap = 0,
@@ -152,34 +154,35 @@ class NativeSourceDevelopSessionTest {
     }
 
     @Test
-    fun render_carries_exactly_the_four_covered_controls() {
-        // 7 parameters: sessionHandle, clipHandle, frameIndex (the three
-        // plumbing values) + exposureEv, highlightReconstruction,
-        // keepVignetting, tonemap (the four fragment-covered grade knobs).
-        // Temporal NR, tone-band, sharpening, detail and LUT controls are
-        // deliberately absent — those stages are NOT fragment-covered, so a
-        // grade using any of them must take the CPU path wholesale; adding
-        // such a parameter here widens the session's promise and must fail
-        // this test until the coverage gate is taught the new stage.
+    fun render_carries_exactly_the_five_covered_controls() {
+        // 8 parameters: sessionHandle, clipHandle, frameIndex (the three
+        // plumbing values) + exposureEv, highlights, highlightReconstruction,
+        // keepVignetting, tonemap (the five fragment-covered grade knobs —
+        // highlights joined with the stage-15 port). Temporal NR, tone-band,
+        // sharpening, detail and LUT controls are deliberately absent —
+        // those stages are NOT fragment-covered, so a grade using any of
+        // them must take the CPU path wholesale; adding such a parameter
+        // here widens the session's promise and must fail this test until
+        // the coverage gate is taught the new stage.
         val render = method("jniDevelopSessionRenderFrame")
-        assertEquals(7, render.parameterCount)
+        assertEquals(8, render.parameterCount)
     }
 
     @Test
     fun render_to_encoder_adds_only_the_presentation_time() {
-        // 9 parameters: the readback render's seven (sessionHandle,
-        // clipHandle, frameIndex + the four covered grade knobs) plus ptsUs
+        // 10 parameters: the readback render's eight (sessionHandle,
+        // clipHandle, frameIndex + the five covered grade knobs) plus ptsUs
         // (the encoder Surface's presentation time, which the readback path
         // never needs — the CPU path carries pts on writeVideoFrameRgb) plus
         // rotationDeg (the surface-gpu vertical deliverable: the frame's
         // effective orientation, applied by the blit's uRotation fold —
         // 0/90/180/270, no default value so this reflection lock sees
         // exactly one wrapper). The blit reuses the SAME develop program,
-        // so the grade controls are the same four; a TENTH parameter would
-        // widen the encoder blit's promise beyond the covered-grade
+        // so the grade controls are the same five; an ELEVENTH parameter
+        // would widen the encoder blit's promise beyond the covered-grade
         // contract and must fail here.
         val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoder")
-        assertEquals(9, renderToEncoder.parameterCount)
+        assertEquals(10, renderToEncoder.parameterCount)
     }
 
     @Test

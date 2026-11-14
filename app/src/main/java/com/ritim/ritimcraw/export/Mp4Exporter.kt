@@ -369,11 +369,11 @@ object NativeRgbToI420 : RgbToI420 {
  * the .so is absent — the dispatcher catches that and stays on CPU (the
  * same guard NativeMp4Session.requireNative rides).
  *
- * The render signature carries EXACTLY the four fragment-covered grade
- * controls (exposure, highlight reconstruction, vignetting, tonemap)
- * beside the three plumbing values — the second lock against uncovered
- * grades (the Kotlin coverage gate is the first). A stage the fragment
- * pass does not cover cannot even be expressed into the session.
+ * The render signature carries EXACTLY the five fragment-covered grade
+ * controls (exposure, highlights, highlight reconstruction, vignetting,
+ * tonemap) beside the three plumbing values — the second lock against
+ * uncovered grades (the Kotlin coverage gate is the first). A stage the
+ * fragment pass does not cover cannot even be expressed into the session.
  */
 interface GpuDevelop {
     /** The capability probe: raw [contextOk, glesMajor, glesMinor, computeOk, floatFboOk, maxTextureSize]; null = JNI failure. */
@@ -396,6 +396,7 @@ interface GpuDevelop {
         clipHandle: Long,
         frameIndex: Int,
         exposureEv: Float,
+        highlights: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
@@ -430,6 +431,7 @@ interface GpuDevelop {
         frameIndex: Int,
         ptsUs: Long,
         exposureEv: Float,
+        highlights: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
@@ -467,12 +469,13 @@ internal object NativeGpuDevelop : GpuDevelop {
         clipHandle: Long,
         frameIndex: Int,
         exposureEv: Float,
+        highlights: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
         sessionHandle, clipHandle, frameIndex,
-        exposureEv, highlightReconstruction, keepVignetting, tonemap,
+        exposureEv, highlights, highlightReconstruction, keepVignetting, tonemap,
     )
 
     override fun setEncoderSurface(sessionHandle: Long, surface: Any?): Boolean =
@@ -484,13 +487,14 @@ internal object NativeGpuDevelop : GpuDevelop {
         frameIndex: Int,
         ptsUs: Long,
         exposureEv: Float,
+        highlights: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
         rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
         sessionHandle, clipHandle, frameIndex, ptsUs,
-        exposureEv, highlightReconstruction, keepVignetting, tonemap, rotationDeg,
+        exposureEv, highlights, highlightReconstruction, keepVignetting, tonemap, rotationDeg,
     )
 
     override fun closeSession(sessionHandle: Long) =
@@ -1531,7 +1535,8 @@ class ExportPipeline(
                             val drew = try {
                                 gpuDevelop.renderFrameToEncoder(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
-                                    grade.exposureEv, grade.highlightReconstruction,
+                                    grade.exposureEv, grade.highlights,
+                                    grade.highlightReconstruction,
                                     grade.keepVignetting, grade.tonemap, effectiveDeg,
                                 )
                             } catch (e: IllegalStateException) {
@@ -1580,7 +1585,8 @@ class ExportPipeline(
                             val gpu = try {
                                 gpuDevelop.renderFrame(
                                     gpuSessionHandle, info.handle, s.frameIndex,
-                                    grade.exposureEv, grade.highlightReconstruction,
+                                    grade.exposureEv, grade.highlights,
+                                    grade.highlightReconstruction,
                                     grade.keepVignetting, grade.tonemap,
                                 )
                             } catch (e: IllegalStateException) {

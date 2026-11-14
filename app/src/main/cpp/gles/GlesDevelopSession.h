@@ -48,13 +48,14 @@
 // (highlight reconstruction), 4 (bilinear demosaic), 5 (WB = guarded
 // 1/asShotNeutral), 6 (camera -> Rec.709 via the buildCameraToRec709
 // matrix, uploaded row-major with transpose=GL_TRUE), 14 (exposure =
-// 2^ev), 23 (tonemap modes 0-5) and the OETF tail (uOetf=1 — the shader's
+// 2^ev), 15 (highlights = the CPU stage-15 shoulder behind uHighlights),
+// 23 (tonemap modes 0-5) and the OETF tail (uOetf=1 — the shader's
 // linearToRec709 is textually identical to core/src/Transfer.cpp's, the
 // commit-verified match). The readback quantize is the toByte tail
 // verbatim (clamp [0,1], then v*255+0.5) — linearToRec709 is NOT applied
 // again: the shader already did. The caller's grade must have every active
 // stage inside the fragment-covered set (BackendRules' vocabulary gates
-// that on the Kotlin side; this API takes only the four covered grade
+// that on the Kotlin side; this API takes only the five covered grade
 // controls precisely so an uncovered grade cannot reach it).
 //
 // FAILURE SEMANTICS: a GL failure mid-render returns ok=false with the
@@ -130,6 +131,7 @@ struct DevelopFrameRequest {
     rawedit::FrameInfo info{};
     const rawedit::RawMeta* meta = nullptr;
     float exposureEv = 0.0f;
+    float highlights = 0.0f;  // raw grade.highlights; the shader computes s
     bool highlightReconstruction = true;
     bool keepVignetting = true;
     int tonemap = 0;  // 0 off, 1 ACES, 2-5 AgX (Grade::tonemap)

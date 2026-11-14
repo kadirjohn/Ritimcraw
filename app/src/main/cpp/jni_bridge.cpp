@@ -2925,11 +2925,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //   nativeDevelopSessionOpen(vertex, vertex310, develop, store, blit)
 //       -> handle
 //   nativeDevelopSessionRenderFrame(handle, clipHandle, frameIndex,
-//                                   exposureEv, highlightReconstruction,
+//                                   exposureEv, highlights,
+//                                   highlightReconstruction,
 //                                   keepVignetting, tonemap) -> RGB888 bytes
 //   nativeDevelopSessionSetEncoderSurface(handle, surface) -> ok
 //   nativeDevelopSessionRenderFrameToEncoder(handle, clipHandle, frameIndex,
-//                                            ptsUs, exposureEv,
+//                                            ptsUs, exposureEv, highlights,
 //                                            highlightReconstruction,
 //                                            keepVignetting, tonemap) -> ok
 //   nativeDevelopSessionClose(handle)
@@ -2950,7 +2951,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // path); a refusal returns false with the reason in the last-error slot —
 // the Kotlin dispatcher falls back with ONE honest line, never a crash.
 //
-// The render takes ONLY the four covered grade controls — an uncovered
+// The render takes ONLY the five covered grade controls — an uncovered
 // grade cannot even express itself here (the Kotlin coverage gate is the
 // upstream guard; this narrow signature is the second lock).
 
@@ -3051,8 +3052,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
 JNIEXPORT jbyteArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jfloat exposureEv, jboolean highlightReconstruction,
-        jboolean keepVignetting, jint tonemap) {
+        jint frameIndex, jfloat exposureEv, jfloat highlights,
+        jboolean highlightReconstruction, jboolean keepVignetting,
+        jint tonemap) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
@@ -3089,6 +3091,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         req.info = info;
         req.meta = &meta;
         req.exposureEv = exposureEv;
+        req.highlights = highlights;
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
@@ -3192,7 +3195,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionSetEncoderSurfa
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoder(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jlong ptsUs, jfloat exposureEv,
+        jint frameIndex, jlong ptsUs, jfloat exposureEv, jfloat highlights,
         jboolean highlightReconstruction, jboolean keepVignetting,
         jint tonemap, jint rotationDeg) {
     (void)env;
@@ -3229,6 +3232,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         req.info = info;
         req.meta = &meta;
         req.exposureEv = exposureEv;
+        req.highlights = highlights;
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
