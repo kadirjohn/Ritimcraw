@@ -603,6 +603,31 @@ class NativeSource private constructor(
             vPixelStride: Int,
         ): Boolean
 
+        /**
+         * Fused rotate + aspect-fill (the timeline export's frame loop):
+         * rotates the sensor-oriented [rgb] (RGB888, inW*inH*3, row-major)
+         * upright by [orientationDeg] (0/90/180/270 CW; any other value is
+         * identity — RotationState's else branch) and aspect-fills it to
+         * [outW]*[outH] (center-crop cover scale, bilinear, RgbScale's
+         * clamp-to-edge) in ONE pass — no intermediate upright buffer.
+         * mode 0 = aspect-fill (the only policy v1 ships). Byte-exact to
+         * the Kotlin pair RotationState.rotateRgb888 + RgbScale.aspectFill
+         * — the degenerate identity pass (no rotation, exact dims) returns
+         * the INPUT array object, matching both Kotlin fast paths.
+         * Returns null on a malformed request (empty frame, short rgb,
+         * unknown mode) with the error state set; the Kotlin dispatcher
+         * then falls back to the unchanged Kotlin pair.
+         */
+        @JvmStatic private external fun nativeRgbRotateScale(
+            rgb: ByteArray,
+            inW: Int,
+            inH: Int,
+            orientationDeg: Int,
+            outW: Int,
+            outH: Int,
+            mode: Int,
+        ): ByteArray?
+
         // ---- Encoded (Mi-Log MP4) develop JNI (developEncoded -> Rec709 -> ARGB) ----
 
         /**
@@ -1206,6 +1231,27 @@ class NativeSource private constructor(
             rgb, width, height, matrix,
             yBuf, yStride, uBuf, uStride, uPixelStride, vBuf, vStride, vPixelStride,
         )
+
+        /**
+         * JNI bridge: see nativeRgbRotateScale (the fused rotate+scale
+         * twin). Throws IllegalStateException when the .so is absent; null
+         * with the library loaded is a malformed request — the dispatcher
+         * falls back to the Kotlin pair, never a silent wrong frame.
+         */
+        internal fun jniRgbRotateScale(
+            rgb: ByteArray,
+            inW: Int,
+            inH: Int,
+            orientationDeg: Int,
+            outW: Int,
+            outH: Int,
+            mode: Int,
+        ): ByteArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeRgbRotateScale(rgb, inW, inH, orientationDeg, outW, outH, mode)
+        }
 
         /**
          * JNI bridge: see nativeExportFrameTimingMs — the six sub-stage

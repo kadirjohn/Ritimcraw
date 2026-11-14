@@ -4,7 +4,9 @@ import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.ProjectJson
+import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.data.timeline.FrameRange
 import com.ritim.ritimcraw.data.timeline.TimelineClip
 import com.ritim.ritimcraw.data.timeline.TimelineOutput
@@ -208,6 +210,7 @@ class TimelineMp4ExporterTest {
         stageLog: ((String) -> Unit)? = null,
         engine: ExecutorService = freshEngine(),
         converter: RgbToI420 = NativeRgbToI420,
+        rotateScale: RgbRotateScale = NativeRgbRotateScale,
     ): TimelineMp4Exporter {
         val fdOf = sources.keys.withIndex().associate { (i, id) -> id to 10 + i }
         return TimelineMp4Exporter(
@@ -221,6 +224,7 @@ class TimelineMp4ExporterTest {
             gradeFor = { GradeK() },
             stageLog = stageLog,
             converter = converter,
+            rotateScale = rotateScale,
         )
     }
 
@@ -705,6 +709,181 @@ class TimelineMp4ExporterTest {
         val result = runBlocking { e.export(timelineJob(twoClipProject()), out) }
         assertEquals(State.DONE, result.state) // the export ran, conversion included
         assertEquals(8, writer.videoFrames)
+    }
+
+    // ---- RgbRotateScale seam: the fused rotate+scale step's dispatch + dual-run ----
+
+    @Test
+    fun rgb_rotate_scale_seam_default_is_the_native_dispatcher() {
+        // The exporter's default rotateScale is the native dispatch. On the
+        // JVM the library is unavailable, so the dispatch falls back to the
+        // Kotlin pair — and the writer still receives the exact
+        // rotate+aspectFill bytes (the fallback wiring's proof; 4x4 output,
+        // 4x4 source, deg 0, so the scale is the identity fast path).
+        val writer = FakeWriter()
+        val e = exporter(FakeSession(), writer)
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        val gray = ByteArray(4 * 4 * 3) { 128.toByte() }
+        val expected = YuvConverter.toI420(
+            RgbScale.aspectFill(
+                RotationState.rotateRgb888(gray, 4, 4, 0).rgb, 4, 4, 4, 4,
+            ),
+            4, 4,
+        )
+        assertTrue(writer.frames[0].contentEquals(expected))
+    }
+
+    @Test
+    fun rgb_rotate_scale_injected_seam_receives_the_plan_dims() {
+        // A recording fake proves the walk calls THROUGH the seam with the
+        // PLAN's output dims and the session's geometry (the pass-through
+        // contract): one call per rendered clip frame, the gap never
+        // reaches the seam, and the writer is fed what the seam returned.
+        val calls = ArrayList<IntArray>() // inW, inH, deg, outW, outH
+        val marker = ByteArray(4 * 4 * 3) { 9.toByte() }
+        val rotateScale = RgbRotateScale { _, inW, inH, deg, outW, outH ->
+            calls.add(intArrayOf(inW, inH, deg, outW, outH))
+            RgbRotateScaleResult(marker, fromNative = false)
+        }
+        val writer = FakeWriter()
+        val e = exporter(FakeSession(), writer, rotateScale = rotateScale)
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        // 6 rendered clip frames (3 + 3), the 2 gap frames are blackI420.
+        assertEquals(6, calls.size)
+        // Every call: the session's 4x4 deg-0 geometry, the plan's 4x4 output.
+        assertTrue(calls.all { it.contentEquals(intArrayOf(4, 4, 0, 4, 4)) })
+        // The writer is fed the seam's bytes (converted as-is, not rescaled).
+        val expected = YuvConverter.toI420(marker, 4, 4)
+        assertTrue(writer.frames[0].contentEquals(expected))
+        assertFalse(writer.frames[3].contentEquals(expected)) // the gap stays black
+    }
+
+    @Test
+    fun rgb_rotate_scale_fallback_is_byte_identical_when_seam_absent() {
+        // The default seam on the JVM (native absent) must produce the
+        // exact bytes of the Kotlin reference pair the frame loop used to
+        // run inline — including a REAL scale and a REAL rotation, not the
+        // identity fast path: the fake session's geometry is 6x4 at 90
+        // degrees, the plan output 4x4.
+        val gray = ByteArray(6 * 4 * 3) { 128.toByte() }
+        for (i in gray.indices step 3) {
+            gray[i] = (i / 3 % 256).toByte()
+            gray[i + 1] = ((i / 3 + 7) % 256).toByte()
+            gray[i + 2] = ((i / 3 + 13) % 256).toByte()
+        }
+        var seen: ByteArray? = null
+        val rotateScale = RgbRotateScale { _, _, _, _, _, _ ->
+            RgbRotateScaleResult(gray.copyOf(), fromNative = false)
+        }
+        val converter = RgbToI420 { rgb, w, h ->
+            seen = rgb
+            RgbToI420Result(YuvConverter.toI420(rgb, w, h), fromNative = false)
+        }
+        val writer = FakeWriter()
+        val e = exporter(
+            FakeSession(width = 6, height = 4, orientationDeg = 90),
+            writer, rotateScale = rotateScale, converter = converter,
+        )
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        // The seam's bytes reached the converter unchanged.
+        assertTrue(seen!!.contentEquals(gray))
+        // And the DEFAULT seam (same geometry, native absent) produces the
+        // exact Kotlin reference bytes for the same input. The upright 90°
+        // rotation of 6x4 is 4x6 — the reference pair's own dims.
+        val upright = RotationState.rotateRgb888(gray, 6, 4, 90)
+        val reference = RgbScale.aspectFill(
+            upright.rgb, upright.width, upright.height, 4, 4,
+        )
+        val defaultOut = NativeRgbRotateScale.rotateScale(gray, 6, 4, 90, 4, 4)
+        assertFalse(defaultOut.fromNative) // JVM: the library is unavailable
+        assertTrue(defaultOut.rgb.contentEquals(reference))
+    }
+
+    @Test
+    fun rgb_rotate_scale_walk_dual_run_logs_through_the_stage_sink() {
+        // A seam that claims native origin drives the walk's rotate+scale
+        // dual-run: the FIRST frame logs the comparison line through the
+        // stage sink (the rgbToI420 dual-run's pattern), later frames do
+        // not. The comparison is against the REAL Kotlin pair, so the
+        // claimed-native bytes must match it for the line to say so.
+        val rotateScale = RgbRotateScale { rgb, inW, inH, deg, outW, outH ->
+            val upright = RotationState.rotateRgb888(rgb, inW, inH, deg)
+            RgbRotateScaleResult(
+                RgbScale.aspectFill(upright.rgb, upright.width, upright.height, outW, outH),
+                fromNative = true,
+            )
+        }
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        val e = exporter(FakeSession(), writer, stageLog = lines::add, rotateScale = rotateScale)
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        // Exactly ONE rotate+scale dual-run line for the whole export.
+        assertEquals(1, lines.count { it.startsWith("rgbRotateScale dual-run") })
+        val dual = lines.first { it.startsWith("rgbRotateScale dual-run") }
+        assertTrue(dual.contains("native == kotlin"))
+    }
+
+    @Test
+    fun rgb_rotate_scale_walk_dual_run_skipped_for_kotlin_frames() {
+        // fromNative false (the JVM fallback, any pure fake): no rotate+scale
+        // dual-run line, even with the sink wired.
+        val rotateScale = RgbRotateScale { rgb, inW, inH, deg, outW, outH ->
+            val upright = RotationState.rotateRgb888(rgb, inW, inH, deg)
+            RgbRotateScaleResult(
+                RgbScale.aspectFill(upright.rgb, upright.width, upright.height, outW, outH),
+                fromNative = false,
+            )
+        }
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        val e = exporter(FakeSession(), writer, stageLog = lines::add, rotateScale = rotateScale)
+        val out = File(tmp.root, "timeline.mp4")
+        runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        assertEquals(0, lines.count { it.startsWith("rgbRotateScale dual-run") })
+    }
+
+    @Test
+    fun rgb_rotate_scale_walk_dual_run_skipped_without_sink() {
+        // A null stage sink (release builds, logging off): the rotate+scale
+        // dual-run never runs — the guard is the sink itself, so release
+        // exports pay zero.
+        val rotateScale = RgbRotateScale { rgb, inW, inH, deg, outW, outH ->
+            val upright = RotationState.rotateRgb888(rgb, inW, inH, deg)
+            RgbRotateScaleResult(
+                RgbScale.aspectFill(upright.rgb, upright.width, upright.height, outW, outH),
+                fromNative = true,
+            )
+        }
+        val writer = FakeWriter()
+        val e = exporter(FakeSession(), writer, rotateScale = rotateScale)
+        val out = File(tmp.root, "timeline.mp4")
+        val result = runBlocking { e.export(timelineJob(twoClipProject()), out) }
+        assertEquals(State.DONE, result.state) // the export ran, rotate+scale included
+        assertEquals(8, writer.videoFrames)
+    }
+
+    // ---- NativeSource.jniRgbRotateScale: the wrapper's unavailable-guard ----
+
+    @Test
+    fun jni_rgb_rotate_scale_wrapper_guards_when_native_absent() {
+        // The wrapper THROWS (with the engine's unavailable message) when
+        // the .so is absent — the jniLutProbe pattern. On the JVM the
+        // library is never loaded, so the guard is the tested path; on a
+        // device build the dispatcher checks nativeAvailable first, so
+        // production never reaches the throw.
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniRgbRotateScale(
+                ByteArray(4 * 4 * 3), 4, 4, 0, 4, 4, 0,
+            )
+            fail("expected the wrapper to guard when the .so is absent")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
     }
 
     // ---- blackI420 ----

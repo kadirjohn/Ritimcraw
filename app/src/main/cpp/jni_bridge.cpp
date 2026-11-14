@@ -3836,6 +3836,211 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeRgbToI420Planes(
     return JNI_TRUE;
 }
 
+// RGB888 rotate + aspect-fill, fused (the timeline export's frame loop) --------
+//
+// The byte-exact native twin of the Kotlin pair the timeline exporter's frame
+// loop runs per frame: RotationState.rotateRgb888 (sensor-oriented ->
+// upright, deg 0/90/180/270 CW) followed by RgbScale.aspectFill (aspect-fill
+// center-crop bilinear to the plan's output frame). Those two Kotlin passes
+// are the remaining per-frame allocations + walks after the YUV seam moved
+// native; this entry removes both by FUSING them into one bilinear pass
+// with no intermediate upright buffer:
+//
+//  1. Compute the aspect-fill sample position in UPRIGHT space exactly the
+//     way RgbScale.bilinear does (cover scale, symmetric crop window,
+//     center-of-pixel inverse mapping, clamp-to-edge via y0/y1, x0/x1 and
+//     the fractional fx/fy).
+//  2. Inverse-map the four integer tap coordinates through the rotation
+//     into SOURCE space (the rotation is an exact lattice permutation, so
+//     an integer upright tap lands on an integer source pixel — the four
+//     taps and the blend are the only per-pixel work, no rotated copy).
+//  3. Blend one channel per tap pair with DOUBLE math in the same order
+//     Kotlin blends (top = v00 + (v01-v00)*fx; bottom likewise; v = top +
+//     (bottom-top)*fy; truncate toward zero, clamp 0..255).
+//
+// BYTE-EXACTNESS CONTRACT vs the Kotlin pair, every rule load-bearing:
+//  - normalize(deg) = ((deg % 360) + 360) % 360; 0 and any value outside
+//    {0,90,180,270} are IDENTITY (RotationState's else branch returns the
+//    input by reference).
+//  - Upright dims swap for quarter turns (90/270), not for 0/180.
+//  - scale = max(outW/uw, outH/uh) in double; scaledW = outW/scale;
+//    scaledH = outH/scale; cropX = (uw - scaledW)/2; cropY likewise —
+//    RgbScale.aspectFill's exact expressions.
+//  - sy = cropY + (y+0.5)*scaledH/outH - 0.5 in double; y0 = (int)sy
+//    clamped to [0, uh-1]; y1 = y0+1 clamped; fy = sy - y0 clamped to
+//    [0,1] — same shape for sx/x0/x1/fx. (int) truncates toward zero
+//    exactly like Kotlin toInt() on these never-NaN values.
+//  - The 2x2 taps are computed in UPRIGHT space FIRST, then inverse-mapped;
+//    the rotation maps the upright lattice onto the source lattice
+//    bijectively, so a clamped upright tap always lands on a valid source
+//    pixel — no second clamp is needed and none may be added (a clamp here
+//    would diverge from the Kotlin pair on degenerate sizes).
+//  - The blend's multiply-add chain must round EXACTLY where the Kotlin
+//    double ops round: this TU is compiled with -ffp-contract=off (the
+//    core/src/Yuv.cpp precedent, app/src/main/cpp/CMakeLists.txt), so the
+//    compiler cannot contract v00 + (v01-v00)*fx into a single-rounding FMA
+//    on arm64.
+//  - Reads are unsigned (uint8_t); the final value truncates toward zero
+//    and clamps to [0,255] before the byte store.
+//
+// mode is the reconcile policy: 0 = aspect-fill center-crop (the only
+// policy v1 ships; any other value is a refusal, never a guess). The
+// degenerate pass — identity rotation AND upright dims equal to the
+// output frame — returns the INPUT array object (the Kotlin pair's
+// by-reference identity, matched so the caller's aliasing stays identical).
+//
+// Returns null only on a malformed request (null rgb, non-positive dims,
+// short rgb buffer, unknown mode) with the error state set; the Kotlin
+// dispatcher then falls back to the unchanged Kotlin pair, which produces
+// the same bytes — or the same require() failure the export always had.
+// No C++ allocations on the hot path beyond the output array itself; JNI
+// OOM surfaces as a null return with the pending Java exception.
+
+// Upright (ux,uy) -> source (sx,sy) for each rotation; the inverse of the
+// forward index math in RotationState.rotateRgb888. Rotation is a lattice
+// bijection, so integer in stays integer out and bounds-clamped upright
+// taps map to valid source pixels.
+static inline void rgbRotateScaleInverseMap(
+        int deg, int inW, int inH, int ux, int uy, int* sx, int* sy) {
+    switch (deg) {
+        case 90:  *sx = uy;         *sy = inH - 1 - ux; break;
+        case 180: *sx = inW - 1 - ux; *sy = inH - 1 - uy; break;
+        case 270: *sx = inW - 1 - uy; *sy = ux;         break;
+        default:  *sx = ux;        *sy = uy;           break;
+    }
+}
+
+// One channel's bilinear blend, the exact RgbScale.blend order and rounding.
+static inline uint8_t rgbRotateScaleBlend(
+        const uint8_t* rgb, int inW,
+        int s00x, int s00y, int s01x, int s01y,
+        int s10x, int s10y, int s11x, int s11y,
+        int channel, double fx, double fy) {
+    const int p00 = (s00y * inW + s00x) * 3 + channel;
+    const int p01 = (s01y * inW + s01x) * 3 + channel;
+    const int p10 = (s10y * inW + s10x) * 3 + channel;
+    const int p11 = (s11y * inW + s11x) * 3 + channel;
+    const double v00 = rgb[p00];
+    const double v01 = rgb[p01];
+    const double v10 = rgb[p10];
+    const double v11 = rgb[p11];
+    const double top = v00 + (v01 - v00) * fx;
+    const double bottom = v10 + (v11 - v10) * fx;
+    const double v = top + (bottom - top) * fy;
+    int iv = static_cast<int>(v); // truncation toward zero, like toInt()
+    if (iv < 0) iv = 0;
+    if (iv > 255) iv = 255;
+    return static_cast<uint8_t>(iv);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRgbRotateScale(
+        JNIEnv* env, jclass, jbyteArray rgb, jint inW, jint inH,
+        jint orientationDeg, jint outW, jint outH, jint mode) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    if (rgb == nullptr || inW <= 0 || inH <= 0 || outW <= 0 || outH <= 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "rgbRotateScale: unsupported — the frame is empty or malformed "
+                 "(recovery: re-export the clip)");
+        return nullptr;
+    }
+    if (mode != 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "rgbRotateScale: unsupported — unknown scale mode "
+                 "(recovery: re-export the clip)");
+        return nullptr;
+    }
+    if (static_cast<long long>(env->GetArrayLength(rgb)) <
+        static_cast<long long>(inW) * inH * 3) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "rgbRotateScale: unsupported — the rgb buffer is smaller than "
+                 "the frame (recovery: re-export the clip)");
+        return nullptr;
+    }
+    // RotationState.normalize, then identity for anything but quarter/half
+    // turns (the Kotlin else branch is identity too).
+    int deg = orientationDeg % 360;
+    if (deg < 0) deg += 360;
+    const bool quarter = (deg == 90 || deg == 270);
+    const bool half = (deg == 180);
+    // Upright dims: swapped for quarter turns (RotationState.rotatedDims).
+    const int uw = quarter ? inH : inW;
+    const int uh = quarter ? inW : inH;
+    // Degenerate pass: identity rotation AND exact size — the Kotlin pair
+    // returns the input by reference at BOTH steps (rotateRgb888's 0/else
+    // branch, then aspectFill's identity fast path), so the native twin
+    // hands the SAME array object back (no copy, no allocation).
+    if (!quarter && !half && uw == outW && uh == outH) {
+        return rgb;
+    }
+    // Non-degenerate: real rotation or a real scale (or both).
+    const jsize outLen = static_cast<jsize>(
+        static_cast<long long>(outW) * outH * 3);
+    jbyte* in = env->GetByteArrayElements(rgb, nullptr);
+    if (in == nullptr) return nullptr; // OOM pending
+    jbyteArray out = env->NewByteArray(outLen);
+    if (out == nullptr) {
+        env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+        return nullptr; // OOM pending
+    }
+    jbyte* dst = env->GetByteArrayElements(out, nullptr);
+    if (dst == nullptr) {
+        env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+        return nullptr; // OOM pending
+    }
+    const uint8_t* src = reinterpret_cast<const uint8_t*>(in);
+    uint8_t* o = reinterpret_cast<uint8_t*>(dst);
+    // RgbScale.aspectFill's cover scale and symmetric crop window, in
+    // UPRIGHT dims, all double math.
+    const double scale = std::max(
+        static_cast<double>(outW) / uw, static_cast<double>(outH) / uh);
+    const double scaledW = outW / scale;
+    const double scaledH = outH / scale;
+    const double cropX = (uw - scaledW) / 2.0;
+    const double cropY = (uh - scaledH) / 2.0;
+    int oi = 0;
+    for (int y = 0; y < outH; y++) {
+        const double sy = cropY + (y + 0.5) * scaledH / outH - 0.5;
+        int uy0 = static_cast<int>(sy);
+        if (uy0 < 0) uy0 = 0;
+        if (uy0 > uh - 1) uy0 = uh - 1;
+        int uy1 = uy0 + 1;
+        if (uy1 < 0) uy1 = 0;
+        if (uy1 > uh - 1) uy1 = uh - 1;
+        double fy = sy - uy0;
+        if (fy < 0.0) fy = 0.0;
+        if (fy > 1.0) fy = 1.0;
+        for (int x = 0; x < outW; x++) {
+            const double sx = cropX + (x + 0.5) * scaledW / outW - 0.5;
+            int ux0 = static_cast<int>(sx);
+            if (ux0 < 0) ux0 = 0;
+            if (ux0 > uw - 1) ux0 = uw - 1;
+            int ux1 = ux0 + 1;
+            if (ux1 < 0) ux1 = 0;
+            if (ux1 > uw - 1) ux1 = uw - 1;
+            double fx = sx - ux0;
+            if (fx < 0.0) fx = 0.0;
+            if (fx > 1.0) fx = 1.0;
+            // Inverse-map the four upright taps into source coords.
+            int s00x, s00y, s01x, s01y, s10x, s10y, s11x, s11y;
+            rgbRotateScaleInverseMap(deg, inW, inH, ux0, uy0, &s00x, &s00y);
+            rgbRotateScaleInverseMap(deg, inW, inH, ux1, uy0, &s01x, &s01y);
+            rgbRotateScaleInverseMap(deg, inW, inH, ux0, uy1, &s10x, &s10y);
+            rgbRotateScaleInverseMap(deg, inW, inH, ux1, uy1, &s11x, &s11y);
+            o[oi++] = rgbRotateScaleBlend(
+                src, inW, s00x, s00y, s01x, s01y, s10x, s10y, s11x, s11y, 0, fx, fy);
+            o[oi++] = rgbRotateScaleBlend(
+                src, inW, s00x, s00y, s01x, s01y, s10x, s10y, s11x, s11y, 1, fx, fy);
+            o[oi++] = rgbRotateScaleBlend(
+                src, inW, s00x, s00y, s01x, s01y, s10x, s10y, s11x, s11y, 2, fx, fy);
+        }
+    }
+    env->ReleaseByteArrayElements(out, dst, 0); // write back / unpin
+    env->ReleaseByteArrayElements(rgb, in, JNI_ABORT);
+    return out;
+}
+
 // DNG export -------------------------------------------------------------------
 //
 // One-shot: open the clip from fd, decode frame [frameIndex], write the raw

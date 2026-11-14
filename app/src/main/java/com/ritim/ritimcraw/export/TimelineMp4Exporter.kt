@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.export
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.RotationState
+import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.data.timeline.TimelineExportPlan
 import com.ritim.ritimcraw.data.timeline.TimelineStore
 import java.io.File
@@ -102,6 +103,15 @@ class TimelineMp4Exporter(
      * whole contract (core/src/Yuv.cpp).
      */
     private val converter: RgbToI420 = NativeRgbToI420,
+    /**
+     * The rotate + aspect-fill seam (the [converter] pattern, for the two
+     * Kotlin passes the frame loop ran before the conversion): the default
+     * dispatches to the fused native twin with the unchanged Kotlin pair
+     * RotationState.rotateRgb888 + RgbScale.aspectFill as fallback (see
+     * [NativeRgbRotateScale]); JVM tests inject a pure fake. The BYTES are
+     * identical either way — that is the seam's whole contract.
+     */
+    private val rotateScale: RgbRotateScale = NativeRgbRotateScale,
 ) {
 
     /**
@@ -296,17 +306,16 @@ class TimelineMp4Exporter(
                                     lastRgb = rendered
                                     rendered
                                 }
-                                val upright = RotationState.rotateRgb888(
-                                    rgb, geometry[entry.sourceId]?.width ?: 0,
-                                    geometry[entry.sourceId]?.height ?: 0,
-                                    geometry[entry.sourceId]?.orientationDeg ?: 0,
-                                )
-                                val scaled = RgbScale.aspectFill(
-                                    upright.rgb, upright.width, upright.height,
+                                val info = geometry[entry.sourceId]
+                                val scaled = rotateScaleFrame(
+                                    rgb,
+                                    info?.width ?: 0,
+                                    info?.height ?: 0,
+                                    info?.orientationDeg ?: 0,
                                     plan.width, plan.height,
                                 )
                                 val converted = convertFrame(
-                                    scaled, plan.width, plan.height,
+                                    scaled.rgb, plan.width, plan.height,
                                 )
                                 writer.writeVideoFrame(pts(done, plan.fps), converted.i420)
                                 done++
@@ -384,6 +393,42 @@ class TimelineMp4Exporter(
     private fun pts(i: Int, fps: Int): Long = i.toLong() * 1_000_000L / fps
 
     /**
+     * One frame's rotate + aspect-fill through the seam, plus the debug
+     * dual-run (the [convertFrame] pattern — the byte-exactness
+     * affordance): the FIRST frame produced by the native path of an
+     * export is also computed by the Kotlin reference pair
+     * (RotationState.rotateRgb888 + RgbScale.aspectFill, both UNTOUCHED —
+     * they stay the export's fallback AND its reference), and the
+     * comparison lands in the stage-log sink (a null stageLog means the
+     * dual-run never runs, so release exports pay nothing). The native
+     * bytes always win: a mismatch is logged, never applied.
+     */
+    private fun rotateScaleFrame(
+        rgb: ByteArray,
+        inW: Int,
+        inH: Int,
+        orientationDeg: Int,
+        outW: Int,
+        outH: Int,
+    ): RgbRotateScaleResult {
+        val traced = rotateScale.rotateScale(rgb, inW, inH, orientationDeg, outW, outH)
+        if (stageLog != null &&
+            RgbToI420Verify.shouldDualRun(nativeRotateScaleSeen, traced.fromNative)
+        ) {
+            val upright = RotationState.rotateRgb888(rgb, inW, inH, orientationDeg)
+            val kt = RgbScale.aspectFill(
+                upright.rgb, upright.width, upright.height, outW, outH,
+            )
+            RgbRotateScaleVerify.line(outW, outH, traced.rgb, kt)?.let { stageLog(it) }
+        }
+        if (traced.fromNative) nativeRotateScaleSeen++
+        return traced
+    }
+
+    /** Native-produced rotate+scale frames so far this export (the dual-run counter). */
+    private var nativeRotateScaleSeen = 0
+
+    /**
      * One frame's conversion through the seam, plus the debug dual-run
      * (the per-clip export's [ExportPipeline.convertFrame] pattern — the
      * byte-exactness affordance): the FIRST frame produced by the native
@@ -439,6 +484,125 @@ class TimelineMp4Exporter(
             java.util.Arrays.fill(out, 0, width * height, 16.toByte())
             java.util.Arrays.fill(out, width * height, out.size, 128.toByte())
             return out
+        }
+    }
+}
+
+/**
+ * The timeline frame loop's rotate + aspect-fill seam (the [RgbToI420]
+ * pattern): the loop calls through this so it stays JVM-testable while
+ * production dispatches to the fused native twin. The result carries the
+ * bytes' ORIGIN (native vs Kotlin) so the loop's debug dual-run knows when
+ * it has a native frame to compare against — without sniffing the
+ * implementation. The BYTES are identical either way; that is the seam's
+ * whole contract.
+ */
+fun interface RgbRotateScale {
+    /**
+     * Rotates [rgb] (packed row-major RGB888, [inW]*[inH]*3, sensor-
+     * oriented) upright by [orientationDeg] (0/90/180/270 CW, the
+     * session's container orientation) and aspect-fills it to
+     * [outW]*[outH] (center-crop cover scale, bilinear). Byte-exact to
+     * RotationState.rotateRgb888 followed by RgbScale.aspectFill.
+     */
+    fun rotateScale(
+        rgb: ByteArray,
+        inW: Int,
+        inH: Int,
+        orientationDeg: Int,
+        outW: Int,
+        outH: Int,
+    ): RgbRotateScaleResult
+}
+
+/** One rotate + aspect-fill outcome: the bytes plus where they came from. */
+class RgbRotateScaleResult(
+    /** The upright, output-sized RGB888 frame. */
+    val rgb: ByteArray,
+    /** True when [rgb] came from the native twin, false from Kotlin. */
+    val fromNative: Boolean,
+)
+
+/**
+ * The production rotate + aspect-fill dispatch (the [RgbRotateScale]
+ * seam's default): the fused native twin first (jni_bridge.cpp
+ * nativeRgbRotateScale — one bilinear pass, no intermediate upright
+ * buffer, reached through NativeSource.jniRgbRotateScale), the unchanged
+ * Kotlin pair RotationState.rotateRgb888 + RgbScale.aspectFill as the
+ * fallback. The fallback keeps the export working wherever the native
+ * entry refuses — a non-NDK build (nativeAvailable false), a malformed
+ * request (the native entry's null-return with the error state set; the
+ * Kotlin require() then fails the export the same way it always did,
+ * never a silent wrong frame).
+ *
+ * JVM tests never touch this object: the exporter's default is injectable
+ * (the rotateScale parameter), and the fakes stay pure.
+ */
+object NativeRgbRotateScale : RgbRotateScale {
+
+    /** mode 0 = aspect-fill center-crop (the only policy v1 ships). */
+    private const val MODE_ASPECT_FILL = 0
+
+    override fun rotateScale(
+        rgb: ByteArray,
+        inW: Int,
+        inH: Int,
+        orientationDeg: Int,
+        outW: Int,
+        outH: Int,
+    ): RgbRotateScaleResult {
+        if (NativeSource.nativeAvailable) {
+            val native = NativeSource.jniRgbRotateScale(
+                rgb, inW, inH, orientationDeg, outW, outH, MODE_ASPECT_FILL,
+            )
+            if (native != null) return RgbRotateScaleResult(native, fromNative = true)
+            // A null return with the library loaded is a malformed request
+            // (empty frame / short buffer / unknown mode): fall through to
+            // Kotlin, whose require() turns it into the export's existing
+            // failure mode.
+        }
+        val upright = RotationState.rotateRgb888(rgb, inW, inH, orientationDeg)
+        val scaled = RgbScale.aspectFill(
+            upright.rgb, upright.width, upright.height, outW, outH,
+        )
+        return RgbRotateScaleResult(scaled, fromNative = false)
+    }
+}
+
+/**
+ * Pure decision object for the rotate + scale debug dual-run's LINE (the
+ * [RgbToI420Verify] pattern): WHAT to log after the reference pair ran.
+ * The WHEN rule is shared — [RgbToI420Verify.shouldDualRun] (the first
+ * frame produced by the native path of an export; a Kotlin fallback frame
+ * never dual-runs, there is no native output to compare against).
+ */
+object RgbRotateScaleVerify {
+
+    /**
+     * The line logged after a dual-run, or null when nothing should be
+     * logged (the sizes differ — a bug that cannot happen: both paths
+     * produce outW*outH*3 bytes — but a missing line is better than a
+     * crash mid-export).
+     */
+    fun line(
+        width: Int,
+        height: Int,
+        native: ByteArray,
+        kotlin: ByteArray,
+    ): String? {
+        if (native.size != kotlin.size) return null
+        var mismatch = -1
+        for (i in native.indices) {
+            if (native[i] != kotlin[i]) {
+                mismatch = i
+                break
+            }
+        }
+        return if (mismatch < 0) {
+            "rgbRotateScale dual-run ${width}x$height: native == kotlin (${native.size} bytes)"
+        } else {
+            "rgbRotateScale dual-run ${width}x$height: MISMATCH at byte $mismatch of ${native.size} " +
+                "(native=${native[mismatch]} kotlin=${kotlin[mismatch]})"
         }
     }
 }

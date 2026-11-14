@@ -23,6 +23,14 @@ add_compile_options(-O2)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../../core ${CMAKE_CURRENT_BINARY_DIR}/rawedit-core)
 
 add_library(rawedit_jni SHARED jni_bridge.cpp)
+# jni_bridge.cpp's nativeRgbRotateScale blends with the same double
+# multiply-add chain as RgbScale.blend (Kotlin): a compiler FMA contraction
+# would single-round where the Kotlin ops double-round and the twin would
+# stop being byte-exact on arm64. This TU alone opts out (the core/src/
+# Yuv.cpp precedent, core/CMakeLists.txt) — existing bridge functions keep
+# their codegen unchanged.
+set_source_files_properties(jni_bridge.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
 # gles/ is the deliverable-C GPU groundwork: the EGL context (grafika
 # EglCore topology), the capability probe and the single-frame demosaic
 # parity harness, reached through the bridge's stateless probes. It is
