@@ -1389,6 +1389,18 @@ fun AppNav(
                         // absolute value (per clip, omit-when-default), and
                         // refreshes the clip-keyed state. Exports snapshot it
                         // at enqueue above.
+                        // Owner request 2026-11-14 ("user footage'ı sağa sola
+                        // döndürdüyse thumbnail'in ikonu da sağa sola
+                        // dönmeli"): a persisted rotation change also
+                        // INVALIDATES the Library icon — the file is
+                        // re-developed (Option A over a display-time
+                        // graphicsLayer: rotation is per-clip, persisted and
+                        // a discrete ±90 tap, not an interactive-frequent
+                        // gesture, so a one-off re-develop is cheap and the
+                        // icon is then physically correct everywhere). The
+                        // remove deletes both the icon and any stale master,
+                        // and the next Library open's bounded backfill
+                        // regenerates with the fresh rotation.
                         manualRotationDeg = manualRotation,
                         onRotate = { byDeg ->
                             val next = com.ritim.ritimcraw.data.RotationState.applyManual(
@@ -1397,6 +1409,13 @@ fun AppNav(
                             val updated = stores.sources.setManualRotation(r.sourceId, next)
                             if (updated != null) {
                                 manualRotation = updated.manualRotationDeg
+                                thumbnailStore.remove(r.sourceId)
+                                // The Library row's ratio-true height reads
+                                // manualRotationDeg from this list state, so
+                                // it must see the fresh value when the user
+                                // returns (the same refresh the delete and
+                                // relink paths do after their store writes).
+                                sources = stores.sources.all()
                             }
                         },
                         // ---- Stabilization wiring (gyro Phase 5) ----
