@@ -45,6 +45,21 @@ object GlesShaderValidator {
         /** DEVELOP_FRAGMENT — GLSL ES 3.00 fragment, the fused develop pass. */
         DEVELOP_FRAGMENT("#version 300 es"),
 
+        /** DEVELOP_FRAGMENT_PRE — GLSL ES 3.00 fragment, the split chain's stages 1-6 draw. */
+        DEVELOP_FRAGMENT_PRE("#version 300 es"),
+
+        /** DEVELOP_FRAGMENT_POST — GLSL ES 3.00 fragment, the split chain's stages 9-23+OETF draw. */
+        DEVELOP_FRAGMENT_POST("#version 300 es"),
+
+        /** NR_CHROMA_H — GLSL ES 3.00 fragment, chroma NR's horizontal half (stage 7, pass 1 of 2). */
+        NR_CHROMA_H("#version 300 es"),
+
+        /** NR_CHROMA_V — GLSL ES 3.00 fragment, chroma NR's vertical half + blend (stage 7, pass 2 of 2). */
+        NR_CHROMA_V("#version 300 es"),
+
+        /** NR_LUMA — GLSL ES 3.00 fragment, the spatial luma bilateral (stage 8). */
+        NR_LUMA("#version 300 es"),
+
         /** STORE_FRAGMENT — GLSL ES 3.10 fragment (SSBO write), readback. */
         STORE_FRAGMENT("#version 310 es"),
 
@@ -100,6 +115,11 @@ object GlesShaderValidator {
             Kind.FULLSCREEN_VERTEX_310,
             -> fullscreenVertexProblems(stripped, out)
             Kind.DEVELOP_FRAGMENT -> developFragmentProblems(stripped, out)
+            Kind.DEVELOP_FRAGMENT_PRE -> developFragmentPreProblems(stripped, out)
+            Kind.DEVELOP_FRAGMENT_POST -> developFragmentPostProblems(stripped, out)
+            Kind.NR_CHROMA_H -> nrChromaHProblems(stripped, out)
+            Kind.NR_CHROMA_V -> nrChromaVProblems(stripped, out)
+            Kind.NR_LUMA -> nrLumaProblems(stripped, out)
             Kind.STORE_FRAGMENT -> storeFragmentProblems(stripped, out)
             Kind.BLIT_FRAGMENT -> blitFragmentProblems(stripped, out)
             Kind.WINDOW_FRAGMENT -> windowFragmentProblems(stripped, out)
@@ -164,46 +184,10 @@ object GlesShaderValidator {
         // (and ONLY those — the grade uniforms' GLSL defaults must be the
         // exact neutral fast path so the frozen harness stays byte-honest);
         // the develop/preview SESSIONS (GlesDevelopSession,
-        // GlesPreviewSession) bind the grade entries per frame.
-        val uniforms = listOf(
-            "uniform highp usampler2D uCfa;",
-            "uniform ivec2 uSize;",
-            "uniform ivec4 uCell;",
-            "uniform vec4 uBlack;",
-            "uniform vec4 uRange;",
-            "uniform int uHasShading;",
-            "uniform highp sampler2D uShading;",
-            "uniform ivec2 uShadingSize;",
-            "uniform int uHr;",
-            "uniform vec3 uHrGain;",
-            "uniform vec3 uWb;",
-            "uniform mat3 uCam2rgb;",
-            "uniform int uHasProfile;",
-            "uniform float uExposure;",
-            "uniform float uHighlights;",
-            "uniform float uBlackPoint;",
-            "uniform float uWhitePoint;",
-            "uniform float uShadows;",
-            "uniform float uMidtones;",
-            "uniform float uContrast;",
-            "uniform int uWbManual;",
-            "uniform float uTempK;",
-            "uniform float uTint;",
-            "uniform float uWheelShadowX;",
-            "uniform float uWheelShadowY;",
-            "uniform float uWheelMidX;",
-            "uniform float uWheelMidY;",
-            "uniform float uWheelHighX;",
-            "uniform float uWheelHighY;",
-            "uniform int uSplitActive;",
-            "uniform float uSplitShadowHue;",
-            "uniform float uSplitHighlightHue;",
-            "uniform float uSplitBalance;",
-            "uniform float uSaturation;",
-            "uniform int uTonemap;",
-            "uniform int uOetf;",
-        )
-        for (u in uniforms) {
+        // GlesPreviewSession) bind the grade entries per frame. The list is
+        // the PRE set + the POST set (the spatial-NR port's split shares
+        // the exact same declarations with the standalone PRE/POST passes).
+        for (u in kDevelopPreUniformDecls + kDevelopPostUniformDecls) {
             if (!s.contains(u)) {
                 out += "missing `$u` (the C++ harness sets it)"
             }
@@ -211,6 +195,97 @@ object GlesShaderValidator {
         if (!s.contains("out vec4 oCol;")) {
             out += "missing `out vec4 oCol;` (the single color attachment output)"
         }
+        checkDevelopPreStageText(s, out)
+        checkDevelopPostStageText(s, out)
+        // The application point: the whole pointwise grade chain sits in
+        // the CPU's stage order — 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 ->
+        // 16 -> 17 -> 18 -> 19 -> 20 -> 23 -> OETF (core/src/Develop.cpp
+        // developCpu, then the JNI tail's OETF). Any stage moved across a
+        // neighbor is a different image, not a refactor. The fused chain
+        // additionally pins the 6/9 boundary: the camera matrix (the last
+        // PRE stage) must precede stage 9 — the exact cut the split passes
+        // share.
+        val cam2rgbIdx = s.indexOf("c = uCam2rgb * c;")
+        val blackPointIdx = s.indexOf("if (uBlackPoint != 0.0) {")
+        val whitePointIdx = s.indexOf("if (uWhitePoint != 0.0) {")
+        val shadowsIdx = s.indexOf("if (uShadows != 0.0) {")
+        val midtonesIdx = s.indexOf("if (uMidtones != 0.0) {")
+        val contrastIdx = s.indexOf("if (uContrast != 0.0) {")
+        val exposureIdx = s.indexOf("c *= uExposure;")
+        val highlightsIdx = s.indexOf("if (uHighlights != 0.0) {")
+        val wbIdx = s.indexOf("if (uWbManual == 1) {")
+        val tintIdx = s.indexOf("if (uWbManual == 1 && uTint != 0.0) {")
+        val wheelIdx = s.indexOf(
+            "if (uWheelShadowX != 0.0 || uWheelShadowY != 0.0 ||"
+        )
+        val splitIdx = s.indexOf("if (uSplitActive == 1) {")
+        val saturationIdx = s.indexOf("if (uSaturation != 0.0) {")
+        val tonemapIdx = s.indexOf("if (uTonemap != 0) {")
+        val oetfIdx = s.indexOf("if (uOetf == 1) {")
+        val order = listOf(
+            cam2rgbIdx, blackPointIdx, whitePointIdx, shadowsIdx,
+            midtonesIdx, contrastIdx, exposureIdx, highlightsIdx, wbIdx,
+            tintIdx, wheelIdx, splitIdx, saturationIdx, tonemapIdx, oetfIdx,
+        )
+        if (order.any { it < 0 } || order.zipWithNext().any { (a, b) -> a >= b }) {
+            out += "the highlights/tonemap application point is wrong " +
+                "(the pointwise grade chain must sit in the CPU stage order " +
+                "9 -> 10 -> 11 -> 12 -> 13 -> 14 (exposure) -> 15 -> 16 -> " +
+                "17 -> 18 -> 19 -> 20 -> 23 (tonemap) -> OETF, each block " +
+                "between its CPU neighbors — developCpu's exact order)"
+        }
+    }
+
+    /** Stages 1-6's uniform declarations (the PRE pass set; the fused pass's own text). */
+    private val kDevelopPreUniformDecls = listOf(
+        "uniform highp usampler2D uCfa;",
+        "uniform ivec2 uSize;",
+        "uniform ivec4 uCell;",
+        "uniform vec4 uBlack;",
+        "uniform vec4 uRange;",
+        "uniform int uHasShading;",
+        "uniform highp sampler2D uShading;",
+        "uniform ivec2 uShadingSize;",
+        "uniform int uHr;",
+        "uniform vec3 uHrGain;",
+        "uniform vec3 uWb;",
+        "uniform mat3 uCam2rgb;",
+        "uniform int uHasProfile;",
+    )
+
+    /** Stages 9-23+OETF's uniform declarations (the POST pass set; the fused pass's own text). */
+    private val kDevelopPostUniformDecls = listOf(
+        "uniform float uExposure;",
+        "uniform float uHighlights;",
+        "uniform float uBlackPoint;",
+        "uniform float uWhitePoint;",
+        "uniform float uShadows;",
+        "uniform float uMidtones;",
+        "uniform float uContrast;",
+        "uniform int uWbManual;",
+        "uniform float uTempK;",
+        "uniform float uTint;",
+        "uniform float uWheelShadowX;",
+        "uniform float uWheelShadowY;",
+        "uniform float uWheelMidX;",
+        "uniform float uWheelMidY;",
+        "uniform float uWheelHighX;",
+        "uniform float uWheelHighY;",
+        "uniform int uSplitActive;",
+        "uniform float uSplitShadowHue;",
+        "uniform float uSplitHighlightHue;",
+        "uniform float uSplitBalance;",
+        "uniform float uSaturation;",
+        "uniform int uTonemap;",
+        "uniform int uOetf;",
+    )
+
+    /**
+     * The PRE stage text (stages 1-6): the demosaic kernel mirror, the
+     * stage-1/2/3 contracts. Shared by the fused pass and the standalone
+     * DEVELOP_FRAGMENT_PRE — the same shared fragments, the same checks.
+     */
+    private fun checkDevelopPreStageText(s: String, out: MutableList<String>) {
         // The CPU kernel mirror — the same text locks the compute variant
         // (rawedit::demosaicBilinear, core/src/Develop.cpp).
         if (!s.contains("int[8](-1, 1, 0, 0, -1, -1, 1, 1)")) {
@@ -299,6 +374,15 @@ object GlesShaderValidator {
                 "(`float cap = ceiling / uHrGain[siteAt(p)];` — the CPU's " +
                 "ceiling / gain[wbIndex(color)] with wbIndex(site) = site)"
         }
+    }
+
+    /**
+     * The POST stage text (stages 9-20 + 23 + OETF): smoothstepf, the
+     * pointwise stage gates and math, the AgX/ACES tonemap contracts and
+     * the const discipline. Shared by the fused pass and the standalone
+     * DEVELOP_FRAGMENT_POST — the same shared fragments, the same checks.
+     */
+    private fun checkDevelopPostStageText(s: String, out: MutableList<String>) {
         // The CPU rawedit::smoothstepf helper (core/src/Develop.cpp), which
         // the tone stages (11, 12) and the color stages (18, 19) blend
         // their band remaps in with. A silent edit of the Hermite form
@@ -819,12 +903,15 @@ object GlesShaderValidator {
                 "(`return pow(o, vec3(2.2));` — the look's output " +
                 "encoding, rawedit::tonemapFrameImpl's last line)"
         }
-        // The application point: the whole pointwise grade chain sits in
-        // the CPU's stage order — 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 ->
-        // 16 -> 17 -> 18 -> 19 -> 20 -> 23 -> OETF (core/src/Develop.cpp
+        // The application point: the pointwise grade chain sits in the
+        // CPU's stage order — 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16
+        // -> 17 -> 18 -> 19 -> 20 -> 23 -> OETF (core/src/Develop.cpp
         // developCpu, then the JNI tail's OETF). Any stage moved across a
-        // neighbor is a different image, not a refactor.
-        val cam2rgbIdx = s.indexOf("c = uCam2rgb * c;")
+        // neighbor is a different image, not a refactor. The camera-matrix
+        // 6/9 cut is deliberately NOT part of this check — the standalone
+        // POST pass never contains the PRE text; the fused pass checks the
+        // full chain including the cut (and rides this check too, where it
+        // is implied by the full-chain one).
         val blackPointIdx = s.indexOf("if (uBlackPoint != 0.0) {")
         val whitePointIdx = s.indexOf("if (uWhitePoint != 0.0) {")
         val shadowsIdx = s.indexOf("if (uShadows != 0.0) {")
@@ -842,9 +929,9 @@ object GlesShaderValidator {
         val tonemapIdx = s.indexOf("if (uTonemap != 0) {")
         val oetfIdx = s.indexOf("if (uOetf == 1) {")
         val order = listOf(
-            cam2rgbIdx, blackPointIdx, whitePointIdx, shadowsIdx,
-            midtonesIdx, contrastIdx, exposureIdx, highlightsIdx, wbIdx,
-            tintIdx, wheelIdx, splitIdx, saturationIdx, tonemapIdx, oetfIdx,
+            blackPointIdx, whitePointIdx, shadowsIdx, midtonesIdx,
+            contrastIdx, exposureIdx, highlightsIdx, wbIdx, tintIdx,
+            wheelIdx, splitIdx, saturationIdx, tonemapIdx, oetfIdx,
         )
         if (order.any { it < 0 } || order.zipWithNext().any { (a, b) -> a >= b }) {
             out += "the highlights/tonemap application point is wrong " +
@@ -852,6 +939,496 @@ object GlesShaderValidator {
                 "9 -> 10 -> 11 -> 12 -> 13 -> 14 (exposure) -> 15 -> 16 -> " +
                 "17 -> 18 -> 19 -> 20 -> 23 (tonemap) -> OETF, each block " +
                 "between its CPU neighbors — developCpu's exact order)"
+        }
+    }
+
+    /**
+     * DEVELOP_FRAGMENT_PRE's contract: the fused pass's own PRE uniform
+     * set + the PRE stage text, PLUS the split-chain boundary honesty —
+     * the camera matrix must close the pass (the 6/9 cut), and NO
+     * post-stage uniform may appear (this pass must be a complete,
+     * self-contained stages 1-6 draw; a leaked post uniform would mean
+     * the PRE/POST fragments were cut at the wrong boundary).
+     */
+    private fun developFragmentPreProblems(s: String, out: MutableList<String>) {
+        for (u in kDevelopPreUniformDecls) {
+            if (!s.contains(u)) {
+                out += "missing `$u` (the C++ session sets it)"
+            }
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        checkDevelopPreStageText(s, out)
+        // The 6/9 cut: the camera matrix is the LAST PRE stage, so the
+        // pass must contain it (the main body runs through `c = uCam2rgb
+        // * c;`) and must END there — the write-out close follows the
+        // PRE fragments' own tail.
+        if (!s.contains("c = uCam2rgb * c;")) {
+            out += "missing the stage-6 camera matrix close " +
+                "(`c = uCam2rgb * c;` — the 6/9 cut: the camera matrix is the " +
+                "LAST PRE stage, so the PRE pass's main body must run through it)"
+        }
+        // The boundary honesty: NO post-stage uniform may appear in the
+        // PRE pass. A leaked declaration would mean the cut landed inside
+        // the pointwise chain, which would double-apply those stages
+        // (once here, once in POST).
+        for (u in kDevelopPostUniformDecls) {
+            if (s.contains(u)) {
+                out += "a POST-stage uniform leaked into the PRE pass " +
+                    "(`$u` — the 6/9 cut must land between stages 6 and 9; " +
+                    "a pointwise uniform in PRE means those stages run TWICE)"
+            }
+        }
+    }
+
+    /**
+     * DEVELOP_FRAGMENT_POST's contract: uSrc (the chain intermediate) +
+     * the fused pass's own POST uniform set + the POST stage text, PLUS
+     * the boundary honesty — NO pre-stage uniform or demosaic text may
+     * appear (this pass must be a complete, self-contained stages 9-23+
+     * OETF draw whose ONLY input is the intermediate texel).
+     */
+    private fun developFragmentPostProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches the chain's RGBA32F intermediate — the PRE pass's " +
+                "output, or the NR passes' when the grade uses spatial NR)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it — " +
+                "the intermediate's dims, same as the CFA's)"
+        }
+        for (u in kDevelopPostUniformDecls) {
+            if (!s.contains(u)) {
+                out += "missing `$u` (the C++ session sets it)"
+            }
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        // The 1:1 input read: POST's pixel comes from the intermediate,
+        // not from any RAW state.
+        if (!s.contains("vec3 c = texelFetch(uSrc, g, 0).rgb;")) {
+            out += "missing the intermediate fetch " +
+                "(`vec3 c = texelFetch(uSrc, g, 0).rgb;` — POST's ONLY input; " +
+                "the demosaic/WB/matrix work is the PRE pass's, already " +
+                "baked into the intermediate)"
+        }
+        checkDevelopPostStageText(s, out)
+        // The boundary honesty: NO pre-stage uniform may appear in the
+        // POST pass. A leaked declaration would mean the cut landed
+        // inside the stages 1-6 chain (or the PRE fragments were pasted
+        // whole), which would re-run the demosaic on the intermediate.
+        // uSize is the one honest exception: POST declares its OWN uSize
+        // for the intermediate's dims (the same value the PRE pass's CFA
+        // dims carry), so the shared name is excluded from the leak list.
+        for (u in kDevelopPreUniformDecls.filter { it != "uniform ivec2 uSize;" }) {
+            if (s.contains(u)) {
+                out += "a PRE-stage uniform leaked into the POST pass " +
+                    "(`$u` — the 6/9 cut must land between stages 6 and 9; " +
+                    "a stages 1-6 uniform in POST means the demosaic would " +
+                    "re-run on the intermediate)"
+            }
+        }
+        // And no demosaic text: the kernel arrays exist only in the PRE
+        // fragments.
+        if (s.contains("int[8](-1, 1, 0, 0, -1, -1, 1, 1)")) {
+            out += "the demosaic kernel leaked into the POST pass " +
+                "(the kDx offsets are PRE-text; POST's input is the " +
+                "intermediate texel, not the CFA)"
+        }
+    }
+
+    /**
+     * NR_CHROMA_H's contract — the CPU denoiseChromaImpl horizontal pass
+     * (core/src/Develop.cpp), verbatim: the uniforms, the gate idiom, the
+     * constants, the clamped columns, the exact tap order and the
+     * center-relative accumulation, the two-plane output and the
+     * pass-through.
+     */
+    private fun nrChromaHProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches the develop PRE pass's output — the ORIGINAL " +
+                "post-demosaic RGB, this pass's CPU-input position)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it)"
+        }
+        if (!s.contains("uniform float uChromaDenoise;")) {
+            out += "missing `uniform float uChromaDenoise;` (the session " +
+                "passes the RAW grade value; the gate + clamp idiom below " +
+                "is the second lock)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        if (!s.contains("if (uChromaDenoise != 0.0) {")) {
+            out += "missing the stage-7 gate " +
+                "(`if (uChromaDenoise != 0.0) {` — grade.chromaDenoise == 0 " +
+                "skips the whole stage, exactly like the CPU's own " +
+                "`if (grade.chromaDenoise != 0.0f)`)"
+        }
+        if (!s.contains("float strength = clamp(uChromaDenoise, 0.0, 100.0) / 100.0;")) {
+            out += "missing the stage-7 strength clamp " +
+                "(`float strength = clamp(uChromaDenoise, 0.0, 100.0) / ` " +
+                "`100.0;` — the CPU call site's min(max(raw, 0), 100)/100)"
+        }
+        // The CPU's own constants, verbatim.
+        if (!s.contains("const float kRadius = 2.0;") ||
+            !s.contains("const float kC0 = exp(-0.5 / (kRadius * kRadius));") ||
+            !s.contains("const float kC1 = exp(-2.0 / (kRadius * kRadius));") ||
+            !s.contains("const float kSr = 0.10;") ||
+            !s.contains("const float kInv2Sr2 = 1.0 / (2.0 * kSr * kSr);")
+        ) {
+            out += "missing the CPU's chroma-NR constants " +
+                "(kRadius 2.0 / kC0 = exp(-0.5/r^2) / kC1 = exp(-2/r^2) / " +
+                "kSr 0.10 / kInv2Sr2 — denoiseChromaImpl's own const block, " +
+                "verbatim; exp() of constant arguments is a constant " +
+                "expression in ES 3.00, so they keep const)"
+        }
+        // The clamped columns — texelFetch does NOT clamp, so the max/min
+        // guards are load-bearing.
+        if (!s.contains("int xm = max(g.x - 2, 0);") ||
+            !s.contains("int xp = min(g.x + 2, uSize.x - 1);") ||
+            !s.contains("int xm2 = max(g.x - 4, 0);") ||
+            !s.contains("int xp2 = min(g.x + 4, uSize.x - 1);")
+        ) {
+            out += "missing the horizontal pass's clamped columns " +
+                "(`int xm = max(g.x - 2, 0);` … `int xp2 = min(g.x + 4, ` " +
+                "`uSize.x - 1);` — texelFetch does NOT clamp; the CPU's " +
+                "max/min guards are load-bearing and carried verbatim)"
+        }
+        // The exact tap order xm, xp, xm2, xp2 — the accumulation order is
+        // part of the math.
+        val xmTapIdx = s.indexOf("ivec2 p = ivec2(xm, g.y);")
+        val xpTapIdx = s.indexOf("ivec2 p = ivec2(xp, g.y);")
+        val xm2TapIdx = s.indexOf("ivec2 p = ivec2(xm2, g.y);")
+        val xp2TapIdx = s.indexOf("ivec2 p = ivec2(xp2, g.y);")
+        if (listOf(xmTapIdx, xpTapIdx, xm2TapIdx, xp2TapIdx).any { it < 0 } ||
+            xmTapIdx >= xpTapIdx || xpTapIdx >= xm2TapIdx || xm2TapIdx >= xp2TapIdx
+        ) {
+            out += "the horizontal tap order is wrong " +
+                "(xm, xp, xm2, xp2 in that exact order — denoiseChromaImpl's " +
+                "own tap(xm,c0); tap(xp,c0); tap(xm2,c1); tap(xp2,c1); " +
+                "sequence; the accumulation order is part of the math)"
+        }
+        // The tap-weight wiring: xm/xp ride kC0 and xm2/xp2 ride kC1 — the
+        // CPU's own tap(xm,c0); tap(xp,c0); tap(xm2,c1); tap(xp2,c1)
+        // pairing. A wiring swap keeps every other check green (the
+        // constants exist, the coordinates stay in order, the accumulation
+        // line text still appears) while changing the blur of every
+        // pixel, so the check binds each weight to its tap block
+        // directly. Skipped when the order check already fired (the
+        // block boundaries are only meaningful on an ordered chain).
+        val hTaps = listOf(xmTapIdx, xpTapIdx, xm2TapIdx, xp2TapIdx)
+        if (hTaps.first() >= 0 && hTaps.zipWithNext().all { (a, b) -> a < b }) {
+            val hWeights = listOf("kC0", "kC0", "kC1", "kC1")
+            for (k in hTaps.indices) {
+                val end = if (k + 1 < hTaps.size) hTaps[k + 1] else s.length
+                if (!s.substring(hTaps[k], end).contains("* ${hWeights[k]} * rw;")) {
+                    out += "the horizontal tap weights are miswired " +
+                        "(xm and xp ride kC0, xm2 and xp2 ride kC1 — the " +
+                        "CPU's own tap(xm,c0); tap(xp,c0); tap(xm2,c1); " +
+                        "tap(xp2,c1) pairing; a swapped weight changes the " +
+                        "blur of every pixel)"
+                    break
+                }
+            }
+        }
+        // The center-relative accumulation: the CPU's tap adds
+        // (row[xx] - row[x]) * c * rw — the neighbor's chroma delta
+        // against the CENTER, with the center's own weight in sw's 1.0.
+        if (!s.contains("sCr += (t.r - ly - cr) * kC0 * rw;") ||
+            !s.contains("sCb += (t.b - ly - cb) * kC0 * rw;")
+        ) {
+            out += "missing the horizontal tap's center-relative chroma " +
+                "accumulation (`sCr += (t.r - ly - cr) * kC0 * rw;` — the " +
+                "CPU's (row[xx] - row[x]) * c * rw with row[x] = the " +
+                "center's own chroma: t.r - ly is the neighbor's cr, minus " +
+                "the center's cr; both planes in one pass)"
+        }
+        if (!s.contains("float tmpCr = cr + sCr / sw;") ||
+            !s.contains("float tmpCb = cb + sCb / sw;")
+        ) {
+            out += "missing the horizontal output " +
+                "(`float tmpCr = cr + sCr / sw;` / `float tmpCb = cb + ` " +
+                "`sCb / sw;` — the CPU's tmp[y*w+x] = row[x] + s/sw, both " +
+                "planes; the vertical pass reads these back from .xy)"
+        }
+        if (!s.contains("oCol = vec4(tmpCr, tmpCb, 0.0, 1.0);")) {
+            out += "missing the horizontal pass's two-plane output " +
+                "(`oCol = vec4(tmpCr, tmpCb, 0.0, 1.0);` — .xy carries the " +
+                "blurred planes, the CPU's tmp buffers; .zw unused)"
+        }
+        if (!s.contains("oCol = vec4(orig, 1.0);")) {
+            out += "missing the gate-closed pass-through " +
+                "(`oCol = vec4(orig, 1.0);` — a drawn pass with a closed " +
+                "gate writes the input through unchanged)"
+        }
+    }
+
+    /**
+     * NR_CHROMA_V's contract — the CPU denoiseChromaImpl vertical pass +
+     * blend (core/src/Develop.cpp), verbatim: the two inputs (uSrc the
+     * horizontal output, uGuide the ORIGINAL pre-NR pixels), the gate,
+     * the clamped rows, the exact tap order, the ORIGINAL-luma guide, the
+     * flat-chroma skip and the green reconstruction.
+     */
+    private fun nrChromaVProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches NR_CHROMA_H's output — .xy = the horizontally " +
+                "blurred cr/cb planes, the CPU's tmp buffers)"
+        }
+        if (!s.contains("uniform highp sampler2D uGuide;")) {
+            out += "missing `uniform highp sampler2D uGuide;` (the session " +
+                "attaches the develop PRE pass's output — the ORIGINAL " +
+                "pre-NR RGB; the CPU's vertical pass guides with the " +
+                "ORIGINAL luma and the blend needs the original chroma, so " +
+                "this texture is load-bearing, not a convenience)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it)"
+        }
+        if (!s.contains("uniform float uChromaDenoise;")) {
+            out += "missing `uniform float uChromaDenoise;` (the session " +
+                "passes the RAW grade value; both passes of one CPU stage " +
+                "share one grade control)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        if (!s.contains("if (uChromaDenoise != 0.0) {")) {
+            out += "missing the stage-7 gate " +
+                "(`if (uChromaDenoise != 0.0) {` — grade.chromaDenoise == 0 " +
+                "skips the whole stage, exactly like the CPU's own gate)"
+        }
+        if (!s.contains("float strength = clamp(uChromaDenoise, 0.0, 100.0) / 100.0;")) {
+            out += "missing the stage-7 strength clamp " +
+                "(`float strength = clamp(uChromaDenoise, 0.0, 100.0) / ` " +
+                "`100.0;` — the CPU call site's min(max(raw, 0), 100)/100)"
+        }
+        // The ORIGINAL-luma guide: lumaAt must read uGuide, not uSrc —
+        // the CPU's second pass keeps the original luma guide.
+        if (!s.contains("vec3 c = texelFetch(uGuide, p, 0).rgb;")) {
+            out += "missing the ORIGINAL-luma guide read " +
+                "(`vec3 c = texelFetch(uGuide, p, 0).rgb;` in lumaAt — the " +
+                "CPU's vertical pass guides with the ORIGINAL luma, NOT " +
+                "the horizontal output; guiding from uSrc would change " +
+                "every pixel's range weights)"
+        }
+        // The clamped rows.
+        if (!s.contains("int ym = max(g.y - 2, 0);") ||
+            !s.contains("int yp = min(g.y + 2, uSize.y - 1);") ||
+            !s.contains("int ym2 = max(g.y - 4, 0);") ||
+            !s.contains("int yp2 = min(g.y + 4, uSize.y - 1);")
+        ) {
+            out += "missing the vertical pass's clamped rows " +
+                "(`int ym = max(g.y - 2, 0);` … `int yp2 = min(g.y + 4, ` " +
+                "`uSize.y - 1);` — texelFetch does NOT clamp; the CPU's " +
+                "max/min guards are load-bearing and carried verbatim)"
+        }
+        // The exact tap order ym, yp, ym2, yp2.
+        val ymTapIdx = s.indexOf("ivec2 p = ivec2(g.x, ym);")
+        val ypTapIdx = s.indexOf("ivec2 p = ivec2(g.x, yp);")
+        val ym2TapIdx = s.indexOf("ivec2 p = ivec2(g.x, ym2);")
+        val yp2TapIdx = s.indexOf("ivec2 p = ivec2(g.x, yp2);")
+        if (listOf(ymTapIdx, ypTapIdx, ym2TapIdx, yp2TapIdx).any { it < 0 } ||
+            ymTapIdx >= ypTapIdx || ypTapIdx >= ym2TapIdx || ym2TapIdx >= yp2TapIdx
+        ) {
+            out += "the vertical tap order is wrong " +
+                "(ym, yp, ym2, yp2 in that exact order — denoiseChromaImpl's " +
+                "own tap(ym,c0); tap(yp,c0); tap(ym2,c1); tap(yp2,c1); " +
+                "sequence)"
+        }
+        // The tap-weight wiring: ym/yp ride kC0 and ym2/yp2 ride kC1 —
+        // the CPU's own tap(ym,c0); tap(yp,c0); tap(ym2,c1); tap(yp2,c1)
+        // pairing. Position-bound for the same reason as the horizontal
+        // pass: a wiring swap keeps the counts and the order green while
+        // changing the blur of every pixel.
+        val vTaps = listOf(ymTapIdx, ypTapIdx, ym2TapIdx, yp2TapIdx)
+        if (vTaps.first() >= 0 && vTaps.zipWithNext().all { (a, b) -> a < b }) {
+            val vWeights = listOf("kC0", "kC0", "kC1", "kC1")
+            for (k in vTaps.indices) {
+                val end = if (k + 1 < vTaps.size) vTaps[k + 1] else s.length
+                if (!s.substring(vTaps[k], end).contains("* ${vWeights[k]} * rw;")) {
+                    out += "the vertical tap weights are miswired " +
+                        "(ym and yp ride kC0, ym2 and yp2 ride kC1 — the " +
+                        "CPU's own tap(ym,c0); tap(yp,c0); tap(ym2,c1); " +
+                        "tap(yp2,c1) pairing; a swapped weight changes the " +
+                        "blur of every pixel)"
+                    break
+                }
+            }
+        }
+        // The center fetch: the CPU's `v = tmp[y*w+x]` — the blurred
+        // value the vertical pass centers on.
+        if (!s.contains("vec2 v = texelFetch(uSrc, g, 0).xy;")) {
+            out += "missing the vertical pass's center fetch " +
+                "(`vec2 v = texelFetch(uSrc, g, 0).xy;` — the CPU's " +
+                "v = tmp[y*w+x]: the HORIZONTALLY blurred center, not the " +
+                "original pixel; values from uSrc, range guide from uGuide)"
+        }
+        // The blurred output.
+        if (!s.contains("float bcr = v.x + sCr / sw;") ||
+            !s.contains("float bcb = v.y + sCb / sw;")
+        ) {
+            out += "missing the vertical output " +
+                "(`float bcr = v.x + sCr / sw;` / `float bcb = v.y + sCb / ` " +
+                "`sw;` — the CPU's out[y*w+x] = v + s/sw, both planes)"
+        }
+        // The blend: the flat-chroma skip keeps the ORIGINAL bytes (the
+        // CPU `continue`s past the write).
+        if (!s.contains("float dr = strength * (bcr - cr);") ||
+            !s.contains("float db = strength * (bcb - cb);")
+        ) {
+            out += "missing the blend delta " +
+                "(`float dr = strength * (bcr - cr);` / `float db = ` " +
+                "`strength * (bcb - cb);` — the CPU's strength-scaled " +
+                "chroma delta)"
+        }
+        if (!s.contains("if (dr == 0.0 && db == 0.0) {") ||
+            !s.contains("oCol = vec4(orig, 1.0);")
+        ) {
+            out += "missing the flat-chroma skip " +
+                "(`if (dr == 0.0 && db == 0.0) { oCol = vec4(orig, 1.0); ` " +
+                "`... }` — the CPU `continue`s past the write, keeping the " +
+                "original bytes; the pass writes the ORIGINAL texel, the " +
+                "same bytes)"
+        }
+        // The green reconstruction + the kept-luma write.
+        if (!s.contains("float newCg = -(0.2126 * newCr + 0.0722 * newCb) / 0.7152;") ||
+            !s.contains("oCol = vec4(y + newCr, y + newCg, y + newCb, 1.0);")
+        ) {
+            out += "missing the blend write " +
+                "(`float newCg = -(0.2126 * newCr + 0.0722 * newCb) / ` " +
+                "`0.7152;` + `oCol = vec4(y + newCr, y + newCg, y + newCb, ` " +
+                "`1.0);` — the CPU's green reconstruction from the kept luma " +
+                "and the y+chroma write)"
+        }
+    }
+
+    /**
+     * NR_LUMA's contract — the CPU denoiseLumaImpl (core/src/Develop.cpp),
+     * verbatim: the uniforms, the gate, the constants, the 3x3 clamped
+     * coordinates, the exact 8-tap order and the smoothed-delta tail.
+     */
+    private fun nrLumaProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches the chain's current RGBA32F input — the chroma-NR " +
+                "output when stage 7 ran, else the PRE pass's output; the " +
+                "CPU runs luma NR on the chroma-denoised image)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it)"
+        }
+        if (!s.contains("uniform float uNoiseReduction;")) {
+            out += "missing `uniform float uNoiseReduction;` (the session " +
+                "passes the RAW grade value; the gate + clamp idiom below " +
+                "is the second lock)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        if (!s.contains("if (uNoiseReduction != 0.0) {")) {
+            out += "missing the stage-8 gate " +
+                "(`if (uNoiseReduction != 0.0) {` — grade.noiseReduction == " +
+                "0 skips the whole stage, exactly like the CPU's own " +
+                "`if (grade.noiseReduction != 0.0f)`)"
+        }
+        if (!s.contains("float strength = clamp(uNoiseReduction, 0.0, 100.0) / 100.0;")) {
+            out += "missing the stage-8 strength clamp " +
+                "(`float strength = clamp(uNoiseReduction, 0.0, 100.0) / ` " +
+                "`100.0;` — the CPU call site's min(max(raw, 0), 100)/100)"
+        }
+        // The CPU's own constants, verbatim.
+        if (!s.contains("const float kSr = 0.05;") ||
+            !s.contains("const float kInv2Sr2 = 1.0 / (2.0 * kSr * kSr);") ||
+            !s.contains("const float kWe = exp(-0.5);") ||
+            !s.contains("const float kWd = exp(-1.0);")
+        ) {
+            out += "missing the CPU's luma-NR constants " +
+                "(kSr 0.05 / kInv2Sr2 / kWe = exp(-0.5) / kWd = exp(-1.0) " +
+                "— denoiseLumaImpl's own const block, verbatim)"
+        }
+        // The 3x3 clamped coordinates.
+        if (!s.contains("int xm = max(g.x - 1, 0);") ||
+            !s.contains("int xp = min(g.x + 1, uSize.x - 1);") ||
+            !s.contains("int ym = max(g.y - 1, 0);") ||
+            !s.contains("int yp = min(g.y + 1, uSize.y - 1);")
+        ) {
+            out += "missing the 3x3 clamped coordinates " +
+                "(`int xm = max(g.x - 1, 0);` … `int yp = min(g.y + 1, ` " +
+                "`uSize.y - 1);` — texelFetch does NOT clamp; the CPU's " +
+                "max/min guards are load-bearing and carried verbatim)"
+        }
+        // The exact 8-tap order — the CPU's own call order, with the edge
+        // taps on wd and the center-row/column taps on we.
+        val tapIdx = listOf(
+            "ivec2 p = ivec2(xm, ym);",   // tap(ym, xm, wd)
+            "ivec2 p = ivec2(g.x, ym);",  // tap(ym, x, we)
+            "ivec2 p = ivec2(xp, ym);",   // tap(ym, xp, wd)
+            "ivec2 p = ivec2(xm, g.y);",  // tap(y, xm, we)
+            "ivec2 p = ivec2(xp, g.y);",  // tap(y, xp, we)
+            "ivec2 p = ivec2(xm, yp);",   // tap(yp, xm, wd)
+            "ivec2 p = ivec2(g.x, yp);",  // tap(yp, x, we)
+            "ivec2 p = ivec2(xp, yp);",   // tap(yp, xp, wd)
+        ).map { s.indexOf(it) }
+        if (tapIdx.any { it < 0 } || tapIdx.zipWithNext().any { (a, b) -> a >= b }) {
+            out += "the luma tap order is wrong " +
+                "((ym,xm,wd), (ym,x,we), (ym,xp,wd), (y,xm,we), (y,xp,we), " +
+                "(yp,xm,wd), (yp,x,we), (yp,xp,wd) in that exact order — " +
+                "denoiseLumaImpl's own call order; the accumulation order is " +
+                "part of the math)"
+        }
+        // The spatial weights, position-bound: the edge taps ride wd and
+        // the center-row/column taps ride we, EACH AT ITS OWN TAP — the
+        // CPU's own tap(ym,xm,wd); tap(ym,x,we); … call order. The old
+        // count check (4 wd / 4 we) was position-blind: swapping wd and
+        // we between two taps kept both counts green while inverting the
+        // bilateral's edge/center weighting, so the check now binds each
+        // weight to its tap block in the chain instead of counting.
+        if (tapIdx.first() >= 0 && tapIdx.zipWithNext().all { (a, b) -> a < b }) {
+            val lumaWeights = listOf(
+                "kWd",  // (ym, xm) edge
+                "kWe",  // (ym, x) center column
+                "kWd",  // (ym, xp) edge
+                "kWe",  // (y, xm) center row
+                "kWe",  // (y, xp) center row
+                "kWd",  // (yp, xm) edge
+                "kWe",  // (yp, x) center column
+                "kWd",  // (yp, xp) edge
+            )
+            for (k in tapIdx.indices) {
+                val end = if (k + 1 < tapIdx.size) tapIdx[k + 1] else s.length
+                if (!s.substring(tapIdx[k], end).contains("* ${lumaWeights[k]} * rw;")) {
+                    out += "the spatial weight split is wrong " +
+                        "(the edge taps (ym,xm), (ym,xp), (yp,xm), (yp,xp) " +
+                        "ride kWd and the center-row/column taps ride kWe, " +
+                        "each at its own tap in the chain — the CPU's own " +
+                        "wd/we call order; a swap changes every pixel)"
+                    break
+                }
+            }
+        }
+        // The tail: the smoothed luma and the equally-lifted RGB.
+        if (!s.contains("float smoothV = c + s / sw;") ||
+            !s.contains("float d = strength * (smoothV - c);") ||
+            !s.contains("oCol = vec4(orig + vec3(d), 1.0);")
+        ) {
+            out += "missing the luma-NR tail " +
+                "(`float smoothV = c + s / sw;` + `float d = strength * ` " +
+                "`(smoothV - c);` + `oCol = vec4(orig + vec3(d), 1.0);` — " +
+                "the CPU's smooth = c + s/sw then the strength-scaled delta " +
+                "added to r, g, b equally)"
+        }
+        if (!s.contains("oCol = vec4(orig, 1.0);")) {
+            out += "missing the gate-closed pass-through " +
+                "(`oCol = vec4(orig, 1.0);` — a drawn pass with a closed " +
+                "gate writes the input through unchanged)"
         }
     }
 

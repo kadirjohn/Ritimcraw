@@ -51,9 +51,10 @@ interface GpuPreviewDevelop {
     /**
      * Opens the GPU preview session: a nonzero handle, or 0 on failure
      * ([lastDetail] then names the step — the caller logs ONE fallback
-     * line and stays on CPU). Compiles the five validated
-     * single-source-of-truth shader texts (the four the M3 develop session
-     * rides PLUS the window pass's WINDOW_FRAGMENT). Runs on the engine
+     * line and stays on CPU). Compiles the nine validated
+     * single-source-of-truth shader texts (the two vertices, the SPLIT
+     * develop pair pre/post, the three spatial-NR fragments, the store
+     * pass, and the window pass's WINDOW_FRAGMENT). Runs on the engine
      * thread.
      */
     suspend fun openSession(): Long
@@ -83,6 +84,8 @@ interface GpuPreviewDevelop {
         clipHandle: Long,
         frameIndex: Int,
         maxDim: Int,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -180,7 +183,11 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                         NativeSource.jniPreviewSessionOpen(
                             GlesShaderSources.FULLSCREEN_VERTEX,
                             GlesShaderSources.FULLSCREEN_VERTEX_310,
-                            GlesShaderSources.DEVELOP_FRAGMENT,
+                            GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+                            GlesShaderSources.DEVELOP_FRAGMENT_POST,
+                            GlesShaderSources.NR_CHROMA_H,
+                            GlesShaderSources.NR_CHROMA_V,
+                            GlesShaderSources.NR_LUMA,
                             GlesShaderSources.STORE_FRAGMENT,
                             GlesShaderSources.WINDOW_FRAGMENT,
                         )
@@ -216,6 +223,8 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         clipHandle: Long,
         frameIndex: Int,
         maxDim: Int,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -247,6 +256,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                         renderArrayBlocking(
                             NativeSource.jniPreviewSessionRenderFrame(
                                 sessionHandle, clipHandle, frameIndex, maxDim,
+                                chromaDenoise, noiseReduction,
                                 exposureEv, highlights, blackPoint, whitePoint,
                                 shadows, midtones, contrast, tempK, tint,
                                 saturation, asShot,
@@ -417,6 +427,8 @@ class GpuPreviewSession(
         clipHandle: Long,
         frameIndex: Int,
         maxDim: Int,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -446,6 +458,7 @@ class GpuPreviewSession(
         return try {
             develop.renderFrame(
                 h, clipHandle, frameIndex, maxDim,
+                chromaDenoise, noiseReduction,
                 exposureEv, highlights, blackPoint, whitePoint,
                 shadows, midtones, contrast, tempK, tint,
                 saturation, asShot,

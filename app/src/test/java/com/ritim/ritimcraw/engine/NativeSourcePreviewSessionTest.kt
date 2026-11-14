@@ -19,12 +19,14 @@ import org.junit.Test
  *   2. the render signature carries the fragment-covered grade controls —
  *      the five base ones (exposure, highlights, highlight
  *      reconstruction, vignetting, tonemap — highlights joined with the
- *      stage-15 port) plus the ten pointwise stages' raw values since the
- *      pointwise port (black point, white point, shadows, midtones,
- *      contrast, temperature, tint, saturation, the color wheel, split
- *      tone, with asShot as the 16/17 gate's input) — beside the four
- *      plumbing values (session handle, clip handle, frame index,
- *      max dim). That narrow signature is the second lock against
+ *      stage-15 port) plus the two spatial-NR stages' raw values since
+ *      the spatial-NR port (chroma denoise, noise reduction — stages 7/8,
+ *      the multi-pass fragment chain) plus the ten pointwise stages' raw
+ *      values since the pointwise port (black point, white point,
+ *      shadows, midtones, contrast, temperature, tint, saturation, the
+ *      color wheel, split tone, with asShot as the 16/17 gate's input) —
+ *      beside the four plumbing values (session handle, clip handle,
+ *      frame index, max dim). That narrow signature is the second lock against
  *      uncovered grades (the Kotlin coverage gate is the first): a stage
  *      the fragment pass does not cover cannot even be expressed into the
  *      session, so widening this signature must be a deliberate act that
@@ -48,7 +50,11 @@ class NativeSourcePreviewSessionTest {
             NativeSource.jniPreviewSessionOpen(
                 GlesShaderSources.FULLSCREEN_VERTEX,
                 GlesShaderSources.FULLSCREEN_VERTEX_310,
-                GlesShaderSources.DEVELOP_FRAGMENT,
+                GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+                GlesShaderSources.DEVELOP_FRAGMENT_POST,
+                GlesShaderSources.NR_CHROMA_H,
+                GlesShaderSources.NR_CHROMA_V,
+                GlesShaderSources.NR_LUMA,
                 GlesShaderSources.STORE_FRAGMENT,
                 GlesShaderSources.WINDOW_FRAGMENT,
             )
@@ -81,6 +87,8 @@ class NativeSourcePreviewSessionTest {
                 clipHandle = 1L,
                 frameIndex = 0,
                 maxDim = 1280,
+                chromaDenoise = 0.0f,
+                noiseReduction = 0.0f,
                 exposureEv = 0.0f,
                 highlights = 0.0f,
                 blackPoint = 0.0f,
@@ -149,8 +157,11 @@ class NativeSourcePreviewSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 27 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
-        // four plumbing values) + exposureEv, highlights,
+        // 29 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+        // four plumbing values) + chromaDenoise, noiseReduction (the two
+        // spatial-NR stages' raw values since the spatial-NR port — stages
+        // 7/8, the multi-pass fragment chain behind uChromaDenoise/
+        // uNoiseReduction) + exposureEv, highlights,
         // highlightReconstruction, keepVignetting, tonemap (the five base
         // fragment-covered grade knobs — highlights joined with the
         // stage-15 port) + the ten pointwise stages' raw values since the
@@ -164,18 +175,21 @@ class NativeSourcePreviewSessionTest {
         // promise and must fail this test until the coverage gate is taught
         // the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(27, render.parameterCount)
+        assertEquals(29, render.parameterCount)
     }
 
     @Test
-    fun open_carries_exactly_the_five_shader_sources() {
+    fun open_carries_exactly_the_nine_shader_sources() {
         // The session compiles the Kotlin single-source-of-truth texts —
         // the same four sources the M3 seam rides PLUS the window pass's
         // own WINDOW_FRAGMENT (the aspect-fit letterbox draw), host-validated
-        // by GlesShaderValidator before the device ever sees them. A sixth
-        // source would be a new program, which is a different session.
+        // by GlesShaderValidator before the device ever sees them. Since
+        // the spatial-NR port the fused develop fragment is the SPLIT pair
+        // (pre/post) plus the three NR fragments (chroma-h, chroma-v,
+        // luma) — nine sources total. A tenth source would be a new
+        // program, which is a different session.
         val open = method("jniPreviewSessionOpen")
-        assertEquals(5, open.parameterCount)
+        assertEquals(9, open.parameterCount)
     }
 
     @Test
@@ -201,12 +215,13 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun the_five_sources_are_the_validated_single_source_of_truth() {
+    fun the_nine_sources_are_the_validated_single_source_of_truth() {
         // The exact constants open() will be called with (commit b wires
         // them) pass the host validator under their own kinds — so the text
         // the production session compiles on device is the text the JVM
         // checked. Locked here so commit b cannot quietly swap in an
-        // unvalidated variant.
+        // unvalidated variant (the split pair and the three NR fragments
+        // joined the set with the spatial-NR port).
         assertTrue(
             GlesShaderValidator.validate(
                 GlesShaderSources.FULLSCREEN_VERTEX,
@@ -221,8 +236,32 @@ class NativeSourcePreviewSessionTest {
         )
         assertTrue(
             GlesShaderValidator.validate(
-                GlesShaderSources.DEVELOP_FRAGMENT,
-                GlesShaderValidator.Kind.DEVELOP_FRAGMENT,
+                GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_PRE,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.DEVELOP_FRAGMENT_POST,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_POST,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_CHROMA_H,
+                GlesShaderValidator.Kind.NR_CHROMA_H,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_CHROMA_V,
+                GlesShaderValidator.Kind.NR_CHROMA_V,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.NR_LUMA,
+                GlesShaderValidator.Kind.NR_LUMA,
             ),
         )
         assertTrue(

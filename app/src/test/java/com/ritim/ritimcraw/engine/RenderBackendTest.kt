@@ -230,10 +230,13 @@ class RenderBackendTest {
         // highlights shoulder and all five tonemap modes included). The ten
         // pointwise grade stages (9-13, 16-20) left it with the pointwise
         // port: each CPU loop's exact math sits behind its raw-value
-        // uniform in the shader.
-        assertEquals(5, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
+        // uniform in the shader. Stages 7 and 8 left it with the spatial-NR
+        // port: the NR passes carry the CPU's exact chroma two-direction
+        // filter (two passes, original luma guide) and the CPU's exact 3x3
+        // luma bilateral behind uChromaDenoise/uNoiseReduction.
+        assertEquals(3, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
         assertEquals(
-            setOf(7, 8, 21, 22, 24),
+            setOf(21, 22, 24),
             BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
         )
         // Covered + uncovered = the full 24-stage contract, no overlap.
@@ -272,12 +275,10 @@ class RenderBackendTest {
     fun every_uncovered_stage_guard_mirrors_the_cpu() {
         // One grade per stage: the field that activates CPU stage N must
         // activate the Kotlin rule's stage N (same guard, same number).
-        // Stages 2, 3, 15, 23 and the ten pointwise grade stages (9-13,
-        // 16-20) are gone from the list (covered by the fragment pass),
-        // so their cases are gone with them.
+        // Stages 2, 3, 7, 8, 15, 23 and the ten pointwise grade stages
+        // (9-13, 16-20) are gone from the list (covered by the fragment
+        // path), so their cases are gone with them.
         val cases = listOf(
-            7 to GradeK(chromaDenoise = 25f),
-            8 to GradeK(noiseReduction = 25f),
             21 to GradeK(sharpness = 5f),
             22 to GradeK(detail = 5f),
             24 to GradeK(lutId = "l1", lutStrength = 100f),
@@ -448,6 +449,65 @@ class RenderBackendTest {
     }
 
     @Test
+    fun spatial_nr_grades_cover_the_fragment_path() {
+        // Stages 7 and 8 are ported into the fragment path (the CPU's exact
+        // chroma two-direction filter as TWO passes with the original luma
+        // guide preserved, and the CPU's exact 3x3 luma bilateral, behind
+        // uChromaDenoise/uNoiseReduction), so an NR grade — the owner's
+        // routine shape whose only fallback blockers were these two stages
+        // — is NOT an uncovered-stage fallback anymore: gates green -> the
+        // fragment leg runs. Each knob alone and both together must pass.
+        val cases = listOf(
+            "chroma-denoise" to GradeK(chromaDenoise = 25f),
+            "noise-reduction" to GradeK(noiseReduction = 25f),
+            "both" to GradeK(chromaDenoise = 25f, noiseReduction = 25f),
+        )
+        cases.forEach { (name, grade) ->
+            assertTrue(
+                "$name must be covered",
+                BackendRules.fragmentUncoveredStages(grade).isEmpty(),
+            )
+            assertTrue(BackendRules.fragmentUncoveredPreStages(grade).isEmpty())
+            assertEquals(
+                "$name must run the fragment leg",
+                EffectiveRenderBackend.GLES,
+                BackendRules.fragmentEffectiveBackend(
+                    RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+                    gyroWarpActive = false,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun spatial_nr_tokens_are_gone_from_the_fallback_vocabulary() {
+        // Coverage table, vocabulary leg: the two spatial-NR stage numbers
+        // and their reason TOKENS are gone from the uncovered map, and a
+        // gates-red NR grade produces a fallback line naming ONLY the
+        // gates — no NR token left to force it.
+        setOf(7, 8).forEach { stage ->
+            assertTrue(
+                "stage $stage must be covered",
+                stage in BackendRules.FRAGMENT_COVERED_STAGES,
+            )
+            assertTrue(
+                "stage $stage must be gone from the uncovered map",
+                stage !in BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
+            )
+        }
+        val goneTokens = listOf("chroma-denoise", "noise-reduction")
+        val line = BackendRules.fragmentFallbackLine(
+            RenderBackend.GPU_EXPERIMENTAL, BackendGates(),
+            GradeK(chromaDenoise = 25f, noiseReduction = 25f),
+            gyroWarpActive = false,
+        )!!
+        goneTokens.forEach { token ->
+            assertTrue("$token must be gone: $line", !line.contains(token))
+        }
+        assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
+    }
+
+    @Test
     fun as_shot_grade_with_manual_values_still_covers_temp_and_tint() {
         // CPU stages 16-17 are guarded by !asShot: manual temp/tint values
         // stored while asShot=true are inert (Develop.h). Stages 16-17 are
@@ -537,9 +597,10 @@ class RenderBackendTest {
         // Gates red + a grade with an active uncovered stage: the line
         // names BOTH the missing gates and the active stages — never
         // silent. (The default grade no longer carries stage tokens —
-        // stages 2+3 are covered — so the stage leg of this test uses a
-        // grade that genuinely has one active.)
-        val grade = GradeK(keepVignetting = true, chromaDenoise = 25f)
+        // stages 2+3 are covered — and chroma-denoise/noise-reduction
+        // left the uncovered map with the spatial-NR port, so the stage
+        // leg of this test uses a grade that genuinely has one active.)
+        val grade = GradeK(keepVignetting = true, sharpness = 5f)
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, BackendGates(), grade,
             gyroWarpActive = false,
@@ -547,7 +608,7 @@ class RenderBackendTest {
         assertTrue("requested missing: $line", line.contains("requested=GPU_EXPERIMENTAL"))
         assertTrue("effective missing: $line", line.contains("effective=CPU"))
         assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
-        assertTrue("stage reason missing: $line", line.contains("chroma-denoise"))
+        assertTrue("stage reason missing: $line", line.contains("sharpness"))
     }
 
     @Test

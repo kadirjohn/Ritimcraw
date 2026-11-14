@@ -2059,6 +2059,9 @@ class Mp4ExporterTest {
         // with an active uncovered stage names its token; the gyro warp adds
         // its own when a log is attached AND stabilization is on (the same
         // gate the timing summary uses); a neutral grade says "none".
+        // Chroma denoise is FRAGMENT-COVERED since the spatial-NR port
+        // (stages 7+8), so it can no longer appear as a token — the
+        // sharpening knob is the uncovered-stage stand-in now.
         val lines = ArrayList<String>()
         ExportPipeline(
             FakeSession(frames = 2, audio = false),
@@ -2066,13 +2069,17 @@ class Mp4ExporterTest {
             lines::add,
         ).run(
             7,
-            GradeK(chromaDenoise = 25f, stabilization = true),
+            GradeK(sharpness = 25f, stabilization = true),
             "/tmp/out.partial",
             gyroPath = "/tmp/gyro.log",
         )
         val line = lines.first { it.startsWith("render backend: ") }
-        assertTrue("chroma-denoise missing: $line", line.contains("chroma-denoise"))
+        assertTrue("sharpness missing: $line", line.contains("sharpness"))
         assertTrue("gyro-warp missing: $line", line.contains("gyro-warp"))
+        assertTrue(
+            "chroma-denoise must be absent (fragment-covered): $line",
+            !line.contains("chroma-denoise"),
+        )
         // Stabilization off: the attached log alone does not warp, so no
         // token — the line stays honest.
         val idleLines = ArrayList<String>()
@@ -2178,6 +2185,11 @@ class Mp4ExporterTest {
         var lastKeepVignetting = false
         var lastTonemap = -1
 
+        // The two spatial-NR stages' raw values the last READBACK render
+        // carried — the stages-7/8 verbatim pass-through lock's snapshot
+        // (same shape as the pointwise recorder below).
+        var lastNr: NrControls? = null
+
         // The ten pointwise stages' raw values the last READBACK render
         // carried, in the seam's parameter order — the verbatim
         // pass-through lock's snapshot (a swapped or dropped parameter in
@@ -2199,6 +2211,11 @@ class Mp4ExporterTest {
         var lastEncoderRotationDeg = Int.MIN_VALUE
         var lastEncoderPointwise: PointwiseControls? = null
 
+        // The encoder blit reuses the SAME develop program family (the NR
+        // multi-pass chain included), so the stages-7/8 recorder rides it
+        // too — the encoder pass-through lock's snapshot.
+        var lastEncoderNr: NrControls? = null
+
         override fun probe(): DoubleArray? {
             probeCalls++
             return probeArray
@@ -2218,6 +2235,8 @@ class Mp4ExporterTest {
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -2254,6 +2273,7 @@ class Mp4ExporterTest {
             lastHighlightReconstruction = highlightReconstruction
             lastKeepVignetting = keepVignetting
             lastTonemap = tonemap
+            lastNr = NrControls(chromaDenoise, noiseReduction)
             lastPointwise = PointwiseControls(
                 blackPoint, whitePoint, shadows, midtones, contrast,
                 tempK, tint, saturation, asShot,
@@ -2275,6 +2295,8 @@ class Mp4ExporterTest {
             clipHandle: Long,
             frameIndex: Int,
             ptsUs: Long,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -2307,6 +2329,7 @@ class Mp4ExporterTest {
             lastEncoderPtsUs = ptsUs
             lastEncoderSessionHandle = sessionHandle
             lastEncoderRotationDeg = rotationDeg
+            lastEncoderNr = NrControls(chromaDenoise, noiseReduction)
             lastEncoderPointwise = PointwiseControls(
                 blackPoint, whitePoint, shadows, midtones, contrast,
                 tempK, tint, saturation, asShot,
@@ -2323,6 +2346,17 @@ class Mp4ExporterTest {
 
         override fun lastDetail(): String? = detail ?: encoderDetail
     }
+
+    /**
+     * The two spatial-NR stages' raw values one render carried, in the
+     * seam's parameter order — shared by the readback and the encoder
+     * recorders so a swapped or dropped parameter fails the equality with
+     * the field named (stages 7/8 ride the multi-pass fragment chain).
+     */
+    private data class NrControls(
+        val chromaDenoise: Float,
+        val noiseReduction: Float,
+    )
 
     /**
      * The ten pointwise stages' raw values one render carried, in the
@@ -2359,8 +2393,9 @@ class Mp4ExporterTest {
         // opened and closed exactly once. The render call carries the
         // fragment-covered grade controls (the NativeSource signature
         // lock's Kotlin mirror) — highlights rides through at the stage-15
-        // value, and since the pointwise port the ten stages' raw values
-        // ride too, so a multi-control grade stays on GPU end to end.
+        // value, since the pointwise port the ten stages' raw values ride
+        // too, and since the spatial-NR port the two stages-7/8 raw values
+        // ride as well, so a multi-control grade stays on GPU end to end.
         val session = FakeSession(frames = 2, audio = false)
         val writer = FakeWriter()
         val gpu = FakeGpuDevelop()
@@ -2374,6 +2409,8 @@ class Mp4ExporterTest {
             GradeK(
                 exposureEv = 1.5f,
                 highlights = -55f,
+                chromaDenoise = 25f,
+                noiseReduction = 40f,
                 highlightReconstruction = false,
                 keepVignetting = false,
                 tonemap = 2,
@@ -2410,6 +2447,9 @@ class Mp4ExporterTest {
         assertFalse(gpu.lastHighlightReconstruction)
         assertFalse(gpu.lastKeepVignetting)
         assertEquals(2, gpu.lastTonemap)
+        // The two spatial-NR stages ride the dispatch verbatim too — the
+        // stages-7/8 raw values in the seam's parameter order.
+        assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastNr)
         // The ten pointwise stages ride the dispatch verbatim, each raw
         // grade value in the established order — a swapped pair or a
         // dropped stage fails this equality with the field named.
@@ -2461,6 +2501,9 @@ class Mp4ExporterTest {
         // The FREE coverage check runs first: an uncovered grade never
         // pays the probe or the parity run, and the fallback line names
         // the STAGE tokens only — never gate tokens (no gate was measured).
+        // Sharpening is the uncovered stand-in (chroma denoise is
+        // fragment-covered since the spatial-NR port, so it can no longer
+        // force the CPU path).
         val session = FakeSession(frames = 2, audio = false)
         val gpu = FakeGpuDevelop()
         val lines = ArrayList<String>()
@@ -2468,7 +2511,7 @@ class Mp4ExporterTest {
             session, FakeWriter(), lines::add,
             renderBackend = RenderBackend.GPU_EXPERIMENTAL,
             gpuDevelop = gpu,
-        ).run(7, GradeK(chromaDenoise = 25f), "/tmp/out.partial")
+        ).run(7, GradeK(sharpness = 25f), "/tmp/out.partial")
         assertEquals(0, gpu.probeCalls)
         assertTrue(gpu.parityFds.isEmpty())
         assertEquals(0, gpu.openCalls)
@@ -2477,14 +2520,14 @@ class Mp4ExporterTest {
         val fallback = lines.first { it.startsWith("render backend fallback: ") }
         assertTrue("requested missing: $fallback", fallback.contains("requested=GPU_EXPERIMENTAL"))
         assertTrue("effective missing: $fallback", fallback.contains("effective=CPU"))
-        assertTrue("stage token missing: $fallback", fallback.contains("reason=chroma-denoise"))
+        assertTrue("stage token missing: $fallback", fallback.contains("reason=sharpness"))
         assertFalse(
             "gate tokens must be absent: $fallback",
             fallback.contains("no-egl-context"),
         )
         // The visibility line carries the SAME tokens (no second truth).
         val backend = lines.first { it.startsWith("render backend: ") }
-        assertTrue("same tokens expected: $backend", backend.contains("chroma-denoise"))
+        assertTrue("same tokens expected: $backend", backend.contains("sharpness"))
     }
 
     @Test
@@ -2704,7 +2747,15 @@ class Mp4ExporterTest {
             lines::add,
             renderBackend = RenderBackend.GPU_EXPERIMENTAL,
             gpuDevelop = gpu,
-        ).run(7, GradeK(), "/tmp/out.partial", manualRotationDeg = 270)
+        ).run(
+            7,
+            // The grade carries the two spatial-NR stages' raw values too —
+            // the blit reuses the SAME develop program family, so the
+            // encoder pass-through lock must see them verbatim.
+            GradeK(chromaDenoise = 25f, noiseReduction = 40f),
+            "/tmp/out.partial",
+            manualRotationDeg = 270,
+        )
     }
 
     @Test
@@ -2737,6 +2788,9 @@ class Mp4ExporterTest {
         // container's 90 composed with the manual 270) — the fold's 0 arm,
         // the byte-identical upright copy.
         assertEquals(0, gpu.lastEncoderRotationDeg)
+        // The two spatial-NR stages ride the blit verbatim too — the
+        // stages-7/8 raw values in the seam's parameter order.
+        assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastEncoderNr)
         // The writer drained once per blit.
         assertEquals(2, writer.drainCalls)
         // No frames on the writer's own paths.

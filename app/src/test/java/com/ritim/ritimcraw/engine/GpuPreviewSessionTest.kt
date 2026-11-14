@@ -26,6 +26,17 @@ import org.junit.Test
 class GpuPreviewSessionTest {
 
     /**
+     * The two spatial-NR stages' raw values ONE render carried — the
+     * verbatim pass-through lock's snapshot for the stages-7/8 pair (a
+     * swapped or dropped parameter in GpuPreviewSession.render fails the
+     * data-class equality with the exact field named).
+     */
+    private data class NrCall(
+        val chromaDenoise: Float,
+        val noiseReduction: Float,
+    )
+
+    /**
      * The ten pointwise stages' raw values ONE render carried, in the
      * seam's parameter order — the verbatim pass-through lock's snapshot
      * (a swapped or dropped parameter in GpuPreviewSession.render fails
@@ -66,6 +77,7 @@ class GpuPreviewSessionTest {
         val surfaces = mutableListOf<Any?>()
         val rendered = mutableListOf<Long>() // the session handles rendered
         val renderedHighlights = mutableListOf<Float>() // grade.highlights per render
+        val renderedNr = mutableListOf<NrCall>() // the two spatial-NR stages per render
         val renderedPointwise = mutableListOf<PointwiseCall>() // the ten stages per render
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
@@ -98,6 +110,8 @@ class GpuPreviewSessionTest {
             clipHandle: Long,
             frameIndex: Int,
             maxDim: Int,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -124,6 +138,7 @@ class GpuPreviewSessionTest {
         ): PreviewFrame? {
             rendered += sessionHandle
             renderedHighlights += highlights
+            renderedNr += NrCall(chromaDenoise, noiseReduction)
             renderedPointwise += PointwiseCall(
                 blackPoint, whitePoint, shadows, midtones, contrast,
                 tempK, tint, saturation, asShot,
@@ -215,6 +230,7 @@ class GpuPreviewSessionTest {
         assertTrue(session.open())
         val out = session.render(
             clipHandle = 11L, frameIndex = 5, maxDim = 1280,
+            chromaDenoise = 25f, noiseReduction = 40f,
             exposureEv = 0.5f, highlights = -55f, highlightReconstruction = true,
             keepVignetting = true, tonemap = 1,
             blackPoint = 5f, whitePoint = -5f,
@@ -235,6 +251,11 @@ class GpuPreviewSessionTest {
         // grade.highlights the shader's uHighlights bind needs (the
         // export-side FakeGpuDevelop pass-through precedent).
         assertEquals(listOf(-55f), develop.renderedHighlights)
+        // The two spatial-NR stages ride the seam verbatim too — the raw
+        // grade values the multi-pass fragment chain's uChromaDenoise/
+        // uNoiseReduction binds need (the stages-7/8 port's own
+        // pass-through lock, same shape as the pointwise one below).
+        assertEquals(listOf(NrCall(chromaDenoise = 25f, noiseReduction = 40f)), develop.renderedNr)
         // The ten pointwise stages ride the seam verbatim too, each raw
         // grade value in the established order — a swapped pair or a
         // dropped stage fails this equality with the field named.
@@ -264,6 +285,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
+                chromaDenoise = 0f, noiseReduction = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
                 blackPoint = 0f, whitePoint = 0f,
@@ -287,6 +309,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
+                chromaDenoise = 0f, noiseReduction = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
                 blackPoint = 0f, whitePoint = 0f,
@@ -332,6 +355,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
+                chromaDenoise = 0f, noiseReduction = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
                 blackPoint = 0f, whitePoint = 0f,
@@ -368,6 +392,8 @@ class GpuPreviewSessionTest {
                 clipHandle: Long,
                 frameIndex: Int,
                 maxDim: Int,
+                chromaDenoise: Float,
+                noiseReduction: Float,
                 exposureEv: Float,
                 highlights: Float,
                 blackPoint: Float,

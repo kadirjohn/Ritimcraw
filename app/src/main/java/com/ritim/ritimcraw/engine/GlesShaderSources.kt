@@ -162,10 +162,13 @@ void main() {
      */
     const val FULLSCREEN_VERTEX_310: String = "#version 310 es\n" + kFullscreenBody
 
-    /**
-     * Fused develop fragment pass (deliverable D) — the fragment-shader
-     * counterpart of the CPU develop chain for a NEUTRAL grade, ONE PASS
-     * (honest fusion: every covered stage is per-pixel pure, and the only
+    /*
+     * The develop fragment family (deliverable D + the spatial-NR port's
+     * split). The FUSED pass — recomposed below from the shared text
+     * fragments, byte-identical to the pre-split constant — is the
+     * fragment-shader counterpart of the CPU develop chain for a NEUTRAL
+     * grade, ONE PASS (honest fusion: every covered stage is per-pixel
+     * pure, and the only
      * neighborhood read is the demosaic, which reads the stage-1 CFA
      * texture directly — fusing loses nothing and saves a full-frame
      * round trip between every stage).
@@ -301,10 +304,16 @@ void main() {
      *      0.018, else 1.099*pow(lin, 0.45) - 0.099), unclamped, exactly
      *      as the CPU tail leaves it; applied only when uOetf == 1.
      *
-     * Stages NOT covered (honest): 7-8 denoise, 21-22 sharpness/detail,
-     * 24 LUT, and the gyro warp — the BackendRules
+     * Stages NOT covered by THIS fused text (honest): 21-22
+     * sharpness/detail, 24 LUT, and the gyro warp — the BackendRules
      * stage-coverage rules fall back to CPU with a reason line whenever
-     * one of those is active in the grade.
+     * one of those is active in the grade. Stages 7-8 (spatial NR) are
+     * fragment-covered since the NR port, but NOT by this fused pass:
+     * they are neighborhood stages, so the session chain runs them as
+     * the separate NR_* passes between DEVELOP_FRAGMENT_PRE and
+     * DEVELOP_FRAGMENT_POST (below); the fused text keeps its no-NR
+     * shape because the frozen device parity harness compiles it as ONE
+     * draw.
      *
      * Parity shape: the harness runs THREE cases against THIS pass. Case
      * 0 pins uHasShading = 0, uHr = 0, uHasProfile = 0, uExposure = 1.0,
@@ -371,15 +380,18 @@ void main() {
      * neither in fragment shaders): #version 300 es. glReadPixels is
      * used NOWHERE (the recorded baseline invariant).
      */
-    const val DEVELOP_FRAGMENT: String = """#version 300 es
+    // ---- the develop chain's shared text fragments (the NR port's split) --
+    //
+    // The session chain draws the develop stages as PRE -> [NR] -> POST
+    // through RGBA32F intermediates (DEVELOP_FRAGMENT_PRE, the NR_* passes
+    // and DEVELOP_FRAGMENT_POST below); the fused parity pass recomposes
+    // THE SAME fragments, so the split chain and the frozen harness cannot
+    // drift. Each fragment is the fused pass's own text, cut at a copy
+    // boundary (the CPU's stage 6/9 boundary - the NR stages' position in
+    // rawedit::developCpu).
 
-// Fused develop pass - stages 1+2+3+4+5+6+9+10+11+12+13+14+15+16+17+18+19+20+23+OETF
-// of rawedit::developCpu (core/src/Develop.cpp). See the Kotlin doc above.
-
-precision highp float;
-precision highp int;
-
-uniform highp usampler2D uCfa;  // RAW CFA: GL_R16UI, uint16 samples 0..65535, row-major CPU order
+    /** Stages 1-6's uniforms (the pre-pass set) - the fused pass's own text. */
+    private const val kDevelopPreUniforms: String = """uniform highp usampler2D uCfa;  // RAW CFA: GL_R16UI, uint16 samples 0..65535, row-major CPU order
 uniform ivec2 uSize;            // CFA width/height in pixels
 uniform ivec4 uCell;            // layoutFor cell: (cell[0][0], cell[0][1], cell[1][0], cell[1][1])
 uniform vec4 uBlack;            // per-slot black levels, frame-preferred (CPU-computed)
@@ -392,7 +404,10 @@ uniform vec3 uHrGain;           // stage-3 WB gains = meta.wbGains with the >0 g
 uniform vec3 uWb;               // WB gains = 1/asShotNeutral, >0 guard included (CPU-computed)
 uniform mat3 uCam2rgb;          // camera->Rec.709, the CPU row-major matrix uploaded with transpose=GL_TRUE
 uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (no profile / parity shape)
-uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
+"""
+
+    /** Stages 9-23+OETF's uniforms (the post-pass set) - the fused pass's own text. */
+    private const val kDevelopPostUniforms: String = """uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
 uniform float uHighlights;      // raw grade.highlights (stage 15); 0.0 = the CPU's own skip
 uniform float uBlackPoint;      // raw grade.blackPoint (stage 9); 0.0 = the CPU's own skip
 uniform float uWhitePoint;      // raw grade.whitePoint (stage 10); 0.0 = the CPU's own skip
@@ -415,10 +430,13 @@ uniform float uSplitBalance;       // raw grade.splitBalance
 uniform float uSaturation;     // raw grade.saturation (stage 20); 0.0 = the CPU's own skip
 uniform int uTonemap;           // grade.tonemap (stage 23): 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base
 uniform int uOetf;              // 1 = apply linearToRec709 (export shape); 0 = linear endpoint (parity)
+"""
 
-out vec4 oCol;
+    /** The shared single color output (the fused pass's own line). */
+    private const val kDevelopOutDecl: String = "out vec4 oCol;\n"
 
-// siteAt(x, y) = cell[y&1][x&1] - the CPU layoutFor lookup.
+    /** Stages 1-6's helpers (siteAt .. kDx/kDy) - the fused pass's own text. */
+    private const val kDevelopPreHelpers: String = """// siteAt(x, y) = cell[y&1][x&1] - the CPU layoutFor lookup.
 int siteAt(ivec2 p) {
     int row = p.y & 1;
     int col = p.x & 1;
@@ -552,8 +570,10 @@ float hrAt(ivec2 p) {
 // The CPU kernel's 8-neighborhood offsets, same order (kDx, kDy).
 const int kDx[8] = int[8](-1, 1, 0, 0, -1, -1, 1, 1);
 const int kDy[8] = int[8](0, 0, -1, 1, -1, 1, -1, 1);
+"""
 
-// The CPU OETF, rawedit::linearToRec709 (core/src/Transfer.cpp): 4.5*lin
+    /** The POST stages' helpers (linearToRec709 .. tonemapPixel) - the fused pass's own text. */
+    private const val kDevelopPostHelpers: String = """// The CPU OETF, rawedit::linearToRec709 (core/src/Transfer.cpp): 4.5*lin
 // below 0.018, else 1.099*pow(lin, 0.45) - 0.099, UNCLAMPED (the CPU tail
 // clamps after, in toByte; this pass leaves it to the caller).
 float linearToRec709(float lin) {
@@ -701,11 +721,16 @@ vec3 tonemapPixel(vec3 c) {
     o = clamp(o, 0.0, 1.0);
     return pow(o, vec3(2.2));
 }
+"""
 
-void main() {
+    /** main()'s guard head - shared by the fused pass, PRE and POST. */
+    private const val kDevelopMainHead: String = """void main() {
     ivec2 g = ivec2(gl_FragCoord.xy);
     if (g.x >= uSize.x || g.y >= uSize.y) discard;
-    int maxI = uSize.x - 1;
+"""
+
+    /** main()'s PRE body: the demosaic + WB + cam2rgb, cut at the 6/9 boundary. */
+    private const val kDevelopPreBody: String = """    int maxI = uSize.x - 1;
     int maxJ = uSize.y - 1;
     int ownSite = siteAt(g);
     float px[3];
@@ -731,7 +756,14 @@ void main() {
     if (uHasProfile == 1) {
         c = uCam2rgb * c;
     }
-    // Stage 9: black point - the CPU stage-9 endpoint remap, verbatim
+"""
+
+    /**
+     * main()'s POST body: stage 9 through the tonemap/OETF tail and the
+     * oCol write + main close (the fused tail's own final lines). PRE
+     * appends its own [kDevelopWriteOut] instead; POST ends here.
+     */
+    private const val kDevelopPostBody: String = """    // Stage 9: black point - the CPU stage-9 endpoint remap, verbatim
     // (core/src/Develop.cpp). uBlackPoint carries the RAW grade.blackPoint
     // value; 0.0 skips the whole stage exactly like the CPU's `if
     // (grade.blackPoint != 0.0f)`. lift is uniform-derived so it must NOT
@@ -896,6 +928,586 @@ void main() {
         c = vec3(linearToRec709(c.r), linearToRec709(c.g), linearToRec709(c.b));
     }
     oCol = vec4(c, 1.0);
+}
+"""
+
+    /** The fused pass's own banner + precision block (its own text). */
+    private const val kDevelopFusedBanner: String = """// Fused develop pass - stages 1+2+3+4+5+6+9+10+11+12+13+14+15+16+17+18+19+20+23+OETF
+// of rawedit::developCpu (core/src/Develop.cpp). See the Kotlin doc above.
+
+precision highp float;
+precision highp int;
+"""
+
+    /** The write + main close shared by PRE and POST (the fused tail's own lines). */
+    private const val kDevelopWriteOut: String = """    oCol = vec4(c, 1.0);
+}
+"""
+
+    /** POST's own input read: the chain's RGBA32F intermediate, 1:1 texel. */
+    private const val kDevelopPostFetch: String = "    vec3 c = texelFetch(uSrc, g, 0).rgb;\n"
+
+    /** PRE's own banner + precision block. */
+    private const val kDevelopPreBanner: String = """// Develop pre pass - stages 1+2+3+4+5+6 of rawedit::developCpu
+// (core/src/Develop.cpp): normalization, lens shading, highlight
+// reconstruction, demosaic, WB, camera->Rec.709. The session chain's
+// first develop draw: reads the RAW CFA, writes the post-demosaic
+// linear RGB to the RGBA32F intermediate the NR passes and the post
+// pass read (the CPU chain's stage 7/8 position - between stages 6
+// and 9). The stage text is byte-identical to the fused pass's own PRE
+// fragments above, so the split chain and the parity harness cannot
+// drift.
+
+precision highp float;
+precision highp int;
+"""
+
+    /** POST's own banner + precision block. */
+    private const val kDevelopPostBanner: String = """// Develop post pass - stages 9+10+11+12+13+14+15+16+17+18+19+20+23+OETF
+// of rawedit::developCpu (core/src/Develop.cpp). The session chain's
+// last develop draw: reads the chain's RGBA32F intermediate (the pre
+// pass's output, or the NR passes' output when the grade uses spatial
+// NR - the CPU chain's stage 7/8 position), applies every per-pixel
+// stage, writes the developed frame. The stage text is byte-identical
+// to the fused pass's own POST fragments above, so the split chain and
+// the parity harness cannot drift.
+
+precision highp float;
+precision highp int;
+"""
+
+    /**
+     * The FUSED develop fragment pass — recomposed byte-identically from
+     * the shared fragments above (the pre-split constant's own text, cut
+     * at the stage 6/9 copy boundary and reassembled here). The frozen
+     * device parity harness (GlesPipeline.cpp's developFragmentParity)
+     * compiles THIS text as ONE draw, so the fused shape stays the
+     * single source of truth the harness rides; the session chain's
+     * PRE/[NR]/POST split composes the same fragments, and drift between
+     * the two chains is impossible by construction. See the family doc
+     * above for the stage list, the parity shape and the input/output
+     * contract; the validator's Kind.DEVELOP_FRAGMENT contract locks the
+     * recomposed text.
+     */
+    const val DEVELOP_FRAGMENT: String =
+        "#version 300 es\n\n" + kDevelopFusedBanner + "\n" +
+            kDevelopPreUniforms + kDevelopPostUniforms + "\n" +
+            kDevelopOutDecl + "\n" + kDevelopPreHelpers + "\n" +
+            kDevelopPostHelpers + "\n" + kDevelopMainHead +
+            kDevelopPreBody + kDevelopPostBody
+
+    /**
+     * The develop chain's PRE pass (the spatial-NR port's split) — stages
+     * 1-6 of the CPU develop chain as a STANDALONE draw: reads the RAW CFA
+     * (uCfa, the same input contract as the fused pass), writes the
+     * post-demosaic, post-WB, post-camera-matrix linear Rec.709 pixel to
+     * an RGBA32F intermediate. That intermediate is the CPU chain's stage
+     * 7/8 input position: the NR passes (NR_CHROMA_H/NR_CHROMA_V,
+     * NR_LUMA below) read it as their ORIGINAL guide, and
+     * DEVELOP_FRAGMENT_POST consumes the chain's final texture.
+     *
+     * The stage text is the fused pass's own PRE fragments (uniforms,
+     * helpers, main head and body up to the stage-6 camera matrix), so
+     * the split chain and the parity harness cannot drift; the validator
+     * locks the PRE contract (Kind.DEVELOP_FRAGMENT_PRE), including that
+     * NO post-stage uniform leaks into this pass.
+     *
+     * When the grade uses no spatial NR, the session still draws PRE then
+     * POST through the intermediate (the pass structure is fixed; only
+     * the NR draws are gated per-grade), so the split chain's no-NR shape
+     * is one extra full-frame copy against the fused pass — the honest
+     * cost of the NR position, paid only on the session path, never on
+     * the frozen parity harness.
+     */
+    const val DEVELOP_FRAGMENT_PRE: String =
+        "#version 300 es\n\n" + kDevelopPreBanner + "\n" +
+            kDevelopPreUniforms + "\n" + kDevelopOutDecl + "\n" +
+            kDevelopPreHelpers + "\n" + kDevelopMainHead +
+            kDevelopPreBody + kDevelopWriteOut
+
+    /**
+     * The develop chain's POST pass (the spatial-NR port's split) —
+     * stages 9-20 + 23 + OETF of the CPU develop chain as a STANDALONE
+     * draw: reads the chain's RGBA32F intermediate 1:1 (uSrc — the PRE
+     * pass's output when no NR stage ran, else the last NR pass's
+     * output; the CPU chain's stage 7/8 output position), applies every
+     * per-pixel stage verbatim, writes the developed frame to the
+     * session's develop texture (the store/blit/window/stats passes all
+     * read THAT texture — POST is always the develop chain's last draw).
+     *
+     * The stage text is the fused pass's own POST fragments, so the split
+     * chain and the parity harness cannot drift; the validator locks the
+     * POST contract (Kind.DEVELOP_FRAGMENT_POST), including that NO
+     * pre-stage uniform (uCfa, uCam2rgb, the demosaic) leaks into this
+     * pass, and the stage application order.
+     */
+    const val DEVELOP_FRAGMENT_POST: String =
+        "#version 300 es\n\n" + kDevelopPostBanner + "\n" +
+            "uniform highp sampler2D uSrc;  // the chain's RGBA32F intermediate: the pre pass's or the NR passes' output\n" +
+            "uniform ivec2 uSize;            // width/height in pixels (the intermediate; same dims as the CFA)\n" +
+            kDevelopPostUniforms + "\n" + kDevelopOutDecl + "\n" +
+            kDevelopPostHelpers + "\n" + kDevelopMainHead +
+            kDevelopPostFetch + kDevelopPostBody
+
+    /**
+     * Spatial chroma NR, the HORIZONTAL half (CPU stage 7, pass 1 of 2) —
+     * rawedit::denoiseChromaImpl's horizontal blurPlane run, verbatim
+     * (core/src/Develop.cpp). The CPU runs its blurPlane lambda TWICE
+     * (the cr plane, then the cb plane) with the SAME original luma guide
+     * and identical weights; the two runs are independent per-pixel, so
+     * ONE pass computing BOTH planes reproduces both exactly.
+     *
+     * Input: uSrc — the PRE pass's RGBA32F output (the ORIGINAL
+     * post-demosaic RGB; this pass's input position IS the CPU's chroma
+     * NR input). Output: .xy = the horizontally blurred (cr, cb) planes
+     * (the CPU's tmp buffers); .zw unused. The vertical pass
+     * (NR_CHROMA_V) reads .xy back beside the ORIGINAL pixels (uGuide)
+     * and finishes the CPU's blend — the two-pass shape is the CPU's own
+     * (its blurPlane is a horizontal pass into tmp, then a vertical pass
+     * into out; collapsing the directions would change the image).
+     *
+     * uChromaDenoise carries the RAW grade value, gated
+     * `if (uChromaDenoise != 0.0)` exactly like the pointwise stages;
+     * strength = clamp(raw, 0, 100)/100 with the CPU's own <= 0 no-op
+     * (a drawn pass with a closed gate writes the input through
+     * unchanged — and the C++ session skips the NR draws entirely for a
+     * clamped strength of 0 or a frame under the CPU's w<2/h<2 guard).
+     * texelFetch does NOT clamp: the CPU's max/min coordinate guards are
+     * load-bearing and carried verbatim, as is the exact tap order
+     * (xm, xp, xm2, xp2) — the accumulation order is part of the math.
+     */
+    const val NR_CHROMA_H: String = """#version 300 es
+
+// Spatial chroma NR, the horizontal half (stage 7 pass 1 of 2) - the CPU
+// rawedit::denoiseChromaImpl's horizontal blurPlane run, verbatim (core/
+// src/Develop.cpp). The CPU runs its blurPlane lambda TWICE (the cr plane,
+// then the cb plane) with the SAME original luma guide and identical
+// weights; the two runs are independent, so this pass computes BOTH planes
+// in one draw and reproduces both exactly. It writes only the blurred
+// planes to .xy - the vertical pass (NR_CHROMA_V) reads them back beside
+// the ORIGINAL pixels (uGuide) and finishes the CPU's blend. See the
+// Kotlin doc above for the full stage contract.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;   // the develop PRE pass's RGBA32F output (the original post-demosaic RGB)
+uniform ivec2 uSize;            // width/height in pixels
+uniform float uChromaDenoise;   // raw grade.chromaDenoise; 0.0 = the CPU call site's own skip
+
+out vec4 oCol;
+
+// The CPU's own constants, verbatim (its const initializers; literal-
+// derived, and exp() of constant arguments is a constant expression in
+// ES 3.00, so they keep const exactly like the CPU's).
+const float kRadius = 2.0;
+const float kC0 = exp(-0.5 / (kRadius * kRadius));
+const float kC1 = exp(-2.0 / (kRadius * kRadius));
+const float kSr = 0.10;
+const float kInv2Sr2 = 1.0 / (2.0 * kSr * kSr);
+
+// The CPU's luma split at p (the guide plane the CPU computes once per
+// pixel; recomputed per read here - the hrAt precedent: identical math,
+// identical answers).
+float lumaAt(ivec2 p) {
+    vec3 c = texelFetch(uSrc, p, 0).rgb;
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    vec3 orig = texelFetch(uSrc, g, 0).rgb;
+    // The CPU call site gates the whole stage on grade.chromaDenoise !=
+    // 0 and the impl clamps + early-outs; the C++ session skips the NR
+    // draws entirely for a clamped strength of 0, and this in-shader
+    // gate keeps a drawn pass an exact pass-through besides (the
+    // pointwise stages' own gate idiom).
+    if (uChromaDenoise != 0.0) {
+        float strength = clamp(uChromaDenoise, 0.0, 100.0) / 100.0;
+        if (strength > 0.0) {
+            // The CPU's per-pixel split, verbatim: y the luma, cr/cb the
+            // chroma deltas. This pass's input is the ORIGINAL image, so
+            // these are the CPU's cr/cb planes.
+            float y = lumaAt(g);
+            float cr = orig.r - y;
+            float cb = orig.b - y;
+            // The CPU's horizontal pass, verbatim: the clamped columns
+            // (texelFetch does NOT clamp - the max/min guards are the
+            // load-bearing lines), the exact tap order xm, xp, xm2, xp2,
+            // center-relative accumulation (s starts 0, sw starts 1 - the
+            // center is sw's own 1.0), and the ORIGINAL luma as the range
+            // guide.
+            int xm = max(g.x - 2, 0);
+            int xp = min(g.x + 2, uSize.x - 1);
+            int xm2 = max(g.x - 4, 0);
+            int xp2 = min(g.x + 4, uSize.x - 1);
+            float sw = 1.0;
+            float sCr = 0.0;
+            float sCb = 0.0;
+            // tap(xm, c0)
+            {
+                ivec2 p = ivec2(xm, g.y);
+                float ly = lumaAt(p);
+                vec3 t = texelFetch(uSrc, p, 0).rgb;
+                float dl = ly - y;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                sCr += (t.r - ly - cr) * kC0 * rw;
+                sCb += (t.b - ly - cb) * kC0 * rw;
+                sw += kC0 * rw;
+            }
+            // tap(xp, c0)
+            {
+                ivec2 p = ivec2(xp, g.y);
+                float ly = lumaAt(p);
+                vec3 t = texelFetch(uSrc, p, 0).rgb;
+                float dl = ly - y;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                sCr += (t.r - ly - cr) * kC0 * rw;
+                sCb += (t.b - ly - cb) * kC0 * rw;
+                sw += kC0 * rw;
+            }
+            // tap(xm2, c1)
+            {
+                ivec2 p = ivec2(xm2, g.y);
+                float ly = lumaAt(p);
+                vec3 t = texelFetch(uSrc, p, 0).rgb;
+                float dl = ly - y;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                sCr += (t.r - ly - cr) * kC1 * rw;
+                sCb += (t.b - ly - cb) * kC1 * rw;
+                sw += kC1 * rw;
+            }
+            // tap(xp2, c1)
+            {
+                ivec2 p = ivec2(xp2, g.y);
+                float ly = lumaAt(p);
+                vec3 t = texelFetch(uSrc, p, 0).rgb;
+                float dl = ly - y;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                sCr += (t.r - ly - cr) * kC1 * rw;
+                sCb += (t.b - ly - cb) * kC1 * rw;
+                sw += kC1 * rw;
+            }
+            // tmp = row + s/sw, both planes - the CPU's horizontal output.
+            float tmpCr = cr + sCr / sw;
+            float tmpCb = cb + sCb / sw;
+            oCol = vec4(tmpCr, tmpCb, 0.0, 1.0);
+            return;
+        }
+    }
+    // Gate closed (or a nonpositive clamp): exact pass-through.
+    oCol = vec4(orig, 1.0);
+}
+"""
+
+    /**
+     * Spatial chroma NR, the VERTICAL half + the blend (CPU stage 7, pass
+     * 2 of 2) — rawedit::denoiseChromaImpl's vertical blurPlane run and
+     * its per-pixel blend, verbatim (core/src/Develop.cpp).
+     *
+     * Inputs: uSrc — NR_CHROMA_H's output (.xy = the horizontally blurred
+     * cr/cb planes, the CPU's tmp buffers); uGuide — the PRE pass's
+     * RGBA32F output (the ORIGINAL pre-NR RGB). The CPU's vertical pass
+     * guides with the ORIGINAL luma (NOT the horizontal output — the
+     * second pass keeps the original luma guide), and the blend needs the
+     * original chroma beside the blurred chroma, so BOTH textures are
+     * load-bearing. Output: the chroma-denoised RGB (the CPU's blend
+     * writes y+newCr, y+newCg, y+newCb with the green reconstructed from
+     * the kept luma; the flat-chroma skip dr == 0 && db == 0 keeps the
+     * ORIGINAL bytes — the CPU `continue`s past the write, here the
+     * original texel is written, the same bytes).
+     *
+     * uChromaDenoise carries the RAW grade value with the same gate and
+     * clamp as NR_CHROMA_H (both passes of one CPU stage share one
+     * grade control). The tap order (ym, yp, ym2, yp2) and the
+     * center-relative accumulation are the CPU's own, verbatim.
+     */
+    const val NR_CHROMA_V: String = """#version 300 es
+
+// Spatial chroma NR, the vertical half + the blend (stage 7 pass 2 of 2)
+// - the CPU rawedit::denoiseChromaImpl's vertical blurPlane run and its
+// per-pixel blend, verbatim (core/src/Develop.cpp). Reads the horizontal
+// pass's blurred planes from uSrc (.xy) and the ORIGINAL pre-NR pixels
+// from uGuide (the develop PRE pass's output): the CPU's vertical pass
+// guides with the ORIGINAL luma (NOT the horizontal output), and its
+// blend needs the original chroma beside the blurred chroma. Both
+// planes' vertical runs are independent, so one draw computes both
+// exactly like the horizontal pass. See the Kotlin doc above for the
+// full stage contract.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;    // NR_CHROMA_H's output: .xy = the horizontally blurred (cr, cb)
+uniform highp sampler2D uGuide;  // the develop PRE pass's output: the ORIGINAL pre-NR RGB
+uniform ivec2 uSize;             // width/height in pixels
+uniform float uChromaDenoise;   // raw grade.chromaDenoise; 0.0 = the CPU call site's own skip
+
+out vec4 oCol;
+
+// The CPU's own constants, verbatim (same as the horizontal pass).
+const float kRadius = 2.0;
+const float kC0 = exp(-0.5 / (kRadius * kRadius));
+const float kC1 = exp(-2.0 / (kRadius * kRadius));
+const float kSr = 0.10;
+const float kInv2Sr2 = 1.0 / (2.0 * kSr * kSr);
+
+// The CPU's luma split at p of the ORIGINAL image (uGuide): the guide
+// plane the CPU computed once from its input.
+float lumaAt(ivec2 p) {
+    vec3 c = texelFetch(uGuide, p, 0).rgb;
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    vec3 orig = texelFetch(uGuide, g, 0).rgb;
+    if (uChromaDenoise != 0.0) {
+        float strength = clamp(uChromaDenoise, 0.0, 100.0) / 100.0;
+        if (strength > 0.0) {
+            // The CPU's per-pixel split of the ORIGINAL pixel, verbatim.
+            float y = lumaAt(g);
+            float cr = orig.r - y;
+            float cb = orig.b - y;
+            // The CPU's vertical pass, verbatim: the clamped rows, the
+            // exact tap order ym, yp, ym2, yp2, center-relative
+            // accumulation, the blurred planes as values (uSrc) and the
+            // ORIGINAL luma as the range guide (uGuide) - the CPU's
+            // second pass keeps the ORIGINAL luma guide.
+            int ym = max(g.y - 2, 0);
+            int yp = min(g.y + 2, uSize.y - 1);
+            int ym2 = max(g.y - 4, 0);
+            int yp2 = min(g.y + 4, uSize.y - 1);
+            vec2 v = texelFetch(uSrc, g, 0).xy;
+            float sw = 1.0;
+            float sCr = 0.0;
+            float sCb = 0.0;
+            // tap(ym, c0)
+            {
+                ivec2 p = ivec2(g.x, ym);
+                float ly = lumaAt(p);
+                vec2 t = texelFetch(uSrc, p, 0).xy;
+                float dl = ly - y;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                sCr += (t.x - v.x) * kC0 * rw;
+                sCb += (t.y - v.y) * kC0 * rw;
+                sw += kC0 * rw;
+            }
+            // tap(yp, c0)
+            {
+                ivec2 p = ivec2(g.x, yp);
+                float ly = lumaAt(p);
+                vec2 t = texelFetch(uSrc, p, 0).xy;
+                float dl = ly - y;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                sCr += (t.x - v.x) * kC0 * rw;
+                sCb += (t.y - v.y) * kC0 * rw;
+                sw += kC0 * rw;
+            }
+            // tap(ym2, c1)
+            {
+                ivec2 p = ivec2(g.x, ym2);
+                float ly = lumaAt(p);
+                vec2 t = texelFetch(uSrc, p, 0).xy;
+                float dl = ly - y;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                sCr += (t.x - v.x) * kC1 * rw;
+                sCb += (t.y - v.y) * kC1 * rw;
+                sw += kC1 * rw;
+            }
+            // tap(yp2, c1)
+            {
+                ivec2 p = ivec2(g.x, yp2);
+                float ly = lumaAt(p);
+                vec2 t = texelFetch(uSrc, p, 0).xy;
+                float dl = ly - y;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                sCr += (t.x - v.x) * kC1 * rw;
+                sCb += (t.y - v.y) * kC1 * rw;
+                sw += kC1 * rw;
+            }
+            // out = v + s/sw, both planes - the CPU's blurred chroma.
+            float bcr = v.x + sCr / sw;
+            float bcb = v.y + sCb / sw;
+            // The CPU's blend, verbatim: the strength-scaled delta, the
+            // flat-chroma skip (dr == 0 && db == 0 keeps the ORIGINAL
+            // bytes - the CPU `continue`s past the write; here the
+            // original texel is written, the same bytes), and the green
+            // reconstruction from the kept luma.
+            float dr = strength * (bcr - cr);
+            float db = strength * (bcb - cb);
+            if (dr == 0.0 && db == 0.0) {
+                oCol = vec4(orig, 1.0);
+                return;
+            }
+            float newCr = cr + dr;
+            float newCb = cb + db;
+            float newCg = -(0.2126 * newCr + 0.0722 * newCb) / 0.7152;
+            oCol = vec4(y + newCr, y + newCg, y + newCb, 1.0);
+            return;
+        }
+    }
+    // Gate closed (or a nonpositive clamp): exact pass-through.
+    oCol = vec4(orig, 1.0);
+}
+"""
+
+    /**
+     * Spatial luma NR (CPU stage 8) — rawedit::denoiseLumaImpl, verbatim
+     * (core/src/Develop.cpp): a true 3x3 luma bilateral, ONE pass. The
+     * CPU computes a luma plane once and smooths it with the center plus
+     * 8 clamped neighbors (9 taps); the smoothed-luma delta scaled by
+     * strength is added to r, g and b equally. NO approximation: the
+     * range weights are the CPU's own exp(-dl*dl/2*sr^2) with sr = 0.05,
+     * the spatial weights are its exp(-0.5)/exp(-1.0) edge/center pair,
+     * and the tap order is its exact call order (the accumulation order
+     * is part of the math).
+     *
+     * Input: uSrc — the chain's current RGBA32F texture: the chroma-NR
+     * output when stage 7 ran, else the PRE pass's output (the CPU runs
+     * luma NR on the chroma-denoised image — its luma plane is computed
+     * from THIS pass's input, not the pre-NR original). Output: the
+     * luma-lifted RGB. uNoiseReduction carries the RAW grade value with
+     * the same gate/clamp idiom as the chroma passes; the C++ session
+     * skips the draw for a clamped strength of 0 or a frame under the
+     * CPU's w<3/h<3 guard.
+     */
+    const val NR_LUMA: String = """#version 300 es
+
+// Spatial luma NR (stage 8) - the CPU rawedit::denoiseLumaImpl, verbatim
+// (core/src/Develop.cpp): a true 3x3 luma bilateral, ONE pass. The CPU
+// computes a luma plane once and smooths it with 8 clamped neighbors
+// (center + 8 taps = 9); the smoothed-luma delta scaled by strength is
+// added to r, g and b equally. This pass reads the chain's current input
+// (the chroma-NR output when stage 7 ran, else the develop PRE output -
+// the CPU runs luma NR on the chroma-denoised image), derives every luma
+// tap from it, and writes the lifted RGB. See the Kotlin doc above for
+// the full stage contract.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;      // the chain's RGBA32F input: the chroma-NR output, or the PRE output when stage 7 is off
+uniform ivec2 uSize;              // width/height in pixels
+uniform float uNoiseReduction;    // raw grade.noiseReduction; 0.0 = the CPU call site's own skip
+
+out vec4 oCol;
+
+// The CPU's own constants, verbatim (its const initializers).
+const float kSr = 0.05;
+const float kInv2Sr2 = 1.0 / (2.0 * kSr * kSr);
+const float kWe = exp(-0.5);
+const float kWd = exp(-1.0);
+
+// The CPU's luma split at p of THIS pass's input (the plane the CPU
+// computes once per pixel; recomputed per read - identical math).
+float lumaAt(ivec2 p) {
+    vec3 c = texelFetch(uSrc, p, 0).rgb;
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    vec3 orig = texelFetch(uSrc, g, 0).rgb;
+    if (uNoiseReduction != 0.0) {
+        float strength = clamp(uNoiseReduction, 0.0, 100.0) / 100.0;
+        if (strength > 0.0) {
+            // The CPU's 3x3 clamped coordinates, verbatim (texelFetch
+            // does NOT clamp - the max/min guards are load-bearing).
+            int xm = max(g.x - 1, 0);
+            int xp = min(g.x + 1, uSize.x - 1);
+            int ym = max(g.y - 1, 0);
+            int yp = min(g.y + 1, uSize.y - 1);
+            float c = lumaAt(g);
+            float sw = 1.0;
+            float s = 0.0;
+            // The CPU's tap order, verbatim: the 8 neighbors in the exact
+            // call order (the center is sw's own initial 1.0).
+            // tap(ym, xm, wd)
+            {
+                ivec2 p = ivec2(xm, ym);
+                float lv = lumaAt(p);
+                float dl = lv - c;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                s += (lv - c) * kWd * rw;
+                sw += kWd * rw;
+            }
+            // tap(ym, x, we)
+            {
+                ivec2 p = ivec2(g.x, ym);
+                float lv = lumaAt(p);
+                float dl = lv - c;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                s += (lv - c) * kWe * rw;
+                sw += kWe * rw;
+            }
+            // tap(ym, xp, wd)
+            {
+                ivec2 p = ivec2(xp, ym);
+                float lv = lumaAt(p);
+                float dl = lv - c;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                s += (lv - c) * kWd * rw;
+                sw += kWd * rw;
+            }
+            // tap(y, xm, we)
+            {
+                ivec2 p = ivec2(xm, g.y);
+                float lv = lumaAt(p);
+                float dl = lv - c;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                s += (lv - c) * kWe * rw;
+                sw += kWe * rw;
+            }
+            // tap(y, xp, we)
+            {
+                ivec2 p = ivec2(xp, g.y);
+                float lv = lumaAt(p);
+                float dl = lv - c;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                s += (lv - c) * kWe * rw;
+                sw += kWe * rw;
+            }
+            // tap(yp, xm, wd)
+            {
+                ivec2 p = ivec2(xm, yp);
+                float lv = lumaAt(p);
+                float dl = lv - c;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                s += (lv - c) * kWd * rw;
+                sw += kWd * rw;
+            }
+            // tap(yp, x, we)
+            {
+                ivec2 p = ivec2(g.x, yp);
+                float lv = lumaAt(p);
+                float dl = lv - c;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                s += (lv - c) * kWe * rw;
+                sw += kWe * rw;
+            }
+            // tap(yp, xp, wd)
+            {
+                ivec2 p = ivec2(xp, yp);
+                float lv = lumaAt(p);
+                float dl = lv - c;
+                float rw = exp(-dl * dl * kInv2Sr2);
+                s += (lv - c) * kWd * rw;
+                sw += kWd * rw;
+            }
+            // smooth = c + s/sw; d = strength * (smooth - luma), added to
+            // r, g, b equally - the CPU's tail, verbatim.
+            float smoothV = c + s / sw;
+            float d = strength * (smoothV - c);
+            oCol = vec4(orig + vec3(d), 1.0);
+            return;
+        }
+    }
+    // Gate closed (or a nonpositive clamp): exact pass-through.
+    oCol = vec4(orig, 1.0);
 }
 """
 

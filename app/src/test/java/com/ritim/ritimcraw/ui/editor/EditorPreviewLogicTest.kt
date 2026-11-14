@@ -773,13 +773,17 @@ class EditorPreviewLogicTest {
         // pointwise stages' raw values since the pointwise port (black
         // point 9, white point 10, shadows 11, midtones 12, contrast 13,
         // temperature 16, tint 17, the color wheel 18, split tone 19,
-        // saturation 20) — all fragment-covered, so the GPU path may
-        // serve a multi-control grade end to end. This is the
-        // eligibility the playback use case rides: grade at HIGH with
-        // AgX tonemap, the owner's routine highlights recovery (-55 —
-        // the stage-15 shoulder behind uHighlights), and a real
-        // multi-control move (shadows + manual temperature + saturation
-        // + the color wheel + split tone) all at once.
+        // saturation 20) plus the two spatial-NR stages since the
+        // spatial-NR port (chroma denoise 7, noise reduction 8) — all
+        // fragment-covered, so the GPU path may serve a multi-control
+        // grade end to end. This is the eligibility the playback use
+        // case rides: grade at HIGH with AgX tonemap, the owner's
+        // routine highlights recovery (-55 — the stage-15 shoulder
+        // behind uHighlights), the owner's routine spatial NR (the
+        // chroma two-direction filter and the 3x3 luma bilateral behind
+        // uChromaDenoise/uNoiseReduction), and a real multi-control
+        // move (shadows + manual temperature + saturation + the color
+        // wheel + split tone) all at once.
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(
@@ -788,6 +792,8 @@ class EditorPreviewLogicTest {
                     highlightReconstruction = false,
                     keepVignetting = false,
                     tonemap = 1,
+                    chromaDenoise = 25f,
+                    noiseReduction = 25f,
                     blackPoint = 5f,
                     whitePoint = -5f,
                     shadows = 55f,
@@ -862,12 +868,14 @@ class EditorPreviewLogicTest {
 
     @Test
     fun an_uncovered_stage_forces_the_cpu_path() {
-        // Stage 8 (spatial noise reduction) is NOT fragment-covered — the
-        // export gate's exact rule, mirrored for the preview: the grade
-        // takes the CPU path wholesale.
+        // Stage 21 (sharpness) is NOT fragment-covered — the export gate's
+        // exact rule, mirrored for the preview: the grade takes the CPU
+        // path wholesale. (Stages 7 and 8, the spatial NR, LEFT the
+        // uncovered set with the spatial-NR port — an NR grade is eligible
+        // now, which the covered-controls test above exercises.)
         assertFalse(
             EditorPreviewLogic.gpuPreviewEligible(
-                grade = GradeK(noiseReduction = 25f),
+                grade = GradeK(sharpness = 5f),
                 gyroWarpActive = false,
                 cropActive = false,
                 zebraOn = false,
