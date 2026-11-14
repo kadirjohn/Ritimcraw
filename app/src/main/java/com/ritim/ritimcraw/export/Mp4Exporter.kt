@@ -403,6 +403,8 @@ interface GpuDevelop {
         frameIndex: Int,
         chromaDenoise: Float,
         noiseReduction: Float,
+        temporalNr: Boolean,
+        temporalStrength: Float,
         sharpness: Float,
         detail: Float,
         exposureEv: Float,
@@ -469,6 +471,8 @@ interface GpuDevelop {
         ptsUs: Long,
         chromaDenoise: Float,
         noiseReduction: Float,
+        temporalNr: Boolean,
+        temporalStrength: Float,
         sharpness: Float,
         detail: Float,
         exposureEv: Float,
@@ -568,6 +572,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         frameIndex: Int,
         chromaDenoise: Float,
         noiseReduction: Float,
+        temporalNr: Boolean,
+        temporalStrength: Float,
         sharpness: Float,
         detail: Float,
         exposureEv: Float,
@@ -604,6 +610,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         warpM: FloatArray,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
         sessionHandle, clipHandle, frameIndex, chromaDenoise, noiseReduction,
+        temporalNr, temporalStrength,
         sharpness, detail,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
@@ -624,6 +631,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         ptsUs: Long,
         chromaDenoise: Float,
         noiseReduction: Float,
+        temporalNr: Boolean,
+        temporalStrength: Float,
         sharpness: Float,
         detail: Float,
         exposureEv: Float,
@@ -661,6 +670,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
         sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise, noiseReduction,
+        temporalNr, temporalStrength,
         sharpness, detail,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
@@ -1818,6 +1828,13 @@ class ExportPipeline(
                                 gpuDevelop.renderFrameToEncoder(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
                                     grade.chromaDenoise, grade.noiseReduction,
+                                    // The temporal pair rides the hybrid's
+                                    // routing verbatim: the bridge's own
+                                    // temporalMergedCfa consumes them to
+                                    // produce the CFA this blit uploads
+                                    // (the SAME merge the CPU path rides,
+                                    // the same per-Entry caches).
+                                    grade.temporalNr, grade.temporalStrength,
                                     grade.sharpness, grade.detail,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,
@@ -1887,6 +1904,13 @@ class ExportPipeline(
                                 gpuDevelop.renderFrame(
                                     gpuSessionHandle, info.handle, s.frameIndex,
                                     grade.chromaDenoise, grade.noiseReduction,
+                                    // The temporal pair rides the hybrid's
+                                    // routing verbatim: the bridge's own
+                                    // temporalMergedCfa consumes them to
+                                    // produce the CFA this render uploads
+                                    // (the SAME merge the CPU path rides,
+                                    // the same per-Entry caches).
+                                    grade.temporalNr, grade.temporalStrength,
                                     grade.sharpness, grade.detail,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,

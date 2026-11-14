@@ -21,7 +21,14 @@ import org.junit.Test
  *      reconstruction, vignetting, tonemap — highlights joined with the
  *      stage-15 port) plus the two spatial-NR stages' raw values since
  *      the spatial-NR port (chroma denoise, noise reduction — stages 7/8,
- *      the multi-pass fragment chain) plus the two unsharp stages' raw
+ *      the multi-pass fragment chain) plus the temporal pair since the
+ *      temporal-hybrid routing (temporalNr, temporalStrength — the SAME
+ *      raw values the CPU export's temporal merge receives; the pair
+ *      dies at the bridge, consumed by the bridge's own temporalMergedCfa
+ *      BEFORE the CFA reduction, so the reduced mosaic samples the MERGED
+ *      CFA — routing, not porting; the merge math stays core/Temporal.cpp's,
+ *      frozen, and the session request itself never sees the pair) plus
+ *      the two unsharp stages' raw
  *      values since the sharpness/detail port (sharpness, detail —
  *      stages 21/22, the four-pass unsharp chain, threaded with NO clamp
  *      because the CPU's amount mapping makes negative values valid
@@ -38,7 +45,7 @@ import org.junit.Test
  *      entirely, the identity no-draw rule). That
  *      narrow signature is the second lock against
  *      uncovered grades (the Kotlin coverage gate is the first): a stage
- *      the fragment pass does not cover cannot even be expressed into the
+ *      the render path does not cover cannot even be expressed into the
  *      session, so widening this signature must be a deliberate act that
  *      edits this test too. The setSurface parameter is Any? on purpose —
  *      the JVM's declaredMethods reflection resolves parameter types, and
@@ -105,6 +112,8 @@ class NativeSourcePreviewSessionTest {
                 maxDim = 1280,
                 chromaDenoise = 0.0f,
                 noiseReduction = 0.0f,
+                temporalNr = false,
+                temporalStrength = 0.0f,
                 sharpness = 0.0f,
                 detail = 0.0f,
                 exposureEv = 0.0f,
@@ -184,11 +193,18 @@ class NativeSourcePreviewSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 40 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+        // 42 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
         // four plumbing values) + chromaDenoise, noiseReduction (the two
         // spatial-NR stages' raw values since the spatial-NR port — stages
         // 7/8, the multi-pass fragment chain behind uChromaDenoise/
-        // uNoiseReduction) + sharpness, detail (the two unsharp stages'
+        // uNoiseReduction) + temporalNr, temporalStrength (the temporal
+        // pair since the temporal-hybrid routing — the SAME raw values
+        // the CPU export's temporal merge receives; the pair dies at the
+        // bridge, consumed by the bridge's own temporalMergedCfa BEFORE
+        // the CFA reduction, so the reduced mosaic samples the MERGED CFA
+        // — routing, not porting; the merge math stays core/Temporal.cpp's,
+        // frozen, and the session request itself never sees the pair) +
+        // sharpness, detail (the two unsharp stages'
         // raw values since the sharpness/detail port — stages 21/22, the
         // four-pass unsharp chain behind uSharpness/uDetail, threaded
         // VERBATIM with no clamp because the CPU's amount mapping makes
@@ -205,14 +221,14 @@ class NativeSourcePreviewSessionTest {
         // warpM since the gyro warp port (the per-frame verdict the
         // resolver produced at the caller — the Boolean locks the draw,
         // the nine floats lock the composite inverse-sampling map; false
-        // skips draw 10 entirely, the identity no-draw rule). Temporal NR
-        // and tone-band controls are deliberately absent — those stages
-        // are NOT fragment-covered, so a grade using any of them must take
-        // the CPU path wholesale; adding such a parameter here widens the
-        // session's promise and must fail this test until the coverage
-        // gate is taught the new stage.
+        // skips draw 10 entirely, the identity no-draw rule). Tone-band
+        // controls remain deliberately absent — that stage is NOT
+        // fragment-covered, so a grade using it must take the CPU path
+        // wholesale; adding such a parameter here widens the session's
+        // promise and must fail this test until the coverage gate is
+        // taught the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(40, render.parameterCount)
+        assertEquals(42, render.parameterCount)
     }
 
     @Test

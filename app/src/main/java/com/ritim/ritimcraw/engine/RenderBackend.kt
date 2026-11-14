@@ -296,31 +296,35 @@ object BackendRules {
      * token — loudly, never a silent drop of the look. THE MAP IS NOW
      * EMPTY: every stage in developCpu's 24-stage contract is covered
      * by the fragment path (the sharpness/detail port closed the last
-     * unconditional gaps), so the ONLY fallback left anywhere in the
-     * develop pipeline is the LUT runtime leg.
+     * unconditional gaps), and — since the temporal hybrid — every
+     * PRE-stage is covered too (the temporal merge feeds the sessions
+     * as the CFA through the bridge's own merge, so
+     * [FRAGMENT_UNCOVERED_PRE_STAGES] is empty as well): the ONLY
+     * fallback left anywhere in the develop pipeline is the LUT
+     * runtime leg.
      */
     val FRAGMENT_UNCOVERED_STAGES: Map<Int, String> = linkedMapOf()
 
     /**
      * The uncovered work that runs OUTSIDE developCpu's own stage list but
-     * still changes pixels before the encode: the temporal NR (applied by
-     * the JNI bridge to the CFA frames BEFORE developCpu). Same
-     * no-silent-skip rule: active -> CPU, with the token in the line.
+     * still changes pixels before the encode. Same no-silent-skip rule
+     * when non-empty: active -> CPU, with the token in the line.
      *
-     * The gyro warp LEFT this set with the gyro-warp port: the warp pass
-     * is pure float32 math (a composed 3x3 inverse-sampling map, a
-     * 4-tap bilinear — no texture-format leg anywhere), so it is covered
-     * by the fragment chain UNCONDITIONALLY, exactly like the pointwise
-     * stages rather than like the LUT's runtime leg. The token is gone
-     * from the runtime vocabulary entirely; the dispatch sites keep
-     * their own honest locks (the export's uncoveredTokens line, the
-     * preview's eligibility rule) until the seams thread the warp
-     * input, because until they do the RENDER path cannot honor the
-     * warp — the locks leave with the seams, not before them.
+     * THE SET IS NOW EMPTY — the temporal NR left it with the temporal
+     * hybrid: the CPU temporal merge (temporalMergedCfa, frozen in
+     * core/Temporal.cpp) now feeds the GPU develop sessions as THE CFA
+     * (the bridge's own merge, riding the SAME per-Entry caches the CPU
+     * path rides), so an active temporal grade no longer forces the CPU
+     * path — the develop pipeline has NO uncovered pre-stage left. The
+     * temporal token is gone from the runtime vocabulary entirely; the
+     * dispatch sites thread the grade's temporalNr/temporalStrength into
+     * the renders verbatim (the same seams commit a grew), so the hybrid
+     * is routing, not porting — the merge math stays the frozen CPU's.
+     * The set stays declared (not deleted) so the vocabulary's shape —
+     * pre-stage work outside the 24-stage list — keeps its home if a
+     * future pre-stage ever appears again.
      */
-    val FRAGMENT_UNCOVERED_PRE_STAGES: Set<String> = setOf(
-        "temporal-nr",    // grade.temporalNr && grade.temporalStrength > 0
-    )
+    val FRAGMENT_UNCOVERED_PRE_STAGES: Set<String> = emptySet()
 
     /**
      * The uncovered stages ACTIVE in one grade, as (stage, token) pairs —
@@ -378,15 +382,16 @@ object BackendRules {
     }
 
     /**
-     * The uncovered pre-develop work active in one grade (temporal NR).
-     * The gyro warp left with the gyro-warp port — the warp pass is
-     * unconditionally fragment-covered — so it contributes no token here.
-     * Pure.
+     * The uncovered pre-develop work active in one grade. ALWAYS EMPTY
+     * since the temporal hybrid: the temporal NR — the one pre-stage this
+     * ever named — now rides the GPU path through the bridge's own
+     * temporalMergedCfa (the CPU merge feeding the session's CFA
+     * directly), so no grade contributes a token here. The gyro warp
+     * left earlier (the gyro-warp port — unconditionally
+     * fragment-covered). Pure.
      */
     fun fragmentUncoveredPreStages(grade: GradeK): List<String> {
-        val active = mutableListOf<String>()
-        if (grade.temporalNr && grade.temporalStrength > 0f) active += "temporal-nr"
-        return active
+        return emptyList()
     }
 
     /**
@@ -424,6 +429,10 @@ object BackendRules {
      * texture-format leg), the seams thread the per-frame verdict into
      * the renders, and the warpActive=false case skips the draw entirely.
      * A gyro-stabilized grade rides GLES like any other covered grade.
+     * The temporal NR contributes NO rule here since the temporal
+     * hybrid: the bridge merges the CFA before the session ever sees
+     * it, so a temporal-active grade rides GLES like any other covered
+     * grade.
      */
     fun fragmentEffectiveBackend(
         requested: RenderBackend,
@@ -452,7 +461,10 @@ object BackendRules {
      *
      * The gyro warp contributes NO token since the gyro-warp port (see
      * [fragmentEffectiveBackend]): the pass is covered, so a stabilized
-     * grade's fallback line names only the real reasons.
+     * grade's fallback line names only the real reasons. The temporal
+     * NR contributes NO token since the temporal hybrid (see
+     * [fragmentUncoveredPreStages]): the merge rides the bridge, so a
+     * temporal-active grade's fallback line names only the real reasons.
      */
     fun fragmentFallbackLine(
         requested: RenderBackend,
