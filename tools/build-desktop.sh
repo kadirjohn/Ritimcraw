@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -126,6 +126,12 @@ echo "== building tests =="
 # bindings, evaluateManagedLut) on synthetic fixtures — no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_color.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_color"
+# bench_develop: M1 developCpu serial-vs-parallel measurement on the real
+# clip. The measured case is RAWEDIT_REALCLIP-gated (2 GB fixture, decode
+# is slow); without the gate the doctest prints a SKIP line. Runs from the
+# repo root so the default RAWEDIT_CLIP path resolves.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/bench_develop.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/bench_develop"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -168,6 +174,8 @@ echo "== running test_yuv =="
 "$BUILD/test_yuv"
 echo "== running test_color =="
 "$BUILD/test_color"
+echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
+(cd "$ROOT" && "$BUILD/bench_develop")
 
 echo
 echo "ALL TESTS DONE. Binaries in $BUILD:"

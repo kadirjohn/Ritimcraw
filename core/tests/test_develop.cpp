@@ -9,10 +9,12 @@
 #include "doctest.h"
 
 #include <rawedit/Develop.h>
+#include <rawedit/Parallel.h>
 #include <rawedit/Source.h>
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 using namespace rawedit;
@@ -1428,4 +1430,307 @@ TEST_CASE("frame_levels_reject_white_at_or_below_black") {
     // Container white 1023 with frame black 64 (equal here) still decodes
     // the patch correctly.
     CHECK(std::abs(r - 0.25f) < 1e-3f);
+}
+
+// ---- M1: row-parallel develop, serial-vs-parallel byte-exactness ----
+// The parallelized stages (demosaic, stage 1, stage 2, stages 9-14,
+// tonemap ACES/AgX) must produce output BIT-IDENTICAL to the serial
+// loop: parallelism changes only WHICH thread computes each output
+// element, never the math. These tests force the serial path with
+// setParallelForcedSerial and compare whole buffers with memcmp.
+
+namespace {
+
+// Whole-buffer byte equality (size + every float byte).
+bool byteEqual(const ImageF& a, const ImageF& b) {
+    return a.w == b.w && a.h == b.h && a.rgb.size() == b.rgb.size()
+        && std::memcmp(a.rgb.data(), b.rgb.data(),
+                       a.rgb.size() * sizeof(float)) == 0;
+}
+
+// developCpu with the pool forced to the serial path (restores the
+// toggle before returning so a CHECK failure cannot poison the next
+// case).
+ImageF developSerial(const uint16_t* cfa, const FrameInfo& info,
+                     const RawMeta& meta, const Grade& grade,
+                     const Lut* lut = nullptr,
+                     const CompiledLutBinding* binding = nullptr) {
+    const bool prev = setParallelForcedSerial(true);
+    ImageF img = developCpu(cfa, info, meta, grade, lut, binding);
+    setParallelForcedSerial(prev);
+    return img;
+}
+
+} // namespace
+
+TEST_CASE("parallel_stages_are_byte_identical_to_serial") {
+    // Every parallelized stage in isolation. The edge fixture feeds the
+    // demosaic real neighborhoods; the flat fixtures exercise stages 1/2
+    // and the tone stages on distinct values.
+    const bool prev = setParallelForcedSerial(false);
+
+    // demosaicBilinear alone, every CFA pattern, with a non-trivial CFA
+    // (the edge fixture's values, re-encoded as float CFA).
+    for (auto p : {CfaPattern::RGGB, CfaPattern::GRBG, CfaPattern::GBRG, CfaPattern::BGGR}) {
+        Synthetic s = syntheticEdgeFixture();
+        s.info.cfa = p;
+        auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+        // demosaicBilinear is exposed for tests (Develop.h): run it
+        // directly on the normalized CFA. Rebuild the float CFA the same
+        // way stage 1 does (the fixture has black 0 / white 1000).
+        std::vector<float> cfa(s.cfa.size());
+        for (size_t i = 0; i < s.cfa.size(); ++i)
+            cfa[i] = static_cast<float>(s.cfa[i]) / 1000.0f;
+        const bool prevD = setParallelForcedSerial(true);
+        ImageF dSer = demosaicBilinear(cfa, s.info.width, s.info.height, p);
+        setParallelForcedSerial(prevD);
+        ImageF dPar = demosaicBilinear(cfa, s.info.width, s.info.height, p);
+        CHECK(byteEqual(dSer, dPar));
+        // And the demosaic output must match developCpu's stage-5 input
+        // shape: same dims.
+        REQUIRE(dPar.w == img.w);
+        REQUIRE(dPar.h == img.h);
+    }
+
+    // tonemapFrame alone: ACES and every AgX look, on a graded (non-flat
+    // per-channel) image so the look slots see distinct channels.
+    Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f, 32, 32);
+    for (int mode = 0; mode <= 5; ++mode) {
+        ImageF a = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+        ImageF b = a;
+        const bool prevT = setParallelForcedSerial(true);
+        tonemapFrame(a, mode);
+        setParallelForcedSerial(prevT);
+        tonemapFrame(b, mode);
+        CHECK(byteEqual(a, b));
+    }
+
+    setParallelForcedSerial(prev);
+}
+
+TEST_CASE("develop_cpu_serial_vs_parallel_all_grade_permutations") {
+    // Full developCpu, serial vs parallel, over the grade permutations the
+    // existing suite covers: every CFA pattern, the golden-hash grades,
+    // lens shading on/off, highlight reconstruction on/off, every tone
+    // slider active, the wheel/split/saturation stages, sharpness/detail,
+    // and every tonemap mode. Reuses the suite's fixtures — no new ones.
+    const bool prev = setParallelForcedSerial(false);
+
+    // Helper: develop the same fixture serial and parallel, require byte
+    // equality.
+    const auto checkByteIdentical = [&](const Synthetic& s, const Grade& g,
+                                        const Lut* lut = nullptr,
+                                        const CompiledLutBinding* binding = nullptr) {
+        ImageF par = developCpu(s.cfa.data(), s.info, s.meta, g, lut, binding);
+        ImageF ser = developSerial(s.cfa.data(), s.info, s.meta, g, lut, binding);
+        INFO("grade permutation mismatch");
+        CHECK(byteEqual(ser, par));
+    };
+
+    // All four CFA patterns, default grade.
+    for (auto p : {CfaPattern::RGGB, CfaPattern::GRBG, CfaPattern::GBRG, CfaPattern::BGGR}) {
+        Synthetic s = syntheticFlat(p, 0.18f, 0.18f, 0.18f);
+        checkByteIdentical(s, Grade{});
+    }
+
+    // Golden fixture A: default grade, 0.18 flat.
+    {
+        Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.18f, 0.18f, 0.18f);
+        ImageF par = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+        ImageF ser = developSerial(s.cfa.data(), s.info, s.meta, Grade{});
+        CHECK(fnv1a(par) == 0x88593750a9564183ULL);
+        CHECK(byteEqual(ser, par));
+    }
+
+    // Golden fixture B: the four original controls active, manual WB.
+    {
+        Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f);
+        Grade g;
+        g.exposureEv = 0.7f;
+        g.highlights = -35.0f;
+        g.tempK = 7200.0f;
+        g.tint = 12.0f;
+        g.asShot = false;
+        ImageF par = developCpu(s.cfa.data(), s.info, s.meta, g);
+        ImageF ser = developSerial(s.cfa.data(), s.info, s.meta, g);
+        CHECK(fnv1a(par) == 0x38150540c239af83ULL);
+        CHECK(byteEqual(ser, par));
+    }
+
+    // Golden fixture C: exposure + heavy highlights recovery.
+    {
+        Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.95f, 0.95f, 0.95f);
+        Grade g;
+        g.exposureEv = 2.1f;
+        g.highlights = -55.0f;
+        ImageF par = developCpu(s.cfa.data(), s.info, s.meta, g);
+        ImageF ser = developSerial(s.cfa.data(), s.info, s.meta, g);
+        CHECK(fnv1a(par) == 0x1cea742e0c17bf03ULL);
+        CHECK(byteEqual(ser, par));
+    }
+
+    // Lens shading ON (stage 2 active) vs OFF (keepVignetting false):
+    // reuse the shading fixture's geometry inline.
+    {
+        Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.5f, 0.5f, 0.5f, 16, 16);
+        const uint32_t sw = 17, sh = 13;
+        s.meta.shadingW = sw;
+        s.meta.shadingH = sh;
+        s.meta.lensShading.assign(4 * sw * sh, 0.0f);
+        for (uint32_t y = 0; y < sh; ++y)
+            for (uint32_t x = 0; x < sw; ++x) {
+                const float u = sw > 1 ? float(x) / float(sw - 1) : 0.5f;
+                const float v = sh > 1 ? float(y) / float(sh - 1) : 0.5f;
+                const float dx = u - 0.5f, dy = v - 0.5f;
+                const float g = 1.0f / (1.0f - 0.4f * (dx * dx + dy * dy) / 0.5f);
+                for (int plane = 0; plane < 4; ++plane)
+                    s.meta.lensShading[plane * sw * sh + y * sw + x] = g;
+            }
+        checkByteIdentical(s, Grade{}); // keepVignetting true (default)
+
+        Grade off;
+        off.keepVignetting = false;
+        checkByteIdentical(s, off);
+    }
+
+    // Highlight reconstruction on (default) and off, on the clipped
+    // fixture (stage 3 is serial either way, but the surrounding parallel
+    // stages must not disturb it).
+    {
+        const uint32_t w = 8, h = 8;
+        Synthetic s;
+        s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
+        s.info.cfa = CfaPattern::RGGB;
+        s.info.activeArea = Rect{0, 0, int(w), int(h)};
+        s.meta.black[0] = s.meta.black[1] = s.meta.black[2] = s.meta.black[3] = 0;
+        s.meta.white = 1000;
+        s.meta.wbGains[0] = s.meta.wbGains[1] = s.meta.wbGains[2] = 1.0f;
+        s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
+        s.cfa.assign(size_t(w) * h, 0);
+        for (uint32_t y = 0; y < h; ++y)
+            for (uint32_t x = 0; x < w; ++x) {
+                const bool rSite = (y % 2 == 0) && (x % 2 == 0);
+                s.cfa[size_t(y) * w + x] = rSite ? 1000 : 600;
+            }
+        checkByteIdentical(s, Grade{});
+
+        Grade off;
+        off.highlightReconstruction = false;
+        checkByteIdentical(s, off);
+    }
+
+    // Every tone slider active at once (stages 9-14 all parallelized).
+    {
+        Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f, 32, 32);
+        Grade g;
+        g.blackPoint = -20.0f;
+        g.whitePoint = 15.0f;
+        g.shadows = 30.0f;
+        g.midtones = -25.0f;
+        g.contrast = 40.0f;
+        g.exposureEv = 0.7f;
+        g.asShot = false;
+        g.tempK = 7200.0f;
+        g.tint = 12.0f;
+        g.highlights = -35.0f;
+        checkByteIdentical(s, g);
+    }
+
+    // Wheel + split tone + saturation (stages 15-20, serial by design —
+    // but the frame around them must stay byte-exact).
+    {
+        Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.4f, 0.4f, 0.4f, 32, 32);
+        Grade g;
+        g.wheelShadowX = 1.0f;
+        g.wheelMidY = -0.5f;
+        g.wheelHighX = 0.5f;
+        g.splitShadowHue = 0.0f;
+        g.splitHighlightHue = 240.0f;
+        g.splitBalance = 50.0f;
+        g.saturation = 40.0f;
+        checkByteIdentical(s, g);
+    }
+
+    // Sharpness + detail (stages 21-22, serial spatial filters) with the
+    // edge fixture — the parallel stages around them must not disturb.
+    {
+        Synthetic s = syntheticEdgeFixture();
+        Grade g;
+        g.sharpness = 100.0f;
+        g.detail = 60.0f;
+        checkByteIdentical(s, g);
+    }
+
+    // Every tonemap mode (stage 23 parallelized; mode 0 exercises the
+    // tonemap-off passthrough).
+    for (int mode = 0; mode <= 5; ++mode) {
+        Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f, 32, 32);
+        Grade g;
+        g.tonemap = mode;
+        g.exposureEv = 0.7f;
+        checkByteIdentical(s, g);
+    }
+
+    // A LUT + binding through the full pipeline (stage 24 stays serial —
+    // Lut.cpp/Color.cpp are outside this mission's file boundary — but
+    // the parallel stages before it must stay byte-exact). Reuse the
+    // test_lut.cpp managed-binding shape: a 2-point identity-ish cube is
+    // not needed; a nullptr LUT is the common path, so cover the LUT path
+    // with the simplest honest fixture: nullptr LUT and binding (the
+    // suite's dominant case) is already covered above; here pass a LUT
+    // with strength 0 (exact passthrough) to prove the router's fast path
+    // is also byte-exact.
+    {
+        Synthetic s = syntheticFlat(CfaPattern::RGGB, 0.55f, 0.30f, 0.12f);
+        Lut lut;
+        lut.n = 2;
+        for (int k = 0; k < 2; ++k)
+            for (int j = 0; j < 2; ++j)
+                for (int i = 0; i < 2; ++i) {
+                    lut.rgb.push_back(i / 1.0f);
+                    lut.rgb.push_back(j / 1.0f);
+                    lut.rgb.push_back(k / 1.0f);
+                }
+        Grade g;
+        g.tonemap = 2;
+        g.lutStrength = 0.0f; // exact passthrough
+        checkByteIdentical(s, g, &lut, nullptr);
+    }
+
+    setParallelForcedSerial(prev);
+}
+
+TEST_CASE("parallel_pool_dispatch_covers_all_rows") {
+    // The pool itself: with the parallel path active, a job must cover
+    // every row exactly once (no gaps, no overlaps) — the byte-exactness
+    // tests prove value equality on real fixtures; this pins the
+    // partition arithmetic on synthetic ranges, including sizes that do
+    // not divide evenly.
+    const bool prev = setParallelForcedSerial(false);
+    for (size_t rows : {size_t(0), size_t(1), size_t(2), size_t(3), size_t(5),
+                        size_t(8), size_t(13), size_t(64), size_t(127)}) {
+        std::vector<int> seen(rows, 0);
+        parallelForRows(rows, [&](size_t b, size_t e) {
+            for (size_t i = b; i < e; ++i)
+                ++seen[i];
+        });
+        for (size_t i = 0; i < rows; ++i)
+            REQUIRE(seen[i] == 1);
+    }
+    // Forced serial: the whole range arrives as one chunk on the caller.
+    {
+        const bool prevF = setParallelForcedSerial(true);
+        int calls = 0;
+        size_t b0 = 0, e0 = 0;
+        parallelForRows(31, [&](size_t b, size_t e) {
+            ++calls;
+            b0 = b;
+            e0 = e;
+        });
+        setParallelForcedSerial(prevF);
+        CHECK(calls == 1);
+        CHECK(b0 == 0);
+        CHECK(e0 == 31);
+    }
+    setParallelForcedSerial(prev);
 }

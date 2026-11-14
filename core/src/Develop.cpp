@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <rawedit/Lut.h>
+#include <rawedit/Parallel.h>
 
 namespace rawedit {
 
@@ -425,10 +426,25 @@ inline float agxEncode(float v, float minEv, float maxEv) {
 }
 
 void tonemapFrameImpl(ImageF& img, int mode) {
+    // Row-parallel path only for a full frame (rgb.size() == w*h*3): this
+    // impl is shared with developEncoded (Transfer.cpp) and
+    // applyManagedLutStage (Color.cpp), which may pass other layouts.
+    // Contract: each row writes only its own rgb elements.
+    const bool rowParallel = img.rgb.size()
+        == static_cast<size_t>(img.w) * img.h * 3;
     if (mode == 1) {
         // ACES: per-channel fit on the linear working values.
-        for (auto& v : img.rgb)
-            v = acesFit(v);
+        // Parallel: per-output-row; reads only that row, writes only it.
+        if (rowParallel) {
+            const size_t rowElems = static_cast<size_t>(img.w) * 3;
+            parallelForRows(img.h, [&](size_t y0, size_t y1) {
+                for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+                    img.rgb[i] = acesFit(img.rgb[i]);
+            });
+        } else {
+            for (auto& v : img.rgb)
+                v = acesFit(v);
+        }
         return;
     }
     if (mode < 2 || mode > 5)
@@ -498,37 +514,49 @@ void tonemapFrameImpl(ImageF& img, int mode) {
     };
     static const float minEv = -12.47393f, maxEv = 4.026069f;
 
-    for (size_t i = 0; i < img.rgb.size(); i += 3) {
-        float v[3];
-        for (int c = 0; c < 3; ++c) {
-            const float r = img.rgb[i + 0], g = img.rgb[i + 1], b = img.rgb[i + 2];
-            v[c] = inset[c * 3 + 0] * r + inset[c * 3 + 1] * g + inset[c * 3 + 2] * b;
-            v[c] = agxEncode(v[c], minEv, maxEv);
+    // Parallel: per-output-row over 3-float pixels; each row reads and
+    // writes only its own pixels (inset/outset/looks are const tables).
+    const auto agxRows = [&](size_t iBegin, size_t iEnd) {
+        for (size_t i = iBegin; i < iEnd; i += 3) {
+            float v[3];
+            for (int c = 0; c < 3; ++c) {
+                const float r = img.rgb[i + 0], g = img.rgb[i + 1], b = img.rgb[i + 2];
+                v[c] = inset[c * 3 + 0] * r + inset[c * 3 + 1] * g + inset[c * 3 + 2] * b;
+                v[c] = agxEncode(v[c], minEv, maxEv);
+            }
+            if (look.punchyLegacyOrder) {
+                // Punchy exactly as the minimal fit shipped it (pre-2025.04.20
+                // iolite order): luma from the sigmoid output, then power, then
+                // sat around that luma. Bit-for-bit the old code path.
+                const float luma = look.lumaW[0] * v[0] + look.lumaW[1] * v[1]
+                                 + look.lumaW[2] * v[2];
+                for (int c = 0; c < 3; ++c)
+                    v[c] = luma + look.sat * (std::pow(v[c], look.power[c]) - luma);
+            } else {
+                // ASC CDL order (current iolite / OCIO CDLTransform): slope,
+                // power, THEN luma of the powered values, then sat.
+                for (int c = 0; c < 3; ++c)
+                    v[c] = std::pow(v[c] * look.slope[c], look.power[c]);
+                const float luma = look.lumaW[0] * v[0] + look.lumaW[1] * v[1]
+                                 + look.lumaW[2] * v[2];
+                for (int c = 0; c < 3; ++c)
+                    v[c] = luma + look.sat * (v[c] - luma);
+            }
+            // Outset, clamp to the display box, Rec.709 gamma 2.2.
+            for (int c = 0; c < 3; ++c) {
+                float o = outset[c * 3 + 0] * v[0] + outset[c * 3 + 1] * v[1] + outset[c * 3 + 2] * v[2];
+                o = std::min(std::max(o, 0.0f), 1.0f);
+                img.rgb[i + c] = std::pow(o, 2.2f);
+            }
         }
-        if (look.punchyLegacyOrder) {
-            // Punchy exactly as the minimal fit shipped it (pre-2025.04.20
-            // iolite order): luma from the sigmoid output, then power, then
-            // sat around that luma. Bit-for-bit the old code path.
-            const float luma = look.lumaW[0] * v[0] + look.lumaW[1] * v[1]
-                             + look.lumaW[2] * v[2];
-            for (int c = 0; c < 3; ++c)
-                v[c] = luma + look.sat * (std::pow(v[c], look.power[c]) - luma);
-        } else {
-            // ASC CDL order (current iolite / OCIO CDLTransform): slope,
-            // power, THEN luma of the powered values, then sat.
-            for (int c = 0; c < 3; ++c)
-                v[c] = std::pow(v[c] * look.slope[c], look.power[c]);
-            const float luma = look.lumaW[0] * v[0] + look.lumaW[1] * v[1]
-                             + look.lumaW[2] * v[2];
-            for (int c = 0; c < 3; ++c)
-                v[c] = luma + look.sat * (v[c] - luma);
-        }
-        // Outset, clamp to the display box, Rec.709 gamma 2.2.
-        for (int c = 0; c < 3; ++c) {
-            float o = outset[c * 3 + 0] * v[0] + outset[c * 3 + 1] * v[1] + outset[c * 3 + 2] * v[2];
-            o = std::min(std::max(o, 0.0f), 1.0f);
-            img.rgb[i + c] = std::pow(o, 2.2f);
-        }
+    };
+    if (rowParallel) {
+        const size_t rowElems = static_cast<size_t>(img.w) * 3;
+        parallelForRows(img.h, [&](size_t y0, size_t y1) {
+            agxRows(y0 * rowElems, y1 * rowElems);
+        });
+    } else {
+        agxRows(0, img.rgb.size());
     }
 }
 
@@ -644,30 +672,37 @@ ImageF demosaicBilinear(const std::vector<float>& cfa, uint32_t w, uint32_t h, C
     static const int kDx[8] = {-1, 1, 0, 0, -1, -1, 1, 1};
     static const int kDy[8] = {0, 0, -1, 1, -1, 1, -1, 1};
 
-    for (int y = 0; y <= maxJ; ++y) {
-        for (int x = 0; x <= maxI; ++x) {
-            const int ownSite = siteAt(x, y);
-            float* px = &img.rgb[(static_cast<size_t>(y) * w + x) * 3];
+    // Parallel: per-output-row. Reads: cfa rows y-1..y+1 (immutable input,
+    // edge-clamped). Writes: only this row's img.rgb pixels.
+    const auto demosaicRows = [&](int yBegin, int yEnd) {
+        for (int y = yBegin; y < yEnd; ++y) {
+            for (int x = 0; x <= maxI; ++x) {
+                const int ownSite = siteAt(x, y);
+                float* px = &img.rgb[(static_cast<size_t>(y) * w + x) * 3];
 
-            for (int t = 0; t < 3; ++t) {
-                if (t == ownSite) {
-                    px[t] = at(x, y);
-                    continue;
-                }
-                float sum = 0.0f;
-                int n = 0;
-                for (int k = 0; k < 8; ++k) {
-                    const int nx = std::min(std::max(x + kDx[k], 0), maxI);
-                    const int ny = std::min(std::max(y + kDy[k], 0), maxJ);
-                    if (siteAt(nx, ny) == t) {
-                        sum += at(nx, ny);
-                        ++n;
+                for (int t = 0; t < 3; ++t) {
+                    if (t == ownSite) {
+                        px[t] = at(x, y);
+                        continue;
                     }
+                    float sum = 0.0f;
+                    int n = 0;
+                    for (int k = 0; k < 8; ++k) {
+                        const int nx = std::min(std::max(x + kDx[k], 0), maxI);
+                        const int ny = std::min(std::max(y + kDy[k], 0), maxJ);
+                        if (siteAt(nx, ny) == t) {
+                            sum += at(nx, ny);
+                            ++n;
+                        }
+                    }
+                    px[t] = n > 0 ? sum / static_cast<float>(n) : at(x, y);
                 }
-                px[t] = n > 0 ? sum / static_cast<float>(n) : at(x, y);
             }
         }
-    }
+    };
+    parallelForRows(static_cast<size_t>(maxJ) + 1, [&](size_t y0, size_t y1) {
+        demosaicRows(static_cast<int>(y0), static_cast<int>(y1));
+    });
 
     return img;
 }
@@ -705,13 +740,17 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     float range[4];
     for (int slot = 0; slot < 4; ++slot)
         range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
-    for (uint32_t y = 0; y < h; ++y) {
-        for (uint32_t x = 0; x < w; ++x) {
-            const int slot = cellSlot(y & 1, x & 1);
-            float v = (static_cast<float>(cfa[y * static_cast<size_t>(w) + x]) - black[slot]) / range[slot];
-            norm[y * static_cast<size_t>(w) + x] = std::min(std::max(v, 0.0f), 1.0f);
+    // Parallel: per-output-row. Reads: cfa (immutable input), the hoisted
+    // black[4]/range[4]. Writes: only this row's norm[] elements.
+    parallelForRows(h, [&](size_t y0, size_t y1) {
+        for (uint32_t y = static_cast<uint32_t>(y0); y < y1; ++y) {
+            for (uint32_t x = 0; x < w; ++x) {
+                const int slot = cellSlot(y & 1, x & 1);
+                float v = (static_cast<float>(cfa[y * static_cast<size_t>(w) + x]) - black[slot]) / range[slot];
+                norm[y * static_cast<size_t>(w) + x] = std::min(std::max(v, 0.0f), 1.0f);
+            }
         }
-    }
+    });
 
     // Stage 2: lens shading gain (bilinear on the shading map in sensor
     // coordinates; identity when the map is empty). Skipped when the grade
@@ -720,14 +759,18 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     if (grade.keepVignetting && !meta.lensShading.empty() && meta.shadingW > 0 && meta.shadingH > 0) {
         const float du = w > 1 ? 1.0f / static_cast<float>(w - 1) : 0.0f;
         const float dv = h > 1 ? 1.0f / static_cast<float>(h - 1) : 0.0f;
-        for (uint32_t y = 0; y < h; ++y) {
-            for (uint32_t x = 0; x < w; ++x) {
-                const int slot = cellSlot(y & 1, x & 1);
-                const float gain = sampleShading(meta,
-                    static_cast<float>(x) * du, static_cast<float>(y) * dv, slot);
-                norm[y * static_cast<size_t>(w) + x] *= gain;
+        // Parallel: per-output-row. Reads: meta (immutable), this row's
+        // norm[] values. Writes: only this row's norm[] elements.
+        parallelForRows(h, [&](size_t y0, size_t y1) {
+            for (uint32_t y = static_cast<uint32_t>(y0); y < y1; ++y) {
+                for (uint32_t x = 0; x < w; ++x) {
+                    const int slot = cellSlot(y & 1, x & 1);
+                    const float gain = sampleShading(meta,
+                        static_cast<float>(x) * du, static_cast<float>(y) * dv, slot);
+                    norm[y * static_cast<size_t>(w) + x] *= gain;
+                }
             }
-        }
+        });
     }
 
     // Stage 3: highlight reconstruction — a channel clipped at white carries
@@ -886,8 +929,12 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // clamp is preserved.
     if (grade.blackPoint != 0.0f) {
         const float lift = -0.25f * (grade.blackPoint / 100.0f);
-        for (auto& v : img.rgb)
-            v = lift + (1.0f - lift) * v;
+        // Parallel: per-output-row; each row writes only its own elements.
+        parallelForRows(img.h, [&](size_t y0, size_t y1) {
+            const size_t rowElems = static_cast<size_t>(img.w) * 3;
+            for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+                img.rgb[i] = lift + (1.0f - lift) * img.rgb[i];
+        });
     }
 
     // Stage 10: white point (grade.whitePoint in [-100, 100], 0 = neutral).
@@ -902,8 +949,12 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         const float scale = grade.whitePoint > 0.0f
             ? 1.0f / (1.0f - 0.25f * (grade.whitePoint / 100.0f))
             : 1.0f + 0.25f * (grade.whitePoint / 100.0f);
-        for (auto& v : img.rgb)
-            v *= scale;
+        // Parallel: per-output-row; each row writes only its own elements.
+        parallelForRows(img.h, [&](size_t y0, size_t y1) {
+            const size_t rowElems = static_cast<size_t>(img.w) * 3;
+            for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+                img.rgb[i] *= scale;
+        });
     }
 
     // Stage 11: shadows (grade.shadows in [-100, 100], 0 = neutral).
@@ -915,14 +966,19 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // symmetric, never zero, no inversion.
     if (grade.shadows != 0.0f) {
         const float strength = grade.shadows / 100.0f;
-        for (size_t i = 0; i < img.rgb.size(); i += 3) {
-            const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
-            const float wDark = smoothstepf(0.18f, 0.0f, mx); // 1 at black
-            const float gain = std::pow(2.0f, strength * wDark);
-            img.rgb[i + 0] *= gain;
-            img.rgb[i + 1] *= gain;
-            img.rgb[i + 2] *= gain;
-        }
+        // Parallel: per-output-row over 3-float pixels; each row writes
+        // only its own pixels.
+        parallelForRows(img.h, [&](size_t y0, size_t y1) {
+            const size_t rowElems = static_cast<size_t>(img.w) * 3;
+            for (size_t i = y0 * rowElems; i < y1 * rowElems; i += 3) {
+                const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
+                const float wDark = smoothstepf(0.18f, 0.0f, mx); // 1 at black
+                const float gain = std::pow(2.0f, strength * wDark);
+                img.rgb[i + 0] *= gain;
+                img.rgb[i + 1] *= gain;
+                img.rgb[i + 2] *= gain;
+            }
+        });
     }
 
     // Stage 12: midtones (grade.midtones in [-100, 100], 0 = neutral).
@@ -933,15 +989,20 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // 2^(strength * weight). Positive brightens mids, negative darkens them.
     if (grade.midtones != 0.0f) {
         const float strength = grade.midtones / 100.0f;
-        for (size_t i = 0; i < img.rgb.size(); i += 3) {
-            const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
-            const float wMid = smoothstepf(0.0f, 0.18f, mx)
-                            * (1.0f - smoothstepf(0.18f, 0.72f, mx));
-            const float gain = std::pow(2.0f, strength * wMid);
-            img.rgb[i + 0] *= gain;
-            img.rgb[i + 1] *= gain;
-            img.rgb[i + 2] *= gain;
-        }
+        // Parallel: per-output-row over 3-float pixels; each row writes
+        // only its own pixels.
+        parallelForRows(img.h, [&](size_t y0, size_t y1) {
+            const size_t rowElems = static_cast<size_t>(img.w) * 3;
+            for (size_t i = y0 * rowElems; i < y1 * rowElems; i += 3) {
+                const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
+                const float wMid = smoothstepf(0.0f, 0.18f, mx)
+                                * (1.0f - smoothstepf(0.18f, 0.72f, mx));
+                const float gain = std::pow(2.0f, strength * wMid);
+                img.rgb[i + 0] *= gain;
+                img.rgb[i + 1] *= gain;
+                img.rgb[i + 2] *= gain;
+            }
+        });
     }
 
     // Stage 13: contrast (grade.contrast in [-100, 100], 0 = neutral).
@@ -955,15 +1016,23 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         const float c = grade.contrast / 100.0f;
         const float slope = 1.0f + c;
         const float pivot = 0.18f;
-        for (auto& v : img.rgb)
-            v = pivot + (v - pivot) * slope;
+        // Parallel: per-output-row; each row writes only its own elements.
+        parallelForRows(img.h, [&](size_t y0, size_t y1) {
+            const size_t rowElems = static_cast<size_t>(img.w) * 3;
+            for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+                img.rgb[i] = pivot + (img.rgb[i] - pivot) * slope;
+        });
     }
 
     // ---- Stage 14: exposure as 2^ev. ----
     if (grade.exposureEv != 0.0f) {
         const float scale = std::pow(2.0f, grade.exposureEv);
-        for (auto& v : img.rgb)
-            v *= scale;
+        // Parallel: per-output-row; each row writes only its own elements.
+        parallelForRows(img.h, [&](size_t y0, size_t y1) {
+            const size_t rowElems = static_cast<size_t>(img.w) * 3;
+            for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+                img.rgb[i] *= scale;
+        });
     }
 
     // ---- Stage 15: highlights (grade.highlights in [-100, 100]). ----
