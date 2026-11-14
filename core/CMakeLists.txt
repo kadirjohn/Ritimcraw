@@ -114,6 +114,12 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_color tests/test_color.cpp)
     target_include_directories(test_color PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_color PRIVATE rawedit)
+    # bench_develop: M1 developCpu serial-vs-parallel measurement on the
+    # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
+    # asserts byte-exactness, reports (never asserts) the speedup.
+    add_executable(bench_develop tests/bench_develop.cpp)
+    target_include_directories(bench_develop PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(bench_develop PRIVATE rawedit)
 
     add_executable(rawcli ../cli/main.cpp)
     target_link_libraries(rawcli PRIVATE rawedit)
@@ -128,4 +134,5 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME optical_sync COMMAND test_optical_sync)
     add_test(NAME yuv COMMAND test_yuv)
     add_test(NAME color COMMAND test_color)
+    add_test(NAME bench_develop COMMAND bench_develop)
 endif()
