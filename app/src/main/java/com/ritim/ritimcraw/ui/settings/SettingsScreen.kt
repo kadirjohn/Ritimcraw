@@ -25,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -63,6 +64,7 @@ import com.ritim.ritimcraw.ui.components.SettingRowBase
 import com.ritim.ritimcraw.ui.components.SettingRowExpandable
 import com.ritim.ritimcraw.ui.components.SettingRowNavigation
 import com.ritim.ritimcraw.ui.components.SettingRowSwitch
+import com.ritim.ritimcraw.ui.components.ThemeSlider
 
 /**
  * Settings screen (owner spec 2026-11-14, target_layout, rebuilt): the
@@ -84,8 +86,9 @@ import com.ritim.ritimcraw.ui.components.SettingRowSwitch
  * - "Advanced" card: the stats-readback switch row (debug only, gated
  *   exactly as before — release builds render neither the button nor
  *   the section),
- * - "Appearance" card: the Theme row (the segmented control stays until
- *   the theme-slider step replaces it with the compact pill),
+ * - "Appearance" card: the Theme row with the compact slider pill
+ *   (spec theme_slider): tap or drag horizontally, the preference
+ *   commits once on release — the segmented control is gone,
  * - the centered version footer (the old divider line is gone).
  *
  * The device report dialog (owner request 2026-11-13) is unchanged in
@@ -362,45 +365,52 @@ fun SettingsScreen(
         SettingsSectionLabel(text = stringResource(R.string.settings_section_appearance))
         SettingsGroupCard {
             SettingsGroupCardRow(divider = false) {
-                // The Theme row (owner request 2026-11-14): the segmented
-                // System/Light/Dark control stays in this step — the
-                // theme-slider step replaces it with the compact pill
-                // (spec theme_slider). The hint is the current choice's
-                // name; the row keeps the same hoisting as before.
-                Column(Modifier.fillMaxWidth()) {
-                    SettingRowBase(
-                        icon = Contrast,
-                        title = stringResource(R.string.settings_theme),
-                        hint = when (themeMode) {
-                            ThemeMode.SYSTEM -> stringResource(R.string.settings_theme_system)
-                            ThemeMode.LIGHT -> stringResource(R.string.settings_theme_light)
-                            ThemeMode.DARK -> stringResource(R.string.settings_theme_dark)
-                        },
+                // The Theme row (owner request 2026-11-14, spec
+                // theme_slider): the compact pill replaces the segmented
+                // System/Light/Dark control. The row hint names the slot
+                // under the thumb LIVE (during a drag the hint follows
+                // the finger; the preference itself is written only on
+                // release, so the app never flickers mid-drag).
+                // The slider's visual order is 0 = Light, 1 = System,
+                // 2 = Dark — the spec's VISUAL order only; the stored
+                // enum and its values are untouched, the mapping lives
+                // here at the call site.
+                val themeSlots = listOf(
+                    ThemeMode.LIGHT,
+                    ThemeMode.SYSTEM,
+                    ThemeMode.DARK,
+                )
+                val slotNames = mapOf(
+                    ThemeMode.LIGHT to stringResource(R.string.settings_theme_light),
+                    ThemeMode.SYSTEM to stringResource(R.string.settings_theme_system),
+                    ThemeMode.DARK to stringResource(R.string.settings_theme_dark),
+                )
+                var displaySlot by remember(themeMode) {
+                    mutableIntStateOf(themeSlots.indexOf(themeMode).coerceAtLeast(0))
+                }
+                SettingRowBase(
+                    icon = Contrast,
+                    title = stringResource(R.string.settings_theme),
+                    hint = slotNames[themeSlots[displaySlot.coerceIn(0, 2)]],
+                    // Spec row: end padding 12dp (not the base 16dp) so
+                    // the 168dp pill fits the card at readable widths.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(end = (-4).dp),
+                ) {
+                    ThemeSlider(
+                        selectedIndex = themeSlots.indexOf(themeMode).coerceAtLeast(0),
+                        onCommit = { slot -> onThemeModeChange(themeSlots[slot]) },
+                        onDisplayIndexChange = { slot -> displaySlot = slot },
+                        sliderLabel = stringResource(R.string.settings_theme_slider),
+                        previousLabel = stringResource(R.string.settings_theme_previous),
+                        nextLabel = stringResource(R.string.settings_theme_next),
+                        stateLabels = listOf(
+                            stringResource(R.string.settings_theme_light),
+                            stringResource(R.string.settings_theme_system),
+                            stringResource(R.string.settings_theme_dark),
+                        ),
                     )
-                    Box(
-                        Modifier.padding(
-                            start = 16.dp,
-                            top = 14.dp,
-                            end = 16.dp,
-                        )
-                    ) {
-                        val themeOptions = listOf(
-                            ThemeMode.SYSTEM,
-                            ThemeMode.LIGHT,
-                            ThemeMode.DARK,
-                        )
-                        AppSegmentedControl(
-                            options = listOf(
-                                stringResource(R.string.settings_theme_system),
-                                stringResource(R.string.settings_theme_light),
-                                stringResource(R.string.settings_theme_dark),
-                            ),
-                            selectedIndex = themeOptions.indexOf(themeMode),
-                            onSelect = { index ->
-                                onThemeModeChange(themeOptions[index])
-                            },
-                        )
-                    }
                 }
             }
         }
