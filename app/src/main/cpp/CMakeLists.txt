@@ -34,9 +34,16 @@ target_sources(rawedit_jni PRIVATE gles/GlesPipeline.cpp)
 # immutable storage, per-frame glTexSubImage2D uploads) beside the
 # one-shot parity harness. Same Android-only rule as GlesPipeline.cpp.
 target_sources(rawedit_jni PRIVATE gles/GlesDevelopSession.cpp)
+# gles/GlesPreviewSession.cpp is M4 commit (a): the production preview
+# session (the M3 develop session's pattern + a window-capable EGL config
+# and the surface job, serving the SurfaceView preview). Same Android-only
+# rule as GlesPipeline.cpp.
+target_sources(rawedit_jni PRIVATE gles/GlesPreviewSession.cpp)
 # log is the Android log library: the bridge's debug-gated "ritim-stab"
 # stabilization measurement line (__android_log_print, audit fix
 # 2026-11-12) needs it. Release builds never call it (the flag stays
 # false), but the symbol must resolve in both build types. EGL + GLESv3
 # carry the deliverable-C probes (EglSession + the compute dispatch).
-target_link_libraries(rawedit_jni PRIVATE rawedit log EGL GLESv3)
+# android carries ANativeWindow_fromSurface (M4 commit a: the preview
+# session's window surface).
+target_link_libraries(rawedit_jni PRIVATE rawedit log android EGL GLESv3)

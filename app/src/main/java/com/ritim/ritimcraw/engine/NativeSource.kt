@@ -834,6 +834,58 @@ class NativeSource private constructor(
 
         @JvmStatic private external fun nativeDevelopSessionClose(sessionHandle: Long)
 
+        /**
+         * M4 commit (a): the GPU preview session's four entry points —
+         * the SAME production session pattern M3 built for export, wired
+         * into PREVIEW. Open compiles the five shader texts (the four M3
+         * sources plus the window pass's WINDOW_FRAGMENT) and returns a
+         * session handle (0 = failure; previewLastError names the step).
+         * SetSurface attaches ([surface] non-null) or detaches (null) the
+         * SurfaceView's window on the session's GL thread; the surface is
+         * typed Any? on purpose — the JVM unit tests reflect over
+         * Companion's declared methods, and an android.view.Surface
+         * parameter type would fail class resolution on the JVM
+         * (NoClassDefFoundError); the UI layer passes the SurfaceView's
+         * Surface as Any?, null = destroyed. RenderFrame decodes +
+         * decimates the frame on the CALLING thread (Thumbnail.h's
+         * cell-aligned math, so the 2x2 Bayer pattern survives the
+         * reduction) and renders it through the session's GL thread —
+         * develop -> the window present (best-effort) -> the small
+         * published stats pack (~256 long edge, upright, the SAME
+         * [w, h, pixels...] int-array shape the CPU preview publishes,
+         * so the Compose overlays consume either path unchanged). NO
+         * full-frame readback exists on this path (the audit's explicit
+         * rule; glReadPixels is used nowhere). The render takes ONLY the
+         * four fragment-covered grade controls. Close is idempotent.
+         * Device-test-pending (the owner's morning playback run is the
+         * production proof).
+         */
+        @JvmStatic private external fun nativePreviewSessionOpen(
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+            windowFragmentSource: String,
+        ): Long
+
+        @JvmStatic private external fun nativePreviewSessionSetSurface(
+            sessionHandle: Long,
+            surface: Any?,
+        ): Boolean
+
+        @JvmStatic private external fun nativePreviewSessionRenderFrame(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            maxDim: Int,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): IntArray?
+
+        @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
+
         // ---- Cross-module wrappers (external decls stay private; see the
         // mangling note at the top of the JNI section) ----
 
@@ -1329,6 +1381,70 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             nativeDevelopSessionClose(sessionHandle)
+        }
+
+        /**
+         * JNI bridge: the GPU preview session (M4 commit a). All four
+         * throw IllegalStateException when the .so is absent. Open returns 0
+         * on failure (previewLastError names the step; the CPU preview path
+         * stays the default). SetSurface takes the SurfaceView's Surface as
+         * Any? (the JVM-loadability rule — see the decl's KDoc) and returns
+         * false on failure; the ANativeWindow reference transfers to the
+         * session at call entry, so the caller never releases it.
+         * RenderFrame returns the published stats pack ([w, h, pixels...],
+         * the same shape the CPU preview publishes) or null on failure (the
+         * session latches unhealthy with the same detail — the Kotlin gate
+         * falls the preview back to CPU). The session handle is NOT a clip
+         * handle: it addresses the preview session registry.
+         */
+        internal fun jniPreviewSessionOpen(
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+            windowFragmentSource: String,
+        ): Long {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativePreviewSessionOpen(
+                vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+                windowFragmentSource)
+        }
+
+        internal fun jniPreviewSessionSetSurface(
+            sessionHandle: Long,
+            surface: Any?,
+        ): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativePreviewSessionSetSurface(sessionHandle, surface)
+        }
+
+        internal fun jniPreviewSessionRenderFrame(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            maxDim: Int,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): IntArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativePreviewSessionRenderFrame(
+                sessionHandle, clipHandle, frameIndex, maxDim, exposureEv,
+                highlightReconstruction, keepVignetting, tonemap)
+        }
+
+        internal fun jniPreviewSessionClose(sessionHandle: Long) {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            nativePreviewSessionClose(sessionHandle)
         }
 
         /** Last-error detail from the engine thread (thread-local in the bridge). */

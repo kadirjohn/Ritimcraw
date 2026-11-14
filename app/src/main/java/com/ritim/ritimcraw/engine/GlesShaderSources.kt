@@ -740,4 +740,100 @@ void main() {
     oCol = vec4(texelFetch(uSrc, src, 0).rgb, 1.0);
 }
 """
+
+    /**
+     * Window fragment pass (M4, the SurfaceView GPU preview deliverable) —
+     * the pass the GPU preview session (GlesPreviewSession.cpp) draws BOTH
+     * the editor's SurfaceView window and its downsampled stats target
+     * with: the developed preview texture, aspect-fit letterboxed into the
+     * destination rect, the frame orientation folded in-shader.
+     *
+     * Program: FULLSCREEN_VERTEX + WINDOW_FRAGMENT (both #version 300
+     * es). One glDrawArrays(GL_TRIANGLE_STRIP, 0, 4) per target; the
+     * fullscreen strip covers the whole surface, so the pass paints the
+     * letterbox bars itself (pixels outside uRect write black — no clear
+     * is needed to get the bars).
+     *
+     * WHY NOT BLIT_FRAGMENT: the blit is a texelFetch 1:1 with an exact
+     * Y flip — integer coordinates cannot letterbox-scale (an upscale
+     * reads outside the source, a downscale crops it). This pass samples
+     * NORMALIZED (texture() + CLAMP_TO_EDGE + LINEAR on filterable
+     * formats), maps each destination pixel through uRect, and clamps
+     * to the source's half-texel span so an upscale never blends past
+     * the edge texels.
+     *
+     * THE ORIENTATION FOLD: uOrientation carries FrameInfo.orientationDeg
+     * normalized to 0/90/180/270 — the same fold developToArgb applies
+     * per-pixel on the CPU preview path, reproduced in normalized space
+     * and verified against its per-case source index. The source texture
+     * is top-row-first (texture row 0 = the image's top, the CPU
+     * pipeline's packed order) while gl_FragCoord counts rows bottom-up,
+     * so the default arm carries the Y flip; both the window surface's
+     * compositor and the stats readback pack consume the result
+     * top-first.
+     *
+     * HALF-TEXEL CLAMP: uSrcSize exists for the clamp (an unused uniform
+     * would be optimized out and the session's all-uniforms lookup would
+     * fail loudly) — normalized st never crosses the source's edge
+     * texel centers.
+     *
+     * Input: uSrc — the session's RGBA32F develop texture (top-row-first)
+     * for BOTH the window and stats draws, sampled NEAREST, or LINEAR
+     * when the device advertises OES_texture_float_linear (the session
+     * gates the extension at open and sets the develop texture's MIN/MAG
+     * filter at allocation; without the extension, 32F is only
+     * NEAREST-filterable). There is deliberately NO intermediate present
+     * texture: a second chained window pass would double-flip — one fold
+     * maps a top-row-first source to a bottom-up destination, and
+     * composing two folds yields an upside-down image (the fold family
+     * has no identity arm). Output: the window surface (RGBA8888) or the
+     * stats FBO (RGBA8). No readback of any kind — this pass only lands
+     * pixels.
+     */
+    const val WINDOW_FRAGMENT: String = """#version 300 es
+
+// Window pass: the developed preview texture -> the SurfaceView window
+// (aspect-fit letterbox) or the downsampled stats target. See the
+// Kotlin doc above.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;  // the developed frame, top-row-first
+uniform ivec2 uSrcSize;        // source width/height in pixels
+uniform vec4 uRect;            // destination rect: origin + size in pixels
+uniform int uOrientation;      // 0/90/180/270, degrees CW to upright
+
+out vec4 oCol;
+
+void main() {
+    // Destination pixel -> rect-local [0,1]. Pixels outside the rect are
+    // the letterbox bars: black, not a smeared edge sample.
+    vec2 uv = (gl_FragCoord.xy - uRect.xy) / uRect.zw;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        oCol = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    // Orientation fold into source-normalized st (developToArgb's
+    // per-case rotation fold, verified against its source index). The
+    // source is top-row-first; the destination counts rows bottom-up, so
+    // the default arm carries the Y flip.
+    vec2 st;
+    if (uOrientation == 90) {
+        st = vec2(1.0 - uv.y, 1.0 - uv.x);
+    } else if (uOrientation == 180) {
+        st = vec2(1.0 - uv.x, uv.y);
+    } else if (uOrientation == 270) {
+        st = vec2(uv.y, uv.x);
+    } else {
+        st = vec2(uv.x, 1.0 - uv.y);
+    }
+    // Half-texel clamp: normalized sampling never crosses the source's
+    // edge texel centers (bilinear would blend against the clamp border
+    // otherwise). This line is why uSrcSize exists.
+    vec2 texelHalf = vec2(0.5) / vec2(uSrcSize);
+    st = clamp(st, texelHalf, vec2(1.0) - texelHalf);
+    oCol = vec4(texture(uSrc, st).rgb, 1.0);
+}
+"""
 }
