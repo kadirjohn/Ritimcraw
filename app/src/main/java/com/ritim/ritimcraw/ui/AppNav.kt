@@ -74,6 +74,7 @@ import com.ritim.ritimcraw.data.metadata.MetadataExtractor
 import com.ritim.ritimcraw.data.metadata.MetadataStore
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.data.ThumbnailStore
 import com.ritim.ritimcraw.engine.ClipThumbnails
@@ -145,9 +146,20 @@ private const val EXPORT_FILE_PROVIDER_AUTHORITY = "com.ritim.ritimcraw.fileprov
  * App shell wiring: owns the stores (files/project.json), the source list,
  * and the current destination. Import is a placeholder action in this build —
  * the SAF picker lands with the device pass (sprint plan Task 4).
+ *
+ * Theme pass-through (owner request 2026-11-14): the light/dark choice
+ * lives in MainActivity (the theme construction site — RitimTheme wraps
+ * this composable, so the state must hoist ABOVE it). This composable
+ * only forwards the pair to SettingsScreen; it persists through
+ * MainActivity's own ThemeStore instance (the companion lock makes the
+ * two instances over one file safe). Defaults keep every other caller
+ * (previews, tests) working unchanged.
  */
 @Composable
-fun AppNav() {
+fun AppNav(
+    themeMode: ThemeMode = ThemeMode.DEFAULT,
+    onThemeModeChange: (ThemeMode) -> Unit = {},
+) {
     val context = LocalContext.current
     val stores = remember {
         val project = File(context.filesDir, "project.json")
@@ -1719,6 +1731,14 @@ fun AppNav() {
                                 stores.previewStats.change(enabled)
                                 previewStats = enabled
                             },
+                            // ---- Theme (owner request 2026-11-14) ----
+                            // Pure pass-through: MainActivity owns the
+                            // store + the state (the theme wraps this
+                            // composable); the row's callback persists and
+                            // updates that state, and the recomposition
+                            // re-tints the whole app.
+                            themeMode = themeMode,
+                            onThemeModeChange = onThemeModeChange,
                         )
                     }
                 }

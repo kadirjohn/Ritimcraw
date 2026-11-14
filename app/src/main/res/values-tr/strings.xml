@@ -400,6 +400,13 @@
     <string name="settings_preview_quality_balanced">Dengeli</string>
     <string name="settings_preview_quality_high">Yüksek</string>
     <string name="settings_preview_quality_dims">%1$d / %2$d px</string>
+
+    <!-- Theme (owner request 2026-11-14: follow the system + manual override) -->
+    <string name="settings_theme">Tema</string>
+    <string name="settings_theme_body">Sistem temasını izleyin ya da uygulamayı açık veya koyu sabitleyin. Editör ekranları her iki durumda da sabit nötr görünümünü korur.</string>
+    <string name="settings_theme_system">Sistem</string>
+    <string name="settings_theme_light">Açık</string>
+    <string name="settings_theme_dark">Koyu</string>
     <string name="settings_gyro_folder">Jiro kayıt klasörü</string>
     <string name="settings_gyro_folder_body">MotionCam .gcsv jiro kayıtlarınızın bulunduğu klasörü seçin. Bir kayıtla aynı adlı yeni içe aktarımlar kaydı otomatik olarak ekler.</string>
     <string name="settings_gyro_folder_none">Ayarlanmadı — .gcsv jiro kayıtlarınızın bulunduğu klasörü seçmek için dokunun</string>

@@ -38,6 +38,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.CodecReport
 import com.ritim.ritimcraw.engine.PreviewMetrics
@@ -127,6 +128,15 @@ fun SettingsScreen(
     // Defaults keep every existing caller and preview working.
     previewStats: Boolean = true,
     onPreviewStatsChange: (Boolean) -> Unit = {},
+    // ---- Theme (owner request 2026-11-14) ----
+    // The persisted light/dark choice (MainActivity reads ThemeStore —
+    // the theme construction site owns the state because RitimTheme
+    // wraps the whole app there) and the change callback (MainActivity
+    // persists + updates its state, so the recomposition re-tints the
+    // whole app immediately). Defaults keep every existing caller and
+    // preview working.
+    themeMode: ThemeMode = ThemeMode.DEFAULT,
+    onThemeModeChange: (ThemeMode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // The device report dialog (owner request 2026-11-13): the codec list
@@ -329,6 +339,45 @@ fun SettingsScreen(
                         onValueChange = onPreviewStatsChange,
                     ),
                 )
+            }
+            // Theme row (owner request 2026-11-14: "sistem teması neyse
+            // ona göre uyumlu olsun" — the app follows the system theme,
+            // and this row adds the manual override): System / Light /
+            // Dark, the same segmented pattern as preview quality and the
+            // render backend (one label per button, E3). System is the
+            // default and is exactly the pre-setting behavior — the
+            // supporting text says so honestly. The editor screens are
+            // deliberately NOT part of this choice: they stay in their
+            // fixed neutral scheme whatever the browse theme is (the
+            // editor world's color-judgment contract).
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_theme)) },
+                supportingContent = {
+                    Text(stringResource(R.string.settings_theme_body))
+                },
+            )
+            val themeOptions = listOf(
+                R.string.settings_theme_system to ThemeMode.SYSTEM,
+                R.string.settings_theme_light to ThemeMode.LIGHT,
+                R.string.settings_theme_dark to ThemeMode.DARK,
+            )
+            SingleChoiceSegmentedButtonRow(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+            ) {
+                themeOptions.forEachIndexed { index, (labelRes, mode) ->
+                    SegmentedButton(
+                        selected = themeMode == mode,
+                        onClick = { onThemeModeChange(mode) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = themeOptions.size,
+                        ),
+                    ) {
+                        Text(stringResource(labelRes))
+                    }
+                }
             }
             // The codec list's new home (see the screen KDoc): the dialog
             // below. The old weight(1f) spacer pinned the version footer to
