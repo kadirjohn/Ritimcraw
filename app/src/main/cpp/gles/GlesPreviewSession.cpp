@@ -34,6 +34,7 @@
 #include "GlesPreviewSession.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
@@ -301,6 +302,14 @@ inline uint8_t toByte(float rec709) {
 // hundred KB while giving the scopes a stable grid; the WINDOW present
 // is the full preview-tier frame and never crosses this constant.
 constexpr uint32_t kStatsLongEdge = 256;
+
+// Microseconds between two steady_clock points — the span arithmetic for
+// the result's four timing fields (the jni_bridge.cpp elapsedMs precedent,
+// at microsecond resolution because the per-frame spans are ms-scale).
+inline double elapsedUs(const std::chrono::steady_clock::time_point& a,
+                        const std::chrono::steady_clock::time_point& b) {
+    return std::chrono::duration<double, std::micro>(b - a).count();
+}
 
 } // namespace
 
@@ -962,12 +971,16 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     }
 
     // --- per-frame upload: the reduced CFA, into the immutable storage -----
+    using SteadyClock = std::chrono::steady_clock;
+    const SteadyClock::time_point tUpload0 = SteadyClock::now();
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, cfaTex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                     static_cast<GLsizei>(w), static_cast<GLsizei>(h),
                     GL_RED_INTEGER, GL_UNSIGNED_SHORT, req.cfa->data());
     if (glErrorAfter("glTexSubImage2D(R16UI)", &out.detail) != GL_NO_ERROR) return;
+    const SteadyClock::time_point tUpload1 = SteadyClock::now();
+    out.uploadUs = elapsedUs(tUpload0, tUpload1);
 
     // --- draw 1: the develop pass (M3's verbatim fused stages + OETF tail) -
     glUseProgram(developProgram);
@@ -1012,18 +1025,28 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     glUniform1f(saturationLoc, req.saturation);
     glUniform1i(tonemapLoc, req.tonemap);
     glUniform1i(oetfLoc, 1);  // the preview shape: linearToRec709 in-shader
+    const SteadyClock::time_point tDevelop0 = SteadyClock::now();
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(develop)", &out.detail) != GL_NO_ERROR) return;
+    const SteadyClock::time_point tDevelop1 = SteadyClock::now();
+    out.developUs = elapsedUs(tDevelop0, tDevelop1);
+    // The develop pass's actual output dims — the trace's develop= truth
+    // (the published pack's dims hide them at the ~256 tier).
+    out.developW = w;
+    out.developH = h;
 
     // --- draw 2: the WINDOW present (only when a window surface is current);
     // --- BEST-EFFORT — never fails the frame, never latches (the stats pack
     // --- below is the render's contract; a dead/dying surface is the UI's
     // --- lifecycle signal, not a pipeline error) ---------------------------
+    const SteadyClock::time_point tPresent0 = SteadyClock::now();
     if (windowSurface != EGL_NO_SURFACE) {
         EGLint winW = 0, winH = 0;
         if (eglQuerySurface(display, windowSurface, EGL_WIDTH, &winW) &&
             eglQuerySurface(display, windowSurface, EGL_HEIGHT, &winH) &&
             winW > 0 && winH > 0) {
+            out.surfaceW = static_cast<uint32_t>(winW);
+            out.surfaceH = static_cast<uint32_t>(winH);
             // Upright dims (90/270 swap), aspect-fit letterbox rect.
             const uint32_t uprightW = (orient == 90 || orient == 270) ? h : w;
             const uint32_t uprightH = (orient == 90 || orient == 270) ? w : h;
@@ -1056,9 +1079,23 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             out.detail = "window present: eglQuerySurface";
         }
     }
+    const SteadyClock::time_point tPresent1 = SteadyClock::now();
+    out.presentUs = elapsedUs(tPresent0, tPresent1);
 
     // --- draw 3: the stats pack — ALWAYS (the published frame the Compose
     // --- overlays consume). ~256 long edge, upright via the same fold. ------
+    // --- THE MEASUREMENT TOGGLE (trace-dims fix 2026-11-14): statsEnabled
+    // --- false skips draw 3 + the readback ENTIRELY — the honest 1x1 empty
+    // --- fallback publishes instead (the zebra/scopes consumers degrade for
+    // --- the run; the trace line reads stats=off), and the stats span stays
+    // --- 0. The dims stay valid so the publish fold's crop math survives.
+    if (!req.statsEnabled) {
+        out.argb8888.assign(1, 0xFF000000u);
+        out.width = 1;
+        out.height = 1;
+        out.ok = true;
+        return;
+    }
     const uint32_t uprightW = (orient == 90 || orient == 270) ? h : w;
     const uint32_t uprightH = (orient == 90 || orient == 270) ? w : h;
     const uint32_t longEdge = uprightW > uprightH ? uprightW : uprightH;
@@ -1075,6 +1112,11 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             : 1;
     }
 
+    // The stats span covers the WHOLE draw-3 stage: the once-per-dims
+    // allocation branch (a tier change pays it on its first frame — the
+    // honest cost for that frame), the window pass into the stats FBO, the
+    // store pass, and the mapped-SSBO readback wait.
+    const SteadyClock::time_point tStats0 = SteadyClock::now();
     if (statsAllocW != statsW || statsAllocH != statsH) {
         if (statsTex != 0) { glDeleteTextures(1, &statsTex); statsTex = 0; }
         if (statsScratchTex != 0) { glDeleteTextures(1, &statsScratchTex); statsScratchTex = 0; }
@@ -1208,6 +1250,8 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
         }
     }
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    const SteadyClock::time_point tStats1 = SteadyClock::now();
+    out.statsUs = elapsedUs(tStats0, tStats1);
     out.width = statsW;
     out.height = statsH;
     out.ok = true;

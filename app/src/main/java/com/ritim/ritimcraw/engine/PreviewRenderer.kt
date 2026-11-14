@@ -10,11 +10,37 @@ import kotlin.coroutines.suspendCoroutine
 /**
  * One rendered preview frame: dimensions plus packed 8-bit ARGB pixels
  * (0xAARRGGBB, row-major), ready for Bitmap.setPixels.
+ *
+ * The GPU-path measurement fields (trace-dims fix 2026-11-14) carry what
+ * the ritim-trace line logs for a GPU window render — the dims the
+ * published pack hides (source sensor dims, actual develop dims, window
+ * surface dims) and the six per-stage timings in milliseconds — parsed by
+ * renderArrayBlocking from the array tail the JNI entry appends. They
+ * DEFAULT to the neutral values everywhere except that parser: the CPU
+ * path constructs the 3-arg form and never populates them (its trace line
+ * stays byte-identical), and every existing construction site keeps
+ * compiling unchanged. The custom equals/hashCode deliberately IGNORE
+ * them (dims+pixels identity, the publish-fold contract — two frames with
+ * equal pixels but different timings are the SAME published frame).
  */
 data class PreviewFrame(
     val width: Int,
     val height: Int,
     val argb: IntArray,
+    // The measurement tail (GPU path only; 0/true/0.0 defaults elsewhere).
+    val sourceW: Int = 0,
+    val sourceH: Int = 0,
+    val developW: Int = 0,
+    val developH: Int = 0,
+    val surfaceW: Int = 0,
+    val surfaceH: Int = 0,
+    val statsEnabled: Boolean = true,
+    val decMs: Double = 0.0,
+    val cfaMs: Double = 0.0,
+    val upMs: Double = 0.0,
+    val devMs: Double = 0.0,
+    val presentMs: Double = 0.0,
+    val statsMs: Double = 0.0,
 ) {
     override fun equals(other: Any?): Boolean =
         other is PreviewFrame && other.width == width && other.height == height &&

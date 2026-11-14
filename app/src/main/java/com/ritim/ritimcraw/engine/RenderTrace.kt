@@ -46,6 +46,15 @@ import com.ritim.ritimcraw.data.GradeK
  *   tier gate actually decided — the M0 SOURCE fix lands here), stab is
  *   on only when the grade asked AND a gyro log was attached. A neutral
  *   grade prints grade=neutral — the A/B baseline leg.
+ * - GPU window frames (backend=gles ONLY — the CPU line is
+ *   byte-identical to the pre-fix shape) append the measurement block
+ *   after grade= (trace-dims fix 2026-11-14): source=<sensor WxH>
+ *   develop=<actual developed WxH> surface=<window presented WxH>
+ *   stats=<pack WxH|off> then dec/cfa/up/dev/present/stats=<ms, one
+ *   decimal>. out= on those frames is the published STATS pack's dims
+ *   (~256 long edge), NOT the render resolution — the block is where the
+ *   real dims and per-stage timings live, the numbers the choppy-12MP
+ *   diagnosis needs.
  *
  * Pure formatting lives in [line] (JVM-testable, the MetricsSummary
  * precedent); the screen calls [log] at the render completion point.
@@ -84,6 +93,33 @@ object RenderTrace {
          * render (and every pre-M4 call site) keeps backend=cpu.
          */
         val servedByGpu: Boolean = false,
+        // ---- the GPU-path measurement fields (trace-dims fix 2026-11-14) --
+        // out= is NOT the render resolution when the GPU window path served
+        // the frame: the published pack IS the stats pack (~256 long edge),
+        // and out= logs ITS dims. These fields carry the dims the pack
+        // hides plus the per-stage timings, so the line can print the
+        // truth the owner's "12MP preview is choppy" diagnosis needs. They
+        // DEFAULT neutral everywhere except the GPU window path's Record
+        // construction; the CPU line stays byte-identical (line() appends
+        // the GPU block only when servedByGpu).
+        /** The clip's SENSOR dims (FrameInfo before any reduction). */
+        val sourceW: Int = 0,
+        val sourceH: Int = 0,
+        /** The actual developed dims (the GPU develop texture). */
+        val developW: Int = 0,
+        val developH: Int = 0,
+        /** The window surface's presented dims (0x0 = no surface/query failed). */
+        val surfaceW: Int = 0,
+        val surfaceH: Int = 0,
+        /** The stats-readback toggle's state for THIS render (default on). */
+        val statsEnabled: Boolean = true,
+        /** The six per-stage spans, milliseconds. */
+        val decMs: Double = 0.0,
+        val cfaMs: Double = 0.0,
+        val upMs: Double = 0.0,
+        val devMs: Double = 0.0,
+        val presentMs: Double = 0.0,
+        val statsMs: Double = 0.0,
     )
 
     /**
@@ -117,7 +153,46 @@ object RenderTrace {
         append(record.renderMs)
         append(" grade=")
         append(gradeSummary(record))
+        // The GPU-path block (trace-dims fix 2026-11-14): appended ONLY
+        // when the GPU window path served the frame — the CPU line stays
+        // byte-identical, so every existing grep and baseline leg keeps
+        // working. out= above is the published stats pack's dims; these
+        // fields are the render's truth: the sensor dims, the actual
+        // develop dims, the window surface dims, the stats toggle's
+        // state, and the six per-stage spans (one decimal, ms).
+        if (record.servedByGpu) {
+            append(" source=")
+            append(record.sourceW)
+            append("x")
+            append(record.sourceH)
+            append(" develop=")
+            append(record.developW)
+            append("x")
+            append(record.developH)
+            append(" surface=")
+            append(record.surfaceW)
+            append("x")
+            append(record.surfaceH)
+            append(" stats=")
+            append(if (record.statsEnabled) "${record.outW}x${record.outH}" else "off")
+            append(" dec=")
+            append(ms(record.decMs))
+            append("ms cfa=")
+            append(ms(record.cfaMs))
+            append("ms up=")
+            append(ms(record.upMs))
+            append("ms dev=")
+            append(ms(record.devMs))
+            append("ms present=")
+            append(ms(record.presentMs))
+            append("ms stats=")
+            append(ms(record.statsMs))
+            append("ms")
+        }
     }
+
+    /** 2.345 -> "2.3" — one decimal, ms, ALWAYS the dot (the line is a grep format: a comma-decimal device locale must not rewrite it). */
+    private fun ms(v: Double): String = String.format(java.util.Locale.US, "%.1f", v)
 
     /**
      * The active-stage summary: pipeline order, only the stages this

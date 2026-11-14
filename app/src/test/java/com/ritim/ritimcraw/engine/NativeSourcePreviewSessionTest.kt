@@ -122,6 +122,20 @@ class NativeSourcePreviewSessionTest {
         }
     }
 
+    @Test
+    fun set_preview_stats_enabled_throws_the_unavailable_message_without_the_native_lib() {
+        // The trace-dims fix's A/B toggle rides the jniSetSyncRefine
+        // runtime-toggle pattern: on the JVM the guard throws the
+        // standard recovery message, never UnsatisfiedLinkError.
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniSetPreviewStatsEnabled(enabled = false)
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
     // ---- the signature locks (the second lock against uncovered grades) ---
 
     private fun method(name: String): java.lang.reflect.Method {
@@ -173,6 +187,17 @@ class NativeSourcePreviewSessionTest {
         // would fail class resolution on the JVM.
         val setSurface = method("jniPreviewSessionSetSurface")
         assertEquals(2, setSurface.parameterCount)
+    }
+
+    @Test
+    fun set_preview_stats_enabled_carries_exactly_the_one_boolean() {
+        // The stats-readback toggle's signature lock (the trace-dims fix,
+        // 2026-11-14): ONE Boolean. The toggle is the A/B instrument for
+        // the synchronous readback's cost — widening it (e.g. a pack-dims
+        // parameter) changes the measurement contract and must be a
+        // deliberate act that edits this test too.
+        val setStats = method("jniSetPreviewStatsEnabled")
+        assertEquals(1, setStats.parameterCount)
     }
 
     @Test

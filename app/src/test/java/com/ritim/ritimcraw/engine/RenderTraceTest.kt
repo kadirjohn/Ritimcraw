@@ -30,10 +30,24 @@ class RenderTraceTest {
         temporalNrApplied: Boolean = false,
         stabilizationApplied: Boolean = false,
         servedByGpu: Boolean = false,
+        sourceW: Int = 0,
+        sourceH: Int = 0,
+        developW: Int = 0,
+        developH: Int = 0,
+        surfaceW: Int = 0,
+        surfaceH: Int = 0,
+        statsEnabled: Boolean = true,
+        decMs: Double = 0.0,
+        cfaMs: Double = 0.0,
+        upMs: Double = 0.0,
+        devMs: Double = 0.0,
+        presentMs: Double = 0.0,
+        statsMs: Double = 0.0,
     ) = RenderTrace.Record(
         sequence, frameIndex, renderClass, requestedMaxDim,
         outW, outH, renderMs, grade, temporalNrApplied, stabilizationApplied,
-        servedByGpu,
+        servedByGpu, sourceW, sourceH, developW, developH, surfaceW, surfaceH,
+        statsEnabled, decMs, cfaMs, upMs, devMs, presentMs, statsMs,
     )
 
     // ---- the line: field order and naming ----
@@ -87,23 +101,88 @@ class RenderTraceTest {
     // ---- the grade summary: the A/B legs ----
 
     @Test
-    fun gpu_served_frame_reads_backend_gles() {
-        // M4 commit c: the same line tells the two pipelines apart — the
-        // owner's morning A/B reads backend=gles from the GPU window path
-        // next to the CPU anchor legs, with no format change elsewhere.
+    fun gpu_served_frame_reads_backend_gles_and_the_measurement_block() {
+        // M4 commit c + the trace-dims fix (2026-11-14): the GPU window
+        // line carries backend=gles AND the measurement block after
+        // grade= — out= is the published STATS pack's dims (NOT the
+        // render resolution), so source=/develop=/surface= carry the real
+        // dims and dec/cfa/up/dev/present/stats= the per-stage spans.
+        // The exact 12MP playback shape the owner's diagnosis reads.
+        assertEquals(
+            "seq=12 frame=34 class=settle req=1280 out=256x144 " +
+                "backend=gles ms=62 grade=neutral " +
+                "source=4032x3024 develop=1280x960 surface=1080x810 " +
+                "stats=256x144 dec=18.4ms cfa=2.7ms up=1.2ms dev=3.9ms " +
+                "present=1.1ms stats=0.8ms",
+            RenderTrace.line(
+                record(
+                    servedByGpu = true,
+                    outW = 256, outH = 144,
+                    sourceW = 4032, sourceH = 3024,
+                    developW = 1280, developH = 960,
+                    surfaceW = 1080, surfaceH = 810,
+                    decMs = 18.4, cfaMs = 2.7, upMs = 1.2,
+                    devMs = 3.9, presentMs = 1.1, statsMs = 0.8,
+                )
+            ),
+        )
+    }
+
+    @Test
+    fun gpu_served_with_stats_disabled_reads_stats_off() {
+        // The A/B instrument: the toggle off skips draw 3 + the readback
+        // entirely — the stats= dims field reads "off" (the ms field still
+        // prints, 0.0 — the stage never ran, the honest zero), and the
+        // published pack degraded to the 1x1 fallback shows in out=.
+        assertEquals(
+            "seq=12 frame=34 class=settle req=1280 out=1x1 " +
+                "backend=gles ms=62 grade=neutral " +
+                "source=4032x3024 develop=1280x960 surface=1080x810 " +
+                "stats=off dec=18.4ms cfa=2.7ms up=1.2ms dev=3.9ms " +
+                "present=1.1ms stats=0.0ms",
+            RenderTrace.line(
+                record(
+                    servedByGpu = true,
+                    outW = 1, outH = 1,
+                    sourceW = 4032, sourceH = 3024,
+                    developW = 1280, developH = 960,
+                    surfaceW = 1080, surfaceH = 810,
+                    statsEnabled = false,
+                    decMs = 18.4, cfaMs = 2.7, upMs = 1.2,
+                    devMs = 3.9, presentMs = 1.1, statsMs = 0.0,
+                )
+            ),
+        )
+    }
+
+    @Test
+    fun cpu_line_stays_byte_identical_with_measurement_fields_present() {
+        // THE compat pin: the CPU path constructs the record with the
+        // neutral defaults (and the CPU renderer never populates them), so
+        // its line keeps the exact pre-fix shape — every existing grep
+        // and baseline leg keeps working. Even a record that happens to
+        // carry measurement values stays CPU-shaped unless servedByGpu.
         assertEquals(
             "seq=12 frame=34 class=settle req=1280 out=1280x720 " +
-                "backend=gles ms=62 grade=neutral",
-            RenderTrace.line(record(servedByGpu = true)),
+                "backend=cpu ms=62 grade=neutral",
+            RenderTrace.line(
+                record(
+                    servedByGpu = false,
+                    sourceW = 4032, sourceH = 3024,
+                    decMs = 18.4, statsMs = 0.8,
+                )
+            ),
         )
     }
 
     @Test
     fun gpu_served_keeps_the_grade_summary_untouched() {
         // The backend verdict rides the line's own field; the grade legs
-        // (the A/B's per-stage story) stay exactly what the CPU legs pin.
+        // (the A/B's per-stage story) stay exactly what the CPU legs pin —
+        // the measurement block appends AFTER grade=.
         assertEquals(
-            "tonemap=agx",
+            "tonemap=agx source=0x0 develop=0x0 surface=0x0 stats=1280x720 " +
+                "dec=0.0ms cfa=0.0ms up=0.0ms dev=0.0ms present=0.0ms stats=0.0ms",
             RenderTrace.line(record(grade = GradeK(tonemap = 2), servedByGpu = true))
                 .substringAfter("grade="),
         )

@@ -121,6 +121,20 @@ std::atomic<bool> gStabDebugLog{false};
 // and the export pick it up without widening the six flat JNI params.
 std::atomic<bool> gSyncRefine{false};
 
+// Preview stats-readback toggle (trace-dims fix 2026-11-14): the A/B
+// instrument for the GPU preview's synchronous glMapBufferRange cost.
+// DEFAULT TRUE = today's behavior (the stats pack publishes every frame);
+// false makes the preview session skip draw 3 + the readback entirely and
+// publish the honest 1x1 empty fallback — the zebra/scopes consumers
+// degrade for the measurement run, and the ritim-trace line reads
+// stats=off. Like gSyncRefine this is a RUNTIME toggle (jni wrapper, not
+// the companion init): the owner's device A/B flips it between two
+// playback runs of the 12MP clip; release builds never flip it, so the
+// pack always publishes there. The flag rides the PreviewFrameRequest
+// (copied below in nativePreviewSessionRenderFrame) so the session reads
+// it per render without a second native call.
+std::atomic<bool> gPreviewStatsEnabled{true};
+
 // Export sub-stage timing (commit (d), owner request 2026-11-13): the
 // export frame's native wall time splits into its six internals so the
 // owner's "native=472ms" sample line becomes
@@ -146,6 +160,15 @@ thread_local ExportFrameTiming gExportFrameTiming;
 inline double elapsedMs(const std::chrono::steady_clock::time_point& a,
                         const std::chrono::steady_clock::time_point& b) {
     return std::chrono::duration<double, std::milli>(b - a).count();
+}
+
+// Microseconds between two steady_clock points — the preview spans are
+// ms-scale or below, so the trace-dims fix (2026-11-14) carries them at
+// microsecond resolution through the jint array tail (the GlesPreviewSession
+// twin of the same helper).
+inline double elapsedUs(const std::chrono::steady_clock::time_point& a,
+                        const std::chrono::steady_clock::time_point& b) {
+    return std::chrono::duration<double, std::micro>(b - a).count();
 }
 
 void setError(const std::string& message) {
@@ -1849,6 +1872,18 @@ JNIEXPORT void JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetSyncRefine(
         JNIEnv*, jclass, jboolean enabled) {
     gSyncRefine.store(enabled == JNI_TRUE, std::memory_order_relaxed);
+}
+
+// Preview stats-readback toggle (trace-dims fix 2026-11-14): the same
+// store-relaxed pattern as the three toggles above, but a RUNTIME one —
+// the Kotlin jniSetPreviewStatsEnabled wrapper owns it (the
+// jniSetSyncRefine precedent), not the companion init. Default TRUE (the
+// atomic's initializer) = today's behavior; the owner's device A/B flips
+// it between two playback runs.
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetPreviewStatsEnabled(
+        JNIEnv*, jclass, jboolean enabled) {
+    gPreviewStatsEnabled.store(enabled == JNI_TRUE, std::memory_order_relaxed);
 }
 
 // The six sub-stage slots of the frame nativeExportFrame just produced, in
@@ -3562,11 +3597,22 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         // Decode + frame info on the CALLING thread (Source's one-thread
         // rule; the ring amortizes sequential playback frames exactly like
         // the export seam). Only the GL work marshals.
+        //
+        // The per-stage timing spans (trace-dims fix 2026-11-14) mirror the
+        // export timing block's steady_clock boundary pattern — ALWAYS
+        // collected (the trace's debug gate is the PRINTING gate, the
+        // RenderTrace.enabled precedent; the cost is a handful of clock
+        // reads per GPU frame, negligible next to the decode itself), and
+        // carried out through the array tail below.
+        using SteadyClock = std::chrono::steady_clock;
+        const SteadyClock::time_point tDecode0 = SteadyClock::now();
         Entry& e = gEntries[clipHandle - 1];
         const CfaBuffer cfa = loadRingFrame(*s, e, frameIndex);
         if (cfa == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
+        const SteadyClock::time_point tDecode1 = SteadyClock::now();
+        const double decodeUs = elapsedUs(tDecode0, tDecode1);
 
         // The preview CFA reduction — Thumbnail.h's cell-aligned math,
         // copied per the documented-copy rule (core/ is READ-ONLY; the
@@ -3577,6 +3623,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         // verbatim, so the 2x2 Bayer pattern survives: RGGB stays RGGB and
         // uCell/uBlack/uRange plus the shading plane order stay valid at
         // the reduced tier.
+        const SteadyClock::time_point tCfa0 = SteadyClock::now();
         const int strideN = strideFor(info, maxDim);
         uint32_t reducedW = 0;
         uint32_t reducedH = 0;
@@ -3620,6 +3667,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         rawedit::FrameInfo reducedInfo = info;
         reducedInfo.width = reducedW;
         reducedInfo.height = reducedH;
+        const SteadyClock::time_point tCfa1 = SteadyClock::now();
+        const double cfaUs = elapsedUs(tCfa0, tCfa1);
 
         gles::PreviewFrameRequest req;
         req.cfa = reducedCfa;
@@ -3648,6 +3697,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
+        // The stats-readback toggle rides the request (the gSyncRefine
+        // precedent): the bridge-level atomic, flipped by the
+        // nativeSetPreviewStatsEnabled JNI setter, copied per render.
+        req.statsEnabled = gPreviewStatsEnabled.load(std::memory_order_relaxed);
         const gles::PreviewFrameResult res = session->renderFrame(req);
         if (!res.ok) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
@@ -3657,7 +3710,18 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         }
         // The published stats pack in developToArgb's int-array shape:
         // [w, h, pixels...] (the SAME shape the CPU preview publishes, so
-        // the Compose overlays consume either path unchanged).
+        // the Compose overlays consume either path unchanged) — PLUS the
+        // trace-dims fix's 13-int measurement tail (2026-11-14):
+        // [sourceW, sourceH, developW, developH, surfaceW, surfaceH,
+        //  statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs].
+        // The dims are the ones the ritim-trace line logs on the GPU path
+        // (the published pack's dims are NOT the render dims — out= keeps
+        // logging the pack, the tail carries the truth); the six spans are
+        // the per-stage steady_clock timings in MICROSECONDS (the dec/cfa
+        // spans measured here, the four GL-thread spans measured inside
+        // runJob and returned on the result). renderArrayBlocking accepts
+        // BOTH the old (2 + w*h) and this new (2 + w*h + 13) length — the
+        // old parser stays byte-compatible.
         const jsize n = static_cast<jsize>(res.argb8888.size());
         if (res.width == 0 || res.height == 0 ||
             n <= 0 || static_cast<size_t>(n) != res.argb8888.size()) {
@@ -3666,12 +3730,33 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
                      "(recovery: reopen the preview)");
             return nullptr;
         }
-        jintArray arr = env->NewIntArray(n + 2);
+        // Clamp each span into jint range: a microsecond double from a
+        // stalled frame can exceed 2^31, and a negative cast into jint is
+        // UB — saturate instead (the trace prints the saturated value,
+        // which is itself an honest "this span blew up" signal).
+        auto spanToJint = [](double us) -> jint {
+            if (!(us > 0.0)) return 0; // covers <= 0 and NaN
+            constexpr double kMaxJint = 2147483647.0;
+            if (us > kMaxJint) return static_cast<jint>(kMaxJint);
+            return static_cast<jint>(us);
+        };
+        jint tail[13] = {
+            static_cast<jint>(info.width), static_cast<jint>(info.height),
+            static_cast<jint>(res.developW), static_cast<jint>(res.developH),
+            static_cast<jint>(res.surfaceW), static_cast<jint>(res.surfaceH),
+            req.statsEnabled ? 1 : 0,
+            spanToJint(decodeUs), spanToJint(cfaUs),
+            spanToJint(res.uploadUs), spanToJint(res.developUs),
+            spanToJint(res.presentUs), spanToJint(res.statsUs),
+        };
+        constexpr jsize kTailLen = 13;
+        jintArray arr = env->NewIntArray(n + 2 + kTailLen);
         if (arr == nullptr) return nullptr;
         jint head[2] = {static_cast<jint>(res.width), static_cast<jint>(res.height)};
         env->SetIntArrayRegion(arr, 0, 2, head);
         env->SetIntArrayRegion(arr, 2, n,
             reinterpret_cast<const jint*>(res.argb8888.data()));
+        env->SetIntArrayRegion(arr, 2 + n, kTailLen, tail);
         return arr;
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
