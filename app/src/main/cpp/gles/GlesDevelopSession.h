@@ -91,6 +91,18 @@
 // readback path with the reason in ONE log line. A renderFrameToEncoder
 // GL failure DOES latch (it is a mid-render context event, same
 // semantics as renderFrame).
+//
+// ROTATION (the surface-gpu vertical deliverable): the encoder blit
+// applies the frame's effective orientation, a multiple of 90 degrees
+// (0/90/180/270), as a texture-coordinate fold in the blit fragment —
+// uRotation. The developed texture stays linear sdr-rgb; only the
+// destination pixel walk rotates. A quarter turn swaps the destination
+// viewport to the source's swapped dims (the session does the swap;
+// uSize stays the SOURCE's w x h). The caller (Mp4Exporter) still gates
+// BEFORE requesting the path — now on "rotation is a multiple of 90 and
+// the encode dims equal the ROTATED source dims" — so crop, straighten
+// and scale remain outside the fast path and the blit stays a 1:1-pixel
+// copy (1:1 through the fold, never resampled).
 
 #pragma once
 
@@ -191,12 +203,18 @@ public:
     // [ptsUs] is the frame's encoder presentation timestamp in
     // microseconds (the SAME normalized pts the writer path uses); it
     // is stamped via eglPresentationTimeANDROID as ptsUs*1000 ns media
-    // time — never the wall clock. ok=false latches the session
-    // unhealthy (mid-render GL failure semantics, same as renderFrame).
-    // Requires a successful setEncoderSurface first; the refusal is
-    // honest and named, never a crash.
+    // time — never the wall clock. [rotationDeg] is the frame's EFFECTIVE
+    // orientation (container + manual, normalized): the blit applies it
+    // through the uRotation fold — 0/90/180/270 only, anything else is
+    // refused on the calling thread with that reason named (the caller
+    // gates first; this is the second lock). 0 is the byte-identical
+    // upright copy. ok=false latches the session unhealthy (mid-render
+    // GL failure semantics, same as renderFrame). Requires a successful
+    // setEncoderSurface first; the refusal is honest and named, never a
+    // crash.
     DevelopFrameResult renderFrameToEncoder(const DevelopFrameRequest& req,
-                                            int64_t ptsUs);
+                                            int64_t ptsUs,
+                                            int rotationDeg = 0);
 
     // See the destructor. Callable from the owning thread.
     void close();

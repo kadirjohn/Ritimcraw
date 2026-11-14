@@ -894,7 +894,10 @@ class NativeSource private constructor(
          * RenderFrameToEncoder develops the frame on the GPU and blits it
          * straight to the encoder surface — no readback bytes cross the
          * seam — stamping [ptsUs] (the SAME normalized encoder pts the
-         * writer path uses) as media time via eglPresentationTimeANDROID.
+         * writer path uses) as media time via eglPresentationTimeANDROID,
+         * and applying [rotationDeg] (the frame's effective orientation,
+         * 0/90/180/270) through the blit's uRotation fold — the session
+         * fast-refuses anything outside that set.
          * Both return false with the reason in lastError on refusal; the
          * Kotlin dispatcher answers with ONE honest fallback line, never
          * a crash. Device-test-pending (the owner's GPU export is the
@@ -914,6 +917,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            rotationDeg: Int,
         ): Boolean
 
         @JvmStatic private external fun nativeDevelopSessionClose(sessionHandle: Long)
@@ -1519,6 +1523,14 @@ class NativeSource private constructor(
             return nativeDevelopSessionSetEncoderSurface(sessionHandle, surface)
         }
 
+        /**
+         * rotationDeg has NO default value ON PURPOSE: the signature-lock
+         * test reflects over declared methods matching this wrapper's
+         * mangled name, and a Kotlin default parameter would emit a
+         * `$default` synthetic that also matches — the "exactly one
+         * wrapper" assertion would see two. Every caller passes it
+         * explicitly (0 for the upright case).
+         */
         internal fun jniDevelopSessionRenderFrameToEncoder(
             sessionHandle: Long,
             clipHandle: Long,
@@ -1528,13 +1540,14 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            rotationDeg: Int,
         ): Boolean {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeDevelopSessionRenderFrameToEncoder(
                 sessionHandle, clipHandle, frameIndex, ptsUs, exposureEv,
-                highlightReconstruction, keepVignetting, tonemap)
+                highlightReconstruction, keepVignetting, tonemap, rotationDeg)
         }
 
         internal fun jniDevelopSessionClose(sessionHandle: Long) {

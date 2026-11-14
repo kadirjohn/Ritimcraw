@@ -706,6 +706,20 @@ void main() {
      * coordinates make the flip exact — there is no half-pixel math here
      * to get wrong.
      *
+     * THE ROTATION FOLD (the surface-gpu rotation deliverable): uRotation
+     * carries the frame's EFFECTIVE orientation normalized to 0/90/180/270
+     * (RotationState.effectiveDeg — the same set the CPU rotate path
+     * handles), and the fold reproduces RotationState.rotateRgb888's
+     * per-degree source index math in integer texel space, inverted
+     * dest->source. uSize stays the SOURCE's w x h on every arm; a
+     * quarter turn (90/270) swaps the DESTINATION viewport to h x w (the
+     * session sets glViewport accordingly), so the upright frame lands
+     * upright — no second pass, no CPU readback. 0 keeps today's plain
+     * Y flip arm byte-identical. The uniform defaults to 0 in GLSL, so
+     * the WRITER's Surface mode (which never sets it — it blits upright
+     * RGB888) compiles the SAME text and runs the 0 arm unchanged; only
+     * the develop session sets it.
+     *
      * Input: uSrc — the developed frame, GL_RGB8, width x height,
      * top-row-first, uploaded per frame by the writer (glTexImage2D,
      * unpack alignment 1). Output: the window surface's back buffer
@@ -726,7 +740,8 @@ precision highp float;
 precision highp int;
 
 uniform highp sampler2D uSrc;  // the frame: GL_RGB8, w x h, top-row-first
-uniform ivec2 uSize;          // frame width/height in pixels
+uniform ivec2 uSize;          // SOURCE frame width/height in pixels
+uniform int uRotation;        // effective orientation, 0/90/180/270 (default 0)
 
 out vec4 oCol;
 
@@ -736,7 +751,21 @@ void main() {
     // texture's row 0 is the image's TOP row (the upload order), and the
     // encoder reads the Surface buffer top-first. Integer texelFetch
     // coordinates - the flip is exact.
-    ivec2 src = ivec2(g.x, uSize.y - 1 - g.y);
+    // The rotation fold (uRotation, 0/90/180/270): rotateRgb888's per-degree
+    // destination index math, inverted dest->source. uSize is ALWAYS the
+    // SOURCE's w x h; a quarter turn's destination viewport is h x w (the
+    // session swaps glViewport), so g spans the rotated frame while src
+    // spans the source. 0 = today's plain Y flip, byte-identical.
+    ivec2 src;
+    if (uRotation == 90) {
+        src = ivec2(uSize.x - 1 - g.y, uSize.y - 1 - g.x);
+    } else if (uRotation == 180) {
+        src = ivec2(uSize.x - 1 - g.x, g.y);
+    } else if (uRotation == 270) {
+        src = ivec2(g.y, g.x);
+    } else {
+        src = ivec2(g.x, uSize.y - 1 - g.y);
+    }
     oCol = vec4(texelFetch(uSrc, src, 0).rgb, 1.0);
 }
 """
