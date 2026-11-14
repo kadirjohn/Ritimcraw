@@ -1130,7 +1130,7 @@ fun AppNav() {
                         onBack = { editorSourceId = null },
                         initialGrade = stores.grades.get(r.sourceId),
                         onGradeChange = { g -> stores.grades.put(r.sourceId, g) },
-                        onExport = { target ->
+                        onExport = { target, resolutionW, resolutionH ->
                             // Snapshot the CURRENT grade at queue time (the
                             // spec: a later edit must not change an in-flight
                             // export) and enqueue; the runner picks it up.
@@ -1167,6 +1167,18 @@ fun AppNav() {
                                     // the GPU seam (the writer's Surface
                                     // mode); DNG/PHOTO/LINEAR ignore it.
                                     renderBackend = renderBackend,
+                                    // Resolution bound snapshot at queue time
+                                    // (owner request 2026-11-13, the same
+                                    // grade-snapshot rule): the pair the
+                                    // export sheet's chip showed — a later
+                                    // chip tap must not change an in-flight
+                                    // export. Null pair = Original (the
+                                    // source's effective size), exactly what
+                                    // every pre-picker export produced; only
+                                    // MP4 jobs carry a pair (DNG/LINEAR have
+                                    // no resolution seam).
+                                    resolutionW = resolutionW,
+                                    resolutionH = resolutionH,
                                 )
                             )
                             exportJobs = stores.exports.all()

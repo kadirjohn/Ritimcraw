@@ -171,6 +171,17 @@ class ExportStore(private val file: File) {
                 if (j.timeline != null) {
                     sb.append(",\"timeline\":").append(renderTimelineRef(j.timeline))
                 }
+                // resolutionW/H (export resolution, owner request
+                // 2026-11-13): omit-when-null — Original (the source's
+                // effective size) is the norm for every job queued before
+                // the resolution picker, so files written before the
+                // field stay byte-identical and old rows parse as null
+                // (exactly what they always exported). The pair is
+                // written together or not at all.
+                if (j.resolutionW != null && j.resolutionH != null) {
+                    sb.append(",\"resolutionW\":").append(j.resolutionW)
+                    sb.append(",\"resolutionH\":").append(j.resolutionH)
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -294,6 +305,14 @@ class ExportStore(private val file: File) {
                     } else {
                         TimelineRef.parseOrNull(ProjectJson.renderRaw(m["timeline"]))
                     },
+                    // resolutionW/H (export resolution): absent in rows
+                    // queued before the picker — null keeps the old
+                    // behavior (the source's effective size) for every
+                    // legacy row. A half pair degrades to null rather
+                    // than a guessed bound (the honesty rule: never
+                    // guess); such rows fail their own gate at export.
+                    resolutionW = (m["resolutionW"] as? Double)?.toInt(),
+                    resolutionH = (m["resolutionH"] as? Double)?.toInt(),
                 )
             }
         }

@@ -833,6 +833,94 @@ class ExportStoreTest {
     }
 
     @Test
+    fun resolution_round_trips_and_omits_when_null() {
+        // Export resolution (owner request 2026-11-13): the resolved bound
+        // the job snapshotted at enqueue persists with it (a crash between
+        // queue and drain still exports the chosen size), and
+        // omit-when-null keeps pre-picker files byte-identical — the same
+        // convention as manualRotationDeg and renderBackend.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(
+            job(id = "fhd", target = Target.MP4).copy(resolutionW = 1920, resolutionH = 1080)
+        )
+        store.add(job(id = "plain", target = Target.MP4)) // null/null = Original
+
+        val jobs = ExportStore(file).all()
+        assertEquals(1920, jobs.single { it.id == "fhd" }.resolutionW)
+        assertEquals(1080, jobs.single { it.id == "fhd" }.resolutionH)
+        assertNull(jobs.single { it.id == "plain" }.resolutionW)
+        assertNull(jobs.single { it.id == "plain" }.resolutionH)
+
+        // Only a chosen bound is written, and the pair travels TOGETHER:
+        // the plain row's JSON carries neither key (legacy rows stay
+        // byte-identical). The plain row is the file's LAST row and this
+        // fresh project.json holds only the exports section, so the full
+        // remainder after its id is exactly the plain row's tail.
+        val text = file.readText()
+        assertTrue(text.contains("\"resolutionW\":1920,\"resolutionH\":1080"))
+        val plainRow = text.substringAfter("\"id\":\"plain\"")
+        assertTrue(!plainRow.contains("resolutionW"))
+        assertTrue(!plainRow.contains("resolutionH"))
+
+        // Retry keeps the bound: the retried export encodes the same
+        // chosen size (requeued() preserves it via copy()).
+        store.retry("fhd")
+        val retried = ExportStore(file).all().single { it.id == "fhd" }
+        assertEquals(1920, retried.resolutionW)
+        assertEquals(1080, retried.resolutionH)
+    }
+
+    @Test
+    fun old_export_row_without_resolution_parses_null() {
+        // A project.json written before the resolution picker (schema 1,
+        // no resolutionW/H fields): the row parses with null/null —
+        // Original, the source's effective size, exactly what every
+        // pre-picker job always exported.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"exports":[
+              {"id":"old-job","sourceId":"clip-a","snapshot":{"version":1,"exposureEv":0.0},"target":"MP4","state":"DONE","detail":"clip-a.mp4"}
+            ]}
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val job = ExportStore(file).all().single()
+        assertNull(job.resolutionW)
+        assertNull(job.resolutionH)
+    }
+
+    @Test
+    fun half_pair_renders_neither_key() {
+        // The render's both-or-neither gate: a job that somehow carries
+        // only half a pair (W set, H null — never written by the sheet,
+        // but the store must not guess a bound) renders NEITHER key. The
+        // pair is one decision; half a decision is no decision, and the
+        // exporter's own both-non-null gate treats the reloaded row as
+        // Original — the honest fallback, never a guessed bound.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(
+            job(id = "half", target = Target.MP4).copy(resolutionW = 1920) // H stays null
+        )
+
+        val text = file.readText()
+        // The half row is the file's only row, so the full remainder after
+        // its id is exactly its tail.
+        val halfRow = text.substringAfter("\"id\":\"half\"")
+        assertTrue(!halfRow.contains("resolutionW"))
+        assertTrue(!halfRow.contains("resolutionH"))
+
+        // And the reloaded row is a clean null pair.
+        val job = ExportStore(file).all().single()
+        assertNull(job.resolutionW)
+        assertNull(job.resolutionH)
+    }
+
+    @Test
     fun corrupt_store_falls_back_to_empty_queue() {
         val file = projectFile()
         file.parentFile?.mkdirs()

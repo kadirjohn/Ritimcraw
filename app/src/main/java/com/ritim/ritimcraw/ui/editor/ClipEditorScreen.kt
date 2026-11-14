@@ -769,7 +769,12 @@ fun ClipEditorScreen(
     onBack: () -> Unit,
     initialGrade: GradeK = GradeK(),
     onGradeChange: (GradeK) -> Unit = {},
-    onExport: (Target) -> Unit = {},
+    // (Export resolution, owner request 2026-11-13) widened by the
+    // resolution pair the export sheet's chip selected: null pair =
+    // Original = the source's effective size, exactly what every export
+    // before the picker produced. DNG/LINEAR taps pass nulls (no
+    // resolution seam); the MP4 tap carries the selected bound.
+    onExport: (Target, Int?, Int?) -> Unit = { _, _, _ -> },
     sourceFd: Int = -1,
     sourceFdProvider: () -> Int = { -1 },
     accessLost: Boolean = false,
@@ -3673,6 +3678,10 @@ fun ClipEditorScreen(
                     onExport = onExport,
                     exportEnabled = sourceFd >= 0,
                     clipInfo = clipInfo,
+                    // The export sheet's ladder composes the manual
+                    // rotation (the exporter's own chain) so its chips
+                    // show the size the encode will really produce.
+                    manualRotationDeg = manualRotationDeg,
                     // The info sheet's "Develop frame" row opens the
                     // screen's own picker sheet (RAW-11): the transport
                     // position lives here, not in the top bar.

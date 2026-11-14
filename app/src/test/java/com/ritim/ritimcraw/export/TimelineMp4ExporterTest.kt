@@ -899,4 +899,79 @@ class TimelineMp4ExporterTest {
             assertTrue(e.message!!.contains("empty"))
         }
     }
+
+    // ---- RgbScale.aspectFit: the export resolution picker's scale ----
+
+    @Test
+    fun fit_identity_returns_the_input_by_reference() {
+        val rgb = ByteArray(4 * 4 * 3) { 9.toByte() }
+        assertSame(rgb, RgbScale.aspectFit(rgb, 4, 4, 4, 4))
+    }
+
+    @Test
+    fun fit_exact_match_downscale_preserves_solid_color() {
+        // The honest export path: the bound resolves to the source's OWN
+        // aspect BEFORE the scale (ExportResolution.outputSize), so the
+        // fit is EXACT — no bars, every output pixel a source sample.
+        val rgb = ByteArray(4 * 4 * 3) { 200.toByte() }
+        val out = RgbScale.aspectFit(rgb, 4, 4, 2, 2)
+        assertEquals(2 * 2 * 3, out.size)
+        assertTrue(out.all { it == 200.toByte() })
+    }
+
+    @Test
+    fun fit_letterboxes_the_mismatched_axis_with_symmetric_black_bars() {
+        // A 2x2 source into a 2x4 box whose aspect does NOT match: the
+        // fit scale is min(2/2, 4/2) = 1, the image lands 2x2 centered
+        // (barY 1), and the top/bottom rows are BLACK BARS (zero-filled)
+        // — nothing crops, nothing stretches. The SIZE decision never
+        // makes a FRAMING decision, and the bars are the honest
+        // fallback, not a center-crop.
+        val rgb = ByteArray(2 * 2 * 3) { 200.toByte() }
+        val out = RgbScale.aspectFit(rgb, 2, 2, 2, 4)
+        assertEquals(2 * 4 * 3, out.size)
+        // Rows 0 and 3: pure black bars, symmetric top and bottom.
+        for (p in 0 until 2 * 3) {
+            assertEquals(0, out[p].toInt() and 0xFF)
+        }
+        for (p in 6 * 3 until 8 * 3) {
+            assertEquals(0, out[p].toInt() and 0xFF)
+        }
+        // Rows 1 and 2: the source's solid color, at scale 1.
+        for (p in 2 * 3 until 6 * 3) {
+            assertEquals(200, out[p].toInt() and 0xFF)
+        }
+    }
+
+    @Test
+    fun fit_keeps_both_edges_never_center_crops() {
+        // The 4:3 rule's byte-level proof: a left-half-red /
+        // right-half-blue 4x2 source fit into 2x2 keeps BOTH halves —
+        // output x=0 samples source columns 0-1, x=1 samples columns
+        // 2-3, the FULL width participates (scaled, never cropped). The
+        // leftover height is a bar, not a framing decision.
+        val rgb = ByteArray(4 * 2 * 3)
+        for (y in 0 until 2) {
+            for (x in 0 until 4) {
+                val i = (y * 4 + x) * 3
+                if (x < 2) {
+                    rgb[i] = 255.toByte(); rgb[i + 1] = 0; rgb[i + 2] = 0
+                } else {
+                    rgb[i] = 0; rgb[i + 1] = 0; rgb[i + 2] = 255.toByte()
+                }
+            }
+        }
+        // Fit scale min(2/4, 2/2) = 0.5: the image lands 2x1 in row 0,
+        // row 1 is the black bar. Row 0: left pixel red, right blue.
+        val out = RgbScale.aspectFit(rgb, 4, 2, 2, 2)
+        assertEquals(2 * 2 * 3, out.size)
+        assertEquals(255, out[0].toInt() and 0xFF)
+        assertEquals(0, out[2].toInt() and 0xFF)
+        assertEquals(0, out[3].toInt() and 0xFF)
+        assertEquals(255, out[5].toInt() and 0xFF)
+        // The bar row is black.
+        for (p in 2 * 3 until 4 * 3) {
+            assertEquals(0, out[p].toInt() and 0xFF)
+        }
+    }
 }

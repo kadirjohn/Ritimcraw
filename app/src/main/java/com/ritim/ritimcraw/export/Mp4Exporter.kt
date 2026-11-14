@@ -1001,6 +1001,26 @@ class ExportPipeline(
      * the engine runs; tests inject it directly.
      */
     private val audioAttached: Boolean = true,
+    /**
+     * The export resolution bound (owner request 2026-11-13): the job's
+     * ladder choice, snapshotted at ENQUEUE and resolved here against the
+     * source's effective size through ExportResolution.outputSize
+     * (fits-within, aspect preserved, even-snapped) — the SAME rules the
+     * sheet's chips showed, so the encode can never disagree with the
+     * choice. Null (the default) = Original = the source's effective
+     * size, byte-identical to every export before this feature: the scale
+     * step is skipped entirely (not even a method dispatch on the
+     * reference path — the RgbScale identity fast path never runs).
+     * When set, the frame path gains one aspect-preserving
+     * RgbScale.aspectFit step between crop and the surface-offer/I420
+     * tail, and the writer's encoder dims are the resolved size. The
+     * develop still runs at SOURCE resolution either way — a smaller
+     * output changes the encode size, not the develop cost (no speed
+     * promises).
+     */
+    private val resolutionW: Int? = null,
+    /** [resolutionW]'s pair; both null or both set, never half a pair. */
+    private val resolutionH: Int? = null,
 ) {
 
     /**
@@ -1035,7 +1055,10 @@ class ExportPipeline(
                 Mp4ExportErrors.message(session.code(), session.stage(), session.detail())
             )
         try {
-            encode(sourceFd, info, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress)
+            encode(
+                sourceFd, info, grade, outPath, lutPath, gyroPath, manualRotationDeg,
+                onProgress,
+            )
         } finally {
             session.close(info.handle)
         }
@@ -1107,6 +1130,24 @@ class ExportPipeline(
             grade.cropX, grade.cropY, grade.cropW, grade.cropH,
         )
         val cropOutDims = CropState.outputDims(outDims.width, outDims.height, cropRect, even = true)
+        // Export resolution (owner request 2026-11-13): when the job
+        // carries a bound, the encoder dims come from it — resolved
+        // against the crop/rotation-EFFECTIVE size through the SAME
+        // rules the sheet's chips showed (ExportResolution.outputSize:
+        // fits-within, aspect preserved, even-snapped — the size decision
+        // never makes a framing decision, so a 4:3 source keeps 4:3).
+        // Null = Original = cropOutDims, byte-identical to every export
+        // before this feature (the chips' default IS today's behavior).
+        val encodeDims = if (resolutionW != null && resolutionH != null) {
+            ExportResolution.outputSize(
+                ExportResolution.Kind.CUSTOM,
+                cropOutDims,
+                customWidth = resolutionW,
+                customHeight = resolutionH,
+            )
+        } else {
+            cropOutDims
+        }
         // M3 commit b — the develop dispatch: WHICH pipeline develops the
         // frames. A GPU_EXPERIMENTAL job whose grade's active stages are
         // ALL fragment-covered (the SAME BackendRules vocabulary the
@@ -1198,7 +1239,7 @@ class ExportPipeline(
             writer.requestEncoderSurfaceInput()
         }
         try {
-            writer.start(outPath, cropOutDims.width, cropOutDims.height, 0, sampleRate, channels)
+            writer.start(outPath, encodeDims.width, encodeDims.height, 0, sampleRate, channels)
         } catch (e: Throwable) {
             writer.release()
             throw e
@@ -1333,6 +1374,37 @@ class ExportPipeline(
                             even = true,
                         )
                         timing?.mark(ExportStageTiming.STAGE_CROP, System.nanoTime() - t2)
+                        // Export resolution (owner request 2026-11-13): the
+                        // scale step — ONLY when the job carries a bound.
+                        // Aspect-PRESERVING fit (RgbScale.aspectFit, never
+                        // aspectFill's center-crop: the size decision never
+                        // makes a framing decision), and because
+                        // encodeDims was resolved through the SAME
+                        // fits-within rules against the same effective
+                        // size, the fit is exact — no bars, no crop, just
+                        // the resize. Null bound = Original: the step is
+                        // skipped entirely, byte-identical to the reference
+                        // path (not even a method dispatch).
+                        val scaled = if (resolutionW != null && resolutionH != null &&
+                            (cropped.width != encodeDims.width || cropped.height != encodeDims.height)
+                        ) {
+                            RgbScale.aspectFit(
+                                cropped.rgb, cropped.width, cropped.height,
+                                encodeDims.width, encodeDims.height,
+                            )
+                        } else {
+                            cropped.rgb
+                        }
+                        val frameW = if (resolutionW != null && resolutionH != null) {
+                            encodeDims.width
+                        } else {
+                            cropped.width
+                        }
+                        val frameH = if (resolutionW != null && resolutionH != null) {
+                            encodeDims.height
+                        } else {
+                            cropped.height
+                        }
                         val t3 = System.nanoTime()
                         // GPU deliverable F (§10): offer the frame to the
                         // writer's encoder-Surface mode FIRST — but only
@@ -1349,7 +1421,7 @@ class ExportPipeline(
                         // writer without the mode) falls through to the
                         // byte-identical I420 path.
                         if (renderBackend == RenderBackend.GPU_EXPERIMENTAL &&
-                            writer.writeVideoFrameRgb(s.ptsUs, cropped.rgb, cropped.width, cropped.height)
+                            writer.writeVideoFrameRgb(s.ptsUs, scaled, frameW, frameH)
                         ) {
                             timing?.endFrame()
                             done++
@@ -1366,15 +1438,15 @@ class ExportPipeline(
                         val planes = writer.acquireVideoFramePlanes()
                         if (planes != null) {
                             val tAcquire = System.nanoTime() - t3
-                            val wrote = converter.convertToPlanes(cropped.rgb, cropped.width, cropped.height, planes)
+                            val wrote = converter.convertToPlanes(scaled, frameW, frameH, planes)
                             if (wrote != null) {
                                 // The debug dual-run reads the encoder memory
                                 // back and compares against the Kotlin oracle
                                 // — proving the stride mapping too.
                                 if (stageLog != null && RgbToI420Verify.shouldDualRun(nativeFramesSeen, wrote.fromNative)) {
-                                    val kt = YuvConverter.toI420(cropped.rgb, cropped.width, cropped.height)
-                                    val got = YuvPlaneIo.readPlanesToPacked(cropped.width, cropped.height, planes)
-                                    RgbToI420Verify.line(cropped.width, cropped.height, got, kt)?.let { stageLog(it) }
+                                    val kt = YuvConverter.toI420(scaled, frameW, frameH)
+                                    val got = YuvPlaneIo.readPlanesToPacked(frameW, frameH, planes)
+                                    RgbToI420Verify.line(frameW, frameH, got, kt)?.let { stageLog(it) }
                                 }
                                 if (wrote.fromNative) nativeFramesSeen++
                                 // The yuv slot covers ONLY the conversion — the
@@ -1387,12 +1459,12 @@ class ExportPipeline(
                                 writer.abandonVideoFrame()
                                 // Packed fallback: identical bytes, and the
                                 // same dual-run/counter bookkeeping.
-                                val converted = convertFrame(cropped.rgb, cropped.width, cropped.height)
+                                val converted = convertFrame(scaled, frameW, frameH)
                                 timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3 - tAcquire)
                                 writer.writeVideoFrame(s.ptsUs, converted.i420)
                             }
                         } else {
-                            val converted = convertFrame(cropped.rgb, cropped.width, cropped.height)
+                            val converted = convertFrame(scaled, frameW, frameH)
                             timing?.mark(ExportStageTiming.STAGE_YUV, System.nanoTime() - t3)
                             writer.writeVideoFrame(s.ptsUs, converted.i420)
                         }
@@ -1423,8 +1495,8 @@ class ExportPipeline(
                 sourceH = info.height,
                 rotatedW = outDims.width,
                 rotatedH = outDims.height,
-                encodedW = cropOutDims.width,
-                encodedH = cropOutDims.height,
+                encodedW = encodeDims.width,
+                encodedH = encodeDims.height,
                 grade = grade,
                 gyroActive = grade.stabilization && gyroPath != null,
                 encodeNanos = System.nanoTime() - tEncode0,
@@ -1636,6 +1708,7 @@ class Mp4Exporter(
                                 job.renderBackend, sourceFd, job.snapshot,
                                 partial.absolutePath, lutPath, gyroPath,
                                 job.manualRotationDeg, audioAttached, onProgress,
+                                job.resolutionW, job.resolutionH,
                             )
                         } catch (e: SurfaceInputUnavailable) {
                             // §10: the writer could not bring its
@@ -1659,6 +1732,7 @@ class Mp4Exporter(
                                 RenderBackend.CPU, sourceFd, job.snapshot,
                                 partial.absolutePath, lutPath, gyroPath,
                                 job.manualRotationDeg, audioAttached, onProgress,
+                                job.resolutionW, job.resolutionH,
                             )
                         }
                         if (ExportStaging.finalize(partial, out)) {
@@ -1721,6 +1795,8 @@ class Mp4Exporter(
         manualRotationDeg: Int,
         audioAttached: Boolean,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
+        resolutionW: Int? = null,
+        resolutionH: Int? = null,
     ) {
         ExportPipeline(
             session,
@@ -1729,6 +1805,8 @@ class Mp4Exporter(
             renderBackend = renderBackend,
             gpuDevelop = gpuDevelop,
             audioAttached = audioAttached,
+            resolutionW = resolutionW,
+            resolutionH = resolutionH,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )
