@@ -369,11 +369,15 @@ object NativeRgbToI420 : RgbToI420 {
  * the .so is absent — the dispatcher catches that and stays on CPU (the
  * same guard NativeMp4Session.requireNative rides).
  *
- * The render signature carries EXACTLY the five fragment-covered grade
- * controls (exposure, highlights, highlight reconstruction, vignetting,
- * tonemap) beside the three plumbing values — the second lock against
- * uncovered grades (the Kotlin coverage gate is the first). A stage the
- * fragment pass does not cover cannot even be expressed into the session.
+ * The render signature carries the fragment-covered grade controls —
+ * the five base ones (exposure, highlights, highlight reconstruction,
+ * vignetting, tonemap) plus the ten pointwise stages' raw values since
+ * the pointwise port (black point, white point, shadows, midtones,
+ * contrast, temperature, tint, saturation, the color wheel, split tone,
+ * with asShot as the 16/17 gate's input) — beside the three plumbing
+ * values, the second lock against uncovered grades (the Kotlin coverage
+ * gate is the first). A stage the fragment pass does not cover cannot
+ * even be expressed into the session.
  */
 interface GpuDevelop {
     /** The capability probe: raw [contextOk, glesMajor, glesMinor, computeOk, floatFboOk, maxTextureSize]; null = JNI failure. */
@@ -397,6 +401,24 @@ interface GpuDevelop {
         frameIndex: Int,
         exposureEv: Float,
         highlights: Float,
+        blackPoint: Float,
+        whitePoint: Float,
+        shadows: Float,
+        midtones: Float,
+        contrast: Float,
+        tempK: Float,
+        tint: Float,
+        saturation: Float,
+        asShot: Boolean,
+        wheelShadowX: Float,
+        wheelShadowY: Float,
+        wheelMidX: Float,
+        wheelMidY: Float,
+        wheelHighX: Float,
+        wheelHighY: Float,
+        splitShadowHue: Float,
+        splitHighlightHue: Float,
+        splitBalance: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
@@ -432,6 +454,24 @@ interface GpuDevelop {
         ptsUs: Long,
         exposureEv: Float,
         highlights: Float,
+        blackPoint: Float,
+        whitePoint: Float,
+        shadows: Float,
+        midtones: Float,
+        contrast: Float,
+        tempK: Float,
+        tint: Float,
+        saturation: Float,
+        asShot: Boolean,
+        wheelShadowX: Float,
+        wheelShadowY: Float,
+        wheelMidX: Float,
+        wheelMidY: Float,
+        wheelHighX: Float,
+        wheelHighY: Float,
+        splitShadowHue: Float,
+        splitHighlightHue: Float,
+        splitBalance: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
@@ -470,12 +510,34 @@ internal object NativeGpuDevelop : GpuDevelop {
         frameIndex: Int,
         exposureEv: Float,
         highlights: Float,
+        blackPoint: Float,
+        whitePoint: Float,
+        shadows: Float,
+        midtones: Float,
+        contrast: Float,
+        tempK: Float,
+        tint: Float,
+        saturation: Float,
+        asShot: Boolean,
+        wheelShadowX: Float,
+        wheelShadowY: Float,
+        wheelMidX: Float,
+        wheelMidY: Float,
+        wheelHighX: Float,
+        wheelHighY: Float,
+        splitShadowHue: Float,
+        splitHighlightHue: Float,
+        splitBalance: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
         sessionHandle, clipHandle, frameIndex,
-        exposureEv, highlights, highlightReconstruction, keepVignetting, tonemap,
+        exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
+        contrast, tempK, tint, saturation, asShot,
+        wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+        wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
+        highlightReconstruction, keepVignetting, tonemap,
     )
 
     override fun setEncoderSurface(sessionHandle: Long, surface: Any?): Boolean =
@@ -488,13 +550,35 @@ internal object NativeGpuDevelop : GpuDevelop {
         ptsUs: Long,
         exposureEv: Float,
         highlights: Float,
+        blackPoint: Float,
+        whitePoint: Float,
+        shadows: Float,
+        midtones: Float,
+        contrast: Float,
+        tempK: Float,
+        tint: Float,
+        saturation: Float,
+        asShot: Boolean,
+        wheelShadowX: Float,
+        wheelShadowY: Float,
+        wheelMidX: Float,
+        wheelMidY: Float,
+        wheelHighX: Float,
+        wheelHighY: Float,
+        splitShadowHue: Float,
+        splitHighlightHue: Float,
+        splitBalance: Float,
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
         rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
         sessionHandle, clipHandle, frameIndex, ptsUs,
-        exposureEv, highlights, highlightReconstruction, keepVignetting, tonemap, rotationDeg,
+        exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
+        contrast, tempK, tint, saturation, asShot,
+        wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+        wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
+        highlightReconstruction, keepVignetting, tonemap, rotationDeg,
     )
 
     override fun closeSession(sessionHandle: Long) =
@@ -1536,6 +1620,15 @@ class ExportPipeline(
                                 gpuDevelop.renderFrameToEncoder(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
                                     grade.exposureEv, grade.highlights,
+                                    grade.blackPoint, grade.whitePoint,
+                                    grade.shadows, grade.midtones, grade.contrast,
+                                    grade.tempK, grade.tint, grade.saturation,
+                                    grade.asShot,
+                                    grade.wheelShadowX, grade.wheelShadowY,
+                                    grade.wheelMidX, grade.wheelMidY,
+                                    grade.wheelHighX, grade.wheelHighY,
+                                    grade.splitShadowHue, grade.splitHighlightHue,
+                                    grade.splitBalance,
                                     grade.highlightReconstruction,
                                     grade.keepVignetting, grade.tonemap, effectiveDeg,
                                 )
@@ -1586,6 +1679,15 @@ class ExportPipeline(
                                 gpuDevelop.renderFrame(
                                     gpuSessionHandle, info.handle, s.frameIndex,
                                     grade.exposureEv, grade.highlights,
+                                    grade.blackPoint, grade.whitePoint,
+                                    grade.shadows, grade.midtones, grade.contrast,
+                                    grade.tempK, grade.tint, grade.saturation,
+                                    grade.asShot,
+                                    grade.wheelShadowX, grade.wheelShadowY,
+                                    grade.wheelMidX, grade.wheelMidY,
+                                    grade.wheelHighX, grade.wheelHighY,
+                                    grade.splitShadowHue, grade.splitHighlightHue,
+                                    grade.splitBalance,
                                     grade.highlightReconstruction,
                                     grade.keepVignetting, grade.tonemap,
                                 )

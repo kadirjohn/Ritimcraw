@@ -25,6 +25,33 @@ import org.junit.Test
  */
 class GpuPreviewSessionTest {
 
+    /**
+     * The ten pointwise stages' raw values ONE render carried, in the
+     * seam's parameter order — the verbatim pass-through lock's snapshot
+     * (a swapped or dropped parameter in GpuPreviewSession.render fails
+     * the data-class equality with the exact field named).
+     */
+    private data class PointwiseCall(
+        val blackPoint: Float,
+        val whitePoint: Float,
+        val shadows: Float,
+        val midtones: Float,
+        val contrast: Float,
+        val tempK: Float,
+        val tint: Float,
+        val saturation: Float,
+        val asShot: Boolean,
+        val wheelShadowX: Float,
+        val wheelShadowY: Float,
+        val wheelMidX: Float,
+        val wheelMidY: Float,
+        val wheelHighX: Float,
+        val wheelHighY: Float,
+        val splitShadowHue: Float,
+        val splitHighlightHue: Float,
+        val splitBalance: Float,
+    )
+
     /** Records every seam call; scripted verdicts per method. */
     private class FakeDevelop(
         var openResult: Long = 1L,
@@ -39,6 +66,7 @@ class GpuPreviewSessionTest {
         val surfaces = mutableListOf<Any?>()
         val rendered = mutableListOf<Long>() // the session handles rendered
         val renderedHighlights = mutableListOf<Float>() // grade.highlights per render
+        val renderedPointwise = mutableListOf<PointwiseCall>() // the ten stages per render
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
         var probeResult: DoubleArray? = null
@@ -72,12 +100,37 @@ class GpuPreviewSessionTest {
             maxDim: Int,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
         ): PreviewFrame? {
             rendered += sessionHandle
             renderedHighlights += highlights
+            renderedPointwise += PointwiseCall(
+                blackPoint, whitePoint, shadows, midtones, contrast,
+                tempK, tint, saturation, asShot,
+                wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+                wheelHighX, wheelHighY,
+                splitShadowHue, splitHighlightHue, splitBalance,
+            )
             if (renderThrows) throw IllegalStateException("seam blew up")
             return renderResult
         }
@@ -164,6 +217,14 @@ class GpuPreviewSessionTest {
             clipHandle = 11L, frameIndex = 5, maxDim = 1280,
             exposureEv = 0.5f, highlights = -55f, highlightReconstruction = true,
             keepVignetting = true, tonemap = 1,
+            blackPoint = 5f, whitePoint = -5f,
+            shadows = 55f, midtones = -55f, contrast = 100f,
+            tempK = 6500f, tint = 30f, saturation = -40f,
+            asShot = false,
+            wheelShadowX = 0.25f, wheelShadowY = -0.25f,
+            wheelMidX = 0.5f, wheelMidY = -0.5f,
+            wheelHighX = 0.75f, wheelHighY = -0.75f,
+            splitShadowHue = 30f, splitHighlightHue = 210f, splitBalance = -25f,
         )
         // The SAME instance flows through — the pump publishes it exactly
         // as the CPU dispatch publishes its own frame.
@@ -174,6 +235,25 @@ class GpuPreviewSessionTest {
         // grade.highlights the shader's uHighlights bind needs (the
         // export-side FakeGpuDevelop pass-through precedent).
         assertEquals(listOf(-55f), develop.renderedHighlights)
+        // The ten pointwise stages ride the seam verbatim too, each raw
+        // grade value in the established order — a swapped pair or a
+        // dropped stage fails this equality with the field named.
+        assertEquals(
+            listOf(
+                PointwiseCall(
+                    blackPoint = 5f, whitePoint = -5f,
+                    shadows = 55f, midtones = -55f, contrast = 100f,
+                    tempK = 6500f, tint = 30f, saturation = -40f,
+                    asShot = false,
+                    wheelShadowX = 0.25f, wheelShadowY = -0.25f,
+                    wheelMidX = 0.5f, wheelMidY = -0.5f,
+                    wheelHighX = 0.75f, wheelHighY = -0.75f,
+                    splitShadowHue = 30f, splitHighlightHue = 210f,
+                    splitBalance = -25f,
+                )
+            ),
+            develop.renderedPointwise,
+        )
     }
 
     @Test
@@ -186,6 +266,14 @@ class GpuPreviewSessionTest {
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
+                blackPoint = 0f, whitePoint = 0f,
+                shadows = 0f, midtones = 0f, contrast = 0f,
+                tempK = 5600f, tint = 0f, saturation = 0f,
+                asShot = true,
+                wheelShadowX = 0f, wheelShadowY = 0f,
+                wheelMidX = 0f, wheelMidY = 0f,
+                wheelHighX = 0f, wheelHighY = 0f,
+                splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
             )
         )
         assertTrue(develop.rendered.isEmpty())
@@ -201,6 +289,14 @@ class GpuPreviewSessionTest {
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
+                blackPoint = 0f, whitePoint = 0f,
+                shadows = 0f, midtones = 0f, contrast = 0f,
+                tempK = 5600f, tint = 0f, saturation = 0f,
+                asShot = true,
+                wheelShadowX = 0f, wheelShadowY = 0f,
+                wheelMidX = 0f, wheelMidY = 0f,
+                wheelHighX = 0f, wheelHighY = 0f,
+                splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
             )
         )
     }
@@ -238,6 +334,14 @@ class GpuPreviewSessionTest {
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
+                blackPoint = 0f, whitePoint = 0f,
+                shadows = 0f, midtones = 0f, contrast = 0f,
+                tempK = 5600f, tint = 0f, saturation = 0f,
+                asShot = true,
+                wheelShadowX = 0f, wheelShadowY = 0f,
+                wheelMidX = 0f, wheelMidY = 0f,
+                wheelHighX = 0f, wheelHighY = 0f,
+                splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
             )
         )
         assertEquals(0, develop.rendered.size)
@@ -266,6 +370,24 @@ class GpuPreviewSessionTest {
                 maxDim: Int,
                 exposureEv: Float,
                 highlights: Float,
+                blackPoint: Float,
+                whitePoint: Float,
+                shadows: Float,
+                midtones: Float,
+                contrast: Float,
+                tempK: Float,
+                tint: Float,
+                saturation: Float,
+                asShot: Boolean,
+                wheelShadowX: Float,
+                wheelShadowY: Float,
+                wheelMidX: Float,
+                wheelMidY: Float,
+                wheelHighX: Float,
+                wheelHighY: Float,
+                splitShadowHue: Float,
+                splitHighlightHue: Float,
+                splitBalance: Float,
                 highlightReconstruction: Boolean,
                 keepVignetting: Boolean,
                 tonemap: Int,

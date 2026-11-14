@@ -2926,13 +2926,30 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //       -> handle
 //   nativeDevelopSessionRenderFrame(handle, clipHandle, frameIndex,
 //                                   exposureEv, highlights,
+//                                   blackPoint, whitePoint, shadows,
+//                                   midtones, contrast, tempK, tint,
+//                                   saturation, asShot,
+//                                   wheelShadowX, wheelShadowY,
+//                                   wheelMidX, wheelMidY,
+//                                   wheelHighX, wheelHighY,
+//                                   splitShadowHue, splitHighlightHue,
+//                                   splitBalance,
 //                                   highlightReconstruction,
 //                                   keepVignetting, tonemap) -> RGB888 bytes
 //   nativeDevelopSessionSetEncoderSurface(handle, surface) -> ok
 //   nativeDevelopSessionRenderFrameToEncoder(handle, clipHandle, frameIndex,
 //                                            ptsUs, exposureEv, highlights,
+//                                            blackPoint, whitePoint, shadows,
+//                                            midtones, contrast, tempK, tint,
+//                                            saturation, asShot,
+//                                            wheelShadowX, wheelShadowY,
+//                                            wheelMidX, wheelMidY,
+//                                            wheelHighX, wheelHighY,
+//                                            splitShadowHue, splitHighlightHue,
+//                                            splitBalance,
 //                                            highlightReconstruction,
-//                                            keepVignetting, tonemap) -> ok
+//                                            keepVignetting, tonemap,
+//                                            rotationDeg) -> ok
 //   nativeDevelopSessionClose(handle)
 //
 // Open compiles the caller-provided Kotlin shader texts (the single source
@@ -2951,9 +2968,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // path); a refusal returns false with the reason in the last-error slot —
 // the Kotlin dispatcher falls back with ONE honest line, never a crash.
 //
-// The render takes ONLY the five covered grade controls — an uncovered
-// grade cannot even express itself here (the Kotlin coverage gate is the
-// upstream guard; this narrow signature is the second lock).
+// The render takes the fragment-covered grade controls — the five base
+// ones (exposure, highlights, highlight reconstruction, vignetting,
+// tonemap) plus the ten pointwise stages' raw values (black point, white
+// point, shadows, midtones, contrast, temperature, tint, the color
+// wheel, split tone, saturation) with asShot as the 16/17 gate's input.
+// An uncovered grade still cannot even express itself here (the Kotlin
+// coverage gate is the upstream guard; this signature stays the second
+// lock — every parameter names a stage the shader covers).
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
@@ -3053,6 +3075,14 @@ JNIEXPORT jbyteArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jfloat exposureEv, jfloat highlights,
+        jfloat blackPoint, jfloat whitePoint, jfloat shadows,
+        jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
+        jfloat saturation, jboolean asShot,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jboolean highlightReconstruction, jboolean keepVignetting,
         jint tonemap) {
     gLastErrorCode = 0;
@@ -3092,6 +3122,24 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         req.meta = &meta;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
+        req.blackPoint = blackPoint;
+        req.whitePoint = whitePoint;
+        req.shadows = shadows;
+        req.midtones = midtones;
+        req.contrast = contrast;
+        req.tempK = tempK;
+        req.tint = tint;
+        req.saturation = saturation;
+        req.asShot = asShot == JNI_TRUE;
+        req.wheelShadowX = wheelShadowX;
+        req.wheelShadowY = wheelShadowY;
+        req.wheelMidX = wheelMidX;
+        req.wheelMidY = wheelMidY;
+        req.wheelHighX = wheelHighX;
+        req.wheelHighY = wheelHighY;
+        req.splitShadowHue = splitShadowHue;
+        req.splitHighlightHue = splitHighlightHue;
+        req.splitBalance = splitBalance;
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
@@ -3196,6 +3244,14 @@ JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoder(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jlong ptsUs, jfloat exposureEv, jfloat highlights,
+        jfloat blackPoint, jfloat whitePoint, jfloat shadows,
+        jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
+        jfloat saturation, jboolean asShot,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jboolean highlightReconstruction, jboolean keepVignetting,
         jint tonemap, jint rotationDeg) {
     (void)env;
@@ -3233,6 +3289,24 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         req.meta = &meta;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
+        req.blackPoint = blackPoint;
+        req.whitePoint = whitePoint;
+        req.shadows = shadows;
+        req.midtones = midtones;
+        req.contrast = contrast;
+        req.tempK = tempK;
+        req.tint = tint;
+        req.saturation = saturation;
+        req.asShot = asShot == JNI_TRUE;
+        req.wheelShadowX = wheelShadowX;
+        req.wheelShadowY = wheelShadowY;
+        req.wheelMidX = wheelMidX;
+        req.wheelMidY = wheelMidY;
+        req.wheelHighX = wheelHighX;
+        req.wheelHighY = wheelHighY;
+        req.splitShadowHue = splitShadowHue;
+        req.splitHighlightHue = splitHighlightHue;
+        req.splitBalance = splitBalance;
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
@@ -3276,9 +3350,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //       -> handle
 //   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
 //   nativePreviewSessionRenderFrame(handle, clipHandle, frameIndex, maxDim,
-//       exposureEv, highlights, highlightReconstruction, keepVignetting,
-//       tonemap) -> [w, h, pixels...] int array (the small published
-//       stats pack)
+//       exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
+//       contrast, tempK, tint, saturation, asShot, wheelShadowX,
+//       wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
+//       splitShadowHue, splitHighlightHue, splitBalance,
+//       highlightReconstruction, keepVignetting, tonemap)
+//       -> [w, h, pixels...] int array (the small published stats pack)
 //   nativePreviewSessionClose(handle)
 //
 // Open compiles the same single-source-of-truth Kotlin shader texts
@@ -3298,9 +3375,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 // NOWHERE.
 //
 // The grade controls are exactly the fragment-covered set's knobs (the
-// five since the stage-15 highlights port — the same narrow-signature
-// lock as the export seam: an uncovered grade cannot even be expressed
-// here).
+// five base ones plus the ten pointwise stages' raw values since the
+// pointwise port — the same narrow-signature lock as the export seam: an
+// uncovered grade cannot even be expressed here).
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
@@ -3450,6 +3527,14 @@ JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jint maxDim, jfloat exposureEv, jfloat highlights,
+        jfloat blackPoint, jfloat whitePoint, jfloat shadows,
+        jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
+        jfloat saturation, jboolean asShot,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue,
+        jfloat splitBalance,
         jboolean highlightReconstruction, jboolean keepVignetting,
         jint tonemap) {
     gLastErrorCode = 0;
@@ -3542,6 +3627,24 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.meta = &meta;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
+        req.blackPoint = blackPoint;
+        req.whitePoint = whitePoint;
+        req.shadows = shadows;
+        req.midtones = midtones;
+        req.contrast = contrast;
+        req.tempK = tempK;
+        req.tint = tint;
+        req.saturation = saturation;
+        req.asShot = asShot == JNI_TRUE;
+        req.wheelShadowX = wheelShadowX;
+        req.wheelShadowY = wheelShadowY;
+        req.wheelMidX = wheelMidX;
+        req.wheelMidY = wheelMidY;
+        req.wheelHighX = wheelHighX;
+        req.wheelHighY = wheelHighY;
+        req.splitShadowHue = splitShadowHue;
+        req.splitHighlightHue = splitHighlightHue;
+        req.splitBalance = splitBalance;
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;

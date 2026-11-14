@@ -57,15 +57,18 @@
 // renderFrame()/setSurface() may be called from any ONE other thread
 // (the editor's engine thread); both block on their job.
 //
-// COLOR CONTRACT: the develop pass is M3's verbatim (the same 17
-// uniforms, uOetf=1 — the shader's linearToRec709 is the CPU tail's
-// twin, so the stats pack's toByte quantize reproduces developToArgb's
-// pack: toByte(linearToRec709(rgb)) with no second OETF). The grade
-// controls are exactly the fragment-covered set's knobs (five since the
-// stage-15 highlights port: exposure, highlights, highlight
-// reconstruction, vignetting, tonemap) — the same narrow-signature lock
-// M3 rides (an uncovered grade cannot even be expressed through this
-// API).
+// COLOR CONTRACT: the develop pass is M3's verbatim (the same 36
+// uniforms since the pointwise port — the 17 base plus the ten pointwise
+// grade stages' raw values and the two hoisted int gates, uOetf=1 — the
+// shader's linearToRec709 is the CPU tail's twin, so the stats pack's
+// toByte quantize reproduces developToArgb's pack:
+// toByte(linearToRec709(rgb)) with no second OETF). The grade controls
+// are exactly the fragment-covered set's knobs (exposure, highlights,
+// highlight reconstruction, vignetting, tonemap plus the ten pointwise
+// stages: black point, white point, shadows, midtones, contrast,
+// temperature, tint, the color wheel, split tone, saturation) — the same
+// narrow-signature lock M3 rides (an uncovered grade cannot even be
+// expressed through this API).
 //
 // FAILURE SEMANTICS: a GL failure mid-render returns ok=false with the
 // step named in [detail] AND LATCHES the session unhealthy (M3's sticky
@@ -101,13 +104,34 @@ namespace gles {
 // FrameInfo (reduced dims; cfa pattern, dynamic levels and orientationDeg
 // preserved). [cfa] and [meta] are BORROWED: the caller keeps them alive
 // until renderFrame() returns (it blocks, so stack locals are fine). The
-// grade controls are exactly the fragment-covered set's knobs.
+// grade controls are the fragment-covered set's knobs — every one a RAW
+// grade value the shader maps itself (0.0f is the CPU's own neutral
+// skip), with the two CPU-side gates hoisted C++-computed exactly like
+// the develop session's request.
 struct PreviewFrameRequest {
     const std::vector<uint16_t>* cfa = nullptr;  // reduced w*h row-major
     rawedit::FrameInfo info{};
     const rawedit::RawMeta* meta = nullptr;
     float exposureEv = 0.0f;
     float highlights = 0.0f;  // raw grade.highlights; the shader computes s
+    float blackPoint = 0.0f;  // raw grade.blackPoint; the shader computes the lift
+    float whitePoint = 0.0f;  // raw grade.whitePoint; the shader computes the gain
+    float shadows = 0.0f;     // raw grade.shadows; the shader computes the gamma
+    float midtones = 0.0f;    // raw grade.midtones; the shader computes the curve
+    float contrast = 0.0f;    // raw grade.contrast; the shader computes the pivot
+    float tempK = 5600.0f;   // raw grade.tempK; the shader computes the gains
+    float tint = 0.0f;       // raw grade.tint; the shader computes the gains
+    float saturation = 0.0f; // raw grade.saturation; the shader computes the mix
+    bool asShot = true;      // grade.asShot; feeds uWbManual (stages 16/17)
+    float wheelShadowX = 0.0f;  // raw grade.wheelShadowX; the shader computes the offset
+    float wheelShadowY = 0.0f;  // raw grade.wheelShadowY; the shader computes the offset
+    float wheelMidX = 0.0f;     // raw grade.wheelMidX; the shader computes the offset
+    float wheelMidY = 0.0f;     // raw grade.wheelMidY; the shader computes the offset
+    float wheelHighX = 0.0f;    // raw grade.wheelHighX; the shader computes the offset
+    float wheelHighY = 0.0f;    // raw grade.wheelHighY; the shader computes the offset
+    float splitShadowHue = -1.0f;  // raw grade.splitShadowHue; -1 = off
+    float splitHighlightHue = -1.0f;  // raw grade.splitHighlightHue; -1 = off
+    float splitBalance = 0.0f;  // raw grade.splitBalance; the shader computes the mask
     bool highlightReconstruction = true;
     bool keepVignetting = true;
     int tonemap = 0;  // 0 off, 1 ACES, 2-5 AgX (Grade::tonemap)

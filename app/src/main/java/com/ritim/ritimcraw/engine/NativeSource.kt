@@ -861,8 +861,9 @@ class NativeSource private constructor(
          * thread (the clip handle's own ring) and renders it through the
          * session's GL thread — full-res RGB888, row-major, NOT rotated,
          * the same byte shape nativeExportFrame returns. The render takes
-         * ONLY the five fragment-covered grade controls; an uncovered
-         * grade cannot express itself through this signature. Close is
+         * the fragment-covered grade controls (the five base ones plus
+         * the ten pointwise stages' raw values); an uncovered grade
+         * cannot express itself through this signature. Close is
          * idempotent. Device-test-pending (the owner's covered-grade GPU
          * export is the production proof).
          */
@@ -880,6 +881,24 @@ class NativeSource private constructor(
             frameIndex: Int,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -916,6 +935,24 @@ class NativeSource private constructor(
             ptsUs: Long,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -945,8 +982,9 @@ class NativeSource private constructor(
          * [w, h, pixels...] int-array shape the CPU preview publishes,
          * so the Compose overlays consume either path unchanged). NO
          * full-frame readback exists on this path (the audit's explicit
-         * rule; glReadPixels is used nowhere). The render takes ONLY the
-         * five fragment-covered grade controls (highlights joined with the
+         * rule; glReadPixels is used nowhere). The render takes the
+         * fragment-covered grade controls (the five base ones plus the
+         * ten pointwise stages' raw values, highlights joined with the
          * stage-15 port). Close is idempotent.
          * Device-test-pending (the owner's morning playback run is the
          * production proof).
@@ -971,6 +1009,24 @@ class NativeSource private constructor(
             maxDim: Int,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1497,6 +1553,24 @@ class NativeSource private constructor(
             frameIndex: Int,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1506,7 +1580,11 @@ class NativeSource private constructor(
             }
             return nativeDevelopSessionRenderFrame(
                 sessionHandle, clipHandle, frameIndex, exposureEv, highlights,
-                highlightReconstruction, keepVignetting, tonemap)
+                blackPoint, whitePoint, shadows, midtones, contrast, tempK,
+                tint, saturation, asShot, wheelShadowX, wheelShadowY,
+                wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
+                splitHighlightHue, splitBalance, highlightReconstruction,
+                keepVignetting, tonemap)
         }
 
         /**
@@ -1534,7 +1612,8 @@ class NativeSource private constructor(
          * mangled name, and a Kotlin default parameter would emit a
          * `$default` synthetic that also matches — the "exactly one
          * wrapper" assertion would see two. Every caller passes it
-         * explicitly (0 for the upright case).
+         * explicitly (0 for the upright case). The same no-default rule
+         * holds for every parameter of every wrapper here.
          */
         internal fun jniDevelopSessionRenderFrameToEncoder(
             sessionHandle: Long,
@@ -1543,6 +1622,24 @@ class NativeSource private constructor(
             ptsUs: Long,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1553,8 +1650,11 @@ class NativeSource private constructor(
             }
             return nativeDevelopSessionRenderFrameToEncoder(
                 sessionHandle, clipHandle, frameIndex, ptsUs, exposureEv,
-                highlights, highlightReconstruction, keepVignetting, tonemap,
-                rotationDeg)
+                highlights, blackPoint, whitePoint, shadows, midtones,
+                contrast, tempK, tint, saturation, asShot, wheelShadowX,
+                wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
+                splitShadowHue, splitHighlightHue, splitBalance,
+                highlightReconstruction, keepVignetting, tonemap, rotationDeg)
         }
 
         internal fun jniDevelopSessionClose(sessionHandle: Long) {
@@ -1610,6 +1710,24 @@ class NativeSource private constructor(
             maxDim: Int,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1619,7 +1737,11 @@ class NativeSource private constructor(
             }
             return nativePreviewSessionRenderFrame(
                 sessionHandle, clipHandle, frameIndex, maxDim, exposureEv,
-                highlights, highlightReconstruction, keepVignetting, tonemap)
+                highlights, blackPoint, whitePoint, shadows, midtones,
+                contrast, tempK, tint, saturation, asShot, wheelShadowX,
+                wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
+                splitShadowHue, splitHighlightHue, splitBalance,
+                highlightReconstruction, keepVignetting, tonemap)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {

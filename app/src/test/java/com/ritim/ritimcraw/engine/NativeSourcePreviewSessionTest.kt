@@ -16,10 +16,14 @@ import org.junit.Test
  *      the standard recovery message, never UnsatisfiedLinkError leaking
  *      out of the seam. This is the same contract the M3 seam rides and the
  *      same one the commit-b/c dispatcher will catch;
- *   2. the render signature carries EXACTLY the five covered grade controls
- *      (exposure, highlights, highlight reconstruction, vignetting,
- *      tonemap — highlights joined with the stage-15 port) beside the
- *      four plumbing values (session handle, clip handle, frame index,
+ *   2. the render signature carries the fragment-covered grade controls —
+ *      the five base ones (exposure, highlights, highlight
+ *      reconstruction, vignetting, tonemap — highlights joined with the
+ *      stage-15 port) plus the ten pointwise stages' raw values since the
+ *      pointwise port (black point, white point, shadows, midtones,
+ *      contrast, temperature, tint, saturation, the color wheel, split
+ *      tone, with asShot as the 16/17 gate's input) — beside the four
+ *      plumbing values (session handle, clip handle, frame index,
  *      max dim). That narrow signature is the second lock against
  *      uncovered grades (the Kotlin coverage gate is the first): a stage
  *      the fragment pass does not cover cannot even be expressed into the
@@ -79,6 +83,24 @@ class NativeSourcePreviewSessionTest {
                 maxDim = 1280,
                 exposureEv = 0.0f,
                 highlights = 0.0f,
+                blackPoint = 0.0f,
+                whitePoint = 0.0f,
+                shadows = 0.0f,
+                midtones = 0.0f,
+                contrast = 0.0f,
+                tempK = 5600.0f,
+                tint = 0.0f,
+                saturation = 0.0f,
+                asShot = true,
+                wheelShadowX = 0.0f,
+                wheelShadowY = 0.0f,
+                wheelMidX = 0.0f,
+                wheelMidY = 0.0f,
+                wheelHighX = 0.0f,
+                wheelHighY = 0.0f,
+                splitShadowHue = -1.0f,
+                splitHighlightHue = -1.0f,
+                splitBalance = 0.0f,
                 highlightReconstruction = true,
                 keepVignetting = true,
                 tonemap = 0,
@@ -112,19 +134,23 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun render_carries_exactly_the_five_covered_controls() {
-        // 9 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+    fun render_carries_exactly_the_fragment_covered_controls() {
+        // 27 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
         // four plumbing values) + exposureEv, highlights,
-        // highlightReconstruction, keepVignetting, tonemap (the five
+        // highlightReconstruction, keepVignetting, tonemap (the five base
         // fragment-covered grade knobs — highlights joined with the
-        // stage-15 port). Temporal NR, tone-band, sharpening, detail and
-        // LUT controls are deliberately absent — those stages are NOT
+        // stage-15 port) + the ten pointwise stages' raw values since the
+        // pointwise port (blackPoint, whitePoint, shadows, midtones,
+        // contrast, tempK, tint, saturation, the six color-wheel offsets,
+        // the three split-tone values, with asShot as the 16/17 gate's
+        // input). Temporal NR, tone-band, sharpening, detail and LUT
+        // controls are deliberately absent — those stages are NOT
         // fragment-covered, so a grade using any of them must take the CPU
         // path wholesale; adding such a parameter here widens the session's
         // promise and must fail this test until the coverage gate is taught
         // the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(9, render.parameterCount)
+        assertEquals(27, render.parameterCount)
     }
 
     @Test
