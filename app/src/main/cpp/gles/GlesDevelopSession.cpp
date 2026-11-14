@@ -36,6 +36,10 @@
 #include <thread>
 #include <utility>
 
+// ANativeWindow_release: the surface job releases the transferred window
+// reference on the GL thread (the header's ownership contract).
+#include <android/native_window.h>
+
 #include <GLES3/gl31.h>
 
 #include "GlesPipeline.h"
@@ -303,15 +307,27 @@ struct DevelopSession::Impl {
     EglSession egl;
     GLuint developProgram = 0;
     GLuint storeProgram = 0;
-    // Uniform locations, resolved ONCE at open (16 develop + 2 store).
+    // Uniform locations, resolved ONCE at open (16 develop + 2 store +
+    // 2 blit — the encoder-surface path's own program).
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
           exposureLoc = -1, tonemapLoc = -1, oetfLoc = -1;
     GLint storeSrcLoc = -1, storeSizeLoc = -1;
+    GLint blitSrcLoc = -1, blitSizeLoc = -1;
+    GLuint blitProgram = 0;
     GLuint cfaTex = 0, shadingTex = 0, developTex = 0, scratchTex = 0;
     GLuint developFbo = 0, scratchFbo = 0;
     GLuint outBuf = 0;
+    // The encoder window surface (M5). EGL_NO_SURFACE until a successful
+    // setEncoderSurface attach; destroyed on the GL thread (in
+    // runSurfaceJob, on detach, and in teardown). GL-thread-owned.
+    EGLSurface encoderSurface = EGL_NO_SURFACE;
+    // eglPresentationTimeANDROID (EGL_ANDROID_presentation_time), resolved
+    // ONCE at init via eglGetProcAddress. Null on a device without the
+    // extension — the encoder render then refuses honestly with that
+    // reason named (never a crash, never a wall-clock stamp).
+    PFNEGLPRESENTATIONTIMEANDROIDPROC presentationTime = nullptr;
     // Immutable storage currently allocated (0 = none yet). Per-frame work
     // touches none of these fields — glTexSubImage2D uploads data into the
     // existing storage, and the SSBO keeps its size while w/h hold.
@@ -320,16 +336,34 @@ struct DevelopSession::Impl {
     uint64_t outBytes = 0;
 
     // --- Handoff state (guarded by [mutex]) --------------------------------
+    // Job kinds (the M4 GlesPreviewSession shape, extended for M5):
+    //   Render   — a readback render (runJob); failures LATCH (mid-render
+    //              GL failure = context event).
+    //   Surface  — an encoder-surface attach/detach (runSurfaceJob);
+    //              failures NEVER latch (the context is fine — the window
+    //              isn't). A detach (null window) always processes, even
+    //              on a latched-unhealthy session, so teardown paths can
+    //              release the surface.
+    //   Encoder   — a render-to-encoder (runEncoderJob); failures LATCH
+    //              (same mid-render semantics as Render).
+    enum class JobKind { None, Render, Surface, Encoder };
     std::mutex mutex;
     std::condition_variable cvRequest;
     std::condition_variable cvDone;
     std::thread glThread;
     bool threadRunning = false;
-    // The one in-flight job (bounded by construction: renderFrame blocks
-    // on cvDone until the GL thread clears [pending], so at most one
-    // request is ever in flight).
-    const DevelopFrameRequest* pending = nullptr;
-    DevelopFrameResult* result = nullptr;
+    // The one in-flight job (bounded by construction: every submitter
+    // blocks on cvDone until the GL thread clears [pendingKind], so at
+    // most one request is ever in flight — regardless of kind).
+    JobKind pendingKind = JobKind::None;
+    const DevelopFrameRequest* pendingReq = nullptr;
+    DevelopFrameResult* pendingRes = nullptr;
+    int64_t pendingPtsUs = 0;
+    // The window to attach (or null to detach) — borrowed for the job's
+    // duration only; ownership transferred at setEncoderSurface entry.
+    ANativeWindow* pendingWindow = nullptr;
+    bool pendingSurfaceOk = false;
+    std::string pendingSurfaceDetail;
     bool closeRequested = false;
     // Latched failure (the header's failure semantics): set on the GL
     // thread, read through the mutex (a failed session never recovers —
@@ -342,8 +376,16 @@ struct DevelopSession::Impl {
                         const std::string& vertex310Source,
                         const std::string& fragmentSource,
                         const std::string& storeFragmentSource,
+                        const std::string& blitFragmentSource,
                         std::string* detail);
     void runJob(const DevelopFrameRequest& req, DevelopFrameResult& out);
+    // The shared develop pass (input contract, CPU uniforms, allocation,
+    // upload, the develop draw into developFbo) — the part runJob and
+    // runEncoderJob share verbatim. False with out.detail set on failure.
+    bool developPass(const DevelopFrameRequest& req, DevelopFrameResult& out);
+    void runSurfaceJob(ANativeWindow* window, bool* ok, std::string* detail);
+    void runEncoderJob(const DevelopFrameRequest& req, int64_t ptsUs,
+                       DevelopFrameResult& out);
     void teardownOnGlThread();
     // The thread's whole life: serve jobs until close (entered on the GL
     // thread itself, right after initOnGlThread reports).
@@ -361,33 +403,55 @@ void DevelopSession::Impl::glThreadLoop() {
     // the harness).
     std::unique_lock<std::mutex> lock(mutex);
     while (true) {
-        cvRequest.wait(lock, [&]() { return closeRequested || pending != nullptr; });
-        if (closeRequested && pending == nullptr) break;
+        cvRequest.wait(lock, [&]() { return closeRequested || pendingKind != JobKind::None; });
+        if (closeRequested && pendingKind == JobKind::None) break;
 
         // Run the job with the lock RELEASED (healthy()/close() must stay
         // live from other threads during the render, and the render can
-        // take hundreds of milliseconds). [pending]/[result] still point
-        // at the caller's request/result — safe because renderFrame is
-        // BLOCKED on cvDone until we clear [pending] below, so nothing
+        // take hundreds of milliseconds). The pending* fields still point
+        // at the caller's buffers — safe because every submitter is
+        // BLOCKED on cvDone until we clear [pendingKind] below, so nothing
         // touches them while the lock is open.
-        const DevelopFrameRequest* req = pending;
-        DevelopFrameResult* out = result;
+        const JobKind kind = pendingKind;
+        const DevelopFrameRequest* req = pendingReq;
+        DevelopFrameResult* out = pendingRes;
+        const int64_t ptsUs = pendingPtsUs;
+        ANativeWindow* window = pendingWindow;
+        bool* surfaceOk = &pendingSurfaceOk;
+        std::string* surfaceDetail = &pendingSurfaceDetail;
         lock.unlock();
-        runJob(*req, *out);
+        if (kind == JobKind::Surface) {
+            // An attach/detach job. NEVER latches (see the Impl comment):
+            // the outcome lands in pendingSurfaceOk/pendingSurfaceDetail.
+            runSurfaceJob(window, surfaceOk, surfaceDetail);
+        } else if (kind == JobKind::Encoder) {
+            runEncoderJob(*req, ptsUs, *out);
+        } else {
+            runJob(*req, *out);
+        }
         lock.lock();
-        // Publish under the lock AND latch failures (the header's
-        // semantics): a mid-render GL failure or an input-contract
-        // failure makes the session unhealthy — later renderFrame calls
-        // fail fast with the same detail instead of retrying a broken
-        // context, and the Kotlin dispatcher falls the export back to
-        // CPU with this reason.
-        if (!out->ok) {
+        // Publish under the lock AND latch RENDER/ENCODER failures (the
+        // header's semantics): a mid-render GL failure or an
+        // input-contract failure makes the session unhealthy — later
+        // renderFrame calls fail fast with the same detail instead of
+        // retrying a broken context, and the Kotlin dispatcher falls the
+        // export back to CPU with this reason. A SURFACE job's failure is
+        // NOT latched (the context is fine — the window isn't).
+        if ((kind == JobKind::Render || kind == JobKind::Encoder) && !out->ok) {
             healthyFlag = false;
             if (failureDetail.empty()) failureDetail = out->detail;
         }
-        pending = nullptr;
-        result = nullptr;
-        cvDone.notify_one();
+        pendingKind = JobKind::None;
+        pendingReq = nullptr;
+        pendingRes = nullptr;
+        pendingPtsUs = 0;
+        pendingWindow = nullptr;
+        // notify_all: TWO different threads can be parked on cvDone (the
+        // engine thread in renderFrame/renderFrameToEncoder, the exporter
+        // thread in setEncoderSurface). A notify_one could wake the wrong
+        // waiter, which would re-sleep on the predicate and leave the
+        // actual waiter stuck until the next spurious wake.
+        cvDone.notify_all();
         // Loop: drain any close requested while the job ran.
     }
     // Exit path: closeRequested && no pending job. Tear down the GL state
@@ -408,6 +472,7 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
         const std::string& vertex310Source,
         const std::string& fragmentSource,
         const std::string& storeFragmentSource,
+        const std::string& blitFragmentSource,
         std::string* detail) {
     std::unique_ptr<DevelopSession> session(new DevelopSession);
     session->impl_ = std::unique_ptr<Impl>(new Impl);
@@ -422,19 +487,19 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
     bool initOk = false;
     std::string initDetail;
 
-    // Capture list is explicit on purpose: [impl] and the four sources BY
+    // Capture list is explicit on purpose: [impl] and the five sources BY
     // VALUE (a `[&]` would dangle — this thread outlives open()'s frame),
     // the init-handshake locals by reference (safe: each is touched
     // exactly once, before the notify, and open() does not return until
     // the notification arrives).
     impl->glThread = std::thread(
         [impl, vertexSource, vertex310Source, fragmentSource,
-         storeFragmentSource, &initMutex, &initCv,
+         storeFragmentSource, blitFragmentSource, &initMutex, &initCv,
          &initReported, &initOk, &initDetail]() {
             std::string d;
             const bool ok = impl->initOnGlThread(
                 vertexSource, vertex310Source, fragmentSource,
-                storeFragmentSource, &d);
+                storeFragmentSource, blitFragmentSource, &d);
             // Report init's outcome to open() FIRST, then serve the loop
             // (or exit it on failure — open() joins the thread below).
             {
@@ -487,10 +552,17 @@ bool DevelopSession::Impl::initOnGlThread(
         const std::string& vertex310Source,
         const std::string& fragmentSource,
         const std::string& storeFragmentSource,
+        const std::string& blitFragmentSource,
         std::string* detail) {
     // --- EGL + capability gates (THIS context, not the probe's) ------------
     std::string d;
-    if (!egl.open(&d)) {
+    // windowCapable + recordable: the session's config must be able to
+    // wrap a MediaCodec input Surface later (M5) — the SAME config is
+    // handed to eglCreateWindowSurface in runSurfaceJob. The pbuffer stays
+    // the session's own current surface; the recordable flag is what the
+    // codec's BufferQueue consumer needs from the producer config
+    // (EGL_ANDROID_recordable).
+    if (!egl.open(&d, /*windowCapable=*/true, /*recordable=*/true)) {
         *detail = "egl: " + d;
         return false;
     }
@@ -527,6 +599,18 @@ bool DevelopSession::Impl::initOnGlThread(
     if (storeFragShader.id == 0) return false;
     storeProgram = linkProgram(vert310Shader.id, storeFragShader.id, "store", detail);
     if (storeProgram == 0) return false;
+    // The blit program (M5): the SAME BLIT_FRAGMENT the Surface-mode writer
+    // proved on device, linked against the plain 300es fullscreen vertex.
+    // It copies the developed texture to the encoder window surface with
+    // the Y flip the writer's path established (the develop pass's texel
+    // row 0 is the image top; the window surface presents row 0 at the
+    // bottom).
+    GlShader blitFragShader;
+    blitFragShader.id = compileShader(GL_FRAGMENT_SHADER, blitFragmentSource,
+                                      "blit-fragment", detail);
+    if (blitFragShader.id == 0) return false;
+    blitProgram = linkProgram(vertShader.id, blitFragShader.id, "blit", detail);
+    if (blitProgram == 0) return false;
     // Program ownership is already in the Impl (linkProgram's result is
     // assigned straight into the member); the GlShader guards deleting the
     // SHADER objects at scope exit is correct OpenGL — an attached shader
@@ -563,6 +647,21 @@ bool DevelopSession::Impl::initOnGlThread(
         *detail = "shader-contract: missing uSrc/uSize";
         return false;
     }
+    blitSrcLoc = glGetUniformLocation(blitProgram, "uSrc");
+    blitSizeLoc = glGetUniformLocation(blitProgram, "uSize");
+    if (blitSrcLoc < 0 || blitSizeLoc < 0) {
+        *detail = "shader-contract: missing blit uSrc/uSize";
+        return false;
+    }
+
+    // --- presentation-time extension (M5) ------------------------------------
+    // eglPresentationTimeANDROID is an EXTENSION: resolved dynamically, and
+    // its ABSENCE is legal (older devices). Null is not an init failure —
+    // the readback path never needs it; the encoder path refuses honestly
+    // with this named reason instead (never a crash, never a wall-clock
+    // stamp pretending to be media time).
+    presentationTime = reinterpret_cast<PFNEGLPRESENTATIONTIMEANDROIDPROC>(
+        eglGetProcAddress("eglPresentationTimeANDROID"));
 
     // --- static texture-unit bindings (the unit assignment never changes) --
     glUseProgram(developProgram);
@@ -570,21 +669,25 @@ bool DevelopSession::Impl::initOnGlThread(
     glUniform1i(shadingLoc, 3);  // shading: GL_TEXTURE3
     glUseProgram(storeProgram);
     glUniform1i(storeSrcLoc, 1); // store source: GL_TEXTURE1
+    glUseProgram(blitProgram);
+    glUniform1i(blitSrcLoc, 1);  // blit source: GL_TEXTURE1 (the developed
+                                 // texture — the same unit the store pass
+                                 // reads it from)
     glUseProgram(0);
     return true;
 }
 
 // ---- the frame job ------------------------------------------------------------
 
-void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
-                                  DevelopFrameResult& out) {
+bool DevelopSession::Impl::developPass(const DevelopFrameRequest& req,
+                                       DevelopFrameResult& out) {
     const uint32_t w = req.info.width;
     const uint32_t h = req.info.height;
     if (req.cfa == nullptr || req.meta == nullptr ||
         w == 0 || h == 0 ||
         req.cfa->size() != static_cast<size_t>(w) * h) {
         out.detail = "input: cfa size != w*h";
-        return;
+        return false;
     }
     out.width = w;
     out.height = h;
@@ -663,7 +766,7 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexStorage2D(GL_TEXTURE_2D, 1, GL_R16UI,
                        static_cast<GLsizei>(w), static_cast<GLsizei>(h));
-        if (glErrorAfter("glTexStorage2D(R16UI)", &out.detail) != GL_NO_ERROR) return;
+        if (glErrorAfter("glTexStorage2D(R16UI)", &out.detail) != GL_NO_ERROR) return false;
 
         // develop FBO: RGBA32F attachment (EXT_color_buffer_float, gated
         // in THIS context at open).
@@ -676,14 +779,14 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F,
                        static_cast<GLsizei>(w), static_cast<GLsizei>(h));
-        if (glErrorAfter("glTexStorage2D(RGBA32F)", &out.detail) != GL_NO_ERROR) return;
+        if (glErrorAfter("glTexStorage2D(RGBA32F)", &out.detail) != GL_NO_ERROR) return false;
         glGenFramebuffers(1, &developFbo);
         glBindFramebuffer(GL_FRAMEBUFFER, developFbo);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                developTex, 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             out.detail = "develop fbo incomplete (RGBA32F not renderable here)";
-            return;
+            return false;
         }
 
         // scratch RGBA8 (the store pass's throwaway target — never the
@@ -698,14 +801,14 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8,
                        static_cast<GLsizei>(w), static_cast<GLsizei>(h));
-        if (glErrorAfter("glTexStorage2D(RGBA8)", &out.detail) != GL_NO_ERROR) return;
+        if (glErrorAfter("glTexStorage2D(RGBA8)", &out.detail) != GL_NO_ERROR) return false;
         glGenFramebuffers(1, &scratchFbo);
         glBindFramebuffer(GL_FRAMEBUFFER, scratchFbo);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                scratchTex, 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             out.detail = "store fbo incomplete";
-            return;
+            return false;
         }
 
         // SSBO: w*h*3 floats, STREAM_READ (the store pass writes it, the
@@ -715,7 +818,7 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, outBuf);
         glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes),
                      nullptr, GL_STREAM_READ);
-        if (glErrorAfter("glBufferData(out)", &out.detail) != GL_NO_ERROR) return;
+        if (glErrorAfter("glBufferData(out)", &out.detail) != GL_NO_ERROR) return false;
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, outBuf);
         outBytes = bytes;
         cfaW = w;
@@ -741,20 +844,20 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
             glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F,
                            static_cast<GLsizei>(req.meta->shadingW),
                            static_cast<GLsizei>(req.meta->shadingH * 4));
-            if (glErrorAfter("glTexStorage2D(R32F shading)", &out.detail) != GL_NO_ERROR) return;
+            if (glErrorAfter("glTexStorage2D(R32F shading)", &out.detail) != GL_NO_ERROR) return false;
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                             static_cast<GLsizei>(req.meta->shadingW),
                             static_cast<GLsizei>(req.meta->shadingH * 4),
                             GL_RED, GL_FLOAT, req.meta->lensShading.data());
-            if (glErrorAfter("glTexSubImage2D(R32F shading)", &out.detail) != GL_NO_ERROR) return;
+            if (glErrorAfter("glTexSubImage2D(R32F shading)", &out.detail) != GL_NO_ERROR) return false;
             shadingW = req.meta->shadingW;
             shadingH = req.meta->shadingH;
         } else {
             const float dummy = 1.0f;
             glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F, 1, 1);
-            if (glErrorAfter("glTexStorage2D(R32F dummy)", &out.detail) != GL_NO_ERROR) return;
+            if (glErrorAfter("glTexStorage2D(R32F dummy)", &out.detail) != GL_NO_ERROR) return false;
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RED, GL_FLOAT, &dummy);
-            if (glErrorAfter("glTexSubImage2D(R32F dummy)", &out.detail) != GL_NO_ERROR) return;
+            if (glErrorAfter("glTexSubImage2D(R32F dummy)", &out.detail) != GL_NO_ERROR) return false;
             shadingW = 1;
             shadingH = 1;
         }
@@ -766,7 +869,7 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                     static_cast<GLsizei>(w), static_cast<GLsizei>(h),
                     GL_RED_INTEGER, GL_UNSIGNED_SHORT, req.cfa->data());
-    if (glErrorAfter("glTexSubImage2D(R16UI)", &out.detail) != GL_NO_ERROR) return;
+    if (glErrorAfter("glTexSubImage2D(R16UI)", &out.detail) != GL_NO_ERROR) return false;
 
     // --- draw 1: the develop pass (the fused covered stages + OETF tail) ---
     glUseProgram(developProgram);
@@ -790,7 +893,19 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
     glUniform1i(tonemapLoc, req.tonemap);
     glUniform1i(oetfLoc, 1);  // the export shape: linearToRec709 in-shader
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    if (glErrorAfter("glDrawArrays(develop)", &out.detail) != GL_NO_ERROR) return;
+    if (glErrorAfter("glDrawArrays(develop)", &out.detail) != GL_NO_ERROR) return false;
+    // The developed frame now lives in developTex (RGBA32F, OETF applied).
+    // runJob continues with the store pass + SSBO readback; runEncoderJob
+    // blits this texture straight to the encoder window surface instead.
+    return true;
+}
+
+void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
+                                  DevelopFrameResult& out) {
+    const uint32_t w = req.info.width;
+    const uint32_t h = req.info.height;
+
+    if (!developPass(req, out)) return;
 
     // --- draw 2: the store pass into the SSBO (never glReadPixels) ---------
     glUseProgram(storeProgram);
@@ -834,6 +949,155 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
     out.ok = true;
 }
 
+void DevelopSession::Impl::runSurfaceJob(ANativeWindow* window, bool* ok,
+                                         std::string* detail) {
+    // Attach/detach the encoder window surface (M4's runSurfaceJob shape).
+    // Entered with the pbuffer current and the lock released. NEVER latches
+    // (the Impl comment): a failure leaves the session healthy, the encoder
+    // path just stays unavailable and the caller falls back with this
+    // reason in ONE log line.
+    *ok = false;
+    if (detail != nullptr) detail->clear();
+
+    // OWNERSHIP (the header's contract, the M4 setSurface shape): the
+    // caller transferred its ANativeWindow reference at setEncoderSurface
+    // entry; THIS job is the served path, so the release happens here, on
+    // the GL thread, on EVERY attach path (success and failure —
+    // eglCreateWindowSurface acquires the window's own reference on
+    // success, so ours is redundant; on failure nothing else holds it). A
+    // DETACH carries no reference. The fast-refusal paths (closed /
+    // unhealthy session) release on the CALLING thread instead — see
+    // setEncoderSurface().
+    if (window == nullptr) {
+        // Detach: destroy any attached encoder surface, then nothing more.
+        // The pbuffer is current again and the session serves readback jobs
+        // as before.
+        if (encoderSurface != EGL_NO_SURFACE) {
+            eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+            eglDestroySurface(egl.display, encoderSurface);
+            encoderSurface = EGL_NO_SURFACE;
+        }
+        *ok = true;
+        return;
+    }
+
+    // Destroy any previous encoder surface first (a re-attach replaces it;
+    // EGL owns at most one window surface per ANativeWindow here).
+    if (encoderSurface != EGL_NO_SURFACE) {
+        eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+        eglDestroySurface(egl.display, encoderSurface);
+        encoderSurface = EGL_NO_SURFACE;
+    }
+
+    // The session's OWN config (opened window-capable + recordable at init)
+    // — the SAME config the context was created with, which is what makes
+    // eglCreateWindowSurface legal here. The surface attribs mirror the
+    // device-PROVEN writer path (configureSurfaceVideoCodec's
+    // eglCreateWindowSurface): EGL_RECORDABLE_ANDROID=1 is what the
+    // MediaCodec input Surface's BufferQueue consumer needs to accept the
+    // producer — without it some devices reject the surface outright.
+    const EGLint surfAttribs[] = {
+        EGL_RECORDABLE_ANDROID, 1,
+        EGL_NONE,
+    };
+    EGLSurface created = eglCreateWindowSurface(egl.display, egl.config,
+                                                 window, surfAttribs);
+    if (created == EGL_NO_SURFACE) {
+        if (detail != nullptr) *detail = "eglCreateWindowSurface(encoder) failed";
+        ANativeWindow_release(window);
+        return;
+    }
+    // Probe make-current on the new surface BEFORE accepting it: an
+    // unusable surface must be refused now, not discovered mid-render.
+    if (!eglMakeCurrent(egl.display, created, created, egl.context)) {
+        if (detail != nullptr) *detail = "eglMakeCurrent(encoder) failed";
+        eglDestroySurface(egl.display, created);
+        ANativeWindow_release(window);
+        return;
+    }
+    encoderSurface = created;
+    // Swap as fast as frames arrive — an export is not a display; pacing
+    // would only add latency in front of the codec.
+    eglSwapInterval(egl.display, 0);
+    // Back to the pbuffer: the session's default current surface (the FBO
+    // draws do not care about the window binding, but every job starts
+    // from the same state).
+    eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+    ANativeWindow_release(window);
+    *ok = true;
+}
+
+void DevelopSession::Impl::runEncoderJob(const DevelopFrameRequest& req,
+                                         int64_t ptsUs,
+                                         DevelopFrameResult& out) {
+    const uint32_t w = req.info.width;
+    const uint32_t h = req.info.height;
+
+    if (encoderSurface == EGL_NO_SURFACE) {
+        out.detail = "encoder surface not attached";
+        return;
+    }
+    if (presentationTime == nullptr) {
+        // Honest gate (the header's rule): the extension was absent at
+        // init; the frame is NOT stamped with a guess. The caller falls
+        // back with this reason.
+        out.detail = "eglPresentationTimeANDROID unavailable";
+        return;
+    }
+    if (ptsUs < 0) {
+        out.detail = "encoder pts must be non-negative us";
+        return;
+    }
+
+    // The shared develop pass — the EXACT same draw the readback path
+    // runs (same uniforms, same allocation, same FBO); only the tail
+    // differs (a blit to the window surface instead of the store pass +
+    // SSBO readback).
+    if (!developPass(req, out)) return;
+
+    // --- the blit: developTex -> the encoder window surface ----------------
+    // Make the ENCODER surface current (the pbuffer stays the session's
+    // default; the readback path and this path stay independent).
+    if (!eglMakeCurrent(egl.display, encoderSurface, encoderSurface,
+                        egl.context)) {
+        out.detail = "eglMakeCurrent(encoder) failed";
+        return;
+    }
+    // BLIT_FRAGMENT's Y flip reproduces the writer's Surface-mode
+    // orientation verbatim (the develop pass's texel row 0 is the image
+    // top; the window surface presents row 0 at the bottom).
+    glUseProgram(blitProgram);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, developTex);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);  // draw to the window surface
+    glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+    glUniform2i(blitSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (glErrorAfter("glDrawArrays(blit)", &out.detail) != GL_NO_ERROR) {
+        eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+        return;
+    }
+    // Media time, NEVER the wall clock: the SAME normalized pts the
+    // writer path stamps (PtsTimeline.ptsNs's math — us -> ns).
+    if (presentationTime(egl.display, encoderSurface,
+                         static_cast<EGLnsecsANDROID>(ptsUs) * 1000) !=
+        EGL_TRUE) {
+        out.detail = "eglPresentationTimeANDROID failed";
+        eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+        return;
+    }
+    if (eglSwapBuffers(egl.display, encoderSurface) != EGL_TRUE) {
+        out.detail = "eglSwapBuffers(encoder) failed";
+        eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+        return;
+    }
+    // Back to the pbuffer for the next job (state symmetry).
+    eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+    out.width = w;
+    out.height = h;
+    out.ok = true;
+}
+
 // ---- renderFrame / close / health ---------------------------------------------
 
 DevelopFrameResult DevelopSession::renderFrame(const DevelopFrameRequest& req) {
@@ -854,18 +1118,95 @@ DevelopFrameResult DevelopSession::renderFrame(const DevelopFrameRequest& req) {
     }
     // In-flight guard: renderFrame blocks, so ONE well-behaved caller can
     // never trip this — but a second concurrent caller would overwrite
-    // [pending] and corrupt the first job's handoff. Fail it loudly
-    // instead (the export engine thread is the one legal caller).
-    if (impl_->pending != nullptr) {
+    // the pending fields and corrupt the first job's handoff. Fail it
+    // loudly instead (the export engine thread is the one legal caller).
+    if (impl_->pendingKind != Impl::JobKind::None) {
         res.detail = "renderFrame re-entered while a frame was in flight";
         return res;
     }
-    impl_->pending = &req;
-    impl_->result = &res;
+    impl_->pendingKind = Impl::JobKind::Render;
+    impl_->pendingReq = &req;
+    impl_->pendingRes = &res;
     impl_->cvRequest.notify_one();
-    impl_->cvDone.wait(lock, [&]() { return impl_->pending == nullptr; });
+    impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None; });
     // [res] was filled by the GL thread while we held the wait; the
     // unique_lock releases on return.
+    return res;
+}
+
+bool DevelopSession::setEncoderSurface(ANativeWindow* window,
+                                       std::string* detail) {
+    if (impl_ == nullptr) {
+        if (detail != nullptr) *detail = "session not open";
+        return false;
+    }
+    // Ownership transfers at call entry (the M4 setSurface shape): the
+    // caller acquired (or nulls) the ANativeWindow; the GL thread releases
+    // it on every path. Fast refusals below release HERE on the calling
+    // thread instead.
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    if (!impl_->threadRunning) {
+        if (window != nullptr) ANativeWindow_release(window);
+        if (detail != nullptr) *detail = "session closed";
+        return false;
+    }
+    // A DETACH (null window) always processes — even on a latched-unhealthy
+    // session (teardown paths must be able to release the surface). An
+    // ATTACH on an unhealthy session is refused: the context is broken and
+    // the attach would be a lie.
+    if (window != nullptr && !impl_->healthyFlag) {
+        ANativeWindow_release(window);
+        if (detail != nullptr) {
+            *detail = impl_->failureDetail.empty()
+                ? std::string("session unhealthy") : impl_->failureDetail;
+        }
+        return false;
+    }
+    if (impl_->pendingKind != Impl::JobKind::None) {
+        if (window != nullptr) ANativeWindow_release(window);
+        if (detail != nullptr) *detail = "setEncoderSurface re-entered while a job was in flight";
+        return false;
+    }
+    impl_->pendingKind = Impl::JobKind::Surface;
+    impl_->pendingWindow = window;
+    impl_->pendingSurfaceOk = false;
+    impl_->pendingSurfaceDetail.clear();
+    impl_->cvRequest.notify_one();
+    impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None; });
+    const bool ok = impl_->pendingSurfaceOk;
+    if (detail != nullptr && !ok && !impl_->pendingSurfaceDetail.empty()) {
+        *detail = impl_->pendingSurfaceDetail;
+    }
+    return ok;
+}
+
+DevelopFrameResult DevelopSession::renderFrameToEncoder(
+        const DevelopFrameRequest& req, int64_t ptsUs) {
+    DevelopFrameResult res;
+    if (impl_ == nullptr) {
+        res.detail = "session not open";
+        return res;
+    }
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    if (!impl_->threadRunning) {
+        res.detail = "session closed";
+        return res;
+    }
+    if (!impl_->healthyFlag) {
+        res.detail = impl_->failureDetail.empty()
+            ? std::string("session unhealthy") : impl_->failureDetail;
+        return res;
+    }
+    if (impl_->pendingKind != Impl::JobKind::None) {
+        res.detail = "renderFrameToEncoder re-entered while a job was in flight";
+        return res;
+    }
+    impl_->pendingKind = Impl::JobKind::Encoder;
+    impl_->pendingReq = &req;
+    impl_->pendingRes = &res;
+    impl_->pendingPtsUs = ptsUs;
+    impl_->cvRequest.notify_one();
+    impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None; });
     return res;
 }
 
@@ -921,6 +1262,14 @@ void DevelopSession::Impl::teardownOnGlThread() {
     if (outBuf != 0) { glDeleteBuffers(1, &outBuf); outBuf = 0; }
     if (developProgram != 0) { glDeleteProgram(developProgram); developProgram = 0; }
     if (storeProgram != 0) { glDeleteProgram(storeProgram); storeProgram = 0; }
+    if (blitProgram != 0) { glDeleteProgram(blitProgram); blitProgram = 0; }
+    // The encoder window surface dies BEFORE the EGL session release (it
+    // belongs to this display); the pbuffer is current, so destroying the
+    // window surface is legal.
+    if (encoderSurface != EGL_NO_SURFACE) {
+        eglDestroySurface(egl.display, encoderSurface);
+        encoderSurface = EGL_NO_SURFACE;
+    }
     egl.release();
 }
 

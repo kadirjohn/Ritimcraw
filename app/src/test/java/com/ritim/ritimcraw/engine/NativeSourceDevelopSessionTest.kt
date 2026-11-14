@@ -5,25 +5,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The production GPU develop session's Kotlin seam (M3 commit a).
+ * The production GPU develop session's Kotlin seam (M3 commit a + the M5
+ * encoder-surface pair).
  *
  * HONESTY: the session itself (GlesDevelopSession.cpp) is Android-only —
  * EGL/GLES headers exist solely in the NDK, so the JVM suite cannot compile
  * or run it. What the JVM CAN lock, and what this file does lock:
  *
- *   1. the wrapper trio's unavailable guard — on the JVM (and on any build
- *      without the .so) every entry point throws IllegalStateException with
+ *   1. every wrapper's unavailable guard — on the JVM (and on any build
+ *      without the .so) each entry point throws IllegalStateException with
  *      the standard recovery message, never UnsatisfiedLinkError leaking
  *      out of the seam. This is the same contract jniGlesFragmentParity
  *      rides and the same one the commit-b dispatcher will catch;
- *   2. the render signature carries EXACTLY the four covered grade controls
- *      (exposure, highlight reconstruction, vignetting, tonemap) beside the
- *      three handles/indices. That narrow signature is the second lock
+ *   2. the render signatures carry EXACTLY the four covered grade controls
+ *      (exposure, highlight reconstruction, vignetting, tonemap) beside
+ *      the plumbing values. That narrow signature is the second lock
  *      against uncovered grades (the Kotlin coverage gate is the first): a
  *      stage the fragment pass does not cover — temporal NR strength, a
  *      tone-band knob, a LUT path — cannot even be expressed into the
  *      session, so widening this signature must be a deliberate act that
- *      edits this test too.
+ *      edits this test too;
+ *   3. the encoder-surface pair's shapes: open now carries the fifth
+ *      (blit) source, and renderFrameToEncoder adds ptsUs (the encoder
+ *      Surface's presentation time) to the readback render's seven.
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -42,6 +46,7 @@ class NativeSourceDevelopSessionTest {
                 GlesShaderSources.FULLSCREEN_VERTEX_310,
                 GlesShaderSources.DEVELOP_FRAGMENT,
                 GlesShaderSources.STORE_FRAGMENT,
+                GlesShaderSources.BLIT_FRAGMENT,
             )
             throw AssertionError("expected IllegalStateException")
         } catch (expected: IllegalStateException) {
@@ -79,13 +84,66 @@ class NativeSourceDevelopSessionTest {
         }
     }
 
+    @Test
+    fun set_encoder_surface_throws_the_unavailable_message_without_the_native_lib() {
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniDevelopSessionSetEncoderSurface(1L, null)
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
+    @Test
+    fun render_frame_to_encoder_throws_the_unavailable_message_without_the_native_lib() {
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniDevelopSessionRenderFrameToEncoder(
+                sessionHandle = 1L,
+                clipHandle = 1L,
+                frameIndex = 0,
+                ptsUs = 0L,
+                exposureEv = 0.0f,
+                highlightReconstruction = true,
+                keepVignetting = true,
+                tonemap = 0,
+            )
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
+    @Test
+    fun set_sync_refine_throws_the_unavailable_message_without_the_native_lib() {
+        // The M5 sync-refine toggle's wrapper: unlike the two build gates
+        // (nativeSetStabDebugLog / nativeSetExportTiming, companion-init
+        // private) this one has a UI caller — the stab sheet's switch —
+        // so the unavailable guard is the ONLY thing standing between the
+        // switch and an UnsatisfiedLinkError mid-compose. The JVM always
+        // runs this path (the .so never loads on the host).
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniSetSyncRefine(true)
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
     // ---- the signature locks (the second lock against uncovered grades) ---
 
     private fun method(name: String): java.lang.reflect.Method {
-        // Internal members are public in JVM bytecode; match by prefix so a
-        // future mangling rule cannot silently break the lookup.
+        // Internal members are public in JVM bytecode but MANGLED with a
+        // build-variant suffix (e.g. jniDevelopSessionRenderFrame$app_debug),
+        // so match the plain name plus the mangling separator — that also
+        // disambiguates the M5 pair, where the readback render's name is a
+        // strict prefix of jniDevelopSessionRenderFrameToEncoder's: only
+        // "jniDevelopSessionRenderFrame$" matches the readback, only
+        // "jniDevelopSessionRenderFrameToEncoder$" the encoder blit.
         val methods = NativeSource.Companion::class.java.declaredMethods
-        val matches = methods.filter { it.name.startsWith(name) }
+        val matches = methods.filter { it.name.startsWith(name + "$") }
         assertEquals("exactly one $name wrapper", 1, matches.size)
         return matches.first()
     }
@@ -105,22 +163,48 @@ class NativeSourceDevelopSessionTest {
     }
 
     @Test
-    fun open_carries_exactly_the_four_shader_sources() {
-        // The session compiles the Kotlin single-source-of-truth texts —
-        // the same four sources jniGlesFragmentParity rides, host-validated
-        // by GlesShaderValidator before the device ever sees them. A fifth
-        // source would be a new program, which is a different session.
-        val open = method("jniDevelopSessionOpen")
-        assertEquals(4, open.parameterCount)
+    fun render_to_encoder_adds_only_the_presentation_time() {
+        // 8 parameters: the readback render's seven (sessionHandle,
+        // clipHandle, frameIndex + the four covered grade knobs) plus ptsUs —
+        // the encoder Surface's presentation time, which the readback path
+        // never needs (the CPU path carries pts on writeVideoFrameRgb). The
+        // blit reuses the SAME develop program, so the grade controls are
+        // the same four; a ninth parameter would widen the encoder blit's
+        // promise beyond the covered-grade contract and must fail here.
+        val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoder")
+        assertEquals(8, renderToEncoder.parameterCount)
     }
 
     @Test
-    fun the_four_sources_are_the_validated_single_source_of_truth() {
-        // The exact constants open() will be called with (commit b wires
-        // them) pass the host validator under their own kinds — so the text
-        // the production session compiles on device is the text the JVM
-        // checked. Locked here so commit b cannot quietly swap in an
-        // unvalidated variant.
+    fun set_encoder_surface_takes_the_window_and_the_window_only() {
+        // 2 parameters: sessionHandle + the Surface as Any? (the
+        // JVM-loadability rule — android.view.Surface is not on the JVM
+        // classpath). The detach call is the same pair with a null window
+        // (a detach always processes, even on a latched-unhealthy session),
+        // so no separate parameter can appear here without breaking the
+        // mid-stream refusal cascade the dispatcher rides.
+        val setEncoderSurface = method("jniDevelopSessionSetEncoderSurface")
+        assertEquals(2, setEncoderSurface.parameterCount)
+    }
+
+    @Test
+    fun open_carries_exactly_the_five_shader_sources() {
+        // The session compiles the Kotlin single-source-of-truth texts —
+        // the four sources jniGlesFragmentParity rides plus the M5 blit
+        // source (the encoder-Surface copy pass), all host-validated by
+        // GlesShaderValidator before the device ever sees them. A sixth
+        // source would be a new program, which is a different session.
+        val open = method("jniDevelopSessionOpen")
+        assertEquals(5, open.parameterCount)
+    }
+
+    @Test
+    fun the_five_sources_are_the_validated_single_source_of_truth() {
+        // The exact constants open() will be called with pass the host
+        // validator under their own kinds — so the text the production
+        // session compiles on device is the text the JVM checked. Locked
+        // here so the dispatcher cannot quietly swap in an unvalidated
+        // variant (the blit source joined the set in M5).
         assertTrue(
             GlesShaderValidator.validate(
                 GlesShaderSources.FULLSCREEN_VERTEX,
@@ -143,6 +227,12 @@ class NativeSourceDevelopSessionTest {
             GlesShaderValidator.validate(
                 GlesShaderSources.STORE_FRAGMENT,
                 GlesShaderValidator.Kind.STORE_FRAGMENT,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.BLIT_FRAGMENT,
+                GlesShaderValidator.Kind.BLIT_FRAGMENT,
             ),
         )
     }

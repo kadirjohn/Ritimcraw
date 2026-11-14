@@ -24,6 +24,9 @@
 #include <vector>
 
 #include <EGL/egl.h>
+// EGL_RECORDABLE_ANDROID (the MediaCodec input Surface's producer flag)
+// lives only in the extension header — egl.h does not define it.
+#include <EGL/eglext.h>
 
 #include <rawedit/Source.h>
 
@@ -38,13 +41,30 @@ struct EglSession {
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLContext context = EGL_NO_CONTEXT;
     EGLSurface surface = EGL_NO_SURFACE;
+    // The config eglChooseConfig picked. Kept so a window-capable
+    // session can hand THE SAME config to eglCreateWindowSurface (a
+    // mismatched config is one of the classic BufferQueue rejection
+    // causes). Nullptr for the default pbuffer-only open (nobody uses
+    // it there) and after release().
+    EGLConfig config = nullptr;
 
     ~EglSession();
 
     // Returns false on the first failing step (the step name lands in
     // *detail for the fallback log line); the destructor releases
     // whatever was created so far.
-    bool open(std::string* detail);
+    //
+    // windowCapable: the chosen config must also support EGL_WINDOW_BIT
+    // (besides the pbuffer) and is kept in [config] so the caller can
+    // wrap an ANativeWindow in eglCreateWindowSurface later. Off by
+    // default: the probe and the parity harness open plain pbuffer
+    // sessions and stay byte-identical.
+    // recordable: adds EGL_RECORDABLE_ANDROID=1 to the config attribs
+    // (EGL_ANDROID_recordable) — required when the window surface will
+    // wrap a MediaCodec input Surface, so the codec's BufferQueue
+    // accepts the producer. Only meaningful with windowCapable.
+    bool open(std::string* detail, bool windowCapable = false,
+              bool recordable = false);
 
     // Safe to call more than once; a no-op when nothing was created.
     void release();

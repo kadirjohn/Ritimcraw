@@ -220,6 +220,20 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeSetExportTiming(enabled: Boolean)
 
         /**
+         * Toggles the optical sync refinement (M5 commit b): when on, a
+         * stabilization plan whose anchor estimate is Anchored runs
+         * rawedit::refineOffsetOptically ONCE per plan-cache key (~seconds
+         * class, ~480px thumbnails) and the refined offset feeds the warp.
+         * UNLIKE the two gates above this is a RUNTIME user toggle, not a
+         * build gate: the companion init never calls it — the stab sheet's
+         * sync-refine switch owns it through [jniSetSyncRefine]. Default
+         * off until the owner's on-device A/B (sync=refined vs
+         * sync=anchored in the ritim-stab-timing line) proves the refined
+         * offset reduces the vibration.
+         */
+        @JvmStatic private external fun nativeSetSyncRefine(enabled: Boolean)
+
+        /**
          * The six sub-stage slots of the frame nativeExportFrame just
          * produced, in milliseconds, in the fixed order
          * [decode, temporal, develop, warp, oetf_pack, jni_copy] — or null
@@ -717,6 +731,18 @@ class NativeSource private constructor(
          * probe per settle covers every tier. MUST run on the session's
          * engine thread (thread-local gyro cache + error state) — the seam
          * confines it like framePtsUs.
+         *
+         * M5 commit b extends the array to six elements: [3] syncKind —
+         * 0 = manual trim/no anchor, 1 = anchored, 2 = refined (the optical
+         * refinement applied; a rejected refine keeps 1); [4] syncOffsetMs
+         * — the model offset the plan actually rode, milliseconds;
+         * [5] syncBoundMs — the estimate's error bound. Readers keyed on
+         * `size >= 3` keep working (the pre-M5 array ended at [2]); the
+         * stab sheet reads [3..5] for the "Refined (optical ±X ms)" status
+         * line. With the sync-refine toggle on, a probe MISS pays the
+         * once-per-key refinement — deliberately (the probe is the
+         * settle-time plan builder); renders after it serve the warmed
+         * cache.
          */
         @JvmStatic private external fun nativeStabZoomProbe(
             handle: Long,
@@ -820,6 +846,7 @@ class NativeSource private constructor(
             vertex310Source: String,
             fragmentSource: String,
             storeFragmentSource: String,
+            blitFragmentSource: String,
         ): Long
 
         @JvmStatic private external fun nativeDevelopSessionRenderFrame(
@@ -831,6 +858,38 @@ class NativeSource private constructor(
             keepVignetting: Boolean,
             tonemap: Int,
         ): ByteArray?
+
+        /**
+         * M5 commit (a): the encoder-surface seam pair. SetEncoderSurface
+         * hands the MediaCodec input Surface to the session (it wraps the
+         * window in an EGL window surface ONCE per export on the session's
+         * GL thread); null detaches. The surface is typed Any? for the
+         * same JVM-loadability reason as nativePreviewSessionSetSurface
+         * (the unit tests reflect over Companion's declared methods).
+         * RenderFrameToEncoder develops the frame on the GPU and blits it
+         * straight to the encoder surface — no readback bytes cross the
+         * seam — stamping [ptsUs] (the SAME normalized encoder pts the
+         * writer path uses) as media time via eglPresentationTimeANDROID.
+         * Both return false with the reason in lastError on refusal; the
+         * Kotlin dispatcher answers with ONE honest fallback line, never
+         * a crash. Device-test-pending (the owner's GPU export is the
+         * production proof).
+         */
+        @JvmStatic private external fun nativeDevelopSessionSetEncoderSurface(
+            sessionHandle: Long,
+            surface: Any?,
+        ): Boolean
+
+        @JvmStatic private external fun nativeDevelopSessionRenderFrameToEncoder(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            ptsUs: Long,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): Boolean
 
         @JvmStatic private external fun nativeDevelopSessionClose(sessionHandle: Long)
 
@@ -1283,6 +1342,22 @@ class NativeSource private constructor(
         }
 
         /**
+         * JNI bridge: see nativeSetSyncRefine. Throws IllegalStateException
+         * when the .so is absent; otherwise the runtime toggle is set and
+         * the NEXT stabilization plan (probe or render) is built under it —
+         * flipping it invalidates the plan cache, so the once-per-key
+         * refinement re-runs under the new flag. Unlike the two build
+         * gates this wrapper has a UI caller (the stab sheet's sync-refine
+         * switch), so it is internal, not init-private.
+         */
+        internal fun jniSetSyncRefine(enabled: Boolean) {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            nativeSetSyncRefine(enabled)
+        }
+
+        /**
          * JNI bridge: see nativeGlesProbe. Throws IllegalStateException
          * when the .so is absent; contextOk=0 otherwise means "no GLES
          * context on this device" — an honest report, with the failing
@@ -1338,25 +1413,28 @@ class NativeSource private constructor(
         internal fun jniCloseSource(handle: Long): Long = nativeCloseSource(handle)
 
         /**
-         * JNI bridge: the production GPU develop session (M3 commit a).
-         * All three throw IllegalStateException when the .so is absent.
-         * Open returns 0 on failure (previewLastError names the EGL/
-         * compile/link step); RenderFrame returns null on failure (the
-         * session latches unhealthy with the same detail — the Kotlin
-         * dispatcher falls the export back to CPU). The session handle is
-         * NOT a clip handle: it addresses the session registry.
+         * JNI bridge: the production GPU develop session (M3 commit a +
+         * the M5 encoder-surface pair). All throw IllegalStateException
+         * when the .so is absent. Open returns 0 on failure
+         * (previewLastError names the EGL/compile/link step);
+         * RenderFrame returns null on failure (the session latches
+         * unhealthy with the same detail — the Kotlin dispatcher falls
+         * the export back to CPU). The session handle is NOT a clip
+         * handle: it addresses the session registry.
          */
         internal fun jniDevelopSessionOpen(
             vertexSource: String,
             vertex310Source: String,
             fragmentSource: String,
             storeFragmentSource: String,
+            blitFragmentSource: String,
         ): Long {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeDevelopSessionOpen(
-                vertexSource, vertex310Source, fragmentSource, storeFragmentSource)
+                vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+                blitFragmentSource)
         }
 
         internal fun jniDevelopSessionRenderFrame(
@@ -1373,6 +1451,43 @@ class NativeSource private constructor(
             }
             return nativeDevelopSessionRenderFrame(
                 sessionHandle, clipHandle, frameIndex, exposureEv,
+                highlightReconstruction, keepVignetting, tonemap)
+        }
+
+        /**
+         * JNI bridge: the encoder-surface seam (M5 commit a). Both throw
+         * IllegalStateException when the .so is absent. SetEncoderSurface
+         * takes the MediaCodec input Surface as Any? (the JVM-loadability
+         * rule); the ANativeWindow reference transfers to the session at
+         * call entry, so the caller never releases it. RenderFrameToEncoder
+         * returns false on refusal (lastError names the step; the
+         * dispatcher answers with ONE honest fallback line).
+         */
+        internal fun jniDevelopSessionSetEncoderSurface(
+            sessionHandle: Long,
+            surface: Any?,
+        ): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionSetEncoderSurface(sessionHandle, surface)
+        }
+
+        internal fun jniDevelopSessionRenderFrameToEncoder(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            ptsUs: Long,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionRenderFrameToEncoder(
+                sessionHandle, clipHandle, frameIndex, ptsUs, exposureEv,
                 highlightReconstruction, keepVignetting, tonemap)
         }
 

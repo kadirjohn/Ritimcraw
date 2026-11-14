@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <utility>
+#include <vector>
 
 #include <GLES3/gl31.h>
 
@@ -156,7 +157,8 @@ GLuint linkProgram(GLuint vert, GLuint frag, const char* stage, std::string* det
 
 EglSession::~EglSession() { release(); }
 
-bool EglSession::open(std::string* detail) {
+bool EglSession::open(std::string* detail, bool windowCapable,
+                      bool recordable) {
     const char* step = "eglGetDisplay";
     display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (display == EGL_NO_DISPLAY) goto fail;
@@ -164,18 +166,28 @@ bool EglSession::open(std::string* detail) {
     if (!eglInitialize(display, nullptr, nullptr)) goto fail;
     step = "eglChooseConfig";
     {
-        const EGLint configAttribs[] = {
+        // EGL_SURFACE_TYPE: the pbuffer is always required (the session's
+        // own FBO work runs against it); windowCapable adds the window bit
+        // so the SAME config can later wrap an ANativeWindow. recordable
+        // requests EGL_ANDROID_recordable — the flag a MediaCodec input
+        // Surface's consumer needs from the producer config.
+        EGLint surfaceType = EGL_PBUFFER_BIT;
+        if (windowCapable) surfaceType |= EGL_WINDOW_BIT;
+        std::vector<EGLint> configAttribs = {
             EGL_RED_SIZE, 8,
             EGL_GREEN_SIZE, 8,
             EGL_BLUE_SIZE, 8,
             EGL_ALPHA_SIZE, 8,
             EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-            EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-            EGL_NONE,
+            EGL_SURFACE_TYPE, surfaceType,
         };
-        EGLConfig config = nullptr;
+        if (recordable) {
+            configAttribs.push_back(EGL_RECORDABLE_ANDROID);
+            configAttribs.push_back(1);
+        }
+        configAttribs.push_back(EGL_NONE);
         EGLint n = 0;
-        if (!eglChooseConfig(display, configAttribs, &config, 1, &n) || n < 1) {
+        if (!eglChooseConfig(display, configAttribs.data(), &config, 1, &n) || n < 1) {
             goto fail;
         }
         step = "eglCreateContext";
@@ -215,6 +227,7 @@ void EglSession::release() {
     surface = EGL_NO_SURFACE;
     context = EGL_NO_CONTEXT;
     display = EGL_NO_DISPLAY;
+    config = nullptr;
 }
 
 Capabilities probeCapabilities(std::string* detail) {

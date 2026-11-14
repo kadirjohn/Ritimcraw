@@ -466,15 +466,43 @@ object EditorPreviewLogic {
      * as the ± bound (the anchor method is coarse; the receive lag is
      * unobservable — Sync.h). false = the anchors were absent: Manual —
      * the trim slider is the user's offset.
+     *
+     * [refined] (M5 commit b) true = the plan's estimate went through the
+     * optical refinement and it SUCCEEDED (the probe's syncKind=2 — a
+     * rejected refine keeps the anchored verdict, syncKind=1). REQUIRES
+     * [anchored]: the refinement upgrades the anchored estimate (the
+     * bridge only ever refines an Anchored confidence), so the refined
+     * verdict only shows on top of the anchor foundation — a refined
+     * flag without anchors is stale and ignored, never a verdict rescue.
+     * The pure mapping's precedence: NO_DATA beats everything, REFINED
+     * beats ANCHORED (both anchored-gated), ANCHORED beats MANUAL.
      */
     fun syncStatus(
         gyroAttached: Boolean,
         probeFailed: Boolean,
         anchored: Boolean,
+        refined: Boolean,
     ): GyroSyncStatus = when {
         !gyroAttached || probeFailed -> GyroSyncStatus.NO_DATA
+        anchored && refined -> GyroSyncStatus.REFINED
         anchored -> GyroSyncStatus.ANCHORED
         else -> GyroSyncStatus.MANUAL
+    }
+
+    /**
+     * The status line's string resource for a sync verdict (M5 commit b
+     * extracted this mapping so the JVM can lock it): REFINED and ANCHORED
+     * carry the ± bound as the one format arg; MANUAL and NO_DATA carry
+     * none. The composable supplies the args (the refined bound comes from
+     * the probe's extended [5], the anchored bound from the attach-time
+     * probe's [2]); this function owns ONLY the verdict → resource pair,
+     * so a verdict can never render the wrong line's text.
+     */
+    fun syncStatusRes(status: GyroSyncStatus): Int = when (status) {
+        GyroSyncStatus.REFINED -> R.string.editor_stabilization_sync_refined
+        GyroSyncStatus.ANCHORED -> R.string.editor_stabilization_sync_anchored
+        GyroSyncStatus.MANUAL -> R.string.editor_stabilization_sync_manual
+        GyroSyncStatus.NO_DATA -> R.string.editor_stabilization_sync_no_data
     }
 
     /**
@@ -656,6 +684,31 @@ object EditorPreviewLogic {
     const val STAB_STATUS_LOW_OVERLAP = 4
     const val STAB_STATUS_INTRINSICS_ASSUMED = 5
 
+    // The M5 sync verdict's kind ints (the probe's extended [3]): the
+    // bridge's stabSyncKindName order, mirrored here for the same reason
+    // STAB_STATUS_* is mirrored — the probe ships plain doubles and the
+    // status-line decision must never guess at a magic number.
+    const val SYNC_KIND_MANUAL = 0
+    const val SYNC_KIND_ANCHORED = 1
+    const val SYNC_KIND_REFINED = 2
+
+    /**
+     * The sync-kind token of the "ritim-stab-timing" line (M5 commit b):
+     * the EXACT spellings the append-only ` sync=%s offsetMs=%.3f` tail
+     * writes — the tokens the owner's ON/OFF A/B greps for (sync=refined
+     * vs sync=anchored). Pure Kotlin mirror of the bridge's
+     * stabSyncKindName so the JVM can lock the contract: [kind] is the
+     * probe's [3] value; null = unknown kind (forward compat — a future
+     * bridge verdict reads as no token rather than a guess, and the test
+     * keeps the three spellings frozen against a silent rename).
+     */
+    fun syncToken(kind: Int): String? = when (kind) {
+        SYNC_KIND_MANUAL -> "manual"
+        SYNC_KIND_ANCHORED -> "anchored"
+        SYNC_KIND_REFINED -> "refined"
+        else -> null
+    }
+
     /**
      * The zoom-limit honesty verdict (audit fix 2026-11-12, Fix 5): which
      * readout the probe's clip-wide numbers support — the APPLIED crop
@@ -692,10 +745,12 @@ object EditorPreviewLogic {
 /**
  * The Stabilization group's sync-status verdict (gyro Phase 5): the pure
  * result of [EditorPreviewLogic.syncStatus], rendered by the group as the
- * localized status line (Approximate (anchored ±N ms) / Manual offset /
- * No gyro data).
+ * localized status line (Refined (optical ±X ms) / Approximate (anchored
+ * ±N ms) / Manual offset / No gyro data). REFINED (M5 commit b) is the
+ * optical refinement's success verdict — the same anchor-based estimate,
+ * now with the measured curve's bound.
  */
-enum class GyroSyncStatus { ANCHORED, MANUAL, NO_DATA }
+enum class GyroSyncStatus { ANCHORED, REFINED, MANUAL, NO_DATA }
 
 /**
  * The Stabilization group's zoom-limit honesty verdict (audit fix
@@ -1458,6 +1513,27 @@ fun ClipEditorScreen(
         // by the probe effect below; keyed to the clip like every other
         // editor state.
         var stabZoom by remember(sourceId) { mutableStateOf<DoubleArray?>(null) }
+        // Optical sync refinement (M5 commit b): a RUNTIME user toggle,
+        // deliberately NOT a grade field (GradeK is frozen — the grade
+        // persists per clip, but the refine verdict is an engine-wide
+        // experiment until the owner's on-device A/B proves it; the
+        // default-off global in the bridge keeps every path honest).
+        // rememberSaveable so a rotate keeps the switch where the owner
+        // left it; the setter rides the guarded engine seam and the probe
+        // effect re-runs on the flip (the cache invalidation re-builds
+        // the plan under the new flag).
+        var syncRefine by rememberSaveable(sourceId) { mutableStateOf(false) }
+        LaunchedEffect(syncRefine) {
+            // The seam throws only without the .so; the editor already
+            // gates every native call on nativeAvailable, and the stab
+            // sheet's toggle is only visible when a session exists.
+            if (NativeSource.nativeAvailable) {
+                NativeSource.jniSetSyncRefine(syncRefine)
+            }
+            else {
+                syncRefine = false
+            }
+        }
         val gyroPicker = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri ->
@@ -1952,7 +2028,7 @@ fun ClipEditorScreen(
             grade.stabilization, grade.stabilizationMode,
             grade.stabilizationStrength, grade.stabilizationZoomLimit,
             grade.stabilizationFocalMm, grade.stabilizationTrimMs,
-            gyroId, session,
+            gyroId, session, syncRefine,
         ) {
             val s = session ?: return@LaunchedEffect
             if (!grade.stabilization || gyroId.isBlank()) {
@@ -3587,6 +3663,12 @@ fun ClipEditorScreen(
                     gyroAttached = gyroId.isNotBlank(),
                     gyroSync = gyroSync,
                     stabZoom = stabZoom,
+                    // The sync-refine switch (M5 commit b) is a discrete
+                    // edit like the other toggles — it settles immediately
+                    // and the probe effect re-runs on the flip (the plan
+                    // cache invalidation re-builds under the new flag).
+                    syncRefine = syncRefine,
+                    onSyncRefineChange = { enabled -> syncRefine = enabled },
                     gyroName = gyroNameFor(gyroId),
                     containerFocalMm = containerFocalMm,
                     gyroImportError = gyroImportError,
@@ -5430,8 +5512,17 @@ private fun FramePanel(
     // native probe's [requiredZoom, appliedZoom, statusInt] over the
     // CURRENT grade + attached log, or null = no verdict (the body
     // renders no readout rather than fabricating a zoom — the pure
-    // EditorPreviewLogic.stabZoomVerdict decides what shows).
+    // EditorPreviewLogic.stabZoomVerdict decides what shows). M5 commit b
+    // extends the array to [.., syncKind, syncOffsetMs, syncBoundMs] —
+    // size >= 3 readers keep working.
     stabZoom: DoubleArray?,
+    // Optical sync refinement (M5 commit b): the RUNTIME user toggle's
+    // state + change handler, passed through to the stab body's switch
+    // (UI-level rememberSaveable in ClipEditorScreen — deliberately NOT a
+    // grade field; the bridge's default-off global keeps every path
+    // honest until the owner's on-device A/B).
+    syncRefine: Boolean,
+    onSyncRefineChange: (Boolean) -> Unit,
     gyroName: String?,
     containerFocalMm: Float,
     gyroImportError: String?,
@@ -5479,6 +5570,8 @@ private fun FramePanel(
                 gyroAttached = gyroAttached,
                 gyroSync = gyroSync,
                 stabZoom = stabZoom,
+                syncRefine = syncRefine,
+                onSyncRefineChange = onSyncRefineChange,
                 gyroName = gyroName,
                 containerFocalMm = containerFocalMm,
                 gyroImportError = gyroImportError,
@@ -5823,6 +5916,8 @@ private fun FrameStabilizeBody(
     gyroAttached: Boolean,
     gyroSync: DoubleArray?,
     stabZoom: DoubleArray?,
+    syncRefine: Boolean,
+    onSyncRefineChange: (Boolean) -> Unit,
     gyroName: String?,
     containerFocalMm: Float,
     gyroImportError: String?,
@@ -5840,27 +5935,41 @@ private fun FrameStabilizeBody(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         // The probe's numbers drive the status line (pure decision in
-        // EditorPreviewLogic.syncStatus): Approximate (anchored ±bound)
-        // / Manual offset / No gyro data — "approximate" because the
-        // anchor offset is a coarse wall-clock estimate (Sync.h: the
-        // receive lag is unobservable; optical-flow refinement is a
-        // later mission). gyroSync holds [anchored, offsetMs,
-        // boundMs, focalMm, samples] from the attach-time probe.
+        // EditorPreviewLogic.syncStatus): Refined (optical ±bound) /
+        // Approximate (anchored ±bound) / Manual offset / No gyro data.
+        // "Approximate" because the anchor offset is a coarse wall-clock
+        // estimate (Sync.h: the receive lag is unobservable); "Refined"
+        // when the M5 optical refinement ran and SUCCEEDED — the probe's
+        // extended [3] syncKind reads 2 (a rejected refine keeps 1 and the
+        // anchored verdict, honestly). gyroSync holds [anchored, offsetMs,
+        // boundMs, focalMm, samples] from the attach-time probe; stabZoom
+        // now carries [requiredZoom, appliedZoom, statusInt, syncKind,
+        // syncOffsetMs, syncBoundMs] from the settle-time plan probe.
         val sync = EditorPreviewLogic.syncStatus(
             gyroAttached = gyroAttached,
             probeFailed = gyroSync == null,
             anchored = gyroSync != null && gyroSync[0] > 0.0,
+            refined = stabZoom != null && stabZoom.size >= 6 &&
+                stabZoom[3].toInt() == EditorPreviewLogic.SYNC_KIND_REFINED,
         )
-        val statusText = when (sync) {
-            GyroSyncStatus.ANCHORED -> stringResource(
-                R.string.editor_stabilization_sync_anchored,
-                gyroSync?.get(2)?.toInt() ?: 0,
-            )
-            GyroSyncStatus.MANUAL ->
-                stringResource(R.string.editor_stabilization_sync_manual)
-            GyroSyncStatus.NO_DATA ->
-                stringResource(R.string.editor_stabilization_sync_no_data)
+        // The verdict → resource pair lives in the pure syncStatusRes (the
+        // JVM locks it); the bound is the only verdict-dependent arg — the
+        // refined line reads the plan probe's extended [5] (the measured
+        // optical curve's bound; the attach-time probe's [2] is the
+        // fallback when the plan probe has not answered yet), the anchored
+        // line the attach-time [2].
+        val boundMs = when (sync) {
+            GyroSyncStatus.REFINED ->
+                stabZoom?.get(5)?.toInt() ?: gyroSync?.get(2)?.toInt() ?: 0
+            GyroSyncStatus.ANCHORED -> gyroSync?.get(2)?.toInt() ?: 0
+            else -> 0
         }
+        val statusText =
+            if (sync == GyroSyncStatus.REFINED || sync == GyroSyncStatus.ANCHORED) {
+                stringResource(EditorPreviewLogic.syncStatusRes(sync), boundMs)
+            } else {
+                stringResource(EditorPreviewLogic.syncStatusRes(sync))
+            }
         RawToggleRow(
             label = stringResource(R.string.editor_stabilization),
             checked = grade.stabilization,
@@ -5961,6 +6070,22 @@ private fun FrameStabilizeBody(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // Optical sync refinement switch (M5 commit b): shown only
+            // with a gyro attached — the refine only ever runs on an
+            // anchored estimate, so without a log the switch would be a
+            // lie about what it controls. The status line above stays the
+            // verdict source: flipping this ON shows "Refined (optical
+            // ±X ms)" ONLY when the probe reports syncKind=2 (a rejected
+            // refine keeps the honest "Approximate" line). The toggle
+            // itself is the RawToggleRow idiom the stabilization master
+            // switch rides above.
+            if (gyroAttached) {
+                RawToggleRow(
+                    label = stringResource(R.string.editor_stabilization_sync_refine_toggle),
+                    checked = syncRefine,
+                    onCheckedChange = onSyncRefineChange,
+                )
+            }
             if (gyroAttached) {
                 TextButton(onClick = onRemoveGyro) {
                     Text(stringResource(R.string.editor_stabilization_remove_gyro))

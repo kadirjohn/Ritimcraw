@@ -92,6 +92,19 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
     /** True once requestEncoderSurfaceInput was called (before start). */
     private var surfaceInputRequested = false
 
+    /**
+     * True once requestSessionEncoderSurface was called (before start) —
+     * the M5 session-owns-EGL mode: the codec gets its input Surface but
+     * the WRAPPER does not wrap it (the GPU develop session is the only
+     * producer — the single-producer BufferQueue rule); the surface is
+     * handed out unwrapped through [encoderInputSurface] and the writer
+     * only drains the codec's output per frame. The writer's own EGL
+     * (window surface + blit program) comes up ONLY through
+     * [adoptEncoderSurface] — the fallback the pipeline takes when the
+     * session refuses the surface.
+     */
+    private var sessionSurfaceMode = false
+
     /** True once start() brought the whole Surface path up. */
     private var surfaceInputActive = false
 
@@ -133,8 +146,11 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         // A no-EGL device fails with SurfaceInputUnavailable here and the
         // exporter turns that into a clean whole-export CPU restart. With
         // no request (the CPU default) this is a no-op: the path below is
-        // byte-identical to what it always was.
-        if (surfaceInputRequested) {
+        // byte-identical to what it always was. The M5 session-owns-EGL
+        // mode needs the SAME display/config/context (adoptEncoderSurface
+        // wraps the surface in the writer's own EGL when the session
+        // refuses it), so it rides the same setup.
+        if (surfaceInputRequested || sessionSurfaceMode) {
             setupEgl()
         }
 
@@ -157,9 +173,14 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         // input Surface, the EGL window surface, the context binding and
         // the blit program — and only then starts. The CPU codec keeps
         // the existing configure+start pair (configure() below) exactly
-        // as it was.
+        // as it was. The M5 session mode stops one step earlier: the
+        // codec gets its input Surface and starts, but NO EGL wrap —
+        // the surface is handed out unwrapped for the GPU develop
+        // session to produce into.
         videoCodec = if (surfaceInputRequested) {
             configureSurfaceVideoCodec(width, height)
+        } else if (sessionSurfaceMode) {
+            configureSessionSurfaceCodec(width, height)
         } else {
             configure("video/avc", videoFormat(width, height, surface = false))
         }
@@ -335,6 +356,149 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
     }
 
     /**
+     * The M5 session-owns-EGL bring-up: the SAME §10 order as
+     * [configureSurfaceVideoCodec] but stopping one step earlier — the
+     * codec is configured WITHOUT start, gets its input Surface, and
+     * starts LAST; the writer does NOT wrap the surface in EGL (the GPU
+     * develop session will be the only producer — the single-producer
+     * BufferQueue rule: two EGL window surfaces on one Surface's
+     * BufferQueue would deadlock). The surface is handed out unwrapped
+     * through [encoderInputSurface]; the writer's own EGL wrap comes up
+     * only if the pipeline calls [adoptEncoderSurface] (the session
+     * refused the surface — the fallback). Every failure is a
+     * [SurfaceInputUnavailable]: none can happen mid-encode, so the
+     * exporter's CPU restart never double-encodes a frame.
+     */
+    private fun configureSessionSurfaceCodec(w: Int, h: Int): MediaCodec {
+        val codec = try {
+            MediaCodec.createEncoderByType(MIME_AVC)
+        } catch (e: Exception) {
+            throw surfaceInputUnavailable("no $MIME_AVC encoder is available on this device")
+        }
+        videoCodec = codec
+        logEncoderIdentity(codec, MIME_AVC)
+        try {
+            codec.configure(
+                videoFormat(w, h, surface = true),
+                null,
+                null,
+                MediaCodec.CONFIGURE_FLAG_ENCODE,
+            )
+        } catch (e: Exception) {
+            throw surfaceInputUnavailable(
+                "$MIME_AVC rejected the ${w}x$h COLOR_FormatSurface format"
+            )
+        }
+        val surface = try {
+            codec.createInputSurface()
+        } catch (e: Exception) {
+            throw surfaceInputUnavailable("$MIME_AVC gave no input Surface")
+        }
+        inputSurface = surface
+        try {
+            codec.start()
+        } catch (e: Exception) {
+            throw surfaceInputUnavailable("$MIME_AVC failed to start in Surface-input mode")
+        }
+        return codec
+    }
+
+    /**
+     * The M5 session-owns-EGL request (see the interface KDoc): call
+     * BEFORE start — never auto, never mid-export. After it, start()
+     * brings the EGL display/config/context up FIRST (adoptEncoderSurface
+     * needs them), configures the video encoder with COLOR_FormatSurface
+     * WITHOUT starting it, creates its input Surface, and starts the codec
+     * LAST — WITHOUT wrapping the surface in the writer's EGL. A call
+     * after start (or a second call) is a mode-confusion bug and throws.
+     */
+    override fun requestSessionEncoderSurface() {
+        if (videoCodec != null || muxer != null) {
+            throw encodeFailure(
+                "session encoder surface must be requested before start"
+            )
+        }
+        sessionSurfaceMode = true
+    }
+
+    /**
+     * The codec input Surface [requestSessionEncoderSurface] created,
+     * handed out UNWRAPPED (the session wraps it in its OWN EGL on its GL
+     * thread). Null when the mode was not requested or the surface was
+     * already handed out — the pipeline reads this exactly once, right
+     * after the session opens.
+     */
+    override fun encoderInputSurface(): Any? {
+        val surface = inputSurface
+        return if (sessionSurfaceMode && surface != null) surface else null
+    }
+
+    /**
+     * Per-frame codec drain for the session-owns-EGL mode (the
+     * Surface-input contract: the producer must dequeue the codec's
+     * output buffers or the pipeline stalls). Runs the SAME drain the
+     * writer's own Surface mode runs after each swap — the codec does
+     * not care WHO produced the frame, only that its output is drained.
+     */
+    override fun drainEncoderInput() {
+        val codec = videoCodec ?: throw notStarted()
+        drain(codec, isVideo = true, timeoutUs = 0)
+    }
+
+    /**
+     * The ADOPT fallback (M5): the GPU develop session refused the
+     * surface, so the writer does the steps [configureSessionSurfaceCodec]
+     * skipped — the exact §10 steps [configureSurfaceVideoCodec] runs
+     * AFTER createInputSurface: wrap the SAME input surface in the
+     * writer's own EGL (recordable attribs), make it current, probe
+     * eglPresentationTimeANDROID, build the blit program. After a
+     * successful adopt [surfaceInputActive] is true and frames flow
+     * through the EXISTING [writeVideoFrameRgb] offer — the CPU-RGB
+     * Surface mode, byte-for-byte the shipped path. Failure throws
+     * [SurfaceInputUnavailable]: the exporter's clean whole-export CPU
+     * restart, never a mid-encode death.
+     */
+    override fun adoptEncoderSurface() {
+        if (surfaceInputActive) return
+        if (!sessionSurfaceMode) {
+            throw surfaceInputUnavailable("the writer is not in session encoder-surface mode")
+        }
+        val surface = inputSurface
+            ?: throw surfaceInputUnavailable("the codec input Surface is missing")
+        val display = eglDisplay
+        val config = eglConfig
+        val context = eglContext
+        if (display == null || config == null || context == null) {
+            throw surfaceInputUnavailable("the EGL context is missing (setupEgl must run first)")
+        }
+        // §10: an EGL window surface ON the codec's input Surface, with the
+        // recordable flag in the surface attribs too (the exact attribs
+        // configureSurfaceVideoCodec proved on device).
+        val surfaceAttribs = intArrayOf(
+            EGLExt.EGL_RECORDABLE_ANDROID, 1,
+            EGL14.EGL_NONE,
+        )
+        val window = EGL14.eglCreateWindowSurface(display, config, surface, surfaceAttribs, 0)
+        if (window == null || window == EGL14.EGL_NO_SURFACE) {
+            throw surfaceInputUnavailable(
+                "no EGL window surface could be created on the input Surface"
+            )
+        }
+        eglWindowSurface = window
+        if (!EGL14.eglMakeCurrent(display, window, window, context)) {
+            throw surfaceInputUnavailable("the GLES 3 context could not be made current")
+        }
+        // Fail fast at adopt, not per frame: a device without the
+        // presentation-time extension restarts on CPU before any frame
+        // exists (the pts stamp is a §10 contract, not a nicety).
+        if (!EGLExt.eglPresentationTimeANDROID(display, window, 0L)) {
+            throw surfaceInputUnavailable("eglPresentationTimeANDROID is not available")
+        }
+        buildBlitProgram(width, height)
+        surfaceInputActive = true
+    }
+
+    /**
      * The blit program (GlesShaderSources.FULLSCREEN_VERTEX + BLIT_FRAGMENT
      * — the same host-validated text the parity harness uses; the device
      * compiles the exact same strings) plus the frame texture object. Runs
@@ -504,7 +668,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
         val codec = videoCodec ?: throw notStarted()
-        if (surfaceInputActive) {
+        if (surfaceInputActive || sessionSurfaceMode) {
             throw encodeFailure(
                 "the writer is in encoder-Surface mode; packed I420 frames are not accepted"
             )
@@ -642,7 +806,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     override fun acquireVideoFramePlanes(): YuvFramePlanes? {
         val codec = videoCodec ?: throw notStarted()
-        if (surfaceInputActive) {
+        if (surfaceInputActive || sessionSurfaceMode) {
             throw encodeFailure(
                 "the writer is in encoder-Surface mode; plane acquire is not available"
             )
@@ -677,7 +841,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     override fun queueVideoFrame(ptsUs: Long) {
         val codec = videoCodec ?: throw notStarted()
-        if (surfaceInputActive) {
+        if (surfaceInputActive || sessionSurfaceMode) {
             throw encodeFailure(
                 "the writer is in encoder-Surface mode; plane queue is not available"
             )
@@ -717,7 +881,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
     }
 
     override fun abandonVideoFrame() {
-        if (surfaceInputActive) {
+        if (surfaceInputActive || sessionSurfaceMode) {
             throw encodeFailure(
                 "the writer is in encoder-Surface mode; plane abandon is not available"
             )
@@ -755,10 +919,13 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         val v = videoCodec
         val a = audioCodec
         if (v != null) {
-            if (surfaceInputActive) {
+            if (surfaceInputActive || sessionSurfaceMode) {
                 // §10: Surface input has no input buffers to carry an EOS
                 // flag — signalEndOfInputStream is the Surface contract, then
-                // drainUntilEos below is unchanged.
+                // drainUntilEos below is unchanged. sessionSurfaceMode rides
+                // the same branch (M5): the codec was configured for Surface
+                // input either way, whether the writer's own EGL or the GPU
+                // develop session produced the frames.
                 v.signalEndOfInputStream()
             } else {
                 signalEos(v)
@@ -844,6 +1011,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         }
         surfaceInputRequested = false
         surfaceInputActive = false
+        sessionSurfaceMode = false
 
         // ---- the CPU-path teardown, unchanged ----
         videoCodec?.let { c ->
