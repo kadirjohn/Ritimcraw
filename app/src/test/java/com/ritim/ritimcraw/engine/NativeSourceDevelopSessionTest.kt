@@ -27,7 +27,9 @@ import org.junit.Test
  *      edits this test too;
  *   3. the encoder-surface pair's shapes: open now carries the fifth
  *      (blit) source, and renderFrameToEncoder adds ptsUs (the encoder
- *      Surface's presentation time) to the readback render's seven.
+ *      Surface's presentation time) and rotationDeg (the frame's
+ *      effective orientation — the blit's uRotation fold) to the
+ *      readback render's seven.
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -108,6 +110,7 @@ class NativeSourceDevelopSessionTest {
                 highlightReconstruction = true,
                 keepVignetting = true,
                 tonemap = 0,
+                rotationDeg = 0,
             )
             throw AssertionError("expected IllegalStateException")
         } catch (expected: IllegalStateException) {
@@ -164,15 +167,19 @@ class NativeSourceDevelopSessionTest {
 
     @Test
     fun render_to_encoder_adds_only_the_presentation_time() {
-        // 8 parameters: the readback render's seven (sessionHandle,
-        // clipHandle, frameIndex + the four covered grade knobs) plus ptsUs —
-        // the encoder Surface's presentation time, which the readback path
-        // never needs (the CPU path carries pts on writeVideoFrameRgb). The
-        // blit reuses the SAME develop program, so the grade controls are
-        // the same four; a ninth parameter would widen the encoder blit's
-        // promise beyond the covered-grade contract and must fail here.
+        // 9 parameters: the readback render's seven (sessionHandle,
+        // clipHandle, frameIndex + the four covered grade knobs) plus ptsUs
+        // (the encoder Surface's presentation time, which the readback path
+        // never needs — the CPU path carries pts on writeVideoFrameRgb) plus
+        // rotationDeg (the surface-gpu vertical deliverable: the frame's
+        // effective orientation, applied by the blit's uRotation fold —
+        // 0/90/180/270, no default value so this reflection lock sees
+        // exactly one wrapper). The blit reuses the SAME develop program,
+        // so the grade controls are the same four; a TENTH parameter would
+        // widen the encoder blit's promise beyond the covered-grade
+        // contract and must fail here.
         val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoder")
-        assertEquals(8, renderToEncoder.parameterCount)
+        assertEquals(9, renderToEncoder.parameterCount)
     }
 
     @Test

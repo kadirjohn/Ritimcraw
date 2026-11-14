@@ -517,6 +517,23 @@ object GlesShaderValidator {
                 "consumes the Surface buffer top-row-first; without the " +
                 "flip every encoded frame is upside down)"
         }
+        // The rotation fold (the surface-gpu rotation deliverable): the
+        // develop session sets uRotation to the frame's effective
+        // orientation (0/90/180/270) and the fold maps each rotated
+        // destination pixel back to its source texel — rotateRgb888's
+        // index math inverted. The 0 arm keeps the Y flip above
+        // byte-identical, and the WRITER (which never sets uRotation —
+        // GLSL defaults it to 0) compiles the same text unchanged.
+        if (!s.contains("uniform int uRotation;")) {
+            out += "missing `uniform int uRotation;` (the session passes " +
+                "the effective orientation normalized to 0/90/180/270, " +
+                "defaulting to 0 so the writer's Surface mode is unchanged)"
+        }
+        if (!s.contains("uRotation == 90")) {
+            out += "missing the rotation fold (`uRotation == 90` — " +
+                "rotateRgb888's quarter-turn index math, reproduced " +
+                "in-shader; without it a 90/270 frame blits sideways)"
+        }
     }
 
     private fun windowFragmentProblems(s: String, out: MutableList<String>) {

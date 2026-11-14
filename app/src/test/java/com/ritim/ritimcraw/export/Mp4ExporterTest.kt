@@ -2179,10 +2179,14 @@ class Mp4ExporterTest {
 
         // M5 recorders: every setEncoderSurface call (handle + the surface
         // object handed in, or the null detach) and every encoder render.
+        // lastEncoderRotationDeg records the rotation the dispatch carried
+        // (the surface-gpu vertical deliverable: 0 for upright, the
+        // effective 90/180/270 for a rotated eligible job).
         val encoderSurfaces = ArrayList<Pair<Long, Any?>>()
         val encoderRendered = ArrayList<Int>()
         var lastEncoderPtsUs = -1L
         var lastEncoderSessionHandle = 0L
+        var lastEncoderRotationDeg = Int.MIN_VALUE
 
         override fun probe(): DoubleArray? {
             probeCalls++
@@ -2237,6 +2241,7 @@ class Mp4ExporterTest {
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            rotationDeg: Int,
         ): Boolean {
             if (failEncoderRenderFrom >= 0 && frameIndex >= failEncoderRenderFrom) {
                 return false
@@ -2244,6 +2249,7 @@ class Mp4ExporterTest {
             encoderRendered.add(frameIndex)
             lastEncoderPtsUs = ptsUs
             lastEncoderSessionHandle = sessionHandle
+            lastEncoderRotationDeg = rotationDeg
             return true
         }
 
@@ -2553,8 +2559,8 @@ class Mp4ExporterTest {
      * the container says 90°, a 270° manual rotation composes to an
      * effective 0° (upright pixels, no dim swap on the 4x4 square), the
      * default grade's crop is full, straighten is 0 and no resolution
-     * bound rides the job — so the develop output IS the encode input and
-     * the session blit is 1:1 pixels.
+     * bound rides the job — so the develop output, rotated 0°, IS the
+     * encode input and the session blit is 1:1 pixels.
      */
     private fun runSessionEncoderExport(
         gpu: FakeGpuDevelop,
@@ -2596,6 +2602,10 @@ class Mp4ExporterTest {
         // The pts the session stamps is the frame's normalized media time —
         // frame 1's 33_333 (the FakeSession's ptsStepUs), the LAST blit.
         assertEquals(33_333L, gpu.lastEncoderPtsUs)
+        // The rotation the dispatch carried: the job's EFFECTIVE 0° (the
+        // container's 90 composed with the manual 270) — the fold's 0 arm,
+        // the byte-identical upright copy.
+        assertEquals(0, gpu.lastEncoderRotationDeg)
         // The writer drained once per blit.
         assertEquals(2, writer.drainCalls)
         // No frames on the writer's own paths.
@@ -2798,11 +2808,56 @@ class Mp4ExporterTest {
     }
 
     @Test
-    fun rotated_job_takes_the_writers_own_surface_mode_not_the_sessions() {
-        // The geometry gate is honest: a rotated job (effective 90° — the
-        // pixels must be rotated upright before the encoder sees them) is
-        // NOT encoderDrawEligible, so the request goes to the writer's
-        // OWN Surface mode (the shipped path), never the session's.
+    fun quarter_turn_swapped_dims_job_blits_through_the_session_with_rotation() {
+        // The surface-gpu rotation deliverable's ELIGIBLE case: a VERTICAL
+        // clip (8x4 source, container 90° -> effective 90°, outDims 4x8)
+        // with no crop/straighten/scale has encodeDims == the ROTATED
+        // source dims, so the job IS encoderDrawEligible — the request
+        // goes to the session mode, every frame blits through
+        // renderFrameToEncoder, and the render call CARRIES the effective
+        // 90 (the uRotation fold's quarter-turn arm; the session swaps
+        // the destination viewport to the source's swapped dims). The
+        // UV math itself is device-proven (the owner's vertical clip);
+        // this locks the PLUMBING: the gate admits a swapped-dims quarter
+        // turn and the dispatch passes the rotation.
+        val gpu = FakeGpuDevelop()
+        val writer = SessionSurfaceWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            FakeSession(frames = 2, width = 8, height = 4, audio = false),
+            writer,
+            lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial") // manualRotationDeg 0: 90° effective
+        // The request went to the SESSION mode (the rotated gate passed).
+        assertEquals(listOf("requestSessionEncoderSurface"), writer.sessionRequests)
+        assertEquals(1, gpu.encoderSurfaces.size)
+        // Every frame blitted; the readback never ran.
+        assertEquals(listOf(0, 1), gpu.encoderRendered)
+        assertTrue(gpu.rendered.isEmpty())
+        // The rotation the dispatch carried is the EFFECTIVE 90.
+        assertEquals(90, gpu.lastEncoderRotationDeg)
+        assertEquals(2, writer.drainCalls)
+        assertEquals(0, writer.rgbFrames)
+        assertEquals(0, writer.packedFrames)
+        assertEquals(0, lines.count { it.startsWith("encoder surface fallback: ") })
+        val backend = lines.first { it.startsWith("render backend: ") }
+        assertTrue("encoder-input must say surface-gpu: $backend", backend.contains("encoder-input=surface-gpu"))
+        assertEquals(listOf(1L), gpu.closedHandles)
+    }
+
+    @Test
+    fun non_quarter_turn_job_takes_the_writers_own_surface_mode_not_the_sessions() {
+        // The geometry gate is honest: a 45° job (effective 45° — the
+        // pixels must be rotated by a non-90 angle before the encoder
+        // sees them, which the blit's fold cannot express) is NOT
+        // encoderDrawEligible, so the request goes to the writer's OWN
+        // Surface mode (the shipped path), never the session's. (The
+        // pre-rotation test used the square's effective 90° here; a
+        // square's rotated dims equal its unswapped dims, so that case
+        // became ELIGIBLE when the gate learned rotation — this 45° case
+        // is the honest not-eligible geometry now.)
         val gpu = FakeGpuDevelop()
         val writer = SessionSurfaceWriter()
         val lines = ArrayList<String>()
@@ -2812,11 +2867,104 @@ class Mp4ExporterTest {
             lines::add,
             renderBackend = RenderBackend.GPU_EXPERIMENTAL,
             gpuDevelop = gpu,
-        ).run(7, GradeK(), "/tmp/out.partial") // manualRotationDeg 0: 90° effective
+        ).run(7, GradeK(), "/tmp/out.partial", manualRotationDeg = -45) // 90-45: 45° effective
         assertEquals(listOf("requestEncoderSurfaceInput"), writer.sessionRequests)
         assertEquals(0, gpu.encoderSurfaces.size)
         // The GPU readback developed the frames; the writer's own offer
         // took them (its writeVideoFrameRgb).
+        assertEquals(listOf(0, 1), gpu.rendered)
+        assertEquals(2, writer.rgbFrames)
+        val backend = lines.first { it.startsWith("render backend: ") }
+        assertTrue("encoder-input must be surface (the writer's own): $backend", backend.contains("encoder-input=surface"))
+        assertFalse(backend.contains("encoder-input=surface-gpu"))
+    }
+
+    @Test
+    fun quarter_turn_with_non_swapped_dims_takes_the_writers_own_surface_mode() {
+        // The gate's dims half: an effective 90° job whose encode dims are
+        // NOT the rotated source dims (a resolution bound rides the job —
+        // the encode is scaled, so the blit is no longer 1:1 pixels) is
+        // NOT encoderDrawEligible. The 8x4 source's rotated dims are 4x8;
+        // a 2x2 bound resolves to 2x2 (fits-within, aspect preserved,
+        // even-snapped) — not 4x8 — so the request goes to the writer's
+        // OWN Surface mode and the readback path with its aspectFit step
+        // takes the frames. (frameBytes must match the 8x4 session — the
+        // readback's size guard latches CPU on a wrong-shaped buffer.)
+        val gpu = FakeGpuDevelop(frameBytes = ByteArray(8 * 4 * 3))
+        val writer = SessionSurfaceWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            FakeSession(frames = 2, width = 8, height = 4, audio = false),
+            writer,
+            lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+            resolutionW = 2,
+            resolutionH = 2,
+        ).run(7, GradeK(), "/tmp/out.partial") // manualRotationDeg 0: 90° effective
+        assertEquals(listOf("requestEncoderSurfaceInput"), writer.sessionRequests)
+        assertEquals(0, gpu.encoderSurfaces.size)
+        assertEquals(0, gpu.encoderRendered.size)
+        assertEquals(listOf(0, 1), gpu.rendered)
+        assertEquals(2, writer.rgbFrames)
+        val backend = lines.first { it.startsWith("render backend: ") }
+        assertTrue("encoder-input must be surface (the writer's own): $backend", backend.contains("encoder-input=surface"))
+        assertFalse(backend.contains("encoder-input=surface-gpu"))
+    }
+
+    @Test
+    fun quarter_turn_with_crop_takes_the_writers_own_surface_mode() {
+        // The gate's crop half: an effective 90° job with a non-full crop
+        // rect is NOT encoderDrawEligible (the blit cannot crop) — the
+        // request goes to the writer's OWN Surface mode and the readback
+        // path with its crop step takes the frames. (frameBytes must match
+        // the 8x4 session — the readback's size guard latches CPU on a
+        // wrong-shaped buffer.)
+        val gpu = FakeGpuDevelop(frameBytes = ByteArray(8 * 4 * 3))
+        val writer = SessionSurfaceWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            FakeSession(frames = 2, width = 8, height = 4, audio = false),
+            writer,
+            lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(
+            7,
+            GradeK(cropX = 0.1f, cropY = 0.1f, cropW = 0.8f, cropH = 0.8f),
+            "/tmp/out.partial",
+        ) // manualRotationDeg 0: 90° effective
+        assertEquals(listOf("requestEncoderSurfaceInput"), writer.sessionRequests)
+        assertEquals(0, gpu.encoderSurfaces.size)
+        assertEquals(0, gpu.encoderRendered.size)
+        assertEquals(listOf(0, 1), gpu.rendered)
+        assertEquals(2, writer.rgbFrames)
+        val backend = lines.first { it.startsWith("render backend: ") }
+        assertTrue("encoder-input must be surface (the writer's own): $backend", backend.contains("encoder-input=surface"))
+        assertFalse(backend.contains("encoder-input=surface-gpu"))
+    }
+
+    @Test
+    fun quarter_turn_with_straighten_takes_the_writers_own_surface_mode() {
+        // The gate's straighten half: an effective 90° job with a non-zero
+        // straighten is NOT encoderDrawEligible (the blit cannot express a
+        // skew) — the request goes to the writer's OWN Surface mode and
+        // the readback path with its straighten step takes the frames.
+        // (frameBytes must match the 8x4 session — the readback's size
+        // guard latches CPU on a wrong-shaped buffer.)
+        val gpu = FakeGpuDevelop(frameBytes = ByteArray(8 * 4 * 3))
+        val writer = SessionSurfaceWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            FakeSession(frames = 2, width = 8, height = 4, audio = false),
+            writer,
+            lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(straightenDeg = 1.5f), "/tmp/out.partial") // manualRotationDeg 0: 90° effective
+        assertEquals(listOf("requestEncoderSurfaceInput"), writer.sessionRequests)
+        assertEquals(0, gpu.encoderSurfaces.size)
+        assertEquals(0, gpu.encoderRendered.size)
         assertEquals(listOf(0, 1), gpu.rendered)
         assertEquals(2, writer.rgbFrames)
         val backend = lines.first { it.startsWith("render backend: ") }

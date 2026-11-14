@@ -314,7 +314,7 @@ struct DevelopSession::Impl {
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
           exposureLoc = -1, tonemapLoc = -1, oetfLoc = -1;
     GLint storeSrcLoc = -1, storeSizeLoc = -1;
-    GLint blitSrcLoc = -1, blitSizeLoc = -1;
+    GLint blitSrcLoc = -1, blitSizeLoc = -1, blitRotLoc = -1;
     GLuint blitProgram = 0;
     GLuint cfaTex = 0, shadingTex = 0, developTex = 0, scratchTex = 0;
     GLuint developFbo = 0, scratchFbo = 0;
@@ -359,6 +359,7 @@ struct DevelopSession::Impl {
     const DevelopFrameRequest* pendingReq = nullptr;
     DevelopFrameResult* pendingRes = nullptr;
     int64_t pendingPtsUs = 0;
+    int pendingRotationDeg = 0;
     // The window to attach (or null to detach) — borrowed for the job's
     // duration only; ownership transferred at setEncoderSurface entry.
     ANativeWindow* pendingWindow = nullptr;
@@ -385,7 +386,7 @@ struct DevelopSession::Impl {
     bool developPass(const DevelopFrameRequest& req, DevelopFrameResult& out);
     void runSurfaceJob(ANativeWindow* window, bool* ok, std::string* detail);
     void runEncoderJob(const DevelopFrameRequest& req, int64_t ptsUs,
-                       DevelopFrameResult& out);
+                       int rotationDeg, DevelopFrameResult& out);
     void teardownOnGlThread();
     // The thread's whole life: serve jobs until close (entered on the GL
     // thread itself, right after initOnGlThread reports).
@@ -416,6 +417,7 @@ void DevelopSession::Impl::glThreadLoop() {
         const DevelopFrameRequest* req = pendingReq;
         DevelopFrameResult* out = pendingRes;
         const int64_t ptsUs = pendingPtsUs;
+        const int rotationDeg = pendingRotationDeg;
         ANativeWindow* window = pendingWindow;
         bool* surfaceOk = &pendingSurfaceOk;
         std::string* surfaceDetail = &pendingSurfaceDetail;
@@ -425,7 +427,7 @@ void DevelopSession::Impl::glThreadLoop() {
             // the outcome lands in pendingSurfaceOk/pendingSurfaceDetail.
             runSurfaceJob(window, surfaceOk, surfaceDetail);
         } else if (kind == JobKind::Encoder) {
-            runEncoderJob(*req, ptsUs, *out);
+            runEncoderJob(*req, ptsUs, rotationDeg, *out);
         } else {
             runJob(*req, *out);
         }
@@ -445,6 +447,7 @@ void DevelopSession::Impl::glThreadLoop() {
         pendingReq = nullptr;
         pendingRes = nullptr;
         pendingPtsUs = 0;
+        pendingRotationDeg = 0;
         pendingWindow = nullptr;
         // notify_all: TWO different threads can be parked on cvDone (the
         // engine thread in renderFrame/renderFrameToEncoder, the exporter
@@ -649,8 +652,9 @@ bool DevelopSession::Impl::initOnGlThread(
     }
     blitSrcLoc = glGetUniformLocation(blitProgram, "uSrc");
     blitSizeLoc = glGetUniformLocation(blitProgram, "uSize");
-    if (blitSrcLoc < 0 || blitSizeLoc < 0) {
-        *detail = "shader-contract: missing blit uSrc/uSize";
+    blitRotLoc = glGetUniformLocation(blitProgram, "uRotation");
+    if (blitSrcLoc < 0 || blitSizeLoc < 0 || blitRotLoc < 0) {
+        *detail = "shader-contract: missing blit uSrc/uSize/uRotation";
         return false;
     }
 
@@ -1046,6 +1050,7 @@ void DevelopSession::Impl::runSurfaceJob(ANativeWindow* window, bool* ok,
 
 void DevelopSession::Impl::runEncoderJob(const DevelopFrameRequest& req,
                                          int64_t ptsUs,
+                                         int rotationDeg,
                                          DevelopFrameResult& out) {
     const uint32_t w = req.info.width;
     const uint32_t h = req.info.height;
@@ -1082,13 +1087,22 @@ void DevelopSession::Impl::runEncoderJob(const DevelopFrameRequest& req,
     }
     // BLIT_FRAGMENT's Y flip reproduces the writer's Surface-mode
     // orientation verbatim (the develop pass's texel row 0 is the image
-    // top; the window surface presents row 0 at the bottom).
+    // top; the window surface presents row 0 at the bottom). The rotation
+    // fold rides the SAME draw: uSize stays the SOURCE's w x h (the
+    // texture's own dims — the fold maps each rotated destination pixel
+    // back to its source texel), while a quarter turn's DESTINATION
+    // viewport is the swapped h x w (the encoder surface was configured
+    // with the rotated dims; the fold's g walks that surface).
+    const bool swap = (rotationDeg == 90 || rotationDeg == 270);
+    const GLsizei dstW = swap ? static_cast<GLsizei>(h) : static_cast<GLsizei>(w);
+    const GLsizei dstH = swap ? static_cast<GLsizei>(w) : static_cast<GLsizei>(h);
     glUseProgram(blitProgram);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, developTex);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);  // draw to the window surface
-    glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+    glViewport(0, 0, dstW, dstH);
     glUniform2i(blitSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+    glUniform1i(blitRotLoc, rotationDeg);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(blit)", &out.detail) != GL_NO_ERROR) {
         eglMakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
@@ -1198,10 +1212,20 @@ bool DevelopSession::setEncoderSurface(ANativeWindow* window,
 }
 
 DevelopFrameResult DevelopSession::renderFrameToEncoder(
-        const DevelopFrameRequest& req, int64_t ptsUs) {
+        const DevelopFrameRequest& req, int64_t ptsUs, int rotationDeg) {
     DevelopFrameResult res;
     if (impl_ == nullptr) {
         res.detail = "session not open";
+        return res;
+    }
+    // Fast validate on the CALLING thread (never hand the GL thread a job
+    // whose contract is already broken): the fold supports exactly the
+    // normalize(deg) set — 0/90/180/270. Mp4Exporter gates first; this is
+    // the second lock, honest and named (never a sideways encode).
+    const int norm = ((rotationDeg % 360) + 360) % 360;
+    if (norm != 0 && norm != 90 && norm != 180 && norm != 270) {
+        res.detail = "encoder blit rotation must be 0/90/180/270 (got " +
+                     std::to_string(rotationDeg) + ")";
         return res;
     }
     std::unique_lock<std::mutex> lock(impl_->mutex);
@@ -1222,6 +1246,7 @@ DevelopFrameResult DevelopSession::renderFrameToEncoder(
     impl_->pendingReq = &req;
     impl_->pendingRes = &res;
     impl_->pendingPtsUs = ptsUs;
+    impl_->pendingRotationDeg = norm;
     impl_->cvRequest.notify_one();
     impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None; });
     return res;

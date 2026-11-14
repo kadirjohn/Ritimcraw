@@ -3183,15 +3183,18 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionSetEncoderSurfa
 // cross the seam, so the return is a boolean, not a byte array. [ptsUs]
 // is the frame's normalized encoder presentation timestamp (the same
 // value the writer path's PtsTimeline would stamp); the session
-// multiplies it to nanoseconds media time. ok=false means the export
-// falls back per the dispatcher's one-line rule.
+// multiplies it to nanoseconds media time. [rotationDeg] is the frame's
+// effective orientation (container + manual, normalized): the blit
+// applies it through the uRotation fold — the session fast-refuses
+// anything outside 0/90/180/270. ok=false means the export falls back
+// per the dispatcher's one-line rule.
 
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoder(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jlong ptsUs, jfloat exposureEv,
         jboolean highlightReconstruction, jboolean keepVignetting,
-        jint tonemap) {
+        jint tonemap, jint rotationDeg) {
     (void)env;
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
@@ -3230,7 +3233,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
         const gles::DevelopFrameResult res =
-            session->renderFrameToEncoder(req, static_cast<int64_t>(ptsUs));
+            session->renderFrameToEncoder(req, static_cast<int64_t>(ptsUs),
+                                          static_cast<int>(rotationDeg));
         if (!res.ok) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop session encoder render: " + res.detail +

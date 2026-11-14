@@ -417,7 +417,12 @@ interface GpuDevelop {
      * M5: develops one frame on the GPU and blits it straight to the
      * encoder surface — no readback bytes cross the seam. [ptsUs] is the
      * frame's normalized encoder presentation timestamp (the same value
-     * the writer path stamps). False names the step in [lastDetail].
+     * the writer path stamps). [rotationDeg] is the frame's EFFECTIVE
+     * orientation (container + manual, normalized): the blit applies it
+     * through the uRotation fold — 0/90/180/270 only (the gate checks
+     * that before dispatch; the session refuses again on the calling
+     * thread). 0 is the byte-identical upright copy. False names the
+     * step in [lastDetail].
      */
     fun renderFrameToEncoder(
         sessionHandle: Long,
@@ -428,6 +433,7 @@ interface GpuDevelop {
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        rotationDeg: Int = 0,
     ): Boolean = false
 
     /** The bridge's thread-local last-error detail (same thread as the failed call). */
@@ -481,9 +487,10 @@ internal object NativeGpuDevelop : GpuDevelop {
         highlightReconstruction: Boolean,
         keepVignetting: Boolean,
         tonemap: Int,
+        rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
         sessionHandle, clipHandle, frameIndex, ptsUs,
-        exposureEv, highlightReconstruction, keepVignetting, tonemap,
+        exposureEv, highlightReconstruction, keepVignetting, tonemap, rotationDeg,
     )
 
     override fun closeSession(sessionHandle: Long) =
@@ -1325,8 +1332,15 @@ class ExportPipeline(
         // M5 — the encoder-surface geometry gate, computed BEFORE the
         // writer request/start (the single decision point): the session
         // blit is 1:1-pixels only, so the frame must reach the encoder
-        // with NO rotation, NO crop, NO straighten and NO scale — i.e.
-        // the develop output IS the encode input. gpuDevelopActive is
+        // with NO crop, NO straighten and NO scale — rotation is now
+        // TAUGHT (the uRotation fold, 0/90/180/270 — the normalize(deg)
+        // set), so the eligibility is "rotation is a multiple of 90 AND
+        // the develop output, rotated, IS the encode input": for 90/270
+        // the encode dims are the source's SWAPPED dims (outDims —
+        // RotationState's rotatedDims, the single rotation source of
+        // truth), and the session blit swaps the destination viewport to
+        // match. At 0/180 outDims IS the source dims, so this reduces to
+        // the pre-rotation gate byte-for-byte. gpuDevelopActive is
         // not known yet (the probe/parity run above fills developBackend
         // synchronously — it IS known: developBackend was computed before
         // this line), so the gate uses the same developBackend the frame
@@ -1334,11 +1348,11 @@ class ExportPipeline(
         // writer's OWN Surface mode (requestEncoderSurfaceInput, the
         // shipped path) or the byte path — byte-identical to before.
         val encoderDrawEligible = developBackend == EffectiveRenderBackend.GLES &&
-            effectiveDeg == 0 &&
+            effectiveDeg % 90 == 0 &&
             CropState.isFull(cropRect) &&
             grade.straightenDeg == 0f &&
-            encodeDims.width == info.width &&
-            encodeDims.height == info.height
+            encodeDims.width == outDims.width &&
+            encodeDims.height == outDims.height
         // GPU deliverable F (§10): the Surface request goes to the writer
         // BEFORE start — an explicit request from the job's render-backend
         // snapshot, never auto. A writer that cannot bring the mode up
@@ -1484,10 +1498,14 @@ class ExportPipeline(
                         // develops AND blits straight to the codec input
                         // surface on its GL thread, stamping the frame's
                         // normalized pts as media time. NO readback bytes
-                        // cross the seam, no rotate/crop/scale runs (the
-                        // geometry gate guaranteed 1:1 pixels), and the
-                        // codec drain follows per the Surface-input
-                        // contract. A refusal latches the fast path OFF
+                        // cross the seam, no crop/scale runs (the geometry
+                        // gate guaranteed 1:1 pixels), and rotation rides
+                        // the blit's uRotation fold (the gate guaranteed a
+                        // 90-multiple; effectiveDeg is the same normalized
+                        // value the gate checked — 0 is the byte-identical
+                        // upright copy). The codec drain follows per the
+                        // Surface-input contract. A refusal latches the
+                        // fast path OFF
                         // with ONE honest fallback line naming the reason.
                         // An encoder-render failure ALSO latches the
                         // session unhealthy natively (mid-render GL
@@ -1514,7 +1532,7 @@ class ExportPipeline(
                                 gpuDevelop.renderFrameToEncoder(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
                                     grade.exposureEv, grade.highlightReconstruction,
-                                    grade.keepVignetting, grade.tonemap,
+                                    grade.keepVignetting, grade.tonemap, effectiveDeg,
                                 )
                             } catch (e: IllegalStateException) {
                                 false // no .so mid-export: latch below

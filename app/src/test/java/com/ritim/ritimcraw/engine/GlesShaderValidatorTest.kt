@@ -1039,4 +1039,25 @@ class GlesShaderValidatorTest {
                 .any { it.contains("uSize") },
         )
     }
+
+    @Test
+    fun a_missing_blit_rotation_fold_is_reported() {
+        // The surface-gpu rotation deliverable: without the fold a 90/270
+        // frame blits sideways (the session would hand the shader a
+        // rotation it cannot apply). Mutations: drop the uniform, and
+        // drop the fold while leaving a decoy uniform behind — each must
+        // be caught by its own check.
+        val noUniform = GlesShaderSources.BLIT_FRAGMENT
+            .replace("uniform int uRotation;", "")
+        assertTrue(
+            GlesShaderValidator.problems(noUniform, GlesShaderValidator.Kind.BLIT_FRAGMENT)
+                .any { it.contains("uRotation") },
+        )
+        val noFold = GlesShaderSources.BLIT_FRAGMENT
+            .replace("uRotation == 90", "uRotation == 1")
+        assertTrue(
+            GlesShaderValidator.problems(noFold, GlesShaderValidator.Kind.BLIT_FRAGMENT)
+                .any { it.contains("uRotation == 90") },
+        )
+    }
 }
