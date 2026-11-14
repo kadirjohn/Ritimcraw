@@ -1,10 +1,9 @@
 package com.ritim.ritimcraw.ui.settings
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,25 +15,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -91,26 +84,34 @@ import com.ritim.ritimcraw.ui.components.ThemeSlider
  *   commits once on release — the segmented control is gone,
  * - the centered version footer (the old divider line is gone).
  *
- * The device report dialog (owner request 2026-11-13) is unchanged in
- * this step — the device-report step replaces it with a full screen and
- * this dialog + its state go away then. The Measure action (debug
- * builds only) runs the preview latency/fps harness over the first
- * imported clip and logs one summary block under the "ritim-pm" tag —
- * see the device test steps in the sprint SUMMARY.
+ * The Device report row navigates to the full report screen
+ * ([DeviceReportScreen], the owner spec's replacement for the old
+ * codec AlertDialog) through [onOpenDeviceReport]; the screen's scroll
+ * position survives that navigation through [scrollState] (AppNav owns
+ * it above the browse Crossfade, so the position outlives the swap and
+ * the report back-navigation restores it — the spec's requirement).
+ * The Measure action (debug builds only) runs the preview latency/fps
+ * harness over the first imported clip and logs one summary block under
+ * the "ritim-pm" tag — see the device test steps in the sprint SUMMARY.
  *
  * The screen owns no store: every level and callback is a parameter
  * (AppNav owns the stores), so the pure mappings stay in the enums and
  * the persistence in AppNav's stores — the redesign changes none of
  * that wiring, only the rows' look.
  */
-// FlowRow (the codec pills' wrap layout) is stable API since foundation
-// 1.7 but still carries the @ExperimentalLayoutApi marker in this
-// version's artifacts; the opt-in is scoped to this file's usage.
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     versionName: String = "1.0",
     reports: List<CodecReport> = remember { runCatching { CodecProbe.probe() }.getOrDefault(emptyList()) },
+    // The screen's scroll position, hoisted by AppNav above the browse
+    // Crossfade (rememberSaveable(saver = ScrollState.Saver)) so it
+    // survives navigating to the Device report screen and back — the
+    // spec's restore requirement. The default keeps every other caller
+    // (previews, tests) working with a local scroll state.
+    scrollState: ScrollState = rememberScrollState(),
+    // Opens the Device report full screen (the spec's replacement for
+    // the old codec AlertDialog): AppNav owns the route flag.
+    onOpenDeviceReport: () -> Unit = {},
     onMeasure: (() -> Unit)? = null,
     measuring: Boolean = false,
     // ---- Preview quality (owner request 2026-11-11b section 3) ----
@@ -154,15 +155,12 @@ fun SettingsScreen(
     onThemeModeChange: (ThemeMode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    // The device report dialog (owner request 2026-11-13): the codec list
-    // lives in the dialog, not the main screen. Local open/close state —
-    // view-only content, nothing to persist or wire through AppNav. The
-    // device-report step replaces this dialog with a full screen.
-    var reportOpen by remember { mutableStateOf(false) }
+    // The Device report row's navigation: AppNav owns the route flag
+    // (deviceReportOpen) and the full screen; this screen only forwards.
     Column(
         modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
     ) {
         // The spec's title (spec section_screen): 32sp SemiBold,
         // letterSpacing -0.01em, onSurface. The app shell's Scaffold
@@ -274,8 +272,8 @@ fun SettingsScreen(
                 if (reports.isEmpty()) {
                     // The probe's empty placeholder keeps its designed
                     // wording and no false affordance (the pre-probe
-                    // contract): no chevron, no click — the dialog below
-                    // would have nothing to show.
+                    // contract): no chevron, no click — the report
+                    // screen would have nothing to show.
                     SettingRowBase(
                         icon = Report,
                         title = stringResource(R.string.settings_device_report),
@@ -291,7 +289,7 @@ fun SettingsScreen(
                             reports.size,
                             reports.size,
                         ),
-                        onClick = { reportOpen = true },
+                        onClick = onOpenDeviceReport,
                     )
                 }
             }
@@ -429,68 +427,6 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 28.dp, bottom = 24.dp),
-        )
-    }
-    // The codec pills dialog (owner request 2026-11-13): one pill per codec
-    // in a flowing wrap list — the whole report at a glance instead of the
-    // old flat one-liner rows. The app's plain AlertDialog pattern
-    // (Library delete, gyro picker); no nav-graph addition. The
-    // device-report step replaces this with the full screen.
-    if (reportOpen && reports.isNotEmpty()) {
-        AlertDialog(
-            onDismissRequest = { reportOpen = false },
-            title = { Text(stringResource(R.string.settings_device_report)) },
-            text = {
-                // FlowRow wraps the pills to the dialog's width — a codec
-                // list of any length reads as flowing rows, not one long
-                // column; verticalScroll bounds a very long device's list.
-                FlowRow(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    reports.forEach { report ->
-                        // One codec, one pill (stock M3 AssistChip — the
-                        // editor's PreviewRefreshControl precedent): the
-                        // codec's name is the label, the hardware/software
-                        // flag is the leading marker. The full formatReport
-                        // line (kind, profiles, max size, 10-bit) rides the
-                        // chip as its accessibility description — the
-                        // on-screen pill stays scannable, the detail stays
-                        // one TalkBack step away. The pill is informational,
-                        // but AssistChip is a clickable shape by design: the
-                        // tap closes the dialog (an honest visible response
-                        // that matches TalkBack's "button" announcement,
-                        // instead of a dead no-op).
-                        val description = CodecProbe.formatReport(report)
-                        AssistChip(
-                            onClick = { reportOpen = false },
-                            label = { Text(report.name) },
-                            leadingIcon = {
-                                Text(
-                                    stringResource(
-                                        if (report.hardware) {
-                                            R.string.settings_codec_hw
-                                        } else {
-                                            R.string.settings_codec_sw
-                                        }
-                                    ),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            modifier = Modifier.semantics {
-                                contentDescription = description
-                            },
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { reportOpen = false }) {
-                    Text(stringResource(R.string.settings_report_close))
-                }
-            },
         )
     }
 }
