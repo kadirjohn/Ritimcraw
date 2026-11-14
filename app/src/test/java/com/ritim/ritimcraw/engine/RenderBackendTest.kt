@@ -271,7 +271,6 @@ class RenderBackendTest {
             EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), GradeK(),
-                gyroWarpActive = false,
             ),
         )
     }
@@ -338,7 +337,6 @@ class RenderBackendTest {
                 EffectiveRenderBackend.GLES,
                 BackendRules.fragmentEffectiveBackend(
                     RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-                    gyroWarpActive = false,
                 ),
             )
         }
@@ -373,7 +371,6 @@ class RenderBackendTest {
                 tint = 5f, wheelShadowX = 0.2f, splitShadowHue = 30f,
                 saturation = 5f,
             ),
-            gyroWarpActive = false,
         )!!
         goneTokens.forEach { token ->
             assertTrue("$token must be gone: $line", !line.contains(token))
@@ -404,7 +401,6 @@ class RenderBackendTest {
             EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-                gyroWarpActive = false,
             ),
         )
     }
@@ -427,7 +423,6 @@ class RenderBackendTest {
                 EffectiveRenderBackend.GLES,
                 BackendRules.fragmentEffectiveBackend(
                     RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-                    gyroWarpActive = false,
                 ),
             )
         }
@@ -452,7 +447,6 @@ class RenderBackendTest {
                 EffectiveRenderBackend.GLES,
                 BackendRules.fragmentEffectiveBackend(
                     RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-                    gyroWarpActive = false,
                 ),
             )
         }
@@ -483,7 +477,6 @@ class RenderBackendTest {
                 EffectiveRenderBackend.GLES,
                 BackendRules.fragmentEffectiveBackend(
                     RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-                    gyroWarpActive = false,
                 ),
             )
         }
@@ -509,7 +502,6 @@ class RenderBackendTest {
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, BackendGates(),
             GradeK(chromaDenoise = 25f, noiseReduction = 25f),
-            gyroWarpActive = false,
         )!!
         goneTokens.forEach { token ->
             assertTrue("$token must be gone: $line", !line.contains(token))
@@ -546,7 +538,6 @@ class RenderBackendTest {
                 EffectiveRenderBackend.GLES,
                 BackendRules.fragmentEffectiveBackend(
                     RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-                    gyroWarpActive = false,
                 ),
             )
         }
@@ -572,7 +563,6 @@ class RenderBackendTest {
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, BackendGates(),
             GradeK(sharpness = 25f, detail = 25f),
-            gyroWarpActive = false,
         )!!
         goneTokens.forEach { token ->
             assertTrue("$token must be gone: $line", !line.contains(token))
@@ -635,12 +625,10 @@ class RenderBackendTest {
             EffectiveRenderBackend.CPU,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), lutGrade,
-                gyroWarpActive = false,
             ),
         )
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), lutGrade,
-            gyroWarpActive = false,
         )!!
         assertTrue("lut token missing: $line", line.contains("lut"))
         // Path healthy: 24 covered — no active uncovered stage, the
@@ -654,13 +642,13 @@ class RenderBackendTest {
             EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), lutGrade,
-                gyroWarpActive = false, lutTexturePathOk = true,
+                lutTexturePathOk = true,
             ),
         )
         assertNull(
             BackendRules.fragmentFallbackLine(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), lutGrade,
-                gyroWarpActive = false, lutTexturePathOk = true,
+                lutTexturePathOk = true,
             ),
         )
     }
@@ -684,19 +672,17 @@ class RenderBackendTest {
             EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-                gyroWarpActive = false, lutTexturePathOk = true,
+                lutTexturePathOk = true,
             ),
         )
         assertEquals(
             EffectiveRenderBackend.CPU,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-                gyroWarpActive = false,
             ),
         )
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
-            gyroWarpActive = false,
         )!!
         assertTrue("lut token missing: $line", line.contains("lut"))
     }
@@ -722,7 +708,6 @@ class RenderBackendTest {
             EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), coveredGrade(),
-                gyroWarpActive = false,
             ),
         )
         // Default grade (stages 2+3 toggles true): GLES too now — both
@@ -731,7 +716,6 @@ class RenderBackendTest {
             EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), GradeK(),
-                gyroWarpActive = false,
             ),
         )
         // Gates red: CPU even for a covered grade.
@@ -739,7 +723,6 @@ class RenderBackendTest {
             EffectiveRenderBackend.CPU,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, BackendGates(), coveredGrade(),
-                gyroWarpActive = false,
             ),
         )
         // CPU requested: always CPU, never gated.
@@ -747,15 +730,19 @@ class RenderBackendTest {
             EffectiveRenderBackend.CPU,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.CPU, fragmentGates(), coveredGrade(),
-                gyroWarpActive = false,
             ),
         )
-        // Gyro warp attached: CPU (the warp is not in the fragment pass).
+        // Gyro warp attached: GLES — the warp pass is unconditionally
+        // fragment-covered (pure math, no texture-format leg), so the
+        // RULE never forces CPU. Since the gyro-warp port's seam leg the
+        // DISPATCH locks are gone too (the seams thread the per-frame
+        // verdict into the renders; warpActive=false skips the draw —
+        // the identity no-draw rule), so an attached warp rides GLES
+        // end to end with no lock anywhere.
         assertEquals(
-            EffectiveRenderBackend.CPU,
+            EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), coveredGrade(),
-                gyroWarpActive = true,
             ),
         )
     }
@@ -774,7 +761,6 @@ class RenderBackendTest {
         val grade = GradeK(lutId = "l1", lutStrength = 100f)
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, BackendGates(), grade,
-            gyroWarpActive = false,
         )!!
         assertTrue("requested missing: $line", line.contains("requested=GPU_EXPERIMENTAL"))
         assertTrue("effective missing: $line", line.contains("effective=CPU"))
@@ -791,12 +777,10 @@ class RenderBackendTest {
         assertNull(
             BackendRules.fragmentFallbackLine(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), GradeK(),
-                gyroWarpActive = false,
             ),
         )
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, BackendGates(), GradeK(),
-            gyroWarpActive = false,
         )!!
         assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
         assertTrue("lens-shading must be gone: $line", !line.contains("lens-shading"))
@@ -817,13 +801,11 @@ class RenderBackendTest {
             BackendRules.fragmentFallbackLine(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(),
                 GradeK(highlights = -55f),
-                gyroWarpActive = false,
             ),
         )
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, BackendGates(),
             GradeK(highlights = -55f),
-            gyroWarpActive = false,
         )!!
         assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
         assertTrue("highlights must be gone: $line", !line.contains("highlights"))
@@ -863,12 +845,21 @@ class RenderBackendTest {
     }
 
     @Test
-    fun fragment_fallback_line_names_gyro_warp_when_attached() {
-        val line = BackendRules.fragmentFallbackLine(
-            RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), coveredGrade(),
-            gyroWarpActive = true,
-        )!!
-        assertTrue("gyro-warp missing: $line", line.contains("gyro-warp"))
+    fun fragment_fallback_line_carries_no_gyro_warp_token_anymore() {
+        // The gyro-warp port: the warp pass is pure float32 math (a
+        // composed 3x3 inverse-sampling map, a 4-tap bilinear — no
+        // texture-format leg anywhere), so it is covered by the fragment
+        // chain UNCONDITIONALLY and the token left the runtime vocabulary
+        // entirely — a warp-attached grade with gates green produces NO
+        // fallback line here. Since the port's seam leg the dispatch
+        // locks are gone too, so there is no second truth anywhere: the
+        // warp rides GLES through the seams, warpActive=false skips the
+        // draw entirely, and no fallback line ever names a warp.
+        assertNull(
+            BackendRules.fragmentFallbackLine(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), coveredGrade(),
+            ),
+        )
     }
 
     @Test
@@ -877,14 +868,12 @@ class RenderBackendTest {
         assertNull(
             BackendRules.fragmentFallbackLine(
                 RenderBackend.CPU, BackendGates(), GradeK(),
-                gyroWarpActive = false,
             ),
         )
         // Fragment path actually running: nothing to report.
         assertNull(
             BackendRules.fragmentFallbackLine(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), coveredGrade(),
-                gyroWarpActive = false,
             ),
         )
     }

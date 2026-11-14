@@ -32,7 +32,10 @@ import org.junit.Test
  *      plus — since the stage-24 GPU port — the seven LUT controls (the
  *      resolved .cube path, the [0,1] strength, and the five
  *      interpretation ordinals, -1 = legacy) beside the four plumbing
- *      values (session handle, clip handle, frame index, max dim). That
+ *      values (session handle, clip handle, frame index, max dim) plus —
+ *      since the gyro warp port — the warp pair (the active flag and the
+ *      nine-float composite inverse-sampling map; false skips the draw
+ *      entirely, the identity no-draw rule). That
  *      narrow signature is the second lock against
  *      uncovered grades (the Kotlin coverage gate is the first): a stage
  *      the fragment pass does not cover cannot even be expressed into the
@@ -64,6 +67,7 @@ class NativeSourcePreviewSessionTest {
                 GlesShaderSources.SHARPNESS_V,
                 GlesShaderSources.DETAIL_H,
                 GlesShaderSources.DETAIL_V,
+                GlesShaderSources.WARP,
                 GlesShaderSources.NR_CHROMA_H,
                 GlesShaderSources.NR_CHROMA_V,
                 GlesShaderSources.NR_LUMA,
@@ -133,6 +137,8 @@ class NativeSourcePreviewSessionTest {
                 lutInTransfer = -1,
                 lutOutGamut = -1,
                 lutOutTransfer = -1,
+                warpActive = false,
+                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
             )
             throw AssertionError("expected IllegalStateException")
         } catch (expected: IllegalStateException) {
@@ -178,7 +184,7 @@ class NativeSourcePreviewSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 38 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+        // 40 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
         // four plumbing values) + chromaDenoise, noiseReduction (the two
         // spatial-NR stages' raw values since the spatial-NR port — stages
         // 7/8, the multi-pass fragment chain behind uChromaDenoise/
@@ -195,18 +201,22 @@ class NativeSourcePreviewSessionTest {
         // the three split-tone values, with asShot as the 16/17 gate's
         // input) + the seven LUT controls since the stage-24 GPU port
         // (lutPath, lutStrength and the five interpretation ordinals — the
-        // SAME layout the CPU seam threads, -1 = legacy). Temporal NR and
-        // tone-band controls are deliberately absent — those stages are
-        // NOT fragment-covered, so a grade using any of them must take the
-        // CPU path wholesale; adding such a parameter here widens the
+        // SAME layout the CPU seam threads, -1 = legacy) + warpActive and
+        // warpM since the gyro warp port (the per-frame verdict the
+        // resolver produced at the caller — the Boolean locks the draw,
+        // the nine floats lock the composite inverse-sampling map; false
+        // skips draw 10 entirely, the identity no-draw rule). Temporal NR
+        // and tone-band controls are deliberately absent — those stages
+        // are NOT fragment-covered, so a grade using any of them must take
+        // the CPU path wholesale; adding such a parameter here widens the
         // session's promise and must fail this test until the coverage
         // gate is taught the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(38, render.parameterCount)
+        assertEquals(40, render.parameterCount)
     }
 
     @Test
-    fun open_carries_exactly_the_fourteen_shader_sources() {
+    fun open_carries_exactly_the_fifteen_shader_sources() {
         // The session compiles the Kotlin single-source-of-truth texts —
         // the same four sources the M3 seam rides PLUS the window pass's
         // own WINDOW_FRAGMENT (the aspect-fit letterbox draw), host-validated
@@ -215,10 +225,12 @@ class NativeSourcePreviewSessionTest {
         // (pre/post) plus the three NR fragments (chroma-h, chroma-v,
         // luma); since the sharpness/detail port the split is the
         // THREE-WAY pair (pre / pointwise post / tail) plus the four
-        // unsharp fragments — fourteen sources total. A fifteenth source
-        // would be a new program, which is a different session.
+        // unsharp fragments; since the gyro warp port the warp fragment
+        // joins between the unsharp passes and the tail — fifteen
+        // sources total. A sixteenth source would be a new program,
+        // which is a different session.
         val open = method("jniPreviewSessionOpen")
-        assertEquals(14, open.parameterCount)
+        assertEquals(15, open.parameterCount)
     }
 
     @Test
@@ -244,14 +256,15 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun the_fourteen_sources_are_the_validated_single_source_of_truth() {
+    fun the_fifteen_sources_are_the_validated_single_source_of_truth() {
         // The exact constants open() will be called with (commit b wires
         // them) pass the host validator under their own kinds — so the text
         // the production session compiles on device is the text the JVM
         // checked. Locked here so commit b cannot quietly swap in an
         // unvalidated variant (the split pair and the three NR fragments
         // joined the set with the spatial-NR port; the tail and the four
-        // unsharp fragments joined with the sharpness/detail port).
+        // unsharp fragments joined with the sharpness/detail port; the warp
+        // fragment joined with the gyro warp port).
         assertTrue(
             GlesShaderValidator.validate(
                 GlesShaderSources.FULLSCREEN_VERTEX,
@@ -304,6 +317,12 @@ class NativeSourcePreviewSessionTest {
             GlesShaderValidator.validate(
                 GlesShaderSources.DETAIL_V,
                 GlesShaderValidator.Kind.DETAIL_V,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.WARP,
+                GlesShaderValidator.Kind.WARP,
             ),
         )
         assertTrue(

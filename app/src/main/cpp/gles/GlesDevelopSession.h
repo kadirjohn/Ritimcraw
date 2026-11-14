@@ -10,13 +10,14 @@
 //   - one EGL context (gles::EglSession from GlesPipeline.h, the grafika
 //     topology: display -> RGBA8888/pbuffer config -> ES 3 context -> 1x1
 //     pbuffer), confined to ONE dedicated GL thread;
-//   - the twelve programs (pre = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_PRE,
+//   - the thirteen programs (pre = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_PRE,
 //     post = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_POST — the pointwise
 //     half — tail = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_TAIL, the four
 //     unsharp passes sharpnessH/sharpnessV/detailH/detailV =
 //     FULLSCREEN_VERTEX + SHARPNESS_H / SHARPNESS_V / DETAIL_H /
 //     DETAIL_V, the three spatial-NR passes chromaH/chromaV/luma =
-//     FULLSCREEN_VERTEX + NR_CHROMA_H / NR_CHROMA_V / NR_LUMA, store =
+//     FULLSCREEN_VERTEX + NR_CHROMA_H / NR_CHROMA_V / NR_LUMA, the gyro
+//     warp pass warp = FULLSCREEN_VERTEX + WARP, store =
 //     FULLSCREEN_VERTEX_310 + STORE_FRAGMENT, blit = FULLSCREEN_VERTEX +
 //     BLIT_FRAGMENT), compiled ONCE at open — the caller provides the
 //     Kotlin single-source-of-truth texts, exactly like the harness does.
@@ -26,8 +27,14 @@
 //     CPU's exact stage 7/8 position, post runs the pointwise stages
 //     9-20, the four unsharp passes (gated per grade) run the CPU's
 //     stages 21/22 — H then V per stage, the V pass reading the stage's
-//     own input as its ORIGINAL-luma guide — and tail runs stages
-//     23+24+OETF into the develop texture. The three-way split
+//     own input as its ORIGINAL-luma guide — then the gyro warp pass
+//     (gated per FRAME, not per grade) resamples the chain's live
+//     texture through the caller-composed inverse-sampling map M, and
+//     tail runs stages 23+24+OETF into the develop texture. The warp is
+//     NOT a develop stage: the CPU pipeline (rawedit::stabilizedFrame's
+//     call site) runs warpFrame AFTER developCpu on the linear output,
+//     so the chain draws it between the unsharp passes and the tail —
+//     the OETF stays in the tail, applied exactly once. The three-way split
 //     recomposes the fused text BYTE-IDENTICALLY (the host-checked
 //     invariant), and the fused text itself stays the frozen parity
 //     harness's own source (GlesPipeline.cpp) — the split passes compose
@@ -246,6 +253,25 @@ struct DevelopFrameRequest {
     int lutInTransfer = 0;
     int lutOutGamut = 0;
     int lutOutTransfer = 0;
+    // Gyro warp (the stabilization resample — NOT a develop stage; the CPU
+    // runs it after developCpu on the linear output). The caller resolves
+    // the frame's stabilization plan on ITS OWN thread (the plan cache is
+    // not GL-thread-safe), composes M = Hinv * S once per frame (S the
+    // scale-about-center map at the frame's zoom; the CPU's own loop in
+    // rawedit::warpFrame), narrows the 9 doubles to floats and uploads
+    // them row-major with transpose=GL_TRUE — the uCam2rgb idiom. The
+    // caller folds inactive (no gyro / the grade not stabilizing),
+    // identity (H == I and zoom == 1 — the CPU's byte-identical fast path)
+    // and degenerate (a singular H, a non-finite zoom) plans into
+    // warpActive = false; the session then SKIPS the draw entirely — the
+    // pass's absence is the identity, because a resampling pass on an
+    // identity map would blur. There is NO in-shader gate: warpActive is
+    // the only lock. The identity default keeps warpless requests
+    // byte-identical to the pre-warp chain.
+    bool warpActive = false;
+    float warpM[9] = {1.0f, 0.0f, 0.0f,
+                      0.0f, 1.0f, 0.0f,
+                      0.0f, 0.0f, 1.0f};  // row-major M = Hinv * S
 };
 
 // One render result. ok=false means the step named in [detail] failed (or
@@ -263,16 +289,16 @@ public:
     // Spawns the GL thread, opens the EGL context on it, checks the gates
     // (ES 3.1+ — STORE_FRAGMENT is 310 es — and GL_EXT_color_buffer_float,
     // re-read in THIS context, never trusted from a probe's throwaway one),
-    // compiles the twelve programs and resolves every uniform location.
+    // compiles the thirteen programs and resolves every uniform location.
     // Returns null with *detail naming the first failing step on any
-    // failure (the GL thread is joined; nothing leaks). The fourteen
+    // failure (the GL thread is joined; nothing leaks). The fifteen
     // sources are the Kotlin single-source-of-truth texts
     // (GlesShaderSources), host-validated: the two vertex variants
     // (vertex + vertex310) + the three-way split develop chain (pre /
     // pointwise post / tail) + the four unsharp fragments
     // (sharpnessH/sharpnessV/detailH/detailV) + the three NR fragments +
-    // store + the blit fragment that draws the developed texture to
-    // the encoder surface.
+    // the gyro warp fragment + store + the blit fragment that draws the
+    // developed texture to the encoder surface.
     static std::unique_ptr<DevelopSession> open(
         const std::string& vertexSource,
         const std::string& vertex310Source,
@@ -283,6 +309,7 @@ public:
         const std::string& sharpnessVSource,
         const std::string& detailHSource,
         const std::string& detailVSource,
+        const std::string& warpFragmentSource,
         const std::string& nrChromaHSource,
         const std::string& nrChromaVSource,
         const std::string& nrLumaSource,

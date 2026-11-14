@@ -435,6 +435,8 @@ interface GpuDevelop {
         lutInTransfer: Int,
         lutOutGamut: Int,
         lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
     ): ByteArray?
 
     /** Closes the session (idempotent; absorbs context loss at teardown). */
@@ -499,8 +501,30 @@ interface GpuDevelop {
         lutInTransfer: Int,
         lutOutGamut: Int,
         lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
         rotationDeg: Int = 0,
     ): Boolean = false
+
+    /**
+     * The gyro warp resolver (the GPU warp port's commit b): the
+     * per-frame plan verdict the dispatch threads into the renders.
+     * Returns the 10-element array ([0] active flag, [1..9] the
+     * composite M) or null = no verdict; the dispatcher folds null to
+     * warpActive=false + identity M. The default body keeps fakes
+     * honest: a fake that does not override it never fabricates a warp.
+     */
+    fun resolveWarp(
+        clipHandle: Long,
+        gyroPath: String?,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        stabFocalMm: Float,
+        stabTrimMs: Float,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = null
 
     /** The bridge's thread-local last-error detail (same thread as the failed call). */
     fun lastDetail(): String?
@@ -530,6 +554,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         GlesShaderSources.SHARPNESS_V,
         GlesShaderSources.DETAIL_H,
         GlesShaderSources.DETAIL_V,
+        GlesShaderSources.WARP,
         GlesShaderSources.NR_CHROMA_H,
         GlesShaderSources.NR_CHROMA_V,
         GlesShaderSources.NR_LUMA,
@@ -575,6 +600,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         lutInTransfer: Int,
         lutOutGamut: Int,
         lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
         sessionHandle, clipHandle, frameIndex, chromaDenoise, noiseReduction,
         sharpness, detail,
@@ -584,6 +611,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
         highlightReconstruction, keepVignetting, tonemap, lutPath, lutStrength,
         lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+        warpActive, warpM,
     )
 
     override fun setEncoderSurface(sessionHandle: Long, surface: Any?): Boolean =
@@ -628,6 +656,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         lutInTransfer: Int,
         lutOutGamut: Int,
         lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
         rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
         sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise, noiseReduction,
@@ -638,7 +668,22 @@ internal object NativeGpuDevelop : GpuDevelop {
         wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
         highlightReconstruction, keepVignetting, tonemap, lutPath, lutStrength,
         lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
-        rotationDeg,
+        warpActive, warpM, rotationDeg,
+    )
+
+    override fun resolveWarp(
+        clipHandle: Long,
+        gyroPath: String?,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        stabFocalMm: Float,
+        stabTrimMs: Float,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = NativeSource.jniStabWarpResolve(
+        clipHandle, gyroPath, stabMode, stabStrength,
+        stabZoomLimit, stabFocalMm, stabTrimMs, frameIndex, maxDim,
     )
 
     override fun closeSession(sessionHandle: Long) =
@@ -1218,7 +1263,10 @@ class ExportPipeline(
     /**
      * The GPU develop leg's seam (M3 commit b): when renderBackend is
      * GPU_EXPERIMENTAL AND BackendRules says the grade's active stages are
-     * ALL fragment-covered AND no gyro warp, the per-frame develop runs
+     * ALL fragment-covered (a gyro-stabilized grade rides GLES like any
+     * other covered grade since the gyro-warp port's seam leg — the
+     * per-frame warp verdict threads the renders), the per-frame develop
+     * runs
      * through the GPU develop session (M3 commit a) instead of
      * session.renderFrame's CPU develop — the SAME rotate/crop/YUV/writer
      * tail consumes the bytes either way (the GPU output is full-res
@@ -1401,9 +1449,14 @@ class ExportPipeline(
         // M3 commit b — the develop dispatch: WHICH pipeline develops the
         // frames. A GPU_EXPERIMENTAL job whose grade's active stages are
         // ALL fragment-covered (the SAME BackendRules vocabulary the
-        // visibility line below uses — no second truth) and whose gyro
-        // warp is off develops through the GPU session; every other
-        // shape develops through the CPU session. The order is
+        // visibility line below uses — no second truth) develops through
+        // the GPU session; every other shape develops through the CPU
+        // session. Since the gyro warp port the warp is NO LONGER an
+        // uncovered leg: the coverage check below says nothing about it,
+        // and the frame loop resolves the per-frame plan on this thread
+        // (gpuDevelop.resolveWarp) and threads the verdict into the GPU
+        // renders — a gyro-stabilized export rides GLES like any other
+        // covered grade. The order is
         // cost-aware: the coverage check is FREE and runs first (an
         // uncovered grade never pays the probe or the parity run — the
         // ONE exception is stage 24's runtime leg above, where the LUT
@@ -1423,7 +1476,6 @@ class ExportPipeline(
         // call (the PreviewMetrics precedent), and the writer binds ITS
         // context only in start() — running the parity after start would
         // put two contexts on one thread.
-        val gyroWarpActive = grade.stabilization && gyroPath != null
         // Stage 24's runtime leg (commit b): a LUT-active grade's coverage
         // depends on a fact only the probe knows — the RGBA16F 3D-texture
         // path is GLES 3.0 core, so contextOk && glesMajor >= 3. A
@@ -1457,7 +1509,6 @@ class ExportPipeline(
         val uncoveredTokens = mutableListOf<String>()
         uncoveredTokens += BackendRules.fragmentUncoveredStages(grade, lutTexturePathOk).map { it.second }
         uncoveredTokens += BackendRules.fragmentUncoveredPreStages(grade)
-        if (gyroWarpActive) uncoveredTokens += "gyro-warp"
         var developBackend = EffectiveRenderBackend.CPU
         var developFallback: String? = null
         if (renderBackend == RenderBackend.GPU_EXPERIMENTAL && uncoveredTokens.isEmpty()) {
@@ -1494,13 +1545,13 @@ class ExportPipeline(
                 gates = BackendGates()
             }
             developBackend = BackendRules.fragmentEffectiveBackend(
-                renderBackend, gates, grade, gyroWarpActive, lutTexturePathOk,
+                renderBackend, gates, grade, lutTexturePathOk,
             )
             developFallback = BackendRules.fragmentFallbackLine(
-                renderBackend, gates, grade, gyroWarpActive, lutTexturePathOk,
+                renderBackend, gates, grade, lutTexturePathOk,
             )
         } else if (renderBackend == RenderBackend.GPU_EXPERIMENTAL) {
-            // An active uncovered stage/pre-stage/gyro warp forces CPU
+            // An active uncovered stage/pre-stage forces CPU
             // BEFORE any probe is paid. The line names the stage tokens
             // ONLY — never gate tokens, because no gate was measured
             // (naming "no-egl-context" for a probe that never ran would
@@ -1677,6 +1728,58 @@ class ExportPipeline(
                     PtsTimeline.Sample.Track.VIDEO -> {
                         timing?.startFrame()
                         val t0 = System.nanoTime()
+                        // The gyro warp port's commit b — the per-frame plan
+                        // resolution. The GPU renders consume the warp verdict
+                        // (active flag + the composite M), so it is resolved
+                        // HERE, per frame, on this engine thread (the plan
+                        // cache and the thread-local gyro cache are not
+                        // GL-thread-safe; the render only READS the pair).
+                        // The six request values are the IDENTICAL ones the
+                        // CPU seam threads (jniExportFrame above): the gyro
+                        // path gated on stabilization-on + attached log,
+                        // strength /100, mode/zoomLimit/focalMm/trimMs raw.
+                        // maxDim = 0 = full resolution (the export renders at
+                        // the clip's own dims — the applyStabilization
+                        // convention). Null verdict (no log, dead handle,
+                        // parse failure) folds to warpActive=false + identity
+                        // M — the session then SKIPS draw 10 entirely (the
+                        // identity no-draw rule), byte-identical to the CPU's
+                        // honest no-op. The CPU branches below never touch
+                        // this: they keep threading the six values into
+                        // jniExportFrame, whose bridge folds the same way.
+                        val warp = if (gpuDevelopActive || encoderSurfaceAttached) {
+                            try {
+                                gpuDevelop.resolveWarp(
+                                    info.handle,
+                                    if (grade.stabilization && gyroPath != null) gyroPath else null,
+                                    grade.stabilizationMode,
+                                    if (grade.stabilization && gyroPath != null) {
+                                        grade.stabilizationStrength / 100f
+                                    } else {
+                                        0f
+                                    },
+                                    grade.stabilizationZoomLimit,
+                                    grade.stabilizationFocalMm,
+                                    grade.stabilizationTrimMs,
+                                    s.frameIndex,
+                                    0,
+                                )
+                            } catch (e: IllegalStateException) {
+                                null // no .so mid-export: the renders latch below
+                            }
+                        } else {
+                            null
+                        }
+                        val warpActive = warp != null && warp[0] != 0.0f
+                        val warpM = if (warp != null && warp.size >= 10) {
+                            warp.copyOfRange(1, 10)
+                        } else {
+                            floatArrayOf(
+                                1f, 0f, 0f,
+                                0f, 1f, 0f,
+                                0f, 0f, 1f,
+                            )
+                        }
                         // M5 — the encoder-surface fast path: the session
                         // develops AND blits straight to the codec input
                         // surface on its GL thread, stamping the frame's
@@ -1734,6 +1837,7 @@ class ExportPipeline(
                                     grade.lutInterp?.input?.transfer?.value ?: -1,
                                     grade.lutInterp?.output?.gamut?.value ?: -1,
                                     grade.lutInterp?.output?.transfer?.value ?: -1,
+                                    warpActive, warpM,
                                     effectiveDeg,
                                 )
                             } catch (e: IllegalStateException) {
@@ -1802,6 +1906,7 @@ class ExportPipeline(
                                     grade.lutInterp?.input?.transfer?.value ?: -1,
                                     grade.lutInterp?.output?.gamut?.value ?: -1,
                                     grade.lutInterp?.output?.transfer?.value ?: -1,
+                                    warpActive, warpM,
                                 )
                             } catch (e: IllegalStateException) {
                                 null // no .so mid-export: latch CPU below

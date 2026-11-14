@@ -496,6 +496,33 @@ inline const char* stabSyncKindName(int kind) {
     return kind == 2 ? "refined" : kind == 1 ? "anchored" : "manual";
 }
 
+// 3x3 inverse through the adjugate — a DOCUMENTED COPY of rawedit::matInv
+// (core/src/Warp.cpp; the same copy note Stabilization.cpp's own helper
+// carries: the core helper is anonymous-namespace, so it is transcribed
+// here verbatim rather than exposed through an internal header for one
+// caller). Returns false when the matrix is numerically singular; out is
+// untouched then. Used by the GPU warp resolver (nativeStabWarpResolve)
+// to compose M = Hinv * S without calling into warpFrame itself.
+bool stabMatInv(const double m[9], double out[9]) {
+    const double c00 = m[4] * m[8] - m[5] * m[7];
+    const double c01 = m[5] * m[6] - m[3] * m[8];
+    const double c02 = m[3] * m[7] - m[4] * m[6];
+    const double det = m[0] * c00 + m[1] * c01 + m[2] * c02;
+    if (!std::isfinite(det) || std::fabs(det) < 1e-12)
+        return false;
+    const double inv = 1.0 / det;
+    out[0] = c00 * inv;
+    out[1] = (m[2] * m[7] - m[1] * m[8]) * inv;
+    out[2] = (m[1] * m[5] - m[2] * m[4]) * inv;
+    out[3] = c01 * inv;
+    out[4] = (m[0] * m[8] - m[2] * m[6]) * inv;
+    out[5] = (m[2] * m[3] - m[0] * m[5]) * inv;
+    out[6] = c02 * inv;
+    out[7] = (m[1] * m[6] - m[0] * m[7]) * inv;
+    out[8] = (m[0] * m[4] - m[1] * m[3]) * inv;
+    return true;
+}
+
 // Forward declaration: the refine helper below shares the preview's
 // thumbnail-stride rule, which is defined with the develop pipeline below.
 int strideFor(const rawedit::FrameInfo& info, int maxDim);
@@ -1045,7 +1072,7 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
                 planEnd - planStart).count();
             __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
                 "frame=%d planMs=%.3f(%s) warpMs=0.000 totalMs=%.3f "
-                "sync=%s offsetMs=%.3f",
+                "sync=%s offsetMs=%.3f backend=cpu",
                 in.frameIndex, planMs,
                 planFromCache ? "cache-hit" : "computed", planMs,
                 stabSyncKindName(measure.syncKind), measure.syncOffsetMs);
@@ -1068,10 +1095,13 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
         // The sync token (M5 commit b) is APPEND-ONLY: the first five
         // fields keep their pre-M5 shape and the appended trio names which
         // offset the plan rode — the owner's ON/OFF A/B reads
-        // sync=refined vs sync=anchored directly off this line.
+        // sync=refined vs sync=anchored directly off this line. The
+        // backend marker (the GPU warp port's commit b) is appended the
+        // same way: backend=cpu here, backend=gpu on the resolver's line,
+        // so the A/B parser tells the two apart without a format change.
         __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
             "frame=%d planMs=%.3f(%s) warpMs=%.3f totalMs=%.3f "
-            "sync=%s offsetMs=%.3f",
+            "sync=%s offsetMs=%.3f backend=cpu",
             in.frameIndex, planMs,
             planFromCache ? "cache-hit" : "computed", warpMs,
             planMs + warpMs,
@@ -3027,13 +3057,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
         jstring preFragmentSource, jstring postFragmentSource,
         jstring tailFragmentSource, jstring sharpnessHSource,
         jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
-        jstring nrChromaHSource, jstring nrChromaVSource,
+        jstring warpFragmentSource, jstring nrChromaHSource,
+        jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
         jstring blitFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The fourteen sources, each read with the nativeGlesFragmentParity pattern
+    // The fifteen sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -3125,6 +3156,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
     const std::string detailV(detailVChars);
     env->ReleaseStringUTFChars(detailVSource, detailVChars);
 
+    const char* warpChars = env->GetStringUTFChars(warpFragmentSource, nullptr);
+    if (warpChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the warp source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string warp(warpChars);
+    env->ReleaseStringUTFChars(warpFragmentSource, warpChars);
+
     const char* nrChromaHChars = env->GetStringUTFChars(nrChromaHSource, nullptr);
     if (nrChromaHChars == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
@@ -3196,8 +3237,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
     std::string detail;
     std::unique_ptr<gles::DevelopSession> session =
         gles::DevelopSession::open(v300, v310, pre, post, tail, sharpnessH,
-                                   sharpnessV, detailH, detailV, nrChromaH,
-                                   nrChromaV, nrLuma, store, blit, &detail);
+                                   sharpnessV, detailH, detailV, warp,
+                                   nrChromaH, nrChromaV, nrLuma, store, blit,
+                                   &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "develop session: " + detail +
@@ -3228,7 +3270,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         jboolean highlightReconstruction, jboolean keepVignetting,
         jint tonemap, jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer) {
+        jint lutOutGamut, jint lutOutTransfer,
+        jboolean warpActive, jfloatArray warpM) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
@@ -3313,6 +3356,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         req.lutInTransfer = lutInTransfer;
         req.lutOutGamut = lutOutGamut;
         req.lutOutTransfer = lutOutTransfer;
+        // Gyro warp (the GPU port's commit b): the caller resolved the
+        // frame's plan on THIS thread (nativeStabWarpResolve — the plan
+        // cache is not GL-thread-safe) and hands the two fragment-pass
+        // inputs verbatim. warpActive false = the session skips draw 10
+        // entirely (the identity no-draw rule); warpM may be null then,
+        // the request's identity default carries the pass.
+        req.warpActive = warpActive == JNI_TRUE;
+        if (warpM != nullptr) {
+            env->GetFloatArrayRegion(warpM, 0, 9, req.warpM);
+        }
         const gles::DevelopFrameResult res = session->renderFrame(req);
         if (!res.ok) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
@@ -3427,7 +3480,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         jboolean highlightReconstruction, jboolean keepVignetting,
         jint tonemap, jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer, jint rotationDeg) {
+        jint lutOutGamut, jint lutOutTransfer,
+        jboolean warpActive, jfloatArray warpM, jint rotationDeg) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
@@ -3506,6 +3560,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         req.lutInTransfer = lutInTransfer;
         req.lutOutGamut = lutOutGamut;
         req.lutOutTransfer = lutOutTransfer;
+        // Gyro warp (the GPU port's commit b), same shape as the readback
+        // entry above: the caller-resolved (warpActive, warpM) pair, the
+        // session's identity no-draw rule on the false case.
+        req.warpActive = warpActive == JNI_TRUE;
+        if (warpM != nullptr) {
+            env->GetFloatArrayRegion(warpM, 0, 9, req.warpM);
+        }
         const gles::DevelopFrameResult res =
             session->renderFrameToEncoder(req, static_cast<int64_t>(ptsUs),
                                           static_cast<int>(rotationDeg));
@@ -3586,13 +3647,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
         jstring preFragmentSource, jstring postFragmentSource,
         jstring tailFragmentSource, jstring sharpnessHSource,
         jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
-        jstring nrChromaHSource, jstring nrChromaVSource,
+        jstring warpFragmentSource, jstring nrChromaHSource,
+        jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
         jstring windowFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The fourteen sources, each read with the nativeGlesFragmentParity pattern
+    // The fifteen sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -3684,6 +3746,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
     const std::string detailV(detailVChars);
     env->ReleaseStringUTFChars(detailVSource, detailVChars);
 
+    const char* warpChars = env->GetStringUTFChars(warpFragmentSource, nullptr);
+    if (warpChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the warp source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string warp(warpChars);
+    env->ReleaseStringUTFChars(warpFragmentSource, warpChars);
+
     const char* nrChromaHChars = env->GetStringUTFChars(nrChromaHSource, nullptr);
     if (nrChromaHChars == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
@@ -3755,8 +3827,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
     std::string detail;
     std::unique_ptr<gles::PreviewSession> session =
         gles::PreviewSession::open(v300, v310, pre, post, tail, sharpnessH,
-                                   sharpnessV, detailH, detailV, nrChromaH,
-                                   nrChromaV, nrLuma, store, window, &detail);
+                                   sharpnessV, detailH, detailV, warp,
+                                   nrChromaH, nrChromaV, nrLuma, store, window,
+                                   &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "preview session: " + detail +
@@ -3837,7 +3910,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         jboolean highlightReconstruction, jboolean keepVignetting,
         jint tonemap, jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer) {
+        jint lutOutGamut, jint lutOutTransfer,
+        jboolean warpActive, jfloatArray warpM) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxPreviewSessions) {
@@ -3988,6 +4062,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.lutInTransfer = lutInTransfer;
         req.lutOutGamut = lutOutGamut;
         req.lutOutTransfer = lutOutTransfer;
+        // Gyro warp (the GPU port's commit b), same shape as the develop
+        // session entries: the caller resolved the plan at this tier's
+        // dims on the engine thread (nativeStabWarpResolve with this
+        // render's own maxDim) and hands the pair verbatim; warpActive
+        // false = the session skips draw 10 entirely.
+        req.warpActive = warpActive == JNI_TRUE;
+        if (warpM != nullptr) {
+            env->GetFloatArrayRegion(warpM, 0, 9, req.warpM);
+        }
         // The stats-readback toggle rides the request (the gSyncRefine
         // precedent): the bridge-level atomic, flipped by the
         // nativeSetPreviewStatsEnabled JNI setter, copied per render.
@@ -4170,6 +4253,177 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabZoomProbe(
     jdoubleArray result = env->NewDoubleArray(6);
     if (result == nullptr) return nullptr;
     env->SetDoubleArrayRegion(result, 0, 6, out);
+    return result;
+}
+
+// Gyro warp resolver (the GPU port's commit b) ----------------------------------
+//
+// The dispatch-side half of the gyro warp port: the CPU path resolves the
+// plan and warps inside applyStabilization, but the GPU sessions consume the
+// warp as a fragment pass whose only inputs are (warpActive, warpM[9]). This
+// entry resolves the frame's stabilization plan — the IDENTICAL
+// stabilizationFrameFor evaluation the CPU renders run, riding the handle's
+// Entry plan cache — and returns the fragment pass's two inputs pre-folded:
+//
+//   [0]  active  (1.0 = draw the warp pass with M; 0.0 = skip it — the
+//                 session's identity no-draw rule)
+//   [1..9]  M    (row-major composite M = Hinv * S, narrowed to floats —
+//                 the upload layout the session's transpose=GL_TRUE tap
+//                 reproduces the CPU row-major composition with)
+//
+// THE FOLDS (every CPU no-op in warpFrame's fast paths, resolved here so
+// the session never draws a resample that the CPU would have skipped):
+// stabWarps false (Off / NoImu / Unsynced — identity H + zoom 1), a
+// non-finite zoom, the byte-identical identity case (H exactly identity AND
+// zoom == 1 — the CPU returns src untouched), and a singular H (matInv
+// fails) all fold into active=0.0 with an identity M, exactly the honest
+// no-ops applyStabilization takes. A zoom below 1 clamps to 1 (a warp may
+// not magnify the frame — the CPU's own clamp).
+//
+// [maxDim] is the render's buffer tier (0 = full res, the export path and
+// the develop readback; the preview path passes the tier's own maxDim). The
+// resolver computes the dims the session will ACTUALLY warp — strideFor on
+// the frame's recorded info, then the preview seam's own reduction math —
+// because the pixel focal (and therefore H) derives from the buffer width:
+// evaluating the plan at any other dims would hand the pass a homography
+// for a different buffer. frameInfo is metadata-only — no decode, no cache
+// touch.
+//
+// Returns nullptr when there is no verdict: a dead handle (silently — the
+// caller's session render will fail on its own handle check), a null gyro
+// path (stabilization off / no attachment — resolveGyro's honest no-log
+// degrade) or a .gcsv parse failure (error state set, like a failing
+// render). The Kotlin dispatch folds null into warpActive=false with the
+// identity M — never a fabricated warp.
+//
+// THREADING (binding): like every session native call this MUST run on the
+// session's engine thread — resolveGyro's gyro cache and the error state
+// are thread_local, and the Entry plan cache it warms rides the same
+// one-thread contract. The Kotlin seam confines it exactly like the render
+// calls themselves.
+
+JNIEXPORT jfloatArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabWarpResolve(
+        JNIEnv* env, jclass, jlong handle, jstring gyroPath,
+        jint stabMode, jfloat stabStrength, jfloat stabZoomLimit,
+        jfloat stabFocalMm, jfloat stabTrimMs,
+        jint frameIndex, jint maxDim) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) return nullptr; // dead session: no verdict, silently
+
+    // The gyro resolves exactly like a render's (the probe's idiom): the
+    // thread-local cache, false only on a parse failure (error set — null
+    // return, the caller folds inactive), null artifacts = no log
+    // attached = inactive.
+    const GyroArtifacts* gyro = nullptr;
+    if (!resolveGyro(env, gyroPath, &gyro)) return nullptr; // error set
+    if (gyro == nullptr) return nullptr; // no log: inactive, no verdict
+
+    // The dims the session will warp: the preview seam's own reduction
+    // math over the frame's recorded info, so H is computed at the buffer
+    // the fragment pass samples (the pixel focal scales with width).
+    const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
+    const int strideN = strideFor(info, maxDim);
+    int bufW = static_cast<int>(info.width);
+    int bufH = static_cast<int>(info.height);
+    if (strideN > 1) {
+        const int cellCols = static_cast<int>(info.width) / 2;
+        const int cellRows = static_cast<int>(info.height) / 2;
+        bufW = 2 * ((cellCols + strideN - 1) / strideN);
+        bufH = 2 * ((cellRows + strideN - 1) / strideN);
+    }
+    if (bufW <= 0 || bufH <= 0) return nullptr; // no recorded dims: inactive
+
+    // The full plan evaluation the CPU renders run, at the session's own
+    // dims, riding the handle's Entry plan cache (once per key change, the
+    // 2026-11-13 perf fix — the resolver runs per frame, so the cache is
+    // what keeps it cheap).
+    const StabRequest req = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
+                                          stabFocalMm, stabTrimMs);
+    rawedit::StabilizationFrame frame;
+    StabMeasure measure;
+    bool planFromCache = false;
+    const bool debug = gStabDebugLog.load(std::memory_order_relaxed);
+    const auto planStart = std::chrono::steady_clock::now();
+    stabilizationFrameFor(req, *s, frameIndex, bufW, bufH, gyro, &frame,
+                         debug ? &measure : nullptr,
+                         &gEntries[handle - 1].stabPlan,
+                         debug ? &planFromCache : nullptr);
+    const auto planEnd = std::chrono::steady_clock::now();
+
+    // The CPU fold, decided here so the session never draws what the CPU
+    // would have skipped: refusing status, non-finite zoom, the exact
+    // identity (H == I AND zoom == 1 — warpFrame's byte-identical fast
+    // path), and a singular H all mean no draw.
+    bool active = stabWarps(frame);
+    double zoom = frame.zoom;
+    bool identity = true;
+    for (int i = 0; i < 9; ++i) {
+        const double want = i == 0 || i == 4 || i == 8 ? 1.0 : 0.0;
+        if (frame.h[i] != want) {
+            identity = false;
+            break;
+        }
+    }
+    if (identity && zoom == 1.0) active = false;
+    if (!std::isfinite(zoom)) active = false;
+    if (zoom < 1.0) zoom = 1.0; // a warp may not magnify (the CPU clamp)
+
+    double m[9] = {1.0, 0.0, 0.0,
+                   0.0, 1.0, 0.0,
+                   0.0, 0.0, 1.0};
+    if (active) {
+        // M = Hinv * S composed once per frame in double — a documented
+        // copy of rawedit::warpFrame's own composition (core/ is READ-ONLY;
+        // the helper is anonymous-namespace there, so the seam transcribes
+        // it rather than exposing an internal header for one caller). The
+        // adjugate inverse carries the same copy note.
+        double hInv[9];
+        if (!stabMatInv(frame.h, hInv)) {
+            active = false; // degenerate plan: the CPU's honest no-op
+        } else {
+            const double cx = static_cast<double>(bufW) / 2.0;
+            const double cy = static_cast<double>(bufH) / 2.0;
+            const double sc = 1.0 / zoom;
+            for (int i = 0; i < 3; ++i) {
+                m[i * 3 + 0] = hInv[i * 3 + 0] * sc;
+                m[i * 3 + 1] = hInv[i * 3 + 1] * sc;
+                m[i * 3 + 2] = hInv[i * 3 + 0] * (cx - cx * sc)
+                             + hInv[i * 3 + 1] * (cy - cy * sc)
+                             + hInv[i * 3 + 2];
+            }
+        }
+    }
+
+    // The honest backend marker (the same ritim-stab-timing line the CPU
+    // path logs, backend=gpu): the resolver pays the plan span but ZERO
+    // warp span — the resample itself runs as the session's draw 10, whose
+    // cost lives in the session's developUs span, not here. warpMs=0.000
+    // is the honest spelling of that split.
+    if (debug) {
+        const double planMs = std::chrono::duration<double, std::milli>(
+            planEnd - planStart).count();
+        __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
+            "frame=%d planMs=%.3f(%s) warpMs=0.000 totalMs=%.3f "
+            "sync=%s offsetMs=%.3f backend=gpu",
+            frameIndex, planMs,
+            planFromCache ? "cache-hit" : "computed", planMs,
+            stabSyncKindName(measure.syncKind), measure.syncOffsetMs);
+    }
+
+    const float out[10] = {
+        active ? 1.0f : 0.0f,
+        static_cast<float>(m[0]), static_cast<float>(m[1]),
+        static_cast<float>(m[2]), static_cast<float>(m[3]),
+        static_cast<float>(m[4]), static_cast<float>(m[5]),
+        static_cast<float>(m[6]), static_cast<float>(m[7]),
+        static_cast<float>(m[8]),
+    };
+    jfloatArray result = env->NewFloatArray(10);
+    if (result == nullptr) return nullptr;
+    env->SetFloatArrayRegion(result, 0, 10, out);
     return result;
 }
 

@@ -66,6 +66,9 @@ object GlesShaderValidator {
         /** DETAIL_V — GLSL ES 3.00 fragment, detail's vertical half + difference (stage 22, pass 2 of 2). */
         DETAIL_V("#version 300 es"),
 
+        /** WARP — GLSL ES 3.00 fragment, the gyro stabilization warp (NOT a develop stage; the CPU's post-develop resample). */
+        WARP("#version 300 es"),
+
         /** NR_CHROMA_H — GLSL ES 3.00 fragment, chroma NR's horizontal half (stage 7, pass 1 of 2). */
         NR_CHROMA_H("#version 300 es"),
 
@@ -137,6 +140,7 @@ object GlesShaderValidator {
             Kind.SHARPNESS_V -> sharpnessVProblems(stripped, out)
             Kind.DETAIL_H -> detailHProblems(stripped, out)
             Kind.DETAIL_V -> detailVProblems(stripped, out)
+            Kind.WARP -> warpProblems(stripped, out)
             Kind.NR_CHROMA_H -> nrChromaHProblems(stripped, out)
             Kind.NR_CHROMA_V -> nrChromaVProblems(stripped, out)
             Kind.NR_LUMA -> nrLumaProblems(stripped, out)
@@ -2220,6 +2224,139 @@ object GlesShaderValidator {
             out += "missing the gate-closed pass-through " +
                 "(`oCol = vec4(orig, 1.0);` — a drawn pass with a closed " +
                 "gate writes the input through unchanged)"
+        }
+    }
+
+    /**
+     * WARP's contract — the CPU rawedit::warpFrame (core/src/Warp.cpp,
+     * FROZEN) as a GLSL fragment pass: the composed inverse-sampling map
+     * uM (row-major, uploaded with transpose=GL_TRUE — the uCam2rgb
+     * idiom), the homogeneous mapPoint tap with the (0,0) unmappable
+     * clamp, the CPU's exact clamp/truncation/edge-clamp bilinear
+     * semantics. NOT a develop stage: the CPU runs it after developCpu,
+     * on the linear output, and the session draws it between the unsharp
+     * passes and the tail. NO OETF here (the tail owns it, applied
+     * exactly once) and NO in-shader gate (the session skips the draw
+     * entirely for an inactive/identity/degenerate plan — the pass's
+     * absence is the identity).
+     */
+    private fun warpProblems(s: String, out: MutableList<String>) {
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "binds the chain's live intermediate on unit 1 — the " +
+                "unsharp output, or the pointwise POST output when stages " +
+                "21/22 are off)"
+        }
+        if (!s.contains("uniform ivec2 uSize;")) {
+            out += "missing `uniform ivec2 uSize;` (the session sets it to " +
+                "the frame's dims — the clamps and the edge guard read it)"
+        }
+        if (!s.contains("uniform mat3 uM;")) {
+            out += "missing `uniform mat3 uM;` (the session uploads the " +
+                "caller-composed M = Hinv * S with glUniformMatrix3fv " +
+                "transpose=GL_TRUE — the row-major CPU contract, the " +
+                "uCam2rgb idiom)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        // The homogeneous tap: the CPU's mapPoint, verbatim.
+        if (!s.contains("vec3 h = uM * vec3(float(g.x), float(g.y), 1.0);")) {
+            out += "missing the homogeneous map tap " +
+                "(`vec3 h = uM * vec3(float(g.x), float(g.y), 1.0);` — " +
+                "mapPoint's u/v/w triple; transpose=GL_TRUE makes this the " +
+                "CPU's row-major multiply exactly)"
+        }
+        // The unmappable check: the CPU's !isfinite(w) || fabs(w) < 1e-12
+        // plus the non-finite ox/oy, folded into the (0,0) clamp. isfinite
+        // is NOT an ES 3.00 builtin, so the shader spells it
+        // isinf/isnan.
+        if (!s.contains("if (!isinf(h.z) && !isnan(h.z) && abs(h.z) >= 1e-12) {")) {
+            out += "missing the unmappable denominator check " +
+                "(`if (!isinf(h.z) && !isnan(h.z) && abs(h.z) >= 1e-12) {` — " +
+                "mapPoint's !isfinite(w) || fabs(w) < 1e-12 fail, which " +
+                "clamps the tap to (0,0))"
+        }
+        if (!s.contains("if (!isinf(mx) && !isnan(mx) && !isinf(my) && !isnan(my)) {") ||
+            !s.contains("float mx = h.x / h.z;") ||
+            !s.contains("float my = h.y / h.z;")
+        ) {
+            out += "missing the non-finite output check " +
+                "(`float mx = h.x / h.z;` + `float my = h.y / h.z;` + " +
+                "`if (!isinf(mx) && !isnan(mx) && !isinf(my) && !isnan(my)) {` " +
+                "— mapPoint's isfinite(ox) && isfinite(oy) return, which " +
+                "clamps the tap to (0,0))"
+        }
+        // The CPU's clamps: std::min(std::max(ox, 0.0), w-1) both axes.
+        if (!s.contains("float fx = clamp(ox, 0.0, float(uSize.x - 1));") ||
+            !s.contains("float fy = clamp(oy, 0.0, float(uSize.y - 1));")
+        ) {
+            out += "missing the source-coordinate clamps " +
+                "(`clamp(ox, 0.0, float(uSize.x - 1))` / `clamp(oy, 0.0, ` " +
+                "`float(uSize.y - 1))` — warpFrame's own min(max(...)) pair; " +
+                "texelFetch does NOT clamp, so these are load-bearing)"
+        }
+        // The truncation + the edge clamp: x0 = (uint32_t)fx (truncation
+        // == floor since fx >= 0 after the clamp), x1 = x0+1 only when
+        // x0+1 < w, else x0 — the CPU's EDGE CLAMP, never a mirror.
+        if (!s.contains("int x0 = int(fx);") || !s.contains("int y0 = int(fy);") ||
+            !s.contains("int x1 = x0 + 1 < uSize.x ? x0 + 1 : x0;") ||
+            !s.contains("int y1 = y0 + 1 < uSize.y ? y0 + 1 : y0;")
+        ) {
+            out += "missing the truncation + edge clamp " +
+                "(`int x0 = int(fx);` … `int x1 = x0 + 1 < uSize.x ? ` " +
+                "`x0 + 1 : x0;` — the CPU's static_cast<uint32_t> then " +
+                "x0+1-if-inside-else-x0 pair; a mirror or wrap here changes " +
+                "every border pixel)"
+        }
+        // Exactly four texelFetch taps, the CPU's tap order
+        // p00/p01/p10/p11 = (x0,y0)/(x1,y0)/(x0,y1)/(x1,y1).
+        val p00Idx = s.indexOf("texelFetch(uSrc, ivec2(x0, y0), 0)")
+        val p01Idx = s.indexOf("texelFetch(uSrc, ivec2(x1, y0), 0)")
+        val p10Idx = s.indexOf("texelFetch(uSrc, ivec2(x0, y1), 0)")
+        val p11Idx = s.indexOf("texelFetch(uSrc, ivec2(x1, y1), 0)")
+        if (listOf(p00Idx, p01Idx, p10Idx, p11Idx).any { it < 0 } ||
+            p00Idx >= p01Idx || p01Idx >= p10Idx || p10Idx >= p11Idx
+        ) {
+            out += "the bilinear tap order is wrong or a tap is missing " +
+                "(p00, p01, p10, p11 — exactly four texelFetch reads in " +
+                "that order, warpFrame's own tap sequence)"
+        }
+        val tapCount = Regex("texelFetch\\(").findAll(s).count()
+        if (tapCount != 4) {
+            out += "expected exactly 4 texelFetch taps (got $tapCount — " +
+                "the CPU's bilinear reads exactly p00/p01/p10/p11, nothing " +
+                "else)"
+        }
+        // The CPU's lerp structure: top/bot rows then the vertical mix —
+        // the double-precision lerp narrowed to float, verbatim shape.
+        if (!s.contains("vec3 top = p00 + (p01 - p00) * ax;") ||
+            !s.contains("vec3 bot = p10 + (p11 - p10) * ax;") ||
+            !s.contains("oCol = vec4(top + (bot - top) * ay, 1.0);")
+        ) {
+            out += "missing the bilinear lerp " +
+                "(`vec3 top = p00 + (p01 - p00) * ax;` + `vec3 bot = ` " +
+                "`p10 + (p11 - p10) * ax;` + `oCol = vec4(top + (bot - top) ` " +
+                "`* ay, 1.0);` — warpFrame's top/bot/lerp sequence, the " +
+                "CPU's exact arithmetic order)"
+        }
+        // NO OETF: the tail owns it. A warp that tone-maps would apply
+        // the OETF twice (the tail draws after this pass).
+        if (s.contains("linearToRec709") || s.contains("uOetf")) {
+            out += "the warp must NOT apply an OETF " +
+                "(no linearToRec709, no uOetf — the TAIL pass owns the " +
+                "OETF and draws AFTER the warp; a second one here would " +
+                "double tone-map every pixel)"
+        }
+        // NO in-shader gate: the session skips the draw entirely for an
+        // inactive/identity/degenerate plan — the pass's absence is the
+        // identity. A gate uniform would be dead vocabulary.
+        if (s.contains("uActive") || s.contains("uWarp")) {
+            out += "the warp must NOT carry an in-shader gate " +
+                "(no uActive/uWarp — the session skips the draw entirely " +
+                "when the plan folds to inactive/identity/degenerate; the " +
+                "pass's ABSENCE is the identity, so a gate uniform would " +
+                "be dead vocabulary)"
         }
     }
 
