@@ -801,6 +801,39 @@ class NativeSource private constructor(
             caseIndex: Int,
         ): DoubleArray?
 
+        /**
+         * M3 commit (a): the production GPU develop session's three entry
+         * points (the persistent counterpart of the one-shot parity
+         * harness). Open compiles the caller-provided shader texts and
+         * returns a session handle (0 = failure; previewLastError names
+         * the step). RenderFrame decodes the clip's frame on the CALLING
+         * thread (the clip handle's own ring) and renders it through the
+         * session's GL thread — full-res RGB888, row-major, NOT rotated,
+         * the same byte shape nativeExportFrame returns. The render takes
+         * ONLY the four fragment-covered grade controls; an uncovered
+         * grade cannot express itself through this signature. Close is
+         * idempotent. Device-test-pending (the owner's covered-grade GPU
+         * export is the production proof).
+         */
+        @JvmStatic private external fun nativeDevelopSessionOpen(
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+        ): Long
+
+        @JvmStatic private external fun nativeDevelopSessionRenderFrame(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): ByteArray?
+
+        @JvmStatic private external fun nativeDevelopSessionClose(sessionHandle: Long)
+
         // ---- Cross-module wrappers (external decls stay private; see the
         // mangling note at the top of the JNI section) ----
 
@@ -1251,6 +1284,52 @@ class NativeSource private constructor(
 
         /** JNI bridge: closeSource for export sessions. */
         internal fun jniCloseSource(handle: Long): Long = nativeCloseSource(handle)
+
+        /**
+         * JNI bridge: the production GPU develop session (M3 commit a).
+         * All three throw IllegalStateException when the .so is absent.
+         * Open returns 0 on failure (previewLastError names the EGL/
+         * compile/link step); RenderFrame returns null on failure (the
+         * session latches unhealthy with the same detail — the Kotlin
+         * dispatcher falls the export back to CPU). The session handle is
+         * NOT a clip handle: it addresses the session registry.
+         */
+        internal fun jniDevelopSessionOpen(
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+        ): Long {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionOpen(
+                vertexSource, vertex310Source, fragmentSource, storeFragmentSource)
+        }
+
+        internal fun jniDevelopSessionRenderFrame(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): ByteArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionRenderFrame(
+                sessionHandle, clipHandle, frameIndex, exposureEv,
+                highlightReconstruction, keepVignetting, tonemap)
+        }
+
+        internal fun jniDevelopSessionClose(sessionHandle: Long) {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            nativeDevelopSessionClose(sessionHandle)
+        }
 
         /** Last-error detail from the engine thread (thread-local in the bridge). */
         internal fun previewLastError(): String? = nativeLastError()
