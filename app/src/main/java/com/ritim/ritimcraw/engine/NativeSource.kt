@@ -220,6 +220,20 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeSetExportTiming(enabled: Boolean)
 
         /**
+         * Toggles the optical sync refinement (M5 commit b): when on, a
+         * stabilization plan whose anchor estimate is Anchored runs
+         * rawedit::refineOffsetOptically ONCE per plan-cache key (~seconds
+         * class, ~480px thumbnails) and the refined offset feeds the warp.
+         * UNLIKE the two gates above this is a RUNTIME user toggle, not a
+         * build gate: the companion init never calls it — the stab sheet's
+         * sync-refine switch owns it through [jniSetSyncRefine]. Default
+         * off until the owner's on-device A/B (sync=refined vs
+         * sync=anchored in the ritim-stab-timing line) proves the refined
+         * offset reduces the vibration.
+         */
+        @JvmStatic private external fun nativeSetSyncRefine(enabled: Boolean)
+
+        /**
          * The six sub-stage slots of the frame nativeExportFrame just
          * produced, in milliseconds, in the fixed order
          * [decode, temporal, develop, warp, oetf_pack, jni_copy] — or null
@@ -717,6 +731,18 @@ class NativeSource private constructor(
          * probe per settle covers every tier. MUST run on the session's
          * engine thread (thread-local gyro cache + error state) — the seam
          * confines it like framePtsUs.
+         *
+         * M5 commit b extends the array to six elements: [3] syncKind —
+         * 0 = manual trim/no anchor, 1 = anchored, 2 = refined (the optical
+         * refinement applied; a rejected refine keeps 1); [4] syncOffsetMs
+         * — the model offset the plan actually rode, milliseconds;
+         * [5] syncBoundMs — the estimate's error bound. Readers keyed on
+         * `size >= 3` keep working (the pre-M5 array ended at [2]); the
+         * stab sheet reads [3..5] for the "Refined (optical ±X ms)" status
+         * line. With the sync-refine toggle on, a probe MISS pays the
+         * once-per-key refinement — deliberately (the probe is the
+         * settle-time plan builder); renders after it serve the warmed
+         * cache.
          */
         @JvmStatic private external fun nativeStabZoomProbe(
             handle: Long,
@@ -1313,6 +1339,22 @@ class NativeSource private constructor(
                 handle, gyroPath, stabMode, stabStrength,
                 stabZoomLimit, stabFocalMm, stabTrimMs,
             )
+        }
+
+        /**
+         * JNI bridge: see nativeSetSyncRefine. Throws IllegalStateException
+         * when the .so is absent; otherwise the runtime toggle is set and
+         * the NEXT stabilization plan (probe or render) is built under it —
+         * flipping it invalidates the plan cache, so the once-per-key
+         * refinement re-runs under the new flag. Unlike the two build
+         * gates this wrapper has a UI caller (the stab sheet's sync-refine
+         * switch), so it is internal, not init-private.
+         */
+        internal fun jniSetSyncRefine(enabled: Boolean) {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            nativeSetSyncRefine(enabled)
         }
 
         /**

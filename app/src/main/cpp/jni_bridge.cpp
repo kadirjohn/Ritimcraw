@@ -33,6 +33,7 @@
 #include <rawedit/Lut.h>
 #include <rawedit/Orientation.h>
 #include <rawedit/OrientationEstimate.h>
+#include <rawedit/OpticalSync.h>
 #include <rawedit/Result.h>
 #include <rawedit/RawStats.h>
 #include <rawedit/Source.h>
@@ -107,6 +108,18 @@ thread_local int gLastErrorStage = kStageOpen;
 //   adb logcat -s ritim-stab-timing    (live)
 //   adb logcat -d -s ritim-stab-timing (dump after a run)
 std::atomic<bool> gStabDebugLog{false};
+
+// Optical sync refinement toggle (M5 commit b, GY-04 exposure): a RUNTIME
+// user toggle, unlike the two BuildConfig gates above — the UI's stab sheet
+// owns it (nativeSetSyncRefine), the companion init never touches it, and
+// the default stays FALSE until the owner's device A/B proves the refined
+// offset reduces the vibration. When on, a stab plan whose sync estimate is
+// Anchored runs rawedit::refineOffsetOptically ONCE per (handle, request
+// key) inside the plan cache's miss branch — the refine is a ~seconds-class
+// cost on the host and must never run per rendered frame. The toggle rides
+// the StabRequest (stabRequestOf reads it here) so all three render paths
+// and the export pick it up without widening the six flat JNI params.
+std::atomic<bool> gSyncRefine{false};
 
 // Export sub-stage timing (commit (d), owner request 2026-11-13): the
 // export frame's native wall time splits into its six internals so the
@@ -379,13 +392,16 @@ bool resolveGyro(JNIEnv* env, jstring gyroPath, const GyroArtifacts** out) {
 // enum order minus Off); strength is already 0..1 (GradeK percent / 100 at
 // the Kotlin boundary, the lutStrength precedent); focalMm 0 = use the
 // container value; trimMs is the manual sync trim over the anchored
-// estimate.
+// estimate. syncRefine is the M5 commit-b optical-refinement flag: it rides
+// the REQUEST (not the six flat JNI params) so the cache key, the refine
+// gate and the export path all see it without any signature widening.
 struct StabRequest {
     rawedit::StabilizationMode mode = rawedit::StabilizationMode::Smooth;
     double strength = 0.5;
     double zoomLimit = 1.3;
     double focalMmOverride = 0.0;
     double trimMs = 0.0;
+    bool syncRefine = false;
 };
 
 StabRequest stabRequestOf(jint mode, jfloat strength, jfloat zoomLimit,
@@ -398,6 +414,7 @@ StabRequest stabRequestOf(jint mode, jfloat strength, jfloat zoomLimit,
     r.zoomLimit = zoomLimit;
     r.focalMmOverride = static_cast<double>(focalMm);
     r.trimMs = static_cast<double>(trimMs);
+    r.syncRefine = gSyncRefine.load(std::memory_order_relaxed);
     return r;
 }
 
@@ -439,7 +456,88 @@ struct StabMeasure {
     double minScale = 1.0;       // effective reduction, worst frame
     double meanScale = 1.0;     // effective reduction, clip mean
     size_t invalidSamples = 0;   // final-warp out-of-source frames (exp. 0)
+    // Sync verdict (M5 commit b): which offset the plan actually rode, and
+    // its numbers for the timing line + the zoom probe. 0 = manual trim /
+    // no anchor (the pre-refine spelling), 1 = the anchored estimate, 2 =
+    // the optically refined offset (only when syncRefine ran and the core
+    // accepted it — a rejected refine keeps 1 and the anchor's offset).
+    int syncKind = 0;
+    double syncOffsetMs = 0.0;  // the offset the plan rode, ms
+    double syncBoundMs = 0.0;   // the estimate's error bound, ms
 };
+
+// The syncKind spelling for the timing line + the probe contract (M5
+// commit b). One source for the token so the log line, the applied line's
+// trailing verdict and the Kotlin mirror can never drift apart.
+inline const char* stabSyncKindName(int kind) {
+    return kind == 2 ? "refined" : kind == 1 ? "anchored" : "manual";
+}
+
+// Forward declaration: the refine helper below shares the preview's
+// thumbnail-stride rule, which is defined with the develop pipeline below.
+int strideFor(const rawedit::FrameInfo& info, int maxDim);
+
+// The optical sync refinement (M5 commit b, GY-04): decodes a bounded,
+// evenly-spaced frame subset, develops each at the ~480px thumbnail tier
+// with a NEUTRAL grade (the sync measurement must not depend on the user's
+// grade — a default Grade runs exactly the linear stages 1+2+3+4+5), and
+// hands the frames + the RAW orientation series to the core refinement.
+// The core splits WHAT IT IS GIVEN into thirds, so the cap is the full
+// window budget: 3 windows x maxPairsPerWindow(24) pairs = 75 frames.
+// NEVER a render failure: any decode/develop refusal returns the anchor
+// estimate untouched (the honest skip — the plan rides the anchored
+// offset, exactly the pre-M5 behavior), and the core's own rejections
+// (weak texture, no curvature improvement, windows disagreeing, unsorted
+// stamps, non-positive focal) come back not-refined through
+// applyOpticalRefinement, which also keeps the anchor. The refine cost is
+// the reason it runs ONCE per plan-cache key, never per frame.
+rawedit::SyncEstimate refineSyncEstimate(rawedit::Source& src,
+                                         const rawedit::OrientationSeries& series,
+                                         const rawedit::SyncEstimate& anchor,
+                                         int64_t frameIntervalNs,
+                                         double focalMm) {
+    constexpr size_t kRefineMaxFrames = 75;
+    const size_t frames = src.frameCount();
+    if (frames < 2) return anchor;
+
+    const size_t count = std::min(frames, kRefineMaxFrames);
+    const rawedit::FrameInfo info0 = src.frameInfo(0);
+    const int strideEvery = strideFor(info0, 480);
+    const rawedit::RawMeta meta = src.rawMeta();
+    const rawedit::Grade grade{}; // neutral: stages 1+2+3+4+5 only
+
+    std::vector<rawedit::OpticalSyncFrame> syncFrames;
+    syncFrames.reserve(count);
+    for (size_t k = 0; k < count; ++k) {
+        // Evenly spaced over the clip: strictly increasing indices (the
+        // core requires time-ordered frames), whole-clip coverage for the
+        // thirds the core will split.
+        const size_t idx = (k * (frames - 1)) / (count - 1);
+        auto cfa = src.readFrame(idx);
+        if (!cfa.isOk()) return anchor; // honest skip, never a failure
+        const rawedit::FrameInfo info = src.frameInfo(idx);
+        rawedit::ImageF img = rawedit::developThumbnail(
+            cfa.value->data(), info, meta, grade, strideEvery,
+            /*lut=*/nullptr, /*binding=*/nullptr);
+        if (img.w == 0 || img.h == 0) return anchor;
+        rawedit::OpticalSyncFrame f;
+        f.captureNs = info.ptsUs * 1000;
+        // The documented representative-time fallback (the container
+        // carries no exposure/readout keys): capture + half the uniform
+        // interval — the SAME formation the plan's mapping-contract
+        // composition below uses, as OpticalSync.h requires.
+        f.repTimeNs = f.captureNs + frameIntervalNs / 2;
+        f.image = std::move(img);
+        syncFrames.push_back(std::move(f));
+    }
+
+    rawedit::OpticalSyncIntrinsics intrinsics;
+    intrinsics.focalLengthPx = rawedit::focalLengthPxFromEquivalent(
+        focalMm, static_cast<int>(syncFrames[0].image.w));
+    const rawedit::OpticalSyncResult result = rawedit::refineOffsetOptically(
+        anchor, syncFrames, series, intrinsics);
+    return rawedit::applyOpticalRefinement(anchor, result);
+}
 
 // The clip-wide stabilization plan cache (the choppy-playback fix,
 // 2026-11-13). The plan — sync estimate + the whole-clip frameTs walk +
@@ -461,21 +559,24 @@ struct StabMeasure {
 // and the cache lives inside the clip's own Entry, so a reopen starts
 // empty by construction). Sync inputs need no key slots of their own:
 // the frame-0 anchors come from THIS Source and the wall-clock anchor
-// from the SAME gyro artifacts the path key already pins.
+// from the SAME gyro artifacts the path key already pins — EXCEPT the
+// M5 syncRefine flag, which IS a key slot: the toggle changes the offset
+// the plan rode (anchored vs optically refined), so flipping it must
+// invalidate the plan and re-run the once-per-key refine.
 //
 // VALUE: the StabilizationResult (per-frame homographies + zooms + the
 // angle list + the correction-scale fields of the 2026-11-13 audit fix —
 // correctionScale per frame, clipCorrectionScale, min/mean
 // correctionScale, invalidSampleFrames; all of them plan OUTPUT, so they
 // ride the result wholesale and the cache key needs no new slots: the
-// scale is a pure function of the key's own inputs) plus the three
-// plan-level measure numbers that are not per-frame slices (anchored /
-// maxAngleDeg / framesInside), so a cache hit serves the per-frame tail
-// AND the debug measure line identically to a fresh compute. The frameTs
-// vector and the sync model are NOT stored: they are compute inputs only
-// (the measure path's framesToImu overlap is folded into framesInside at
-// store time). ~61 KB for a 576-frame clip — trivial next to the Entry's
-// CFA caches.
+// scale is a pure function of the key's own inputs) plus the plan-level
+// measure numbers that are not per-frame slices (anchored / maxAngleDeg /
+// framesInside / the sync verdict trio), so a cache hit serves the
+// per-frame tail AND the debug measure line identically to a fresh
+// compute. The frameTs vector and the sync model are NOT stored: they are
+// compute inputs only (the measure path's framesToImu overlap is folded
+// into framesInside at store time). ~61 KB for a 576-frame clip —
+// trivial next to the Entry's CFA caches.
 //
 // THREADING: the cache lives in the session's Entry, whose access
 // contract is the owner session's engine thread only (identical to
@@ -489,6 +590,7 @@ struct StabPlanCache {
     double zoomLimit = 1.3;
     double focalMmOverride = 0.0;
     double trimMs = 0.0;
+    bool syncRefine = false;
     int bufW = 0;
     int bufH = 0;
     std::string gyroPath;
@@ -499,6 +601,9 @@ struct StabPlanCache {
     bool anchored = false;
     double maxAngleDeg = 0.0;
     size_t framesInside = 0;
+    int syncKind = 0;          // 0 manual, 1 anchored, 2 refined (StabMeasure)
+    double syncOffsetMs = 0.0;
+    double syncBoundMs = 0.0;
 };
 
 // The clip-wide stabilization plan evaluated at [frameIndex], for the
@@ -532,7 +637,12 @@ void stabilizationFrameFor(const StabRequest& req,
                           StabPlanCache* planCache = nullptr,
                           bool* fromCache = nullptr) {
     *out = rawedit::StabilizationFrame(); // identity + Off until proven
-    if (measure != nullptr) measure->anchored = false;
+    if (measure != nullptr) {
+        measure->anchored = false;
+        measure->syncKind = 0;
+        measure->syncOffsetMs = 0.0;
+        measure->syncBoundMs = 0.0;
+    }
     if (fromCache != nullptr) *fromCache = false;
     if (gyro == nullptr || bufW <= 0 || bufH <= 0) return;
 
@@ -546,6 +656,7 @@ void stabilizationFrameFor(const StabRequest& req,
         planCache->zoomLimit == req.zoomLimit &&
         planCache->focalMmOverride == req.focalMmOverride &&
         planCache->trimMs == req.trimMs &&
+        planCache->syncRefine == req.syncRefine &&
         planCache->bufW == bufW && planCache->bufH == bufH &&
         planCache->gyroPath == gyro->path &&
         planCache->frameCount == src.frameCount();
@@ -559,20 +670,88 @@ void stabilizationFrameFor(const StabRequest& req,
     bool anchored = false;
     double maxAngleDeg = 0.0;
     size_t framesInside = 0;
+    int syncKind = 0;
+    double syncOffsetMs = 0.0;
+    double syncBoundMs = 0.0;
 
     if (hit) {
         plan = &planCache->result;
         anchored = planCache->anchored;
         maxAngleDeg = planCache->maxAngleDeg;
         framesInside = planCache->framesInside;
+        syncKind = planCache->syncKind;
+        syncOffsetMs = planCache->syncOffsetMs;
+        syncBoundMs = planCache->syncBoundMs;
     } else {
+        // Focal: the grade's override wins; 0 = the container's 35mm-equiv
+        // value. Resolved FIRST so the optical refine below uses the same
+        // focal the plan will (the refine's intrinsics and the plan's
+        // pixel focal must be the same 35mm-equivalence assumption).
+        // focalLengthPxFromEquivalent is the one documented, FLAGGED
+        // fallback (f_px = width * mm / 36) — assumedFocal below wires
+        // the IntrinsicsAssumed status so the assumption is visible,
+        // never silent.
+        const double focalMm = req.focalMmOverride > 0.0
+            ? req.focalMmOverride
+            : src.rawMeta().focalLengthMm;
+
         // Sync: frame-0 anchors from the Source itself.
         const rawedit::FrameInfo first = src.frameInfo(0);
-        const rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
+        rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
             first.recvdMs, gyro->imu.logStartWallMs, first.ptsUs * 1000);
+
+        // Optical refinement (M5 commit b, GY-04): when the toggle is on
+        // and the anchor estimate exists, refine the offset against the
+        // decoded frames + the RAW orientation series ONCE per plan build
+        // (this whole branch runs once per cache key change, never per
+        // frame — the refine is a ~seconds-class cost on the host). The
+        // core never re-anchors and never fabricates: a rejected refine
+        // (weak texture, no curvature improvement, disagreement) returns
+        // not-refined and the anchor estimate stays exactly as it was.
+        int64_t frameIntervalNs = 0;
+        if (req.syncRefine && est.isAnchored()) {
+            const size_t frames = src.frameCount();
+            // The frame interval from the pts span (uniform-interval
+            // fallback the repTime formation documents; a 1-frame clip has
+            // no span and no refine — the anchor stays, honestly).
+            if (frames >= 2) {
+                const int64_t firstTs = first.ptsUs * 1000;
+                const int64_t lastTs =
+                    src.frameInfo(frames - 1).ptsUs * 1000;
+                if (lastTs > firstTs) {
+                    frameIntervalNs =
+                        (lastTs - firstTs) /
+                        static_cast<int64_t>(frames - 1);
+                }
+            }
+            if (frameIntervalNs > 0) {
+                est = refineSyncEstimate(src, gyro->orientation.series,
+                                         est, frameIntervalNs, focalMm);
+            }
+        }
+
         rawedit::SyncModel model = est.model;
         bool offsetKnown = false;
-        if (est.isAnchored()) {
+        if (est.confidence == rawedit::SyncConfidence::Refined) {
+            // MAPPING CONTRACT (OpticalSync.h, binding): refinedOffsetNs
+            // maps t_imu = repTimeNs + refinedOffsetNs with
+            // repTimeNs = captureNs + 0.5*frameIntervalNs, while the plan
+            // maps t_imu = captureNs + model.offsetNs. Keeping frameTs as
+            // the capture stamps, the model that reproduces the refined
+            // mapping is exactly the half-interval shift:
+            //     model.offsetNs = refinedOffsetNs + 0.5*frameIntervalNs
+            // (the same fallback repTime the refinement measured under —
+            // the two formations must agree, or the half-interval lag
+            // enters as sync error). The trim composes MANUALLY over it:
+            // trimOffsetMs composes over model.offsetNs, which a refined
+            // estimate never touched (applyOpticalRefinement keeps the
+            // anchor's model), so the core trim helper would trim the
+            // WRONG (anchor) offset.
+            offsetKnown = true;
+            model.offsetNs = est.refinedOffsetNs + frameIntervalNs / 2 +
+                             static_cast<int64_t>(
+                                 req.trimMs * 1000000.0);
+        } else if (est.isAnchored()) {
             offsetKnown = true;
             if (req.trimMs != 0.0) {
                 model = rawedit::trimOffsetMs(est, req.trimMs).model;
@@ -582,16 +761,14 @@ void stabilizationFrameFor(const StabRequest& req,
             model = rawedit::manualOffsetMs(req.trimMs).model;
         }
         // else: unanchored + no trim -> offsetKnown stays false (Unsynced).
-        anchored = est.isAnchored();
+        anchored = est.isAnchored() ||
+                   est.confidence == rawedit::SyncConfidence::Refined;
+        syncBoundMs = est.errorBoundMs;
+        syncOffsetMs = static_cast<double>(model.offsetNs) / 1000000.0;
+        syncKind = est.confidence == rawedit::SyncConfidence::Refined ? 2
+                 : est.isAnchored() ? 1 : 0;
 
-        // Focal: the grade's override wins; 0 = the container's 35mm-equiv
-        // value. focalLengthPxFromEquivalent is the one documented,
-        // FLAGGED fallback (f_px = width * mm / 36) — assumedFocal below
-        // wires the IntrinsicsAssumed status so the assumption is visible,
-        // never silent.
-        const double focalMm = req.focalMmOverride > 0.0
-            ? req.focalMmOverride
-            : src.rawMeta().focalLengthMm;
+        // Focal: resolved above the sync block so the refine shares it.
         const double focalPx = rawedit::focalLengthPxFromEquivalent(
             focalMm, bufW);
 
@@ -639,6 +816,7 @@ void stabilizationFrameFor(const StabRequest& req,
             planCache->zoomLimit = req.zoomLimit;
             planCache->focalMmOverride = req.focalMmOverride;
             planCache->trimMs = req.trimMs;
+            planCache->syncRefine = req.syncRefine;
             planCache->bufW = bufW;
             planCache->bufH = bufH;
             planCache->gyroPath = gyro->path;
@@ -647,6 +825,9 @@ void stabilizationFrameFor(const StabRequest& req,
             planCache->anchored = anchored;
             planCache->maxAngleDeg = maxAngleDeg;
             planCache->framesInside = framesInside;
+            planCache->syncKind = syncKind;
+            planCache->syncOffsetMs = syncOffsetMs;
+            planCache->syncBoundMs = syncBoundMs;
             planCache->result = std::move(computed);
             plan = &planCache->result;
         } else {
@@ -674,6 +855,9 @@ void stabilizationFrameFor(const StabRequest& req,
         measure->maxAngleDeg = maxAngleDeg;
         measure->framesInside = framesInside;
         measure->anchored = anchored;
+        measure->syncKind = syncKind;
+        measure->syncOffsetMs = syncOffsetMs;
+        measure->syncBoundMs = syncBoundMs;
         // Correction-scale honesty (audit fix 2026-11-13): the numbers ride
         // the plan wholesale (cache value or fresh compute — the fields are
         // StabilizationResult members, so a cache hit serves them without
@@ -779,7 +963,7 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
     const auto planStart = std::chrono::steady_clock::now();
     stabilizationFrameFor(in.request, *in.source, in.frameIndex,
                           static_cast<int>(img.w), static_cast<int>(img.h),
-                          in.gyro, &frame, wantLog ? &measure : nullptr,
+                          in.gyro, &frame, debug ? &measure : nullptr,
                           in.planCache, debug ? &planFromCache : nullptr);
     const auto planEnd = std::chrono::steady_clock::now();
     if (wantLog) {
@@ -819,7 +1003,9 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
                 measure.invalidSamples,
                 measure.framesInside, measure.framesTotal,
                 rawedit::stabilizationStatusName(frame.status),
-                measure.anchored ? "anchored" : "manual-trim");
+                measure.syncKind == 2
+                    ? "refined"
+                    : measure.anchored ? "anchored" : "manual-trim");
         }
         __android_log_print(ANDROID_LOG_INFO, "ritim-stab", "%s", line);
     }
@@ -829,12 +1015,17 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
             // span; the warp is what it skipped. Same line shape as the
             // applied case — a skip simply reads warpMs=0.000 — so the
             // owner's parser sees one uniform format per rendered frame.
+            // The sync token (M5 commit b) is APPEND-ONLY: a pre-M5 log
+            // parser reading the first five fields keeps working, and the
+            // token names which offset the plan rode.
             const double planMs = std::chrono::duration<double, std::milli>(
                 planEnd - planStart).count();
             __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
-                "frame=%d planMs=%.3f(%s) warpMs=0.000 totalMs=%.3f",
+                "frame=%d planMs=%.3f(%s) warpMs=0.000 totalMs=%.3f "
+                "sync=%s offsetMs=%.3f",
                 in.frameIndex, planMs,
-                planFromCache ? "cache-hit" : "computed", planMs);
+                planFromCache ? "cache-hit" : "computed", planMs,
+                stabSyncKindName(measure.syncKind), measure.syncOffsetMs);
         }
         return;
     }
@@ -851,11 +1042,17 @@ void applyStabilization(const StabInput& in, rawedit::ImageF& img,
             planEnd - planStart).count();
         const double warpMs = std::chrono::duration<double, std::milli>(
             warpEnd - warpStart).count();
+        // The sync token (M5 commit b) is APPEND-ONLY: the first five
+        // fields keep their pre-M5 shape and the appended trio names which
+        // offset the plan rode — the owner's ON/OFF A/B reads
+        // sync=refined vs sync=anchored directly off this line.
         __android_log_print(ANDROID_LOG_INFO, "ritim-stab-timing",
-            "frame=%d planMs=%.3f(%s) warpMs=%.3f totalMs=%.3f",
+            "frame=%d planMs=%.3f(%s) warpMs=%.3f totalMs=%.3f "
+            "sync=%s offsetMs=%.3f",
             in.frameIndex, planMs,
             planFromCache ? "cache-hit" : "computed", warpMs,
-            planMs + warpMs);
+            planMs + warpMs,
+            stabSyncKindName(measure.syncKind), measure.syncOffsetMs);
     }
 }
 
@@ -1640,6 +1837,18 @@ JNIEXPORT void JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetExportTiming(
         JNIEnv*, jclass, jboolean enabled) {
     gExportTiming.store(enabled == JNI_TRUE, std::memory_order_relaxed);
+}
+
+// Optical sync refinement toggle (M5 commit b): UNLIKE the two gates above
+// this is a RUNTIME user toggle — the stab sheet's sync-refine switch owns
+// it (jniSetSyncRefine), not the companion init. Default FALSE: the owner
+// A/Bs the refined offset on device before it becomes a default. When on,
+// stabRequestOf copies it onto every stab request and the plan cache's
+// miss branch runs the once-per-key optical refinement.
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetSyncRefine(
+        JNIEnv*, jclass, jboolean enabled) {
+    gSyncRefine.store(enabled == JNI_TRUE, std::memory_order_relaxed);
 }
 
 // The six sub-stage slots of the frame nativeExportFrame just produced, in
@@ -3384,6 +3593,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionClose(
 //                      Unsynced=3, LowOverlap=4, IntrinsicsAssumed=5 — the
 //                      core Stabilization.h enum order; the Kotlin mirror
 //                      documents the same list)
+//   [3] syncKind      (the sync verdict the plan rode, M5 commit b:
+//                      0 = manual trim / no anchor, 1 = the anchored
+//                      estimate, 2 = the optically refined offset — the
+//                      stabSyncKindName mirror; the pre-M5 array ended
+//                      here at [2], so existing `size >= 3` readers keep
+//                      working unchanged)
+//   [4] syncOffsetMs  (the offset the plan rode, ms — the timing line's
+//                      offsetMs, the same number)
+//   [5] syncBoundMs   (the estimate's error bound, ms — the "±N" the
+//                      status line renders)
 //
 // or nullptr when there is no verdict to show: a bad handle (the
 // nativeFramePtsUs silent-null precedent), no gyro log attached (null/empty
@@ -3399,7 +3618,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionClose(
 // is a dimensionless corner-coverage ratio, so evaluating at the clip's
 // RECORDED CFA dims (frameInfo(0).width/height) yields the same
 // required/applied zooms any preview tier or the full-res export would.
-// One probe per settle covers every tier.
+// One probe per settle covers every tier. THE M5 EXCEPTION: with the
+// sync-refine toggle on, a probe MISS pays the once-per-key optical
+// refinement (~seconds class host) — deliberately, because the probe is
+// the settle-time plan builder; the renders after it serve the warmed
+// cache, and the probe's [3..5] fields are exactly how the UI reads the
+// refined verdict without re-running anything.
 //
 // THREADING (binding): like every session native call this MUST run on the
 // session's engine thread — resolveGyro's gyro cache and the error state
@@ -3445,14 +3669,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabZoomProbe(
     stabilizationFrameFor(req, *s, /*frameIndex=*/0, bufW, bufH, gyro,
                           &frame, &measure, &gEntries[handle - 1].stabPlan);
 
-    const double out[3] = {
+    const double out[6] = {
         measure.requiredZoom,
         measure.appliedZoom,
         static_cast<double>(static_cast<int>(measure.status)),
+        static_cast<double>(measure.syncKind),
+        measure.syncOffsetMs,
+        measure.syncBoundMs,
     };
-    jdoubleArray result = env->NewDoubleArray(3);
+    jdoubleArray result = env->NewDoubleArray(6);
     if (result == nullptr) return nullptr;
-    env->SetDoubleArrayRegion(result, 0, 3, out);
+    env->SetDoubleArrayRegion(result, 0, 6, out);
     return result;
 }
 

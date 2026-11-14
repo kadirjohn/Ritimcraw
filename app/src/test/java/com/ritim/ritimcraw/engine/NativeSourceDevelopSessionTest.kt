@@ -115,6 +115,23 @@ class NativeSourceDevelopSessionTest {
         }
     }
 
+    @Test
+    fun set_sync_refine_throws_the_unavailable_message_without_the_native_lib() {
+        // The M5 sync-refine toggle's wrapper: unlike the two build gates
+        // (nativeSetStabDebugLog / nativeSetExportTiming, companion-init
+        // private) this one has a UI caller — the stab sheet's switch —
+        // so the unavailable guard is the ONLY thing standing between the
+        // switch and an UnsatisfiedLinkError mid-compose. The JVM always
+        // runs this path (the .so never loads on the host).
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniSetSyncRefine(true)
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
     // ---- the signature locks (the second lock against uncovered grades) ---
 
     private fun method(name: String): java.lang.reflect.Method {

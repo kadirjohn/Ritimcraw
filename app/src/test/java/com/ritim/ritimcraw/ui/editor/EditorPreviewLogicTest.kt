@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.editor
 
+import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.engine.SourcePath
@@ -243,7 +244,8 @@ class EditorPreviewLogicTest {
         assertEquals(
             GyroSyncStatus.NO_DATA,
             EditorPreviewLogic.syncStatus(
-                gyroAttached = false, probeFailed = false, anchored = true,
+                gyroAttached = false, probeFailed = false,
+                anchored = true, refined = false,
             ),
         )
     }
@@ -256,7 +258,8 @@ class EditorPreviewLogicTest {
         assertEquals(
             GyroSyncStatus.NO_DATA,
             EditorPreviewLogic.syncStatus(
-                gyroAttached = true, probeFailed = true, anchored = false,
+                gyroAttached = true, probeFailed = true,
+                anchored = false, refined = false,
             ),
         )
     }
@@ -270,7 +273,8 @@ class EditorPreviewLogicTest {
         assertEquals(
             GyroSyncStatus.ANCHORED,
             EditorPreviewLogic.syncStatus(
-                gyroAttached = true, probeFailed = false, anchored = true,
+                gyroAttached = true, probeFailed = false,
+                anchored = true, refined = false,
             ),
         )
     }
@@ -281,8 +285,121 @@ class EditorPreviewLogicTest {
         assertEquals(
             GyroSyncStatus.MANUAL,
             EditorPreviewLogic.syncStatus(
-                gyroAttached = true, probeFailed = false, anchored = false,
+                gyroAttached = true, probeFailed = false,
+                anchored = false, refined = false,
             ),
+        )
+    }
+
+    // ---- refined verdict (M5 commit b: the optical refinement's success) ----
+
+    @Test
+    fun a_successful_refinement_is_refined_even_though_anchor_based() {
+        // The optical refinement SUCCEEDED (the probe's syncKind=2): the
+        // estimate is still anchor-based, but the bound is now the measured
+        // optical curve's — the status line says "Refined (optical ±X ms)"
+        // instead of "Approximate". REFINED takes precedence over ANCHORED.
+        assertEquals(
+            GyroSyncStatus.REFINED,
+            EditorPreviewLogic.syncStatus(
+                gyroAttached = true, probeFailed = false,
+                anchored = true, refined = true,
+            ),
+        )
+    }
+
+    @Test
+    fun a_rejected_refinement_keeps_the_anchored_verdict() {
+        // The refinement ran but was REJECTED (too few pairs, no curve): the
+        // bridge keeps syncKind=1 and the plan rides the anchor estimate —
+        // the status line stays honestly "Approximate", never a "Refined"
+        // claim the plan does not back.
+        assertEquals(
+            GyroSyncStatus.ANCHORED,
+            EditorPreviewLogic.syncStatus(
+                gyroAttached = true, probeFailed = false,
+                anchored = true, refined = false,
+            ),
+        )
+    }
+
+    @Test
+    fun a_refinement_verdict_never_rescues_a_manual_estimate() {
+        // refined=true with anchored=false cannot occur (the bridge only
+        // refines ANCHORED estimates, and a rejected refine keeps the
+        // anchored verdict) — but the pure mapping stays honest anyway:
+        // no anchors, no anchored verdict to refine, Manual wins.
+        assertEquals(
+            GyroSyncStatus.MANUAL,
+            EditorPreviewLogic.syncStatus(
+                gyroAttached = true, probeFailed = false,
+                anchored = false, refined = true,
+            ),
+        )
+    }
+
+    @Test
+    fun a_refinement_verdict_never_rescues_no_data() {
+        // The same forward-compat guard at the top of the mapping: no gyro
+        // attached beats every downstream verdict, refined included.
+        assertEquals(
+            GyroSyncStatus.NO_DATA,
+            EditorPreviewLogic.syncStatus(
+                gyroAttached = false, probeFailed = false,
+                anchored = true, refined = true,
+            ),
+        )
+    }
+
+    // ---- sync-kind tokens (M5 commit b: the timing line's contract) ----
+
+    @Test
+    fun sync_kind_tokens_match_the_timing_line_spellings() {
+        // The EXACT spellings the bridge's append-only
+        // ` sync=%s offsetMs=%.3f` tail writes — the owner's ON/OFF A/B
+        // greps for "sync=refined" vs "sync=anchored" in logcat, so a
+        // silent rename on either side breaks the experiment's readout.
+        // The bridge's stabSyncKindName and this mirror must stay frozen
+        // together; the JVM locks the Kotlin half.
+        assertEquals("manual", EditorPreviewLogic.syncToken(EditorPreviewLogic.SYNC_KIND_MANUAL))
+        assertEquals("anchored", EditorPreviewLogic.syncToken(EditorPreviewLogic.SYNC_KIND_ANCHORED))
+        assertEquals("refined", EditorPreviewLogic.syncToken(EditorPreviewLogic.SYNC_KIND_REFINED))
+    }
+
+    @Test
+    fun an_unknown_sync_kind_has_no_token_never_a_guess() {
+        // Forward compat: a future bridge verdict kind reads as no token
+        // (the status-line decision then keeps the honest anchored/manual
+        // verdict from the attach-time probe), never a fabricated
+        // spelling.
+        assertNull(EditorPreviewLogic.syncToken(3))
+        assertNull(EditorPreviewLogic.syncToken(-1))
+    }
+
+    // ---- status-line strings (M5 commit b: the verdict → resource pair) ----
+
+    @Test
+    fun each_sync_verdict_maps_to_its_own_status_line() {
+        // One verdict, one line — the extracted pure mapping the JVM locks
+        // so a verdict can never render the wrong line's text: REFINED →
+        // "Refined (optical ±%1$d ms)", ANCHORED → "Approximate (anchored
+        // ±%1$d ms)", MANUAL → "Manual offset", NO_DATA → "No gyro data".
+        // The en/tr resources carry the spellings; this locks the PAIRING.
+        assertEquals(
+            R.string.editor_stabilization_sync_refined,
+            EditorPreviewLogic.syncStatusRes(GyroSyncStatus.REFINED),
+        )
+        assertEquals(
+            R.string.editor_stabilization_sync_anchored,
+            EditorPreviewLogic.syncStatusRes(GyroSyncStatus.ANCHORED),
+        )
+        assertEquals(
+            R.string.editor_stabilization_sync_manual,
+            EditorPreviewLogic.syncStatusRes(GyroSyncStatus.MANUAL),
+        )
+        assertEquals(
+            R.string.editor_stabilization_sync_no_data,
+            EditorPreviewLogic.syncStatusRes(GyroSyncStatus.NO_DATA),
         )
     }
 
