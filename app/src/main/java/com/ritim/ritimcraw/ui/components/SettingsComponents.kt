@@ -309,7 +309,16 @@ fun SettingRowExpandable(
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             )
         }
-        Box(Modifier.padding(top = 14.dp)) {
+        // The control slot shares the top line's 16dp gutter, so the
+        // segmented track aligns with the row's text instead of touching
+        // the card edge.
+        Box(
+            Modifier.padding(
+                start = 16.dp,
+                top = 14.dp,
+                end = 16.dp,
+            )
+        ) {
             content()
         }
     }

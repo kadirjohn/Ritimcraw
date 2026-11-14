@@ -15,15 +15,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.automirrored.outlined.ExitToApp
-import androidx.compose.material.icons.automirrored.outlined.List
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
@@ -82,6 +73,10 @@ import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.engine.SourcePathDecision
+import com.ritim.ritimcraw.ui.components.NavExports
+import com.ritim.ritimcraw.ui.components.NavLibrary
+import com.ritim.ritimcraw.ui.components.NavProjects
+import com.ritim.ritimcraw.ui.components.NavSettings
 import com.ritim.ritimcraw.export.BitmapPngWriter
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
@@ -121,19 +116,19 @@ import java.io.File
  */
 enum class Destination(
     val labelRes: Int,
-    // §4.5 icon consistency: outlined/filled glyph pairs per destination,
-    // drawn from the cached core Material set. The owner chose these glyphs
-    // deliberately (2026-11-12 request) — including the stock Settings gear
-    // with its center detail — over the vendored ic_nav_* pair from 1ca091d.
-    // Filled variant for the selected item, outlined for the rest — the
-    // stock M3 NavigationBar pattern.
+    // Settings redesign (owner spec 2026-11-14, icons section): the
+    // spec's own stroke-based glyphs replace the core Material pairs —
+    // the same vector serves both states (the glyphs are stroke-based,
+    // not filled/outlined variants), and NavigationBar's own
+    // selected/unselected Monet tints do the differentiation, exactly
+    // as the tint did for the gear pair before. Labels and routes stay.
     val outlined: ImageVector,
     val filled: ImageVector,
 ) {
-    LIBRARY(R.string.nav_library, Icons.Outlined.PlayArrow, Icons.Filled.PlayArrow),
-    PROJECTS(R.string.nav_projects, Icons.AutoMirrored.Outlined.List, Icons.AutoMirrored.Filled.List),
-    EXPORTS(R.string.nav_exports, Icons.AutoMirrored.Outlined.ExitToApp, Icons.AutoMirrored.Filled.ExitToApp),
-    SETTINGS(R.string.nav_settings, Icons.Outlined.Settings, Icons.Filled.Settings),
+    LIBRARY(R.string.nav_library, NavLibrary, NavLibrary),
+    PROJECTS(R.string.nav_projects, NavProjects, NavProjects),
+    EXPORTS(R.string.nav_exports, NavExports, NavExports),
+    SETTINGS(R.string.nav_settings, NavSettings, NavSettings),
 }
 
 /** editor/{sourceId} back stack entry. */
