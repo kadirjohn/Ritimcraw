@@ -470,6 +470,16 @@ fun AppNav(
     // How many missing thumbnails one Library open generates (bounded, so
     // a huge library opens instantly and fills in while the user looks).
     val thumbnailBatchLimit = 3
+    // The thumbnail generation revision (owner finding 2026-11-14: after
+    // rotating a clip, the Library icon stayed blank until the user
+    // re-entered the editor — the async generation lands with NO record
+    // change for an already-probed clip, so nothing recomposed the visible
+    // row; the icon WAS regenerated on the current visit, the row just
+    // never re-read the store): bumped after every generation pass; the
+    // Library rows pin their thumbnailAt read to it (LibraryScreen's
+    // thumbnailRevision param), so the freshly written PNG swaps in
+    // placeholder -> icon on the CURRENT visit, in place.
+    var thumbnailRevision by remember { mutableStateOf(0) }
 
     // Generates ONE clip's thumbnail + stats off the UI path and refreshes
     // the list when the record changed (the stats backfill rewrites the
@@ -505,6 +515,14 @@ fun AppNav(
                 },
             )
         )
+        // The pass may just have written the icon file (rotation change,
+        // backfill, import, relink): bump the revision so the Library's
+        // visible rows re-read the store and the icon swaps in place —
+        // the stats refresh above only fires when the RECORD changed,
+        // which an already-probed rotated clip's does not (owner finding
+        // 2026-11-14). Harmless when nothing landed: the rows re-read the
+        // same path and produceState keeps its key.
+        thumbnailRevision++
     }
 
     // IN-13 Stage A: extracts the source's honest metadata record and
@@ -1399,8 +1417,11 @@ fun AppNav(
                         // gesture, so a one-off re-develop is cheap and the
                         // icon is then physically correct everywhere). The
                         // remove deletes both the icon and any stale master,
-                        // and the next Library open's bounded backfill
-                        // regenerates with the fresh rotation.
+                        // and the CURRENT Library visit's bounded backfill
+                        // (every return is a fresh composition) regenerates
+                        // with the fresh rotation — the generation revision
+                        // then swaps the icon in place, no re-entering the
+                        // editor (owner finding 2026-11-14).
                         manualRotationDeg = manualRotation,
                         onRotate = { byDeg ->
                             val next = com.ritim.ritimcraw.data.RotationState.applyManual(
@@ -1410,9 +1431,9 @@ fun AppNav(
                             if (updated != null) {
                                 manualRotation = updated.manualRotationDeg
                                 thumbnailStore.remove(r.sourceId)
-                                // The Library row's ratio-true height reads
-                                // manualRotationDeg from this list state, so
-                                // it must see the fresh value when the user
+                                // The Library row reads the record (and the
+                                // icon path) from this list state, so it
+                                // must see the fresh value when the user
                                 // returns (the same refresh the delete and
                                 // relink paths do after their store writes).
                                 sources = stores.sources.all()
@@ -1630,6 +1651,11 @@ fun AppNav(
                                 // shows the placeholder while missing.
                                 thumbnailStore.fileFor(id)?.absolutePath
                             },
+                            // The generation revision above: the rows pin
+                            // their thumbnailAt read to it, so an icon the
+                            // pass just wrote swaps in on the CURRENT
+                            // visit (owner finding 2026-11-14).
+                            thumbnailRevision = thumbnailRevision,
                             thumbnailBatchLimit = thumbnailBatchLimit,
                             onGenerateThumbnails = { pending ->
                                 // Bounded, cancellable backfill for records

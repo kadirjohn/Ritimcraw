@@ -131,6 +131,14 @@ fun LibraryScreen(
     // here (the screen owns the message surface).
     onRelink: (sourceId: String, uri: String) -> Result<MediaSource>,
     thumbnailAt: (id: String) -> String?,
+    // Generation revision (owner finding 2026-11-14: after rotating a clip
+    // the Library icon stayed blank until the user re-entered the editor —
+    // the async generation lands with NO record change for an
+    // already-probed clip, so nothing recomposed the visible row): the
+    // caller bumps it after every generation pass; the rows pin their
+    // thumbnailAt read to it, so the freshly written PNG swaps in on the
+    // CURRENT visit (placeholder -> icon, no re-enter).
+    thumbnailRevision: Int,
     thumbnailBatchLimit: Int,
     onGenerateThumbnails: (pending: List<String>) -> Unit,
     // Manual full sweep (spec IN-12): pull-to-refresh hands the whole
@@ -365,7 +373,22 @@ fun LibraryScreen(
                             items(visible, key = { it.id }) { source ->
                                 LibraryRow(
                                     source = source,
-                                    thumbnailPath = thumbnailAt(source.id),
+                                    // Pinned to the generation revision
+                                    // (owner finding 2026-11-14): a plain
+                                    // thumbnailAt call reads at composition
+                                    // time only — when the async icon lands
+                                    // there is no record change to
+                                    // recompose the row, so the placeholder
+                                    // stayed until the NEXT fresh
+                                    // composition (the enter-exit dance).
+                                    // The revision bump is the change
+                                    // signal: it re-reads the store here,
+                                    // and the fresh path re-runs the row's
+                                    // own decode (placeholder -> icon in
+                                    // place).
+                                    thumbnailPath = remember(thumbnailRevision) {
+                                        thumbnailAt(source.id)
+                                    },
                                     selected = source.id in selection,
                                     selecting = selecting,
                                     showDivider = source !== visible.lastOrNull(),
@@ -472,17 +495,12 @@ private fun LibraryRow(
             LibraryRowModel.durationText(source),
         ),
         thumbnailPath = thumbnailPath,
-        // The recorded frame dims drive the thumbnail's ratio-true height
-        // (owner request 2026-11-14: a vertical clip shows a vertical
-        // thumbnail); 0x0 until the generation pass probes the clip, and
-        // the row keeps the 76dp square then — never a guessed ratio.
-        frameWidth = source.width,
-        frameHeight = source.height,
-        // The persisted manual rotation swaps the displayed ratio on a
-        // quarter turn (owner request 2026-11-14: the icon must match the
-        // rotated look the user chose in the editor) — the same swap the
-        // regenerated icon file carries, so the box and icon agree.
-        manualRotationDeg = source.manualRotationDeg,
+        // The uniform 76dp slot needs no dims and no rotation (owner
+        // finding 2026-11-14: the ratio-true heights broke the list's
+        // rhythm between vertical, horizontal and open-gate rows): the
+        // icon FILE carries the ratio and the manual rotation (it is
+        // re-developed on every rotation change), and the slot fits it
+        // letterboxed at its own ratio.
         accessLost = accessLost,
         accessLostLine = when (status) {
             LibraryRowModel.RowStatus.LOST -> stringResource(R.string.library_row_access_lost)
