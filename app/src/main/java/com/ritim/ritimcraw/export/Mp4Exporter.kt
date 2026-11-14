@@ -4,8 +4,13 @@ import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.engine.BackendGates
 import com.ritim.ritimcraw.engine.BackendRules
 import com.ritim.ritimcraw.engine.EffectiveRenderBackend
+import com.ritim.ritimcraw.engine.GlesParityResult
+import com.ritim.ritimcraw.engine.GlesProbeResult
+import com.ritim.ritimcraw.engine.GlesShaderSources
+import com.ritim.ritimcraw.engine.GpuParityRules
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
 import java.io.File
@@ -343,6 +348,104 @@ object NativeRgbToI420 : RgbToI420 {
         )
         return if (ok) RgbToI420PlanesResult(fromNative = true) else null
     }
+}
+
+/**
+ * The GPU develop leg's JNI seam (M3 commit b) — the [Mp4Session] pattern
+ * again: a dumb reporter interface, the real object calling the NativeSource
+ * wrappers, JVM tests injecting a fake. The DISPATCHER (ExportPipeline)
+ * owns every decision — fromArray, the parity verdict, the gates — so the
+ * seam never decides pass/fail and the decision rules stay JVM-tested
+ * (the same philosophy as the C++ harness: it reports raw numbers).
+ *
+ * The probe/parity half runs BEFORE writer.start() on the export engine
+ * thread: the harness brings its own one-shot EGL context up and down
+ * inside the call (the PreviewMetrics precedent), and the writer binds ITS
+ * context only in start() — running the parity after start would put two
+ * contexts on one thread. The session half wraps the M3-commit-a trio:
+ * open() returns 0 on failure (previewLastError names the step), render
+ * returns null on failure (the session latches unhealthy with the same
+ * detail), close is idempotent. All three throw IllegalStateException when
+ * the .so is absent — the dispatcher catches that and stays on CPU (the
+ * same guard NativeMp4Session.requireNative rides).
+ *
+ * The render signature carries EXACTLY the four fragment-covered grade
+ * controls (exposure, highlight reconstruction, vignetting, tonemap)
+ * beside the three plumbing values — the second lock against uncovered
+ * grades (the Kotlin coverage gate is the first). A stage the fragment
+ * pass does not cover cannot even be expressed into the session.
+ */
+interface GpuDevelop {
+    /** The capability probe: raw [contextOk, glesMajor, glesMinor, computeOk, floatFboOk, maxTextureSize]; null = JNI failure. */
+    fun probe(): DoubleArray?
+
+    /**
+     * The case-0 fragment parity run (the developLinear shape — the
+     * device-PROVEN case): raw [ran, maxDiffLsb, mismatchCount, samples];
+     * null = JNI failure. [fd] is the export's own clip fd (the harness
+     * dups it for its independent read; the fd stays the caller's to close).
+     */
+    fun fragmentParity(fd: Int): DoubleArray?
+
+    /** Opens the develop session: a nonzero handle, or 0 on failure (then [lastDetail] names the step). */
+    fun openSession(): Long
+
+    /** Renders one frame; null on failure (the session latches unhealthy). */
+    fun renderFrame(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        exposureEv: Float,
+        highlightReconstruction: Boolean,
+        keepVignetting: Boolean,
+        tonemap: Int,
+    ): ByteArray?
+
+    /** Closes the session (idempotent; absorbs context loss at teardown). */
+    fun closeSession(sessionHandle: Long)
+
+    /** The bridge's thread-local last-error detail (same thread as the failed call). */
+    fun lastDetail(): String?
+}
+
+/** The real boundary: the NativeSource wrappers with the validated single-source-of-truth shader texts. */
+internal object NativeGpuDevelop : GpuDevelop {
+    override fun probe(): DoubleArray? = NativeSource.jniGlesProbe()
+
+    override fun fragmentParity(fd: Int): DoubleArray? =
+        NativeSource.jniGlesFragmentParity(
+            fd,
+            GlesShaderSources.FULLSCREEN_VERTEX,
+            GlesShaderSources.FULLSCREEN_VERTEX_310,
+            GlesShaderSources.DEVELOP_FRAGMENT,
+            GlesShaderSources.STORE_FRAGMENT,
+            0, // case 0 — the developLinear shape, the device-proven case
+        )
+
+    override fun openSession(): Long = NativeSource.jniDevelopSessionOpen(
+        GlesShaderSources.FULLSCREEN_VERTEX,
+        GlesShaderSources.FULLSCREEN_VERTEX_310,
+        GlesShaderSources.DEVELOP_FRAGMENT,
+        GlesShaderSources.STORE_FRAGMENT,
+    )
+
+    override fun renderFrame(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        exposureEv: Float,
+        highlightReconstruction: Boolean,
+        keepVignetting: Boolean,
+        tonemap: Int,
+    ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
+        sessionHandle, clipHandle, frameIndex,
+        exposureEv, highlightReconstruction, keepVignetting, tonemap,
+    )
+
+    override fun closeSession(sessionHandle: Long) =
+        NativeSource.jniDevelopSessionClose(sessionHandle)
+
+    override fun lastDetail(): String? = NativeSource.previewLastError()
 }
 
 /**
@@ -863,6 +966,27 @@ class ExportPipeline(
      */
     private val renderBackend: RenderBackend = RenderBackend.CPU,
     /**
+     * The GPU develop leg's seam (M3 commit b): when renderBackend is
+     * GPU_EXPERIMENTAL AND BackendRules says the grade's active stages are
+     * ALL fragment-covered AND no gyro warp, the per-frame develop runs
+     * through the GPU develop session (M3 commit a) instead of
+     * session.renderFrame's CPU develop — the SAME rotate/crop/YUV/writer
+     * tail consumes the bytes either way (the GPU output is full-res
+     * RGB888, row-major, NOT rotated — the same byte shape). The dispatch
+     * order is cost-aware: the FREE coverage check runs first (an
+     * uncovered grade never pays the probe/parity), then the probe, then
+     * ONE case-0 parity run whose verdict fills BackendGates.parityOk
+     * (NEVER GpuParityRules.gatesFrom — that one keeps parityOk false on
+     * purpose; parity comes only from a real run). CPU and AUTO never touch
+     * the seam: CPU is the byte-identical reference path, AUTO stays CPU
+     * until the owner's device verdict (an honest policy line names it).
+     * The default is the real native seam; JVM tests inject a fake
+     * (nativeAvailable=false there, so the real object would throw ISE —
+     * the dispatcher catches that and stays on CPU, the same guard every
+     * seam in this file rides).
+     */
+    private val gpuDevelop: GpuDevelop = NativeGpuDevelop,
+    /**
      * AUD-02's export gate: true (the default) = the source's audio link
      * state is ATTACHED, so the encode reads the clip's audio track exactly
      * as before — the encoded bytes are identical. False = DETACHED,
@@ -911,13 +1035,14 @@ class ExportPipeline(
                 Mp4ExportErrors.message(session.code(), session.stage(), session.detail())
             )
         try {
-            encode(info, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress)
+            encode(sourceFd, info, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress)
         } finally {
             session.close(info.handle)
         }
     }
 
     private fun encode(
+        sourceFd: Int,
         info: Mp4SessionInfo,
         grade: GradeK,
         outPath: String,
@@ -982,6 +1107,88 @@ class ExportPipeline(
             grade.cropX, grade.cropY, grade.cropW, grade.cropH,
         )
         val cropOutDims = CropState.outputDims(outDims.width, outDims.height, cropRect, even = true)
+        // M3 commit b — the develop dispatch: WHICH pipeline develops the
+        // frames. A GPU_EXPERIMENTAL job whose grade's active stages are
+        // ALL fragment-covered (the SAME BackendRules vocabulary the
+        // visibility line below uses — no second truth) and whose gyro
+        // warp is off develops through the GPU session; every other
+        // shape develops through the CPU session. The order is
+        // cost-aware: the coverage check is FREE and runs first (an
+        // uncovered grade never pays the probe or the parity run); only a
+        // covered grade pays the probe, then ONE case-0 fragment parity
+        // run (the developLinear shape — the case the device PROVED at
+        // 1 LSB; the grade's own shape is gated by the coverage check, so
+        // the parity run is a capability gate, not a grade check). The
+        // verdict fills BackendGates.parityOk directly — NEVER
+        // GpuParityRules.gatesFrom, which keeps parityOk false on purpose
+        // (parity comes only from a real run). CPU and AUTO never touch
+        // the seam at all: CPU is the byte-identical reference path, AUTO
+        // stays CPU until the owner's device verdict (its honest policy
+        // line says so, never silent). The probe and the parity run
+        // BEFORE writer.start() on this same engine thread: the harness
+        // brings its own one-shot EGL context up and down INSIDE the
+        // call (the PreviewMetrics precedent), and the writer binds ITS
+        // context only in start() — running the parity after start would
+        // put two contexts on one thread.
+        val gyroWarpActive = grade.stabilization && gyroPath != null
+        val uncoveredTokens = mutableListOf<String>()
+        uncoveredTokens += BackendRules.fragmentUncoveredStages(grade).map { it.second }
+        uncoveredTokens += BackendRules.fragmentUncoveredPreStages(grade)
+        if (gyroWarpActive) uncoveredTokens += "gyro-warp"
+        var developBackend = EffectiveRenderBackend.CPU
+        var developFallback: String? = null
+        if (renderBackend == RenderBackend.GPU_EXPERIMENTAL && uncoveredTokens.isEmpty()) {
+            var gates = BackendGates()
+            try {
+                val probeRaw = gpuDevelop.probe()
+                if (probeRaw != null) {
+                    val probe = GlesProbeResult.fromArray(probeRaw)
+                    if (probe.contextOk && probe.floatFboOk) {
+                        val parityRaw = gpuDevelop.fragmentParity(sourceFd)
+                        val parity = if (parityRaw != null) GlesParityResult.fromArray(parityRaw) else null
+                        gates = BackendGates(
+                            contextOk = true,
+                            computeOk = probe.computeOk,
+                            floatFboOk = true,
+                            parityOk = parity != null &&
+                                GpuParityRules.verdict(parity, gpuDevelop.lastDetail()).pass,
+                        )
+                    } else {
+                        // Parity is skipped when the context/float-FBO gates
+                        // are red (running it would only produce a
+                        // predictable failure) — parityOk stays false.
+                        gates = BackendGates(
+                            contextOk = probe.contextOk,
+                            computeOk = probe.computeOk,
+                            floatFboOk = probe.floatFboOk,
+                        )
+                    }
+                }
+            } catch (e: IllegalStateException) {
+                // No .so (JVM / non-NDK build): the honest all-false
+                // default gates keep the export on CPU — the same guard
+                // every native seam in this file rides.
+                gates = BackendGates()
+            }
+            developBackend = BackendRules.fragmentEffectiveBackend(
+                renderBackend, gates, grade, gyroWarpActive,
+            )
+            developFallback = BackendRules.fragmentFallbackLine(
+                renderBackend, gates, grade, gyroWarpActive,
+            )
+        } else if (renderBackend == RenderBackend.GPU_EXPERIMENTAL) {
+            // An active uncovered stage/pre-stage/gyro warp forces CPU
+            // BEFORE any probe is paid. The line names the stage tokens
+            // ONLY — never gate tokens, because no gate was measured
+            // (naming "no-egl-context" for a probe that never ran would
+            // fabricate a measurement).
+            developFallback = developFallbackLine(uncoveredTokens.joinToString(","))
+        } else if (renderBackend == RenderBackend.AUTO) {
+            // AUTO stays CPU for the develop until the owner's device
+            // verdict moves the picker — the honest policy line, never a
+            // silent skip.
+            developFallback = developFallbackLine("auto-stays-cpu")
+        }
         // GPU deliverable F (§10): the Surface request goes to the writer
         // BEFORE start — an explicit request from the job's render-backend
         // snapshot, never auto. A writer that cannot bring the mode up
@@ -998,22 +1205,23 @@ class ExportPipeline(
         }
         // Render-backend visibility (owner request 2026-11-13, deliverable
         // (c)): ONE honest line per export, emitted after start() so the
-        // encoder-input mode is knowable. The EFFECTIVE value is the axis the
-        // export actually has: the encoder-Surface input mode is this
-        // pipeline's GPU leg (the develop itself always runs the CPU
-        // reference per frame — the fragment develop pass is not wired into
-        // the export yet), so effective=GLES means the writer took the
-        // Surface mode and the frames feed the encoder through its EGL
-        // surface; every other shape is effective=CPU, including a
-        // GPU_EXPERIMENTAL request whose Surface mode did not come up (the
-        // exporter's restart covers the start throw; a per-frame offer
-        // refusal logs CPU here honestly). The unsupported= tokens are the
-        // exact BackendRules fragment vocabulary for THIS grade — the stages
-        // the fragment develop pass does not cover that the grade activates
-        // (plus gyro-warp when stabilization is on AND a log is attached —
-        // the same gate the timing summary uses) — so the line doubles as
-        // the coverage statement for the day the fragment develop is wired
-        // in: "none" is the default grade after the stage 2+3+23 ports.
+        // encoder-input mode is knowable. The EFFECTIVE value this line
+        // reports is the ENCODER-INPUT axis: effective=GLES means the
+        // writer took the Surface mode and the frames feed the encoder
+        // through its EGL surface; every other shape is effective=CPU,
+        // including a GPU_EXPERIMENTAL request whose Surface mode did not
+        // come up (the exporter's restart covers the start throw; a
+        // per-frame offer refusal logs CPU here honestly). The develop
+        // dispatch above (commit b) is its OWN axis with its OWN fallback
+        // line — a GPU-developed export whose writer never took the
+        // Surface mode logs effective=CPU here while the develop honestly
+        // ran GLES; commit (c) makes THIS line's effective= the develop
+        // axis and moves the encoder-input mode to its own unconditional
+        // line. The unsupported= tokens are the exact BackendRules
+        // fragment vocabulary for THIS grade — the SAME [uncoveredTokens]
+        // list the develop dispatch gated on (no second truth) — so the
+        // line doubles as the coverage statement: "none" is the default
+        // grade after the stage 2+3+23 ports.
         // CPU exports log the same line (effective=CPU): the requested axis
         // is visible per export, never only on fallback. Null stageLog =
         // nothing emitted, bytes identical, release pays nothing.
@@ -1023,15 +1231,17 @@ class ExportPipeline(
             } else {
                 EffectiveRenderBackend.CPU
             }
-            val unsupported = mutableListOf<String>()
-            unsupported += BackendRules.fragmentUncoveredStages(grade).map { it.second }
-            unsupported += BackendRules.fragmentUncoveredPreStages(grade)
-            if (grade.stabilization && gyroPath != null) unsupported += "gyro-warp"
             stageLog(
                 "render backend: requested=${renderBackend.name} " +
                     "effective=${effective.name} " +
-                    "unsupported=${unsupported.joinToString(",").ifEmpty { "none" }}"
+                    "unsupported=${uncoveredTokens.joinToString(",").ifEmpty { "none" }}"
             )
+            // The develop dispatch's honest fallback line (commit b): null
+            // when the GPU develop runs (or CPU was requested — no
+            // fallback happened). The reason names the coverage tokens,
+            // the gate tokens, or the AUTO policy — whichever forced the
+            // CPU develop, never silently.
+            developFallback?.let { stageLog(it) }
             // The encoder input mode, logged only when a GPU request actually
             // engaged the GPU leg (the Surface mode came up — only a
             // GPU_EXPERIMENTAL request ever asks for it) — the byte mode is
@@ -1040,7 +1250,31 @@ class ExportPipeline(
                 stageLog("encoder input: surface")
             }
         }
+        // M3 commit b — the GPU develop session: opened ONCE per export
+        // when the dispatch chose GLES (compile/allocate happen there —
+        // per-frame work is uploads and uniforms only, the commit-a
+        // contract). Open failure (0 or a throw) is NOT an export failure:
+        // the export continues on the CPU develop with the honest fallback
+        // line — the JNI error string itself says "(recovery: the CPU
+        // develop path stays the default)". The handle is declared BEFORE
+        // the try so the finally below closes it on EVERY path;
+        // closeSession is idempotent and absorbs context loss at teardown.
+        var gpuSessionHandle = 0L
+        var gpuDevelopActive = developBackend == EffectiveRenderBackend.GLES
         try {
+            if (gpuDevelopActive) {
+                try {
+                    gpuSessionHandle = gpuDevelop.openSession()
+                } catch (e: IllegalStateException) {
+                    // No .so: the honest CPU continue (the seam's guard).
+                }
+                if (gpuSessionHandle == 0L) {
+                    gpuDevelopActive = false
+                    stageLog?.invoke(
+                        developFallbackLine(gpuDevelop.lastDetail() ?: "develop session open failed")
+                    )
+                }
+            }
             // 4. Encode loop, in presentation order across both tracks.
             // Progress counts VIDEO frames only (the frame counter the user
             // sees); it starts once the encoders are actually configured —
@@ -1058,20 +1292,70 @@ class ExportPipeline(
                     PtsTimeline.Sample.Track.VIDEO -> {
                         timing?.startFrame()
                         val t0 = System.nanoTime()
-                        val rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath)
-                            ?: throw IllegalStateException(
-                                Mp4ExportErrors.message(
-                                    session.code(), session.stage(), session.detail()
+                        // Commit b — the develop dispatch per frame: the GPU
+                        // session renders when it is active; the bytes flow
+                        // through the SAME rotate/crop/offer/I420 tail below
+                        // (the GPU output is the same full-res RGB888,
+                        // row-major, NOT-rotated byte shape). Mid-render
+                        // null (or a size mismatch — a wrong-shaped buffer
+                        // is a GPU failure, never a corrupt frame) latches
+                        // the CPU develop for the REST of the export with
+                        // ONE fallback line: the session latches unhealthy
+                        // natively (sticky), the first failure already
+                        // named its step, and the ≤1-LSB parity contract
+                        // makes the mid-stream switch visually invisible.
+                        // The CPU branch stays byte-identical to the
+                        // reference path (the same call, the same args).
+                        var rgb: ByteArray
+                        if (gpuDevelopActive) {
+                            val gpu = try {
+                                gpuDevelop.renderFrame(
+                                    gpuSessionHandle, info.handle, s.frameIndex,
+                                    grade.exposureEv, grade.highlightReconstruction,
+                                    grade.keepVignetting, grade.tonemap,
                                 )
-                            )
+                            } catch (e: IllegalStateException) {
+                                null // no .so mid-export: latch CPU below
+                            }
+                            if (gpu == null || gpu.size != info.width * info.height * 3) {
+                                gpuDevelopActive = false
+                                stageLog?.invoke(
+                                    developFallbackLine(
+                                        gpuDevelop.lastDetail() ?: "gpu develop render failed"
+                                    )
+                                )
+                                rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath)
+                                    ?: throw IllegalStateException(
+                                        Mp4ExportErrors.message(
+                                            session.code(), session.stage(), session.detail()
+                                        )
+                                    )
+                            } else {
+                                rgb = gpu
+                            }
+                        } else {
+                            rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath)
+                                ?: throw IllegalStateException(
+                                    Mp4ExportErrors.message(
+                                        session.code(), session.stage(), session.detail()
+                                    )
+                                )
+                        }
                         timing?.mark(ExportStageTiming.STAGE_NATIVE, System.nanoTime() - t0)
                         // Commit (d): the bridge timed its six internals
                         // into thread-local slots during that call (debug
                         // builds only) — read them NOW, on this same
                         // thread, before anything else can overwrite them.
                         // Null (fake / release / non-NDK) renders the
-                        // sample line exactly as before.
-                        timing?.markNativeSubStages(session.lastFrameSubStagesMs())
+                        // sample line exactly as before. The GPU develop
+                        // path does NOT read them: the develop session
+                        // does not populate the CPU develop's timing slots
+                        // (stale numbers would be dishonest), so the
+                        // sample line stays plain — the develop stage is
+                        // attributed to STAGE_NATIVE above either way.
+                        if (!gpuDevelopActive) {
+                            timing?.markNativeSubStages(session.lastFrameSubStagesMs())
+                        }
                         // Section 5: renderFrame returns NOT-rotated RGB888;
                         // rotating by the EFFECTIVE orientation makes the
                         // pixels themselves upright (the encoder wants
@@ -1193,9 +1477,34 @@ class ExportPipeline(
                 encodeNanos = System.nanoTime() - tEncode0,
             )
         } finally {
+            // The GPU develop session closes on EVERY path — success,
+            // mid-encode failure, writer failure — beside the writer's
+            // release (the commit-a contract: close drains the one
+            // in-flight render, joins the GL thread, and is idempotent; a
+            // 0 handle means no session was ever opened). The session NEVER
+            // outlives the export: the registry slot is freed for the next
+            // export before this method returns.
+            if (gpuSessionHandle != 0L) {
+                try {
+                    gpuDevelop.closeSession(gpuSessionHandle)
+                } catch (e: IllegalStateException) {
+                    // No .so at teardown: nothing to close.
+                }
+                gpuSessionHandle = 0L
+            }
             writer.release()
         }
     }
+
+    /**
+     * The develop dispatch's fallback line (commit b): the SAME format the
+     * exporter's surface restart uses, so the export log reads uniformly.
+     * The reason is the honest why — coverage tokens, gate tokens, the
+     * AUTO policy, or the develop session's own failure detail.
+     */
+    private fun developFallbackLine(reason: String): String =
+        "render backend fallback: requested=${renderBackend.name} " +
+            "effective=CPU reason=$reason"
 
     /**
      * One frame's conversion through the seam, plus the debug dual-run
@@ -1276,6 +1585,14 @@ class Mp4Exporter(
      * collected, the encoded bytes are identical.
      */
     private val stageLog: ((String) -> Unit)? = null,
+    /**
+     * The GPU develop leg's seam, threaded through to every ExportPipeline
+     * attempt (M3 commit b) — the same injectability rule as [session] and
+     * [writerFactory]: the default is the real native seam, JVM tests
+     * inject a fake, and the app's construction site (AppNav) compiles
+     * untouched.
+     */
+    private val gpuDevelop: GpuDevelop = NativeGpuDevelop,
 ) {
 
     /**
@@ -1410,6 +1727,7 @@ class Mp4Exporter(
             writerFactory(),
             stageLog,
             renderBackend = renderBackend,
+            gpuDevelop = gpuDevelop,
             audioAttached = audioAttached,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress

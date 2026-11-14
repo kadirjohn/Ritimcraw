@@ -1848,4 +1848,369 @@ class Mp4ExporterTest {
         assertTrue("effective must be CPU: $line", line.contains("effective=CPU"))
         assertTrue(lines.none { it.startsWith("encoder input: ") })
     }
+
+    // ---- GPU develop dispatch (M3 commit b) ----
+
+    /**
+     * A fake GPU develop seam: configurable probe/parity arrays (the raw
+     * shapes the JNI returns), a configurable session handle, and a
+     * recorder for every entry point. The DISPATCHER owns every decision
+     * (fromArray, verdict, gates) — this fake only reports, exactly like
+     * the native seam it stands in for.
+     */
+    private class FakeGpuDevelop(
+        private val probeArray: DoubleArray? =
+            doubleArrayOf(1.0, 3.0, 2.0, 1.0, 1.0, 4096.0),
+        private val parityArray: DoubleArray? =
+            doubleArrayOf(1.0, 1.0, 398.0, 24_800_000.0),
+        private val openHandle: Long = 1L,
+        private val frameBytes: ByteArray = ByteArray(4 * 4 * 3) { 77.toByte() },
+        private val failRenderFrom: Int = -1,
+        private val detail: String? = null,
+    ) : GpuDevelop {
+        var probeCalls = 0
+        val parityFds = ArrayList<Int>()
+        var openCalls = 0
+        val rendered = ArrayList<Int>()
+        val closedHandles = ArrayList<Long>()
+        var lastSessionHandle = 0L
+        var lastClipHandle = 0L
+        var lastExposureEv = Float.NaN
+        var lastHighlightReconstruction = false
+        var lastKeepVignetting = false
+        var lastTonemap = -1
+
+        override fun probe(): DoubleArray? {
+            probeCalls++
+            return probeArray
+        }
+
+        override fun fragmentParity(fd: Int): DoubleArray? {
+            parityFds.add(fd)
+            return parityArray
+        }
+
+        override fun openSession(): Long {
+            openCalls++
+            return openHandle
+        }
+
+        override fun renderFrame(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): ByteArray? {
+            if (failRenderFrom >= 0 && frameIndex >= failRenderFrom) return null
+            rendered.add(frameIndex)
+            lastSessionHandle = sessionHandle
+            lastClipHandle = clipHandle
+            lastExposureEv = exposureEv
+            lastHighlightReconstruction = highlightReconstruction
+            lastKeepVignetting = keepVignetting
+            lastTonemap = tonemap
+            return frameBytes
+        }
+
+        override fun closeSession(sessionHandle: Long) {
+            closedHandles.add(sessionHandle)
+        }
+
+        override fun lastDetail(): String? = detail
+    }
+
+    @Test
+    fun covered_gpu_job_develops_every_frame_on_the_gpu_session() {
+        // The dispatch's happy path: GPU_EXPERIMENTAL + a covered grade +
+        // green probe/parity -> the GPU session renders EVERY frame, the
+        // CPU session's renderFrame is never called, and the session is
+        // opened and closed exactly once. The render call carries EXACTLY
+        // the four fragment-covered grade controls (the NativeSource
+        // signature lock's Kotlin mirror).
+        val session = FakeSession(frames = 2, audio = false)
+        val writer = FakeWriter()
+        val gpu = FakeGpuDevelop()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, writer, lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(
+            7,
+            GradeK(
+                exposureEv = 1.5f,
+                highlightReconstruction = false,
+                keepVignetting = false,
+                tonemap = 2,
+            ),
+            "/tmp/out.partial",
+        )
+        assertEquals(1, gpu.probeCalls)
+        assertEquals(listOf(7), gpu.parityFds) // the export's own fd, once
+        assertEquals(1, gpu.openCalls)
+        assertEquals(listOf(0, 1), gpu.rendered)
+        assertTrue("the CPU develop must never run", session.rendered.isEmpty())
+        assertEquals(1L, gpu.lastSessionHandle)
+        assertEquals(1L, gpu.lastClipHandle) // FakeSession's handle
+        assertEquals(1.5f, gpu.lastExposureEv, 0f)
+        assertFalse(gpu.lastHighlightReconstruction)
+        assertFalse(gpu.lastKeepVignetting)
+        assertEquals(2, gpu.lastTonemap)
+        assertEquals(listOf(1L), gpu.closedHandles) // closed exactly once
+        assertEquals(2, writer.videoFrames) // the packed tail consumed both
+        // No develop fallback: the dispatch chose GLES and it held.
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
+    }
+
+    @Test
+    fun gpu_develop_bytes_feed_the_same_rotate_crop_surface_tail() {
+        // The byte-shape contract: the GPU session's RGB888 output flows
+        // through the SAME tail — here the encoder-Surface offer carries
+        // the GPU's bytes (marker 77), not the CPU session's (128).
+        val session = FakeSession(frames = 2, width = 8, height = 4, audio = false)
+        val writer = SurfaceWriter()
+        val gpu = FakeGpuDevelop(frameBytes = ByteArray(8 * 4 * 3) { 77.toByte() })
+        ExportPipeline(
+            session, writer,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(2, writer.rgbFrames.size)
+        assertEquals(8 * 4 * 3, writer.rgbFrames[0].second.size)
+        assertTrue(
+            "the offered bytes must be the GPU session's",
+            writer.rgbFrames[0].second.all { it == 77.toByte() },
+        )
+        assertTrue(session.rendered.isEmpty())
+    }
+
+    @Test
+    fun uncovered_grade_stays_cpu_and_never_probes() {
+        // The FREE coverage check runs first: an uncovered grade never
+        // pays the probe or the parity run, and the fallback line names
+        // the STAGE tokens only — never gate tokens (no gate was measured).
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(chromaDenoise = 25f), "/tmp/out.partial")
+        assertEquals(0, gpu.probeCalls)
+        assertTrue(gpu.parityFds.isEmpty())
+        assertEquals(0, gpu.openCalls)
+        assertTrue(gpu.closedHandles.isEmpty())
+        assertEquals(listOf(0, 1), session.rendered)
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("requested missing: $fallback", fallback.contains("requested=GPU_EXPERIMENTAL"))
+        assertTrue("effective missing: $fallback", fallback.contains("effective=CPU"))
+        assertTrue("stage token missing: $fallback", fallback.contains("reason=chroma-denoise"))
+        assertFalse(
+            "gate tokens must be absent: $fallback",
+            fallback.contains("no-egl-context"),
+        )
+        // The visibility line carries the SAME tokens (no second truth).
+        val backend = lines.first { it.startsWith("render backend: ") }
+        assertTrue("same tokens expected: $backend", backend.contains("chroma-denoise"))
+    }
+
+    @Test
+    fun gyro_warp_stays_cpu_before_any_probe() {
+        // Gyro warp is not ported to the fragment pass: a stabilized grade
+        // with a log attached forces the CPU develop BEFORE any probe is
+        // paid, and the line names the warp token.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(stabilization = true), "/tmp/out.partial", gyroPath = "/tmp/gyro.log")
+        assertEquals(0, gpu.probeCalls)
+        assertEquals(listOf(0, 1), session.rendered)
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("gyro-warp missing: $fallback", fallback.contains("gyro-warp"))
+    }
+
+    @Test
+    fun auto_stays_cpu_with_the_policy_line() {
+        // AUTO never touches the seam (an honest policy, not a gate
+        // measurement): the CPU develop runs and the line names it.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.AUTO,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, gpu.probeCalls)
+        assertEquals(0, gpu.openCalls)
+        assertEquals(listOf(0, 1), session.rendered)
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("requested missing: $fallback", fallback.contains("requested=AUTO"))
+        assertTrue("policy missing: $fallback", fallback.contains("reason=auto-stays-cpu"))
+    }
+
+    @Test
+    fun cpu_job_never_touches_the_gpu_seam() {
+        // The reference path is byte-identical: a CPU job makes NO seam
+        // call at all and logs NO develop fallback (nothing fell back).
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.CPU,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, gpu.probeCalls)
+        assertEquals(0, gpu.openCalls)
+        assertTrue(gpu.rendered.isEmpty())
+        assertTrue(gpu.closedHandles.isEmpty())
+        assertEquals(listOf(0, 1), session.rendered)
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
+    }
+
+    @Test
+    fun parity_fail_stays_cpu_with_the_gate_token() {
+        // A parity run that FAILS (maxDiffLsb beyond the 1-LSB tolerance)
+        // keeps the export on the CPU develop with the gate token — the
+        // session is never opened.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop(parityArray = doubleArrayOf(1.0, 2.0, 398.0, 24_800_000.0))
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, gpu.probeCalls)
+        assertEquals(listOf(7), gpu.parityFds)
+        assertEquals(0, gpu.openCalls)
+        assertEquals(listOf(0, 1), session.rendered)
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("gate token missing: $fallback", fallback.contains("parity-not-verified"))
+    }
+
+    @Test
+    fun red_probe_skips_the_parity_run() {
+        // A probe whose context gate is red never pays the parity run (it
+        // could only fail predictably); the line names the missing gates.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop(probeArray = doubleArrayOf(0.0, 3.0, 2.0, 1.0, 1.0, 4096.0))
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, gpu.probeCalls)
+        assertTrue("parity must be skipped", gpu.parityFds.isEmpty())
+        assertEquals(0, gpu.openCalls)
+        assertEquals(listOf(0, 1), session.rendered)
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("context token missing: $fallback", fallback.contains("no-egl-context"))
+    }
+
+    @Test
+    fun open_failure_continues_on_cpu_with_the_session_detail() {
+        // Open returning 0 is NOT an export failure: the CPU develop
+        // continues, ONE fallback line carries the session's own detail,
+        // and close is never called (no session was opened).
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop(
+            openHandle = 0L,
+            detail = "develop session: egl context (recovery: the CPU develop path stays the default)",
+        )
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, writer, lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, gpu.openCalls)
+        assertTrue(gpu.closedHandles.isEmpty())
+        assertEquals(listOf(0, 1), session.rendered)
+        assertEquals(2, writer.videoFrames)
+        assertEquals(1, lines.count { it.startsWith("render backend fallback: ") })
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("detail missing: $fallback", fallback.contains("develop session:"))
+    }
+
+    @Test
+    fun mid_render_failure_latches_cpu_for_the_rest() {
+        // A mid-render GPU failure latches the CPU develop for the REST of
+        // the export with ONE fallback line — frame 0 is GPU, frame 1 is
+        // CPU, and the session closes exactly once.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop(
+            failRenderFrom = 1,
+            detail = "develop session render: draw failed (recovery: the export falls back to the CPU develop)",
+        )
+        val writer = FakeWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, writer, lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(listOf(0), gpu.rendered)
+        assertEquals(listOf(1), session.rendered)
+        assertEquals(2, writer.videoFrames)
+        assertEquals(1, lines.count { it.startsWith("render backend fallback: ") })
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("detail missing: $fallback", fallback.contains("develop session render:"))
+        assertEquals(listOf(1L), gpu.closedHandles)
+    }
+
+    @Test
+    fun wrong_sized_gpu_output_latches_cpu() {
+        // A wrong-shaped buffer is a GPU failure, never a corrupt frame:
+        // the size guard latches the CPU develop even though the render
+        // "succeeded".
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop(frameBytes = ByteArray(3))
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(listOf(0), gpu.rendered) // the fake did return bytes
+        assertEquals(listOf(0, 1), session.rendered) // both frames on CPU
+        assertEquals(1, lines.count { it.startsWith("render backend fallback: ") })
+        assertEquals(listOf(1L), gpu.closedHandles)
+    }
+
+    @Test
+    fun gpu_session_closes_when_the_encode_fails() {
+        // The finally-path lock: a mid-encode failure (here the CPU
+        // develop's own frame failure after the GPU render refused) still
+        // closes the GPU session and releases the writer — the session
+        // never outlives the export, on ANY path.
+        val session = FakeSession(frames = 2, audio = false, failAtFrame = 0)
+        val gpu = FakeGpuDevelop(failRenderFrom = 0)
+        val writer = FakeWriter()
+        var thrown: IllegalStateException? = null
+        try {
+            ExportPipeline(
+                session, writer,
+                renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+                gpuDevelop = gpu,
+            ).run(7, GradeK(), "/tmp/out.partial")
+        } catch (expected: IllegalStateException) {
+            thrown = expected
+        }
+        assertNotNull(thrown)
+        assertEquals(1, gpu.openCalls)
+        assertEquals(listOf(1L), gpu.closedHandles)
+        assertTrue(writer.released)
+    }
 }
