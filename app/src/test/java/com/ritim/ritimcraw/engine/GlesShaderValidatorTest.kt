@@ -426,6 +426,7 @@ class GlesShaderValidatorTest {
             "uniform mat3 uCam2rgb;",
             "uniform int uHasProfile;",
             "uniform float uExposure;",
+            "uniform float uHighlights;",
             "uniform int uTonemap;",
             "uniform int uOetf;",
         ).forEach { u ->
@@ -673,14 +674,74 @@ class GlesShaderValidatorTest {
     @Test
     fun develop_fragment_applies_tonemap_between_exposure_and_oetf() {
         val src = GlesShaderSources.DEVELOP_FRAGMENT
-        // The CPU stage order 14 -> 23 -> OETF: the tonemap application
-        // must sit between the exposure multiply and the OETF block.
+        // The CPU stage order 14 -> 15 -> 23 -> OETF: the highlights and
+        // tonemap applications must sit between the exposure multiply and
+        // the OETF block, highlights first (the CPU stage order).
         val exposure = src.indexOf("c *= uExposure;")
+        val highlights = src.indexOf("if (uHighlights != 0.0) {")
         val tonemap = src.indexOf("if (uTonemap != 0) {")
         val oetf = src.indexOf("if (uOetf == 1) {")
         assertTrue(
-            "tonemap application point wrong (must sit between exposure and OETF)",
-            exposure in 0..tonemap && tonemap in 0..oetf,
+            "highlights application point wrong (must sit between exposure and tonemap)",
+            exposure in 0..highlights && highlights in 0..tonemap,
+        )
+        assertTrue(
+            "tonemap application point wrong (must sit between highlights and OETF)",
+            tonemap in 0..oetf,
+        )
+    }
+
+    // ---- stage 15 (highlights) is locked to the CPU math it mirrors
+    // (the stage-15 shoulder, core/src/Develop.cpp): the knee, the
+    // monotone shoulder on the max channel, the blend and the uniform
+    // per-pixel gain ----
+
+    @Test
+    fun develop_fragment_carries_the_cpu_stage15_shoulder() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        // The CPU stage-15 shoulder, verbatim: the gate (0.0 = the CPU's
+        // own `if (grade.highlights != 0.0f)` skip), the knee, the
+        // strength SIGN (recovery -> +, lift -> -), the max-channel test,
+        // the monotone shoulder, the blend and the uniform gain.
+        assertTrue(
+            "stage-15 gate missing",
+            src.contains("if (uHighlights != 0.0) {"),
+        )
+        assertTrue(
+            "knee missing",
+            src.contains("const float knee = 0.75;"),
+        )
+        assertTrue(
+            "span missing",
+            src.contains("const float span = 1.0 - knee;"),
+        )
+        assertTrue(
+            "strength sign missing (recovery -> +, lift -> -)",
+            src.contains("float s = -uHighlights / 100.0;"),
+        )
+        assertTrue(
+            "max channel missing",
+            src.contains("float mx = max(c.r, max(c.g, c.b));"),
+        )
+        assertTrue(
+            "knee test missing",
+            src.contains("if (mx > knee) {"),
+        )
+        assertTrue(
+            "monotone shoulder missing",
+            src.contains("float shoulder = knee + span * (t / (1.0 + t));"),
+        )
+        assertTrue(
+            "blend missing",
+            src.contains("float newMx = mx + s * (shoulder - mx);"),
+        )
+        assertTrue(
+            "gain missing",
+            src.contains("float gain = mx > 0.0 ? newMx / mx : 1.0;"),
+        )
+        assertTrue(
+            "gain application missing",
+            src.contains("c *= gain;"),
         )
     }
 
@@ -916,6 +977,88 @@ class GlesShaderValidatorTest {
         )
     }
 
+    // ---- stage-15 (highlights) mutations: the shoulder's every constant
+    // and the application point are load-bearing — a rewrite that changes
+    // any of them changes the owner's routine recovery shape ---
+
+    @Test
+    fun a_stage15_strength_sign_flip_is_reported() {
+        // s = -uHighlights / 100.0 is the CPU's exact sign convention
+        // (recovery -> +, lift -> -). Flipping it turns recovery into lift
+        // and back — byte-identical source shape, opposite grade.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("float s = -uHighlights / 100.0;",
+                     "float s = uHighlights / 100.0;")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.DEVELOP_FRAGMENT,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("stage-15 strength") },
+        )
+    }
+
+    @Test
+    fun a_stage15_gate_removed_is_reported() {
+        // Dropping the `!= 0.0` gate (running the shoulder unconditionally)
+        // changes nothing at uHighlights=0 numerically EXCEPT through the
+        // mx > knee branch — but it deletes the CPU's own skip, and a
+        // rewired gate (`!= 1.0` etc.) would leave the default grade
+        // shouldered. The validator locks the gate text.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("if (uHighlights != 0.0) {", "if (uHighlights != 1.0) {")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("stage-15 gate") },
+        )
+    }
+
+    @Test
+    fun a_stage15_local_with_const_initializer_is_reported() {
+        // Same GLSL ES 3.00 rule the tonemap locals ride: a reintroduced
+        // `const` on the uniform-derived strength is a device compile error.
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT
+            .replace("float s = -uHighlights / 100.0;",
+                     "const float s = -uHighlights / 100.0;")
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("non-constant") },
+        )
+    }
+
+    @Test
+    fun a_highlights_block_moved_after_tonemap_is_reported() {
+        // The CPU stage order is 14 -> 15 -> 23 -> OETF. Moving the
+        // highlights block AFTER the tonemap block reorders the shoulder
+        // across the tonemap — a different image, not a refactor. The
+        // blocks are adjacent as shipped (highlights then tonemap), so the
+        // swap is byte-identical bodies, only the order changes.
+        val src = GlesShaderSources.DEVELOP_FRAGMENT
+        val highlights = "if (uHighlights != 0.0) {"
+        val tonemap = "if (uTonemap != 0) {"
+        val hIdx = src.indexOf(highlights)
+        val tIdx = src.indexOf(tonemap)
+        assertTrue("mutation setup wrong: highlights block missing", hIdx >= 0)
+        assertTrue("mutation setup wrong: tonemap block missing", tIdx > hIdx)
+        val hBlock = src.substring(hIdx, tIdx)
+        val tStart = tIdx
+        val tEnd = src.indexOf("if (uOetf == 1) {")
+        assertTrue("mutation setup wrong: OETF block missing", tEnd > tStart)
+        val tBlock = src.substring(tStart, tEnd)
+        val original = hBlock + tBlock
+        val reordered = tBlock + hBlock
+        val mutated = src.replace(original, reordered)
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != src,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT)
+                .any { it.contains("application point is wrong") },
+        )
+    }
+
     @Test
     fun a_missing_store_binding_is_reported() {
         val oldForm = GlesShaderSources.STORE_FRAGMENT
@@ -1059,5 +1202,114 @@ class GlesShaderValidatorTest {
             GlesShaderValidator.problems(noFold, GlesShaderValidator.Kind.BLIT_FRAGMENT)
                 .any { it.contains("uRotation == 90") },
         )
+    }
+
+    // ---- stage-15 host numeric parity: the CPU loop's Kotlin
+    // transcription vs the shipped GLSL block's Kotlin transcription,
+    // compared after the readback quantize (the toByte tail: clamp
+    // [0,1], then v*255+0.5). HONESTY: this locks that the two shipped
+    // TEXTS evaluate identically over the shoulder's every branch — it
+    // is NOT a device parity claim (no GLSL compiler runs here; the
+    // device harness's cases still ride uHighlights=0.0, and the owner's
+    // covered-grade export is the production proof) ----
+
+    private fun cpuStage15(
+        r: Float,
+        g: Float,
+        b: Float,
+        highlights: Float,
+    ): Triple<Float, Float, Float> {
+        // core/src/Develop.cpp stage 15, transcribed verbatim (the
+        // byte-exact definition the GLSL matches).
+        if (highlights != 0.0f) {
+            val knee = 0.75f
+            val span = 1.0f - knee
+            val s = -highlights / 100.0f // recovery -> +1, lift -> -1
+            val mx = maxOf(r, maxOf(g, b))
+            if (mx <= knee) return Triple(r, g, b)
+            val over = mx - knee
+            val t = over / span // 0..1+ above the knee
+            // Monotone shoulder: bounded, order-preserving for all t.
+            val shoulder = knee + span * (t / (1.0f + t))
+            // Blend original -> shoulder by strength (s in [-1, 1]).
+            val newMx = mx + s * (shoulder - mx)
+            val gain = if (mx > 0.0f) newMx / mx else 1.0f
+            return Triple(r * gain, g * gain, b * gain)
+        }
+        return Triple(r, g, b)
+    }
+
+    private fun glslStage15(
+        r: Float,
+        g: Float,
+        b: Float,
+        uHighlights: Float,
+    ): Triple<Float, Float, Float> {
+        // The shipped GLSL block, transcribed verbatim (the uHighlights
+        // != 0.0 gate, the mx > knee branch — the CPU skip's complement).
+        if (uHighlights != 0.0f) {
+            val knee = 0.75f
+            val span = 1.0f - knee
+            val s = -uHighlights / 100.0f
+            val mx = maxOf(r, maxOf(g, b))
+            if (mx > knee) {
+                val over = mx - knee
+                val t = over / span
+                val shoulder = knee + span * (t / (1.0f + t))
+                val newMx = mx + s * (shoulder - mx)
+                val gain = if (mx > 0.0f) newMx / mx else 1.0f
+                return Triple(r * gain, g * gain, b * gain)
+            }
+        }
+        return Triple(r, g, b)
+    }
+
+    private fun toByte(v: Float): Int = (v.coerceIn(0.0f, 1.0f) * 255.0f + 0.5f).toInt()
+
+    @Test
+    fun stage15_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // Representative pixels — every branch of the shoulder: mx==0
+        // (the gain guard), mx<knee (skip), mx==knee (skip, the boundary),
+        // slightly>knee, mx==1, mx>1 (post-exposure headroom), a neutral
+        // above the knee (neutrals stay neutral — the uniform gain), a
+        // saturated single channel, a near-tie max and a lone red above
+        // the knee.
+        val pixels = listOf(
+            Triple(0.0f, 0.0f, 0.0f),
+            Triple(0.5f, 0.25f, 0.1f),
+            Triple(0.75f, 0.3f, 0.6f),
+            Triple(0.76f, 0.4f, 0.2f),
+            Triple(1.0f, 0.9f, 0.85f),
+            Triple(1.2f, 0.7f, 0.3f),
+            Triple(0.9f, 0.9f, 0.9f),
+            Triple(0.3f, 1.1f, 0.05f),
+            Triple(0.8f, 0.8000001f, 0.1f),
+            Triple(0.85f, 0.0f, 0.0f),
+        )
+        // recovery -55, lift +55, and 0 — the fast path: both
+        // transcriptions skip the whole stage, so the bytes are
+        // identical to the pre-stage-15 render (the unset uniform's 0.0
+        // default is exactly the CPU's own skip).
+        listOf(-55f, 55f, 0f).forEach { highlights ->
+            var mismatches = 0
+            var maxLsb = 0
+            pixels.forEach { (r, g, b) ->
+                val cpu = cpuStage15(r, g, b, highlights)
+                val glsl = glslStage15(r, g, b, highlights)
+                val cpuBytes = intArrayOf(
+                    toByte(cpu.first), toByte(cpu.second), toByte(cpu.third),
+                )
+                val glslBytes = intArrayOf(
+                    toByte(glsl.first), toByte(glsl.second), toByte(glsl.third),
+                )
+                for (c in 0..2) {
+                    val lsb = Math.abs(cpuBytes[c] - glslBytes[c])
+                    if (lsb > 0) mismatches++
+                    if (lsb > maxLsb) maxLsb = lsb
+                }
+            }
+            assertEquals("highlights $highlights: mismatched bytes", 0, mismatches)
+            assertEquals("highlights $highlights: max LSB", 0, maxLsb)
+        }
     }
 }

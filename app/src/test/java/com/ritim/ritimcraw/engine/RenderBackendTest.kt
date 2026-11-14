@@ -225,12 +225,12 @@ class RenderBackendTest {
     @Test
     fun fragment_uncovered_stages_match_the_cpu_guards() {
         // The map is the single uncovered list the line tokens come from.
-        // Stages 2, 3 and 23 left it when they were ported into the
-        // fragment pass (they are covered now, map-state gate and all five
-        // tonemap modes included).
-        assertEquals(16, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
+        // Stages 2, 3, 15 and 23 left it when they were ported into the
+        // fragment pass (they are covered now, map-state gate, the stage-15
+        // highlights shoulder and all five tonemap modes included).
+        assertEquals(15, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
         assertEquals(
-            setOf(7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 24),
+            setOf(7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 24),
             BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
         )
         // Covered + uncovered = the full 24-stage contract, no overlap.
@@ -269,7 +269,7 @@ class RenderBackendTest {
     fun every_uncovered_stage_guard_mirrors_the_cpu() {
         // One grade per stage: the field that activates CPU stage N must
         // activate the Kotlin rule's stage N (same guard, same number).
-        // Stages 2, 3 and 23 are gone from the list (covered by the
+        // Stages 2, 3, 15 and 23 are gone from the list (covered by the
         // fragment pass), so their cases are gone with them.
         val cases = listOf(
             7 to GradeK(chromaDenoise = 25f),
@@ -279,7 +279,6 @@ class RenderBackendTest {
             11 to GradeK(shadows = 5f),
             12 to GradeK(midtones = 5f),
             13 to GradeK(contrast = 5f),
-            15 to GradeK(highlights = 5f),
             16 to GradeK(asShot = false, tempK = 6500f),
             17 to GradeK(asShot = false, tint = 5f),
             18 to GradeK(wheelShadowX = 0.2f),
@@ -313,6 +312,31 @@ class RenderBackendTest {
             val grade = GradeK(tonemap = mode)
             assertTrue(
                 "tonemap mode $mode must be covered",
+                BackendRules.fragmentUncoveredStages(grade).isEmpty(),
+            )
+            assertTrue(BackendRules.fragmentUncoveredPreStages(grade).isEmpty())
+            assertEquals(
+                EffectiveRenderBackend.GLES,
+                BackendRules.fragmentEffectiveBackend(
+                    RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+                    gyroWarpActive = false,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun highlights_grade_covers_the_fragment_path() {
+        // Stage 15 is ported into the fragment pass (the CPU stage-15
+        // shoulder — knee 0.75, the monotone shoulder, the uniform gain —
+        // behind uHighlights), so a highlights-only grade — the owner's
+        // routine recovery shape — is NOT an uncovered-stage fallback
+        // anymore: gates green -> the fragment leg runs. Both directions
+        // of the knob (recovery negative, lift positive) must pass.
+        listOf(-55f, 55f).forEach { highlights ->
+            val grade = GradeK(highlights = highlights)
+            assertTrue(
+                "highlights $highlights must be covered",
                 BackendRules.fragmentUncoveredStages(grade).isEmpty(),
             )
             assertTrue(BackendRules.fragmentUncoveredPreStages(grade).isEmpty())
@@ -447,6 +471,29 @@ class RenderBackendTest {
             "highlight-reconstruction must be gone: $line",
             !line.contains("highlight-reconstruction"),
         )
+    }
+
+    @Test
+    fun fragment_fallback_line_names_no_stage_for_a_highlights_grade() {
+        // Stage 15 joined the covered set: a highlights-only grade (the
+        // owner's routine recovery shape) contributes NO stage token to
+        // the fallback line — gates red + highlights grade -> the line
+        // names ONLY the gates, the same vocabulary rule the default
+        // grade rides.
+        assertNull(
+            BackendRules.fragmentFallbackLine(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(),
+                GradeK(highlights = -55f),
+                gyroWarpActive = false,
+            ),
+        )
+        val line = BackendRules.fragmentFallbackLine(
+            RenderBackend.GPU_EXPERIMENTAL, BackendGates(),
+            GradeK(highlights = -55f),
+            gyroWarpActive = false,
+        )!!
+        assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
+        assertTrue("highlights must be gone: $line", !line.contains("highlights"))
     }
 
     @Test

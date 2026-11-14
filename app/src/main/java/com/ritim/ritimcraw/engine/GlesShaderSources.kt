@@ -213,6 +213,15 @@ void main() {
      *      multiply (no-profile clips / the parity shape);
      *  14  exposure 2^ev — uExposure (1.0 = neutral; the CPU guard
      *      exposureEv != 0 maps to exactly 1.0);
+     *  15  highlights — uHighlights carries the RAW grade.highlights value
+     *      (0.0 = the CPU's own `if (grade.highlights != 0.0f)` skip, so
+     *      the unset uniform's 0.0 default is exactly the fast path), and
+     *      the shader runs the CPU stage-15 shoulder verbatim
+     *      (core/src/Develop.cpp): knee 0.75, span = 1 - knee, s =
+     *      -highlights / 100 (recovery -> +, lift -> -), the monotone
+     *      shoulder knee + span * (t / (1 + t)) on pixels whose mx >
+     *      knee, the blend mx + s * (shoulder - mx), and the uniform
+     *      per-pixel gain newMx / mx (neutrals stay neutral);
      *  23  tonemap — uTonemap, the exact tonemapFrameImpl math
      *      (core/src/Develop.cpp): 1 = ACES (the project's Narkowicz
      *      2015 fit, per-component, [0,1]-clamped); 2-5 = AgX (the
@@ -233,8 +242,8 @@ void main() {
      *      as the CPU tail leaves it; applied only when uOetf == 1.
      *
      * Stages NOT covered (honest): 7-8 denoise, 9-13 tone controls,
-     * 15-22 highlights/temp-tint/wheel/split/saturation/sharpness/
-     * detail, 24 LUT, and the gyro warp — the BackendRules
+     * 16-22 temp-tint/wheel/split/saturation/sharpness/detail, 24 LUT,
+     * and the gyro warp — the BackendRules
      * stage-coverage rules fall back to CPU with a reason line whenever
      * one of those is active in the grade.
      *
@@ -296,7 +305,7 @@ void main() {
      */
     const val DEVELOP_FRAGMENT: String = """#version 300 es
 
-// Fused develop pass - stages 1+2+3+4+5+6+14+23+OETF of rawedit::developCpu
+// Fused develop pass - stages 1+2+3+4+5+6+14+15+23+OETF of rawedit::developCpu
 // (core/src/Develop.cpp). See the Kotlin doc above.
 
 precision highp float;
@@ -316,6 +325,7 @@ uniform vec3 uWb;               // WB gains = 1/asShotNeutral, >0 guard included
 uniform mat3 uCam2rgb;          // camera->Rec.709, the CPU row-major matrix uploaded with transpose=GL_TRUE
 uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (no profile / parity shape)
 uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
+uniform float uHighlights;      // raw grade.highlights (stage 15); 0.0 = the CPU's own skip
 uniform int uTonemap;           // grade.tonemap (stage 23): 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base
 uniform int uOetf;              // 1 = apply linearToRec709 (export shape); 0 = linear endpoint (parity)
 
@@ -609,6 +619,27 @@ void main() {
         c = uCam2rgb * c;
     }
     c *= uExposure;
+    // Stage 15: highlights - the CPU stage-15 shoulder, verbatim (core/src/
+    // Develop.cpp). uHighlights carries the RAW grade.highlights value; 0.0
+    // skips the whole stage exactly like the CPU's `if (grade.highlights
+    // != 0.0f)`. knee/span are literal-only so they keep const; s/mx/over/
+    // t/shoulder/newMx/gain are uniform-derived and must NOT (GLSL ES 3.00).
+    if (uHighlights != 0.0) {
+        const float knee = 0.75;
+        const float span = 1.0 - knee;
+        float s = -uHighlights / 100.0;  // recovery -> +1, lift -> -1
+        float mx = max(c.r, max(c.g, c.b));
+        if (mx > knee) {
+            float over = mx - knee;
+            float t = over / span;               // 0..1+ above the knee
+            // Monotone shoulder: bounded, order-preserving for all t.
+            float shoulder = knee + span * (t / (1.0 + t));
+            // Blend original -> shoulder by strength (s in [-1, 1]).
+            float newMx = mx + s * (shoulder - mx);
+            float gain = mx > 0.0 ? newMx / mx : 1.0;
+            c *= gain;
+        }
+    }
     if (uTonemap != 0) {
         c = tonemapPixel(c);
     }

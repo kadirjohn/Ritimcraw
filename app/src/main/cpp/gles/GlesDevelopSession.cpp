@@ -22,10 +22,12 @@
 // design — the harness pinned uHasProfile=0 / uExposure=1.0 / uOetf=0 to
 // isolate the parity cases; production opens the gates the export tail
 // needs: uHasProfile/uCam2rgb from the real buildCameraToRec709 matrix,
-// uExposure = 2^ev (grade.exposureEv), uOetf = 1 (the export shape — the
-// shader's linearToRec709 is textually identical to core/src/Transfer.cpp's,
-// so the readback's toByte quantize reproduces nativeExportFrame's pack
-// loop: toByte(linearToRec709(rgb)) with no second OETF application).
+// uExposure = 2^ev (grade.exposureEv), uHighlights = grade.highlights raw
+// (the shader computes s = -highlights/100 — the CPU stage-15 shoulder),
+// uOetf = 1 (the export shape — the shader's linearToRec709 is textually
+// identical to core/src/Transfer.cpp's, so the readback's toByte quantize
+// reproduces nativeExportFrame's pack loop: toByte(linearToRec709(rgb))
+// with no second OETF application).
 
 #include "GlesDevelopSession.h"
 
@@ -307,12 +309,12 @@ struct DevelopSession::Impl {
     EglSession egl;
     GLuint developProgram = 0;
     GLuint storeProgram = 0;
-    // Uniform locations, resolved ONCE at open (16 develop + 2 store +
+    // Uniform locations, resolved ONCE at open (17 develop + 2 store +
     // 2 blit — the encoder-surface path's own program).
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
-          exposureLoc = -1, tonemapLoc = -1, oetfLoc = -1;
+          exposureLoc = -1, highlightsLoc = -1, tonemapLoc = -1, oetfLoc = -1;
     GLint storeSrcLoc = -1, storeSizeLoc = -1;
     GLint blitSrcLoc = -1, blitSizeLoc = -1, blitRotLoc = -1;
     GLuint blitProgram = 0;
@@ -634,13 +636,14 @@ bool DevelopSession::Impl::initOnGlThread(
     camLoc = glGetUniformLocation(developProgram, "uCam2rgb");
     hasProfileLoc = glGetUniformLocation(developProgram, "uHasProfile");
     exposureLoc = glGetUniformLocation(developProgram, "uExposure");
+    highlightsLoc = glGetUniformLocation(developProgram, "uHighlights");
     tonemapLoc = glGetUniformLocation(developProgram, "uTonemap");
     oetfLoc = glGetUniformLocation(developProgram, "uOetf");
     if (cfaLoc < 0 || sizeLoc < 0 || cellLoc < 0 || blackLoc < 0 ||
         rangeLoc < 0 || hasShadingLoc < 0 || shadingLoc < 0 ||
         shadingSizeLoc < 0 || hrLoc < 0 || hrGainLoc < 0 || wbLoc < 0 ||
         camLoc < 0 || hasProfileLoc < 0 || exposureLoc < 0 ||
-        tonemapLoc < 0 || oetfLoc < 0) {
+        highlightsLoc < 0 || tonemapLoc < 0 || oetfLoc < 0) {
         *detail = "shader-contract: missing a develop uniform";
         return false;
     }
@@ -894,6 +897,7 @@ bool DevelopSession::Impl::developPass(const DevelopFrameRequest& req,
     glUniformMatrix3fv(camLoc, 1, GL_TRUE, cam2rgb);
     glUniform1i(hasProfileLoc, hasProfile ? 1 : 0);
     glUniform1f(exposureLoc, exposure);
+    glUniform1f(highlightsLoc, req.highlights);  // raw; the shader computes s
     glUniform1i(tonemapLoc, req.tonemap);
     glUniform1i(oetfLoc, 1);  // the export shape: linearToRec709 in-shader
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);

@@ -861,7 +861,7 @@ class NativeSource private constructor(
          * thread (the clip handle's own ring) and renders it through the
          * session's GL thread — full-res RGB888, row-major, NOT rotated,
          * the same byte shape nativeExportFrame returns. The render takes
-         * ONLY the four fragment-covered grade controls; an uncovered
+         * ONLY the five fragment-covered grade controls; an uncovered
          * grade cannot express itself through this signature. Close is
          * idempotent. Device-test-pending (the owner's covered-grade GPU
          * export is the production proof).
@@ -879,6 +879,7 @@ class NativeSource private constructor(
             clipHandle: Long,
             frameIndex: Int,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -914,6 +915,7 @@ class NativeSource private constructor(
             frameIndex: Int,
             ptsUs: Long,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1492,6 +1494,7 @@ class NativeSource private constructor(
             clipHandle: Long,
             frameIndex: Int,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1500,7 +1503,7 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeDevelopSessionRenderFrame(
-                sessionHandle, clipHandle, frameIndex, exposureEv,
+                sessionHandle, clipHandle, frameIndex, exposureEv, highlights,
                 highlightReconstruction, keepVignetting, tonemap)
         }
 
@@ -1537,6 +1540,7 @@ class NativeSource private constructor(
             frameIndex: Int,
             ptsUs: Long,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -1547,7 +1551,8 @@ class NativeSource private constructor(
             }
             return nativeDevelopSessionRenderFrameToEncoder(
                 sessionHandle, clipHandle, frameIndex, ptsUs, exposureEv,
-                highlightReconstruction, keepVignetting, tonemap, rotationDeg)
+                highlights, highlightReconstruction, keepVignetting, tonemap,
+                rotationDeg)
         }
 
         internal fun jniDevelopSessionClose(sessionHandle: Long) {

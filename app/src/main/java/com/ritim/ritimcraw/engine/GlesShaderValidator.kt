@@ -175,6 +175,7 @@ object GlesShaderValidator {
             "uniform mat3 uCam2rgb;",
             "uniform int uHasProfile;",
             "uniform float uExposure;",
+            "uniform float uHighlights;",
             "uniform int uTonemap;",
             "uniform int uOetf;",
         )
@@ -282,6 +283,63 @@ object GlesShaderValidator {
         if (!s.contains("1.099 * pow(lin, 0.45) - 0.099")) {
             out += "missing the OETF power segment " +
                 "(`1.099 * pow(lin, 0.45) - 0.099` — rawedit::linearToRec709)"
+        }
+        // Stage 15: the CPU highlights shoulder, verbatim — the stage-15
+        // loop in rawedit::developCpu (core/src/Develop.cpp). The gate,
+        // the knee/span constants, the strength SIGN (recovery -> +,
+        // lift -> -), the mx > knee test, the monotone shoulder and the
+        // uniform gain are all load-bearing; a silent edit of any of
+        // them surfaces here (the CPU side is pinned by core's own
+        // doctests, the GLSL side by these contract checks + the host
+        // parity test).
+        if (!s.contains("if (uHighlights != 0.0) {")) {
+            out += "missing the stage-15 gate " +
+                "(`if (uHighlights != 0.0) {` — grade.highlights == 0 skips " +
+                "the whole stage, exactly like the CPU's own " +
+                "`if (grade.highlights != 0.0f)`)"
+        }
+        if (!s.contains("const float knee = 0.75;")) {
+            out += "missing the stage-15 knee " +
+                "(`const float knee = 0.75;` — the CPU stage-15 shoulder start)"
+        }
+        if (!s.contains("const float span = 1.0 - knee;")) {
+            out += "missing the stage-15 span " +
+                "(`const float span = 1.0 - knee;` — the CPU's 1 - knee)"
+        }
+        if (!s.contains("float s = -uHighlights / 100.0;")) {
+            out += "missing the stage-15 strength " +
+                "(`float s = -uHighlights / 100.0;` — the SIGN is the " +
+                "recovery/lift direction; a dropped minus flips recovery " +
+                "into lift)"
+        }
+        if (!s.contains("float mx = max(c.r, max(c.g, c.b));")) {
+            out += "missing the stage-15 max " +
+                "(`float mx = max(c.r, max(c.g, c.b));` — the CPU's per-pixel " +
+                "channel max)"
+        }
+        if (!s.contains("if (mx > knee) {")) {
+            out += "missing the stage-15 knee test " +
+                "(`if (mx > knee) {` — the CPU skips pixels with mx <= knee)"
+        }
+        if (!s.contains("float shoulder = knee + span * (t / (1.0 + t));")) {
+            out += "missing the stage-15 monotone shoulder " +
+                "(`float shoulder = knee + span * (t / (1.0 + t));` — bounded, " +
+                "order-preserving for all t, the CPU's exact form)"
+        }
+        if (!s.contains("float newMx = mx + s * (shoulder - mx);")) {
+            out += "missing the stage-15 blend " +
+                "(`float newMx = mx + s * (shoulder - mx);` — original blended " +
+                "toward the shoulder by strength, s in [-1, 1])"
+        }
+        if (!s.contains("float gain = mx > 0.0 ? newMx / mx : 1.0;")) {
+            out += "missing the stage-15 gain guard " +
+                "(`float gain = mx > 0.0 ? newMx / mx : 1.0;` — the mx==0 " +
+                "fallback keeps black at exactly 0)"
+        }
+        if (!s.contains("c *= gain;")) {
+            out += "missing the stage-15 gain multiply " +
+                "(`c *= gain;` — the uniform per-pixel gain, neutrals stay " +
+                "neutral)"
         }
         // Stage 23: the CPU tonemap math verbatim — rawedit::
         // tonemapFrameImpl (core/src/Develop.cpp). The rational-function
@@ -429,12 +487,16 @@ object GlesShaderValidator {
         if (s.contains("const float num") || s.contains("const float den") ||
             s.contains("const float y = den") || s.contains("const float x2") ||
             s.contains("const float x4") || s.contains("const int look") ||
-            s.contains("const float luma")
+            s.contains("const float luma") || s.contains("const float s =") ||
+            s.contains("const float mx") || s.contains("const float over") ||
+            s.contains("const float t =") || s.contains("const float shoulder") ||
+            s.contains("const float newMx") || s.contains("const float gain")
         ) {
-            out += "a tonemap local uses `const` with a non-constant " +
-                "initializer (GLSL ES 3.00 requires constant expressions " +
-                "for const; the CPU's read-only const does not carry — " +
-                "drop the qualifier, keep the literal-only declarations)"
+            out += "a tonemap or highlights local uses `const` with a " +
+                "non-constant initializer (GLSL ES 3.00 requires constant " +
+                "expressions for const; the CPU's read-only const does " +
+                "not carry — drop the qualifier, keep the literal-only " +
+                "declarations)"
         }
         // The tail: clamp BEFORE the pow-2.2 (NaN guard) and the pow
         // itself — the AgX output encoding the CPU leaves in the buffer
@@ -449,18 +511,22 @@ object GlesShaderValidator {
                 "(`return pow(o, vec3(2.2));` — the look's output " +
                 "encoding, rawedit::tonemapFrameImpl's last line)"
         }
-        // The application point: tonemap sits between the exposure
-        // multiply (stage 14) and the OETF (the JNI tail's position) —
-        // the CPU stage order 14 -> 23 -> OETF.
+        // The application point: highlights and tonemap sit in the CPU's
+        // stage order between the exposure multiply (stage 14) and the
+        // OETF (the JNI tail's position) — 14 -> 15 -> 23 -> OETF.
         val exposureIdx = s.indexOf("c *= uExposure;")
+        val highlightsIdx = s.indexOf("if (uHighlights != 0.0) {")
         val tonemapIdx = s.indexOf("if (uTonemap != 0) {")
         val oetfIdx = s.indexOf("if (uOetf == 1) {")
-        if (exposureIdx < 0 || tonemapIdx < 0 || oetfIdx < 0 ||
-            !(exposureIdx < tonemapIdx && tonemapIdx < oetfIdx)
+        if (exposureIdx < 0 || highlightsIdx < 0 || tonemapIdx < 0 ||
+            oetfIdx < 0 ||
+            !(exposureIdx < highlightsIdx && highlightsIdx < tonemapIdx &&
+                tonemapIdx < oetfIdx)
         ) {
-            out += "the tonemap application point is wrong (must sit " +
-                "between `c *= uExposure;` and the OETF block — the CPU " +
-                "stage order 14 -> 23 -> OETF)"
+            out += "the highlights/tonemap application point is wrong " +
+                "(both must sit between `c *= uExposure;` and the OETF " +
+                "block, highlights first — the CPU stage order " +
+                "14 -> 15 -> 23 -> OETF)"
         }
     }
 
