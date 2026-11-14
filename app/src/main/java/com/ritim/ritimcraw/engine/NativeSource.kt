@@ -794,6 +794,41 @@ class NativeSource private constructor(
         ): DoubleArray?
 
         /**
+         * Gyro warp resolver (the GPU warp port's commit b): evaluates the
+         * SAME stabilization plan the renders run — the six flat request
+         * params are the identical ones jniStabZoomProbe threads — for ONE
+         * frame at the render dims [maxDim] implies (0 = full resolution,
+         * the applyStabilization convention; the bridge derives the actual
+         * buffer dims internally because H's pixel focal derives from
+         * buffer width) and returns the warp verdict the GPU session
+         * consumes: a 10-element array, [0] = active (1 = warp, 0 = skip
+         * draw 10 entirely — the identity no-draw rule) and [1..9] = the
+         * composite inverse-sampling matrix M (row-major, the CPU
+         * warpFrame tap narrowed to floats). Null = no verdict — dead
+         * handle, no gyro log, or a .gcsv parse failure (the error
+         * accessors say which; the caller folds every null to
+         * warpActive=false + identity M, never a fabricated warp). The
+         * bridge folds the CPU's own honest no-ops into inactive: plan
+         * status that refuses to warp (Off/NoImu/Unsynced), the identity
+         * H with zoom 1, non-finite zoom, and a singular H (matInv's
+         * degenerate case). MUST run on the session's engine thread —
+         * the plan cache and the thread-local gyro cache are not
+         * GL-thread-safe (the dispatch sites resolve before handing the
+         * pair to the render, which only reads it).
+         */
+        @JvmStatic private external fun nativeStabWarpResolve(
+            handle: Long,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
+            frameIndex: Int,
+            maxDim: Int,
+        ): FloatArray?
+
+        /**
          * GLES capability probe (owner request 2026-11-12, deliverable C):
          * statelessly creates a throwaway GLES context, reads what the
          * device reports, releases the context, and returns
@@ -949,6 +984,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
         ): ByteArray?
 
         /**
@@ -1014,6 +1051,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
             rotationDeg: Int,
         ): Boolean
 
@@ -1117,6 +1156,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
         ): IntArray?
 
         @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
@@ -1539,6 +1580,32 @@ class NativeSource private constructor(
         }
 
         /**
+         * JNI bridge: see nativeStabWarpResolve. Throws
+         * IllegalStateException when the .so is absent; null otherwise
+         * means "no verdict" — the caller folds it to warpActive=false +
+         * identity M, never a fabricated warp.
+         */
+        internal fun jniStabWarpResolve(
+            handle: Long,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
+            frameIndex: Int,
+            maxDim: Int,
+        ): FloatArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeStabWarpResolve(
+                handle, gyroPath, stabMode, stabStrength,
+                stabZoomLimit, stabFocalMm, stabTrimMs, frameIndex, maxDim,
+            )
+        }
+
+        /**
          * JNI bridge: see nativeSetSyncRefine. Throws IllegalStateException
          * when the .so is absent; otherwise the runtime toggle is set and
          * the NEXT stabilization plan (probe or render) is built under it —
@@ -1700,6 +1767,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
         ): ByteArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
@@ -1712,7 +1781,8 @@ class NativeSource private constructor(
                 wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
                 splitHighlightHue, splitBalance, highlightReconstruction,
                 keepVignetting, tonemap, lutPath, lutStrength, lutRole,
-                lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer)
+                lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+                warpActive, warpM)
         }
 
         /**
@@ -1782,6 +1852,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
             rotationDeg: Int,
         ): Boolean {
             if (!nativeAvailable) {
@@ -1796,7 +1868,7 @@ class NativeSource private constructor(
                 splitShadowHue, splitHighlightHue, splitBalance,
                 highlightReconstruction, keepVignetting, tonemap, lutPath,
                 lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut,
-                lutOutTransfer, rotationDeg)
+                lutOutTransfer, warpActive, warpM, rotationDeg)
         }
 
         internal fun jniDevelopSessionClose(sessionHandle: Long) {
@@ -1897,6 +1969,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
         ): IntArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
@@ -1910,7 +1984,7 @@ class NativeSource private constructor(
                 splitShadowHue, splitHighlightHue, splitBalance,
                 highlightReconstruction, keepVignetting, tonemap, lutPath,
                 lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut,
-                lutOutTransfer)
+                lutOutTransfer, warpActive, warpM)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {

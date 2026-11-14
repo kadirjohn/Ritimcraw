@@ -758,7 +758,6 @@ class EditorPreviewLogicTest {
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(),
-                gyroWarpActive = false,
                 cropActive = false,
                 zebraOn = false,
             )
@@ -818,7 +817,6 @@ class EditorPreviewLogicTest {
                     splitHighlightHue = 210f,
                     splitBalance = -25f,
                 ),
-                gyroWarpActive = false,
                 cropActive = false,
                 zebraOn = false,
             )
@@ -834,7 +832,6 @@ class EditorPreviewLogicTest {
         assertFalse(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(),
-                gyroWarpActive = false,
                 cropActive = false,
                 zebraOn = true,
             )
@@ -849,7 +846,6 @@ class EditorPreviewLogicTest {
         assertFalse(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(cropW = 0.5f, cropH = 1f),
-                gyroWarpActive = false,
                 cropActive = true,
                 zebraOn = false,
             )
@@ -857,14 +853,16 @@ class EditorPreviewLogicTest {
     }
 
     @Test
-    fun a_gyro_warp_forces_the_cpu_path() {
-        // The GPU window draw is un-warped; an active stabilization warp
-        // (the grade's toggle with a resolved gyro path) takes the CPU
-        // wholesale.
-        assertFalse(
+    fun a_gyro_warp_grade_is_eligible_since_the_port() {
+        // The gyro-warp port's seam leg: the warp pass is unconditionally
+        // fragment-covered (pure math, no texture-format leg), the pump
+        // resolves the per-frame plan at the tier's maxDim and threads the
+        // verdict into the GPU render, and warpActive=false skips the
+        // draw entirely — so a stabilized grade is GPU-ELIGIBLE like any
+        // other covered grade. The old CPU-forcing rule is gone.
+        assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(stabilization = true),
-                gyroWarpActive = true,
                 cropActive = false,
                 zebraOn = false,
             )
@@ -890,7 +888,6 @@ class EditorPreviewLogicTest {
                 "grade must be eligible: $grade",
                 EditorPreviewLogic.gpuPreviewEligible(
                     grade = grade,
-                    gyroWarpActive = false,
                     cropActive = false,
                     zebraOn = false,
                 ),
@@ -905,7 +902,6 @@ class EditorPreviewLogicTest {
         assertFalse(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(temporalNr = true, temporalStrength = 30f),
-                gyroWarpActive = false,
                 cropActive = false,
                 zebraOn = false,
             )
@@ -915,13 +911,13 @@ class EditorPreviewLogicTest {
     @Test
     fun a_stabilization_toggle_without_a_warp_stays_eligible() {
         // The grade's toggle alone is inert for eligibility — the warp
-        // fact (a resolved gyro path) is what the export wiring computes,
-        // and the display grade renders un-warped when no log is
-        // attached. Mirrors the pump's per-request fact.
+        // VERDICT is resolved per frame at the pump (null = no log, the
+        // honest no-op), and the display grade renders un-warped when no
+        // log is attached. Mirrors the pump's per-request fact; since the
+        // port the toggle-with-log shape is eligible too (the test above).
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(stabilization = true),
-                gyroWarpActive = false,
                 cropActive = false,
                 zebraOn = false,
             )
@@ -942,7 +938,6 @@ class EditorPreviewLogicTest {
         assertFalse(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(lutId = "milog", lutStrength = 85f),
-                gyroWarpActive = false,
                 cropActive = false,
                 zebraOn = false,
                 lutTexturePathOk = false,
@@ -951,7 +946,6 @@ class EditorPreviewLogicTest {
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(lutId = "milog", lutStrength = 85f),
-                gyroWarpActive = false,
                 cropActive = false,
                 zebraOn = false,
                 lutTexturePathOk = true,

@@ -32,7 +32,10 @@ import org.junit.Test
  *      plus — since the stage-24 GPU port — the seven LUT controls (the
  *      resolved .cube path, the [0,1] strength, and the five
  *      interpretation ordinals, -1 = legacy) beside the four plumbing
- *      values (session handle, clip handle, frame index, max dim). That
+ *      values (session handle, clip handle, frame index, max dim) plus —
+ *      since the gyro warp port — the warp pair (the active flag and the
+ *      nine-float composite inverse-sampling map; false skips the draw
+ *      entirely, the identity no-draw rule). That
  *      narrow signature is the second lock against
  *      uncovered grades (the Kotlin coverage gate is the first): a stage
  *      the fragment pass does not cover cannot even be expressed into the
@@ -134,6 +137,8 @@ class NativeSourcePreviewSessionTest {
                 lutInTransfer = -1,
                 lutOutGamut = -1,
                 lutOutTransfer = -1,
+                warpActive = false,
+                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
             )
             throw AssertionError("expected IllegalStateException")
         } catch (expected: IllegalStateException) {
@@ -179,7 +184,7 @@ class NativeSourcePreviewSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 38 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+        // 40 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
         // four plumbing values) + chromaDenoise, noiseReduction (the two
         // spatial-NR stages' raw values since the spatial-NR port — stages
         // 7/8, the multi-pass fragment chain behind uChromaDenoise/
@@ -196,14 +201,18 @@ class NativeSourcePreviewSessionTest {
         // the three split-tone values, with asShot as the 16/17 gate's
         // input) + the seven LUT controls since the stage-24 GPU port
         // (lutPath, lutStrength and the five interpretation ordinals — the
-        // SAME layout the CPU seam threads, -1 = legacy). Temporal NR and
-        // tone-band controls are deliberately absent — those stages are
-        // NOT fragment-covered, so a grade using any of them must take the
-        // CPU path wholesale; adding such a parameter here widens the
+        // SAME layout the CPU seam threads, -1 = legacy) + warpActive and
+        // warpM since the gyro warp port (the per-frame verdict the
+        // resolver produced at the caller — the Boolean locks the draw,
+        // the nine floats lock the composite inverse-sampling map; false
+        // skips draw 10 entirely, the identity no-draw rule). Temporal NR
+        // and tone-band controls are deliberately absent — those stages
+        // are NOT fragment-covered, so a grade using any of them must take
+        // the CPU path wholesale; adding such a parameter here widens the
         // session's promise and must fail this test until the coverage
         // gate is taught the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(38, render.parameterCount)
+        assertEquals(40, render.parameterCount)
     }
 
     @Test

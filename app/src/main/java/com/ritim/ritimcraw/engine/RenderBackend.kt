@@ -419,19 +419,16 @@ object BackendRules {
      * the same honest default-false contract (a LUT grade stays on CPU
      * until the dispatch site knows the path is real).
      *
-     * [gyroWarpActive] no longer forces CPU here: the warp pass is
-     * unconditionally fragment-covered (pure math, no texture-format
-     * leg), so the token left the runtime vocabulary with the gyro-warp
-     * port. The parameter stays through the port's commit (a) so the
-     * callers do not change before the seams carry the warp; the
-     * dispatch sites keep their OWN honest locks until the seams thread
-     * the warp input, and the parameter leaves with those locks.
+     * The gyro warp contributes NO rule here since the gyro-warp port: the
+     * warp pass is unconditionally fragment-covered (pure math, no
+     * texture-format leg), the seams thread the per-frame verdict into
+     * the renders, and the warpActive=false case skips the draw entirely.
+     * A gyro-stabilized grade rides GLES like any other covered grade.
      */
     fun fragmentEffectiveBackend(
         requested: RenderBackend,
         gates: BackendGates,
         grade: GradeK,
-        gyroWarpActive: Boolean,
         lutTexturePathOk: Boolean = false,
     ): EffectiveRenderBackend {
         if (requested == RenderBackend.CPU) return EffectiveRenderBackend.CPU
@@ -453,22 +450,18 @@ object BackendRules {
      * grade's fallback line names the lut token until the runtime fact
      * says the texture path is healthy.
      *
-     * [gyroWarpActive] no longer contributes the gyro-warp token: the
-     * warp pass is unconditionally fragment-covered, so the token left
-     * the runtime vocabulary with the gyro-warp port. The parameter stays
-     * through the port's commit (a) (see [fragmentEffectiveBackend]) and
-     * leaves with the dispatch sites' own locks once the seams thread the
-     * warp input.
+     * The gyro warp contributes NO token since the gyro-warp port (see
+     * [fragmentEffectiveBackend]): the pass is covered, so a stabilized
+     * grade's fallback line names only the real reasons.
      */
     fun fragmentFallbackLine(
         requested: RenderBackend,
         gates: BackendGates,
         grade: GradeK,
-        gyroWarpActive: Boolean,
         lutTexturePathOk: Boolean = false,
     ): String? {
         if (requested == RenderBackend.CPU) return null
-        if (fragmentEffectiveBackend(requested, gates, grade, gyroWarpActive, lutTexturePathOk) ==
+        if (fragmentEffectiveBackend(requested, gates, grade, lutTexturePathOk) ==
             EffectiveRenderBackend.GLES
         ) {
             return null

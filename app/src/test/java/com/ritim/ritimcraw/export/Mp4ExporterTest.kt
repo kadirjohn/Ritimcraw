@@ -2068,14 +2068,16 @@ class Mp4ExporterTest {
     @Test
     fun render_backend_line_names_the_unsupported_tokens_exactly() {
         // The tokens are the exact BackendRules fragment vocabulary: a grade
-        // with an active uncovered stage names its token; the gyro warp adds
-        // its own when a log is attached AND stabilization is on (the same
-        // gate the timing summary uses); a neutral grade says "none".
-        // Chroma denoise is FRAGMENT-COVERED since the spatial-NR port
-        // (stages 7+8) and sharpness/detail since the sharpness/detail port
-        // (stages 21+22), so neither can appear as a token — a LUT grade
-        // with the texture path unavailable is the uncovered-stage
-        // stand-in now (the ONLY stage token left anywhere).
+        // with an active uncovered stage names its token; a neutral grade
+        // says "none". Chroma denoise is FRAGMENT-COVERED since the
+        // spatial-NR port (stages 7+8), sharpness/detail since the
+        // sharpness/detail port (stages 21+22), and the gyro warp since the
+        // gyro-warp port's seam leg (the pass is pure math — no
+        // texture-format leg — so a stabilized grade with a log attached
+        // rides GLES like any other covered grade and NEVER names a warp
+        // token): a LUT grade with the texture path unavailable is the
+        // uncovered-stage stand-in now (the ONLY stage token left
+        // anywhere).
         val lines = ArrayList<String>()
         ExportPipeline(
             FakeSession(frames = 2, audio = false),
@@ -2089,7 +2091,10 @@ class Mp4ExporterTest {
         )
         val line = lines.first { it.startsWith("render backend: ") }
         assertTrue("lut missing: $line", line.contains("lut"))
-        assertTrue("gyro-warp missing: $line", line.contains("gyro-warp"))
+        assertTrue(
+            "gyro-warp must be absent (fragment-covered): $line",
+            !line.contains("gyro-warp"),
+        )
         assertTrue(
             "chroma-denoise must be absent (fragment-covered): $line",
             !line.contains("chroma-denoise"),
@@ -2098,8 +2103,9 @@ class Mp4ExporterTest {
             "sharpness must be absent (fragment-covered): $line",
             !line.contains("sharpness"),
         )
-        // Stabilization off: the attached log alone does not warp, so no
-        // token — the line stays honest.
+        // Stabilization off: the attached log alone does not warp — the
+        // line stays honest either way, with no warp token in either
+        // case.
         val idleLines = ArrayList<String>()
         ExportPipeline(
             FakeSession(frames = 2, audio = false),
@@ -2189,6 +2195,12 @@ class Mp4ExporterTest {
         private val refuseEncoderSurface: Boolean = false,
         private val failEncoderRenderFrom: Int = -1,
         private val encoderDetail: String? = null,
+        // The gyro warp port's commit b: the resolver's configurable
+        // verdict (the raw shape the JNI returns — [0]=active, [1..9]=M,
+        // null = no verdict). The DISPATCHER owns the fold (null →
+        // inactive + identity M); this fake only reports.
+        private val warpArray: FloatArray? = null,
+        private val failWarpResolveWithIllegalState: Boolean = false,
     ) : GpuDevelop {
         var probeCalls = 0
         val parityFds = ArrayList<Int>()
@@ -2255,6 +2267,22 @@ class Mp4ExporterTest {
         // pass-through lock's snapshot.
         var lastEncoderLut: LutControls? = null
 
+        // The warp pair the last READBACK render carried — the pass-
+        // through lock's snapshot (the active flag and the nine-float
+        // map; the INACTIVE case rides the same recorder with
+        // warpActive=false + the identity M, asserting the dispatcher's
+        // null fold and the no-warp path's verbatim threading).
+        var lastWarp: WarpControls? = null
+
+        // Same pair on the encoder blit — the encoder pass-through
+        // lock's snapshot.
+        var lastEncoderWarp: WarpControls? = null
+
+        // Every resolveWarp call's frame index — the per-frame
+        // resolution lock (the dispatch resolves the plan EACH frame,
+        // never once per job).
+        val warpResolved = ArrayList<Int>()
+
         override fun probe(): DoubleArray? {
             probeCalls++
             return probeArray
@@ -2308,6 +2336,8 @@ class Mp4ExporterTest {
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
         ): ByteArray? {
             if (failRenderFrom >= 0 && frameIndex >= failRenderFrom) return null
             // The native latch mirror: an encoder-render failure latched
@@ -2334,6 +2364,7 @@ class Mp4ExporterTest {
                 lutPath, lutStrength, lutRole,
                 lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             )
+            lastWarp = WarpControls(warpActive, warpM)
             return frameBytes
         }
 
@@ -2382,6 +2413,8 @@ class Mp4ExporterTest {
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
             rotationDeg: Int,
         ): Boolean {
             if (failEncoderRenderFrom >= 0 && frameIndex >= failEncoderRenderFrom) {
@@ -2404,7 +2437,29 @@ class Mp4ExporterTest {
                 lutPath, lutStrength, lutRole,
                 lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             )
+            lastEncoderWarp = WarpControls(warpActive, warpM)
             return true
+        }
+
+        override fun resolveWarp(
+            clipHandle: Long,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
+            frameIndex: Int,
+            maxDim: Int,
+        ): FloatArray? {
+            // The unavailable-guard fold's stand-in: the dispatcher catches
+            // IllegalStateException (the no-.so mid-export case) and folds
+            // it to the inactive verdict, never letting the seam throw.
+            if (failWarpResolveWithIllegalState) {
+                throw IllegalStateException(NativeSource.nativeUnavailableMessage)
+            }
+            warpResolved.add(frameIndex)
+            return warpArray
         }
 
         override fun closeSession(sessionHandle: Long) {
@@ -2454,6 +2509,23 @@ class Mp4ExporterTest {
         val lutOutGamut: Int,
         val lutOutTransfer: Int,
     )
+
+    /**
+     * The warp pair one render carried, in the seam's parameter order —
+     * shared by the readback and the encoder recorders so a swapped or
+     * dropped parameter fails the equality with the field named (the
+     * active flag and the nine-float composite inverse-sampling map;
+     * warpActive=false means the session SKIPS draw 10 entirely, the
+     * identity no-draw rule).
+     */
+    private data class WarpControls(
+        val warpActive: Boolean,
+        val warpM: FloatArray,
+    ) {
+        override fun equals(other: Any?): Boolean = other is WarpControls &&
+            warpActive == other.warpActive && warpM.contentEquals(other.warpM)
+        override fun hashCode(): Int = 31 * warpActive.hashCode() + warpM.contentHashCode()
+    }
 
     /**
      * The ten pointwise stages' raw values one render carried, in the
@@ -2756,16 +2828,16 @@ class Mp4ExporterTest {
     }
 
     @Test
-    fun gyro_warp_stays_cpu_before_any_probe() {
-        // The gyro-warp port's honesty split, dispatch leg: the warp pass
-        // IS in the fragment chain now (draw 10, host-proven parity), but
-        // the render seams do not carry the warp input until the port's
-        // seam commit — so the EXPORT DISPATCH keeps its own honest lock
-        // (the uncoveredTokens line adds the gyro-warp token itself, NOT
-        // through BackendRules' vocabulary, which dropped the token with
-        // the port). A stabilized grade with a log attached therefore
-        // still forces the CPU develop BEFORE any probe is paid, and the
-        // line names the warp token — the lock leaves with the seams.
+    fun gyro_warp_rides_the_gpu_with_a_verdict_per_frame() {
+        // The gyro-warp port's seam leg: the warp input now threads BOTH
+        // render seams, so the EXPORT DISPATCH lock is GONE — a stabilized
+        // grade with a log attached rides GLES like any other covered
+        // grade. The dispatch resolves the plan PER FRAME (warpResolved
+        // records one entry per frame) and threads the verdict verbatim
+        // into the render: this run's resolver returns null (no verdict —
+        // the honest no-log fold), so the render carries warpActive=false
+        // + the identity M, and the session SKIPS draw 10 entirely (the
+        // identity no-draw rule). No gyro-warp token anywhere.
         val session = FakeSession(frames = 2, audio = false)
         val gpu = FakeGpuDevelop()
         val lines = ArrayList<String>()
@@ -2774,10 +2846,129 @@ class Mp4ExporterTest {
             renderBackend = RenderBackend.GPU_EXPERIMENTAL,
             gpuDevelop = gpu,
         ).run(7, GradeK(stabilization = true), "/tmp/out.partial", gyroPath = "/tmp/gyro.log")
-        assertEquals(0, gpu.probeCalls)
-        assertEquals(listOf(0, 1), session.rendered)
-        val fallback = lines.first { it.startsWith("render backend fallback: ") }
-        assertTrue("gyro-warp missing: $fallback", fallback.contains("gyro-warp"))
+        assertEquals(1, gpu.probeCalls)
+        assertEquals(1, gpu.openCalls)
+        assertEquals(listOf(0, 1), gpu.rendered)
+        // The per-frame resolution lock: one resolve per frame, at the
+        // frame loop's own indices, maxDim=0 (the export's full res —
+        // the applyStabilization convention).
+        assertEquals(listOf(0, 1), gpu.warpResolved)
+        // The INACTIVE pass-through lock: null verdict → the dispatcher's
+        // fold (warpActive=false + identity M), threaded verbatim.
+        val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        assertEquals(WarpControls(false, identity), gpu.lastWarp)
+        // The bytes writer never runs the encoder blit (FakeWriter's
+        // encoderInputSurface is the null default), so the encoder leg's
+        // pair stays unset here — the session_encoder_warp test below
+        // owns that leg.
+        assertNull(gpu.lastEncoderWarp)
+        // No fallback line: the grade is covered, the job rode GLES.
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
+        val backend = lines.first { it.startsWith("render backend: ") }
+        assertTrue("effective must be GLES: $backend", backend.contains("effective=GLES"))
+        assertFalse(
+            "gyro-warp token must be gone: $backend",
+            backend.contains("gyro-warp"),
+        )
+    }
+
+    @Test
+    fun gyro_warp_active_verdict_threads_verbatim_into_the_readback_render() {
+        // The ACTIVE case's pass-through lock, readback leg: the resolver's
+        // verdict (active + a non-identity M) threads VERBATIM into the
+        // readback renderFrame — the dispatcher never rewrites, clamps, or
+        // fabricates the map the resolver produced. The encoder blit's leg
+        // is the session_encoder_warp test below.
+        val m = floatArrayOf(
+            0.5f, 0.25f, -1.5f,
+            2.5f, 0.75f, 3.25f,
+            -0.5f, 1.5f, 0.9f,
+        )
+        val gpu = FakeGpuDevelop(
+            warpArray = floatArrayOf(1.0f) + m,
+        )
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            FakeSession(frames = 2, audio = false), FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(stabilization = true), "/tmp/out.partial", gyroPath = "/tmp/gyro.log")
+        assertEquals(listOf(0, 1), gpu.warpResolved)
+        assertEquals(WarpControls(true, m), gpu.lastWarp)
+        // The bytes writer never runs the encoder blit — the
+        // session_encoder_warp test below owns that leg.
+        assertNull(gpu.lastEncoderWarp)
+    }
+
+    @Test
+    fun warp_resolver_unavailable_folds_to_inactive_never_throws() {
+        // The no-.so mid-export fold: resolveWarp throwing the unavailable
+        // IllegalStateException (the JVM seam's own guard) is CAUGHT by the
+        // dispatch and folded to the inactive verdict — the export never
+        // dies on the resolver, and the renders still carry the honest
+        // warpActive=false + identity M pair.
+        val gpu = FakeGpuDevelop(failWarpResolveWithIllegalState = true)
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            FakeSession(frames = 2, audio = false), FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(stabilization = true), "/tmp/out.partial", gyroPath = "/tmp/gyro.log")
+        assertTrue(gpu.warpResolved.isEmpty())
+        assertEquals(listOf(0, 1), gpu.rendered)
+        val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        assertEquals(WarpControls(false, identity), gpu.lastWarp)
+        // The bytes writer never runs the encoder blit — the
+        // session_encoder_warp test below owns that leg.
+        assertNull(gpu.lastEncoderWarp)
+    }
+
+    @Test
+    fun session_encoder_warp_threads_the_verdict_into_the_blit() {
+        // The warp pair's ENCODER leg: the session-owns-EGL path (the M5
+        // fast path — the session develops AND blits straight to the codec
+        // input surface, the readback renderFrame NEVER runs) threads the
+        // SAME per-frame verdict into renderFrameToEncoder, verbatim,
+        // before rotationDeg (the LUT precedent keeps rotationDeg the
+        // tail parameter). The bytes-writer tests above own the readback
+        // leg; this one owns the blit.
+        val m = floatArrayOf(
+            0.5f, 0.25f, -1.5f,
+            2.5f, 0.75f, 3.25f,
+            -0.5f, 1.5f, 0.9f,
+        )
+        val gpu = FakeGpuDevelop(
+            warpArray = floatArrayOf(1.0f) + m,
+        )
+        val writer = SessionSurfaceWriter()
+        val lines = ArrayList<String>()
+        // The runSessionEncoderExport geometry recipe: the container's 90
+        // composed with the manual 270 is an effective 0 on the 4x4
+        // square, so the blit is 1:1 pixels and the job is
+        // encoderDrawEligible — plus the stabilized grade and the gyro
+        // log the warp port threads.
+        ExportPipeline(
+            FakeSession(frames = 2, audio = false), writer, lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(
+            7,
+            GradeK(stabilization = true),
+            "/tmp/out.partial",
+            manualRotationDeg = 270,
+            gyroPath = "/tmp/gyro.log",
+        )
+        // One resolve per frame, before each blit.
+        assertEquals(listOf(0, 1), gpu.warpResolved)
+        // The blit ran per frame; the readback never did.
+        assertEquals(listOf(0, 1), gpu.encoderRendered)
+        assertTrue("the readback renderFrame must never run", gpu.rendered.isEmpty())
+        // The ACTIVE verdict threads verbatim into the blit's pair.
+        assertEquals(WarpControls(true, m), gpu.lastEncoderWarp)
+        assertNull(gpu.lastWarp)
+        assertEquals(2, writer.drainCalls)
+        assertEquals(0, lines.count { it.startsWith("encoder surface fallback: ") })
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
     }
 
     @Test

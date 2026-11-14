@@ -561,10 +561,12 @@ object EditorPreviewLogic {
      * uncovered grade takes the CPU path wholesale in the editor exactly
      * like it does in the export.
      *
-     * [gyroWarpActive] is the SAME per-request fact the export wiring
-     * computes: the grade's stabilization toggle with a gyro log actually
-     * attached (a resolved non-null path). The GPU window draw is
-     * uncropped and un-warped, so an active warp forces CPU.
+     * The gyro warp contributes NO rule since the gyro-warp port: the
+     * warp pass is unconditionally fragment-covered, the pump resolves
+     * the per-frame plan at the tier's maxDim and threads the verdict
+     * into the GPU render, and warpActive=false skips the draw entirely
+     * (the identity no-draw rule). A gyro-stabilized grade stays
+     * GPU-eligible like any other covered grade.
      *
      * [cropActive] is the request's DISPLAY-grade crop state (the grade
      * the pump actually renders — crop-overlay mode swaps in the
@@ -597,14 +599,12 @@ object EditorPreviewLogic {
      */
     fun gpuPreviewEligible(
         grade: GradeK,
-        gyroWarpActive: Boolean,
         cropActive: Boolean,
         zebraOn: Boolean,
         lutTexturePathOk: Boolean = false,
     ): Boolean {
         if (zebraOn) return false
         if (cropActive) return false
-        if (gyroWarpActive) return false
         if (BackendRules.fragmentUncoveredStages(grade, lutTexturePathOk).isNotEmpty()) return false
         if (BackendRules.fragmentUncoveredPreStages(grade).isNotEmpty()) return false
         return true
@@ -2206,8 +2206,10 @@ fun ClipEditorScreen(
                     // for the preview: when the GPU path is active (the
                     // setting asks, a live GPU session exists, and THIS
                     // request is eligible — every active stage covered, no
-                    // gyro warp, no active crop in the request's display
-                    // grade, zebra off), try the GPU session first. A
+                    // active crop in the request's display grade, zebra
+                    // off; the gyro warp stopped blocking eligibility with
+                    // its GPU port — the pass is unconditionally fragment-
+                    // covered), try the GPU session first. A
                     // null verdict (render failure OR malformed pack)
                     // LATCHES the path off for the clip's lifetime (the
                     // session latches unhealthy on its side too — the M3
@@ -2240,7 +2242,6 @@ fun ClipEditorScreen(
                         currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
                         EditorPreviewLogic.gpuPreviewEligible(
                             grade = req.grade,
-                            gyroWarpActive = req.grade.stabilization && gyroPath != null,
                             cropActive = req.grade.straightenDeg != 0f ||
                                 !CropState.isFull(
                                     CropState.RectF(
@@ -2252,6 +2253,36 @@ fun ClipEditorScreen(
                             lutTexturePathOk = gpuLutTexturePathOk,
                         )
                     ) {
+                        // Gyro warp (the GPU port's commit b): resolve the
+                        // frame's plan at the tier's maxDim — the SAME six
+                        // stab values the CPU preview threads, with the
+                        // export dispatch's gating (gyroPath and strength
+                        // only when stabilization is on AND a log is
+                        // attached). Null (no verdict — no log, dead
+                        // handle, parse failure) folds to inactive + the
+                        // identity M, and the render then skips draw 10
+                        // entirely: the pass's absence IS the identity.
+                        val warp = gpu.resolveWarp(
+                            clipHandle = s.nativeClipHandle,
+                            gyroPath = if (req.grade.stabilization && gyroPath != null) gyroPath else null,
+                            stabMode = req.grade.stabilizationMode,
+                            stabStrength = if (req.grade.stabilization && gyroPath != null) {
+                                req.grade.stabilizationStrength / 100f
+                            } else {
+                                0f
+                            },
+                            stabZoomLimit = req.grade.stabilizationZoomLimit,
+                            stabFocalMm = req.grade.stabilizationFocalMm,
+                            stabTrimMs = req.grade.stabilizationTrimMs,
+                            frameIndex = req.frameIndex,
+                            maxDim = req.maxDim,
+                        )
+                        val warpActive = warp != null && warp[0] != 0.0f
+                        val warpM = if (warp != null && warp.size >= 10) {
+                            warp.copyOfRange(1, 10)
+                        } else {
+                            floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+                        }
                         val gpuFrame = gpu.render(
                             clipHandle = s.nativeClipHandle,
                             frameIndex = req.frameIndex,
@@ -2299,6 +2330,11 @@ fun ClipEditorScreen(
                             lutInTransfer = req.grade.lutInterp?.input?.transfer?.value ?: -1,
                             lutOutGamut = req.grade.lutInterp?.output?.gamut?.value ?: -1,
                             lutOutTransfer = req.grade.lutInterp?.output?.transfer?.value ?: -1,
+                            // Gyro warp: the resolved verdict rides the render
+                            // seam (warpActive=false skips draw 10 — the
+                            // identity no-draw rule).
+                            warpActive = warpActive,
+                            warpM = warpM,
                         )
                         if (gpuFrame != null) {
                             result = Result.success(gpuFrame)

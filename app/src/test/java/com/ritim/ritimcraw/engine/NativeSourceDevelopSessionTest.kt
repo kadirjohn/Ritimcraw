@@ -32,7 +32,10 @@ import org.junit.Test
  *      asShot as the 16/17 gate's input) plus — since the stage-24 GPU
  *      port — the seven LUT controls (the resolved .cube path, the [0,1]
  *      strength, and the five interpretation ordinals, -1 = legacy)
- *      beside the plumbing values.
+ *      beside the plumbing values plus — since the gyro warp port — the
+ *      warp pair (the active flag and the nine-float composite
+ *      inverse-sampling map; false skips the draw entirely, the identity
+ *      no-draw rule).
  *      That narrow signature is the second lock against uncovered grades
  *      (the Kotlin coverage gate is the first): a stage the fragment pass
  *      does not cover — temporal NR strength, a tone-band knob — cannot
@@ -45,7 +48,7 @@ import org.junit.Test
  *      port — the warp fragment), and renderFrameToEncoder adds ptsUs (the
  *      encoder Surface's presentation time) and rotationDeg (the frame's
  *      effective orientation — the blit's uRotation fold) to the
- *      readback render's thirty-seven.
+ *      readback render's thirty-nine.
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -124,6 +127,8 @@ class NativeSourceDevelopSessionTest {
                 lutInTransfer = -1,
                 lutOutGamut = -1,
                 lutOutTransfer = -1,
+                warpActive = false,
+                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
             )
             throw AssertionError("expected IllegalStateException")
         } catch (expected: IllegalStateException) {
@@ -196,6 +201,8 @@ class NativeSourceDevelopSessionTest {
                 lutInTransfer = -1,
                 lutOutGamut = -1,
                 lutOutTransfer = -1,
+                warpActive = false,
+                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
                 rotationDeg = 0,
             )
             throw AssertionError("expected IllegalStateException")
@@ -221,6 +228,34 @@ class NativeSourceDevelopSessionTest {
         }
     }
 
+    @Test
+    fun stab_warp_resolve_throws_the_unavailable_message_without_the_native_lib() {
+        // The gyro warp resolver's wrapper (the GPU warp port's commit b):
+        // the export dispatch catches the guard's IllegalStateException
+        // and folds it to the inactive verdict, and the preview pump's
+        // resolveWarp catches Throwable — so the guard is what stands
+        // between a no-.so build and an UnsatisfiedLinkError mid-render.
+        // The jniSetSyncRefine precedent: a wrapper with a runtime caller
+        // carries its guard test, and the JVM always runs this path.
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniStabWarpResolve(
+                handle = 1L,
+                gyroPath = null,
+                stabMode = 0,
+                stabStrength = 0.0f,
+                stabZoomLimit = 1.0f,
+                stabFocalMm = 0.0f,
+                stabTrimMs = 0.0f,
+                frameIndex = 0,
+                maxDim = 0,
+            )
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
     // ---- the signature locks (the second lock against uncovered grades) ---
 
     private fun method(name: String): java.lang.reflect.Method {
@@ -239,7 +274,7 @@ class NativeSourceDevelopSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 37 parameters: sessionHandle, clipHandle, frameIndex (the three
+        // 39 parameters: sessionHandle, clipHandle, frameIndex (the three
         // plumbing values) + chromaDenoise, noiseReduction (the two
         // spatial-NR stages' raw values since the spatial-NR port — stages
         // 7/8, the multi-pass fragment chain behind uChromaDenoise/
@@ -256,36 +291,41 @@ class NativeSourceDevelopSessionTest {
         // the 16/17 gate's input) + the seven LUT controls since the
         // stage-24 GPU port (lutPath, lutStrength and the five
         // interpretation ordinals — the SAME layout the CPU seam's develop
-        // call threads, -1 = legacy). Temporal NR and tone-band controls
+        // call threads, -1 = legacy) + warpActive and warpM since the gyro
+        // warp port (the per-frame verdict the resolver produced at the
+        // caller — the Boolean locks the draw, the nine floats lock the
+        // composite inverse-sampling map; false skips draw 10 entirely,
+        // the identity no-draw rule). Temporal NR and tone-band controls
         // remain deliberately absent — those stages are NOT
         // fragment-covered, so a grade using any of them must take the CPU
         // path wholesale; adding such a parameter here widens the session's
         // promise and must fail this test until the coverage gate is
         // taught the new stage.
         val render = method("jniDevelopSessionRenderFrame")
-        assertEquals(37, render.parameterCount)
+        assertEquals(39, render.parameterCount)
     }
 
     @Test
     fun render_to_encoder_adds_only_the_presentation_time() {
-        // 39 parameters: the readback render's thirty-seven (sessionHandle,
+        // 41 parameters: the readback render's thirty-nine (sessionHandle,
         // clipHandle, frameIndex + the two spatial-NR stages' raw values +
         // the two unsharp stages' raw values + the fragment-covered grade
-        // controls + the seven LUT controls)
+        // controls + the seven LUT controls + the warp pair)
         // plus ptsUs (the encoder Surface's presentation time, which the
         // readback path never needs — the CPU path carries pts on
         // writeVideoFrameRgb) plus rotationDeg (the surface-gpu vertical
         // deliverable: the frame's effective orientation, applied by the
         // blit's uRotation fold — 0/90/180/270, no default value so this
-        // reflection lock sees exactly one wrapper; the LUT controls sit
-        // BEFORE it, keeping rotationDeg the tail parameter). The blit
-        // reuses the SAME develop program family (the NR multi-pass chain,
-        // the four-pass unsharp chain, and the LUT 3D-texture sampler
-        // included), so the grade controls are the same fragment-covered
-        // set; a FORTIETH parameter would widen the encoder blit's promise
-        // beyond the covered-grade contract and must fail here.
+        // reflection lock sees exactly one wrapper; the warp pair sits
+        // BEFORE it, keeping rotationDeg the tail parameter — the LUT
+        // precedent). The blit reuses the SAME develop program family (the
+        // NR multi-pass chain, the four-pass unsharp chain, the LUT
+        // 3D-texture sampler, and the warp pass included), so the grade
+        // controls are the same fragment-covered set; a FORTY-SECOND
+        // parameter would widen the encoder blit's promise beyond the
+        // covered-grade contract and must fail here.
         val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoder")
-        assertEquals(39, renderToEncoder.parameterCount)
+        assertEquals(41, renderToEncoder.parameterCount)
     }
 
     @Test

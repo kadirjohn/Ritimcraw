@@ -14,7 +14,12 @@ import org.junit.Test
  * M3 export pipeline's dispatch rides — the fake records the calls so the
  * tests lock the LATCH rules (open failure stays 0; a null render returns
  * null without throwing; close is idempotent and drains through the seam)
- * without the native lib.
+ * without the native lib. Since the gyro warp port the render also threads
+ * the warp pair — the per-frame verdict the caller's resolver produced
+ * (null folds to warpActive=false + identity M at the caller, never a
+ * fabricated warp; false skips the draw entirely, the identity no-draw
+ * rule) — locked verbatim in the render test below, same shape as the
+ * pointwise and LUT pass-through locks.
  *
  * HONESTY: the real boundary (NativeGpuPreviewDevelop) and the GL session
  * behind it are Android-only — the JVM suite locks the wrapper's contract
@@ -92,6 +97,18 @@ class GpuPreviewSessionTest {
         val lutOutTransfer: Int,
     )
 
+    /**
+     * The warp pair ONE render carried — the verbatim pass-through lock's
+     * snapshot for the gyro warp port (a swapped or dropped parameter in
+     * GpuPreviewSession.render fails the data-class equality with the
+     * exact field named; the nine-float map rides as a List because a
+     * FloatArray field would compare references, not contents).
+     */
+    private data class WarpCall(
+        val warpActive: Boolean,
+        val warpM: List<Float>,
+    )
+
     /** Records every seam call; scripted verdicts per method. */
     private class FakeDevelop(
         var openResult: Long = 1L,
@@ -110,6 +127,7 @@ class GpuPreviewSessionTest {
         val renderedSharpnessDetail = mutableListOf<SharpnessDetailCall>() // the two unsharp stages per render
         val renderedPointwise = mutableListOf<PointwiseCall>() // the ten stages per render
         val renderedLut = mutableListOf<LutCall>() // the seven LUT controls per render
+        val renderedWarp = mutableListOf<WarpCall>() // the warp pair per render
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
         var probeResult: DoubleArray? = null
@@ -175,6 +193,8 @@ class GpuPreviewSessionTest {
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
         ): PreviewFrame? {
             rendered += sessionHandle
             renderedHighlights += highlights
@@ -191,6 +211,7 @@ class GpuPreviewSessionTest {
                 lutPath, lutStrength, lutRole,
                 lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             )
+            renderedWarp += WarpCall(warpActive, warpM.toList())
             if (renderThrows) throw IllegalStateException("seam blew up")
             return renderResult
         }
@@ -290,6 +311,11 @@ class GpuPreviewSessionTest {
             lutPath = "/data/luts/milog.cube", lutStrength = 0.85f,
             lutRole = 3, lutInGamut = 8, lutInTransfer = 12,
             lutOutGamut = 0, lutOutTransfer = 1,
+            warpActive = true, warpM = floatArrayOf(
+                0.5f, 0.25f, -1.5f,
+                2.5f, 0.75f, 3.25f,
+                -0.5f, 1.5f, 0.9f,
+            ),
         )
         // The SAME instance flows through — the pump publishes it exactly
         // as the CPU dispatch publishes its own frame.
@@ -346,6 +372,24 @@ class GpuPreviewSessionTest {
             ),
             develop.renderedLut,
         )
+        // The warp pair rides the seam verbatim too — the per-frame
+        // verdict the caller's resolver produced (the active flag locks
+        // the draw, the nine floats lock the composite inverse-sampling
+        // map; this render locks the ACTIVE pass-through — false would
+        // skip draw 10 entirely, the identity no-draw rule).
+        assertEquals(
+            listOf(
+                WarpCall(
+                    warpActive = true,
+                    warpM = listOf(
+                        0.5f, 0.25f, -1.5f,
+                        2.5f, 0.75f, 3.25f,
+                        -0.5f, 1.5f, 0.9f,
+                    ),
+                )
+            ),
+            develop.renderedWarp,
+        )
     }
 
     @Test
@@ -371,6 +415,9 @@ class GpuPreviewSessionTest {
                 lutPath = null, lutStrength = 0f,
                 lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
                 lutOutGamut = -1, lutOutTransfer = -1,
+                warpActive = false, warpM = floatArrayOf(
+                    1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
+                ),
             )
         )
         assertTrue(develop.rendered.isEmpty())
@@ -399,6 +446,9 @@ class GpuPreviewSessionTest {
                 lutPath = null, lutStrength = 0f,
                 lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
                 lutOutGamut = -1, lutOutTransfer = -1,
+                warpActive = false, warpM = floatArrayOf(
+                    1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
+                ),
             )
         )
     }
@@ -449,6 +499,9 @@ class GpuPreviewSessionTest {
                 lutPath = null, lutStrength = 0f,
                 lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
                 lutOutGamut = -1, lutOutTransfer = -1,
+                warpActive = false, warpM = floatArrayOf(
+                    1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
+                ),
             )
         )
         assertEquals(0, develop.rendered.size)
@@ -509,6 +562,8 @@ class GpuPreviewSessionTest {
                 lutInTransfer: Int,
                 lutOutGamut: Int,
                 lutOutTransfer: Int,
+                warpActive: Boolean,
+                warpM: FloatArray,
             ): PreviewFrame? = null
             override fun closeSession(sessionHandle: Long) {}
             override suspend fun lastDetail(): String? = throw IllegalStateException("seam blew up")

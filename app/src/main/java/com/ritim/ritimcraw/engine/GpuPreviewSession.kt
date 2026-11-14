@@ -118,7 +118,30 @@ interface GpuPreviewDevelop {
         lutInTransfer: Int,
         lutOutGamut: Int,
         lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
     ): PreviewFrame?
+
+    /**
+     * The gyro warp resolver (the GPU warp port's commit b): the per-frame
+     * plan verdict the render consumes — a 10-element array ([0] active
+     * flag, [1..9] the composite M) or null = no verdict (the caller folds
+     * null to warpActive=false + identity M, never a fabricated warp).
+     * Runs on the engine thread like every render entry. The default body
+     * keeps fakes honest: a fake that does not override it never
+     * fabricates a warp.
+     */
+    suspend fun resolveWarp(
+        clipHandle: Long,
+        gyroPath: String?,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        stabFocalMm: Float,
+        stabTrimMs: Float,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = null
 
     /**
      * Closes the session (idempotent; absorbs the unavailable guard and a
@@ -272,6 +295,8 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         lutInTransfer: Int,
         lutOutGamut: Int,
         lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
     ): PreviewFrame? = suspendCoroutine { cont ->
         try {
             PreviewRenderer.previewEngine.execute {
@@ -291,10 +316,41 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                                 highlightReconstruction, keepVignetting, tonemap,
                                 lutPath, lutStrength, lutRole, lutInGamut,
                                 lutInTransfer, lutOutGamut, lutOutTransfer,
+                                warpActive, warpM,
                             )
                         )
                     } catch (t: Throwable) {
                         null // unavailable guard / engine-side failure: fall back to CPU
+                    }
+                )
+            }
+        } catch (e: RejectedExecutionException) {
+            cont.resume(null)
+        }
+    }
+
+    override suspend fun resolveWarp(
+        clipHandle: Long,
+        gyroPath: String?,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        stabFocalMm: Float,
+        stabTrimMs: Float,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = suspendCoroutine { cont ->
+        try {
+            PreviewRenderer.previewEngine.execute {
+                cont.resume(
+                    try {
+                        NativeSource.jniStabWarpResolve(
+                            clipHandle, gyroPath, stabMode, stabStrength,
+                            stabZoomLimit, stabFocalMm, stabTrimMs,
+                            frameIndex, maxDim,
+                        )
+                    } catch (t: Throwable) {
+                        null // unavailable guard: no verdict, the render skips draw 10
                     }
                 )
             }
@@ -488,6 +544,8 @@ class GpuPreviewSession(
         lutInTransfer: Int,
         lutOutGamut: Int,
         lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
     ): PreviewFrame? {
         val h = handle
         if (h == 0L || closed.get()) return null
@@ -505,10 +563,38 @@ class GpuPreviewSession(
                 highlightReconstruction, keepVignetting, tonemap,
                 lutPath, lutStrength, lutRole, lutInGamut,
                 lutInTransfer, lutOutGamut, lutOutTransfer,
+                warpActive, warpM,
             )
         } catch (t: Throwable) {
             null
         }
+    }
+
+    /**
+     * Resolves the frame's gyro warp plan on the engine thread (the GPU
+     * warp port's commit b): the verdict the [render] above consumes. Null
+     * (no verdict — no log, dead handle, parse failure, or the unavailable
+     * guard) folds to warpActive=false + identity M at the CALLER, never a
+     * fabricated warp; the render then skips draw 10 entirely (the
+     * identity no-draw rule). Never throws.
+     */
+    suspend fun resolveWarp(
+        clipHandle: Long,
+        gyroPath: String?,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        stabFocalMm: Float,
+        stabTrimMs: Float,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = try {
+        develop.resolveWarp(
+            clipHandle, gyroPath, stabMode, stabStrength,
+            stabZoomLimit, stabFocalMm, stabTrimMs, frameIndex, maxDim,
+        )
+    } catch (t: Throwable) {
+        null
     }
 
     /** The bridge's last-error detail, read on the engine thread (thread-local). */
