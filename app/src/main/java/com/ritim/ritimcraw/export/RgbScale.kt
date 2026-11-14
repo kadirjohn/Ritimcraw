@@ -55,9 +55,88 @@ object RgbScale {
         // The scaled size and the symmetric crop window inside it.
         val scaledW = outW / scale
         val scaledH = outH / scale
-        val cropX = ((inW - scaledW) / 2.0)
-        val cropY = ((inH - scaledH) / 2.0)
+        return bilinear(
+            rgb, inW, inH, outW, outH,
+            (inW - scaledW) / 2.0, (inH - scaledH) / 2.0, scaledW, scaledH,
+        )
+    }
 
+    /**
+     * Aspect-PRESERVING fit (the export resolution picker, owner request
+     * 2026-11-13): scales [rgb] by the largest uniform scale that fits
+     * WITHIN [outW]*[outH] — min(outW/inW, outH/inH) — filling the
+     * leftover with symmetric black bars. Nothing stretches, nothing
+     * crops: a 4:3 source into a 16:9 box keeps every source pixel and
+     * letterboxes the sides. The export resolution rules
+     * ([ExportResolution.outputSize]) resolve the bound to the source's
+     * OWN aspect BEFORE this runs, so the honest export path takes the
+     * no-bar branch (the fit is exact); this function exists beside
+     * [aspectFill] so the SCALED RESIZE ITSELF is aspect-preserving by
+     * construction, never a center-crop — the size decision and the
+     * framing decision stay separate (the audit's 4:3 rule). Identity
+     * fast path same as aspectFill.
+     */
+    fun aspectFit(rgb: ByteArray, inW: Int, inH: Int, outW: Int, outH: Int): ByteArray {
+        require(inW > 0 && inH > 0) { "input $inW x $inH is empty" }
+        require(outW > 0 && outH > 0) { "output $outW x $outH is empty" }
+        if (inW == outW && inH == outH) return rgb
+
+        // Fit scale: the largest uniform scale that fits inside the output.
+        val scale = minOf(outW.toDouble() / inW, outH.toDouble() / inH)
+        val scaledW = inW * scale
+        val scaledH = inH * scale
+        val out = ByteArray(outW * outH * 3) // zero-filled = black bars
+        val barX = (outW - scaledW) / 2.0
+        val barY = (outH - scaledH) / 2.0
+        var oi = 0
+        for (y in 0 until outH) {
+            val inY = y >= ((outH - scaledH) / 2.0).toInt() &&
+                y < (((outH - scaledH) / 2.0) + scaledH).toInt()
+            if (!inY) {
+                oi += outW * 3 // whole black row
+                continue
+            }
+            val sy = (y + 0.5 - barY) / scale - 0.5
+            val y0 = sy.toInt().coerceIn(0, inH - 1)
+            val y1 = (y0 + 1).coerceIn(0, inH - 1)
+            val fy = (sy - y0).coerceIn(0.0, 1.0)
+            val row0 = y0 * inW * 3
+            val row1 = y1 * inW * 3
+            for (x in 0 until outW) {
+                val sx = (x + 0.5 - barX) / scale - 0.5
+                val inX = sx >= -0.5 && sx <= inW - 0.5
+                if (!inX) {
+                    oi += 3 // black bar pixel
+                    continue
+                }
+                val x0 = sx.toInt().coerceIn(0, inW - 1)
+                val x1 = (x0 + 1).coerceIn(0, inW - 1)
+                val fx = (sx - x0).coerceIn(0.0, 1.0)
+                val p00 = row0 + x0 * 3
+                val p01 = row0 + x1 * 3
+                val p10 = row1 + x0 * 3
+                val p11 = row1 + x1 * 3
+                out[oi++] = blend(rgb, p00, p01, p10, p11, fx, fy)
+                out[oi++] = blend(rgb, p00 + 1, p01 + 1, p10 + 1, p11 + 1, fx, fy)
+                out[oi++] = blend(rgb, p00 + 2, p01 + 2, p10 + 2, p11 + 2, fx, fy)
+            }
+        }
+        return out
+    }
+
+    /**
+     * The bilinear core aspectFill shares (the same center-of-pixel
+     * mapping, unsigned reads, clamp-to-edge): [cropX]/[cropY] is the
+     * symmetric crop window's top-left inside the source, [scaledW]/
+     * [scaledH] the window's size.
+     */
+    private fun bilinear(
+        rgb: ByteArray,
+        inW: Int, inH: Int,
+        outW: Int, outH: Int,
+        cropX: Double, cropY: Double,
+        scaledW: Double, scaledH: Double,
+    ): ByteArray {
         val out = ByteArray(outW * outH * 3)
         var oi = 0
         for (y in 0 until outH) {

@@ -117,6 +117,23 @@ data class ExportJob(
      * apply to fps/frame metadata).
      */
     val timeline: TimelineRef? = null,
+    /**
+     * (Export resolution, owner request 2026-11-13) the OUTPUT
+     * resolution bound this job's MP4 encode resolves against — the
+     * ladder choice snapshotted at ENQUEUE time, exactly like the grade:
+     * a later tap must not change an in-flight export. The pair is the
+     * RESOLVED bound (what the sheet's chip showed), not the ladder
+     * kind: the exporter runs ExportResolution.outputSize against the
+     * source's effective size with it (fits-within, aspect preserved,
+     * even-snapped). Null = Original = the source's effective size —
+     * byte-identical to every export before this feature, and the
+     * recommended default (the frameIndex/manualRotationDeg shape:
+     * omit-when-null so pre-resolution project.json rows stay
+     * byte-identical and parse as null).
+     */
+    val resolutionW: Int? = null,
+    /** [resolutionW]'s pair; both null or both set, never half a pair. */
+    val resolutionH: Int? = null,
 ) {
 
     /**

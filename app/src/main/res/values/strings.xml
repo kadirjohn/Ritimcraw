@@ -217,6 +217,19 @@
     <string name="editor_export_choice_mp4">MP4 video</string>
     <string name="editor_export_dng">Export DNG</string>
     <string name="editor_export_mp4">Export MP4</string>
+    <!-- Export resolution row (owner request 2026-11-13): the MP4-only
+         ladder. "Original" is the recommended default (the source's
+         effective size); the scale flags and the encoder-refusal reason
+         ride the chips as their accessibility descriptions. -->
+    <string name="editor_export_resolution_title">MP4 resolution</string>
+    <string name="editor_export_resolution_original">Original</string>
+    <string name="editor_export_resolution_custom">Custom</string>
+    <string name="editor_export_recommended">Recommended</string>
+    <string name="editor_export_upscale">Upscale</string>
+    <string name="editor_export_downscale">Downscale</string>
+    <string name="editor_export_unsupported">Not supported by this device\'s video encoder</string>
+    <string name="editor_export_custom_width">Width</string>
+    <string name="editor_export_custom_height">Height</string>
     <string name="editor_more">More options</string>
     <string name="editor_undo">Undo</string>
     <string name="editor_redo">Redo</string>

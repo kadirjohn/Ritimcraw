@@ -824,6 +824,52 @@ class Mp4ExporterTest {
     }
 
     @Test
+    fun pipeline_resolution_bound_starts_writer_at_the_resolved_size() {
+        // Export resolution (owner request 2026-11-13): a job that carries
+        // a bound resolves it through the SAME fits-within rules the
+        // sheet's chips showed (ExportResolution.outputSize against the
+        // crop/rotation-effective size) — the writer's encoder dims ARE
+        // the resolved size, so the encode can never disagree with the
+        // choice. FakeSession is 4x4 with orientationDeg 90 (square, so
+        // the upright dims stay 4x4): a 2x2 bound resolves to 2x2.
+        val session = FakeSession(frames = 2, audio = false)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, resolutionW = 2, resolutionH = 2)
+            .run(7, GradeK(), "/tmp/out.partial")
+        // The writer started at the RESOLVED dims, not the source's.
+        assertEquals(2, writer.startArgs!![1])
+        assertEquals(2, writer.startArgs!![2])
+        // And every frame the writer received was converted at those
+        // dims: I420 is w*h*3/2 bytes (2*2*3/2 = 6), not the source's
+        // 4*4*3/2 = 24 — the aspectFit step ran between crop and the
+        // conversion.
+        assertEquals(2 * 2 * 3 / 2, writer.lastVideoFrame!!.size)
+        assertEquals(2, writer.videoFrames)
+    }
+
+    @Test
+    fun pipeline_null_bound_is_byte_identical_to_the_reference_path() {
+        // Null pair = Original = today's behavior: the writer starts at
+        // the crop dims (the source's effective size), the scale step is
+        // skipped entirely (not even a method dispatch), and the frames
+        // are byte-identical to a pipeline constructed with no bound at
+        // all. The chips' default IS the pre-feature export.
+        val session = FakeSession(frames = 2, audio = false)
+        val nullBound = FakeWriter() // constructed with the default null pair
+        ExportPipeline(session, nullBound).run(7, GradeK(), "/tmp/out.partial")
+        val reference = FakeWriter() // constructed with no bound at all
+        ExportPipeline(session, reference).run(7, GradeK(), "/tmp/out.partial")
+
+        assertEquals(nullBound.startArgs!![1], reference.startArgs!![1])
+        assertEquals(nullBound.startArgs!![2], reference.startArgs!![2])
+        assertEquals(4, reference.startArgs!![1]) // the crop dims, not a bound
+        assertEquals(4, reference.startArgs!![2])
+        assertTrue(
+            nullBound.lastVideoFrame!!.contentEquals(reference.lastVideoFrame!!)
+        )
+    }
+
+    @Test
     fun pipeline_video_only_when_clip_has_no_audio() {
         val session = FakeSession(frames = 2, audio = false)
         val writer = FakeWriter()

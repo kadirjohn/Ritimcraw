@@ -214,6 +214,19 @@
     <string name="editor_export_choice_mp4">MP4 video</string>
     <string name="editor_export_dng">DNG aktar</string>
     <string name="editor_export_mp4">MP4 aktar</string>
+    <!-- Dışa aktarım çözünürlük satırı (istek 2026-11-13): yalnız MP4
+         merdiveni. "Orijinal" önerilen varsayılan (kaynağın etkili
+         boyutu); ölçek işaretleri ve kodlayıcı reddi gerekçesi erişile-
+        bilirlik açıklamaları olarak çiplere taşınır. -->
+    <string name="editor_export_resolution_title">MP4 çözünürlüğü</string>
+    <string name="editor_export_resolution_original">Orijinal</string>
+    <string name="editor_export_resolution_custom">Özel</string>
+    <string name="editor_export_recommended">Önerilen</string>
+    <string name="editor_export_upscale">Büyütme</string>
+    <string name="editor_export_downscale">Küçültme</string>
+    <string name="editor_export_unsupported">Bu cihazın video kodlayıcısı desteklemiyor</string>
+    <string name="editor_export_custom_width">Genişlik</string>
+    <string name="editor_export_custom_height">Yükseklik</string>
     <string name="editor_more">Diğer seçenekler</string>
     <string name="editor_undo">Geri al</string>
     <string name="editor_redo">Yinele</string>

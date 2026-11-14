@@ -1,7 +1,11 @@
 package com.ritim.ritimcraw.ui.editor
 
+import android.media.MediaCodecList
+import android.media.MediaFormat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
@@ -17,9 +22,11 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -39,11 +46,13 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.GradePreset
+import com.ritim.ritimcraw.export.ExportResolution
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.util.Format
 
@@ -83,9 +92,21 @@ val EditorTopBarHeight = 56.dp
 fun EditorTopBar(
     sourceId: String,
     onBack: () -> Unit,
-    onExport: (Target) -> Unit,
+    // (Export resolution, owner request 2026-11-13) the widened export
+    // callback: the target plus the RESOLVED resolution bound the sheet's
+    // chip showed (null pair = Original = the source's effective size,
+    // exactly what every export before the picker produced). DNG/LINEAR
+    // taps pass nulls — those targets have no resolution seam; the
+    // MP4 tap passes the selected entry's bound.
+    onExport: (Target, Int?, Int?) -> Unit,
     exportEnabled: Boolean,
     clipInfo: ClipInfo,
+    // (Export resolution) the clip's persisted manual rotation delta —
+    // the ladder's effective size composes it (RotationState.effectiveDeg
+    // + rotatedDims, the exporter's own chain), so the chips show the
+    // size the encode will really produce. Default 0 keeps call sites
+    // that never rotate working.
+    manualRotationDeg: Int = 0,
     // RAW-11 Frame Picker: opens the screen's frame picker sheet from the
     // clip-info sheet's action row. Default no-op keeps call sites without
     // a picker working.
@@ -93,7 +114,8 @@ fun EditorTopBar(
     // ---- Copy/Paste settings + Presets (owner request 2026-11-11 §4) ----
     // The clip's CURRENT grade — what "Copy settings" copies and "Save as
     // preset" snapshots. The screen owns the grade state; the sheet only
-    // reads it.
+    // reads it. (Export resolution: the grade's crop fractions feed the
+    // ladder's effective size too.)
     grade: GradeK = GradeK(),
     // True when the in-memory clipboard holds a copied grade (the paste
     // row hides without one — see GradeClipboard's process-death note).
@@ -189,9 +211,12 @@ fun EditorTopBar(
     }
     if (exportSheetOpen) {
         ExportSheet(
-            onExport = { target ->
+            clipInfo = clipInfo,
+            grade = grade,
+            manualRotationDeg = manualRotationDeg,
+            onExport = { target, resolutionW, resolutionH ->
                 exportSheetOpen = false
-                onExport(target)
+                onExport(target, resolutionW, resolutionH)
             },
             onDismiss = { exportSheetOpen = false },
         )
@@ -217,27 +242,109 @@ fun EditorTopBar(
 
 /**
  * Export choices (design review: "MP4 video + DNG kare; mevcut kuyruk /
- * bildirim korunur"): the same two actions the old FlowRow buttons
- * carried — MP4 video and DNG frame — now in the top-bar sheet. Each
- * tap dismisses the sheet and calls the screen's onExport(Target),
- * which enqueues the job exactly as before.
+ * bildirim korunur"): the same actions the old FlowRow buttons carried —
+ * MP4 video and the two DNG contracts — now in the top-bar sheet. Each
+ * tap dismisses the sheet and calls the screen's widened onExport(Target,
+ * resolutionW, resolutionH), which enqueues the job exactly as before.
+ *
+ * ---- The resolution row (owner request 2026-11-13: "export ederken 4K,
+ * FHD vs cozunurluk ya da orijinal videonun cozunurlugune gore bir oneri
+ * yok") ----
+ *
+ * MP4-only, and labeled so: DNG/PHOTO/LINEAR have no resolution seam —
+ * they develop pixels, they do not encode a frame size. The row shows
+ * the ladder ([ExportResolution.ladder] over the clip's effective size —
+ * the recorded dims composed with manual rotation and the grade's crop,
+ * the exporter's own chain) as chips: Original (the RECOMMENDED default,
+ * star-marked — the source-based recommendation the owner asked for),
+ * UHD/FHD/HD with their RESOLVED size and honest scale flag, and Custom
+ * (two small number fields). Selection is local to the sheet; the MP4
+ * tap hands the SELECTED entry's bound to the job, which re-resolves it
+ * against the true effective size at run time (the bound travels; the
+ * exporter resolves), so a container rotation the sheet could not see
+ * still lands honestly.
+ *
+ * CONTAINER-ORIENTATION GAP, documented honestly: the ladder here
+ * computes with orientationDeg = 0 because the editor's session does
+ * not expose the container's rotation (only the native MP4 session
+ * reads it, at export time). For a rotated-container clip the chips can
+ * therefore show transposed dims; the job carries the RESOLVED BOUND
+ * (not the kind), and the exporter re-resolves against the true
+ * effective size, so the ENCODE is always the honest fits-within
+ * result. The chip label is the only thing that can be off, and only
+ * for rotated-container clips.
+ *
+ * HONEST DEGRADE: when the clip's dims are unknown (0), there is no
+ * ladder to show — the row hides rather than faking sizes, and the MP4
+ * tap exports Original (nulls), exactly what every export before the
+ * picker produced.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ExportSheet(
-    onExport: (Target) -> Unit,
+    clipInfo: ClipInfo,
+    grade: GradeK,
+    manualRotationDeg: Int,
+    onExport: (Target, Int?, Int?) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // The selection state lives here, not in the caller: the sheet is the
+    // only consumer, and a dismissal forgets the choice (a reopen starts
+    // at Original, the recommended default — never a stale pick).
+    var selectedKind by remember { mutableStateOf(ExportResolution.Kind.ORIGINAL) }
+    var customWidthText by remember { mutableStateOf("") }
+    var customHeightText by remember { mutableStateOf("") }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Text(
             stringResource(R.string.editor_export_sheet_title),
             style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
+        // ---- The resolution row (MP4-only) ----
+        // The ladder needs a usable source size; 0 dims (unknown) hide the
+        // row entirely — the honest degrade, never a fake ladder.
+        if (clipInfo.width > 0 && clipInfo.height > 0) {
+            ResolutionRow(
+                clipInfo = clipInfo,
+                grade = grade,
+                manualRotationDeg = manualRotationDeg,
+                selectedKind = selectedKind,
+                customWidthText = customWidthText,
+                customHeightText = customHeightText,
+                onSelect = { kind -> selectedKind = kind },
+                onCustomWidth = { customWidthText = it },
+                onCustomHeight = { customHeightText = it },
+            )
+        }
         ListItem(
             headlineContent = { Text(stringResource(R.string.editor_export_choice_mp4)) },
-            supportingContent = { Text(stringResource(R.string.exports_format_mp4)) },
-            modifier = Modifier.clickable { onExport(Target.MP4) },
+            supportingContent = {
+                // The selected entry's resolved size rides the row (the
+                // chip already showed it; this is the tap-time echo), or
+                // the format alone when the ladder is hidden (unknown
+                // dims — Original, the pre-picker behavior).
+                val format = stringResource(R.string.exports_format_mp4)
+                val dims = if (clipInfo.width > 0 && clipInfo.height > 0) {
+                    resolutionSummary(
+                        clipInfo, grade, manualRotationDeg,
+                        selectedKind, customWidthText, customHeightText,
+                    )
+                } else {
+                    null
+                }
+                Text(if (dims == null) format else "$format · $dims")
+            },
+            modifier = Modifier.clickable {
+                // The MP4 tap carries the SELECTED entry's resolved bound;
+                // Original (the default) passes nulls — byte-identical to
+                // every export before the picker.
+                val bound = resolvedBound(
+                    clipInfo, grade, manualRotationDeg,
+                    selectedKind, customWidthText, customHeightText,
+                )
+                onExport(Target.MP4, bound?.first, bound?.second)
+            },
         )
         ListItem(
             headlineContent = { Text(stringResource(R.string.editor_export_choice_dng)) },
@@ -245,28 +352,268 @@ private fun ExportSheet(
                 // The DNG write format, separate from the RAW source info
                 // (owner request 2026-11-11 section 2): the export always
                 // writes 16-bit uncompressed CFA — that is the writer's
-                // contract, not the sensor's bit depth.
+                // contract, not the sensor's bit depth. No resolution
+                // seam: the DNG develops pixels, it does not encode a
+                // frame size — the nulls are honest, not a fallback.
                 Text(
                     stringResource(R.string.exports_format_dng) + " · " +
                         stringResource(R.string.exports_format_dng_detail)
                 )
             },
-            modifier = Modifier.clickable { onExport(Target.DNG) },
+            modifier = Modifier.clickable { onExport(Target.DNG, null, null) },
         )
         ListItem(
             headlineContent = { Text(stringResource(R.string.editor_export_choice_dng_linear)) },
             supportingContent = {
                 // RAW-13: the second DNG file contract — the demosaiced,
-                // scene-referred linear deliverable, next to the raw mosaic.
+                // scene-referred linear deliverable, next to the raw
+                // mosaic. Same no-seam honesty as the raw DNG above.
                 Text(
                     stringResource(R.string.exports_format_dng_linear) + " · " +
                         stringResource(R.string.exports_format_dng_linear_detail)
                 )
             },
-            modifier = Modifier.clickable { onExport(Target.LINEAR) },
+            modifier = Modifier.clickable { onExport(Target.LINEAR, null, null) },
         )
         Spacer(Modifier.height(16.dp))
     }
+}
+
+/**
+ * The ladder's chips (Original/UHD/FHD/HD + Custom). Each chip's label
+ * carries its RESOLVED size and honest flag; the recommended Original is
+ * star-marked; an upscale is EXPLICITLY marked (never the default); a
+ * codec-refused entry renders disabled with the reason. Custom opens two
+ * small number fields below the chips.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ResolutionRow(
+    clipInfo: ClipInfo,
+    grade: GradeK,
+    manualRotationDeg: Int,
+    selectedKind: ExportResolution.Kind,
+    customWidthText: String,
+    customHeightText: String,
+    onSelect: (ExportResolution.Kind) -> Unit,
+    onCustomWidth: (String) -> Unit,
+    onCustomHeight: (String) -> Unit,
+) {
+    // The effective size: the recorded dims composed with manual
+    // rotation and the grade's crop — the exporter's own chain, so the
+    // chips show the size the encode will really produce. The container
+    // orientation gap is documented on ExportSheet.
+    val source = ExportResolution.effectiveSourceSize(
+        clipInfo.width, clipInfo.height,
+        0, manualRotationDeg,
+        grade.cropX, grade.cropY, grade.cropW, grade.cropH,
+    )
+    // fps feeds ONLY the codec seam (a rate question needs a rate); an
+    // unknown fps (<= 0) skips gating entirely — pass null, the honest
+    // "cannot ask a rate question without a rate". The seam is queried
+    // ONCE per sheet open (remember, no keys: the device's encoders do
+    // not change while the sheet is up, and a fresh instance would
+    // invalidate the ladder memo below on every chip tap).
+    val fps = if (clipInfo.fps > 0f) clipInfo.fps.toDouble() else 0.0
+    val codec = remember(clipInfo.fps) {
+        if (clipInfo.fps > 0f) deviceCodecSupport() else null
+    }
+    val ladder = remember(source, fps, codec) {
+        ExportResolution.ladder(source, fps, codec)
+    }
+    // Resolved OUTSIDE the semantics blocks: their lambdas are not
+    // composable (the refresh chip's pattern).
+    val recommendedLabel = stringResource(R.string.editor_export_recommended)
+    val upscaleLabel = stringResource(R.string.editor_export_upscale)
+    val downscaleLabel = stringResource(R.string.editor_export_downscale)
+    val unsupportedLabel = stringResource(R.string.editor_export_unsupported)
+
+    Text(
+        stringResource(R.string.editor_export_resolution_title),
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+    )
+    FlowRow(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ladder.forEach { choice ->
+            // The chip label: name + resolved size. The recommended entry
+            // carries the star; an upscale carries its honest flag; a
+            // refusal disables the entry (Original is never codec-gated).
+            val name = when (choice.kind) {
+                ExportResolution.Kind.ORIGINAL ->
+                    stringResource(R.string.editor_export_resolution_original)
+                ExportResolution.Kind.UHD -> "UHD"
+                ExportResolution.Kind.FHD -> "FHD"
+                ExportResolution.Kind.HD -> "HD"
+                ExportResolution.Kind.CUSTOM -> stringResource(R.string.editor_export_resolution_custom)
+            }
+            val label = "$name ${choice.width}×${choice.height}"
+            val description = buildString {
+                append(label)
+                if (choice.recommended) append(". $recommendedLabel")
+                when (choice.scale) {
+                    ExportResolution.Scale.UPSCALE -> append(". $upscaleLabel")
+                    ExportResolution.Scale.DOWNSCALE -> append(". $downscaleLabel")
+                    ExportResolution.Scale.EQUAL -> {}
+                }
+                if (!choice.supported) append(". $unsupportedLabel")
+            }
+            FilterChip(
+                selected = selectedKind == choice.kind,
+                onClick = { onSelect(choice.kind) },
+                label = { Text(label) },
+                leadingIcon = if (choice.recommended) {
+                    {
+                        Icon(
+                            Icons.Filled.Star,
+                            contentDescription = null,
+                            modifier = Modifier.heightIn(max = 18.dp),
+                        )
+                    }
+                } else {
+                    null
+                },
+                enabled = choice.supported,
+                modifier = Modifier.semantics { contentDescription = description },
+            )
+        }
+        // Custom rides the same FlowRow as a chip; its fields open below.
+        val customSelected = selectedKind == ExportResolution.Kind.CUSTOM
+        FilterChip(
+            selected = customSelected,
+            onClick = { onSelect(ExportResolution.Kind.CUSTOM) },
+            label = { Text(stringResource(R.string.editor_export_resolution_custom)) },
+        )
+    }
+    if (selectedKind == ExportResolution.Kind.CUSTOM) {
+        // Two small number fields (the preset-name dialog's OutlinedTextField
+        // shape, keyboard-numeric): the typed pair is a BOUND, not a forcing
+        // — the resolve preserves the source aspect (no crop, no stretch).
+        // Invalid/blank input keeps the Custom chip selected but the MP4
+        // tap exports Original (the honest degrade, never a guessed bound).
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = customWidthText,
+                onValueChange = { text ->
+                    onCustomWidth(text.filter { it.isDigit() }.take(5))
+                },
+                label = { Text(stringResource(R.string.editor_export_custom_width)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                value = customHeightText,
+                onValueChange = { text ->
+                    onCustomHeight(text.filter { it.isDigit() }.take(5))
+                },
+                label = { Text(stringResource(R.string.editor_export_custom_height)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/**
+ * The device codec seam (the [ExportResolution.CodecSupport] wiring the
+ * pure rules leave to the caller): the H.264 encoders' verdict on
+ * w x h at fps, via MediaCodecList (the CodecProbe precedent —
+ * REGULAR_CODECS, video/avc). Device-only API: a failure here must not
+ * break the sheet, so it degrades to null (no gating — the encode-time
+ * MediaCodec rejection stays the honest backstop). The seam is consulted
+ * once per sheet open, not per frame.
+ */
+private fun deviceCodecSupport(): ExportResolution.CodecSupport? {
+    return try {
+        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val encoders = list.codecInfos.filter { info ->
+            info.isEncoder && info.supportedTypes.any { it == MediaFormat.MIMETYPE_VIDEO_AVC }
+        }
+        if (encoders.isEmpty()) return null
+        // Any encoder accepting the size/rate supports it (the writer picks
+        // its own encoder; the seam only answers "does one exist").
+        ExportResolution.CodecSupport { w, h, fps ->
+            encoders.any { info ->
+                runCatching {
+                    info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                        .videoCapabilities?.areSizeAndRateSupported(w, h, fps)
+                }.getOrNull() == true
+            }
+        }
+    } catch (e: Exception) {
+        // Device-only API (JVM previews, exotic builds): no seam, no gating.
+        null
+    }
+}
+
+/**
+ * The selected entry's resolved bound (what the MP4 tap carries to the
+ * job): null pair for Original (the pre-picker behavior), the resolved
+ * w x h for a fixed entry, and for Custom the typed pair resolved through
+ * outputSize — INVALID/blank input degrades to null (Original), never a
+ * guessed bound. The exporter re-resolves against the true effective
+ * size at run time; what travels is the BOUND.
+ */
+private fun resolvedBound(
+    clipInfo: ClipInfo,
+    grade: GradeK,
+    manualRotationDeg: Int,
+    kind: ExportResolution.Kind,
+    customWidthText: String,
+    customHeightText: String,
+): Pair<Int, Int>? {
+    if (clipInfo.width <= 0 || clipInfo.height <= 0) return null
+    val source = ExportResolution.effectiveSourceSize(
+        clipInfo.width, clipInfo.height,
+        0, manualRotationDeg,
+        grade.cropX, grade.cropY, grade.cropW, grade.cropH,
+    )
+    return when (kind) {
+        ExportResolution.Kind.ORIGINAL -> null
+        else -> {
+            if (kind == ExportResolution.Kind.CUSTOM) {
+                val w = customWidthText.toIntOrNull() ?: return null
+                val h = customHeightText.toIntOrNull() ?: return null
+                if (w <= 0 || h <= 0) return null
+            }
+            val out = ExportResolution.outputSize(
+                kind, source,
+                customWidthText.toIntOrNull() ?: 0,
+                customHeightText.toIntOrNull() ?: 0,
+            )
+            Pair(out.width, out.height)
+        }
+    }
+}
+
+/**
+ * The MP4 row's supporting line: the selected entry's resolved size
+ * (the tap-time echo of the chip above), or null when there is no honest
+ * answer (Custom with blank fields).
+ */
+private fun resolutionSummary(
+    clipInfo: ClipInfo,
+    grade: GradeK,
+    manualRotationDeg: Int,
+    kind: ExportResolution.Kind,
+    customWidthText: String,
+    customHeightText: String,
+): String? {
+    val bound = resolvedBound(
+        clipInfo, grade, manualRotationDeg,
+        kind, customWidthText, customHeightText,
+    ) ?: return null
+    return "${bound.first}×${bound.second}"
 }
 
 /** One clip-info row: label + value, value falls back to "Unknown". */
