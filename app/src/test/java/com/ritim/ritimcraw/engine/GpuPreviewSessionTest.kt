@@ -38,6 +38,7 @@ class GpuPreviewSessionTest {
         val parities = mutableListOf<Int>() // the fds the parity leg saw
         val surfaces = mutableListOf<Any?>()
         val rendered = mutableListOf<Long>() // the session handles rendered
+        val renderedHighlights = mutableListOf<Float>() // grade.highlights per render
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
         var probeResult: DoubleArray? = null
@@ -70,11 +71,13 @@ class GpuPreviewSessionTest {
             frameIndex: Int,
             maxDim: Int,
             exposureEv: Float,
+            highlights: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
         ): PreviewFrame? {
             rendered += sessionHandle
+            renderedHighlights += highlights
             if (renderThrows) throw IllegalStateException("seam blew up")
             return renderResult
         }
@@ -159,7 +162,7 @@ class GpuPreviewSessionTest {
         assertTrue(session.open())
         val out = session.render(
             clipHandle = 11L, frameIndex = 5, maxDim = 1280,
-            exposureEv = 0.5f, highlightReconstruction = true,
+            exposureEv = 0.5f, highlights = -55f, highlightReconstruction = true,
             keepVignetting = true, tonemap = 1,
         )
         // The SAME instance flows through — the pump publishes it exactly
@@ -167,6 +170,10 @@ class GpuPreviewSessionTest {
         assertSame(frame, out)
         // The seam saw the OPENED handle, never the screen's raw one.
         assertEquals(listOf(7L), develop.rendered)
+        // The stage-15 control rides the seam verbatim — the raw
+        // grade.highlights the shader's uHighlights bind needs (the
+        // export-side FakeGpuDevelop pass-through precedent).
+        assertEquals(listOf(-55f), develop.renderedHighlights)
     }
 
     @Test
@@ -177,7 +184,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
-                exposureEv = 0f, highlightReconstruction = true,
+                exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
             )
         )
@@ -192,7 +199,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
-                exposureEv = 0f, highlightReconstruction = true,
+                exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
             )
         )
@@ -229,7 +236,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
-                exposureEv = 0f, highlightReconstruction = true,
+                exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
             )
         )
@@ -258,6 +265,7 @@ class GpuPreviewSessionTest {
                 frameIndex: Int,
                 maxDim: Int,
                 exposureEv: Float,
+                highlights: Float,
                 highlightReconstruction: Boolean,
                 keepVignetting: Boolean,
                 tonemap: Int,

@@ -3276,8 +3276,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //       -> handle
 //   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
 //   nativePreviewSessionRenderFrame(handle, clipHandle, frameIndex, maxDim,
-//       exposureEv, highlightReconstruction, keepVignetting, tonemap)
-//       -> [w, h, pixels...] int array (the small published stats pack)
+//       exposureEv, highlights, highlightReconstruction, keepVignetting,
+//       tonemap) -> [w, h, pixels...] int array (the small published
+//       stats pack)
 //   nativePreviewSessionClose(handle)
 //
 // Open compiles the same single-source-of-truth Kotlin shader texts
@@ -3297,8 +3298,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 // NOWHERE.
 //
 // The grade controls are exactly the fragment-covered set's knobs (the
-// same narrow-signature lock as the export seam: an uncovered grade
-// cannot even be expressed here).
+// five since the stage-15 highlights port — the same narrow-signature
+// lock as the export seam: an uncovered grade cannot even be expressed
+// here).
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
@@ -3447,7 +3449,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetSurface(
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jint maxDim, jfloat exposureEv,
+        jint frameIndex, jint maxDim, jfloat exposureEv, jfloat highlights,
         jboolean highlightReconstruction, jboolean keepVignetting,
         jint tonemap) {
     gLastErrorCode = 0;
@@ -3539,6 +3541,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.info = reducedInfo;
         req.meta = &meta;
         req.exposureEv = exposureEv;
+        req.highlights = highlights;
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;

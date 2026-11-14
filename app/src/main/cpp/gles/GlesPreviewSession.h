@@ -57,13 +57,15 @@
 // renderFrame()/setSurface() may be called from any ONE other thread
 // (the editor's engine thread); both block on their job.
 //
-// COLOR CONTRACT: the develop pass is M3's verbatim (the same 16
+// COLOR CONTRACT: the develop pass is M3's verbatim (the same 17
 // uniforms, uOetf=1 — the shader's linearToRec709 is the CPU tail's
 // twin, so the stats pack's toByte quantize reproduces developToArgb's
 // pack: toByte(linearToRec709(rgb)) with no second OETF). The grade
-// controls are exactly the fragment-covered set's knobs — the same
-// narrow-signature lock M3 rides (an uncovered grade cannot even be
-// expressed through this API).
+// controls are exactly the fragment-covered set's knobs (five since the
+// stage-15 highlights port: exposure, highlights, highlight
+// reconstruction, vignetting, tonemap) — the same narrow-signature lock
+// M3 rides (an uncovered grade cannot even be expressed through this
+// API).
 //
 // FAILURE SEMANTICS: a GL failure mid-render returns ok=false with the
 // step named in [detail] AND LATCHES the session unhealthy (M3's sticky
@@ -105,6 +107,7 @@ struct PreviewFrameRequest {
     rawedit::FrameInfo info{};
     const rawedit::RawMeta* meta = nullptr;
     float exposureEv = 0.0f;
+    float highlights = 0.0f;  // raw grade.highlights; the shader computes s
     bool highlightReconstruction = true;
     bool keepVignetting = true;
     int tonemap = 0;  // 0 off, 1 ACES, 2-5 AgX (Grade::tonemap)
