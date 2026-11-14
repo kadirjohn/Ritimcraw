@@ -530,6 +530,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         GlesShaderSources.SHARPNESS_V,
         GlesShaderSources.DETAIL_H,
         GlesShaderSources.DETAIL_V,
+        GlesShaderSources.WARP,
         GlesShaderSources.NR_CHROMA_H,
         GlesShaderSources.NR_CHROMA_V,
         GlesShaderSources.NR_LUMA,

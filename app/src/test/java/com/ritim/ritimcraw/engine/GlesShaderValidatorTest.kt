@@ -415,6 +415,17 @@ class GlesShaderValidatorTest {
     }
 
     @Test
+    fun shipped_warp_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.WARP,
+                GlesShaderValidator.Kind.WARP,
+            ),
+        )
+    }
+
+    @Test
     fun the_split_and_fused_develop_fragments_cannot_drift() {
         // The fused DEVELOP_FRAGMENT is the frozen device-parity harness's
         // program: it must stay BYTE-IDENTICAL to the stage bodies the
@@ -502,6 +513,12 @@ class GlesShaderValidatorTest {
             GlesShaderValidator.validate(
                 GlesShaderSources.DETAIL_V,
                 GlesShaderValidator.Kind.DETAIL_V,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.WARP,
+                GlesShaderValidator.Kind.WARP,
             ),
         )
         assertTrue(
@@ -3156,6 +3173,318 @@ class GlesShaderValidatorTest {
                 glslUnsharpStage(base, 9, 9, 1.5f, s), 9, 9, 0.75f, d,
             )
             assertNrParity("chained unsharp s=$s d=$d", 9, 9, cpuChained, glslChained)
+        }
+    }
+
+    // ---- the gyro warp (the post-develop resample, NOT a develop stage):
+    // host numeric parity between the CPU rawedit::warpFrame (core/src/
+    // Warp.cpp, transcribed below with its DOUBLE math verbatim — matInv,
+    // mapPoint, the composite M = Hinv * S loop, the clamps, the uint32
+    // truncation, the edge clamp, the double lerp narrowed to float) and
+    // the shipped WARP GLSL text (transcribed with its FLOAT math
+    // verbatim — the uM homogeneous tap, the isinf/isnan unmappable
+    // checks, the clamps, the int truncation, the edge clamp, the 4-tap
+    // bilinear). The CPU composes M in double and narrows the 9 floats
+    // for the upload — the harness models EXACTLY that crossing (the
+    // GLSL side receives the narrowed float M, the CPU side keeps its
+    // doubles), so this locks the REAL contract: the GPU pass reproduces
+    // the CPU reference after the readback quantize. Pure float32 math
+    // on both sides of the upload — EXACT after quantize, the same claim
+    // shape as the unsharp harness. HONESTY: this locks the two TEXTS'
+    // numeric agreement over the sweep's every branch — the device
+    // compile and the real GLES render stay device-test-pending (the
+    // owner's stabilization-ON export A/B). ----
+
+    // The CPU's matInv, verbatim (double): the adjugate, failing at a
+    // non-finite/|det| < 1e-12 determinant (the caller then no-ops).
+    private fun warpMatInv(m: DoubleArray): DoubleArray? {
+        val c00 = m[4] * m[8] - m[5] * m[7]
+        val c01 = m[5] * m[6] - m[3] * m[8]
+        val c02 = m[3] * m[7] - m[4] * m[6]
+        val det = m[0] * c00 + m[1] * c01 + m[2] * c02
+        if (!det.isFinite() || Math.abs(det) < 1e-12) return null
+        val inv = 1.0 / det
+        return doubleArrayOf(
+            c00 * inv,
+            (m[2] * m[7] - m[1] * m[8]) * inv,
+            (m[1] * m[5] - m[2] * m[4]) * inv,
+            c01 * inv,
+            (m[0] * m[8] - m[2] * m[6]) * inv,
+            (m[2] * m[3] - m[0] * m[5]) * inv,
+            c02 * inv,
+            (m[1] * m[6] - m[0] * m[7]) * inv,
+            (m[0] * m[4] - m[1] * m[3]) * inv,
+        )
+    }
+
+    // The CPU's warpFrame, verbatim (core/src/Warp.cpp): the identity
+    // fast path (H == I and zoom == 1.0 -> the caller's no-draw), the
+    // non-finite zoom no-op, the zoom < 1 clamp, the matInv degenerate
+    // no-op, the composite M = Hinv * S built in double, then the
+    // per-pixel mapPoint with the (0,0) unmappable clamp, the [0, w-1] /
+    // [0, h-1] clamps, the uint32 truncation, the edge clamp and the
+    // double lerp narrowed to float. Returns the output AND the composed
+    // M the caller uploads (null = the CPU no-op: the session skips the
+    // draw — the pass's absence is the identity).
+    private fun cpuWarpFrame(
+        rgb: FloatArray,
+        w: Int,
+        h: Int,
+        hm: DoubleArray,
+        zoomIn: Double,
+        cx: Double,
+        cy: Double,
+    ): Pair<FloatArray, FloatArray?> {
+        var identity = true
+        for (i in 0..8) {
+            val want = if (i == 0 || i == 4 || i == 8) 1.0 else 0.0
+            if (hm[i] != want) {
+                identity = false
+                break
+            }
+        }
+        if (identity && zoomIn == 1.0) return rgb.copyOf() to null
+        if (!zoomIn.isFinite()) return rgb.copyOf() to null
+        var zoom = zoomIn
+        if (zoom < 1.0) zoom = 1.0
+        val hInv = warpMatInv(hm) ?: return rgb.copyOf() to null
+        val m = DoubleArray(9)
+        val s = 1.0 / zoom
+        for (i in 0..2) {
+            m[i * 3 + 0] = hInv[i * 3 + 0] * s
+            m[i * 3 + 1] = hInv[i * 3 + 1] * s
+            m[i * 3 + 2] = hInv[i * 3 + 0] * (cx - cx * s) +
+                hInv[i * 3 + 1] * (cy - cy * s) +
+                hInv[i * 3 + 2]
+        }
+        val out = FloatArray(w * h * 3)
+        val maxU = w - 1.0
+        val maxV = h - 1.0
+        val stride = w * 3
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                // mapPoint, verbatim: the homogeneous tap, the |w| < 1e-12
+                // and finiteness guards, the (0,0) unmappable clamp.
+                var fx = 0.0
+                var fy = 0.0
+                val u = m[0] * x + m[1] * y + m[2]
+                val v = m[3] * x + m[4] * y + m[5]
+                val ww = m[6] * x + m[7] * y + m[8]
+                if (ww.isFinite() && Math.abs(ww) >= 1e-12) {
+                    val mx = u / ww
+                    val my = v / ww
+                    if (mx.isFinite() && my.isFinite()) {
+                        fx = mx
+                        fy = my
+                    }
+                }
+                if (fx < 0.0) fx = 0.0
+                if (fx > maxU) fx = maxU
+                if (fy < 0.0) fy = 0.0
+                if (fy > maxV) fy = maxV
+                val x0 = fx.toInt() // the uint32 cast: fx >= 0 after the clamp
+                val y0 = fy.toInt()
+                val x1 = if (x0 + 1 < w) x0 + 1 else x0
+                val y1 = if (y0 + 1 < h) y0 + 1 else y0
+                val ax = fx - x0
+                val ay = fy - y0
+                val i00 = (y0 * stride + x0 * 3)
+                val i01 = (y0 * stride + x1 * 3)
+                val i10 = (y1 * stride + x0 * 3)
+                val i11 = (y1 * stride + x1 * 3)
+                val dst = (y * stride + x * 3)
+                for (c in 0..2) {
+                    val top = rgb[i00 + c] + (rgb[i01 + c] - rgb[i00 + c]) * ax
+                    val bot = rgb[i10 + c] + (rgb[i11 + c] - rgb[i10 + c]) * ax
+                    out[dst + c] = (top + (bot - top) * ay).toFloat()
+                }
+            }
+        }
+        // The composed M, narrowed to the 9 floats the JNI seam uploads
+        // (the CPU keeps its doubles; the GPU receives these floats).
+        return out to FloatArray(9) { m[it].toFloat() }
+    }
+
+    // The shipped WARP GLSL, transcribed verbatim with FLOAT math (the
+    // uM * vec3(x, y, 1.0) tap — the upload's transpose=GL_TRUE makes the
+    // column-vector product the CPU's row-major tap exactly; the isinf/
+    // isnan unmappable checks; the clamps; the int truncation; the edge
+    // clamp; the 4-tap bilinear). mF is the narrowed float M the upload
+    // carries; active = false is the session's skipped draw (the input
+    // passes through untouched — the pass's absence is the identity).
+    private fun glslWarpPass(
+        rgb: FloatArray,
+        w: Int,
+        h: Int,
+        mF: FloatArray,
+        active: Boolean,
+    ): FloatArray {
+        if (!active) return rgb.copyOf()
+        val out = FloatArray(w * h * 3)
+        val stride = w * 3
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                // vec3 h = uM * vec3(float(g.x), float(g.y), 1.0); — with
+                // the transposed upload, uM's columns are the CPU's rows.
+                val hx = mF[0] * x + mF[1] * y + mF[2]
+                val hy = mF[3] * x + mF[4] * y + mF[5]
+                val hz = mF[6] * x + mF[7] * y + mF[8]
+                var ox = 0.0f
+                var oy = 0.0f
+                // if (!isinf(h.z) && !isnan(h.z) && abs(h.z) >= 1e-12) —
+                // the ES 3.00 spelling of isfinite (not a builtin there).
+                if (!hz.isInfinite() && !hz.isNaN() && Math.abs(hz) >= 1e-12f) {
+                    val mx = hx / hz
+                    val my = hy / hz
+                    if (!mx.isInfinite() && !mx.isNaN() &&
+                        !my.isInfinite() && !my.isNaN()
+                    ) {
+                        ox = mx
+                        oy = my
+                    }
+                }
+                val fx = ox.coerceIn(0.0f, (w - 1).toFloat())
+                val fy = oy.coerceIn(0.0f, (h - 1).toFloat())
+                val x0 = fx.toInt()
+                val y0 = fy.toInt()
+                val x1 = if (x0 + 1 < w) x0 + 1 else x0
+                val y1 = if (y0 + 1 < h) y0 + 1 else y0
+                val ax = fx - x0
+                val ay = fy - y0
+                val i00 = (y0 * stride + x0 * 3)
+                val i01 = (y0 * stride + x1 * 3)
+                val i10 = (y1 * stride + x0 * 3)
+                val i11 = (y1 * stride + x1 * 3)
+                val dst = (y * stride + x * 3)
+                for (c in 0..2) {
+                    val top = rgb[i00 + c] + (rgb[i01 + c] - rgb[i00 + c]) * ax
+                    val bot = rgb[i10 + c] + (rgb[i11 + c] - rgb[i10 + c]) * ax
+                    out[dst + c] = top + (bot - top) * ay
+                }
+            }
+        }
+        return out
+    }
+
+    @Test
+    fun warp_host_parity_the_glsl_pass_matches_the_cpu_warpframe_over_the_sweep() {
+        // The sweep the brief names: identity, a small rotation, and the
+        // zoom arms 1.0 / 1.25 (each over a NON-TRIVIAL H, so the rotation
+        // and the zoom compose), plus the degenerate cases the CPU folds
+        // into the caller's inactive flag (a singular H and a non-finite
+        // zoom). 12x12 exercises the interior AND every border clamp.
+        val w = 12
+        val h = 12
+        val cx = (w - 1) / 2.0
+        val cy = (h - 1) / 2.0
+        // A non-trivial H: a small rotation about the buffer center with a
+        // slight perspective term, normalized so the determinant is well
+        // away from the 1e-12 failure. Identity stays exact for the arm.
+        fun rotH(deg: Double): DoubleArray {
+            val t = Math.toRadians(deg)
+            val cos = Math.cos(t)
+            val sin = Math.sin(t)
+            // The rotation about (cx, cy), composed as T(c) * R * T(-c),
+            // with a mild perspective row (the gyro's own shape).
+            val cosC = cos * cx
+            val sinC = sin * cx
+            val cosC2 = cos * cy
+            val sinC2 = sin * cy
+            return doubleArrayOf(
+                cos, -sin, cx - cosC + sinC2,
+                sin, cos, cy - sinC - cosC2,
+                0.0002, 0.0001, 1.0,
+            )
+        }
+        val identityH = doubleArrayOf(
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        )
+        val cases = listOf(
+            "identity" to (identityH to 1.0),
+            "small-rot" to (rotH(0.7) to 1.0),
+            "rot-zoom-1.25" to (rotH(1.4) to 1.25),
+            "zoom-1.25" to (identityH to 1.25),
+            "zoom-2.0" to (identityH to 2.0),
+            "zoom-0.8-clamped" to (identityH to 0.8),
+        )
+        for ((name, hh) in cases) {
+            val (hm, zoom) = hh
+            val base = warpSyntheticFrame(w, h)
+            // The CPU side: the full double-math reference, returning the
+            // composed float M the seam uploads (null = the no-draw).
+            val (cpuOut, mF) = cpuWarpFrame(base, w, h, hm, zoom, cx, cy)
+            // The identity / degenerate folds: the CPU no-ops, so the
+            // session skips the draw — the GLSL side models the skip.
+            val active = mF != null
+            val glslOut = glslWarpPass(base, w, h, mF ?: FloatArray(9), active)
+            if (!active) {
+                // The identity no-draw assertion: the CPU's fast path is
+                // byte-identical, and the session's skipped draw passes
+                // the input through — the outputs must be EXACTLY the
+                // input, byte for byte, not a resampled copy.
+                assertWarpIdentity(name, base, cpuOut, glslOut)
+                continue
+            }
+            assertNrParity("warp $name", w, h, cpuOut, glslOut)
+        }
+        // The degenerate H: singular (a zero row), so matInv fails and
+        // the CPU no-ops — the session's inactive fold.
+        val singular = doubleArrayOf(
+            1.0, 2.0, 3.0,
+            2.0, 4.0, 6.0,
+            0.0, 0.0, 1.0,
+        )
+        val base = warpSyntheticFrame(w, h)
+        val (cpuOut, mF) = cpuWarpFrame(base, w, h, singular, 1.25, cx, cy)
+        assertTrue("the singular H must fold inactive", mF == null)
+        val glslOut = glslWarpPass(base, w, h, FloatArray(9), false)
+        assertWarpIdentity("singular-H", base, cpuOut, glslOut)
+        // The non-finite zoom: the CPU's honest no-op, the same fold.
+        val (cpuNf, mNf) = cpuWarpFrame(base, w, h, rotH(0.7), Double.NaN, cx, cy)
+        assertTrue("the NaN zoom must fold inactive", mNf == null)
+        val glslNf = glslWarpPass(base, w, h, FloatArray(9), false)
+        assertWarpIdentity("nan-zoom", base, cpuNf, glslNf)
+    }
+
+    // The synthetic frame: a gradient + deterministic per-pixel variation
+    // + a hard edge + saturated corners — every bilinear branch (interior
+    // taps, border clamps, the (0,0) corner) sees a DIFFERENT value, so a
+    // tap-order or clamp defect cannot pass by coincidence.
+    private fun warpSyntheticFrame(w: Int, h: Int): FloatArray {
+        val rgb = FloatArray(w * h * 3)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val base = 0.15f + 0.03f * x + 0.02f * y
+                val n = ((x * 5 + y * 11) % 7).toFloat() / 7.0f - 0.5f
+                var r = base + 0.04f * n
+                var g = base + 0.02f * n
+                var b = base - 0.04f * n
+                if (x >= w / 2) {
+                    r += 0.45f; g += 0.35f; b += 0.25f
+                }
+                if (x == 0 && y == 0) {
+                    r = 1.2f; g = 0.04f; b = 0.08f
+                }
+                if (x == w - 1 && y == h - 1) {
+                    r = 0.03f; g = 0.85f; b = 1.3f
+                }
+                val i = (y * w + x) * 3
+                rgb[i] = r; rgb[i + 1] = g; rgb[i + 2] = b
+            }
+        }
+        return rgb
+    }
+
+    // The identity no-draw assertion: BOTH outputs are byte-identical to
+    // the input (the CPU's `return src;` fast path AND the session's
+    // skipped draw), quantized — never a resampled copy (a resampling
+    // pass on an identity map would blur).
+    private fun assertWarpIdentity(name: String, base: FloatArray, cpuOut: FloatArray, glslOut: FloatArray) {
+        for (i in base.indices) {
+            assertEquals("$name: the CPU identity fast path must be byte-identical at $i", toByte(base[i]), toByte(cpuOut[i]))
+            assertEquals("$name: the skipped draw must pass the input through at $i", toByte(base[i]), toByte(glslOut[i]))
         }
     }
 

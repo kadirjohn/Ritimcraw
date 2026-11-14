@@ -304,9 +304,15 @@ void main() {
      *      0.018, else 1.099*pow(lin, 0.45) - 0.099), unclamped, exactly
      *      as the CPU tail leaves it; applied only when uOetf == 1.
      *
-     * Stages NOT covered by THIS fused text (honest): the gyro warp —
-     * the BackendRules stage-coverage rules fall back to CPU with a
-     * reason line whenever it is active in the grade. Stages 21-22
+     * Stages NOT covered by THIS fused text (honest): none of the
+     * fragment-covered stages any more — the gyro warp joined the
+     * covered set with the warp port (it is not a develop stage at
+     * all: the CPU runs it after developCpu, on the linear output), and
+     * the session chain runs it as the separate WARP pass between the
+     * unsharp passes and the tail, exactly where the CPU pipeline
+     * applies it; the warp is UNCONDITIONALLY covered (pure math, no
+     * texture-format leg), so BackendRules carries no warp token in
+     * its runtime vocabulary. Stages 21-22
      * (sharpness/detail) are fragment-covered since the sharpness/detail
      * port, but NOT by this fused pass: they are neighborhood stages,
      * so the session chain runs them as the separate SHARPNESS_H/
@@ -397,15 +403,20 @@ void main() {
     // ---- the develop chain's shared text fragments (the NR port's split) --
     //
     // The session chain draws the develop stages as PRE -> [NR] ->
-    // POST(9-20) -> [SHARPNESS/DETAIL] -> TAIL(23+24+OETF) through RGBA32F
-    // intermediates (DEVELOP_FRAGMENT_PRE, the NR_* passes,
-    // DEVELOP_FRAGMENT_POST, the four unsharp passes and
-    // DEVELOP_FRAGMENT_TAIL below); the fused parity pass recomposes
+    // POST(9-20) -> [SHARPNESS/DETAIL] -> [WARP, gated per frame] ->
+    // TAIL(23+24+OETF) through RGBA32F intermediates
+    // (DEVELOP_FRAGMENT_PRE, the NR_* passes, DEVELOP_FRAGMENT_POST, the
+    // four unsharp passes, the WARP pass and DEVELOP_FRAGMENT_TAIL
+    // below); the fused parity pass recomposes
     // THE SAME fragments, so the split chain and the frozen harness cannot
     // drift. Each fragment is the fused pass's own text, cut at a copy
     // boundary (the CPU's stage 6/9 boundary - the NR stages' position in
     // rawedit::developCpu - and the 20/23 boundary, the unsharp stages'
-    // position).
+    // position). The WARP pass is NOT a develop stage and is not part of
+    // the fused recomposition: the CPU pipeline runs the warp after
+    // developCpu on its linear output, so the chain draws it between the
+    // unsharp passes and the tail, and the fused parity pass never
+    // includes it (the parity harness pins the warp off).
 
     /** Stages 1-6's uniforms (the pre-pass set) - the fused pass's own text. */
     private const val kDevelopPreUniforms: String = """uniform highp usampler2D uCfa;  // RAW CFA: GL_R16UI, uint16 samples 0..65535, row-major CPU order
@@ -2198,6 +2209,113 @@ void main() {
     }
     // Gate closed: exact pass-through (the CPU's amount-0 shape).
     oCol = vec4(orig, 1.0);
+}
+"""
+
+    /**
+     * Gyro warp (the stabilization resample) — the frozen CPU reference
+     * rawedit::warpFrame's per-pixel map, verbatim (core/src/Warp.cpp).
+     * The warp is NOT a develop stage: the CPU pipeline runs it AFTER
+     * developCpu, on the linear output, so the session chain draws this
+     * pass between the four unsharp passes (21/22) and the tail
+     * (23 + 24 + OETF) — the OETF stays in the tail, applied exactly
+     * once.
+     *
+     * The composite map: p_src = Hinv( c + (p_out - c)/Z ) with Z =
+     * max(zoom, 1) and c the buffer center. The CALLER resolves the
+     * frame's stabilization plan on its own thread (the plan cache is
+     * not GL-thread-safe), composes M = Hinv * S ONCE per frame (S the
+     * scale-about-center map — the CPU's own loop in warpFrame), narrows
+     * the 9 doubles to floats and uploads them here row-major with
+     * glUniformMatrix3fv(..., GL_TRUE, ...) — the uCam2rgb idiom: the
+     * transpose makes `uM * vec3(x, y, 1.0)` the CPU mapPoint's exact
+     * row-major homogeneous tap (u = m[0]x + m[1]y + m[2],
+     * v = m[3]x + m[4]y + m[5], w = m[6]x + m[7]y + m[8]).
+     *
+     * Semantics locked to the CPU, verbatim: an unmappable output pixel
+     * (a non-finite or ~zero w — |w| < 1e-12 — or a non-finite landing
+     * point) clamps to (0, 0), the documented edge behavior (isfinite
+     * is not an ES 3.00 builtin, so the check is isinf/isnan); the
+     * mapped coordinates clamp to [0, w-1] / [0, h-1]; the integer
+     * truncation is the CPU's uint32 cast (floor — the coordinates are
+     * >= 0 after the clamp); x1/y1 are the EDGE clamp (x0 + 1 while
+     * inside, else x0 — never a mirror); the bilinear tap order is
+     * p00 = (x0, y0), p01 = (x1, y0), p10 = (x0, y1), p11 = (x1, y1),
+     * the top/bot row lerp then the vertical lerp.
+     *
+     * NO in-shader gate: the caller folds inactive (no gyro / the grade
+     * not stabilizing), identity (H == I and zoom == 1 — the CPU's
+     * byte-identical fast path) and degenerate (a singular H, a
+     * non-finite zoom) plans into warpActive = false and the session
+     * SKIPS the draw entirely — the pass's absence is the identity,
+     * because a resampling pass on an identity map would blur.
+     *
+     * uSrc rides unit 1 (the chain's pass-source texture, rebound per
+     * draw); uSize is the buffer dims; the output is the warped RGB,
+     * alpha 1.
+     */
+    const val WARP: String = """#version 300 es
+
+// Gyro warp - the CPU rawedit::warpFrame's per-pixel resample, verbatim
+// (core/src/Warp.cpp). The caller resolves the frame's stabilization
+// plan on its own thread and composes the inverse-sampling map ONCE per
+// frame - M = Hinv * S, S the scale-about-center map at zoom Z - and
+// uploads the 9 floats here row-major (transpose=GL_TRUE: the uCam2rgb
+// idiom, so uM * vec3(x, y, 1.0) is the CPU mapPoint's exact row tap).
+// NO gate: the session skips this draw entirely when the warp is
+// inactive - the pass's ABSENCE is the identity (a resample on an
+// identity map would blur). See the Kotlin doc above for the contract.
+
+precision highp float;
+precision highp int;
+
+uniform highp sampler2D uSrc;  // the chain's pass-source texture (unit 1)
+uniform ivec2 uSize;           // width/height in pixels
+uniform mat3 uM;               // the composed map M = Hinv * S, row-major
+
+out vec4 oCol;
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    // The CPU's mapPoint, verbatim: the homogeneous tap, then the
+    // perspective divide. Unmappable pixels (a non-finite or ~zero w,
+    // or a non-finite landing) clamp to (0, 0) - the CPU's documented
+    // edge behavior. isfinite is not an ES 3.00 builtin, so the check
+    // is isinf/isnan.
+    vec3 h = uM * vec3(float(g.x), float(g.y), 1.0);
+    float ox = 0.0;
+    float oy = 0.0;
+    if (!isinf(h.z) && !isnan(h.z) && abs(h.z) >= 1e-12) {
+        float mx = h.x / h.z;
+        float my = h.y / h.z;
+        if (!isinf(mx) && !isnan(mx) && !isinf(my) && !isnan(my)) {
+            ox = mx;
+            oy = my;
+        }
+    }
+    // The CPU's clamps, verbatim: [0, w-1] / [0, h-1], truncation (the
+    // coordinates are >= 0 after the clamp, so int() is the CPU's
+    // uint32 cast), and the EDGE clamp - x1 is x0 + 1 while inside,
+    // else x0; never a mirror.
+    float fx = clamp(ox, 0.0, float(uSize.x - 1));
+    float fy = clamp(oy, 0.0, float(uSize.y - 1));
+    int x0 = int(fx);
+    int y0 = int(fy);
+    int x1 = x0 + 1 < uSize.x ? x0 + 1 : x0;
+    int y1 = y0 + 1 < uSize.y ? y0 + 1 : y0;
+    float ax = fx - float(x0);
+    float ay = fy - float(y0);
+    // The CPU's bilinear, verbatim tap order: p00 = (x0, y0),
+    // p01 = (x1, y0), p10 = (x0, y1), p11 = (x1, y1); the top/bot row
+    // lerp, then the vertical lerp.
+    vec3 p00 = texelFetch(uSrc, ivec2(x0, y0), 0).rgb;
+    vec3 p01 = texelFetch(uSrc, ivec2(x1, y0), 0).rgb;
+    vec3 p10 = texelFetch(uSrc, ivec2(x0, y1), 0).rgb;
+    vec3 p11 = texelFetch(uSrc, ivec2(x1, y1), 0).rgb;
+    vec3 top = p00 + (p01 - p00) * ax;
+    vec3 bot = p10 + (p11 - p10) * ax;
+    oCol = vec4(top + (bot - top) * ay, 1.0);
 }
 """
 

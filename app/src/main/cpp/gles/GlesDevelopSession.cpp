@@ -450,6 +450,14 @@ struct DevelopSession::Impl {
     GLuint sharpnessVProgram = 0;
     GLuint detailHProgram = 0;
     GLuint detailVProgram = 0;
+    // The gyro warp pass (NOT a develop stage: the CPU runs warpFrame
+    // after developCpu, on the linear output). Drawn between the four
+    // unsharp passes and the tail, gated per FRAME (req.warpActive) —
+    // the caller composes M = Hinv * S on its own thread and folds
+    // inactive/identity/degenerate plans into warpActive = false, so
+    // the pass's absence is the identity (a resample on an identity map
+    // would blur).
+    GLuint warpProgram = 0;
     GLuint nrChromaHProgram = 0;
     GLuint nrChromaVProgram = 0;
     GLuint nrLumaProgram = 0;
@@ -501,6 +509,11 @@ struct DevelopSession::Impl {
     GLint detailHSrcLoc = -1, detailHSizeLoc = -1, detailHStrengthLoc = -1;
     GLint detailVSrcLoc = -1, detailVGuideLoc = -1, detailVSizeLoc = -1,
           detailVStrengthLoc = -1;
+    // The gyro warp pass's own set (uSrc/uSize/uM), on warpProgram —
+    // the chain-pass shape. uM uploads row-major with transpose=GL_TRUE
+    // (the uCam2rgb idiom), so the shader's uM * vec3(x, y, 1) is the
+    // CPU mapPoint's exact row tap.
+    GLint warpSrcLoc = -1, warpSizeLoc = -1, warpMLoc = -1;
     // POST's own uSrc/uSize (the chain-intermediate input the NR position
     // feeds) and the NR passes' uniform sets, each on its own program.
     GLint postSrcLoc = -1, postSizeLoc = -1;
@@ -614,6 +627,7 @@ struct DevelopSession::Impl {
                         const std::string& sharpnessVSource,
                         const std::string& detailHSource,
                         const std::string& detailVSource,
+                        const std::string& warpFragmentSource,
                         const std::string& nrChromaHSource,
                         const std::string& nrChromaVSource,
                         const std::string& nrLumaSource,
@@ -722,6 +736,7 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
         const std::string& sharpnessVSource,
         const std::string& detailHSource,
         const std::string& detailVSource,
+        const std::string& warpFragmentSource,
         const std::string& nrChromaHSource,
         const std::string& nrChromaVSource,
         const std::string& nrLumaSource,
@@ -741,7 +756,7 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
     bool initOk = false;
     std::string initDetail;
 
-    // Capture list is explicit on purpose: [impl] and the fourteen sources
+    // Capture list is explicit on purpose: [impl] and the fifteen sources
     // BY VALUE (a `[&]` would dangle — this thread outlives open()'s frame),
     // the init-handshake locals by reference (safe: each is touched
     // exactly once, before the notify, and open() does not return until
@@ -749,8 +764,8 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
     impl->glThread = std::thread(
         [impl, vertexSource, vertex310Source, preFragmentSource,
          postFragmentSource, tailFragmentSource, sharpnessHSource,
-         sharpnessVSource, detailHSource, detailVSource, nrChromaHSource,
-         nrChromaVSource, nrLumaSource, storeFragmentSource,
+         sharpnessVSource, detailHSource, detailVSource, warpFragmentSource,
+         nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
          blitFragmentSource, &initMutex,
          &initCv, &initReported, &initOk, &initDetail]() {
             std::string d;
@@ -758,6 +773,7 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
                 vertexSource, vertex310Source, preFragmentSource,
                 postFragmentSource, tailFragmentSource, sharpnessHSource,
                 sharpnessVSource, detailHSource, detailVSource,
+                warpFragmentSource,
                 nrChromaHSource, nrChromaVSource,
                 nrLumaSource, storeFragmentSource, blitFragmentSource, &d);
             // Report init's outcome to open() FIRST, then serve the loop
@@ -817,6 +833,7 @@ bool DevelopSession::Impl::initOnGlThread(
         const std::string& sharpnessVSource,
         const std::string& detailHSource,
         const std::string& detailVSource,
+        const std::string& warpFragmentSource,
         const std::string& nrChromaHSource,
         const std::string& nrChromaVSource,
         const std::string& nrLumaSource,
@@ -916,6 +933,15 @@ bool DevelopSession::Impl::initOnGlThread(
     detailVProgram = linkProgram(vertShader.id, detailVFragShader.id,
                                  "detail-v", detail);
     if (detailVProgram == 0) return false;
+    // The gyro warp pass (NOT a develop stage — the CPU runs warpFrame
+    // after developCpu, on the linear output). Drawn between the unsharp
+    // passes and the tail, gated per FRAME at the session level.
+    GlShader warpFragShader;
+    warpFragShader.id = compileShader(GL_FRAGMENT_SHADER, warpFragmentSource,
+                                      "warp-fragment", detail);
+    if (warpFragShader.id == 0) return false;
+    warpProgram = linkProgram(vertShader.id, warpFragShader.id, "warp", detail);
+    if (warpProgram == 0) return false;
     // The three spatial-NR passes (the CPU's denoiseChromaImpl as H+V —
     // the vertical pass reads the ORIGINAL pre-NR image as its luma
     // guide — and denoiseLumaImpl as the one-pass 3x3 bilateral).
@@ -1094,6 +1120,15 @@ bool DevelopSession::Impl::initOnGlThread(
         *detail = "shader-contract: missing a detail-v uniform";
         return false;
     }
+    // The gyro warp pass's own set: uSrc/uSize/uM (the composed map,
+    // uploaded row-major with transpose=GL_TRUE at draw time).
+    warpSrcLoc = glGetUniformLocation(warpProgram, "uSrc");
+    warpSizeLoc = glGetUniformLocation(warpProgram, "uSize");
+    warpMLoc = glGetUniformLocation(warpProgram, "uM");
+    if (warpSrcLoc < 0 || warpSizeLoc < 0 || warpMLoc < 0) {
+        *detail = "shader-contract: missing a warp uniform";
+        return false;
+    }
     // The NR passes' own small sets: uSrc/uSize/uChromaDenoise on the
     // horizontal pass, uSrc/uGuide/uSize/uChromaDenoise on the vertical
     // (uGuide = the ORIGINAL pre-NR image — the CPU's second pass keeps
@@ -1178,6 +1213,9 @@ bool DevelopSession::Impl::initOnGlThread(
     glUseProgram(detailVProgram);
     glUniform1i(detailVSrcLoc, 1);
     glUniform1i(detailVGuideLoc, 4);  // the stage's input guide: unit 4
+    glUseProgram(warpProgram);
+    glUniform1i(warpSrcLoc, 1);  // warp source: GL_TEXTURE1 (the chain's
+                                 // live intermediate, rebound per draw)
     glUseProgram(nrChromaHProgram);
     glUniform1i(nrChromaHSrcLoc, 1);  // NR sources: GL_TEXTURE1 (rebound
     glUseProgram(nrChromaVProgram);   // per draw along the chain)
@@ -1808,7 +1846,36 @@ bool DevelopSession::Impl::developPass(const DevelopFrameRequest& req,
         if (glErrorAfter("glDrawArrays(detail-v)", &out.detail) != GL_NO_ERROR) return false;
         chainTex = detailOut;
     }
-    // --- draw 10: the TAIL pass (stages 23+24+OETF) into developTex ---------
+    // --- draw 10: the gyro warp pass, gated per FRAME -----------------------
+    // NOT a develop stage: the CPU pipeline runs rawedit::warpFrame AFTER
+    // developCpu, on the linear output, so the chain draws it here — after
+    // the unsharp passes, BEFORE the tail, so the OETF stays in the tail
+    // and is applied exactly once. The CALLER resolved the frame's
+    // stabilization plan on its own thread, composed M = Hinv * S once and
+    // folded inactive / identity / degenerate plans into warpActive = false
+    // — the CPU's identity fast path is byte-identical, so the pass's
+    // ABSENCE is the identity (a resampling pass on an identity map would
+    // blur). There is NO in-shader gate; req.warpActive is the only lock.
+    if (req.warpActive) {
+        // The slot rotation, recomputed from the chain's live texture: the
+        // warp reads chainTex (unit 1) and writes the next slot — no draw
+        // reads and writes the same texture.
+        slotIndex = (chainTex == texA) ? 0 : ((chainTex == texB) ? 1 : 2);
+        const GLuint warpOut = slotAfter[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)];
+        glUseProgram(warpProgram);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, chainTex);
+        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)]);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glUniform2i(warpSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+        // Row-major CPU composite map, transpose=GL_TRUE — the uCam2rgb
+        // idiom (the shader's uM * vec3(x, y, 1) is mapPoint's exact tap).
+        glUniformMatrix3fv(warpMLoc, 1, GL_TRUE, req.warpM);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(warp)", &out.detail) != GL_NO_ERROR) return false;
+        chainTex = warpOut;
+    }
+    // --- draw 11: the TAIL pass (stages 23+24+OETF) into developTex ---------
     glUseProgram(tailProgram);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, chainTex);
@@ -2261,6 +2328,7 @@ void DevelopSession::Impl::teardownOnGlThread() {
     if (sharpnessVProgram != 0) { glDeleteProgram(sharpnessVProgram); sharpnessVProgram = 0; }
     if (detailHProgram != 0) { glDeleteProgram(detailHProgram); detailHProgram = 0; }
     if (detailVProgram != 0) { glDeleteProgram(detailVProgram); detailVProgram = 0; }
+    if (warpProgram != 0) { glDeleteProgram(warpProgram); warpProgram = 0; }
     if (nrChromaHProgram != 0) { glDeleteProgram(nrChromaHProgram); nrChromaHProgram = 0; }
     if (nrChromaVProgram != 0) { glDeleteProgram(nrChromaVProgram); nrChromaVProgram = 0; }
     if (nrLumaProgram != 0) { glDeleteProgram(nrLumaProgram); nrLumaProgram = 0; }

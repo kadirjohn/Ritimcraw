@@ -3027,13 +3027,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
         jstring preFragmentSource, jstring postFragmentSource,
         jstring tailFragmentSource, jstring sharpnessHSource,
         jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
-        jstring nrChromaHSource, jstring nrChromaVSource,
+        jstring warpFragmentSource, jstring nrChromaHSource,
+        jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
         jstring blitFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The fourteen sources, each read with the nativeGlesFragmentParity pattern
+    // The fifteen sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -3125,6 +3126,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
     const std::string detailV(detailVChars);
     env->ReleaseStringUTFChars(detailVSource, detailVChars);
 
+    const char* warpChars = env->GetStringUTFChars(warpFragmentSource, nullptr);
+    if (warpChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the warp source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string warp(warpChars);
+    env->ReleaseStringUTFChars(warpFragmentSource, warpChars);
+
     const char* nrChromaHChars = env->GetStringUTFChars(nrChromaHSource, nullptr);
     if (nrChromaHChars == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
@@ -3196,8 +3207,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
     std::string detail;
     std::unique_ptr<gles::DevelopSession> session =
         gles::DevelopSession::open(v300, v310, pre, post, tail, sharpnessH,
-                                   sharpnessV, detailH, detailV, nrChromaH,
-                                   nrChromaV, nrLuma, store, blit, &detail);
+                                   sharpnessV, detailH, detailV, warp,
+                                   nrChromaH, nrChromaV, nrLuma, store, blit,
+                                   &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "develop session: " + detail +
@@ -3586,13 +3598,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
         jstring preFragmentSource, jstring postFragmentSource,
         jstring tailFragmentSource, jstring sharpnessHSource,
         jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
-        jstring nrChromaHSource, jstring nrChromaVSource,
+        jstring warpFragmentSource, jstring nrChromaHSource,
+        jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
         jstring windowFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The fourteen sources, each read with the nativeGlesFragmentParity pattern
+    // The fifteen sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -3684,6 +3697,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
     const std::string detailV(detailVChars);
     env->ReleaseStringUTFChars(detailVSource, detailVChars);
 
+    const char* warpChars = env->GetStringUTFChars(warpFragmentSource, nullptr);
+    if (warpChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the warp source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string warp(warpChars);
+    env->ReleaseStringUTFChars(warpFragmentSource, warpChars);
+
     const char* nrChromaHChars = env->GetStringUTFChars(nrChromaHSource, nullptr);
     if (nrChromaHChars == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
@@ -3755,8 +3778,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
     std::string detail;
     std::unique_ptr<gles::PreviewSession> session =
         gles::PreviewSession::open(v300, v310, pre, post, tail, sharpnessH,
-                                   sharpnessV, detailH, detailV, nrChromaH,
-                                   nrChromaV, nrLuma, store, window, &detail);
+                                   sharpnessV, detailH, detailV, warp,
+                                   nrChromaH, nrChromaV, nrLuma, store, window,
+                                   &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "preview session: " + detail +

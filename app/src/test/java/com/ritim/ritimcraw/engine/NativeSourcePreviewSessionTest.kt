@@ -64,6 +64,7 @@ class NativeSourcePreviewSessionTest {
                 GlesShaderSources.SHARPNESS_V,
                 GlesShaderSources.DETAIL_H,
                 GlesShaderSources.DETAIL_V,
+                GlesShaderSources.WARP,
                 GlesShaderSources.NR_CHROMA_H,
                 GlesShaderSources.NR_CHROMA_V,
                 GlesShaderSources.NR_LUMA,
@@ -206,7 +207,7 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun open_carries_exactly_the_fourteen_shader_sources() {
+    fun open_carries_exactly_the_fifteen_shader_sources() {
         // The session compiles the Kotlin single-source-of-truth texts —
         // the same four sources the M3 seam rides PLUS the window pass's
         // own WINDOW_FRAGMENT (the aspect-fit letterbox draw), host-validated
@@ -215,10 +216,12 @@ class NativeSourcePreviewSessionTest {
         // (pre/post) plus the three NR fragments (chroma-h, chroma-v,
         // luma); since the sharpness/detail port the split is the
         // THREE-WAY pair (pre / pointwise post / tail) plus the four
-        // unsharp fragments — fourteen sources total. A fifteenth source
-        // would be a new program, which is a different session.
+        // unsharp fragments; since the gyro warp port the warp fragment
+        // joins between the unsharp passes and the tail — fifteen
+        // sources total. A sixteenth source would be a new program,
+        // which is a different session.
         val open = method("jniPreviewSessionOpen")
-        assertEquals(14, open.parameterCount)
+        assertEquals(15, open.parameterCount)
     }
 
     @Test
@@ -244,14 +247,15 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun the_fourteen_sources_are_the_validated_single_source_of_truth() {
+    fun the_fifteen_sources_are_the_validated_single_source_of_truth() {
         // The exact constants open() will be called with (commit b wires
         // them) pass the host validator under their own kinds — so the text
         // the production session compiles on device is the text the JVM
         // checked. Locked here so commit b cannot quietly swap in an
         // unvalidated variant (the split pair and the three NR fragments
         // joined the set with the spatial-NR port; the tail and the four
-        // unsharp fragments joined with the sharpness/detail port).
+        // unsharp fragments joined with the sharpness/detail port; the warp
+        // fragment joined with the gyro warp port).
         assertTrue(
             GlesShaderValidator.validate(
                 GlesShaderSources.FULLSCREEN_VERTEX,
@@ -304,6 +308,12 @@ class NativeSourcePreviewSessionTest {
             GlesShaderValidator.validate(
                 GlesShaderSources.DETAIL_V,
                 GlesShaderValidator.Kind.DETAIL_V,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.WARP,
+                GlesShaderValidator.Kind.WARP,
             ),
         )
         assertTrue(

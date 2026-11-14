@@ -38,11 +38,11 @@ import org.junit.Test
  *      does not cover — temporal NR strength, a tone-band knob — cannot
  *      even be expressed into the session, so widening this signature
  *      must be a deliberate act that edits this test too;
- *   3. the encoder-surface pair's shapes: open carries the fourteen
+ *   3. the encoder-surface pair's shapes: open carries the fifteen
  *      shader sources (the four the parity harness rides, the M5 blit
- *      source, and — since the sharpness/detail port — the SPLIT
- *      three-way develop pair plus the four unsharp fragments plus
- *      the three NR fragments), and renderFrameToEncoder adds ptsUs (the
+ *      source, the SPLIT three-way develop pair plus the four unsharp
+ *      fragments plus the three NR fragments, and — since the gyro warp
+ *      port — the warp fragment), and renderFrameToEncoder adds ptsUs (the
  *      encoder Surface's presentation time) and rotationDeg (the frame's
  *      effective orientation — the blit's uRotation fold) to the
  *      readback render's thirty-seven.
@@ -69,6 +69,7 @@ class NativeSourceDevelopSessionTest {
                 GlesShaderSources.SHARPNESS_V,
                 GlesShaderSources.DETAIL_H,
                 GlesShaderSources.DETAIL_V,
+                GlesShaderSources.WARP,
                 GlesShaderSources.NR_CHROMA_H,
                 GlesShaderSources.NR_CHROMA_V,
                 GlesShaderSources.NR_LUMA,
@@ -300,7 +301,7 @@ class NativeSourceDevelopSessionTest {
     }
 
     @Test
-    fun open_carries_exactly_the_fourteen_shader_sources() {
+    fun open_carries_exactly_the_fifteen_shader_sources() {
         // The session compiles the Kotlin single-source-of-truth texts —
         // the four sources jniGlesFragmentParity rides plus the M5 blit
         // source (the encoder-Surface copy pass), all host-validated by
@@ -309,14 +310,16 @@ class NativeSourceDevelopSessionTest {
         // (pre/post) plus the three NR fragments (chroma-h, chroma-v,
         // luma); since the sharpness/detail port the split is the
         // THREE-WAY pair (pre / pointwise post / tail) plus the four
-        // unsharp fragments — fourteen sources total. A fifteenth source
-        // would be a new program, which is a different session.
+        // unsharp fragments; since the gyro warp port the warp fragment
+        // joins between the unsharp passes and the tail — fifteen
+        // sources total. A sixteenth source would be a new program,
+        // which is a different session.
         val open = method("jniDevelopSessionOpen")
-        assertEquals(14, open.parameterCount)
+        assertEquals(15, open.parameterCount)
     }
 
     @Test
-    fun the_fourteen_sources_are_the_validated_single_source_of_truth() {
+    fun the_fifteen_sources_are_the_validated_single_source_of_truth() {
         // The exact constants open() will be called with pass the host
         // validator under their own kinds — so the text the production
         // session compiles on device is the text the JVM checked. Locked
@@ -324,7 +327,8 @@ class NativeSourceDevelopSessionTest {
         // variant (the blit source joined the set in M5; the split pair
         // and the three NR fragments joined with the spatial-NR port; the
         // tail and the four unsharp fragments joined with the
-        // sharpness/detail port).
+        // sharpness/detail port; the warp fragment joined with the gyro
+        // warp port).
         assertTrue(
             GlesShaderValidator.validate(
                 GlesShaderSources.FULLSCREEN_VERTEX,
@@ -377,6 +381,12 @@ class NativeSourceDevelopSessionTest {
             GlesShaderValidator.validate(
                 GlesShaderSources.DETAIL_V,
                 GlesShaderValidator.Kind.DETAIL_V,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.WARP,
+                GlesShaderValidator.Kind.WARP,
             ),
         )
         assertTrue(

@@ -750,9 +750,16 @@ class RenderBackendTest {
                 gyroWarpActive = false,
             ),
         )
-        // Gyro warp attached: CPU (the warp is not in the fragment pass).
+        // Gyro warp attached: GLES — the warp pass is unconditionally
+        // fragment-covered (pure math, no texture-format leg), so the
+        // RULE no longer forces CPU. The dispatch sites keep their OWN
+        // honest locks until the seams thread the warp input (the export
+        // wiring adds the gyro-warp token to its uncoveredTokens line
+        // itself; the preview's eligibility rule returns false itself),
+        // so an attached warp still never SILENTLY renders unwarp — the
+        // locks live at the dispatch, not here.
         assertEquals(
-            EffectiveRenderBackend.CPU,
+            EffectiveRenderBackend.GLES,
             BackendRules.fragmentEffectiveBackend(
                 RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), coveredGrade(),
                 gyroWarpActive = true,
@@ -863,12 +870,24 @@ class RenderBackendTest {
     }
 
     @Test
-    fun fragment_fallback_line_names_gyro_warp_when_attached() {
-        val line = BackendRules.fragmentFallbackLine(
-            RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), coveredGrade(),
-            gyroWarpActive = true,
-        )!!
-        assertTrue("gyro-warp missing: $line", line.contains("gyro-warp"))
+    fun fragment_fallback_line_carries_no_gyro_warp_token_anymore() {
+        // The gyro-warp port's honesty split: the warp pass is pure
+        // float32 math (a composed 3x3 inverse-sampling map, a 4-tap
+        // bilinear — no texture-format leg anywhere), so it is covered by
+        // the fragment chain UNCONDITIONALLY and the token left the
+        // runtime vocabulary entirely — a warp-attached grade with gates
+        // green produces NO fallback line here. The dispatch sites keep
+        // their own honest locks while the seams do not yet carry the
+        // warp (the export's uncoveredTokens line adds the token itself,
+        // the preview's eligibility rule returns false itself), so the
+        // warp still never silently renders unwarp — but through the
+        // dispatch locks, never through this rule.
+        assertNull(
+            BackendRules.fragmentFallbackLine(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), coveredGrade(),
+                gyroWarpActive = true,
+            ),
+        )
     }
 
     @Test

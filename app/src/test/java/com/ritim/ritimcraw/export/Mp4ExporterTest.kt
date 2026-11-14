@@ -2757,9 +2757,15 @@ class Mp4ExporterTest {
 
     @Test
     fun gyro_warp_stays_cpu_before_any_probe() {
-        // Gyro warp is not ported to the fragment pass: a stabilized grade
-        // with a log attached forces the CPU develop BEFORE any probe is
-        // paid, and the line names the warp token.
+        // The gyro-warp port's honesty split, dispatch leg: the warp pass
+        // IS in the fragment chain now (draw 10, host-proven parity), but
+        // the render seams do not carry the warp input until the port's
+        // seam commit — so the EXPORT DISPATCH keeps its own honest lock
+        // (the uncoveredTokens line adds the gyro-warp token itself, NOT
+        // through BackendRules' vocabulary, which dropped the token with
+        // the port). A stabilized grade with a log attached therefore
+        // still forces the CPU develop BEFORE any probe is paid, and the
+        // line names the warp token — the lock leaves with the seams.
         val session = FakeSession(frames = 2, audio = false)
         val gpu = FakeGpuDevelop()
         val lines = ArrayList<String>()

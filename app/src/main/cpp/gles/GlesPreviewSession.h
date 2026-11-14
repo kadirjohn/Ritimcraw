@@ -62,7 +62,7 @@
 // (the editor's engine thread); both block on their job.
 //
 // COLOR CONTRACT: the develop chain is the develop session's SPLIT shape
-// (the same twelve programs since the sharpness/detail port): PRE runs
+// (the same thirteen programs since the gyro warp port): PRE runs
 // stages 1-6 into an RGBA32F intermediate, the three NR passes sit at
 // the CPU's exact stage 7/8 position (gated per grade — the preview
 // shares the develop program family, so chroma denoise and noise
@@ -70,10 +70,16 @@
 // chain slot, the four unsharp passes sit at the CPU's exact 21/22
 // position (sharpness radius 1.5, detail radius 0.75 — unsharpLumaImpl
 // verbatim as H+V pairs; gated per grade, so sharpness and detail
-// preview too), and TAIL runs stages 23+24+OETF into the develop texture
-// (uOetf=1 — the shader's linearToRec709 is the CPU tail's twin, so the
-// stats pack's toByte quantize reproduces developToArgb's pack:
-// toByte(linearToRec709(rgb)) with no second OETF). The grade controls
+// preview too), then the gyro warp pass (gated per FRAME, not per
+// grade) resamples the chain's live texture through the caller-composed
+// inverse-sampling map M — the warp is NOT a develop stage (the CPU
+// pipeline runs it after developCpu, on the linear output), so it sits
+// between the unsharp passes and the tail and the OETF stays in the
+// tail, applied exactly once — and TAIL runs stages 23+24+OETF into the
+// develop texture (uOetf=1 — the shader's linearToRec709 is the CPU
+// tail's twin, so the stats pack's toByte quantize reproduces
+// developToArgb's pack: toByte(linearToRec709(rgb)) with no second
+// OETF). The grade controls
 // are exactly the fragment-covered set's knobs (exposure, highlights,
 // highlight reconstruction, vignetting, tonemap plus the ten pointwise
 // stages: black point, white point, shadows, midtones, contrast,
@@ -188,6 +194,28 @@ struct PreviewFrameRequest {
     int lutInTransfer = 0;
     int lutOutGamut = 0;
     int lutOutTransfer = 0;
+    // Gyro warp (NOT a develop stage — the CPU pipeline runs
+    // rawedit::warpFrame after developCpu, on the linear output). The
+    // CALLER resolves the frame's stabilization plan on ITS thread (the
+    // plan cache is not safe to touch from the GL thread), composes the
+    // per-frame inverse-sampling map M = Hinv * S once — cx/cy = the
+    // buffer center, s = 1/max(zoom, 1) — and crosses ONLY (warpActive,
+    // warpM): inactive, identity (H exactly identity AND zoom == 1 —
+    // the CPU's byte-identical fast path) and degenerate plans
+    // (non-finite zoom, singular H) all fold into warpActive = false.
+    // The session then skips the warp draw entirely — the pass's
+    // ABSENCE is the identity (a resampling pass on an identity map
+    // would blur); there is NO in-shader gate, warpActive is the only
+    // lock. warpM is row-major (the CPU composite loop's layout),
+    // uploaded with transpose=GL_TRUE — the uCam2rgb idiom. The
+    // identity default keeps warpless requests byte-identical.
+    // Populated through the JNI seam in commit (b); warpActive = false
+    // here keeps commit (a)'s sessions byte-identical to the
+    // pre-warp chain.
+    bool warpActive = false;
+    float warpM[9] = {1.0f, 0.0f, 0.0f,
+                      0.0f, 1.0f, 0.0f,
+                      0.0f, 0.0f, 1.0f};  // row-major M = Hinv * S
     // The stats-readback measurement toggle (trace-dims fix 2026-11-14):
     // true — the DEFAULT, and today's behavior — runs draw 3 + the
     // mapped-SSBO readback and publishes the real stats pack; false skips
@@ -248,18 +276,19 @@ public:
     // GL_EXT_color_buffer_float, re-read in THIS context, never trusted
     // from a probe's throwaway one; OES_texture_float_linear is read the
     // same way to pick the develop texture's filter, NOT a gate),
-    // compiles the twelve programs (pre = FULLSCREEN_VERTEX +
+    // compiles the thirteen programs (pre = FULLSCREEN_VERTEX +
     // DEVELOP_FRAGMENT_PRE, post = FULLSCREEN_VERTEX +
     // DEVELOP_FRAGMENT_POST, tail = FULLSCREEN_VERTEX +
     // DEVELOP_FRAGMENT_TAIL, the four unsharp passes sharpnessH/
     // sharpnessV/detailH/detailV = FULLSCREEN_VERTEX + SHARPNESS_H /
-    // SHARPNESS_V / DETAIL_H / DETAIL_V, the three spatial-NR passes
+    // SHARPNESS_V / DETAIL_H / DETAIL_V, the gyro warp pass warp =
+    // FULLSCREEN_VERTEX + WARP, the three spatial-NR passes
     // chromaH/chromaV/luma = FULLSCREEN_VERTEX + NR_CHROMA_H /
     // NR_CHROMA_V / NR_LUMA, store = FULLSCREEN_VERTEX_310 +
     // STORE_FRAGMENT, window = FULLSCREEN_VERTEX + WINDOW_FRAGMENT) and
     // resolves every uniform location. Returns null with *detail naming
     // the first failing step on any failure (the GL thread is joined;
-    // nothing leaks). The fourteen sources are the Kotlin
+    // nothing leaks). The fifteen sources are the Kotlin
     // single-source-of-truth texts (GlesShaderSources), host-validated.
     static std::unique_ptr<PreviewSession> open(
         const std::string& vertexSource,
@@ -271,6 +300,7 @@ public:
         const std::string& sharpnessVSource,
         const std::string& detailHSource,
         const std::string& detailVSource,
+        const std::string& warpFragmentSource,
         const std::string& nrChromaHSource,
         const std::string& nrChromaVSource,
         const std::string& nrLumaSource,

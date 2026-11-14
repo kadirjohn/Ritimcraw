@@ -304,13 +304,22 @@ object BackendRules {
     /**
      * The uncovered work that runs OUTSIDE developCpu's own stage list but
      * still changes pixels before the encode: the temporal NR (applied by
-     * the JNI bridge to the CFA frames BEFORE developCpu) and the gyro
-     * warp. Same no-silent-skip rule: active -> CPU, with the token in
-     * the line.
+     * the JNI bridge to the CFA frames BEFORE developCpu). Same
+     * no-silent-skip rule: active -> CPU, with the token in the line.
+     *
+     * The gyro warp LEFT this set with the gyro-warp port: the warp pass
+     * is pure float32 math (a composed 3x3 inverse-sampling map, a
+     * 4-tap bilinear — no texture-format leg anywhere), so it is covered
+     * by the fragment chain UNCONDITIONALLY, exactly like the pointwise
+     * stages rather than like the LUT's runtime leg. The token is gone
+     * from the runtime vocabulary entirely; the dispatch sites keep
+     * their own honest locks (the export's uncoveredTokens line, the
+     * preview's eligibility rule) until the seams thread the warp
+     * input, because until they do the RENDER path cannot honor the
+     * warp — the locks leave with the seams, not before them.
      */
     val FRAGMENT_UNCOVERED_PRE_STAGES: Set<String> = setOf(
         "temporal-nr",    // grade.temporalNr && grade.temporalStrength > 0
-        "gyro-warp",      // a gyro path is attached to the export job
     )
 
     /**
@@ -369,9 +378,10 @@ object BackendRules {
     }
 
     /**
-     * The uncovered pre-develop work active in one grade (temporal NR; the
-     * gyro warp is a job-level fact the caller adds — see the export
-     * wiring). Pure.
+     * The uncovered pre-develop work active in one grade (temporal NR).
+     * The gyro warp left with the gyro-warp port — the warp pass is
+     * unconditionally fragment-covered — so it contributes no token here.
+     * Pure.
      */
     fun fragmentUncoveredPreStages(grade: GradeK): List<String> {
         val active = mutableListOf<String>()
@@ -408,6 +418,14 @@ object BackendRules {
      * runtime fact that the device's LUT texture path is healthy, with
      * the same honest default-false contract (a LUT grade stays on CPU
      * until the dispatch site knows the path is real).
+     *
+     * [gyroWarpActive] no longer forces CPU here: the warp pass is
+     * unconditionally fragment-covered (pure math, no texture-format
+     * leg), so the token left the runtime vocabulary with the gyro-warp
+     * port. The parameter stays through the port's commit (a) so the
+     * callers do not change before the seams carry the warp; the
+     * dispatch sites keep their OWN honest locks until the seams thread
+     * the warp input, and the parameter leaves with those locks.
      */
     fun fragmentEffectiveBackend(
         requested: RenderBackend,
@@ -422,7 +440,6 @@ object BackendRules {
             return EffectiveRenderBackend.CPU
         }
         if (fragmentUncoveredPreStages(grade).isNotEmpty()) return EffectiveRenderBackend.CPU
-        if (gyroWarpActive) return EffectiveRenderBackend.CPU
         return EffectiveRenderBackend.GLES
     }
 
@@ -435,6 +452,13 @@ object BackendRules {
      * default-false contract as [fragmentEffectiveBackend], so a LUT
      * grade's fallback line names the lut token until the runtime fact
      * says the texture path is healthy.
+     *
+     * [gyroWarpActive] no longer contributes the gyro-warp token: the
+     * warp pass is unconditionally fragment-covered, so the token left
+     * the runtime vocabulary with the gyro-warp port. The parameter stays
+     * through the port's commit (a) (see [fragmentEffectiveBackend]) and
+     * leaves with the dispatch sites' own locks once the seams thread the
+     * warp input.
      */
     fun fragmentFallbackLine(
         requested: RenderBackend,
@@ -453,7 +477,6 @@ object BackendRules {
         gates.fragmentFallbackReason()?.let { reasons += it }
         reasons += fragmentUncoveredStages(grade, lutTexturePathOk).map { it.second }
         reasons += fragmentUncoveredPreStages(grade)
-        if (gyroWarpActive) reasons += "gyro-warp"
         return "render backend fallback: requested=${requested.name} " +
             "effective=CPU reason=${reasons.joinToString(",")}"
     }
