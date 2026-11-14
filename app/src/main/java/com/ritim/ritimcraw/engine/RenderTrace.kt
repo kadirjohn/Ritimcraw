@@ -32,12 +32,12 @@ import com.ritim.ritimcraw.data.GradeK
  *   long edge on integer Bayer-cell strides, so a 720 request on a
  *   3840x2160 clip develops 640x360 — the audit's exact finding, and
  *   the number the owner needs next to the requested one.
- * - backend= names the pipeline that ACTUALLY ran. The production
- *   preview path is the CPU reference (RenderBackend.DEFAULT, all
- *   backend gates off); the GPU groundwork's GLES legs are parity
- *   probes, not the editor's render path, so the honest value today is
- *   cpu. The field exists so the day a backend ships, the SAME line
- *   tells the two pipelines apart without a format change.
+ * - backend= names the pipeline that ACTUALLY ran: gles when the GPU
+ *   window path served the frame (M4 commit c — the SurfaceView draw
+ *   with the stats-pack publish), cpu for every other shape (the CPU
+ *   reference path, and the GPU path's CPU fallbacks). The default
+ *   record stays cpu so every existing call site and the pre-GPU
+ *   baseline legs keep their exact lines.
  * - grade= lists only the stages that are ACTIVE for this render, in
  *   pipeline order, each with its dial where one exists: vign/hlrec are
  *   the keep- booleans (named for what the stage DOES, true = applied),
@@ -77,6 +77,13 @@ object RenderTrace {
         val temporalNrApplied: Boolean,
         /** True when a gyro log was attached and the warp ran for this render. */
         val stabilizationApplied: Boolean,
+        /**
+         * True when the GPU window path served THIS frame (M4 commit c):
+         * the SurfaceView drew it and the Compose Image suppressed — the
+         * trace's backend= then reads gles. Default false: every CPU
+         * render (and every pre-M4 call site) keeps backend=cpu.
+         */
+        val servedByGpu: Boolean = false,
     )
 
     /**
@@ -104,7 +111,9 @@ object RenderTrace {
         append(record.outW)
         append("x")
         append(record.outH)
-        append(" backend=cpu ms=")
+        append(" backend=")
+        append(if (record.servedByGpu) "gles" else "cpu")
+        append(" ms=")
         append(record.renderMs)
         append(" grade=")
         append(gradeSummary(record))

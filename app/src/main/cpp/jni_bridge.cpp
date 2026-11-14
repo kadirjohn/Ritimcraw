@@ -46,6 +46,10 @@
 
 #include "gles/GlesDevelopSession.h"
 #include "gles/GlesPipeline.h"
+#include "gles/GlesPreviewSession.h"
+
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
 
 namespace {
 
@@ -1464,6 +1468,24 @@ CfaBuffer temporalMergedCfa(
 constexpr int kMaxDevelopSessions = 4;
 std::unique_ptr<gles::DevelopSession> gDevelopSessions[kMaxDevelopSessions];
 
+// GPU preview session registry (M4 commit a) ----------------------------------
+//
+// Same registry shape as the develop sessions above (fixed slot array +
+// mutex for slot bookkeeping ONLY), for the preview counterpart of the
+// M3 seam: the editor opens ONE session per clip preview while
+// renderBackend=GPU_EXPERIMENTAL (the Kotlin gate, commit c, decides),
+// attaches the SurfaceView's window to it, renders the preview-tier
+// frames through it, and closes it on teardown. The session pointer is
+// confined to the engine thread that opened it — the same
+// one-thread-serves-the-session rule the clip registry rides (the GL
+// work marshals onto the session's own GL thread inside renderFrame;
+// setSurface likewise). A session is NOT tied to a clip handle on
+// purpose (the session owns only GL state; the clip's bytes flow
+// through it per frame). Slots are never reused while occupied — the
+// fixed size bounds the leak surface to kMaxPreviewSessions.
+constexpr int kMaxPreviewSessions = 4;
+std::unique_ptr<gles::PreviewSession> gPreviewSessions[kMaxPreviewSessions];
+
 } // namespace
 
 extern "C" {
@@ -2873,6 +2895,327 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
     if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) return;
     std::lock_guard<std::mutex> lock(gRegistryMutex);
     gDevelopSessions[sessionHandle - 1].reset();
+}
+
+// GPU preview session (M4 commit a) -------------------------------------------
+//
+// The preview counterpart of the M3 develop-session seam, wired to the
+// SurfaceView the editor mounts (commit b). One session per clip preview:
+//
+//   nativePreviewSessionOpen(vertex, vertex310, develop, store, window)
+//       -> handle
+//   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
+//   nativePreviewSessionRenderFrame(handle, clipHandle, frameIndex, maxDim,
+//       exposureEv, highlightReconstruction, keepVignetting, tonemap)
+//       -> [w, h, pixels...] int array (the small published stats pack)
+//   nativePreviewSessionClose(handle)
+//
+// Open compiles the same single-source-of-truth Kotlin shader texts
+// (host-validated) plus the window pass's own WINDOW_FRAGMENT. SetSurface
+// carries the SurfaceHolder's lifecycle: a non-null surface attaches the
+// window (the ANativeWindow_fromSurface reference transfers to the session
+// at call entry — the session releases it on every path, so the JNI layer
+// NEVER releases it after a successful fromSurface), null detaches.
+// RenderFrame decodes + decimates on the CALLING thread (Source's
+// one-thread rule; the decimation is Thumbnail.h's cell-aligned math,
+// copied per the documented-copy rule — core/ is READ-ONLY; the reduced
+// mosaic keeps the 2x2 Bayer pattern, so uCell/uBlack/uRange and the
+// shading plane order stay valid at the preview tier), then hands the
+// request to the session's GL thread: develop -> window present
+// (best-effort) -> the small stats pack readback. NO full-frame readback
+// exists on this path — the audit's explicit rule; glReadPixels is used
+// NOWHERE.
+//
+// The grade controls are exactly the fragment-covered set's knobs (the
+// same narrow-signature lock as the export seam: an uncovered grade
+// cannot even be expressed here).
+
+JNIEXPORT jlong JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
+        JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
+        jstring fragmentSource, jstring storeFragmentSource,
+        jstring windowFragmentSource) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+
+    // The five sources, each read with the nativeGlesFragmentParity pattern
+    // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
+    const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
+    if (v300Chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the vertex source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string v300(v300Chars);
+    env->ReleaseStringUTFChars(vertexSource, v300Chars);
+
+    const char* v310Chars = env->GetStringUTFChars(vertex310Source, nullptr);
+    if (v310Chars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the 310 vertex source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string v310(v310Chars);
+    env->ReleaseStringUTFChars(vertex310Source, v310Chars);
+
+    const char* fragChars = env->GetStringUTFChars(fragmentSource, nullptr);
+    if (fragChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the develop source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string frag(fragChars);
+    env->ReleaseStringUTFChars(fragmentSource, fragChars);
+
+    const char* storeChars = env->GetStringUTFChars(storeFragmentSource, nullptr);
+    if (storeChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the store source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string store(storeChars);
+    env->ReleaseStringUTFChars(storeFragmentSource, storeChars);
+
+    const char* windowChars = env->GetStringUTFChars(windowFragmentSource, nullptr);
+    if (windowChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the window source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string window(windowChars);
+    env->ReleaseStringUTFChars(windowFragmentSource, windowChars);
+
+    // Find a free slot (the registry's fixed array bounds the leak surface).
+    int slot = -1;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        for (int i = 0; i < kMaxPreviewSessions; ++i) {
+            if (gPreviewSessions[i] == nullptr) {
+                slot = i;
+                break;
+            }
+        }
+    }
+    if (slot < 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: too many open sessions "
+                 "(recovery: close a session and retry)");
+        return 0;
+    }
+
+    std::string detail;
+    std::unique_ptr<gles::PreviewSession> session =
+        gles::PreviewSession::open(v300, v310, frag, store, window, &detail);
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "preview session: " + detail +
+                     " (recovery: the CPU preview path stays the default)");
+        return 0;
+    }
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        gPreviewSessions[slot] = std::move(session);
+    }
+    return static_cast<jlong>(slot) + 1;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetSurface(
+        JNIEnv* env, jclass, jlong sessionHandle, jobject surface) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    if (sessionHandle <= 0 || sessionHandle > kMaxPreviewSessions) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: invalid session handle "
+                 "(recovery: reopen the preview)");
+        return JNI_FALSE;
+    }
+    gles::PreviewSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        session = gPreviewSessions[sessionHandle - 1].get();
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: session is closed "
+                 "(recovery: reopen the preview)");
+        return JNI_FALSE;
+    }
+    // Ownership transfer at call entry: a non-null surface acquires the
+    // ANativeWindow reference HERE and hands the raw pointer to the session
+    // (which releases it on every path — refusal, failure, replace,
+    // teardown). The JNI layer never releases it after a successful
+    // fromSurface. A null surface is the destroy signal (no reference).
+    ANativeWindow* window = nullptr;
+    if (surface != nullptr) {
+        window = ANativeWindow_fromSurface(env, surface);
+        if (window == nullptr) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                     "preview session: ANativeWindow_fromSurface failed "
+                     "(recovery: the preview retries on the next surface "
+                     "callback, or falls back to CPU)");
+            return JNI_FALSE;
+        }
+    }
+    std::string detail;
+    const bool ok = session->setSurface(window, &detail);
+    if (!ok) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "preview session surface: " + detail +
+                     " (recovery: the preview retries on the next surface "
+                     "callback, or falls back to CPU)");
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
+        JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
+        jint frameIndex, jint maxDim, jfloat exposureEv,
+        jboolean highlightReconstruction, jboolean keepVignetting,
+        jint tonemap) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (sessionHandle <= 0 || sessionHandle > kMaxPreviewSessions) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "preview session: invalid session handle "
+                 "(recovery: reopen the preview)");
+        return nullptr;
+    }
+    gles::PreviewSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        session = gPreviewSessions[sessionHandle - 1].get();
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "preview session: session is closed "
+                 "(recovery: reopen the preview)");
+        return nullptr;
+    }
+    rawedit::Source* s = sourceFor(clipHandle);
+    if (!s) return nullptr;
+    try {
+        // Decode + frame info on the CALLING thread (Source's one-thread
+        // rule; the ring amortizes sequential playback frames exactly like
+        // the export seam). Only the GL work marshals.
+        Entry& e = gEntries[clipHandle - 1];
+        const CfaBuffer cfa = loadRingFrame(*s, e, frameIndex);
+        if (cfa == nullptr) return nullptr; // decode failed (error set)
+        const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
+        const rawedit::RawMeta& meta = s->rawMeta();
+
+        // The preview CFA reduction — Thumbnail.h's cell-aligned math,
+        // copied per the documented-copy rule (core/ is READ-ONLY; the
+        // same rule the other decimation copies in this file ride).
+        // N == 1 borrows the ring buffer directly (no copy, no decimation
+        // — the full-res tier); N >= 2 decimates into a reused thread_local
+        // scratch. Output cell (ocx, ocy) copies source cell (ocx*N, ocy*N)
+        // verbatim, so the 2x2 Bayer pattern survives: RGGB stays RGGB and
+        // uCell/uBlack/uRange plus the shading plane order stay valid at
+        // the reduced tier.
+        const int strideN = strideFor(info, maxDim);
+        uint32_t reducedW = 0;
+        uint32_t reducedH = 0;
+        const std::vector<uint16_t>* reducedCfa = nullptr;
+        if (strideN <= 1) {
+            reducedCfa = cfa.get();
+            reducedW = info.width;
+            reducedH = info.height;
+        } else {
+            const uint32_t cellCols = info.width / 2;
+            const uint32_t cellRows = info.height / 2;
+            const uint32_t sampledCols = (cellCols + strideN - 1) / strideN;
+            const uint32_t sampledRows = (cellRows + strideN - 1) / strideN;
+            reducedW = 2 * sampledCols;
+            reducedH = 2 * sampledRows;
+            thread_local std::vector<uint16_t> scratch;
+            scratch.assign(static_cast<size_t>(reducedW) * reducedH, 0);
+            const uint32_t srcW = info.width;
+            const uint32_t srcH = info.height;
+            for (uint32_t ocy = 0; ocy < sampledRows; ++ocy) {
+                for (uint32_t ocx = 0; ocx < sampledCols; ++ocx) {
+                    // Source cell (ocx*N, ocy*N), verbatim 2x2 copy.
+                    const uint32_t scx = ocx * static_cast<uint32_t>(strideN);
+                    const uint32_t scy = ocy * static_cast<uint32_t>(strideN);
+                    for (uint32_t dy = 0; dy < 2; ++dy) {
+                        for (uint32_t dx = 0; dx < 2; ++dx) {
+                            const uint32_t sx = 2 * scx + dx;
+                            const uint32_t sy = 2 * scy + dy;
+                            const uint16_t sample =
+                                (sx < srcW && sy < srcH)
+                                    ? (*cfa)[static_cast<size_t>(sy) * srcW + sx]
+                                    : 0;
+                            scratch[static_cast<size_t>(2 * ocy + dy) * reducedW +
+                                    (2 * ocx + dx)] = sample;
+                        }
+                    }
+                }
+            }
+            reducedCfa = &scratch;
+        }
+        rawedit::FrameInfo reducedInfo = info;
+        reducedInfo.width = reducedW;
+        reducedInfo.height = reducedH;
+
+        gles::PreviewFrameRequest req;
+        req.cfa = reducedCfa;
+        req.info = reducedInfo;
+        req.meta = &meta;
+        req.exposureEv = exposureEv;
+        req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
+        req.keepVignetting = keepVignetting == JNI_TRUE;
+        req.tonemap = tonemap;
+        const gles::PreviewFrameResult res = session->renderFrame(req);
+        if (!res.ok) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "preview session render: " + res.detail +
+                         " (recovery: the preview falls back to the CPU develop)");
+            return nullptr;
+        }
+        // The published stats pack in developToArgb's int-array shape:
+        // [w, h, pixels...] (the SAME shape the CPU preview publishes, so
+        // the Compose overlays consume either path unchanged).
+        const jsize n = static_cast<jsize>(res.argb8888.size());
+        if (res.width == 0 || res.height == 0 ||
+            n <= 0 || static_cast<size_t>(n) != res.argb8888.size()) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "preview session render: empty output "
+                     "(recovery: reopen the preview)");
+            return nullptr;
+        }
+        jintArray arr = env->NewIntArray(n + 2);
+        if (arr == nullptr) return nullptr;
+        jint head[2] = {static_cast<jint>(res.width), static_cast<jint>(res.height)};
+        env->SetIntArrayRegion(arr, 0, 2, head);
+        env->SetIntArrayRegion(arr, 2, n,
+            reinterpret_cast<const jint*>(res.argb8888.data()));
+        return arr;
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "preview session render: out of memory decoding the frame "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("preview session render: ") + e.what() +
+                     " (recovery: reopen the preview)");
+        return nullptr;
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionClose(
+        JNIEnv*, jclass, jlong sessionHandle) {
+    if (sessionHandle <= 0 || sessionHandle > kMaxPreviewSessions) return;
+    std::lock_guard<std::mutex> lock(gRegistryMutex);
+    gPreviewSessions[sessionHandle - 1].reset();
 }
 
 // Stabilization zoom probe (audit fix 2026-11-12, Fix 5) -----------------------

@@ -50,6 +50,9 @@ object GlesShaderValidator {
 
         /** BLIT_FRAGMENT — GLSL ES 3.00 fragment, the encoder-Surface blit. */
         BLIT_FRAGMENT("#version 300 es"),
+
+        /** WINDOW_FRAGMENT — GLSL ES 3.00 fragment, the preview window/stats draw. */
+        WINDOW_FRAGMENT("#version 300 es"),
     }
 
     /**
@@ -99,6 +102,7 @@ object GlesShaderValidator {
             Kind.DEVELOP_FRAGMENT -> developFragmentProblems(stripped, out)
             Kind.STORE_FRAGMENT -> storeFragmentProblems(stripped, out)
             Kind.BLIT_FRAGMENT -> blitFragmentProblems(stripped, out)
+            Kind.WINDOW_FRAGMENT -> windowFragmentProblems(stripped, out)
         }
         return out
     }
@@ -512,6 +516,51 @@ object GlesShaderValidator {
             out += "missing the Y flip (`uSize.y - 1 - g.y` — the encoder " +
                 "consumes the Surface buffer top-row-first; without the " +
                 "flip every encoded frame is upside down)"
+        }
+    }
+
+    private fun windowFragmentProblems(s: String, out: MutableList<String>) {
+        // The uniforms GlesPreviewSession's window program looks up and
+        // sets after linking. Names double as the Kotlin lookup contract.
+        if (!s.contains("uniform highp sampler2D uSrc;")) {
+            out += "missing `uniform highp sampler2D uSrc;` (the session " +
+                "attaches the developed preview texture)"
+        }
+        if (!s.contains("uniform ivec2 uSrcSize;")) {
+            out += "missing `uniform ivec2 uSrcSize;` (the session sets it — " +
+                "the half-texel clamp depends on it, and an optimized-out " +
+                "uniform would fail the session's all-uniforms lookup)"
+        }
+        if (!s.contains("uniform vec4 uRect;")) {
+            out += "missing `uniform vec4 uRect;` (the session computes the " +
+                "aspect-fit letterbox rect)"
+        }
+        if (!s.contains("uniform int uOrientation;")) {
+            out += "missing `uniform int uOrientation;` (the session passes " +
+                "FrameInfo.orientationDeg normalized to 0/90/180/270)"
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the window surface's color output)"
+        }
+        if (!s.contains("texture(uSrc, st)")) {
+            out += "missing the `texture(uSrc, st)` fetch (normalized " +
+                "sampling — the aspect-fit scale the blit's texelFetch " +
+                "cannot do)"
+        }
+        // The orientation fold — developToArgb's per-case rotation fold in
+        // normalized space; without it a 90/180/270 frame draws rotated.
+        if (!s.contains("uOrientation == 90")) {
+            out += "missing the orientation fold (`uOrientation == 90` — " +
+                "the CPU preview path's upright rotation, reproduced " +
+                "in-shader)"
+        }
+        // The Y flip — the source texture is top-row-first while
+        // gl_FragCoord counts rows bottom-up (the same trap the blit's
+        // flip guards against, folded into the default arm).
+        if (!s.contains("1.0 - uv.y")) {
+            out += "missing the Y flip (`1.0 - uv.y` — the developed " +
+                "texture is top-row-first; without the fold the window " +
+                "and stats draws are upside down)"
         }
     }
 

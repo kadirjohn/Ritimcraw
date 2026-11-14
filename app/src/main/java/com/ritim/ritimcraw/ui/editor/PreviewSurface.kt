@@ -1,6 +1,8 @@
 package com.ritim.ritimcraw.ui.editor
 
 import android.graphics.Bitmap
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -26,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -213,6 +216,33 @@ fun PreviewSurface(
     // null keeps PreviewSurface's own tests and any other call site
     // working unchanged.
     onZoomSettled: ((ZoomPan.State) -> Unit)? = null,
+    // ---- GPU window path (M4 commit b) ----
+    // Compose the AndroidView(SurfaceView) whenever the GPU preview path
+    // is ACTIVE (the session opened and has not latched), NOT only when it
+    // is serving: surfaceCreated must fire BEFORE the first GPU render, or
+    // the session would never receive a window surface and the first frame
+    // would have nowhere to present. The SurfaceView composes as a SIBLING
+    // of the Image inside the same content Box, transformed by the SAME
+    // graphicsLayer math (rotation + cover scale + zoom/pan), so crop
+    // geometry, manual rotation, fullscreen and the pinch transforms keep
+    // working identically on both display paths. Default false keeps every
+    // existing call site (and PreviewSurface's own tests) working
+    // unchanged — no SurfaceView is composed on the CPU path.
+    gpuWindowActive: Boolean = false,
+    // The GPU window path is SERVING the display (a GPU frame published AND
+    // a live surface): suppress the Compose Image — the SurfaceView draws
+    // BEHIND the Compose window, so a visible Image would cover it. The
+    // frame still publishes (the overlays read it for stats), so this is a
+    // pure display swap, never a data change. Default false keeps the
+    // Image everywhere it renders today.
+    gpuWindowServing: Boolean = false,
+    // The SurfaceHolder lifecycle → the session's window surface:
+    // surfaceCreated → the holder's Surface (the session takes ownership
+    // at call entry), surfaceDestroyed → null (the destroy signal always
+    // processes, even when a render latched the session unhealthy — a dead
+    // surface is a lifecycle signal, never a render failure). Null keeps
+    // the SurfaceView inert (never composed) at every existing call site.
+    onGpuSurfaceChanged: ((surface: Any?) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     // §6 zoom/pan state: keyed on the CLIP (a fresh clip starts at 1x
@@ -364,9 +394,81 @@ fun PreviewSurface(
                 },
             contentAlignment = Alignment.Center,
         ) {
+            // ---- GPU window path (M4 commit b) ----
+            // The SurfaceView composes whenever the GPU path is ACTIVE
+            // (not only when serving — surfaceCreated must fire before the
+            // first GPU render) and sits BEHIND the Compose window: the
+            // session's window pass draws the developed frame into it from
+            // the GL thread, aspect-fit letterboxed, with the container
+            // orientation folded in-shader. The SAME graphicsLayer math as
+            // the Image below (manual rotation delta + cover scale + zoom/
+            // pan) rides the AndroidView, so the window content lands
+            // EXACTLY where the Image's pixels would: quarter turns, the
+            // cover scale, pinch zoom and pan all keep working, and the
+            // crop overlay / scope strip / corner controls (Compose, on
+            // top) stay aligned with the window's rect. The SurfaceView
+            // punches a hole through the Compose surface; the Compose
+            // layers above (overlays, controls) still composite over it.
+            if (gpuWindowActive && onGpuSurfaceChanged != null) {
+                AndroidView(
+                    factory = { context ->
+                        SurfaceView(context).apply {
+                            // Default Z-order (BELOW the window): the
+                            // SurfaceView punches a hole through the
+                            // Compose surface and the window pass paints
+                            // its own letterbox bars (pixels outside uRect
+                            // write black), so the surface covers its
+                            // bounds opaquely and the Compose overlays
+                            // composite ON TOP of it — the audit's rule.
+                            setZOrderMediaOverlay(false)
+                            holder.addCallback(object : SurfaceHolder.Callback {
+                                override fun surfaceCreated(holder: SurfaceHolder) {
+                                    onGpuSurfaceChanged(holder.surface)
+                                }
+
+                                override fun surfaceChanged(
+                                    holder: SurfaceHolder,
+                                    format: Int,
+                                    width: Int,
+                                    height: Int,
+                                ) {
+                                    // The session re-derives the window size
+                                    // per frame (eglQuerySurface), so a size
+                                    // change needs no re-handoff — the next
+                                    // render letterboxes to the new size.
+                                }
+
+                                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                    onGpuSurfaceChanged(null)
+                                }
+                            })
+                        }
+                    },
+                    // The transform rides the AndroidView exactly as on
+                    // the Image: the §6 order (rotation + cover scale
+                    // about the content center, then zoom, then pan in the
+                    // box's screen space) — the GPU window's pixels land
+                    // where the CPU Image's would, so every overlay's
+                    // coordinate space is unchanged.
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            rotationZ = manualRotationDeg.toFloat()
+                            scaleX = coverScale * zoomPan.zoom
+                            scaleY = coverScale * zoomPan.zoom
+                            translationX = zoomPan.panX * size.width
+                            translationY = zoomPan.panY * size.height
+                        },
+                )
+            }
             val f = frame
             when {
-                f != null -> Image(
+                // The Image serves ONLY when the GPU window is not: the
+                // SurfaceView draws behind the Compose window, so a serving
+                // window under a visible Image would never show. The frame
+                // still publishes either way (the scope strip reads it), so
+                // this is a pure display swap.
+                f != null && !gpuWindowServing -> Image(
                     bitmap = remember(f) { f.toImageBitmap() },
                     contentDescription = null,
                     contentScale = ContentScale.Fit,

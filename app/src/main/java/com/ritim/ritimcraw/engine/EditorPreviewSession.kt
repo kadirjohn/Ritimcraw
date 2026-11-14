@@ -51,6 +51,18 @@ interface EditorPreviewSession : AutoCloseable {
     val rawWhiteLevel: Int get() = 0
 
     /**
+     * The NATIVE clip handle behind the session (M4 GPU preview): the
+     * identity the GPU preview session's renderFrame dispatch needs to
+     * decode the frame's RAW CFA through the bridge's ring buffer — the
+     * SAME handle the CPU session renders through. 0 means "no native
+     * clip" (the default, the rawWhiteLevel precedent): only
+     * [PreviewSession] carries a live handle; [EncodedPreviewSession]
+     * inherits 0 and the GPU preview path stays off for encoded clips —
+     * the same honest degradation, never a fabricated handle.
+     */
+    val nativeClipHandle: Long get() = 0L
+
+    /**
      * Renders frame [frameIndex] with [grade], long edge scaled to fit
      * [maxDim]. [lutPath] is the selected .cube's path (null = no LUT —
      * stage 24 bypassed, the old look; COL-07). [gyroPath] is the attached
