@@ -432,55 +432,81 @@ struct DevelopSession::Impl {
     // --- GL-thread-owned state (touched ONLY on the GL thread; the mutex
     // --- guards only the handoff/latch fields below) ----------------------
     EglSession egl;
-    // The split develop chain's programs (the spatial-NR port): pre runs
+    // The split develop chain's programs (the sharpness/detail port's
+    // three-way 20/23 cut on the spatial-NR port's 6/9 cut): pre runs
     // stages 1-6 into an RGBA32F intermediate, the three NR passes sit
     // at the CPU's exact stage 7/8 position between them (gated per
-    // grade), post runs stages 9-20+23+OETF into the develop texture.
-    // The fused DEVELOP_FRAGMENT stays the frozen parity harness's own
-    // source (GlesPipeline.cpp); the split programs compile the same
-    // shared fragments, so the two chains cannot drift.
+    // grade), post runs the pointwise stages 9-20, the four unsharp
+    // passes (gated per grade) run the CPU's stages 21/22 at their
+    // exact position, and tail runs stages 23+24+OETF into the develop
+    // texture. The fused DEVELOP_FRAGMENT stays the frozen parity
+    // harness's own source (GlesPipeline.cpp); the split programs
+    // compile the same shared fragments, so the two chains cannot
+    // drift.
     GLuint preProgram = 0;
     GLuint postProgram = 0;
+    GLuint tailProgram = 0;
+    GLuint sharpnessHProgram = 0;
+    GLuint sharpnessVProgram = 0;
+    GLuint detailHProgram = 0;
+    GLuint detailVProgram = 0;
     GLuint nrChromaHProgram = 0;
     GLuint nrChromaVProgram = 0;
     GLuint nrLumaProgram = 0;
     GLuint storeProgram = 0;
     // Uniform locations, resolved ONCE at open. The develop set is SPLIT
     // with the programs: the 13 PRE uniforms (uCfa..uHasProfile — the
-    // pre-stage set) resolve on preProgram, the 34 POST uniforms
-    // (uExposure..uOetf plus the stage-24 LUT set) on postProgram. The
+    // pre-stage set) resolve on preProgram, the 21 POINTWISE uniforms
+    // (uExposure..uSaturation) on postProgram, the 13 TAIL uniforms
+    // (uTonemap/uOetf plus the stage-24 LUT set) on tailProgram. The
     // NR passes carry their own small sets: uSrc/uSize/uChromaDenoise on
     // the horizontal pass, uSrc/uGuide/uSize/uChromaDenoise on the
     // vertical (uGuide = the ORIGINAL pre-NR image — the CPU's second
     // pass keeps the original luma guide), uSrc/uSize/uNoiseReduction on
-    // the luma. Store and blit keep their own pairs.
+    // the luma. The unsharp passes carry the NR passes' own shape:
+    // uSrc/uSize/uSharpness (or uDetail) on the H pass, uSrc/uGuide/
+    // uSize/uSharpness (or uDetail) on the V (uGuide = the stage's own
+    // input — the CPU's tail reads the ORIGINAL luma, not the sharpened
+    // one). Store and blit keep their own pairs.
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
-          exposureLoc = -1, highlightsLoc = -1, tonemapLoc = -1, oetfLoc = -1,
+          exposureLoc = -1, highlightsLoc = -1,
           blackPointLoc = -1, whitePointLoc = -1, shadowsLoc = -1,
           midtonesLoc = -1, contrastLoc = -1, wbManualLoc = -1, tempKLoc = -1,
           tintLoc = -1, wheelShadowXLoc = -1, wheelShadowYLoc = -1,
           wheelMidXLoc = -1, wheelMidYLoc = -1, wheelHighXLoc = -1,
           wheelHighYLoc = -1, splitActiveLoc = -1, splitShadowHueLoc = -1,
           splitHighlightHueLoc = -1, splitBalanceLoc = -1, saturationLoc = -1;
-    // The stage-24 LUT set (the LUT port, commit (a)) — all on postProgram,
-    // all resolved at open with the same >= 0 contract check as the rest.
-    // uLutStrength/uLutSize/uLutDomainMin/uLutDomainMax/uLutRole/
-    // uLutPassthrough/uLutInTransfer/uLutOutTransfer feed the shader's
-    // own role/gamut/transfer contract (the CPU applyManagedLutStage
-    // semantics transcribed); uLut is the sampler3D pinned to unit 5 at
-    // open (the static binding block below); the two mat3s carry
-    // core's compiled binding matrices, uploaded row-major with
-    // transpose=GL_TRUE exactly like uCam.
+    // The tail's tonemap/OETF pair + the stage-24 LUT set (the LUT port)
+    // — all on tailProgram, all resolved at open with the same >= 0
+    // contract check as the rest. uLutStrength/uLutSize/uLutDomainMin/
+    // uLutDomainMax/uLutRole/uLutPassthrough/uLutInTransfer/
+    // uLutOutTransfer feed the shader's own role/gamut/transfer contract
+    // (the CPU applyManagedLutStage semantics transcribed); uLut is the
+    // sampler3D pinned to unit 5 at open (the static binding block
+    // below); the two mat3s carry core's compiled binding matrices,
+    // uploaded row-major with transpose=GL_TRUE exactly like uCam.
+    GLint tonemapLoc = -1, oetfLoc = -1;
     GLint lutStrengthLoc = -1, lutLoc = -1, lutSizeLoc = -1,
           lutDomainMinLoc = -1, lutDomainMaxLoc = -1, lutRoleLoc = -1,
           lutPassthroughLoc = -1, lutInTransferLoc = -1,
           lutOutTransferLoc = -1, lutWorkingToInputLoc = -1,
           lutOutputToWorkingLoc = -1;
+    // The unsharp passes' uniform sets (stages 21/22), each on its own
+    // program — the NR passes' own per-program shape.
+    GLint sharpnessHSrcLoc = -1, sharpnessHSizeLoc = -1, sharpnessHStrengthLoc = -1;
+    GLint sharpnessVSrcLoc = -1, sharpnessVGuideLoc = -1, sharpnessVSizeLoc = -1,
+          sharpnessVStrengthLoc = -1;
+    GLint detailHSrcLoc = -1, detailHSizeLoc = -1, detailHStrengthLoc = -1;
+    GLint detailVSrcLoc = -1, detailVGuideLoc = -1, detailVSizeLoc = -1,
+          detailVStrengthLoc = -1;
     // POST's own uSrc/uSize (the chain-intermediate input the NR position
     // feeds) and the NR passes' uniform sets, each on its own program.
     GLint postSrcLoc = -1, postSizeLoc = -1;
+    // TAIL's own uSrc/uSize (the chain-intermediate input the unsharp
+    // position feeds).
+    GLint tailSrcLoc = -1, tailSizeLoc = -1;
     GLint nrChromaHSrcLoc = -1, nrChromaHSizeLoc = -1, nrChromaHStrengthLoc = -1;
     GLint nrChromaVSrcLoc = -1, nrChromaVGuideLoc = -1, nrChromaVSizeLoc = -1,
           nrChromaVStrengthLoc = -1;
@@ -512,11 +538,14 @@ struct DevelopSession::Impl {
     bool lutBindingOk = false;
     rawedit::CompiledLutBinding lutBinding{};
     int lutBindingKey[5] = {-2, -2, -2, -2, -2};  // role,in,out gamut,in,out transfer
-    // The chain's RGBA32F ping-pong intermediates (the spatial-NR port):
-    // A = the PRE pass's output (and the chroma vertical pass's ORIGINAL
-    // guide), B/C = the NR passes' scratch pair. POST always writes
-    // developTex (the store/blit passes read THAT texture — writing
-    // POST's output to an intermediate the chain also reads would be a
+    // The chain's RGBA32F ping-pong intermediates (the spatial-NR port,
+    // threaded through the unsharp section): A = the PRE pass's output
+    // (and the chroma vertical pass's ORIGINAL guide), B/C = the NR
+    // passes' scratch pair; the four unsharp passes and the TAIL pass
+    // ride the same three slots (the ping-pong threading in developPass
+    // — no draw reads and writes the same texture). TAIL always writes
+    // developTex (the store/blit passes read THAT texture — writing the
+    // tail's output to an intermediate the chain also reads would be a
     // framebuffer feedback loop).
     GLuint texA = 0, texB = 0, texC = 0;
     GLuint developFbo = 0, scratchFbo = 0;
@@ -580,6 +609,11 @@ struct DevelopSession::Impl {
                         const std::string& vertex310Source,
                         const std::string& preFragmentSource,
                         const std::string& postFragmentSource,
+                        const std::string& tailFragmentSource,
+                        const std::string& sharpnessHSource,
+                        const std::string& sharpnessVSource,
+                        const std::string& detailHSource,
+                        const std::string& detailVSource,
                         const std::string& nrChromaHSource,
                         const std::string& nrChromaVSource,
                         const std::string& nrLumaSource,
@@ -588,9 +622,9 @@ struct DevelopSession::Impl {
                         std::string* detail);
     void runJob(const DevelopFrameRequest& req, DevelopFrameResult& out);
     // The shared develop pass (input contract, CPU uniforms, allocation,
-    // upload, the pre -> [NR] -> post draw chain into developFbo) — the
-    // part runJob and runEncoderJob share verbatim. False with
-    // out.detail set on failure.
+    // upload, the pre -> [NR] -> pointwise -> [unsharp] -> tail draw chain
+    // into developFbo) — the part runJob and runEncoderJob share verbatim.
+    // False with out.detail set on failure.
     bool developPass(const DevelopFrameRequest& req, DevelopFrameResult& out);
     void runSurfaceJob(ANativeWindow* window, bool* ok, std::string* detail);
     void runEncoderJob(const DevelopFrameRequest& req, int64_t ptsUs,
@@ -683,6 +717,11 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
         const std::string& vertex310Source,
         const std::string& preFragmentSource,
         const std::string& postFragmentSource,
+        const std::string& tailFragmentSource,
+        const std::string& sharpnessHSource,
+        const std::string& sharpnessVSource,
+        const std::string& detailHSource,
+        const std::string& detailVSource,
         const std::string& nrChromaHSource,
         const std::string& nrChromaVSource,
         const std::string& nrLumaSource,
@@ -702,20 +741,24 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
     bool initOk = false;
     std::string initDetail;
 
-    // Capture list is explicit on purpose: [impl] and the nine sources BY
-    // VALUE (a `[&]` would dangle — this thread outlives open()'s frame),
+    // Capture list is explicit on purpose: [impl] and the fourteen sources
+    // BY VALUE (a `[&]` would dangle — this thread outlives open()'s frame),
     // the init-handshake locals by reference (safe: each is touched
     // exactly once, before the notify, and open() does not return until
     // the notification arrives).
     impl->glThread = std::thread(
         [impl, vertexSource, vertex310Source, preFragmentSource,
-         postFragmentSource, nrChromaHSource, nrChromaVSource,
-         nrLumaSource, storeFragmentSource, blitFragmentSource, &initMutex,
+         postFragmentSource, tailFragmentSource, sharpnessHSource,
+         sharpnessVSource, detailHSource, detailVSource, nrChromaHSource,
+         nrChromaVSource, nrLumaSource, storeFragmentSource,
+         blitFragmentSource, &initMutex,
          &initCv, &initReported, &initOk, &initDetail]() {
             std::string d;
             const bool ok = impl->initOnGlThread(
                 vertexSource, vertex310Source, preFragmentSource,
-                postFragmentSource, nrChromaHSource, nrChromaVSource,
+                postFragmentSource, tailFragmentSource, sharpnessHSource,
+                sharpnessVSource, detailHSource, detailVSource,
+                nrChromaHSource, nrChromaVSource,
                 nrLumaSource, storeFragmentSource, blitFragmentSource, &d);
             // Report init's outcome to open() FIRST, then serve the loop
             // (or exit it on failure — open() joins the thread below).
@@ -769,6 +812,11 @@ bool DevelopSession::Impl::initOnGlThread(
         const std::string& vertex310Source,
         const std::string& preFragmentSource,
         const std::string& postFragmentSource,
+        const std::string& tailFragmentSource,
+        const std::string& sharpnessHSource,
+        const std::string& sharpnessVSource,
+        const std::string& detailHSource,
+        const std::string& detailVSource,
         const std::string& nrChromaHSource,
         const std::string& nrChromaVSource,
         const std::string& nrLumaSource,
@@ -804,12 +852,15 @@ bool DevelopSession::Impl::initOnGlThread(
     }
 
     // --- programs, compiled ONCE -------------------------------------------
-    // The develop pair is the SPLIT of the fused DEVELOP_FRAGMENT at the
-    // CPU's stage 6/9 boundary (the spatial-NR port's shape): pre runs
-    // stages 1-6, post runs 9-20+23+OETF, and the three NR passes sit at
-    // the CPU's exact stage 7/8 position between them. The fused text
-    // stays the frozen parity harness's own source; these programs
-    // compile the same shared fragments, so the chains cannot drift.
+    // The develop chain is the SPLIT of the fused DEVELOP_FRAGMENT at the
+    // CPU's stage 6/9 and 20/23 boundaries (the spatial-NR port's shape,
+    // extended): pre runs stages 1-6, the three NR passes sit at the CPU's
+    // exact stage 7/8 position, the pointwise post runs 9-20, the four
+    // unsharp passes sit at the CPU's exact stage 21/22 position (sharpness
+    // then detail, each an H+V pair riding the NR mission's multi-pass
+    // infrastructure), and the tail runs 23+24+OETF. The split recomposes
+    // the fused text BYTE-IDENTICALLY (the host-checked invariant), so the
+    // chains cannot drift.
     GlShader vertShader;
     vertShader.id = compileShader(GL_VERTEX_SHADER, vertexSource, "vertex", detail);
     if (vertShader.id == 0) return false;
@@ -825,6 +876,46 @@ bool DevelopSession::Impl::initOnGlThread(
     if (postFragShader.id == 0) return false;
     postProgram = linkProgram(vertShader.id, postFragShader.id, "develop-post", detail);
     if (postProgram == 0) return false;
+    GlShader tailFragShader;
+    tailFragShader.id = compileShader(GL_FRAGMENT_SHADER, tailFragmentSource,
+                                     "develop-tail-fragment", detail);
+    if (tailFragShader.id == 0) return false;
+    tailProgram = linkProgram(vertShader.id, tailFragShader.id, "develop-tail", detail);
+    if (tailProgram == 0) return false;
+    // The four unsharp passes (stages 21/22 — the CPU's unsharpLumaImpl
+    // verbatim as H+V pairs): sharpness (radius 1.5) then detail (radius
+    // 0.75), each split so the vertical pass can read the H pass's blurred
+    // luma as uSrc while keeping the STAGE'S INPUT (the original
+    // pre-sharpen RGB) as the uGuide it takes luma from — the CPU's
+    // two-buffer shape.
+    GlShader sharpnessHFragShader;
+    sharpnessHFragShader.id = compileShader(GL_FRAGMENT_SHADER, sharpnessHSource,
+                                            "sharpness-h-fragment", detail);
+    if (sharpnessHFragShader.id == 0) return false;
+    sharpnessHProgram = linkProgram(vertShader.id, sharpnessHFragShader.id,
+                                   "sharpness-h", detail);
+    if (sharpnessHProgram == 0) return false;
+    GlShader sharpnessVFragShader;
+    sharpnessVFragShader.id = compileShader(GL_FRAGMENT_SHADER, sharpnessVSource,
+                                            "sharpness-v-fragment", detail);
+    if (sharpnessVFragShader.id == 0) return false;
+    sharpnessVProgram = linkProgram(vertShader.id, sharpnessVFragShader.id,
+                                   "sharpness-v", detail);
+    if (sharpnessVProgram == 0) return false;
+    GlShader detailHFragShader;
+    detailHFragShader.id = compileShader(GL_FRAGMENT_SHADER, detailHSource,
+                                        "detail-h-fragment", detail);
+    if (detailHFragShader.id == 0) return false;
+    detailHProgram = linkProgram(vertShader.id, detailHFragShader.id,
+                                 "detail-h", detail);
+    if (detailHProgram == 0) return false;
+    GlShader detailVFragShader;
+    detailVFragShader.id = compileShader(GL_FRAGMENT_SHADER, detailVSource,
+                                         "detail-v-fragment", detail);
+    if (detailVFragShader.id == 0) return false;
+    detailVProgram = linkProgram(vertShader.id, detailVFragShader.id,
+                                 "detail-v", detail);
+    if (detailVProgram == 0) return false;
     // The three spatial-NR passes (the CPU's denoiseChromaImpl as H+V —
     // the vertical pass reads the ORIGINAL pre-NR image as its luma
     // guide — and denoiseLumaImpl as the one-pass 3x3 bilateral).
@@ -875,11 +966,12 @@ bool DevelopSession::Impl::initOnGlThread(
 
     // --- uniform locations, resolved ONCE ----------------------------------
     // The develop set is SPLIT with the programs: the 13 PRE uniforms
-    // (uCfa..uHasProfile) resolve on preProgram, the 34 POST uniforms
-    // (uExposure..uOetf plus the stage-24 LUT set) on postProgram. The
-    // LUT lookups join the same >= 0 contract check as the rest — a
-    // postProgram compiled without its LUT uniforms is a shader-contract
-    // break, not a runtime condition.
+    // (uCfa..uHasProfile) resolve on preProgram, the 21 POINTWISE uniforms
+    // (uExposure..uSaturation) on postProgram, the 13 TAIL uniforms
+    // (uTonemap/uOetf plus the stage-24 LUT set) on tailProgram, and the
+    // four unsharp sets on their own programs. Every lookup joins the same
+    // >= 0 contract check — a program compiled without its uniforms is a
+    // shader-contract break, not a runtime condition.
     cfaLoc = glGetUniformLocation(preProgram, "uCfa");
     sizeLoc = glGetUniformLocation(preProgram, "uSize");
     cellLoc = glGetUniformLocation(preProgram, "uCell");
@@ -925,36 +1017,81 @@ bool DevelopSession::Impl::initOnGlThread(
     splitHighlightHueLoc = glGetUniformLocation(postProgram, "uSplitHighlightHue");
     splitBalanceLoc = glGetUniformLocation(postProgram, "uSplitBalance");
     saturationLoc = glGetUniformLocation(postProgram, "uSaturation");
-    tonemapLoc = glGetUniformLocation(postProgram, "uTonemap");
-    oetfLoc = glGetUniformLocation(postProgram, "uOetf");
-    // The stage-24 LUT set (the LUT port, commit (a)) — the same resolved-
-    // once contract as the rest of the POST set.
-    lutStrengthLoc = glGetUniformLocation(postProgram, "uLutStrength");
-    lutLoc = glGetUniformLocation(postProgram, "uLut");
-    lutSizeLoc = glGetUniformLocation(postProgram, "uLutSize");
-    lutDomainMinLoc = glGetUniformLocation(postProgram, "uLutDomainMin");
-    lutDomainMaxLoc = glGetUniformLocation(postProgram, "uLutDomainMax");
-    lutRoleLoc = glGetUniformLocation(postProgram, "uLutRole");
-    lutPassthroughLoc = glGetUniformLocation(postProgram, "uLutPassthrough");
-    lutInTransferLoc = glGetUniformLocation(postProgram, "uLutInTransfer");
-    lutOutTransferLoc = glGetUniformLocation(postProgram, "uLutOutTransfer");
-    lutWorkingToInputLoc = glGetUniformLocation(postProgram, "uLutWorkingToInput");
-    lutOutputToWorkingLoc = glGetUniformLocation(postProgram, "uLutOutputToWorking");
     if (postSrcLoc < 0 || postSizeLoc < 0 || exposureLoc < 0 ||
-        highlightsLoc < 0 || tonemapLoc < 0 || oetfLoc < 0 ||
+        highlightsLoc < 0 ||
         blackPointLoc < 0 || whitePointLoc < 0 || shadowsLoc < 0 ||
         midtonesLoc < 0 || contrastLoc < 0 || wbManualLoc < 0 ||
         tempKLoc < 0 || tintLoc < 0 || wheelShadowXLoc < 0 ||
         wheelShadowYLoc < 0 || wheelMidXLoc < 0 || wheelMidYLoc < 0 ||
         wheelHighXLoc < 0 || wheelHighYLoc < 0 || splitActiveLoc < 0 ||
         splitShadowHueLoc < 0 || splitHighlightHueLoc < 0 ||
-        splitBalanceLoc < 0 || saturationLoc < 0 ||
+        splitBalanceLoc < 0 || saturationLoc < 0) {
+        *detail = "shader-contract: missing a develop-post uniform";
+        return false;
+    }
+    // TAIL's own uSrc/uSize (the chain-intermediate input the unsharp
+    // section leaves the image in) + the tonemap/OETF pair and the
+    // stage-24 LUT set (the LUT port) — all on tailProgram.
+    tailSrcLoc = glGetUniformLocation(tailProgram, "uSrc");
+    tailSizeLoc = glGetUniformLocation(tailProgram, "uSize");
+    tonemapLoc = glGetUniformLocation(tailProgram, "uTonemap");
+    oetfLoc = glGetUniformLocation(tailProgram, "uOetf");
+    lutStrengthLoc = glGetUniformLocation(tailProgram, "uLutStrength");
+    lutLoc = glGetUniformLocation(tailProgram, "uLut");
+    lutSizeLoc = glGetUniformLocation(tailProgram, "uLutSize");
+    lutDomainMinLoc = glGetUniformLocation(tailProgram, "uLutDomainMin");
+    lutDomainMaxLoc = glGetUniformLocation(tailProgram, "uLutDomainMax");
+    lutRoleLoc = glGetUniformLocation(tailProgram, "uLutRole");
+    lutPassthroughLoc = glGetUniformLocation(tailProgram, "uLutPassthrough");
+    lutInTransferLoc = glGetUniformLocation(tailProgram, "uLutInTransfer");
+    lutOutTransferLoc = glGetUniformLocation(tailProgram, "uLutOutTransfer");
+    lutWorkingToInputLoc = glGetUniformLocation(tailProgram, "uLutWorkingToInput");
+    lutOutputToWorkingLoc = glGetUniformLocation(tailProgram, "uLutOutputToWorking");
+    if (tailSrcLoc < 0 || tailSizeLoc < 0 || tonemapLoc < 0 || oetfLoc < 0 ||
         lutStrengthLoc < 0 || lutLoc < 0 || lutSizeLoc < 0 ||
         lutDomainMinLoc < 0 || lutDomainMaxLoc < 0 || lutRoleLoc < 0 ||
         lutPassthroughLoc < 0 || lutInTransferLoc < 0 ||
         lutOutTransferLoc < 0 || lutWorkingToInputLoc < 0 ||
         lutOutputToWorkingLoc < 0) {
-        *detail = "shader-contract: missing a develop-post uniform";
+        *detail = "shader-contract: missing a develop-tail uniform";
+        return false;
+    }
+    // The four unsharp passes' sets (stages 21/22): uSrc/uSize/uSharpness
+    // on the horizontal passes, uSrc/uGuide/uSize/uSharpness on the
+    // vertical (uGuide = the STAGE'S INPUT — the original pre-sharpen
+    // RGB the CPU's second pass keeps taking luma from), the same shape
+    // for detail's pair.
+    sharpnessHSrcLoc = glGetUniformLocation(sharpnessHProgram, "uSrc");
+    sharpnessHSizeLoc = glGetUniformLocation(sharpnessHProgram, "uSize");
+    sharpnessHStrengthLoc = glGetUniformLocation(sharpnessHProgram, "uSharpness");
+    if (sharpnessHSrcLoc < 0 || sharpnessHSizeLoc < 0 ||
+        sharpnessHStrengthLoc < 0) {
+        *detail = "shader-contract: missing a sharpness-h uniform";
+        return false;
+    }
+    sharpnessVSrcLoc = glGetUniformLocation(sharpnessVProgram, "uSrc");
+    sharpnessVGuideLoc = glGetUniformLocation(sharpnessVProgram, "uGuide");
+    sharpnessVSizeLoc = glGetUniformLocation(sharpnessVProgram, "uSize");
+    sharpnessVStrengthLoc = glGetUniformLocation(sharpnessVProgram, "uSharpness");
+    if (sharpnessVSrcLoc < 0 || sharpnessVGuideLoc < 0 ||
+        sharpnessVSizeLoc < 0 || sharpnessVStrengthLoc < 0) {
+        *detail = "shader-contract: missing a sharpness-v uniform";
+        return false;
+    }
+    detailHSrcLoc = glGetUniformLocation(detailHProgram, "uSrc");
+    detailHSizeLoc = glGetUniformLocation(detailHProgram, "uSize");
+    detailHStrengthLoc = glGetUniformLocation(detailHProgram, "uDetail");
+    if (detailHSrcLoc < 0 || detailHSizeLoc < 0 || detailHStrengthLoc < 0) {
+        *detail = "shader-contract: missing a detail-h uniform";
+        return false;
+    }
+    detailVSrcLoc = glGetUniformLocation(detailVProgram, "uSrc");
+    detailVGuideLoc = glGetUniformLocation(detailVProgram, "uGuide");
+    detailVSizeLoc = glGetUniformLocation(detailVProgram, "uSize");
+    detailVStrengthLoc = glGetUniformLocation(detailVProgram, "uDetail");
+    if (detailVSrcLoc < 0 || detailVGuideLoc < 0 || detailVSizeLoc < 0 ||
+        detailVStrengthLoc < 0) {
+        *detail = "shader-contract: missing a detail-v uniform";
         return false;
     }
     // The NR passes' own small sets: uSrc/uSize/uChromaDenoise on the
@@ -1010,23 +1147,37 @@ bool DevelopSession::Impl::initOnGlThread(
 
     // --- static texture-unit bindings (the unit assignment never changes) --
     // Unit map: 0 = CFA, 1 = the chain's pass-source texture (rebound per
-    // draw), 2 = the store pass's scratch, 3 = shading, 4 = the NR vertical
-    // pass's ORIGINAL guide (texA — a unit nothing else samples, so the
-    // guide survives the per-draw rebinds on unit 1 untouched), 5 = the
-    // stage-24 LUT 3D texture (the LUT port, commit (a); bound once here —
-    // the upload block in developPass swaps the texture OBJECT on that
-    // unit per LUT revision, the unit assignment itself never moves).
+    // draw), 2 = the store pass's scratch, 3 = shading, 4 = the vertical
+    // passes' guide (texA for NR, the stage's input for the unsharp passes
+    // — a unit nothing else samples, so the guide survives the per-draw
+    // rebinds on unit 1 untouched), 5 = the stage-24 LUT 3D texture (the
+    // LUT port, commit (a); bound once here — the upload block in
+    // developPass swaps the texture OBJECT on that unit per LUT revision,
+    // the unit assignment itself never moves).
     glUseProgram(preProgram);
     glUniform1i(cfaLoc, 0);      // CFA: GL_TEXTURE0
     glUniform1i(shadingLoc, 3);  // shading: GL_TEXTURE3
     glUseProgram(postProgram);
     glUniform1i(postSrcLoc, 1); // post source: GL_TEXTURE1 (the chain's
+                                // intermediate, rebound per frame)
+    glUseProgram(tailProgram);
+    glUniform1i(tailSrcLoc, 1); // tail source: GL_TEXTURE1 (the chain's
                                 // final intermediate, rebound per frame)
     glUniform1i(lutLoc, 5);     // LUT 3D texture: GL_TEXTURE5 (pinned at
                                 // open — a statically-declared sampler3D
                                 // whose unit is never set would default to
                                 // 0 and collide with uCfa, the harness's
                                 // own lutDummy comment)
+    glUseProgram(sharpnessHProgram);
+    glUniform1i(sharpnessHSrcLoc, 1);  // unsharp sources: GL_TEXTURE1
+    glUseProgram(sharpnessVProgram);   // (rebound per draw along the chain)
+    glUniform1i(sharpnessVSrcLoc, 1);
+    glUniform1i(sharpnessVGuideLoc, 4);  // the stage's input guide: unit 4
+    glUseProgram(detailHProgram);
+    glUniform1i(detailHSrcLoc, 1);
+    glUseProgram(detailVProgram);
+    glUniform1i(detailVSrcLoc, 1);
+    glUniform1i(detailVGuideLoc, 4);  // the stage's input guide: unit 4
     glUseProgram(nrChromaHProgram);
     glUniform1i(nrChromaHSrcLoc, 1);  // NR sources: GL_TEXTURE1 (rebound
     glUseProgram(nrChromaVProgram);   // per draw along the chain)
@@ -1423,14 +1574,16 @@ bool DevelopSession::Impl::developPass(const DevelopFrameRequest& req,
     if (glErrorAfter("glTexSubImage2D(R16UI)", &out.detail) != GL_NO_ERROR) return false;
 
     // --- draw 1: the PRE pass (stages 1-6) into texA ------------------------
-    // The chain shape (the spatial-NR port): PRE -> [NR, gated per grade]
-    // -> POST, with the NR passes at the CPU's exact stage 7/8 position.
-    // texA is both PRE's output and the vertical chroma pass's ORIGINAL
-    // guide (bound on unit 4, which no other draw touches); the NR
-    // sources ride unit 1 with per-draw rebinds; POST ALWAYS writes
-    // developTex (the store/blit passes read THAT texture — writing
-    // POST's output to an intermediate the chain also reads would be a
-    // framebuffer feedback loop).
+    // The chain shape (the spatial-NR port, extended by the unsharp port):
+    // PRE -> [NR, gated per grade] -> POST-pointwise -> [sharpness/detail,
+    // gated per grade] -> TAIL, with the NR passes at the CPU's exact
+    // stage 7/8 position and the unsharp passes at its exact 21/22
+    // position. texA is both PRE's output and the vertical chroma pass's
+    // ORIGINAL guide (bound on unit 4, which no other draw touches); the
+    // pass sources ride unit 1 with per-draw rebinds; the TAIL pass
+    // ALWAYS writes developTex (the store/blit passes read THAT texture
+    // — writing the tail's output to an intermediate the chain also
+    // reads would be a framebuffer feedback loop).
     glUseProgram(preProgram);
     glBindFramebuffer(GL_FRAMEBUFFER, fboA);
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
@@ -1519,11 +1672,23 @@ bool DevelopSession::Impl::developPass(const DevelopFrameRequest& req,
         chainTex = texB;
     }
 
-    // --- draw 5: the POST pass (stages 9-20+23+OETF) into developTex ------
+    // --- draw 5: the POST pass (the pointwise stages 9-20) into a chain slot -
+    // The three-way split's middle cut: the pointwise stages write a chain
+    // intermediate (NOT developTex — the unsharp section and the tail still
+    // read the chain; writing developTex here would let the tail read a
+    // texture the store/blit passes also read while the chain runs). The
+    // slot rotation threads the three ping-pong slots A->B->C->A: each
+    // unsharp H pass writes the slot after its input, each V pass the slot
+    // after that, so no draw reads and writes the same texture and each
+    // V pass's guide (its STAGE'S INPUT, bound on unit 4) stays live
+    // through its own draw.
+    GLuint postSrc = chainTex;
+    GLuint postDst = (postSrc == texA) ? texB : texA;
     glUseProgram(postProgram);
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, chainTex);
-    glBindFramebuffer(GL_FRAMEBUFFER, developFbo);
+    glBindTexture(GL_TEXTURE_2D, postSrc);
+    glBindFramebuffer(GL_FRAMEBUFFER,
+                      postDst == texA ? fboA : (postDst == texB ? fboB : fboC));
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
     glUniform2i(postSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
     glUniform1f(exposureLoc, exposure);
@@ -1549,18 +1714,118 @@ bool DevelopSession::Impl::developPass(const DevelopFrameRequest& req,
     glUniform1f(splitHighlightHueLoc, req.splitHighlightHue);
     glUniform1f(splitBalanceLoc, req.splitBalance);
     glUniform1f(saturationLoc, req.saturation);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (glErrorAfter("glDrawArrays(post)", &out.detail) != GL_NO_ERROR) return false;
+    chainTex = postDst;
+
+    // --- draws 6-9: the unsharp passes (stages 21/22), gated per grade ------
+    // The CPU call sites' own gate (Develop.cpp: the outer gate is
+    // `sharpness != 0.0f || detail != 0.0f`, each stage's own gate is its
+    // raw value != 0.0f) + the impl's own w<2/h<2 guard. NO clamp here —
+    // the CPU's amount mapping min(max(0.5*(raw/100), -0.5), 0.5) runs
+    // in-shader, so NEGATIVE raw values are valid softening and a raw 0
+    // is the only skip. The session skips the draws entirely for a raw
+    // 0 or a too-small frame; the in-shader gate is the second lock — a
+    // skipped draw and a gate-closed draw produce the same pass-through.
+    const bool runSharp = req.sharpness != 0.0f && w >= 2 && h >= 2;
+    const bool runDetail = req.detail != 0.0f && w >= 2 && h >= 2;
+    // The slot rotation: A -> B -> C -> A (the ping-pong threading worked
+    // out for every NR state — no draw reads and writes the same texture).
+    // Each unsharp stage is an H pass (input -> the next slot) + a V pass
+    // (the H output + the STAGE'S INPUT as the uGuide on unit 4 -> the
+    // slot after that). Sharpness's guide is the pointwise output; the
+    // tail of the chain hands detail the sharpness output as its guide.
+    const GLuint slotAfter[] = {texB, texC, texA};  // index: A=0, B=1, C=2
+    const GLuint fboOf[] = {fboA, fboB, fboC};
+    int slotIndex = (chainTex == texA) ? 0 : ((chainTex == texB) ? 1 : 2);
+    const GLuint sharpIn = chainTex;
+    if (runSharp) {
+        // Stage 21, horizontal (radius 1.5): sharpIn -> the next slot. The
+        // H pass blurs ONLY luma — its .x output is the horizontally
+        // blurred luma (the gate-closed branch writes the original luma
+        // so a gate-closed draw is an exact pass-through).
+        const GLuint sharpHOut = slotAfter[slotIndex];
+        glUseProgram(sharpnessHProgram);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, sharpIn);
+        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)]);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glUniform2i(sharpnessHSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+        glUniform1f(sharpnessHStrengthLoc, req.sharpness);  // raw; the shader gates
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(sharpness-h)", &out.detail) != GL_NO_ERROR) return false;
+
+        // Stage 21, vertical: sharpHOut + the guide sharpIn (unit 4) ->
+        // the next slot. The V pass finishes the blur (the H output's .x
+        // carries no RGB — the guide supplies the ORIGINAL luma and RGB
+        // the CPU's second buffer keeps), then applies the high-pass
+        // difference + the amount blend in the same draw.
+        const GLuint sharpOut = slotAfter[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)];
+        glUseProgram(sharpnessVProgram);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, sharpHOut);
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, sharpIn);
+        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 2 : (slotIndex == 1 ? 0 : 1)]);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glUniform2i(sharpnessVSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+        glUniform1f(sharpnessVStrengthLoc, req.sharpness);  // raw; the shader gates
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(sharpness-v)", &out.detail) != GL_NO_ERROR) return false;
+        chainTex = sharpOut;
+    }
+    if (runDetail) {
+        // Stage 22, horizontal (radius 0.75): chainTex (the sharpness
+        // output, or the pointwise output when stage 21 is off) -> the
+        // next slot.
+        slotIndex = (chainTex == texA) ? 0 : ((chainTex == texB) ? 1 : 2);
+        const GLuint detailIn = chainTex;
+        const GLuint detailHOut = slotAfter[slotIndex];
+        glUseProgram(detailHProgram);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, detailIn);
+        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)]);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glUniform2i(detailHSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+        glUniform1f(detailHStrengthLoc, req.detail);  // raw; the shader gates
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(detail-h)", &out.detail) != GL_NO_ERROR) return false;
+
+        // Stage 22, vertical: detailHOut + the guide detailIn (unit 4) ->
+        // the next slot — the CPU's second buffer keeping the stage's
+        // own input luma.
+        const GLuint detailOut = slotAfter[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)];
+        glUseProgram(detailVProgram);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, detailHOut);
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, detailIn);
+        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 2 : (slotIndex == 1 ? 0 : 1)]);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glUniform2i(detailVSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+        glUniform1f(detailVStrengthLoc, req.detail);  // raw; the shader gates
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(detail-v)", &out.detail) != GL_NO_ERROR) return false;
+        chainTex = detailOut;
+    }
+    // --- draw 10: the TAIL pass (stages 23+24+OETF) into developTex ---------
+    glUseProgram(tailProgram);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, chainTex);
+    glBindFramebuffer(GL_FRAMEBUFFER, developFbo);
+    glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+    glUniform2i(tailSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
     glUniform1i(tonemapLoc, req.tonemap);
     glUniform1i(oetfLoc, 1);  // the export shape: linearToRec709 in-shader
-    // Stage 24 LUT (the LUT port, commit (a)): the raw strength ([0,1],
-    // Kotlin-mapped) + the table's shape/binding uniforms. The neutral
-    // pins when no LUT is active (strength 0, size 0, role 0) keep the
-    // POST draw byte-identical to the pre-LUT chain — the shader's own
-    // gate is the skip, exactly like every raw grade value above. The
-    // role rides the request's ordinal clamped to the shader's own
-    // vocabulary [0,3] — an ordinal the shader does not know falls back
-    // to role 0 (the legacy plain-sampler pair), the same honest
-    // fallback the CPU's nullptr binding takes, never a silent
-    // mis-render.
+    // Stage 24 LUT (the LUT port): the raw strength ([0,1], Kotlin-mapped)
+    // + the table's shape/binding uniforms. The neutral pins when no LUT
+    // is active (strength 0, size 0, role 0) keep the TAIL draw
+    // byte-identical to the pre-LUT chain — the shader's own gate is the
+    // skip, exactly like every raw grade value above. The role rides the
+    // request's ordinal clamped to the shader's own vocabulary [0,3] — an
+    // ordinal the shader does not know falls back to role 0 (the legacy
+    // plain-sampler pair), the same honest fallback the CPU's nullptr
+    // binding takes, never a silent mis-render.
     glUniform1f(lutStrengthLoc, req.lutStrength);
     glUniform1i(lutSizeLoc, lutActive ? lutParsed->n : 0);
     glUniform3fv(lutDomainMinLoc, 1, lutActive ? lutParsed->domainMin : kLutDomainMinDefault);
@@ -1577,7 +1842,7 @@ bool DevelopSession::Impl::developPass(const DevelopFrameRequest& req,
     glUniformMatrix3fv(lutOutputToWorkingLoc, 1, GL_TRUE,
                        lutBindingOk && lutActive ? lutBinding.outputToWorking : kLutIdentity);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    if (glErrorAfter("glDrawArrays(post)", &out.detail) != GL_NO_ERROR) return false;
+    if (glErrorAfter("glDrawArrays(tail)", &out.detail) != GL_NO_ERROR) return false;
     // The developed frame now lives in developTex (RGBA32F, OETF applied).
     // runJob continues with the store pass + SSBO readback; runEncoderJob
     // blits this texture straight to the encoder window surface instead.
@@ -1991,6 +2256,11 @@ void DevelopSession::Impl::teardownOnGlThread() {
     if (outBuf != 0) { glDeleteBuffers(1, &outBuf); outBuf = 0; }
     if (preProgram != 0) { glDeleteProgram(preProgram); preProgram = 0; }
     if (postProgram != 0) { glDeleteProgram(postProgram); postProgram = 0; }
+    if (tailProgram != 0) { glDeleteProgram(tailProgram); tailProgram = 0; }
+    if (sharpnessHProgram != 0) { glDeleteProgram(sharpnessHProgram); sharpnessHProgram = 0; }
+    if (sharpnessVProgram != 0) { glDeleteProgram(sharpnessVProgram); sharpnessVProgram = 0; }
+    if (detailHProgram != 0) { glDeleteProgram(detailHProgram); detailHProgram = 0; }
+    if (detailVProgram != 0) { glDeleteProgram(detailVProgram); detailVProgram = 0; }
     if (nrChromaHProgram != 0) { glDeleteProgram(nrChromaHProgram); nrChromaHProgram = 0; }
     if (nrChromaVProgram != 0) { glDeleteProgram(nrChromaVProgram); nrChromaVProgram = 0; }
     if (nrLumaProgram != 0) { glDeleteProgram(nrLumaProgram); nrLumaProgram = 0; }

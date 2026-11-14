@@ -2258,6 +2258,13 @@ fun ClipEditorScreen(
                             maxDim = req.maxDim,
                             chromaDenoise = req.grade.chromaDenoise,
                             noiseReduction = req.grade.noiseReduction,
+                            // Stages 21/22 (commit b): the unsharp pair's raw
+                            // percents ride the render seam exactly like the
+                            // CPU preview — verbatim, NO clamp, because the
+                            // CPU's own amount mapping makes negative values
+                            // valid (softening).
+                            sharpness = req.grade.sharpness,
+                            detail = req.grade.detail,
                             exposureEv = req.grade.exposureEv,
                             highlights = req.grade.highlights,
                             blackPoint = req.grade.blackPoint,

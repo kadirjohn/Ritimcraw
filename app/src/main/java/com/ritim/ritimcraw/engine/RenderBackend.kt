@@ -229,7 +229,7 @@ object BackendRules {
      * math behind uHighlights — 0.0 is the CPU's own skip). Stage 24
      * (LUT) joined with the LUT port — CONDITIONALLY at runtime, the
      * one stage in the contract whose coverage rides a runtime fact:
-     * the POST pass carries the CPU's exact role/transfer contract
+     * the TAIL pass carries the CPU's exact role/transfer contract
      * (applyManagedLutStage's per-role order, the managed
      * encode/sample/decode chain) behind uLutStrength, sampling the
      * parsed .cube through a 3D RGBA16F texture (hardware trilinear,
@@ -238,12 +238,18 @@ object BackendRules {
      * [fragmentUncoveredStages]' lutTexturePathOk carries that runtime
      * fact, and while it is false the grade falls back with the lut
      * token (the honest gate, never a silent skip: the LUT port's own
-     * bounded-error rule). Everything else in the 24-stage CPU
-     * contract falls back to CPU when active (see
-     * [fragmentUncoveredStages]).
+     * bounded-error rule). Stages 21 and 22 (sharpness, detail) joined
+     * with the sharpness/detail port: the four unsharp passes carry
+     * the CPU's exact unsharpLumaImpl (radius 1.5 and 0.75, the H+V
+     * blur pairs, the original-luma guide, the amount mapping with
+     * NEGATIVE softening valid) behind uSharpness/uDetail, so an active
+     * sharpness/detail grade no longer forces the CPU path — the
+     * develop pipeline is 100% fragment-covered modulo the ONE runtime
+     * leg. Nothing else in the 24-stage CPU contract falls back to CPU
+     * when active (see [fragmentUncoveredStages]).
      */
     val FRAGMENT_COVERED_STAGES: Set<Int> =
-        setOf(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24)
+        setOf(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24)
 
     /**
      * The fragment path's honest uncovered list, as stage number ->
@@ -273,21 +279,27 @@ object BackendRules {
      * (two passes, original luma guide preserved) and the CPU's exact
      * 3x3 luma bilateral behind uChromaDenoise/uNoiseReduction, so an
      * active chroma-denoise/noise-reduction grade no longer forces the
-     * CPU path. Stage 24 (LUT) left it with the LUT port — the ONLY
-     * conditional leave in the contract: the shader carries the CPU's
-     * exact managed-LUT math, so 24 is covered whenever the device's
-     * LUT texture path is healthy, and the lut TOKEN lives in
+     * CPU path. Stages 21 and 22 (sharpness, detail) left it with the
+     * sharpness/detail port: the four unsharp passes carry the CPU's
+     * exact unsharpLumaImpl behind uSharpness/uDetail (the raw values,
+     * NO clamp — negative softening valid), so an active sharpness/
+     * detail grade no longer forces the CPU path. Stage 24 (LUT) left
+     * it with the LUT port — the ONLY conditional leave in the
+     * contract: the shader carries the CPU's exact managed-LUT math,
+     * so 24 is covered whenever the device's LUT texture path is
+     * healthy, and the lut TOKEN lives in
      * [fragmentUncoveredStages]' runtime leg (lutTexturePathOk), NOT
      * in this map — the map stays the unconditionally-uncovered list
      * so the covered/uncovered disjointness lock keeps its exact
      * meaning. When the path is unavailable (format/filter), the
      * session latches unhealthy and the job falls back with the lut
-     * token — loudly, never a silent drop of the look.
+     * token — loudly, never a silent drop of the look. THE MAP IS NOW
+     * EMPTY: every stage in developCpu's 24-stage contract is covered
+     * by the fragment path (the sharpness/detail port closed the last
+     * unconditional gaps), so the ONLY fallback left anywhere in the
+     * develop pipeline is the LUT runtime leg.
      */
-    val FRAGMENT_UNCOVERED_STAGES: Map<Int, String> = linkedMapOf(
-        21 to "sharpness",            // grade.sharpness != 0
-        22 to "detail",               // grade.detail != 0
-    )
+    val FRAGMENT_UNCOVERED_STAGES: Map<Int, String> = linkedMapOf()
 
     /**
      * The uncovered work that runs OUTSIDE developCpu's own stage list but
@@ -307,8 +319,8 @@ object BackendRules {
      * deliverable D: no active effect is silently skipped; the GPU path
      * only takes a frame when EVERY active stage is covered).
      *
-     * Stages 2, 3, 7, 8, 15, 23 and the ten pointwise grade stages (9-13,
-     * 16-20) are no longer listed: all of them are covered by the
+     * Stages 2, 3, 7, 8, 15, 21, 22, 23 and the ten pointwise grade stages
+     * (9-13, 16-20) are no longer listed: all of them are covered by the
      * fragment path. Stage 2's map-state guard moved into the shader's
      * uniform (uHasShading — the CPU-side gate computed where the map
      * state is known; see [fragmentShadingApplies]), stage 3's toggle
@@ -327,7 +339,14 @@ object BackendRules {
      * bilateral behind uChromaDenoise/uNoiseReduction (the CPU's own
      * 0.0-skip and w/h guards mirrored), so an active chroma-denoise/
      * noise-reduction grade is NOT an uncovered-stage fallback anymore.
-     * Stage 24 (LUT) is the RUNTIME-CONDITIONAL shape: the POST pass
+     * Stages 21 and 22 moved with the sharpness/detail port: the four
+     * unsharp passes carry the CPU's exact unsharpLumaImpl (radius 1.5
+     * and 0.75, the H+V blur pairs, the original-luma guide, the amount
+     * mapping with NEGATIVE softening valid) behind uSharpness/uDetail,
+     * so an active sharpness/detail grade is NOT an uncovered-stage
+     * fallback anymore — the develop pipeline is 100% fragment-covered
+     * modulo the ONE runtime leg.
+     * Stage 24 (LUT) is the RUNTIME-CONDITIONAL shape: the TAIL pass
      * carries the CPU's exact managed-LUT contract, so an active LUT
      * grade is covered ONLY when the device's LUT texture path is
      * healthy — [lutTexturePathOk] is the caller's runtime fact (the
@@ -343,8 +362,6 @@ object BackendRules {
         lutTexturePathOk: Boolean = false,
     ): List<Pair<Int, String>> {
         val active = mutableListOf<Pair<Int, String>>()
-        if (grade.sharpness != 0f) active += 21 to "sharpness"
-        if (grade.detail != 0f) active += 22 to "detail"
         if (grade.lutId != null && grade.lutStrength > 0f && !lutTexturePathOk) {
             active += 24 to "lut"
         }

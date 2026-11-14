@@ -37,6 +37,19 @@ class GpuPreviewSessionTest {
     )
 
     /**
+     * The two unsharp stages' raw percents ONE render carried, in the
+     * seam's parameter order — the verbatim pass-through lock's snapshot
+     * for the stages-21/22 pair (a swapped or dropped parameter in
+     * GpuPreviewSession.render fails the data-class equality with the
+     * exact field named; NO clamp — negative sharpness is valid
+     * softening).
+     */
+    private data class SharpnessDetailCall(
+        val sharpness: Float,
+        val detail: Float,
+    )
+
+    /**
      * The ten pointwise stages' raw values ONE render carried, in the
      * seam's parameter order — the verbatim pass-through lock's snapshot
      * (a swapped or dropped parameter in GpuPreviewSession.render fails
@@ -94,6 +107,7 @@ class GpuPreviewSessionTest {
         val rendered = mutableListOf<Long>() // the session handles rendered
         val renderedHighlights = mutableListOf<Float>() // grade.highlights per render
         val renderedNr = mutableListOf<NrCall>() // the two spatial-NR stages per render
+        val renderedSharpnessDetail = mutableListOf<SharpnessDetailCall>() // the two unsharp stages per render
         val renderedPointwise = mutableListOf<PointwiseCall>() // the ten stages per render
         val renderedLut = mutableListOf<LutCall>() // the seven LUT controls per render
         val closed = mutableListOf<Long>()
@@ -129,6 +143,8 @@ class GpuPreviewSessionTest {
             maxDim: Int,
             chromaDenoise: Float,
             noiseReduction: Float,
+            sharpness: Float,
+            detail: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -163,6 +179,7 @@ class GpuPreviewSessionTest {
             rendered += sessionHandle
             renderedHighlights += highlights
             renderedNr += NrCall(chromaDenoise, noiseReduction)
+            renderedSharpnessDetail += SharpnessDetailCall(sharpness, detail)
             renderedPointwise += PointwiseCall(
                 blackPoint, whitePoint, shadows, midtones, contrast,
                 tempK, tint, saturation, asShot,
@@ -259,6 +276,7 @@ class GpuPreviewSessionTest {
         val out = session.render(
             clipHandle = 11L, frameIndex = 5, maxDim = 1280,
             chromaDenoise = 25f, noiseReduction = 40f,
+            sharpness = 35f, detail = -15f,
             exposureEv = 0.5f, highlights = -55f, highlightReconstruction = true,
             keepVignetting = true, tonemap = 1,
             blackPoint = 5f, whitePoint = -5f,
@@ -287,6 +305,14 @@ class GpuPreviewSessionTest {
         // uNoiseReduction binds need (the stages-7/8 port's own
         // pass-through lock, same shape as the pointwise one below).
         assertEquals(listOf(NrCall(chromaDenoise = 25f, noiseReduction = 40f)), develop.renderedNr)
+        // The two unsharp stages ride the seam verbatim too — the raw
+        // grade percents the four-pass unsharp chain's uSharpness/uDetail
+        // binds need, the NEGATIVE detail carrying through unclamped
+        // (softening is valid — the CPU's own amount mapping).
+        assertEquals(
+            listOf(SharpnessDetailCall(sharpness = 35f, detail = -15f)),
+            develop.renderedSharpnessDetail,
+        )
         // The ten pointwise stages ride the seam verbatim too, each raw
         // grade value in the established order — a swapped pair or a
         // dropped stage fails this equality with the field named.
@@ -331,6 +357,7 @@ class GpuPreviewSessionTest {
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 chromaDenoise = 0f, noiseReduction = 0f,
+                sharpness = 0f, detail = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
                 blackPoint = 0f, whitePoint = 0f,
@@ -358,6 +385,7 @@ class GpuPreviewSessionTest {
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 chromaDenoise = 0f, noiseReduction = 0f,
+                sharpness = 0f, detail = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
                 blackPoint = 0f, whitePoint = 0f,
@@ -407,6 +435,7 @@ class GpuPreviewSessionTest {
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
                 chromaDenoise = 0f, noiseReduction = 0f,
+                sharpness = 0f, detail = 0f,
                 exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
                 keepVignetting = true, tonemap = 0,
                 blackPoint = 0f, whitePoint = 0f,
@@ -448,6 +477,8 @@ class GpuPreviewSessionTest {
                 maxDim: Int,
                 chromaDenoise: Float,
                 noiseReduction: Float,
+                sharpness: Float,
+                detail: Float,
                 exposureEv: Float,
                 highlights: Float,
                 blackPoint: Float,

@@ -2961,6 +2961,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //                            nrChromaV, nrLuma, store, blit) -> handle
 //   nativeDevelopSessionRenderFrame(handle, clipHandle, frameIndex,
 //                                   chromaDenoise, noiseReduction,
+//                                   sharpness, detail,
 //                                   exposureEv, highlights,
 //                                   blackPoint, whitePoint, shadows,
 //                                   midtones, contrast, tempK, tint,
@@ -2975,7 +2976,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //   nativeDevelopSessionSetEncoderSurface(handle, surface) -> ok
 //   nativeDevelopSessionRenderFrameToEncoder(handle, clipHandle, frameIndex,
 //                                            ptsUs, chromaDenoise,
-//                                            noiseReduction, exposureEv,
+//                                            noiseReduction, sharpness,
+//                                            detail, exposureEv,
 //                                            highlights,
 //                                            blackPoint, whitePoint, shadows,
 //                                            midtones, contrast, tempK, tint,
@@ -3009,7 +3011,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // The render takes the fragment-covered grade controls — the five base
 // ones (exposure, highlights, highlight reconstruction, vignetting,
 // tonemap), the two spatial-NR stages' raw values since the NR port
-// (chroma denoise, noise reduction — stages 7/8), plus the ten pointwise
+// (chroma denoise, noise reduction — stages 7/8), the two unsharp stages'
+// raw values since the sharpness/detail port (sharpness, detail —
+// stages 21/22, the four-pass unsharp chain), plus the ten pointwise
 // stages' raw values (black point, white point, shadows, midtones,
 // contrast, temperature, tint, the color wheel, split tone, saturation)
 // with asShot as the 16/17 gate's input. An uncovered grade still cannot
@@ -3021,13 +3025,15 @@ JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
         JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
         jstring preFragmentSource, jstring postFragmentSource,
+        jstring tailFragmentSource, jstring sharpnessHSource,
+        jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
         jstring nrChromaHSource, jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
         jstring blitFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The nine sources, each read with the nativeGlesFragmentParity pattern
+    // The fourteen sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -3068,6 +3074,56 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
     }
     const std::string post(postChars);
     env->ReleaseStringUTFChars(postFragmentSource, postChars);
+
+    const char* tailChars = env->GetStringUTFChars(tailFragmentSource, nullptr);
+    if (tailChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the tail source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string tail(tailChars);
+    env->ReleaseStringUTFChars(tailFragmentSource, tailChars);
+
+    const char* sharpnessHChars = env->GetStringUTFChars(sharpnessHSource, nullptr);
+    if (sharpnessHChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the sharpness-h source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string sharpnessH(sharpnessHChars);
+    env->ReleaseStringUTFChars(sharpnessHSource, sharpnessHChars);
+
+    const char* sharpnessVChars = env->GetStringUTFChars(sharpnessVSource, nullptr);
+    if (sharpnessVChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the sharpness-v source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string sharpnessV(sharpnessVChars);
+    env->ReleaseStringUTFChars(sharpnessVSource, sharpnessVChars);
+
+    const char* detailHChars = env->GetStringUTFChars(detailHSource, nullptr);
+    if (detailHChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the detail-h source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string detailH(detailHChars);
+    env->ReleaseStringUTFChars(detailHSource, detailHChars);
+
+    const char* detailVChars = env->GetStringUTFChars(detailVSource, nullptr);
+    if (detailVChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the detail-v source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string detailV(detailVChars);
+    env->ReleaseStringUTFChars(detailVSource, detailVChars);
 
     const char* nrChromaHChars = env->GetStringUTFChars(nrChromaHSource, nullptr);
     if (nrChromaHChars == nullptr) {
@@ -3139,8 +3195,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
 
     std::string detail;
     std::unique_ptr<gles::DevelopSession> session =
-        gles::DevelopSession::open(v300, v310, pre, post, nrChromaH, nrChromaV,
-                                   nrLuma, store, blit, &detail);
+        gles::DevelopSession::open(v300, v310, pre, post, tail, sharpnessH,
+                                   sharpnessV, detailH, detailV, nrChromaH,
+                                   nrChromaV, nrLuma, store, blit, &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "develop session: " + detail +
@@ -3158,6 +3215,7 @@ JNIEXPORT jbyteArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jfloat chromaDenoise, jfloat noiseReduction,
+        jfloat sharpness, jfloat detail,
         jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
         jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
@@ -3208,6 +3266,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         req.meta = &meta;
         req.chromaDenoise = chromaDenoise;
         req.noiseReduction = noiseReduction;
+        // Stages 21/22 (the sharpness/detail seam commit): the raw grade
+        // percents threaded verbatim — NO clamp, because the CPU's own
+        // amount mapping makes NEGATIVE values valid (softening); the
+        // session gates the four unsharp draws on raw != 0 plus the
+        // CPU's own w >= 2 / h >= 2 guard.
+        req.sharpness = sharpness;
+        req.detail = detail;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
         req.blackPoint = blackPoint;
@@ -3349,7 +3414,8 @@ JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoder(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jlong ptsUs, jfloat chromaDenoise,
-        jfloat noiseReduction, jfloat exposureEv, jfloat highlights,
+        jfloat noiseReduction, jfloat sharpness, jfloat detail,
+        jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
         jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
         jfloat saturation, jboolean asShot,
@@ -3396,6 +3462,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         req.meta = &meta;
         req.chromaDenoise = chromaDenoise;
         req.noiseReduction = noiseReduction;
+        // Stages 21/22 (the sharpness/detail seam commit), same shape as
+        // the readback entry above: the raw grade percents verbatim, NO
+        // clamp (negatives = the CPU's softening direction).
+        req.sharpness = sharpness;
+        req.detail = detail;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
         req.blackPoint = blackPoint;
@@ -3471,17 +3542,18 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 // The preview counterpart of the M3 develop-session seam, wired to the
 // SurfaceView the editor mounts (commit b). One session per clip preview:
 //
-//   nativePreviewSessionOpen(vertex, vertex310, pre, post, nrChromaH,
+//   nativePreviewSessionOpen(vertex, vertex310, pre, post, tail, sharpnessH,
+//                            sharpnessV, detailH, detailV, nrChromaH,
 //                            nrChromaV, nrLuma, store, window) -> handle
 //   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
 //   nativePreviewSessionRenderFrame(handle, clipHandle, frameIndex, maxDim,
-//       chromaDenoise, noiseReduction, exposureEv, highlights, blackPoint,
-//       whitePoint, shadows, midtones, contrast, tempK, tint, saturation,
-//       asShot, wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-//       wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue,
-//       splitBalance, highlightReconstruction, keepVignetting, tonemap,
-//       lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
-//       lutOutGamut, lutOutTransfer)
+//       chromaDenoise, noiseReduction, sharpness, detail, exposureEv,
+//       highlights, blackPoint, whitePoint, shadows, midtones, contrast,
+//       tempK, tint, saturation, asShot, wheelShadowX, wheelShadowY,
+//       wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
+//       splitHighlightHue, splitBalance, highlightReconstruction,
+//       keepVignetting, tonemap, lutPath, lutStrength, lutRole,
+//       lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer)
 //       -> [w, h, pixels...] int array (the small published stats pack)
 //   nativePreviewSessionClose(handle)
 //
@@ -3502,21 +3574,25 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 // NOWHERE.
 //
 // The grade controls are exactly the fragment-covered set's knobs (the
-// five base ones plus the ten pointwise stages' raw values since the
-// pointwise port — the same narrow-signature lock as the export seam: an
-// uncovered grade cannot even be expressed here).
+// five base ones plus the two spatial-NR stages' raw values since the
+// NR port plus the two unsharp stages' raw values since the
+// sharpness/detail port plus the ten pointwise stages' raw values since
+// the pointwise port — the same narrow-signature lock as the export
+// seam: an uncovered grade cannot even be expressed here).
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
         JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
         jstring preFragmentSource, jstring postFragmentSource,
+        jstring tailFragmentSource, jstring sharpnessHSource,
+        jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
         jstring nrChromaHSource, jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
         jstring windowFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The nine sources, each read with the nativeGlesFragmentParity pattern
+    // The fourteen sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -3557,6 +3633,56 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
     }
     const std::string post(postChars);
     env->ReleaseStringUTFChars(postFragmentSource, postChars);
+
+    const char* tailChars = env->GetStringUTFChars(tailFragmentSource, nullptr);
+    if (tailChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the tail source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string tail(tailChars);
+    env->ReleaseStringUTFChars(tailFragmentSource, tailChars);
+
+    const char* sharpnessHChars = env->GetStringUTFChars(sharpnessHSource, nullptr);
+    if (sharpnessHChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the sharpness-h source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string sharpnessH(sharpnessHChars);
+    env->ReleaseStringUTFChars(sharpnessHSource, sharpnessHChars);
+
+    const char* sharpnessVChars = env->GetStringUTFChars(sharpnessVSource, nullptr);
+    if (sharpnessVChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the sharpness-v source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string sharpnessV(sharpnessVChars);
+    env->ReleaseStringUTFChars(sharpnessVSource, sharpnessVChars);
+
+    const char* detailHChars = env->GetStringUTFChars(detailHSource, nullptr);
+    if (detailHChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the detail-h source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string detailH(detailHChars);
+    env->ReleaseStringUTFChars(detailHSource, detailHChars);
+
+    const char* detailVChars = env->GetStringUTFChars(detailVSource, nullptr);
+    if (detailVChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session: out of memory reading the detail-v source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string detailV(detailVChars);
+    env->ReleaseStringUTFChars(detailVSource, detailVChars);
 
     const char* nrChromaHChars = env->GetStringUTFChars(nrChromaHSource, nullptr);
     if (nrChromaHChars == nullptr) {
@@ -3628,8 +3754,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
 
     std::string detail;
     std::unique_ptr<gles::PreviewSession> session =
-        gles::PreviewSession::open(v300, v310, pre, post, nrChromaH, nrChromaV,
-                                   nrLuma, store, window, &detail);
+        gles::PreviewSession::open(v300, v310, pre, post, tail, sharpnessH,
+                                   sharpnessV, detailH, detailV, nrChromaH,
+                                   nrChromaV, nrLuma, store, window, &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "preview session: " + detail +
@@ -3697,7 +3824,8 @@ JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
         jint frameIndex, jint maxDim, jfloat chromaDenoise,
-        jfloat noiseReduction, jfloat exposureEv, jfloat highlights,
+        jfloat noiseReduction, jfloat sharpness, jfloat detail,
+        jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
         jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
         jfloat saturation, jboolean asShot,
@@ -3814,6 +3942,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.meta = &meta;
         req.chromaDenoise = chromaDenoise;
         req.noiseReduction = noiseReduction;
+        // Stages 21/22 (the sharpness/detail seam commit), same shape as
+        // the develop-session entries above: the raw grade percents
+        // verbatim, NO clamp (negatives = the CPU's softening direction).
+        req.sharpness = sharpness;
+        req.detail = detail;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
         req.blackPoint = blackPoint;

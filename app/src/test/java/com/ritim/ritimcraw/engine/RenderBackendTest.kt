@@ -234,24 +234,27 @@ class RenderBackendTest {
         // it with the spatial-NR port: the NR passes carry the CPU's exact
         // chroma two-direction filter (two passes, original luma guide)
         // and the CPU's exact 3x3 luma bilateral behind
-        // uChromaDenoise/uNoiseReduction. Stage 24 (LUT) left it with the
-        // LUT port — the ONLY conditional leave: the map does NOT carry
-        // the lut token because the shader covers the managed-LUT math;
-        // the token fires from fragmentUncoveredStages' runtime
-        // lutTexturePathOk leg when the device's LUT texture path is
-        // unavailable (the lut coverage tests below pin that shape), so
-        // the map keeps meaning "uncovered, period" and the disjointness
-        // lock below keeps its exact pre-LUT meaning.
-        assertEquals(2, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
-        assertEquals(
-            setOf(21, 22),
-            BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
-        )
+        // uChromaDenoise/uNoiseReduction. Stages 21 and 22 (sharpness,
+        // detail) left it with the sharpness/detail port — the CPU's exact
+        // separable unsharp (H/V blur passes + the high-pass difference
+        // fused into the V pass) behind uSharpness/uDetail. THE MAP IS NOW
+        // EMPTY: every one of developCpu's 24 stages is fragment-covered,
+        // so the map keeps meaning "uncovered, period" and the disjointness
+        // lock below holds trivially. The ONLY fallback left anywhere in
+        // the develop pipeline is the RUNTIME lutTexturePathOk leg (the
+        // lut coverage tests below pin that shape).
+        assertEquals(0, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
+        assertTrue(BackendRules.FRAGMENT_UNCOVERED_STAGES.isEmpty())
         // Covered + uncovered = the full 24-stage contract, no overlap.
         assertTrue(
             BackendRules.FRAGMENT_COVERED_STAGES.intersect(
                 BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
             ).isEmpty(),
+        )
+        // The covered set IS the full contract now.
+        assertEquals(
+            (1..24).toSet(),
+            BackendRules.FRAGMENT_COVERED_STAGES,
         )
     }
 
@@ -283,12 +286,11 @@ class RenderBackendTest {
     fun every_uncovered_stage_guard_mirrors_the_cpu() {
         // One grade per stage: the field that activates CPU stage N must
         // activate the Kotlin rule's stage N (same guard, same number).
-        // Stages 2, 3, 7, 8, 15, 23 and the ten pointwise grade stages
-        // (9-13, 16-20) are gone from the list (covered by the fragment
-        // path), so their cases are gone with them.
+        // Stages 2, 3, 7, 8, 15, 21, 22, 23 and the ten pointwise grade
+        // stages (9-13, 16-20) are gone from the list (covered by the
+        // fragment path), so their cases are gone with them. The ONLY
+        // remaining runtime-conditional activation is stage 24's LUT leg.
         val cases = listOf(
-            21 to GradeK(sharpness = 5f),
-            22 to GradeK(detail = 5f),
             24 to GradeK(lutId = "l1", lutStrength = 100f),
         )
         cases.forEach { (stage, grade) ->
@@ -516,6 +518,69 @@ class RenderBackendTest {
     }
 
     @Test
+    fun sharpness_detail_grades_cover_the_fragment_path() {
+        // Stages 21 and 22 are ported into the fragment path (the CPU's
+        // exact separable unsharp — the H/V blur passes with the CPU's
+        // radius-specific kernel weights, the high-pass difference and the
+        // amount blend fused into the V pass — behind uSharpness/
+        // uDetail), so a sharpness/detail grade — the LAST routine-grade
+        // GPU blockers — is NOT an uncovered-stage fallback anymore:
+        // gates green -> the fragment leg runs. Each knob alone, both
+        // together, and BOTH directions of the knobs (the CPU's amount
+        // mapping keeps negative raws as valid softening) must pass.
+        val cases = listOf(
+            "sharpness" to GradeK(sharpness = 5f),
+            "sharpness-negative" to GradeK(sharpness = -25f),
+            "detail" to GradeK(detail = 5f),
+            "detail-negative" to GradeK(detail = -25f),
+            "both" to GradeK(sharpness = 5f, detail = 5f),
+        )
+        cases.forEach { (name, grade) ->
+            assertTrue(
+                "$name must be covered",
+                BackendRules.fragmentUncoveredStages(grade).isEmpty(),
+            )
+            assertTrue(BackendRules.fragmentUncoveredPreStages(grade).isEmpty())
+            assertEquals(
+                "$name must run the fragment leg",
+                EffectiveRenderBackend.GLES,
+                BackendRules.fragmentEffectiveBackend(
+                    RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+                    gyroWarpActive = false,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun sharpness_detail_tokens_are_gone_from_the_fallback_vocabulary() {
+        // Coverage table, vocabulary leg: the two unsharp stage numbers
+        // and their reason TOKENS are gone from the uncovered map, and a
+        // gates-red sharpness/detail grade produces a fallback line naming
+        // ONLY the gates — no sharpness/detail token left to force it.
+        setOf(21, 22).forEach { stage ->
+            assertTrue(
+                "stage $stage must be covered",
+                stage in BackendRules.FRAGMENT_COVERED_STAGES,
+            )
+            assertTrue(
+                "stage $stage must be gone from the uncovered map",
+                stage !in BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
+            )
+        }
+        val goneTokens = listOf("sharpness", "detail")
+        val line = BackendRules.fragmentFallbackLine(
+            RenderBackend.GPU_EXPERIMENTAL, BackendGates(),
+            GradeK(sharpness = 25f, detail = 25f),
+            gyroWarpActive = false,
+        )!!
+        goneTokens.forEach { token ->
+            assertTrue("$token must be gone: $line", !line.contains(token))
+        }
+        assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
+    }
+
+    @Test
     fun as_shot_grade_with_manual_values_still_covers_temp_and_tint() {
         // CPU stages 16-17 are guarded by !asShot: manual temp/tint values
         // stored while asShot=true are inert (Develop.h). Stages 16-17 are
@@ -701,9 +766,12 @@ class RenderBackendTest {
         // names BOTH the missing gates and the active stages — never
         // silent. (The default grade no longer carries stage tokens —
         // stages 2+3 are covered — and chroma-denoise/noise-reduction
-        // left the uncovered map with the spatial-NR port, so the stage
-        // leg of this test uses a grade that genuinely has one active.)
-        val grade = GradeK(keepVignetting = true, sharpness = 5f)
+        // left the uncovered map with the spatial-NR port, and
+        // sharpness/detail left it with the sharpness/detail port, so the
+        // stage leg of this test uses the ONE shape that genuinely has an
+        // active runtime leg: a LUT grade with the texture path
+        // unavailable.)
+        val grade = GradeK(lutId = "l1", lutStrength = 100f)
         val line = BackendRules.fragmentFallbackLine(
             RenderBackend.GPU_EXPERIMENTAL, BackendGates(), grade,
             gyroWarpActive = false,
@@ -711,7 +779,7 @@ class RenderBackendTest {
         assertTrue("requested missing: $line", line.contains("requested=GPU_EXPERIMENTAL"))
         assertTrue("effective missing: $line", line.contains("effective=CPU"))
         assertTrue("gate reason missing: $line", line.contains("no-egl-context"))
-        assertTrue("stage reason missing: $line", line.contains("sharpness"))
+        assertTrue("stage reason missing: $line", line.contains("lut"))
     }
 
     @Test

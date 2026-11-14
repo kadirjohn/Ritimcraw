@@ -403,6 +403,8 @@ interface GpuDevelop {
         frameIndex: Int,
         chromaDenoise: Float,
         noiseReduction: Float,
+        sharpness: Float,
+        detail: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -465,6 +467,8 @@ interface GpuDevelop {
         ptsUs: Long,
         chromaDenoise: Float,
         noiseReduction: Float,
+        sharpness: Float,
+        detail: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -521,6 +525,11 @@ internal object NativeGpuDevelop : GpuDevelop {
         GlesShaderSources.FULLSCREEN_VERTEX_310,
         GlesShaderSources.DEVELOP_FRAGMENT_PRE,
         GlesShaderSources.DEVELOP_FRAGMENT_POST,
+        GlesShaderSources.DEVELOP_FRAGMENT_TAIL,
+        GlesShaderSources.SHARPNESS_H,
+        GlesShaderSources.SHARPNESS_V,
+        GlesShaderSources.DETAIL_H,
+        GlesShaderSources.DETAIL_V,
         GlesShaderSources.NR_CHROMA_H,
         GlesShaderSources.NR_CHROMA_V,
         GlesShaderSources.NR_LUMA,
@@ -534,6 +543,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         frameIndex: Int,
         chromaDenoise: Float,
         noiseReduction: Float,
+        sharpness: Float,
+        detail: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -566,6 +577,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         lutOutTransfer: Int,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
         sessionHandle, clipHandle, frameIndex, chromaDenoise, noiseReduction,
+        sharpness, detail,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
         wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
@@ -584,6 +596,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         ptsUs: Long,
         chromaDenoise: Float,
         noiseReduction: Float,
+        sharpness: Float,
+        detail: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -617,6 +631,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
         sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise, noiseReduction,
+        sharpness, detail,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
         wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
@@ -1135,14 +1150,17 @@ class ExportStageTiming(private val log: ((String) -> Unit)?) {
         /**
          * Active-effect tokens for the summary line: the effect groups
          * whose per-frame cost the timing is meant to attribute — spatial
-         * NR (luma or chroma percent), temporal NR, gyro stabilization
-         * (on AND a log attached — [gyroActive] is the pipeline's own
-         * gate), tonemap, LUT. A neutral grade is "none", never an empty
-         * list.
+         * NR (luma or chroma percent), temporal NR, the unsharp pair
+         * (sharpness or detail percent — the four-pass chain the fragment
+         * path rides, active whenever EITHER percent is nonzero, matching
+         * the session's own raw != 0 gate), gyro stabilization (on AND a
+         * log attached — [gyroActive] is the pipeline's own gate),
+         * tonemap, LUT. A neutral grade is "none", never an empty list.
          */
         fun effects(grade: GradeK, gyroActive: Boolean): String {
-            val parts = ArrayList<String>(5)
+            val parts = ArrayList<String>(6)
             if (grade.noiseReduction > 0f || grade.chromaDenoise > 0f) parts.add("nr")
+            if (grade.sharpness != 0f || grade.detail != 0f) parts.add("unsharp")
             if (grade.temporalNr) parts.add("temporal")
             if (gyroActive) parts.add("gyro")
             if (grade.tonemap != 0) parts.add("tonemap")
@@ -1697,6 +1715,7 @@ class ExportPipeline(
                                 gpuDevelop.renderFrameToEncoder(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
                                     grade.chromaDenoise, grade.noiseReduction,
+                                    grade.sharpness, grade.detail,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,
                                     grade.shadows, grade.midtones, grade.contrast,
@@ -1764,6 +1783,7 @@ class ExportPipeline(
                                 gpuDevelop.renderFrame(
                                     gpuSessionHandle, info.handle, s.frameIndex,
                                     grade.chromaDenoise, grade.noiseReduction,
+                                    grade.sharpness, grade.detail,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,
                                     grade.shadows, grade.midtones, grade.contrast,

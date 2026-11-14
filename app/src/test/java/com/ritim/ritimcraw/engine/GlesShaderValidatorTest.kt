@@ -302,7 +302,7 @@ class GlesShaderValidatorTest {
         )
     }
 
-    // ---- the split chain's five new sources pass their own kinds ----
+    // ---- the split chain's sources pass their own kinds ----
 
     @Test
     fun shipped_develop_fragment_pre_passes_every_check() {
@@ -355,6 +355,61 @@ class GlesShaderValidatorTest {
             GlesShaderValidator.problems(
                 GlesShaderSources.NR_LUMA,
                 GlesShaderValidator.Kind.NR_LUMA,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_develop_fragment_tail_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.DEVELOP_FRAGMENT_TAIL,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_TAIL,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_sharpness_h_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.SHARPNESS_H,
+                GlesShaderValidator.Kind.SHARPNESS_H,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_sharpness_v_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.SHARPNESS_V,
+                GlesShaderValidator.Kind.SHARPNESS_V,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_detail_h_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.DETAIL_H,
+                GlesShaderValidator.Kind.DETAIL_H,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_detail_v_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.DETAIL_V,
+                GlesShaderValidator.Kind.DETAIL_V,
             ),
         )
     }
@@ -417,6 +472,36 @@ class GlesShaderValidatorTest {
             GlesShaderValidator.validate(
                 GlesShaderSources.DEVELOP_FRAGMENT_POST,
                 GlesShaderValidator.Kind.DEVELOP_FRAGMENT_POST,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.DEVELOP_FRAGMENT_TAIL,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_TAIL,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.SHARPNESS_H,
+                GlesShaderValidator.Kind.SHARPNESS_H,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.SHARPNESS_V,
+                GlesShaderValidator.Kind.SHARPNESS_V,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.DETAIL_H,
+                GlesShaderValidator.Kind.DETAIL_H,
+            ),
+        )
+        assertTrue(
+            GlesShaderValidator.validate(
+                GlesShaderSources.DETAIL_V,
+                GlesShaderValidator.Kind.DETAIL_V,
             ),
         )
         assertTrue(
@@ -1508,6 +1593,244 @@ class GlesShaderValidatorTest {
         assertTrue(
             GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.NR_LUMA)
                 .any { it.contains("luma-NR tail") },
+        )
+    }
+
+    // ---- unsharp pass mutations (stages 21+22): the CPU's every
+    // constant, tap order, pair wiring, gate, amount mapping, guide
+    // source and tail are load-bearing — a rewrite that changes any of
+    // them changes the owner's routine sharpness/detail look ----
+
+    @Test
+    fun a_wrong_sharpness_radius_is_reported() {
+        // kRadius 1.5 is unsharpLumaImpl's own stage-21 radius; 1.6 is a
+        // different filter. Every other check stays green — only the
+        // constant drifted.
+        val mutated = GlesShaderSources.SHARPNESS_H
+            .replace("const float kRadius = 1.5;", "const float kRadius = 1.6;")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_H)
+                .any { it.contains("sharpness constants") },
+        )
+    }
+
+    @Test
+    fun a_wrong_detail_radius_is_reported() {
+        // kRadius 0.75 is the CPU call site's own stage-22 radius; 0.8 is
+        // a different filter.
+        val mutated = GlesShaderSources.DETAIL_H
+            .replace("const float kRadius = 0.75;", "const float kRadius = 0.8;")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.DETAIL_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DETAIL_H)
+                .any { it.contains("detail constants") },
+        )
+    }
+
+    @Test
+    fun a_wrong_sharpness_h_tap_order_is_reported() {
+        // The CPU's own (row[xm]+row[xp])*c0 + (row[xm2]+row[xp2])*c1
+        // order. Swapping xm2 ahead of xp makes a different accumulation
+        // order — byte-identical lines, different float sum.
+        val mutated = GlesShaderSources.SHARPNESS_H
+            .replace(
+                "(lumaAt(ivec2(xm2, g.y)) + lumaAt(ivec2(xp2, g.y))) * kC1",
+                "(lumaAt(ivec2(xm2, g.y)) + lumaAt(ivec2(xp2, g.y))) * kC1 // reorder sentinel",
+            )
+            .replace(
+                "(lumaAt(ivec2(xm, g.y)) + lumaAt(ivec2(xp, g.y))) * kC0",
+                "(lumaAt(ivec2(xm2, g.y)) + lumaAt(ivec2(xp2, g.y))) * kC1",
+            )
+            .replace(
+                "(lumaAt(ivec2(xm2, g.y)) + lumaAt(ivec2(xp2, g.y))) * kC1 // reorder sentinel",
+                "(lumaAt(ivec2(xm, g.y)) + lumaAt(ivec2(xp, g.y))) * kC0",
+            )
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_H)
+                .any { it.contains("the horizontal tap order is wrong") },
+        )
+    }
+
+    @Test
+    fun a_miswired_sharpness_h_tap_weight_is_reported() {
+        // The xm/xp pair rides kC0 in the CPU; wiring it to kC1 keeps
+        // every other check green (the constants exist, the order holds,
+        // the accumulation text appears) while changing the blur of
+        // every pixel. The pair-segment wiring check catches it.
+        val mutated = GlesShaderSources.SHARPNESS_H
+            .replace(
+                "+ (lumaAt(ivec2(xm, g.y)) + lumaAt(ivec2(xp, g.y))) * kC0",
+                "+ (lumaAt(ivec2(xm, g.y)) + lumaAt(ivec2(xp, g.y))) * kC1",
+            )
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_H)
+                .any { it.contains("tap weights are miswired") },
+        )
+    }
+
+    @Test
+    fun a_missing_sharpness_gate_is_reported() {
+        // The gate rewrite `!= 1.0` leaves the pass running when the
+        // grade is neutral — a different default image. The validator
+        // locks the gate text.
+        val mutated = GlesShaderSources.SHARPNESS_V
+            .replace("if (uSharpness != 0.0) {", "if (uSharpness != 1.0) {")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_V)
+                .any { it.contains("stage-21 gate") },
+        )
+    }
+
+    @Test
+    fun a_wrong_sharpness_amount_mapping_is_reported() {
+        // The CPU call site's own min(max(0.5*(raw/100), -0.5), 0.5).
+        // Dropping the negative arm of the clamp changes every softening
+        // grade (raw < 0) — the validator locks the mapping text.
+        val mutated = GlesShaderSources.SHARPNESS_V
+            .replace(
+                "float amount = clamp(0.5 * (uSharpness / 100.0), -0.5, 0.5);",
+                "float amount = clamp(0.5 * (uSharpness / 100.0), 0.0, 0.5);",
+            )
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_V)
+                .any { it.contains("amount mapping") },
+        )
+    }
+
+    @Test
+    fun a_wrong_sharpness_v_guide_source_is_reported() {
+        // The vertical pass must guide with the ORIGINAL luma (uGuide);
+        // guiding from uSrc (the horizontal output's .x) changes every
+        // pixel's tail delta to exactly 0. The validator locks the guide
+        // read.
+        val mutated = GlesShaderSources.SHARPNESS_V
+            .replace("vec3 c = texelFetch(uGuide, p, 0).rgb;", "vec3 c = texelFetch(uSrc, p, 0).rgb;")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_V)
+                .any { it.contains("ORIGINAL-luma guide read") },
+        )
+    }
+
+    @Test
+    fun a_missing_sharpness_v_center_fetch_is_reported() {
+        // The CPU's v = tmp[y*w+x]: the HORIZONTALLY blurred center from
+        // uSrc. Replacing it with the original luma (uGuide's lumaAt)
+        // keeps the taps green while changing the blur of every pixel.
+        val mutated = GlesShaderSources.SHARPNESS_V
+            .replace("float v = texelFetch(uSrc, g, 0).x;", "float v = lumaAt(g);")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_V)
+                .any { it.contains("center fetch") },
+        )
+    }
+
+    @Test
+    fun a_missing_sharpness_tail_is_reported() {
+        // Dropping the equally-lifted write is the amount delta lost.
+        val mutated = GlesShaderSources.SHARPNESS_V
+            .replace("        oCol = vec4(orig + vec3(d), 1.0);\n", "")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_V)
+                .any { it.contains("sharpness tail") },
+        )
+    }
+
+    @Test
+    fun a_missing_sharpness_pass_through_is_reported() {
+        // Dropping the gate-closed write leaves oCol unwritten on the
+        // closed path — undefined output. The validator locks the
+        // pass-through.
+        val mutated = GlesShaderSources.SHARPNESS_V
+            .replace("    oCol = vec4(orig, 1.0);\n", "")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.SHARPNESS_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.SHARPNESS_V)
+                .any { it.contains("gate-closed pass-through") },
+        )
+    }
+
+    @Test
+    fun a_missing_detail_gate_is_reported() {
+        val mutated = GlesShaderSources.DETAIL_V
+            .replace("if (uDetail != 0.0) {", "if (uDetail != 1.0) {")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.DETAIL_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DETAIL_V)
+                .any { it.contains("stage-22 gate") },
+        )
+    }
+
+    @Test
+    fun a_missing_detail_v_guide_uniform_is_reported() {
+        // Dropping the uGuide uniform declaration is the session having
+        // nothing to attach the stage's ORIGINAL input to.
+        val mutated = GlesShaderSources.DETAIL_V
+            .replace("uniform highp sampler2D uGuide;  // the sharpness output, or the pointwise post pass's output when stage 21 is off\n", "")
+        assertTrue(
+            "mutation must apply (source text declared changed)",
+            mutated != GlesShaderSources.DETAIL_V,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DETAIL_V)
+                .any { it.contains("uGuide") },
+        )
+    }
+
+    @Test
+    fun a_missing_gate_closed_luma_fallback_is_reported() {
+        // The H pass's gate-closed path writes the ORIGINAL luma to .x;
+        // dropping it leaves .x unwritten — the V pass would read garbage
+        // whenever the session draws the H pass with the gate closed.
+        val mutated = GlesShaderSources.DETAIL_H
+            .replace("    oCol = vec4(lumaAt(g), 0.0, 0.0, 1.0);\n", "")
+        assertTrue(
+            "mutation must apply (source text changed)",
+            mutated != GlesShaderSources.DETAIL_H,
+        )
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DETAIL_H)
+                .any { it.contains("gate-closed luma fallback") },
         )
     }
 
@@ -2646,6 +2969,193 @@ class GlesShaderValidatorTest {
             val cpuFlat = cpuStage8(cpuStage7(flat, 9, 9, v), 9, 9, v)
             val glslFlat = glslStage8(glslStage7(flat, 9, 9, v), 9, 9, v)
             assertNrParity("chained NR flat v=$v", 9, 9, cpuFlat, glslFlat)
+        }
+    }
+
+    // ---- stages 21+22 (sharpness/detail) host numeric parity: the same
+    // TEXT-parity discipline — the CPU loop (core/src/Develop.cpp
+    // unsharpLumaImpl + its call site) transcribed verbatim, the GLSL
+    // two-pass chain (SHARPNESS_H then SHARPNESS_V at radius 1.5,
+    // DETAIL_H then DETAIL_V at 0.75) transcribed verbatim, byte-exact
+    // after the toByte quantize. These are pure float32 stages (no LUT
+    // half-float quantization in the loop), so the claim is EXACT:
+    // mismatches == 0 AND maxLsb == 0 ----
+
+    // The CPU's unsharpLumaImpl, verbatim (core/src/Develop.cpp): the
+    // luma plane, the `radius < 1 ? 1 : floor(radius)` step fallback, the
+    // 4-tap separable Gaussian (H then V, clamped edges), and the
+    // equally-lifted tail. The amount is the call site's own
+    // min(max(0.5*(raw/100), -0.5), 0.5); raw == 0 skips the stage (the
+    // call site's own fast path — bit-identical to the pre-stage image).
+    private fun cpuUnsharpStage(rgb: FloatArray, w: Int, h: Int, radius: Float, raw: Float): FloatArray {
+        if (raw == 0.0f || w < 2 || h < 2) return rgb.copyOf()
+        val amount = (0.5f * (raw / 100.0f)).coerceIn(-0.5f, 0.5f)
+        val n = w * h
+        val luma = FloatArray(n)
+        for (i in 0 until n) {
+            luma[i] = 0.2126f * rgb[i * 3 + 0] +
+                0.7152f * rgb[i * 3 + 1] + 0.0722f * rgb[i * 3 + 2]
+        }
+        val step = if (radius < 1.0f) 1 else Math.floor(radius.toDouble()).toInt()
+        val c0 = expF(-0.5f / (radius * radius))
+        val c1 = expF(-2.0f / (radius * radius))
+        val norm = 1.0f + 2.0f * (c0 + c1)
+        val tmp = FloatArray(n)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val xm = Math.max(x - step, 0)
+                val xp = Math.min(x + step, w - 1)
+                val xm2 = Math.max(x - 2 * step, 0)
+                val xp2 = Math.min(x + 2 * step, w - 1)
+                val s = luma[y * w + x] +
+                    (luma[y * w + xm] + luma[y * w + xp]) * c0 +
+                    (luma[y * w + xm2] + luma[y * w + xp2]) * c1
+                tmp[y * w + x] = s / norm
+            }
+        }
+        val blur = FloatArray(n)
+        for (y in 0 until h) {
+            val ym = Math.max(y - step, 0)
+            val yp = Math.min(y + step, h - 1)
+            val ym2 = Math.max(y - 2 * step, 0)
+            val yp2 = Math.min(y + 2 * step, h - 1)
+            for (x in 0 until w) {
+                val v = tmp[y * w + x]
+                val s = v +
+                    (tmp[ym * w + x] + tmp[yp * w + x]) * c0 +
+                    (tmp[ym2 * w + x] + tmp[yp2 * w + x]) * c1
+                blur[y * w + x] = s / norm
+            }
+        }
+        val out = rgb.copyOf()
+        for (i in 0 until n) {
+            val d = amount * (luma[i] - blur[i])
+            out[i * 3 + 0] += d
+            out[i * 3 + 1] += d
+            out[i * 3 + 2] += d
+        }
+        return out
+    }
+
+    // The GLSL two-pass chain, verbatim (the session's own draw
+    // sequence): the H pass's lumaAt reads uSrc (the stage's input) and
+    // writes the blurred luma plane to .x; the V pass reads its values
+    // from uSrc (.x) and its luma guide + original pixel from uGuide
+    // (the stage's ORIGINAL input — the CPU's tail reads the ORIGINAL
+    // luma), with the clamped rows at step 1 (BOTH radii: 1.5 ->
+    // floor(1.5), 0.75 -> the CPU's own < 1 fallback), the norm division
+    // and the equally-lifted tail. raw == 0 skips both draws (the C++
+    // session-side gate); the in-shader gate is the second lock — the
+    // pass-through is exact.
+    private fun glslUnsharpStage(rgb: FloatArray, w: Int, h: Int, radius: Float, raw: Float): FloatArray {
+        if (raw == 0.0f || w < 2 || h < 2) return rgb.copyOf()
+        val amount = (0.5f * (raw / 100.0f)).coerceIn(-0.5f, 0.5f)
+        val n = w * h
+        val kC0 = expF(-0.5f / (radius * radius))
+        val kC1 = expF(-2.0f / (radius * radius))
+        val kNorm = 1.0f + 2.0f * (kC0 + kC1)
+        fun lumaAt(px: Int, py: Int): Float {
+            val i = (py * w + px) * 3
+            return 0.2126f * rgb[i] + 0.7152f * rgb[i + 1] + 0.0722f * rgb[i + 2]
+        }
+        // Pass 1 of 2 (the H pass): the clamped columns at step 1, the
+        // four taps in the CPU's own order, the norm-divided .x output.
+        val tmp = FloatArray(n)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val xm = Math.max(x - 1, 0)
+                val xp = Math.min(x + 1, w - 1)
+                val xm2 = Math.max(x - 2, 0)
+                val xp2 = Math.min(x + 2, w - 1)
+                val yv = lumaAt(x, y)
+                val s = yv +
+                    (lumaAt(xm, y) + lumaAt(xp, y)) * kC0 +
+                    (lumaAt(xm2, y) + lumaAt(xp2, y)) * kC1
+                tmp[y * w + x] = s / kNorm
+            }
+        }
+        // Pass 2 of 2 (the V pass): values from uSrc (the H output's
+        // .x), the luma guide and the original pixel from uGuide, the
+        // norm division, and the tail's equally-lifted write.
+        val out = FloatArray(n * 3)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val ym = Math.max(y - 1, 0)
+                val yp = Math.min(y + 1, h - 1)
+                val ym2 = Math.max(y - 2, 0)
+                val yp2 = Math.min(y + 2, h - 1)
+                val v = tmp[y * w + x]
+                val s = v +
+                    (tmp[ym * w + x] + tmp[yp * w + x]) * kC0 +
+                    (tmp[ym2 * w + x] + tmp[yp2 * w + x]) * kC1
+                val blur = s / kNorm
+                val ci = (y * w + x) * 3
+                val d = amount * (lumaAt(x, y) - blur)
+                out[ci] = rgb[ci] + d
+                out[ci + 1] = rgb[ci + 1] + d
+                out[ci + 2] = rgb[ci + 2] + d
+            }
+        }
+        return out
+    }
+
+    @Test
+    fun stage21_host_parity_the_glsl_passes_match_the_cpu_filter() {
+        // The raw grade values: a routine strength, the maximum, the
+        // NEGATIVE arms (softening — valid here, unlike the NR passes),
+        // a small one and the neutral 0 (the CPU call site's own skip /
+        // the session's skipped draw).
+        val raws = listOf(50f, 100f, -50f, -100f, 25f, 0.5f, 0f)
+        for (v in raws) {
+            assertNrParity(
+                "sharpness mixed v=$v", 9, 9,
+                cpuUnsharpStage(nrMixedNeighborhood(), 9, 9, 1.5f, v),
+                glslUnsharpStage(nrMixedNeighborhood(), 9, 9, 1.5f, v),
+            )
+            assertNrParity(
+                "sharpness flat v=$v", 9, 9,
+                cpuUnsharpStage(nrFlatNeighborhood(), 9, 9, 1.5f, v),
+                glslUnsharpStage(nrFlatNeighborhood(), 9, 9, 1.5f, v),
+            )
+        }
+    }
+
+    @Test
+    fun stage22_host_parity_the_glsl_passes_match_the_cpu_filter() {
+        // The same sweep at the fine-texture radius (step STILL 1: the
+        // CPU's own `radius < 1.0f ? 1.0f : floor(radius)` fallback).
+        val raws = listOf(50f, 100f, -50f, -100f, 25f, 0.5f, 0f)
+        for (v in raws) {
+            assertNrParity(
+                "detail mixed v=$v", 9, 9,
+                cpuUnsharpStage(nrMixedNeighborhood(), 9, 9, 0.75f, v),
+                glslUnsharpStage(nrMixedNeighborhood(), 9, 9, 0.75f, v),
+            )
+            assertNrParity(
+                "detail flat v=$v", 9, 9,
+                cpuUnsharpStage(nrFlatNeighborhood(), 9, 9, 0.75f, v),
+                glslUnsharpStage(nrFlatNeighborhood(), 9, 9, 0.75f, v),
+            )
+        }
+    }
+
+    @Test
+    fun stages21_then_22_chained_host_parity_matches_the_cpu_chain() {
+        // The CPU runs stage 22 on the stage-21 output (its luma plane
+        // comes from the sharpened image); the GLSL chain feeds the
+        // detail passes the sharpness output (uSrc AND uGuide). Both
+        // arms active, each arm alone (the session's per-stage gating),
+        // and both negative — the softening shape.
+        val cases = listOf(50f to 40f, 50f to 0f, 0f to 40f, -30f to -60f)
+        for ((s, d) in cases) {
+            val base = nrMixedNeighborhood()
+            val cpuChained = cpuUnsharpStage(
+                cpuUnsharpStage(base, 9, 9, 1.5f, s), 9, 9, 0.75f, d,
+            )
+            val glslChained = glslUnsharpStage(
+                glslUnsharpStage(base, 9, 9, 1.5f, s), 9, 9, 0.75f, d,
+            )
+            assertNrParity("chained unsharp s=$s d=$d", 9, 9, cpuChained, glslChained)
         }
     }
 
