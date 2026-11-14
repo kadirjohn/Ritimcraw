@@ -421,6 +421,44 @@
     <string name="settings_gyro_folder_body">Pick the folder that holds your MotionCam .gcsv gyro logs. New imports matching a log\'s name attach it automatically.</string>
     <string name="settings_gyro_folder_none">Not set — tap to pick the folder holding your .gcsv gyro logs</string>
     <string name="settings_gyro_folder_set">Current: %1$s — tap to change</string>
+
+    <!-- Settings redesign (owner spec 2026-11-14): section labels, row
+         hints, expandable info notes, the theme slider's a11y strings,
+         and the Device report full screen. -->
+    <string name="settings_section_playback">Playback</string>
+    <string name="settings_section_storage_device">Storage &amp; device</string>
+    <string name="settings_section_advanced">Advanced</string>
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_preview_quality_hint">%1$d × %2$d px</string>
+    <string name="settings_preview_quality_info">Resolution for playback and scrubbing. Lower is smoother. Paused frames always sharpen to the clip\'s own resolution.</string>
+    <string name="settings_preview_quality_about">About preview quality</string>
+    <string name="settings_render_backend_hint_cpu">Reference path</string>
+    <string name="settings_render_backend_hint_auto">GPU when verified</string>
+    <string name="settings_render_backend_hint_gpu">Experimental</string>
+    <string name="settings_render_backend_info">Where the develop pipeline runs. CPU is the reference path. Auto uses the GPU once this device verifies it. GPU is experimental and falls back to CPU. The video encoder is chosen separately.</string>
+    <string name="settings_render_backend_about">About image processing</string>
+    <string name="settings_gyro_folder_not_set">Not set</string>
+    <string name="settings_preview_stats_hint_on">Debug · reading stats every frame</string>
+    <string name="settings_preview_stats_hint_off">Debug · off, no per-frame cost</string>
+    <string name="settings_theme_slider">Theme</string>
+    <string name="settings_theme_previous">Previous theme</string>
+    <string name="settings_theme_next">Next theme</string>
+    <string name="settings_expanded">Expanded</string>
+    <string name="settings_collapsed">Collapsed</string>
+    <plurals name="settings_device_report_codec_count">
+        <item quantity="one">%1$d codec</item>
+        <item quantity="other">%1$d codecs</item>
+    </plurals>
+    <string name="settings_device_report_summary">video codecs on this device</string>
+    <string name="settings_device_report_filter_all">All</string>
+    <string name="settings_device_report_filter_decoders">Decoders</string>
+    <string name="settings_device_report_filter_encoders">Encoders</string>
+    <string name="settings_device_report_copy">Copy report</string>
+    <string name="settings_device_report_copied">Report copied to clipboard</string>
+    <string name="settings_back">Back</string>
+    <string name="settings_device_report_group_decoders">%1$s · Decoders</string>
+    <string name="settings_device_report_group_encoders">%1$s · Encoders</string>
+    <string name="settings_device_report_pill_low_latency">Low latency</string>
     <string name="gyro_auto_attached">Gyro data attached</string>
     <string name="gyro_folder_hint_snackbar">Import a MotionCam clip and a same-named .gcsv gyro log can attach automatically. Pick the gyro folder?</string>
     <string name="gyro_folder_hint_action">Pick folder</string>

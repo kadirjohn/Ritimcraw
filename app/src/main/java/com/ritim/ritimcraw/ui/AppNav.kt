@@ -10,20 +10,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.automirrored.outlined.ExitToApp
-import androidx.compose.material.icons.automirrored.outlined.List
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
@@ -48,8 +40,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
@@ -78,10 +72,15 @@ import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.data.ThumbnailStore
 import com.ritim.ritimcraw.engine.ClipThumbnails
+import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.engine.SourcePathDecision
+import com.ritim.ritimcraw.ui.components.NavExports
+import com.ritim.ritimcraw.ui.components.NavLibrary
+import com.ritim.ritimcraw.ui.components.NavProjects
+import com.ritim.ritimcraw.ui.components.NavSettings
 import com.ritim.ritimcraw.export.BitmapPngWriter
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
@@ -104,6 +103,7 @@ import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
 import com.ritim.ritimcraw.ui.exports.ExportsScreen
 import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
+import com.ritim.ritimcraw.ui.settings.DeviceReportScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
 import com.ritim.ritimcraw.ui.timeline.TimelineScreen
 import kotlinx.coroutines.launch
@@ -121,19 +121,19 @@ import java.io.File
  */
 enum class Destination(
     val labelRes: Int,
-    // §4.5 icon consistency: outlined/filled glyph pairs per destination,
-    // drawn from the cached core Material set. The owner chose these glyphs
-    // deliberately (2026-11-12 request) — including the stock Settings gear
-    // with its center detail — over the vendored ic_nav_* pair from 1ca091d.
-    // Filled variant for the selected item, outlined for the rest — the
-    // stock M3 NavigationBar pattern.
+    // Settings redesign (owner spec 2026-11-14, icons section): the
+    // spec's own stroke-based glyphs replace the core Material pairs —
+    // the same vector serves both states (the glyphs are stroke-based,
+    // not filled/outlined variants), and NavigationBar's own
+    // selected/unselected Monet tints do the differentiation, exactly
+    // as the tint did for the gear pair before. Labels and routes stay.
     val outlined: ImageVector,
     val filled: ImageVector,
 ) {
-    LIBRARY(R.string.nav_library, Icons.Outlined.PlayArrow, Icons.Filled.PlayArrow),
-    PROJECTS(R.string.nav_projects, Icons.AutoMirrored.Outlined.List, Icons.AutoMirrored.Filled.List),
-    EXPORTS(R.string.nav_exports, Icons.AutoMirrored.Outlined.ExitToApp, Icons.AutoMirrored.Filled.ExitToApp),
-    SETTINGS(R.string.nav_settings, Icons.Outlined.Settings, Icons.Filled.Settings),
+    LIBRARY(R.string.nav_library, NavLibrary, NavLibrary),
+    PROJECTS(R.string.nav_projects, NavProjects, NavProjects),
+    EXPORTS(R.string.nav_exports, NavExports, NavExports),
+    SETTINGS(R.string.nav_settings, NavSettings, NavSettings),
 }
 
 /** editor/{sourceId} back stack entry. */
@@ -434,6 +434,29 @@ fun AppNav(
     // open), and the full-screen branch below composes TimelineScreen
     // exactly like the editor branch above.
     var timelineOpen by rememberSaveable { mutableStateOf(false) }
+    // The Device report route (owner spec 2026-11-14,
+    // device_report_screen): the SAME full-screen pattern — a
+    // rememberSaveable Boolean flag (rotation keeps the report open),
+    // the branch below sits first in the chain (the most-pushed screen
+    // wins), DeviceReportScreen owns its own back handling, and the
+    // bottom-bar gate below hides the NavigationBar while it is open.
+    var deviceReportOpen by rememberSaveable { mutableStateOf(false) }
+    // Settings' scroll position, hoisted HERE above the browse
+    // Crossfade (spec device_report_screen: back from the report
+    // RESTORES the Settings scroll). A rememberSaveable ScrollState
+    // outlives the Crossfade's disposal of the SettingsScreen instance,
+    // so returning re-composes the screen with its old position. The
+    // saver keeps it across config changes too; a fresh process starts
+    // at the top, as before.
+    val settingsScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+    // The device codec probe (the report's data source): hoisted HERE so
+    // the Settings row's "{n} codecs" count and the report screen's list
+    // are the SAME list, always in sync. The probe ran lazily inside
+    // SettingsScreen's default before; hoisting moves the one
+    // MediaCodecList walk to this composable's first composition (still
+    // once per process, runCatching-guarded exactly as before — the JVM
+    // and any probe failure degrade to an empty report).
+    val codecReports = remember { runCatching { CodecProbe.probe() }.getOrDefault(emptyList()) }
     // Debug-only measurement harness state (PreviewMetrics): one run at a
     // time, kicked from Settings' Measure action.
     var measuring by remember { mutableStateOf(false) }
@@ -568,6 +591,14 @@ fun AppNav(
     val exportSnackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val exportQueuedText = stringResource(R.string.export_queued_snackbar)
+    // The Device report copy confirmation (spec device_report_screen):
+    // the same shell snackbar, the same SHORT duration — the clipboard
+    // write itself happens in the report screen's callback below.
+    val reportCopiedText = stringResource(R.string.settings_device_report_copied)
+    // The system clipboard (the report's Copy button): LocalClipboardManager
+    // is the plain Compose way — the app had no prior system-clipboard use
+    // (GradeClipboard is an in-memory grade slot, not the system clipboard).
+    val clipboardManager = LocalClipboardManager.current
     // The timeline's display name (TL-EX): v1 has one unnamed shared
     // timeline, so the honest name is the localized screen title. Used
     // for the export's output file name, the Exports row label, and the
@@ -909,9 +940,10 @@ fun AppNav(
         // time (the inner host renders when its screen is composed).
         snackbarHost = { SnackbarHost(exportSnackbar) },
         bottomBar = {
-            // Editors — and the timeline — are full screen without nav
-            // (DESIGN.md Layout).
-            if (editorRoute == null && !timelineOpen) {
+            // Editors — the timeline — and the Device report — are full
+            // screen without nav (DESIGN.md Layout; spec
+            // device_report_screen: the bottom bar hides on the report).
+            if (editorRoute == null && !timelineOpen && !deviceReportOpen) {
                 NavigationBar {
                     Destination.entries.forEach { d ->
                         val selected = destination == d
@@ -941,7 +973,30 @@ fun AppNav(
                 .padding(innerPadding)
         ) {
             val route = editorRoute
-            if (timelineOpen) {
+            // The Device report (owner spec 2026-11-14): the most-pushed
+            // screen first in the chain — entered from Settings, it sits
+            // above the timeline/editor branches like the timeline sits
+            // above the editor. The branch swap (no Crossfade: one
+            // route, nothing to crossfade between), the screen owns its
+            // back handling, and the copy callback writes the clipboard
+            // here and confirms through the shell's snackbar (the
+            // screen stays presentation-only, no Android clipboard type
+            // in its API).
+            if (deviceReportOpen) {
+                DeviceReportScreen(
+                    reports = codecReports,
+                    onBack = { deviceReportOpen = false },
+                    onCopyReport = { text ->
+                        clipboardManager.setText(AnnotatedString(text))
+                        scope.launch {
+                            exportSnackbar.showSnackbar(
+                                reportCopiedText,
+                                duration = SnackbarDuration.Short,
+                            )
+                        }
+                    },
+                )
+            } else if (timelineOpen) {
                 // The timeline (spec TL-01): a full-screen sibling of the
                 // editor branch above — entered instantly like the editor
                 // (the branch swap, not a Crossfade: there is one timeline
@@ -1727,6 +1782,19 @@ fun AppNav(
                             },
                         )
                         Destination.SETTINGS -> SettingsScreen(
+                            // The report's data source, hoisted above: the
+                            // row count and the report screen's list are
+                            // the SAME probe (spec: keep the existing data
+                            // source — only the container changed).
+                            reports = codecReports,
+                            // The hoisted scroll position: survives the
+                            // Device report navigation (the Crossfade
+                            // disposes this screen; the state lives here).
+                            scrollState = settingsScroll,
+                            // The Device report full screen (spec
+                            // device_report_screen): the row navigates,
+                            // AppNav owns the route flag.
+                            onOpenDeviceReport = { deviceReportOpen = true },
                             onMeasure = if (BuildConfig.DEBUG) {
                                 {
                                     if (!measuring) {

@@ -1,101 +1,117 @@
 package com.ritim.ritimcraw.ui.settings
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ListItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.CodecReport
-import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.PreviewQuality
 import com.ritim.ritimcraw.engine.RenderBackend
-import com.ritim.ritimcraw.ui.components.ScreenHeader
-import com.ritim.ritimcraw.ui.theme.Tnum
+import com.ritim.ritimcraw.ui.components.Activity
+import com.ritim.ritimcraw.ui.components.AppSegmentedControl
+import com.ritim.ritimcraw.ui.components.Contrast
+import com.ritim.ritimcraw.ui.components.Cpu
+import com.ritim.ritimcraw.ui.components.Eye
+import com.ritim.ritimcraw.ui.components.Folder
+import com.ritim.ritimcraw.ui.components.Gauge
+import com.ritim.ritimcraw.ui.components.Report
+import com.ritim.ritimcraw.ui.components.SettingsGroupCard
+import com.ritim.ritimcraw.ui.components.SettingsGroupCardRow
+import com.ritim.ritimcraw.ui.components.SettingsSectionLabel
+import com.ritim.ritimcraw.ui.components.SettingRowBase
+import com.ritim.ritimcraw.ui.components.SettingRowExpandable
+import com.ritim.ritimcraw.ui.components.SettingRowNavigation
+import com.ritim.ritimcraw.ui.components.SettingRowSwitch
+import com.ritim.ritimcraw.ui.components.ThemeSlider
 
 /**
- * Settings screen (DESIGN.md Settings): the device report. The codec probe
- * runs on device only; until then the placeholder body stays and the
- * report list renders empty (probe returns nothing on non-Android JVMs and
- * the screen keeps the designed placeholder).
+ * Settings screen (owner spec 2026-11-14, target_layout, rebuilt): the
+ * same rows, the same state hoisting and callbacks as before — only the
+ * PRESENTATION changed. The screen is a vertically scrolling column over
+ * the app shell's Scaffold (the bottom NavigationBar stays below it),
+ * composed from the redesign's shared components:
  *
- * The device report's codec list (owner request 2026-11-13: "device
- * report'taki codec çeşitlilikleri ekranda düzgün görüntülenmiyor" — the
- * device report's codec varieties were not displaying properly) moved out
- * of the settings main screen into its own dialog: the "Device report" row
- * opens a dialog that shows every codec as a separate pill in a flowing
- * wrap list (stock M3 AssistChip, one pill per codec — name + hardware/
- * software marker; the full [CodecProbe.formatReport] line rides the
- * chip as its accessibility description). No nav-graph addition — the
- * app's existing AlertDialog pattern (Library delete, gyro picker).
+ * - the spec's own 32sp SemiBold title (the redesign replaces the title
+ *   on THIS screen only; the other browse screens keep ScreenHeader),
+ * - "Playback" card: Preview quality + Image processing as expandable
+ *   rows — the long descriptions moved behind the info buttons, so no
+ *   multi-line description renders by default,
+ * - "Storage & device" card: Gyro log folder + Device report navigation
+ *   rows,
+ * - the Measure button outside any card (spec geometry: 56dp pill, the
+ *   gauge icon and label centered as ONE group, never a start-aligned
+ *   leading slot),
+ * - "Advanced" card: the stats-readback switch row (debug only, gated
+ *   exactly as before — release builds render neither the button nor
+ *   the section),
+ * - "Appearance" card: the Theme row with the compact slider pill
+ *   (spec theme_slider): tap or drag horizontally, the preference
+ *   commits once on release — the segmented control is gone,
+ * - the centered version footer (the old divider line is gone).
  *
+ * The Device report row navigates to the full report screen
+ * ([DeviceReportScreen], the owner spec's replacement for the old
+ * codec AlertDialog) through [onOpenDeviceReport]; the screen's scroll
+ * position survives that navigation through [scrollState] (AppNav owns
+ * it above the browse Crossfade, so the position outlives the swap and
+ * the report back-navigation restores it — the spec's requirement).
  * The Measure action (debug builds only) runs the preview latency/fps
  * harness over the first imported clip and logs one summary block under
  * the "ritim-pm" tag — see the device test steps in the sprint SUMMARY.
  *
- * Preview quality (owner request 2026-11-11b section 3): the user's
- * playback/scrub resolution choice, a Low/Balanced/High segmented row
- * (DESIGN.md Inputs: segmented buttons for a choice). The screen owns no
- * store: the level and the change callback are parameters, so the pure
- * mapping stays in PreviewQuality and the persistence in AppNav's
- * PreviewQualityStore.
- *
- * The body scrolls (owner finding 2026-11-14: "settings'te scroll
- * edilmiyor, ekran dolmuş" — Settings did not scroll, the screen was
- * full): rows had outgrown the fixed Column, so the bottom ones (the
- * debug Measure action and the stats-readback toggle) were unreachable
- * and clipped. The body Column now carries verticalScroll (the same
- * modifier pattern the codec-report FlowRow below already used), so
- * every row is reachable and the long supporting texts read in full. The
- * old weight(1f) spacer that pinned the version footer to the screen
- * bottom is gone: a scrollable column measures children unbounded, so a
- * weight-based spacer collapses to nothing and would leave no gap. The
- * footer now flows after the content behind a fixed 16dp spacer and
- * scrolls with it — the standard Android settings pattern (a pinned
- * footer would need Scaffold/LazyColumn restructuring, out of scope).
+ * The screen owns no store: every level and callback is a parameter
+ * (AppNav owns the stores), so the pure mappings stay in the enums and
+ * the persistence in AppNav's stores — the redesign changes none of
+ * that wiring, only the rows' look.
  */
-// FlowRow (the codec pills' wrap layout) is stable API since foundation
-// 1.7 but still carries the @ExperimentalLayoutApi marker in this
-// version's artifacts; the opt-in is scoped to this file's usage.
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     versionName: String = "1.0",
     reports: List<CodecReport> = remember { runCatching { CodecProbe.probe() }.getOrDefault(emptyList()) },
+    // The screen's scroll position, hoisted by AppNav above the browse
+    // Crossfade (rememberSaveable(saver = ScrollState.Saver)) so it
+    // survives navigating to the Device report screen and back — the
+    // spec's restore requirement. The default keeps every other caller
+    // (previews, tests) working with a local scroll state.
+    scrollState: ScrollState = rememberScrollState(),
+    // Opens the Device report full screen (the spec's replacement for
+    // the old codec AlertDialog): AppNav owns the route flag.
+    onOpenDeviceReport: () -> Unit = {},
     onMeasure: (() -> Unit)? = null,
     measuring: Boolean = false,
     // ---- Preview quality (owner request 2026-11-11b section 3) ----
@@ -139,322 +155,278 @@ fun SettingsScreen(
     onThemeModeChange: (ThemeMode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    // The device report dialog (owner request 2026-11-13): the codec list
-    // lives in the dialog, not the main screen. Local open/close state —
-    // view-only content, nothing to persist or wire through AppNav.
-    var reportOpen by remember { mutableStateOf(false) }
-    // Canonical header call site (title consistency, owner finding
-    // 2026-11-12 — the contract lives in ScreenHeader's doc): the root
-    // Column pads NOTHING, so the title's left edge is ScreenHeader's
-    // own 16dp in all four browse screens. The 16dp screen gutter moved
-    // into the body container below — every row keeps its exact margins.
-    Column(modifier.fillMaxSize()) {
-        // Shared header (owner request 2026-11-11d: consistent top area
-        // across the main screens) — same title, same compact rhythm as
-        // Library/Exports; no toolbar actions on this screen.
-        ScreenHeader(title = stringResource(R.string.settings_title))
-        // The 16dp screen gutter (DESIGN.md Layout) that used to pad the
-        // root Column: moved here so it no longer shifts the title. The
-        // body fills the remaining height AND scrolls (owner finding
-        // 2026-11-14: the rows outgrew the screen and the bottom ones were
-        // unreachable) — verticalScroll with the same pattern the codec
-        // dialog's FlowRow uses below, so every row is reachable on any
-        // screen height. The weight(1f) is kept: inside a non-scrolling
-        // parent it still sizes this column to the remaining height, it
-        // only no longer stretches the content.
-        Column(
-            Modifier
+    // The Device report row's navigation: AppNav owns the route flag
+    // (deviceReportOpen) and the full screen; this screen only forwards.
+    Column(
+        modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+    ) {
+        // The spec's title (spec section_screen): 32sp SemiBold,
+        // letterSpacing -0.01em, onSurface. The app shell's Scaffold
+        // already applies the status-bar inset through its innerPadding
+        // (default contentWindowInsets), so the 16dp top padding here
+        // sits below that inset — nothing hardcodes a status bar height.
+        // 20dp horizontal padding: the spec's title/section gutter.
+        Text(
+            text = stringResource(R.string.settings_title),
+            style = TextStyle(
+                fontSize = 32.sp,
+                lineHeight = 40.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = (-0.01).em,
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-        ) {
-            // Preview quality row (owner request 2026-11-11b section 3): the
-            // headline + supporting text state the tradeoff; the segmented row
-            // carries the choice. Owner finding 2026-11-11 E3: an M3
-            // SegmentedButton centers ALL of its content at the same spot
-            // (SegmentedButtonContent places every child identically), so a
-            // label Text plus a dims Text overlapped on the device. Each button
-            // now carries ONLY its label; the SELECTED level's dims render as
-            // one supporting line UNDER the row in tabular numerals (DESIGN.md
-            // Numbers) — the tradeoff stays visible, nothing overlaps. The
-            // picker changes ONLY playback + scrub — the supporting text says
-            // so (paused frames always settle to the clip's own resolution).
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.settings_preview_quality)) },
-                supportingContent = {
-                    Text(stringResource(R.string.settings_preview_quality_body))
-                },
-            )
-            val qualityOptions = listOf(
-                R.string.settings_preview_quality_low to PreviewQuality.LOW,
-                R.string.settings_preview_quality_balanced to PreviewQuality.BALANCED,
-                R.string.settings_preview_quality_high to PreviewQuality.HIGH,
-            )
-            SingleChoiceSegmentedButtonRow(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-            ) {
-                qualityOptions.forEachIndexed { index, (labelRes, level) ->
-                    SegmentedButton(
-                        selected = previewQuality == level,
-                        onClick = { onPreviewQualityChange(level) },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = qualityOptions.size,
-                        ),
-                    ) {
-                        Text(stringResource(labelRes))
-                    }
-                }
-            }
-            // The selected level's dims, under the row (E3): playback / scrub
-            // caps in tabular numerals, changing with the selection.
-            Text(
-                stringResource(
-                    R.string.settings_preview_quality_dims,
-                    previewQuality.playbackMaxDim,
-                    previewQuality.scrubMaxDim,
-                ),
-                style = MaterialTheme.typography.labelMedium.merge(Tnum),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 4.dp),
-            )
-            // Render backend row (owner request 2026-11-12, deliverable B):
-            // the REQUESTED image-processing backend. Same segmented pattern
-            // as preview quality (one label per button, E3). The supporting
-            // text states the semantics honestly: CPU is the reference, Auto
-            // is capability/parity-gated, GPU is experimental with honest
-            // fallback — and the encoder axis is independent of this choice.
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.settings_render_backend)) },
-                supportingContent = {
-                    Text(stringResource(R.string.settings_render_backend_body))
-                },
-            )
-            val backendOptions = listOf(
-                R.string.settings_render_backend_cpu to RenderBackend.CPU,
-                R.string.settings_render_backend_auto to RenderBackend.AUTO,
-                R.string.settings_render_backend_gpu to RenderBackend.GPU_EXPERIMENTAL,
-            )
-            SingleChoiceSegmentedButtonRow(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-            ) {
-                backendOptions.forEachIndexed { index, (labelRes, backend) ->
-                    SegmentedButton(
-                        selected = renderBackend == backend,
-                        onClick = { onRenderBackendChange(backend) },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = backendOptions.size,
-                        ),
-                    ) {
-                        Text(stringResource(labelRes))
-                    }
-                }
-            }
-            // Gyro folder grant (G1): the durable home of the grant. The row
-            // states what the folder is for and shows the current folder (or
-            // the not-set wording); a tap opens the SAF tree picker. The
-            // supporting text doubles as the recovery line — the auto-match
-            // does nothing until the owner picks the MotionCam folder here
-            // (or through the one-time import hint).
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.settings_gyro_folder)) },
-                supportingContent = {
-                    Text(
-                        if (gyroFolderLabel == null) {
-                            stringResource(R.string.settings_gyro_folder_none)
-                        } else {
-                            stringResource(R.string.settings_gyro_folder_set, gyroFolderLabel)
-                        }
-                    )
-                },
-                modifier = Modifier.clickable(onClick = onPickGyroFolder),
-            )
-            // Device report (owner request 2026-11-13): the codec list is no
-            // longer the main screen's flat one-liner rows — the row opens a
-            // dialog that shows every codec as its own pill (tap only when
-            // there is something to show; the probe's empty placeholder
-            // keeps its designed wording and no false affordance).
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.settings_device_report)) },
-                supportingContent = {
-                    Text(
-                        if (reports.isEmpty()) {
-                            stringResource(R.string.settings_device_report_body)
-                        } else {
-                            stringResource(R.string.settings_device_report_count, reports.size)
-                        }
-                    )
-                },
-                modifier = if (reports.isEmpty()) {
-                    Modifier
-                } else {
-                    Modifier.clickable { reportOpen = true }
-                },
-            )
-            // Debug-only measurement harness entry point (owner request
-            // 2026-11-10 section 1). In release builds onMeasure is null and
-            // the action does not exist at all.
-            if (BuildConfig.DEBUG && onMeasure != null) {
-                Button(
-                    onClick = onMeasure,
-                    enabled = !measuring,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
+                .padding(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 8.dp),
+        )
+        // ---- Playback ----
+        SettingsSectionLabel(
+            text = stringResource(R.string.settings_section_playback),
+            first = true,
+        )
+        SettingsGroupCard {
+            SettingsGroupCardRow(divider = false) {
+                SettingRowExpandable(
+                    icon = Eye,
+                    title = stringResource(R.string.settings_preview_quality),
+                    // The dims of the selected level (spec hint: the
+                    // current value, not the old caption under the row).
+                    hint = stringResource(
+                        R.string.settings_preview_quality_hint,
+                        previewQuality.playbackMaxDim,
+                        previewQuality.scrubMaxDim,
+                    ),
+                    infoContentDescription = stringResource(R.string.settings_preview_quality_about),
+                    infoNote = stringResource(R.string.settings_preview_quality_info),
+                    expandedText = stringResource(R.string.settings_expanded),
+                    collapsedText = stringResource(R.string.settings_collapsed),
                 ) {
+                    AppSegmentedControl(
+                        options = listOf(
+                            stringResource(R.string.settings_preview_quality_low),
+                            stringResource(R.string.settings_preview_quality_balanced),
+                            stringResource(R.string.settings_preview_quality_high),
+                        ),
+                        // Options keep the enum's own order (LOW,
+                        // BALANCED, HIGH) — the index maps straight back.
+                        selectedIndex = previewQuality.ordinal,
+                        onSelect = { index ->
+                            onPreviewQualityChange(PreviewQuality.entries[index])
+                        },
+                    )
+                }
+            }
+            SettingsGroupCardRow(divider = true) {
+                SettingRowExpandable(
+                    icon = Cpu,
+                    title = stringResource(R.string.settings_render_backend),
+                    // State-dependent hint (spec): the requested axis in
+                    // one line — the semantics stay in the info note.
+                    hint = when (renderBackend) {
+                        RenderBackend.CPU ->
+                            stringResource(R.string.settings_render_backend_hint_cpu)
+                        RenderBackend.AUTO ->
+                            stringResource(R.string.settings_render_backend_hint_auto)
+                        RenderBackend.GPU_EXPERIMENTAL ->
+                            stringResource(R.string.settings_render_backend_hint_gpu)
+                    },
+                    infoContentDescription = stringResource(R.string.settings_render_backend_about),
+                    infoNote = stringResource(R.string.settings_render_backend_info),
+                    expandedText = stringResource(R.string.settings_expanded),
+                    collapsedText = stringResource(R.string.settings_collapsed),
+                ) {
+                    AppSegmentedControl(
+                        options = listOf(
+                            stringResource(R.string.settings_render_backend_cpu),
+                            stringResource(R.string.settings_render_backend_auto),
+                            stringResource(R.string.settings_render_backend_gpu),
+                        ),
+                        // Options keep the enum's own order (CPU, AUTO,
+                        // GPU_EXPERIMENTAL) — the index maps straight back.
+                        selectedIndex = renderBackend.ordinal,
+                        onSelect = { index ->
+                            onRenderBackendChange(RenderBackend.entries[index])
+                        },
+                    )
+                }
+            }
+        }
+        // ---- Storage & device ----
+        SettingsSectionLabel(text = stringResource(R.string.settings_section_storage_device))
+        SettingsGroupCard {
+            SettingsGroupCardRow(divider = false) {
+                SettingRowNavigation(
+                    icon = Folder,
+                    title = stringResource(R.string.settings_gyro_folder),
+                    // The spec's hint: the folder path only (or "Not
+                    // set") — the chevron carries the affordance, no
+                    // "Current:" prefix, no "tap to change" suffix.
+                    hint = gyroFolderLabel
+                        ?: stringResource(R.string.settings_gyro_folder_not_set),
+                    onClick = onPickGyroFolder,
+                )
+            }
+            SettingsGroupCardRow(divider = true) {
+                if (reports.isEmpty()) {
+                    // The probe's empty placeholder keeps its designed
+                    // wording and no false affordance (the pre-probe
+                    // contract): no chevron, no click — the report
+                    // screen would have nothing to show.
+                    SettingRowBase(
+                        icon = Report,
+                        title = stringResource(R.string.settings_device_report),
+                        hint = stringResource(R.string.settings_device_report_body),
+                    )
+                } else {
+                    SettingRowNavigation(
+                        icon = Report,
+                        title = stringResource(R.string.settings_device_report),
+                        // "{n} codecs" from a plurals resource (spec).
+                        hint = pluralStringResource(
+                            R.plurals.settings_device_report_codec_count,
+                            reports.size,
+                            reports.size,
+                        ),
+                        onClick = onOpenDeviceReport,
+                    )
+                }
+            }
+        }
+        // ---- Measure preview performance (debug) + Advanced ----
+        // Spec button: outside any card, 56dp pill (extraLarge = 28dp on
+        // a 56dp height), primary/onPrimary, ONE centered Row (gauge 30dp
+        // + 14dp spacer + 16sp SemiBold label) — the icon+label group
+        // centers as a whole, never a start-aligned leading slot. The
+        // gate is unchanged from before the redesign: release builds pass
+        // onMeasure as null and neither the button nor the Advanced
+        // section exists at all.
+        if (BuildConfig.DEBUG && onMeasure != null) {
+            Button(
+                onClick = onMeasure,
+                enabled = !measuring,
+                shape = MaterialTheme.shapes.extraLarge,
+                contentPadding = PaddingValues(horizontal = 24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, top = 20.dp, end = 16.dp)
+                    .height(56.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    Icon(
+                        imageVector = Gauge,
+                        contentDescription = null,
+                        modifier = Modifier.size(30.dp),
+                    )
+                    Spacer(Modifier.width(14.dp))
                     Text(
-                        if (measuring) {
+                        text = if (measuring) {
                             stringResource(R.string.settings_measuring)
                         } else {
                             stringResource(R.string.settings_measure)
-                        }
+                        },
+                        style = TextStyle(
+                            fontSize = 16.sp,
+                            lineHeight = 20.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-                // The stats-readback A/B toggle (debug-only, beside the
-                // Measure action it exists to serve): flips the GPU
-                // preview's synchronous stats readback (draw 3 + the
-                // glMapBufferRange the trace line's stats= span measures)
-                // on/off so the owner can compare the span and the total
-                // on the 12MP clip without a local patch. The whole row
-                // is toggleable at the 48dp minimum (the editor's
-                // RawToggleRow convention); the Switch itself carries no
-                // own click handler so the row speaks as one control.
-                ListItem(
-                    headlineContent = { Text(stringResource(R.string.settings_preview_stats)) },
-                    supportingContent = {
-                        Text(stringResource(R.string.settings_preview_stats_body))
-                    },
-                    trailingContent = {
-                        Switch(checked = previewStats, onCheckedChange = null)
-                    },
-                    modifier = Modifier.toggleable(
-                        value = previewStats,
-                        role = Role.Switch,
-                        onValueChange = onPreviewStatsChange,
-                    ),
-                )
             }
-            // Theme row (owner request 2026-11-14: "sistem teması neyse
-            // ona göre uyumlu olsun" — the app follows the system theme,
-            // and this row adds the manual override): System / Light /
-            // Dark, the same segmented pattern as preview quality and the
-            // render backend (one label per button, E3). System is the
-            // default and is exactly the pre-setting behavior — the
-            // supporting text says so honestly. The editor screens are
-            // deliberately NOT part of this choice: they stay in their
-            // fixed neutral scheme whatever the browse theme is (the
-            // editor world's color-judgment contract).
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.settings_theme)) },
-                supportingContent = {
-                    Text(stringResource(R.string.settings_theme_body))
-                },
-            )
-            val themeOptions = listOf(
-                R.string.settings_theme_system to ThemeMode.SYSTEM,
-                R.string.settings_theme_light to ThemeMode.LIGHT,
-                R.string.settings_theme_dark to ThemeMode.DARK,
-            )
-            SingleChoiceSegmentedButtonRow(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-            ) {
-                themeOptions.forEachIndexed { index, (labelRes, mode) ->
-                    SegmentedButton(
-                        selected = themeMode == mode,
-                        onClick = { onThemeModeChange(mode) },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = themeOptions.size,
-                        ),
-                    ) {
-                        Text(stringResource(labelRes))
-                    }
+            SettingsSectionLabel(text = stringResource(R.string.settings_section_advanced))
+            SettingsGroupCard {
+                SettingsGroupCardRow(divider = false) {
+                    SettingRowSwitch(
+                        icon = Activity,
+                        title = stringResource(R.string.settings_preview_stats),
+                        // State-dependent hint (spec switch_row): the old
+                        // long debug description is dropped from the
+                        // screen — one line states what the toggle does.
+                        hint = if (previewStats) {
+                            stringResource(R.string.settings_preview_stats_hint_on)
+                        } else {
+                            stringResource(R.string.settings_preview_stats_hint_off)
+                        },
+                        checked = previewStats,
+                        onCheckedChange = onPreviewStatsChange,
+                    )
                 }
             }
-            // The codec list's new home (see the screen KDoc): the dialog
-            // below. The old weight(1f) spacer pinned the version footer to
-            // the screen bottom; inside this now-scrollable column a
-            // weight-based spacer measures unbounded and collapses to
-            // nothing, so the footer flows after the content behind a fixed
-            // 16dp gap instead (DESIGN.md Layout's group scale) and scrolls
-            // with it — the standard Android settings pattern.
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Text(
-                stringResource(R.string.settings_version, versionName),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 8.dp),
-            )
         }
-    }
-    // The codec pills dialog (owner request 2026-11-13): one pill per codec
-    // in a flowing wrap list — the whole report at a glance instead of the
-    // old flat one-liner rows. The app's plain AlertDialog pattern
-    // (Library delete, gyro picker); no nav-graph addition.
-    if (reportOpen && reports.isNotEmpty()) {
-        AlertDialog(
-            onDismissRequest = { reportOpen = false },
-            title = { Text(stringResource(R.string.settings_device_report)) },
-            text = {
-                // FlowRow wraps the pills to the dialog's width — a codec
-                // list of any length reads as flowing rows, not one long
-                // column; verticalScroll bounds a very long device's list.
-                FlowRow(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+        // ---- Appearance ----
+        SettingsSectionLabel(text = stringResource(R.string.settings_section_appearance))
+        SettingsGroupCard {
+            SettingsGroupCardRow(divider = false) {
+                // The Theme row (owner request 2026-11-14, spec
+                // theme_slider): the compact pill replaces the segmented
+                // System/Light/Dark control. The row hint names the slot
+                // under the thumb LIVE (during a drag the hint follows
+                // the finger; the preference itself is written only on
+                // release, so the app never flickers mid-drag).
+                // The slider's visual order is 0 = Light, 1 = System,
+                // 2 = Dark — the spec's VISUAL order only; the stored
+                // enum and its values are untouched, the mapping lives
+                // here at the call site.
+                val themeSlots = listOf(
+                    ThemeMode.LIGHT,
+                    ThemeMode.SYSTEM,
+                    ThemeMode.DARK,
+                )
+                val slotNames = mapOf(
+                    ThemeMode.LIGHT to stringResource(R.string.settings_theme_light),
+                    ThemeMode.SYSTEM to stringResource(R.string.settings_theme_system),
+                    ThemeMode.DARK to stringResource(R.string.settings_theme_dark),
+                )
+                var displaySlot by remember(themeMode) {
+                    mutableIntStateOf(themeSlots.indexOf(themeMode).coerceAtLeast(0))
+                }
+                SettingRowBase(
+                    icon = Contrast,
+                    title = stringResource(R.string.settings_theme),
+                    hint = slotNames[themeSlots[displaySlot.coerceIn(0, 2)]],
+                    // Spec row: end padding 12dp (not the base 16dp) so
+                    // the 168dp pill fits the card at readable widths.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(end = (-4).dp),
                 ) {
-                    reports.forEach { report ->
-                        // One codec, one pill (stock M3 AssistChip — the
-                        // editor's PreviewRefreshControl precedent): the
-                        // codec's name is the label, the hardware/software
-                        // flag is the leading marker. The full formatReport
-                        // line (kind, profiles, max size, 10-bit) rides the
-                        // chip as its accessibility description — the
-                        // on-screen pill stays scannable, the detail stays
-                        // one TalkBack step away. The pill is informational,
-                        // but AssistChip is a clickable shape by design: the
-                        // tap closes the dialog (an honest visible response
-                        // that matches TalkBack's "button" announcement,
-                        // instead of a dead no-op).
-                        val description = CodecProbe.formatReport(report)
-                        AssistChip(
-                            onClick = { reportOpen = false },
-                            label = { Text(report.name) },
-                            leadingIcon = {
-                                Text(
-                                    stringResource(
-                                        if (report.hardware) {
-                                            R.string.settings_codec_hw
-                                        } else {
-                                            R.string.settings_codec_sw
-                                        }
-                                    ),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            modifier = Modifier.semantics {
-                                contentDescription = description
-                            },
-                        )
-                    }
+                    ThemeSlider(
+                        selectedIndex = themeSlots.indexOf(themeMode).coerceAtLeast(0),
+                        onCommit = { slot -> onThemeModeChange(themeSlots[slot]) },
+                        onDisplayIndexChange = { slot -> displaySlot = slot },
+                        sliderLabel = stringResource(R.string.settings_theme_slider),
+                        previousLabel = stringResource(R.string.settings_theme_previous),
+                        nextLabel = stringResource(R.string.settings_theme_next),
+                        stateLabels = listOf(
+                            stringResource(R.string.settings_theme_light),
+                            stringResource(R.string.settings_theme_system),
+                            stringResource(R.string.settings_theme_dark),
+                        ),
+                    )
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { reportOpen = false }) {
-                    Text(stringResource(R.string.settings_report_close))
-                }
-            },
+            }
+        }
+        // ---- Version footer (spec footer) ----
+        // Centered, 12sp, onSurfaceVariant, top 28dp / bottom 24dp; the
+        // old divider line is gone. Same version source as before.
+        Text(
+            text = stringResource(R.string.settings_version, versionName),
+            style = TextStyle(
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.Normal,
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 28.dp, bottom = 24.dp),
         )
     }
 }
