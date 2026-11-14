@@ -199,12 +199,14 @@ object GlesShaderValidator {
         checkDevelopPostStageText(s, out)
         // The application point: the whole pointwise grade chain sits in
         // the CPU's stage order — 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 ->
-        // 16 -> 17 -> 18 -> 19 -> 20 -> 23 -> OETF (core/src/Develop.cpp
-        // developCpu, then the JNI tail's OETF). Any stage moved across a
-        // neighbor is a different image, not a refactor. The fused chain
-        // additionally pins the 6/9 boundary: the camera matrix (the last
-        // PRE stage) must precede stage 9 — the exact cut the split passes
-        // share.
+        // 16 -> 17 -> 18 -> 19 -> 20 -> 23 -> 24 (LUT) -> OETF (core/src/
+        // Develop.cpp developCpu, then the JNI tail's OETF). Any stage
+        // moved across a neighbor is a different image, not a refactor.
+        // Stage 24's SceneLook (role 2) block sits BEFORE tonemap and the
+        // every-other-role block AFTER it — applyManagedLutStage's own
+        // per-role order. The fused chain additionally pins the 6/9
+        // boundary: the camera matrix (the last PRE stage) must precede
+        // stage 9 — the exact cut the split passes share.
         val cam2rgbIdx = s.indexOf("c = uCam2rgb * c;")
         val blackPointIdx = s.indexOf("if (uBlackPoint != 0.0) {")
         val whitePointIdx = s.indexOf("if (uWhitePoint != 0.0) {")
@@ -220,19 +222,24 @@ object GlesShaderValidator {
         )
         val splitIdx = s.indexOf("if (uSplitActive == 1) {")
         val saturationIdx = s.indexOf("if (uSaturation != 0.0) {")
+        val lutSceneIdx = s.indexOf("if (uLutRole == 2 && uLutStrength != 0.0) {")
         val tonemapIdx = s.indexOf("if (uTonemap != 0) {")
+        val lutPostIdx = s.indexOf("if (uLutStrength != 0.0 && uLutRole != 2) {")
         val oetfIdx = s.indexOf("if (uOetf == 1) {")
         val order = listOf(
             cam2rgbIdx, blackPointIdx, whitePointIdx, shadowsIdx,
             midtonesIdx, contrastIdx, exposureIdx, highlightsIdx, wbIdx,
-            tintIdx, wheelIdx, splitIdx, saturationIdx, tonemapIdx, oetfIdx,
+            tintIdx, wheelIdx, splitIdx, saturationIdx, lutSceneIdx,
+            tonemapIdx, lutPostIdx, oetfIdx,
         )
         if (order.any { it < 0 } || order.zipWithNext().any { (a, b) -> a >= b }) {
-            out += "the highlights/tonemap application point is wrong " +
+            out += "the highlights/tonemap/LUT application point is wrong " +
                 "(the pointwise grade chain must sit in the CPU stage order " +
                 "9 -> 10 -> 11 -> 12 -> 13 -> 14 (exposure) -> 15 -> 16 -> " +
-                "17 -> 18 -> 19 -> 20 -> 23 (tonemap) -> OETF, each block " +
-                "between its CPU neighbors — developCpu's exact order)"
+                "17 -> 18 -> 19 -> 20 -> 23 (tonemap) -> 24 (LUT) -> OETF, " +
+                "each block between its CPU neighbors — developCpu's exact " +
+                "order, with stage 24's SceneLook block BEFORE tonemap and " +
+                "every other role's AFTER it)"
         }
     }
 
@@ -278,6 +285,23 @@ object GlesShaderValidator {
         "uniform float uSaturation;",
         "uniform int uTonemap;",
         "uniform int uOetf;",
+        // Stage 24 LUT (the LUT port, commit (a)): the raw strength ([0,1];
+        // 0.0 is the CPU call site's own skip), the 3D table on unit 5, the
+        // table's shape (size 0 = no table), and the managed binding's
+        // role/passthrough/transfers/matrices. All pinned neutral by the
+        // sessions when no LUT is active — the no-LUT chain stays
+        // byte-identical.
+        "uniform float uLutStrength;",
+        "uniform highp sampler3D uLut;",
+        "uniform int uLutSize;",
+        "uniform vec3 uLutDomainMin;",
+        "uniform vec3 uLutDomainMax;",
+        "uniform int uLutRole;",
+        "uniform int uLutPassthrough;",
+        "uniform int uLutInTransfer;",
+        "uniform int uLutOutTransfer;",
+        "uniform mat3 uLutWorkingToInput;",
+        "uniform mat3 uLutOutputToWorking;",
     )
 
     /**
@@ -903,12 +927,137 @@ object GlesShaderValidator {
                 "(`return pow(o, vec3(2.2));` — the look's output " +
                 "encoding, rawedit::tonemapFrameImpl's last line)"
         }
+        // ---- Stage 24: the LUT block (the LUT GPU port) ----
+        //
+        // The CPU reference is rawedit::applyManagedLutStage +
+        // evaluateManagedLutPixel + sampleLutPixel + compileLutBinding
+        // (core/src/Color.cpp). The table lives in the session's 3D
+        // texture (RGBA16F, one mip, GL_LINEAR + CLAMP_TO_EDGE on all
+        // three axes — hardware trilinear), so the shader's contract is
+        // the EXACT texel-center mapping plus the role/strength order;
+        // every line below is load-bearing. Half-float table quantization
+        // makes the match bounded-error, not bit-exact — the JVM parity
+        // harness measures and pins the max LSB honestly.
+        if (!s.contains("return x < 0.0 ? -pow(-x, e) : pow(x, e);")) {
+            out += "missing the LUT signed pow " +
+                "(`return x < 0.0 ? -pow(-x, e) : pow(x, e);` — " +
+                "rawedit::spow: a negative encoded value keeps its sign " +
+                "through the gamma curves)"
+        }
+        if (!s.contains("return log2(x) / 3.321928094887362;")) {
+            out += "missing the LUT log10 transcription " +
+                "(`return log2(x) / 3.321928094887362;` — GLSL ES has no " +
+                "log10; log2(x)/log2(10) stands in for std::log10, its " +
+                "~1-ulp difference part of the bounded-error claim)"
+        }
+        // The texel-center mapping: the hardware trilinear filter must BE
+        // the CPU lattice interpolation — the domain normalization, the
+        // pre-clamp and the (i + 0.5)/n center are all three required
+        // (any one changed and the sampled texel weights differ).
+        if (!s.contains("vec3 scale = (n - 1.0) / max(span, vec3(1e-20));")) {
+            out += "missing the LUT domain scale " +
+                "(`vec3 scale = (n - 1.0) / max(span, vec3(1e-20));` — " +
+                "sampleLutPixel's (n-1)/max(domainMax - domainMin, 1e-20), " +
+                "componentwise)"
+        }
+        if (!s.contains(
+            "vec3 fx = clamp((enc - uLutDomainMin) * scale, vec3(0.0), vec3(n - 1.0));"
+        )) {
+            out += "missing the LUT pre-clamp " +
+                "(`vec3 fx = clamp((enc - uLutDomainMin) * scale, " +
+                "vec3(0.0), vec3(n - 1.0));` — sampleLutPixel's clamp to " +
+                "[0, n-1], which also keeps t inside the texel range so " +
+                "CLAMP_TO_EDGE never distorts an edge sample)"
+        }
+        if (!s.contains("vec3 t = (fx + 0.5) / n;")) {
+            out += "missing the LUT texel-center map " +
+                "(`vec3 t = (fx + 0.5) / n;` — texel i's center is " +
+                "(i + 0.5)/n; this is what makes hardware trilinear equal " +
+                "the CPU's 8-corner lattice sum)"
+        }
+        // The managed chain: working -> input gamut -> encode -> sample ->
+        // decode -> output gamut (evaluateManagedLutPixel, verbatim).
+        if (!s.contains("vec3 gamutIn = uLutWorkingToInput * px;")) {
+            out += "missing the LUT input-gamut matrix " +
+                "(`vec3 gamutIn = uLutWorkingToInput * px;` — " +
+                "compileLutBinding's workingToInput, the chain's head)"
+        }
+        if (!s.contains("lutEncodeTransfer(gamutIn.x, uLutInTransfer),")) {
+            out += "missing the LUT per-channel encode " +
+                "(`lutEncodeTransfer(gamutIn.x, uLutInTransfer),` — the " +
+                "binding's input transfer, applied per channel)"
+        }
+        if (!s.contains("return uLutOutputToWorking * dec;")) {
+            out += "missing the LUT output-gamut matrix " +
+                "(`return uLutOutputToWorking * dec;` — " +
+                "compileLutBinding's outputToWorking, the chain's tail)"
+        }
+        // The role/strength contract (applyManagedLutStage's exact shape):
+        // strength 0 skips the whole stage (the CPU's own
+        // `if (!(lutStrength > 0.0f))` bypass), SceneLook (role 2) applies
+        // the LUT BEFORE tonemap, SceneToDisplay (role 3) at full strength
+        // SKIPS tonemap and samples the SCENE pixel, and every other role
+        // applies after tonemap — legacy (0) always the plain sampler,
+        // DisplayLook (1) the plain sampler only when the binding
+        // degenerates to passthrough.
+        if (!s.contains("float lutS = min(uLutStrength, 1.0);")) {
+            out += "missing the LUT strength clamp " +
+                "(`float lutS = min(uLutStrength, 1.0);` — the CPU's own " +
+                "min(strength, 1.0f) that gates the SceneToDisplay branches)"
+        }
+        if (!s.contains("vec3 cScene = c;")) {
+            out += "missing the LUT scene-pixel preservation " +
+                "(`vec3 cScene = c;` — the pre-tonemap pixel SceneToDisplay's " +
+                "LUT samples, the CPU's baseline-copy form)"
+        }
+        if (!s.contains("if (uLutRole == 2 && uLutStrength != 0.0) {")) {
+            out += "missing the SceneLook LUT gate " +
+                "(`if (uLutRole == 2 && uLutStrength != 0.0) {` — role 2 " +
+                "applies the LUT BEFORE tonemap, the CPU SceneLook order)"
+        }
+        if (!s.contains(
+            "if (!(uLutStrength != 0.0 && uLutRole == 3 && lutS >= 1.0)) {"
+        )) {
+            out += "missing the SceneToDisplay tonemap skip " +
+                "(`if (!(uLutStrength != 0.0 && uLutRole == 3 && lutS >= " +
+                "1.0)) {` — role 3 at full strength replaces the pixel " +
+                "outright; tonemap must not run first, the CPU's s >= 1 " +
+                "branch)"
+        }
+        if (!s.contains("if (uLutStrength != 0.0 && uLutRole != 2) {")) {
+            out += "missing the post-tonemap LUT gate " +
+                "(`if (uLutStrength != 0.0 && uLutRole != 2) {` — every " +
+                "role but SceneLook applies the LUT AFTER tonemap, before " +
+                "the OETF)"
+        }
+        if (!s.contains("vec3 lutPx = lutManagedPixel(cScene);")) {
+            out += "missing the SceneToDisplay managed sample " +
+                "(`vec3 lutPx = lutManagedPixel(cScene);` — role 3's LUT " +
+                "reads the SCENE pixel while the blend baseline stays " +
+                "tonemapped, the CPU's per-pixel two-branch form)"
+        }
+        if (!s.contains("else if (uLutPassthrough == 1 || uLutRole == 0) {")) {
+            out += "missing the LUT plain-sampler branch " +
+                "(`else if (uLutPassthrough == 1 || uLutRole == 0) {` — " +
+                "legacy (0) is always the plain sampler; DisplayLook (1) " +
+                "takes it only when the binding degenerates)"
+        }
+        if (!s.contains("c = lutPx * lutS + c * (1.0 - lutS);")) {
+            out += "missing the LUT strength blend " +
+                "(`c = lutPx * lutS + c * (1.0 - lutS);` — the CPU's " +
+                "lutPx*s + baseline*(1-s) mix, the strength knob's whole " +
+                "effect)"
+        }
         // The application point: the pointwise grade chain sits in the
         // CPU's stage order — 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16
-        // -> 17 -> 18 -> 19 -> 20 -> 23 -> OETF (core/src/Develop.cpp
-        // developCpu, then the JNI tail's OETF). Any stage moved across a
-        // neighbor is a different image, not a refactor. The camera-matrix
-        // 6/9 cut is deliberately NOT part of this check — the standalone
+        // -> 17 -> 18 -> 19 -> 20 -> 23 -> 24 (LUT) -> OETF (core/src/
+        // Develop.cpp developCpu, then the JNI tail's OETF). Any stage
+        // moved across a neighbor is a different image, not a refactor.
+        // Stage 24's role-2 (SceneLook) block sits BEFORE tonemap and the
+        // every-other-role block AFTER it — applyManagedLutStage's own
+        // per-role order — so both LUT gates are pinned here around
+        // tonemap, between saturation and the OETF. The camera-matrix 6/9
+        // cut is deliberately NOT part of this check — the standalone
         // POST pass never contains the PRE text; the fused pass checks the
         // full chain including the cut (and rides this check too, where it
         // is implied by the full-chain one).
@@ -927,18 +1076,24 @@ object GlesShaderValidator {
         val splitIdx = s.indexOf("if (uSplitActive == 1) {")
         val saturationIdx = s.indexOf("if (uSaturation != 0.0) {")
         val tonemapIdx = s.indexOf("if (uTonemap != 0) {")
+        val lutSceneIdx = s.indexOf("if (uLutRole == 2 && uLutStrength != 0.0) {")
+        val lutPostIdx = s.indexOf("if (uLutStrength != 0.0 && uLutRole != 2) {")
         val oetfIdx = s.indexOf("if (uOetf == 1) {")
         val order = listOf(
             blackPointIdx, whitePointIdx, shadowsIdx, midtonesIdx,
             contrastIdx, exposureIdx, highlightsIdx, wbIdx, tintIdx,
-            wheelIdx, splitIdx, saturationIdx, tonemapIdx, oetfIdx,
+            wheelIdx, splitIdx, saturationIdx, lutSceneIdx, tonemapIdx,
+            lutPostIdx, oetfIdx,
         )
         if (order.any { it < 0 } || order.zipWithNext().any { (a, b) -> a >= b }) {
-            out += "the highlights/tonemap application point is wrong " +
+            out += "the highlights/tonemap/LUT application point is wrong " +
                 "(the pointwise grade chain must sit in the CPU stage order " +
                 "9 -> 10 -> 11 -> 12 -> 13 -> 14 (exposure) -> 15 -> 16 -> " +
-                "17 -> 18 -> 19 -> 20 -> 23 (tonemap) -> OETF, each block " +
-                "between its CPU neighbors — developCpu's exact order)"
+                "17 -> 18 -> 19 -> 20 -> 23 (tonemap) -> 24 (LUT) -> OETF, " +
+                "each block between its CPU neighbors — developCpu's exact " +
+                "order, with stage 24's SceneLook block BEFORE tonemap and " +
+                "every other role's AFTER it, applyManagedLutStage's own " +
+                "per-role order)"
         }
     }
 

@@ -1,6 +1,11 @@
 package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.LutEncodingK
+import com.ritim.ritimcraw.data.LutGamut
+import com.ritim.ritimcraw.data.LutInterpK
+import com.ritim.ritimcraw.data.LutRole
+import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
@@ -2216,6 +2221,18 @@ class Mp4ExporterTest {
         // too — the encoder pass-through lock's snapshot.
         var lastEncoderNr: NrControls? = null
 
+        // The seven LUT controls (stage 24) the last READBACK render
+        // carried, in the seam's parameter order — the verbatim
+        // pass-through lock's snapshot (the resolved path, the [0,1]
+        // strength from the grade's percent, and the five interpretation
+        // ordinals; a swapped or dropped parameter in the dispatcher fails
+        // the data-class equality with the field named).
+        var lastLut: LutControls? = null
+
+        // Same seven controls on the encoder blit — the encoder
+        // pass-through lock's snapshot.
+        var lastEncoderLut: LutControls? = null
+
         override fun probe(): DoubleArray? {
             probeCalls++
             return probeArray
@@ -2260,6 +2277,13 @@ class Mp4ExporterTest {
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): ByteArray? {
             if (failRenderFrom >= 0 && frameIndex >= failRenderFrom) return null
             // The native latch mirror: an encoder-render failure latched
@@ -2280,6 +2304,10 @@ class Mp4ExporterTest {
                 wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
                 wheelHighX, wheelHighY,
                 splitShadowHue, splitHighlightHue, splitBalance,
+            )
+            lastLut = LutControls(
+                lutPath, lutStrength, lutRole,
+                lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             )
             return frameBytes
         }
@@ -2320,6 +2348,13 @@ class Mp4ExporterTest {
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
             rotationDeg: Int,
         ): Boolean {
             if (failEncoderRenderFrom >= 0 && frameIndex >= failEncoderRenderFrom) {
@@ -2336,6 +2371,10 @@ class Mp4ExporterTest {
                 wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
                 wheelHighX, wheelHighY,
                 splitShadowHue, splitHighlightHue, splitBalance,
+            )
+            lastEncoderLut = LutControls(
+                lutPath, lutStrength, lutRole,
+                lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             )
             return true
         }
@@ -2356,6 +2395,23 @@ class Mp4ExporterTest {
     private data class NrControls(
         val chromaDenoise: Float,
         val noiseReduction: Float,
+    )
+
+    /**
+     * The seven LUT controls (stage 24) one render carried, in the seam's
+     * parameter order — shared by the readback and the encoder recorders
+     * so a swapped or dropped parameter fails the equality with the field
+     * named (the resolved .cube path, the [0,1] strength, and the five
+     * interpretation ordinals, -1 = legacy).
+     */
+    private data class LutControls(
+        val lutPath: String?,
+        val lutStrength: Float,
+        val lutRole: Int,
+        val lutInGamut: Int,
+        val lutInTransfer: Int,
+        val lutOutGamut: Int,
+        val lutOutTransfer: Int,
     )
 
     /**
@@ -2467,11 +2523,124 @@ class Mp4ExporterTest {
             ),
             gpu.lastPointwise,
         )
+        // No LUT in this grade: the seven controls ride as the neutral
+        // legacy shape (null path, -1 ordinals) — the strength carries
+        // the grade's default 100 percent mapped to [0,1] (1.0, the
+        // faithful pass-through; the native leg gates on the null path,
+        // so a null-path render never samples the table) — the LUT
+        // grade's own pass-through lives in the stage-24 test below.
+        assertEquals(
+            LutControls(
+                lutPath = null, lutStrength = 1.0f,
+                lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
+                lutOutGamut = -1, lutOutTransfer = -1,
+            ),
+            gpu.lastLut,
+        )
         assertEquals(listOf(1L), gpu.closedHandles) // closed exactly once
         assertEquals(2, writer.videoFrames) // the packed tail consumed both
         // No develop fallback: the dispatch chose GLES and it held — the
         // multi-control grade is covered now, so it stays GPU.
         assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
+    }
+
+    @Test
+    fun lut_grade_rides_the_gpu_when_the_texture_path_is_healthy() {
+        // The stage-24 recipe: a LUT-active grade (lutId set, a percent
+        // strength, a full managed interpretation) on GPU_EXPERIMENTAL
+        // stays on the GPU when the probe says the 3D-texture path is
+        // healthy — the runtime leg's fact comes from the probe itself
+        // (contextOk && glesMajor >= 3, the FakeGpuDevelop default), so
+        // the pre-coverage fetch is paid ONCE and the gate reuses it. The
+        // seven LUT controls ride the dispatch verbatim: the resolved
+        // .cube path, the percent strength mapped to [0,1] (85 -> 0.85),
+        // and the five interpretation ordinals in the LutInterpK order
+        // (role, input gamut, input transfer, output gamut, output
+        // transfer) — a swapped pair or a dropped ordinal fails the
+        // LutControls equality with the field named.
+        val session = FakeSession(frames = 2, audio = false)
+        val writer = FakeWriter()
+        val gpu = FakeGpuDevelop()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, writer, lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(
+            7,
+            GradeK(
+                lutId = "milog",
+                lutStrength = 85f,
+                lutInterp = LutInterpK(
+                    input = LutEncodingK(
+                        gamut = LutGamut.VGamut,
+                        transfer = LutTransfer.VLog,
+                    ),
+                    output = LutEncodingK(
+                        gamut = LutGamut.Rec709,
+                        transfer = LutTransfer.Rec709OETF,
+                    ),
+                    role = LutRole.SceneToDisplay,
+                ),
+            ),
+            "/tmp/out.partial",
+            lutPath = "/data/luts/milog.cube",
+        )
+        // The probe is paid exactly once: the pre-coverage fetch for the
+        // LUT fact IS the gate's probe (reused, not re-asked).
+        assertEquals(1, gpu.probeCalls)
+        assertEquals(listOf(7), gpu.parityFds)
+        assertEquals(1, gpu.openCalls)
+        assertEquals(listOf(0, 1), gpu.rendered)
+        assertTrue("the CPU develop must never run", session.rendered.isEmpty())
+        // The seven controls, verbatim: the path the job resolved, the
+        // percent mapped to [0,1], and the five ordinals from the managed
+        // interpretation's enums (VGamut=8, VLog=10, Rec709=0,
+        // Rec709OETF=2, SceneToDisplay=3).
+        assertEquals(
+            LutControls(
+                lutPath = "/data/luts/milog.cube",
+                lutStrength = 0.85f,
+                lutRole = 3,
+                lutInGamut = 8,
+                lutInTransfer = 10,
+                lutOutGamut = 0,
+                lutOutTransfer = 2,
+            ),
+            gpu.lastLut,
+        )
+        // No fallback: the runtime leg's fact said healthy, so the lut
+        // token never appears and the grade stays GPU end to end.
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
+    }
+
+    @Test
+    fun lut_grade_falls_back_with_the_lut_token_when_the_texture_path_is_unhealthy() {
+        // The runtime leg's honest other side: the same LUT-active grade
+        // on a GLES-2 context (glesMajor < 3, no 3D-texture path) takes
+        // the CPU path WHOLESALE with the lut token in the fallback line
+        // — never a silent drop of the look. The probe is still paid
+        // exactly once (the pre-coverage fetch), and the parity run is
+        // skipped: coverage already said no.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop(probeArray = doubleArrayOf(1.0, 2.0, 0.0, 1.0, 1.0, 4096.0))
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(
+            7,
+            GradeK(lutId = "milog", lutStrength = 85f),
+            "/tmp/out.partial",
+            lutPath = "/data/luts/milog.cube",
+        )
+        assertEquals(1, gpu.probeCalls)
+        assertTrue("parity must be skipped", gpu.parityFds.isEmpty())
+        assertEquals(0, gpu.openCalls)
+        assertEquals(listOf(0, 1), session.rendered)
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("lut token missing: $fallback", fallback.contains("lut"))
     }
 
     @Test
@@ -2791,6 +2960,18 @@ class Mp4ExporterTest {
         // The two spatial-NR stages ride the blit verbatim too — the
         // stages-7/8 raw values in the seam's parameter order.
         assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastEncoderNr)
+        // No LUT in this grade: the blit's seven LUT controls ride as the
+        // neutral legacy shape (null path, -1 ordinals; the strength is
+        // the default 100 percent mapped to [0,1] — the faithful
+        // pass-through, inert while the path is null).
+        assertEquals(
+            LutControls(
+                lutPath = null, lutStrength = 1.0f,
+                lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
+                lutOutGamut = -1, lutOutTransfer = -1,
+            ),
+            gpu.lastEncoderLut,
+        )
         // The writer drained once per blit.
         assertEquals(2, writer.drainCalls)
         // No frames on the writer's own paths.

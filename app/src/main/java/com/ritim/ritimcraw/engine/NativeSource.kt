@@ -929,6 +929,13 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): ByteArray?
 
         /**
@@ -985,6 +992,13 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
             rotationDeg: Int,
         ): Boolean
 
@@ -1070,6 +1084,13 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): IntArray?
 
         @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
@@ -1636,6 +1657,13 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): ByteArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
@@ -1647,7 +1675,8 @@ class NativeSource private constructor(
                 tint, saturation, asShot, wheelShadowX, wheelShadowY,
                 wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
                 splitHighlightHue, splitBalance, highlightReconstruction,
-                keepVignetting, tonemap)
+                keepVignetting, tonemap, lutPath, lutStrength, lutRole,
+                lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer)
         }
 
         /**
@@ -1708,6 +1737,13 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
             rotationDeg: Int,
         ): Boolean {
             if (!nativeAvailable) {
@@ -1720,7 +1756,9 @@ class NativeSource private constructor(
                 contrast, tempK, tint, saturation, asShot, wheelShadowX,
                 wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
                 splitShadowHue, splitHighlightHue, splitBalance,
-                highlightReconstruction, keepVignetting, tonemap, rotationDeg)
+                highlightReconstruction, keepVignetting, tonemap, lutPath,
+                lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut,
+                lutOutTransfer, rotationDeg)
         }
 
         internal fun jniDevelopSessionClose(sessionHandle: Long) {
@@ -1804,6 +1842,13 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): IntArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
@@ -1815,7 +1860,9 @@ class NativeSource private constructor(
                 contrast, tempK, tint, saturation, asShot, wheelShadowX,
                 wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
                 splitShadowHue, splitHighlightHue, splitBalance,
-                highlightReconstruction, keepVignetting, tonemap)
+                highlightReconstruction, keepVignetting, tonemap, lutPath,
+                lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut,
+                lutOutTransfer)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {

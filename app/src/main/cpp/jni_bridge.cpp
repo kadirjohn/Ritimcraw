@@ -3168,7 +3168,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         jfloat splitShadowHue, jfloat splitHighlightHue,
         jfloat splitBalance,
         jboolean highlightReconstruction, jboolean keepVignetting,
-        jint tonemap) {
+        jint tonemap, jstring lutPath, jfloat lutStrength,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
@@ -3229,6 +3231,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
+        // Stage 24 LUT (commit b): the resolved .cube path + the [0,1]
+        // strength + the five interpretation ordinals, threaded verbatim
+        // (the CPU seam's own jniExportFrame layout: -1 ordinals = the
+        // legacy shape). A null jstring is an empty path = no LUT.
+        req.lutStrength = lutStrength;
+        if (lutPath != nullptr) {
+            const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
+            if (lutChars != nullptr) {
+                req.lutPath.assign(lutChars);
+                env->ReleaseStringUTFChars(lutPath, lutChars);
+            }
+        }
+        req.lutRole = lutRole;
+        req.lutInGamut = lutInGamut;
+        req.lutInTransfer = lutInTransfer;
+        req.lutOutGamut = lutOutGamut;
+        req.lutOutTransfer = lutOutTransfer;
         const gles::DevelopFrameResult res = session->renderFrame(req);
         if (!res.ok) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
@@ -3340,8 +3359,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         jfloat splitShadowHue, jfloat splitHighlightHue,
         jfloat splitBalance,
         jboolean highlightReconstruction, jboolean keepVignetting,
-        jint tonemap, jint rotationDeg) {
-    (void)env;
+        jint tonemap, jstring lutPath, jfloat lutStrength,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer, jint rotationDeg) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
@@ -3399,6 +3419,22 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
+        // Stage 24 LUT (commit b), same layout as the readback entry above:
+        // the resolved path + the [0,1] strength + the five ordinals
+        // (-1 = the legacy shape); a null jstring is no LUT.
+        req.lutStrength = lutStrength;
+        if (lutPath != nullptr) {
+            const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
+            if (lutChars != nullptr) {
+                req.lutPath.assign(lutChars);
+                env->ReleaseStringUTFChars(lutPath, lutChars);
+            }
+        }
+        req.lutRole = lutRole;
+        req.lutInGamut = lutInGamut;
+        req.lutInTransfer = lutInTransfer;
+        req.lutOutGamut = lutOutGamut;
+        req.lutOutTransfer = lutOutTransfer;
         const gles::DevelopFrameResult res =
             session->renderFrameToEncoder(req, static_cast<int64_t>(ptsUs),
                                           static_cast<int>(rotationDeg));
@@ -3443,7 +3479,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //       whitePoint, shadows, midtones, contrast, tempK, tint, saturation,
 //       asShot, wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
 //       wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue,
-//       splitBalance, highlightReconstruction, keepVignetting, tonemap)
+//       splitBalance, highlightReconstruction, keepVignetting, tonemap,
+//       lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+//       lutOutGamut, lutOutTransfer)
 //       -> [w, h, pixels...] int array (the small published stats pack)
 //   nativePreviewSessionClose(handle)
 //
@@ -3669,7 +3707,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         jfloat splitShadowHue, jfloat splitHighlightHue,
         jfloat splitBalance,
         jboolean highlightReconstruction, jboolean keepVignetting,
-        jint tonemap) {
+        jint tonemap, jstring lutPath, jfloat lutStrength,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxPreviewSessions) {
@@ -3797,6 +3837,24 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
         req.keepVignetting = keepVignetting == JNI_TRUE;
         req.tonemap = tonemap;
+        // Stage 24 LUT (commit b), same layout as the develop-session
+        // entries above: the resolved .cube path (per request, the
+        // lutPathFor resolution), the [0,1] strength and the five
+        // interpretation ordinals (-1 = the legacy shape). A null jstring
+        // is an empty path = no LUT (the old look).
+        req.lutStrength = lutStrength;
+        if (lutPath != nullptr) {
+            const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
+            if (lutChars != nullptr) {
+                req.lutPath.assign(lutChars);
+                env->ReleaseStringUTFChars(lutPath, lutChars);
+            }
+        }
+        req.lutRole = lutRole;
+        req.lutInGamut = lutInGamut;
+        req.lutInTransfer = lutInTransfer;
+        req.lutOutGamut = lutOutGamut;
+        req.lutOutTransfer = lutOutTransfer;
         // The stats-readback toggle rides the request (the gSyncRefine
         // precedent): the bridge-level atomic, flipped by the
         // nativeSetPreviewStatsEnabled JNI setter, copied per render.

@@ -583,6 +583,14 @@ object EditorPreviewLogic {
      * anyway. Zebra is a display feature, so its display rule rides the
      * request, not the grade.
      *
+     * [lutTexturePathOk] (commit b) is the probe-derived runtime fact for
+     * stage 24's runtime leg — the RGBA16F 3D-texture path is GLES 3.0
+     * core, so the fact is contextOk && glesMajor >= 3. The pump latches
+     * it once at the capability gate and hands every request the same
+     * latched value; false (the default, also a device with no GLES 3)
+     * keeps a LUT-active grade on the CPU path — the same honest
+     * fallback the export gate rides.
+     *
      * Pure and JVM-testable; the pump supplies the per-request facts and
      * latches GPU-off when the session itself fails (the M3 per-frame
      * dispatch rule — that latch lives in the pump, not here).
@@ -592,11 +600,12 @@ object EditorPreviewLogic {
         gyroWarpActive: Boolean,
         cropActive: Boolean,
         zebraOn: Boolean,
+        lutTexturePathOk: Boolean = false,
     ): Boolean {
         if (zebraOn) return false
         if (cropActive) return false
         if (gyroWarpActive) return false
-        if (BackendRules.fragmentUncoveredStages(grade).isNotEmpty()) return false
+        if (BackendRules.fragmentUncoveredStages(grade, lutTexturePathOk).isNotEmpty()) return false
         if (BackendRules.fragmentUncoveredPreStages(grade).isNotEmpty()) return false
         return true
     }
@@ -1381,6 +1390,15 @@ fun ClipEditorScreen(
         // instead of the idle "No preview yet" over the seconds-class
         // open on a fresh 12MP clip.
         var gpuPreparing by remember(sourceId) { mutableStateOf(false) }
+        // Stage 24's runtime fact (commit b): whether the device's GLES
+        // context carries the RGBA16F 3D-texture LUT path (GLES 3.0 core).
+        // Latched ONCE by the capability gate from the same probe that
+        // feeds the gates — false until then, and false on any probe
+        // failure (null, malformed, seam throw): a LUT-active grade then
+        // rides the CPU preview path, the same honest fallback the export
+        // gate rides. Keyed on sourceId like its GPU siblings: a fresh
+        // clip re-derives it at its own capability gate.
+        var gpuLutTexturePathOk by remember(sourceId) { mutableStateOf(false) }
         // Editor audio (owner request 2026-11-11 section 4): one controller per
         // clip, released at dispose. Audio follows the transport: play starts
         // it at the current position, pause/seek stop it, the clip end ends
@@ -1915,6 +1933,21 @@ fun ClipEditorScreen(
             try {
                 val develop = NativeGpuPreviewDevelop
                 val probeRaw = develop.probe()
+                // Stage 24's runtime leg (commit b): the SAME probe answers
+                // whether the RGBA16F 3D-texture LUT path is available
+                // (GLES 3.0 core → contextOk && glesMajor >= 3). Latched
+                // ONCE per editor open and handed to every eligibility
+                // check below; a null or malformed probe keeps it false —
+                // a LUT-active grade then rides the CPU path, never a
+                // fabricated healthy path.
+                gpuLutTexturePathOk = try {
+                    probeRaw != null &&
+                        GlesProbeResult.fromArray(probeRaw).let {
+                            it.contextOk && it.glesMajor >= 3
+                        }
+                } catch (t: Throwable) {
+                    false
+                }
                 // The parity leg is paid only when the probe's verdicts
                 // justify it AND the clip's fd opened — a doomed run is
                 // waste; the honest null keeps parityOk false either way.
@@ -1935,6 +1968,7 @@ fun ClipEditorScreen(
                 // never papered over) costs the GPU path, never the
                 // preview — the honest all-false gates.
                 gates = BackendGates()
+                gpuLutTexturePathOk = false
             } finally {
                 PreviewRenderer.closeFdQuietly(parityFd)
             }
@@ -2215,6 +2249,7 @@ fun ClipEditorScreen(
                                     )
                                 ),
                             zebraOn = currentZebraOn,
+                            lutTexturePathOk = gpuLutTexturePathOk,
                         )
                     ) {
                         val gpuFrame = gpu.render(
@@ -2246,6 +2281,17 @@ fun ClipEditorScreen(
                             highlightReconstruction = req.grade.highlightReconstruction,
                             keepVignetting = req.grade.keepVignetting,
                             tonemap = req.grade.tonemap,
+                            // Stage 24 (commit b): the LUT thread rides the
+                            // render seam exactly like the CPU preview — the
+                            // resolved path, the [0,1] strength, and the
+                            // five interpretation ordinals (-1 = legacy).
+                            lutPath = lutPath,
+                            lutStrength = req.grade.lutStrength / 100f,
+                            lutRole = req.grade.lutInterp?.role?.value ?: -1,
+                            lutInGamut = req.grade.lutInterp?.input?.gamut?.value ?: -1,
+                            lutInTransfer = req.grade.lutInterp?.input?.transfer?.value ?: -1,
+                            lutOutGamut = req.grade.lutInterp?.output?.gamut?.value ?: -1,
+                            lutOutTransfer = req.grade.lutInterp?.output?.transfer?.value ?: -1,
                         )
                         if (gpuFrame != null) {
                             result = Result.success(gpuFrame)

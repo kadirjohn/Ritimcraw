@@ -786,6 +786,32 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     }
     if (glErrorAfter("glTexImage2D(R32F shading)", &rep.detail) != GL_NO_ERROR) return rep;
 
+    // --- LUT 3D dummy texture: 2x2x2 RGBA16F on unit 5 --------------------
+    // (the LUT port's shading-map precedent: the sampler uniform is always
+    // set, keeping the program's uniform set complete; the shader only
+    // fetches uLut when uLutStrength != 0.0, and this harness never sets a
+    // non-zero strength — so the dummy is never read. Without a bound 3D
+    // texture the sampler's default unit 0 would collide with uCfa's
+    // usampler2D, an incomplete-sampler draw error on ES 3.x; a dummy on
+    // its own unit keeps the frozen cases byte-honest exactly like the
+    // shading dummy above).
+    GLuint lutTex = 0;
+    glGenTextures(1, &lutTex);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_3D, lutTex);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    const uint16_t lutDummy[16] = { 0x3c00, 0x3c00, 0x3c00, 0x3c00,
+                                    0x3c00, 0x3c00, 0x3c00, 0x3c00,
+                                    0x3c00, 0x3c00, 0x3c00, 0x3c00,
+                                    0x3c00, 0x3c00, 0x3c00, 0x3c00 };  // half(1.0)
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F, 2, 2, 2, 0,
+                 GL_RGBA, GL_HALF_FLOAT, lutDummy);
+    if (glErrorAfter("glTexImage3D(RGBA16F lut dummy)", &rep.detail) != GL_NO_ERROR) return rep;
+
     // --- develop FBO: RGBA32F attachment --------------------------------
     GLuint developTex = 0;
     glGenTextures(1, &developTex);
@@ -831,11 +857,15 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     const GLint exposureLoc = glGetUniformLocation(developProgram.id, "uExposure");
     const GLint tonemapLoc = glGetUniformLocation(developProgram.id, "uTonemap");
     const GLint oetfLoc = glGetUniformLocation(developProgram.id, "uOetf");
+    const GLint lutStrengthLoc = glGetUniformLocation(developProgram.id, "uLutStrength");
+    const GLint lutLoc = glGetUniformLocation(developProgram.id, "uLut");
+    const GLint lutSizeLoc = glGetUniformLocation(developProgram.id, "uLutSize");
     if (cfaLoc < 0 || sizeLoc < 0 || cellLoc < 0 || blackLoc < 0 ||
         rangeLoc < 0 || hasShadingLoc < 0 || shadingLoc < 0 ||
         shadingSizeLoc < 0 || hrLoc < 0 || hrGainLoc < 0 || wbLoc < 0 ||
         camLoc < 0 || hasProfileLoc < 0 || exposureLoc < 0 ||
-        tonemapLoc < 0 || oetfLoc < 0) {
+        tonemapLoc < 0 || oetfLoc < 0 || lutStrengthLoc < 0 || lutLoc < 0 ||
+        lutSizeLoc < 0) {
         rep.detail = "shader-contract: missing a develop uniform";
         return rep;
     }
@@ -845,6 +875,14 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     glUniform4f(blackLoc, black[0], black[1], black[2], black[3]);
     glUniform4f(rangeLoc, range[0], range[1], range[2], range[3]);
     glUniform1i(shadingLoc, 3);  // texture unit 3 (GL_TEXTURE3 above)
+    // The LUT port's neutral pins: strength 0 (the CPU's own bypass — the
+    // LUT block never fires, so cases 0/1/2 still measure exactly the
+    // stage lists they pinned before the port) + the sampler's own unit
+    // (the dummy 3D texture above — the shading-map precedent: set even
+    // when unread, keeping the program's uniform set complete).
+    glUniform1f(lutStrengthLoc, 0.0f);
+    glUniform1i(lutLoc, 5);  // texture unit 5 (GL_TEXTURE5 above)
+    glUniform1i(lutSizeLoc, 0);
     // The stage-2/3 uniform gates, per case. case 0 pins both OFF (the
     // developLinear shape — byte-honest regardless of the clip's real
     // metadata, so this case keeps its original meaning and verdict);
@@ -1040,6 +1078,7 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     glDeleteTextures(1, &scratchTex);
     glDeleteTextures(1, &developTex);
     glDeleteTextures(1, &shadingTex);
+    glDeleteTextures(1, &lutTex);
     glDeleteTextures(1, &cfaTex);
 
     rep.ran = true;

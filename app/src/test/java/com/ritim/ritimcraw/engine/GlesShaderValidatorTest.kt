@@ -1065,23 +1065,41 @@ class GlesShaderValidatorTest {
     @Test
     fun a_tonemap_applied_after_the_oetf_is_reported() {
         // Tonemap after the OETF double-encodes: the CPU stage order is
-        // 14 -> 23 -> OETF, never 14 -> OETF -> 23. The swap moves the
-        // whole tonemap block past the whole OETF block, byte-identical
-        // bodies, only the order changes.
+        // 14 -> 23/24 -> OETF, never 14 -> OETF -> 23/24. The swap moves
+        // the whole tonemap + LUT sequence (stage 24 sits between them
+        // since the LUT port) past the OETF block, byte-identical bodies,
+        // only the order changes.
         val src = GlesShaderSources.DEVELOP_FRAGMENT
-        val tonemap = "if (uTonemap != 0) {\n" +
-            "        c = tonemapPixel(c);\n" +
-            "    }"
-        val oetf = "if (uOetf == 1) {\n" +
-            "        c = vec3(linearToRec709(c.r), linearToRec709(c.g), linearToRec709(c.b));\n" +
-            "    }"
-        val original = tonemap + "\n    " + oetf
-        val reordered = oetf + "\n    " + tonemap
+        val tonemapIdx = src.indexOf("if (uTonemap != 0) {")
+        val oetfIdx = src.indexOf("if (uOetf == 1) {")
         assertTrue(
-            "mutation setup wrong: the blocks are not adjacent as shipped",
-            src.contains(original),
+            "mutation setup wrong: tonemap block not found",
+            tonemapIdx >= 0,
         )
-        val mutated = src.replace(original, reordered)
+        assertTrue(
+            "mutation setup wrong: OETF block not found",
+            oetfIdx > tonemapIdx,
+        )
+        // The shipped tail: tonemap -> stage 24 (post-tonemap shapes) ->
+        // OETF -> oCol, 4-space indented, ending at the fragment's close.
+        val oetfBlock = "if (uOetf == 1) {\n" +
+            "        c = vec3(linearToRec709(c.r), linearToRec709(c.g), linearToRec709(c.b));\n" +
+            "    }\n"
+        val oetfEnd = src.indexOf("    oCol = vec4(c, 1.0);", oetfIdx)
+        assertTrue(
+            "mutation setup wrong: the oCol write does not follow the OETF",
+            oetfEnd == oetfIdx + oetfBlock.length,
+        )
+        // region = tonemap + stage 24 + OETF, byte-identical; the swap only
+        // moves the OETF block in front of the tonemap + stage-24 text.
+        val region = src.substring(tonemapIdx, oetfEnd)
+        val tonemapAndLut = region.removeSuffix(oetfBlock)
+        assertTrue(
+            "mutation setup wrong: the region does not end with the OETF block",
+            tonemapAndLut != region,
+        )
+        val reordered = oetfBlock + "    " + tonemapAndLut.trimEnd() + "\n"
+        val mutated = src.replaceRange(tonemapIdx, oetfEnd, reordered)
         assertTrue(
             "mutation must apply (source text changed)",
             mutated != src,
@@ -2628,6 +2646,451 @@ class GlesShaderValidatorTest {
             val cpuFlat = cpuStage8(cpuStage7(flat, 9, 9, v), 9, 9, v)
             val glslFlat = glslStage8(glslStage7(flat, 9, 9, v), 9, 9, v)
             assertNrParity("chained NR flat v=$v", 9, 9, cpuFlat, glslFlat)
+        }
+    }
+
+    // ---- stage 24 (LUT) host numeric parity: the same TEXT-parity
+    // discipline, but a BOUNDED-error claim — never bit-exact. The GPU
+    // samples the parsed .cube through an RGBA16F 3D texture (hardware
+    // trilinear, CLAMP_TO_EDGE), so the table crosses the seam HALF
+    // quantized: the CPU reference interpolates the ORIGINAL float table
+    // (rawedit::sampleLutPixel / applyLut, core/src/Color.cpp + Lut.cpp,
+    // 8-corner lattice sum on domain-clamped coordinates) while the GLSL
+    // text's path interpolates the HALF-quantized texels through the
+    // texel-center mapping t = (fx + 0.5)/n. The half rounding is
+    // round-to-nearest-even, modeled bit-for-bit after the session's
+    // floatToHalfBits upload helper; the hardware filter is modeled at
+    // float32 lattice weights (fx reconstructed as t*n - 0.5, the
+    // sampler's own arithmetic; CLAMP_TO_EDGE never engages because fx is
+    // pre-clamped, the epsilon guard only models float rounding). Inside
+    // the same measured bound: the GLSL log10 substitution
+    // (log2(x)/log2(10), ~1 float ulp) and Math.log10/Math.pow standing in
+    // for the CPU's std::log10f/std::powf. Each case's bound below is the
+    // MEASURED max LSB over the pixel x strength (0/0.5/1) sweep — pinned
+    // after a run and reported honestly, NOT assumed. Device filtering
+    // precision and the real compile stay device-test-pending (the owner's
+    // Measure run). ----
+
+    // The session's floatToHalfBits (GlesDevelopSession.cpp), transcribed:
+    // round-to-nearest-even IEEE 754 binary16.
+    private fun lutFloatToHalfBits(f: Float): Int {
+        val x = f.toRawBits()
+        val sign = (x ushr 16) and 0x8000
+        val exp = (x ushr 23) and 0xff
+        val man = x and 0x007fffff
+        if (exp == 0) return sign
+        if (exp == 0xff) {
+            return sign or 0x7c00 or (if (man != 0) 0x0200 else 0)
+        }
+        var e = exp - 127 + 15
+        if (e >= 0x1f) return sign or 0x7c00
+        if (e <= 0) {
+            if (e < -10) return sign
+            val mFull = man or 0x00800000
+            val s = 14 - e
+            var k = mFull ushr s
+            val rem = mFull and ((1 shl s) - 1)
+            val halfBit = 1 shl (s - 1)
+            if (rem > halfBit || (rem == halfBit && (k and 1) != 0)) ++k
+            return sign or k
+        }
+        var halfMan = man ushr 13
+        val rem = man and 0x1fff
+        if (rem > 0x1000 || (rem == 0x1000 && (halfMan and 1) != 0)) {
+            ++halfMan
+            if (halfMan >= 0x400) {
+                halfMan = 0
+                ++e
+                if (e >= 0x1f) return sign or 0x7c00
+            }
+        }
+        return sign or (e shl 10) or halfMan
+    }
+
+    private fun lutHalfToFloat(h: Int): Float {
+        val sign = (h and 0x8000) shl 16
+        val exp = (h ushr 10) and 0x1f
+        val man = h and 0x3ff
+        if (exp == 0x1f) {
+            return Float.fromBits(sign or 0x7f800000 or (man shl 13))
+        }
+        if (exp == 0) {
+            // Half subnormal: man * 2^-24, exact in float32.
+            if (man == 0) return Float.fromBits(sign)
+            val v = (man.toDouble() * 5.9604644775390625e-8).toFloat()
+            return Float.fromBits(sign or v.toRawBits())
+        }
+        return Float.fromBits(sign or ((exp - 15 + 127) shl 23) or (man shl 13))
+    }
+
+    // The upload quantization itself: one half round per table component,
+    // exactly what glTexSubImage3D receives from the session.
+    private fun lutHalfTable(table: FloatArray): FloatArray =
+        FloatArray(table.size) { lutHalfToFloat(lutFloatToHalfBits(table[it])) }
+
+    // A synthetic 33^3 identity: entry (i, j, k) = (i, j, k)/(n-1), the
+    // .cube red-fastest order (i + n*j + n*n*k) the parser produces. Every
+    // value lands exactly on the half grid (i * 2^-5 fits the half
+    // significand), so this case isolates the texel-center mapping: with
+    // quantization silent, the measured bound is the mapping alone.
+    private fun lutIdentityTable(n: Int): FloatArray {
+        val rgb = FloatArray(n * n * n * 3)
+        for (k in 0 until n) for (j in 0 until n) for (i in 0 until n) {
+            val e = (i + n * j + n * n * k) * 3
+            rgb[e] = i.toFloat() / (n - 1).toFloat()
+            rgb[e + 1] = j.toFloat() / (n - 1).toFloat()
+            rgb[e + 2] = k.toFloat() / (n - 1).toFloat()
+        }
+        return rgb
+    }
+
+    // A deterministic synthetic look whose values are deliberately NOT on
+    // the RGBA16F grid (the quantization the bound measures): a warm
+    // cross-mix with channel powers and small lifts, everything inside
+    // [0, ~1.07].
+    private fun lutNonTrivialTable(n: Int): FloatArray {
+        val rgb = FloatArray(n * n * n * 3)
+        for (k in 0 until n) for (j in 0 until n) for (i in 0 until n) {
+            val r = i.toFloat() / (n - 1).toFloat()
+            val g = j.toFloat() / (n - 1).toFloat()
+            val b = k.toFloat() / (n - 1).toFloat()
+            val e = (i + n * j + n * n * k) * 3
+            rgb[e] = 0.913f * lutSpowKt(r, 1.15f) + 0.117f * g + 0.021f * b + 0.019f
+            rgb[e + 1] = 0.083f * r + 0.947f * g + 0.031f * b + 0.004f
+            rgb[e + 2] = 0.023f * r + 0.104f * g + 0.871f * lutSpowKt(b, 1.25f) + 0.017f
+        }
+        return rgb
+    }
+
+    private fun lutSpowKt(x: Float, e: Float): Float =
+        if (x < 0.0f) -Math.pow((-x).toDouble(), e.toDouble()).toFloat()
+        else Math.pow(x.toDouble(), e.toDouble()).toFloat()
+
+    // The CPU's std::log10f as Math.log10 (correctly rounded through
+    // double, within 1 float ulp of the C++ call) and the GLSL's
+    // log2(x)/log2(10) substitution, both halves of the encode difference.
+    private fun lutCpuLog10(x: Float): Float = Math.log10(x.toDouble()).toFloat()
+    private fun lutGlslLog2(x: Float): Float =
+        (Math.log(x.toDouble()) / 0.6931471805599453).toFloat()
+    private fun lutGlslLog10(x: Float): Float = lutGlslLog2(x) / 3.321928094887362f
+
+    // The harness exercises the Linear (0), VLog (10) encodes and the
+    // Srgb (1) decode — the trio the managed case rides; any other id is
+    // a loud harness bug, not a silent fallback (the full 13-curve text
+    // parity is the validator's contract block, not this numeric case).
+    private fun lutCpuEncodeTransfer(lin: Float, t: Int): Float = when (t) {
+        0 -> lin
+        10 -> if (lin < 0.01f) 5.6f * lin + 0.125f
+              else 0.241514f * lutCpuLog10(lin + 0.00873f) + 0.598206f
+        else -> throw IllegalStateException("lut parity harness: encode id $t not covered")
+    }
+
+    private fun lutGlslEncodeTransfer(lin: Float, t: Int): Float = when (t) {
+        0 -> lin
+        10 -> if (lin < 0.01f) 5.6f * lin + 0.125f
+              else 0.241514f * lutGlslLog10(lin + 0.00873f) + 0.598206f
+        else -> throw IllegalStateException("lut parity harness: encode id $t not covered")
+    }
+
+    // Srgb decode: identical text on both sides (no log10 in the curve),
+    // so one shared body — the smoothstepfKt precedent.
+    private fun lutDecodeSrgbKt(enc: Float): Float =
+        if (enc <= 0.040449936f) enc / 12.92f
+        else lutSpowKt((enc + 0.055f) / 1.055f, 2.4f)
+
+    private fun lutDecodeTransfer(enc: Float, t: Int): Float = when (t) {
+        0 -> enc
+        1 -> lutDecodeSrgbKt(enc)
+        else -> throw IllegalStateException("lut parity harness: decode id $t not covered")
+    }
+
+    // The CPU rawedit::sampleLutPixel (== Lut.cpp's applyLut sampler),
+    // verbatim: default .cube domain [0,1] per axis, lattice coordinates
+    // clamped to [0, n-1], the 8-corner weighted sum on the ORIGINAL
+    // float table.
+    private fun cpuLutSample(table: FloatArray, n: Int, inRgb: FloatArray): FloatArray {
+        val out = FloatArray(3)
+        val scale = FloatArray(3) { (n - 1).toFloat() / Math.max(1.0f - 0.0f, 1e-20f) }
+        val i0 = IntArray(3)
+        val w1 = FloatArray(3)
+        for (c in 0..2) {
+            var fx = (inRgb[c] - 0.0f) * scale[c]
+            fx = fx.coerceIn(0.0f, (n - 1).toFloat())
+            var i = fx.toInt()
+            if (i > n - 2) i = n - 2
+            i0[c] = i
+            w1[c] = fx - i.toFloat()
+        }
+        for (dk in 0..1) {
+            val wk = if (dk == 0) 1.0f - w1[2] else w1[2]
+            val baseK = (if (dk == 1) i0[2] + 1 else i0[2]) * n * n
+            for (dj in 0..1) {
+                val wj = if (dj == 0) 1.0f - w1[1] else w1[1]
+                val wkj = wk * wj
+                val baseJ = (if (dj == 1) i0[1] + 1 else i0[1]) * n
+                for (di in 0..1) {
+                    val wi = if (di == 0) 1.0f - w1[0] else w1[0]
+                    val w = wkj * wi
+                    val idx = (baseK + baseJ + (if (di == 1) i0[0] + 1 else i0[0])) * 3
+                    out[0] += w * table[idx + 0]
+                    out[1] += w * table[idx + 1]
+                    out[2] += w * table[idx + 2]
+                }
+            }
+        }
+        return out
+    }
+
+    // The shipped lutSample() text's path: the texel-center mapping
+    // t = (fx + 0.5)/n, then the hardware trilinear — modeled as the
+    // sampler's own reconstruction fx = t*n - 0.5 and the same 8-corner
+    // weighted sum, on the HALF-quantized table.
+    private fun glslLutSample(halfTable: FloatArray, n: Int, inRgb: FloatArray): FloatArray {
+        val out = FloatArray(3)
+        val nf = n.toFloat()
+        val scale = FloatArray(3) { (nf - 1.0f) / Math.max(1.0f - 0.0f, 1e-20f) }
+        val i0 = IntArray(3)
+        val w1 = FloatArray(3)
+        for (c in 0..2) {
+            val fx = ((inRgb[c] - 0.0f) * scale[c]).coerceIn(0.0f, nf - 1.0f)
+            val t = (fx + 0.5f) / nf
+            // The sampler's lattice coordinate; the coerce only echoes the
+            // pre-clamp above (CLAMP_TO_EDGE never distorts a clamped fx).
+            val fxHw = (t * nf - 0.5f).coerceIn(0.0f, nf - 1.0f)
+            var i = fxHw.toInt()
+            if (i > n - 2) i = n - 2
+            i0[c] = i
+            w1[c] = (fxHw - i.toFloat()).coerceIn(0.0f, 1.0f)
+        }
+        for (dk in 0..1) {
+            val wk = if (dk == 0) 1.0f - w1[2] else w1[2]
+            val baseK = (if (dk == 1) i0[2] + 1 else i0[2]) * n * n
+            for (dj in 0..1) {
+                val wj = if (dj == 0) 1.0f - w1[1] else w1[1]
+                val wkj = wk * wj
+                val baseJ = (if (dj == 1) i0[1] + 1 else i0[1]) * n
+                for (di in 0..1) {
+                    val wi = if (di == 0) 1.0f - w1[0] else w1[0]
+                    val w = wkj * wi
+                    val idx = (baseK + baseJ + (if (di == 1) i0[0] + 1 else i0[0])) * 3
+                    out[0] += w * halfTable[idx + 0]
+                    out[1] += w * halfTable[idx + 1]
+                    out[2] += w * halfTable[idx + 2]
+                }
+            }
+        }
+        return out
+    }
+
+    // evaluateManagedLutPixel with the harness's Rec709-in/Rec709-out
+    // identity gamut matrices (the matrix multiply is exact identity both
+    // sides; the Bradford-CAT construction is upload-time CPU work shared
+    // by both, not part of the per-pixel claim).
+    private fun cpuLutManagedPixel(
+        px: FloatArray, table: FloatArray, n: Int, inT: Int, outT: Int,
+    ): FloatArray {
+        val enc = FloatArray(3) { lutCpuEncodeTransfer(px[it], inT) }
+        val sampled = cpuLutSample(table, n, enc)
+        return FloatArray(3) { lutDecodeTransfer(sampled[it], outT) }
+    }
+
+    // The shipped lutManagedPixel() text's path, same identity gamuts.
+    private fun glslLutManagedPixel(
+        px: FloatArray, halfTable: FloatArray, n: Int, inT: Int, outT: Int,
+    ): FloatArray {
+        val enc = FloatArray(3) { lutGlslEncodeTransfer(px[it], inT) }
+        val sampled = glslLutSample(halfTable, n, enc)
+        return FloatArray(3) { lutDecodeTransfer(sampled[it], outT) }
+    }
+
+    // The ACES fit (tonemap mode 1) — the tonemap branch the role-order
+    // cases ride; identical text on both sides, one shared body. The AgX
+    // modes' numeric parity is locked by the stage-23 text checks above.
+    private fun lutAcesFitKt(x: Float): Float {
+        val a = 2.51f; val b = 0.03f; val c = 2.43f; val d = 0.59f; val e = 0.14f
+        val num = x * (a * x + b)
+        val den = x * (c * x + d) + e
+        val y = if (den > 0.0f) num / den else 0.0f
+        return y.coerceIn(0.0f, 1.0f)
+    }
+
+    private fun lutTonemapAces(px: FloatArray): FloatArray =
+        FloatArray(3) { lutAcesFitKt(px[it]) }
+
+    // The CPU rawedit::applyManagedLutStage (core/src/Color.cpp),
+    // verbatim per role — the legacy pair, the bypass, DisplayLook's
+    // tonemap-then-look, SceneLook's look-then-tonemap, and
+    // SceneToDisplay's two-branch mix with the full-strength tonemap
+    // skip.
+    private fun cpuLutStage24(
+        pxIn: Triple<Float, Float, Float>,
+        table: FloatArray, n: Int,
+        role: Int, passthrough: Boolean,
+        inT: Int, outT: Int, tonemap: Int, strength: Float,
+    ): Triple<Float, Float, Float> {
+        var arr = floatArrayOf(pxIn.first, pxIn.second, pxIn.third)
+        val tonemapIfActive = {
+            if (tonemap == 1) arr = lutTonemapAces(arr)
+        }
+        val applyLutBlend = {
+            // applyLut(img, lut, strength): plain sample, blend with s.
+            val s = strength.coerceAtMost(1.0f)
+            val out = cpuLutSample(table, n, arr)
+            arr = FloatArray(3) { out[it] * s + arr[it] * (1.0f - s) }
+        }
+        val managedBlend = {
+            // evaluateManagedLut(img, lut, binding, strength).
+            val s = strength.coerceAtMost(1.0f)
+            val out = cpuLutManagedPixel(arr, table, n, inT, outT)
+            arr = FloatArray(3) { out[it] * s + arr[it] * (1.0f - s) }
+        }
+        if (role == 0) { // LegacyLinear709: the legacy pair, verbatim.
+            tonemapIfActive()
+            if (strength != 0.0f) applyLutBlend()
+            return Triple(arr[0], arr[1], arr[2])
+        }
+        if (!(strength > 0.0f)) { // bypass: tonemap alone.
+            tonemapIfActive()
+            return Triple(arr[0], arr[1], arr[2])
+        }
+        when (role) {
+            1 -> { // DisplayLook: render first, then the look.
+                tonemapIfActive()
+                if (passthrough) applyLutBlend() else managedBlend()
+            }
+            2 -> { // SceneLook: the look enters the scene first.
+                if (passthrough) applyLutBlend() else managedBlend()
+                tonemapIfActive()
+            }
+            3 -> { // SceneToDisplay: two branches in the rendered ref.
+                val s = strength.coerceAtMost(1.0f)
+                if (s >= 1.0f) {
+                    arr = cpuLutManagedPixel(arr, table, n, inT, outT)
+                } else {
+                    val baseline = lutTonemapAces(arr.copyOf())
+                    val lutPx = cpuLutManagedPixel(arr, table, n, inT, outT)
+                    arr = FloatArray(3) { lutPx[it] * s + baseline[it] * (1.0f - s) }
+                }
+            }
+        }
+        return Triple(arr[0], arr[1], arr[2])
+    }
+
+    // The shipped stage-24 GLSL block (GlesShaderSources' develop body),
+    // transcribed: the lutS clamp, the SceneLook-before-tonemap branch,
+    // the tonemap skip at SceneToDisplay full strength, and the three
+    // after-tonemap application shapes around cScene.
+    private fun glslLutStage24(
+        pxIn: Triple<Float, Float, Float>,
+        halfTable: FloatArray, n: Int,
+        role: Int, passthrough: Boolean,
+        inT: Int, outT: Int, tonemap: Int, strength: Float,
+    ): Triple<Float, Float, Float> {
+        var c = floatArrayOf(pxIn.first, pxIn.second, pxIn.third)
+        val lutS = strength.coerceAtMost(1.0f)
+        val cScene = c.copyOf()
+        if (role == 2 && strength != 0.0f) {
+            val lutPx = if (passthrough) glslLutSample(halfTable, n, c)
+                        else glslLutManagedPixel(c, halfTable, n, inT, outT)
+            c = FloatArray(3) { lutPx[it] * lutS + c[it] * (1.0f - lutS) }
+        }
+        if (tonemap == 1) {
+            if (!(strength != 0.0f && role == 3 && lutS >= 1.0f)) {
+                c = lutTonemapAces(c)
+            }
+        }
+        if (strength != 0.0f && role != 2) {
+            c = if (role == 3) {
+                val lutPx = glslLutManagedPixel(cScene, halfTable, n, inT, outT)
+                if (lutS >= 1.0f) lutPx
+                else FloatArray(3) { lutPx[it] * lutS + c[it] * (1.0f - lutS) }
+            } else if (passthrough || role == 0) {
+                val lutPx = glslLutSample(halfTable, n, c)
+                FloatArray(3) { lutPx[it] * lutS + c[it] * (1.0f - lutS) }
+            } else {
+                val lutPx = glslLutManagedPixel(c, halfTable, n, inT, outT)
+                FloatArray(3) { lutPx[it] * lutS + c[it] * (1.0f - lutS) }
+            }
+        }
+        return Triple(c[0], c[1], c[2])
+    }
+
+    @Test
+    fun stage24_host_parity_the_glsl_block_matches_the_cpu_stage() {
+        val n = 33
+        val identity = lutIdentityTable(n)
+        val nonTrivial = lutNonTrivialTable(n)
+        val halfIdentity = lutHalfTable(identity)
+        val halfNonTrivial = lutHalfTable(nonTrivial)
+        val strengths = listOf(0f, 0.5f, 1f)
+        // label, cpu table, glsl (half) table, role, passthrough, in/out
+        // transfer, tonemap, pinned bound (the measured max LSB over the
+        // sweep: identity passthrough 0 everywhere — the half-grid identity
+        // isolates the mapping, bit-exact; nontrivial displaylook managed
+        // vlog-in/srgb-out and scenelook 0 everywhere; the remaining
+        // nontrivial cases 1 at full/near-full strength — the half-float
+        // quantization bound).
+        val cases = listOf(
+            listOf(
+                "identity 33^3 displaylook passthrough",
+                identity, halfIdentity, 1, true, 0, 0, 0, 0,
+            ),
+            listOf(
+                "nontrivial 33^3 displaylook passthrough",
+                nonTrivial, halfNonTrivial, 1, true, 0, 0, 0, 1,
+            ),
+            listOf(
+                "nontrivial 33^3 displaylook managed vlog-in srgb-out",
+                nonTrivial, halfNonTrivial, 1, false, 10, 1, 0, 1,
+            ),
+            listOf(
+                "nontrivial 33^3 legacy role with aces",
+                nonTrivial, halfNonTrivial, 0, true, 0, 0, 1, 1,
+            ),
+            listOf(
+                "nontrivial 33^3 displaylook with aces",
+                nonTrivial, halfNonTrivial, 1, true, 0, 0, 1, 1,
+            ),
+            listOf(
+                "nontrivial 33^3 scenelook with aces",
+                nonTrivial, halfNonTrivial, 2, true, 0, 0, 1, 1,
+            ),
+            listOf(
+                "nontrivial 33^3 scenetodisplay with aces",
+                nonTrivial, halfNonTrivial, 3, true, 0, 0, 1, 1,
+            ),
+        )
+        for (case in cases) {
+            val label = case[0] as String
+            val cpuTable = case[1] as FloatArray
+            val glslTable = case[2] as FloatArray
+            val role = case[3] as Int
+            val passthrough = case[4] as Boolean
+            val inT = case[5] as Int
+            val outT = case[6] as Int
+            val tonemap = case[7] as Int
+            val bound = case[8] as Int
+            for (s in strengths) {
+                var maxLsb = 0
+                parityPixels.forEach { px ->
+                    val cpu = cpuLutStage24(px, cpuTable, n, role, passthrough, inT, outT, tonemap, s)
+                    val glsl = glslLutStage24(px, glslTable, n, role, passthrough, inT, outT, tonemap, s)
+                    val cpuBytes = intArrayOf(
+                        toByte(cpu.first), toByte(cpu.second), toByte(cpu.third),
+                    )
+                    val glslBytes = intArrayOf(
+                        toByte(glsl.first), toByte(glsl.second), toByte(glsl.third),
+                    )
+                    for (c in 0..2) {
+                        val lsb = Math.abs(cpuBytes[c] - glslBytes[c])
+                        if (lsb > maxLsb) maxLsb = lsb
+                    }
+                }
+                assertTrue(
+                    "$label s=$s: measured max LSB $maxLsb exceeds the pinned bound $bound",
+                    maxLsb <= bound,
+                )
+            }
         }
     }
 }

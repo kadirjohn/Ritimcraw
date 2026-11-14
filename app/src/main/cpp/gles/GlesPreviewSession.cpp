@@ -51,6 +51,14 @@
 #include <EGL/egl.h>
 #include <GLES3/gl31.h>
 
+// Stage 24 LUT (the LUT port, commit (a)): the session parses the .cube
+// with core's frozen parser and compiles the managed binding with core's
+// frozen compiler — the session NEVER re-implements either; the CPU seam
+// (jni_bridge.cpp) owns the same pair through the same headers, so the
+// two paths cannot drift in interpretation.
+#include <rawedit/Lut.h>
+#include <rawedit/Color.h>
+
 namespace gles {
 namespace {
 
@@ -302,6 +310,88 @@ inline uint8_t toByte(float rec709) {
     return static_cast<uint8_t>(v * 255.0f + 0.5f);
 }
 
+// floatToHalfBits — the stage-24 LUT upload's float->half converter (the
+// LUT port, commit (a)): round-to-nearest-even IEEE 754 binary16, the SAME
+// converter GlesDevelopSession.cpp carries (this file's second documented
+// copy — the keep-in-sync note at the top of this namespace explains the
+// convention). Host-tested against clang's native _Float16 conversion:
+// 2,000,032/2,000,032 bits identical over the exhaustive pattern sweep
+// (sign x exponent x mantissa-step), NaN payloads aside — a canonical
+// quiet NaN either way, and a parsed .cube never carries one. Runs ONCE
+// per LUT revision (the table interleave), never per frame.
+inline uint16_t floatToHalfBits(float f) {
+    uint32_t x = 0;
+    __builtin_memcpy(&x, &f, sizeof(x));
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const uint32_t exp = (x >> 23) & 0xffu;
+    const uint32_t man = x & 0x007fffffu;
+    if (exp == 0) return static_cast<uint16_t>(sign);
+    if (exp == 0xffu) {
+        return static_cast<uint16_t>(sign | 0x7c00u | (man != 0u ? 0x0200u : 0u));
+    }
+    int32_t e = static_cast<int32_t>(exp) - 127 + 15;
+    if (e >= 0x1f) return static_cast<uint16_t>(sign | 0x7c00u);
+    if (e <= 0) {
+        if (e < -10) return static_cast<uint16_t>(sign);
+        const uint32_t mFull = man | 0x00800000u;
+        const uint32_t s = static_cast<uint32_t>(14 - e);
+        uint32_t k = mFull >> s;
+        const uint32_t rem = mFull & ((1u << s) - 1u);
+        const uint32_t halfBit = 1u << (s - 1u);
+        if (rem > halfBit || (rem == halfBit && (k & 1u) != 0u)) ++k;
+        return static_cast<uint16_t>(sign | k);
+    }
+    uint32_t halfMan = man >> 13;
+    const uint32_t rem = man & 0x1fffu;
+    if (rem > 0x1000u || (rem == 0x1000u && (halfMan & 1u) != 0u)) {
+        ++halfMan;
+        if (halfMan >= 0x400u) {
+            halfMan = 0u;
+            ++e;
+            if (e >= 0x1f) return static_cast<uint16_t>(sign | 0x7c00u);
+        }
+    }
+    return static_cast<uint16_t>(sign | (static_cast<uint32_t>(e) << 10) | halfMan);
+}
+
+// bindLutDummyTex — the stage-24 LUT's no-table placeholder (the LUT port,
+// commit (a)): a 2x2x2 RGBA16F 3D texture, every texel 1.0, hardware
+// trilinear + CLAMP_TO_EDGE on all three axes, ONE mip level. The shader's
+// strength gate (uLutStrength 0) means it is never sampled on the no-LUT
+// path — the point of the dummy is keeping the sampler3D complete, the
+// shading dummy's own rule (a statically-declared sampler whose unit is
+// never set would default to unit 0 and collide with uCfa). The harness's
+// GlesPipeline.cpp lutDummy is the same table (0x3c00 = half(1.0)).
+inline void bindLutDummyTex(GLuint tex) {
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_3D, tex);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    const uint16_t dummy[16] = {0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u,
+                                0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u,
+                                0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u,
+                                0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u};
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F, 2, 2, 2, 0,
+                 GL_RGBA, GL_HALF_FLOAT, dummy);
+}
+
+// The stage-24 neutral pins (the LUT port, commit (a)): the values the POST
+// draw uploads when no LUT is active, so the uniform set stays complete and
+// the shader's own strength gate is the ONLY thing that skips stage 24 —
+// the raw-grade-value idiom every other knob above rides. The domain pins
+// are the .cube parser's own defaults (DOMAIN_MIN 0, DOMAIN_MAX 1 per
+// axis); kLutIdentity is the row-major identity the binding matrices pin to
+// (the shader's legacy role-0 branch never reads them, but the uniform
+// upload stays honest).
+constexpr float kLutDomainMinDefault[3] = {0.0f, 0.0f, 0.0f};
+constexpr float kLutDomainMaxDefault[3] = {1.0f, 1.0f, 1.0f};
+constexpr float kLutIdentity[9] = {1.0f, 0.0f, 0.0f,
+                                   0.0f, 1.0f, 0.0f,
+                                   0.0f, 0.0f, 1.0f};
+
 // The published frame's long edge (the small stats pack the Compose
 // overlays — zebra, scopes — consume). ~256 keeps the pack at a few
 // hundred KB while giving the scopes a stable grid; the WINDOW present
@@ -344,8 +434,9 @@ struct PreviewSession::Impl {
     GLuint windowProgram = 0;
     // Uniform locations, resolved ONCE at open. The develop set is SPLIT
     // with the programs (see GlesDevelopSession.cpp's Impl): the 13 PRE
-    // uniforms on preProgram, the 23 POST uniforms on postProgram, the NR
-    // passes' own small sets on theirs.
+    // uniforms on preProgram, the 34 POST uniforms on postProgram (uExposure
+    // .. uOetf plus the stage-24 LUT set), the NR passes' own small sets on
+    // theirs.
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
@@ -355,7 +446,12 @@ struct PreviewSession::Impl {
           tintLoc = -1, wheelShadowXLoc = -1, wheelShadowYLoc = -1,
           wheelMidXLoc = -1, wheelMidYLoc = -1, wheelHighXLoc = -1,
           wheelHighYLoc = -1, splitActiveLoc = -1, splitShadowHueLoc = -1,
-          splitHighlightHueLoc = -1, splitBalanceLoc = -1, saturationLoc = -1;
+          splitHighlightHueLoc = -1, splitBalanceLoc = -1, saturationLoc = -1,
+          lutStrengthLoc = -1, lutLoc = -1, lutSizeLoc = -1,
+          lutDomainMinLoc = -1, lutDomainMaxLoc = -1, lutRoleLoc = -1,
+          lutPassthroughLoc = -1, lutInTransferLoc = -1,
+          lutOutTransferLoc = -1, lutWorkingToInputLoc = -1,
+          lutOutputToWorkingLoc = -1;
     GLint postSrcLoc = -1, postSizeLoc = -1;
     GLint nrChromaHSrcLoc = -1, nrChromaHSizeLoc = -1, nrChromaHStrengthLoc = -1;
     GLint nrChromaVSrcLoc = -1, nrChromaVGuideLoc = -1, nrChromaVSizeLoc = -1,
@@ -365,6 +461,20 @@ struct PreviewSession::Impl {
     GLint windowSrcLoc = -1, windowSrcSizeLoc = -1, windowRectLoc = -1,
           windowOrientationLoc = -1;
     GLuint cfaTex = 0, shadingTex = 0, developTex = 0;
+    // Stage 24 LUT state (the LUT port, commit (a)) — the session's OWN
+    // GL-thread cache, mirroring GlesDevelopSession.cpp's Impl field for
+    // field (the JNI bridge's thread_locals belong to engine threads, not
+    // this GL thread): [lutUploadedPath] names the table currently bound
+    // on unit 5 ("" = the 2x2x2 dummy), [lutParsedPath]/[lutParsed] keep
+    // the LAST parse so a strength step across 0 never re-reads the file,
+    // and the binding cache keys on the five interpretation ordinals.
+    GLuint lutTex = 0;
+    std::string lutUploadedPath;
+    std::string lutParsedPath;
+    std::unique_ptr<rawedit::Lut> lutParsed;
+    bool lutBindingOk = false;
+    rawedit::CompiledLutBinding lutBinding{};
+    int lutBindingKey[5] = {-2, -2, -2, -2, -2};  // role,in,out gamut,in,out transfer
     // The chain's RGBA32F ping-pong intermediates: A = the PRE pass's
     // output (and the chroma vertical pass's ORIGINAL guide), B/C = the
     // NR passes' scratch pair. POST always writes developTex (the window/
@@ -752,8 +862,12 @@ bool PreviewSession::Impl::initOnGlThread(
 
     // --- uniform locations, resolved ONCE ----------------------------------
     // The develop set is SPLIT with the programs (the develop session's
-    // shape): the 13 PRE uniforms on preProgram, the 23 POST uniforms on
-    // postProgram, the NR passes' own small sets on theirs.
+    // shape): the 13 PRE uniforms on preProgram, the 34 POST uniforms
+    // (uExposure..uOetf plus the stage-24 LUT set) on postProgram, the NR
+    // passes' own small sets on theirs. The LUT lookups join the same
+    // >= 0 contract check as the rest — a postProgram compiled without
+    // its LUT uniforms is a shader-contract break, not a runtime
+    // condition.
     cfaLoc = glGetUniformLocation(preProgram, "uCfa");
     sizeLoc = glGetUniformLocation(preProgram, "uSize");
     cellLoc = glGetUniformLocation(preProgram, "uCell");
@@ -799,6 +913,17 @@ bool PreviewSession::Impl::initOnGlThread(
     saturationLoc = glGetUniformLocation(postProgram, "uSaturation");
     tonemapLoc = glGetUniformLocation(postProgram, "uTonemap");
     oetfLoc = glGetUniformLocation(postProgram, "uOetf");
+    lutStrengthLoc = glGetUniformLocation(postProgram, "uLutStrength");
+    lutLoc = glGetUniformLocation(postProgram, "uLut");
+    lutSizeLoc = glGetUniformLocation(postProgram, "uLutSize");
+    lutDomainMinLoc = glGetUniformLocation(postProgram, "uLutDomainMin");
+    lutDomainMaxLoc = glGetUniformLocation(postProgram, "uLutDomainMax");
+    lutRoleLoc = glGetUniformLocation(postProgram, "uLutRole");
+    lutPassthroughLoc = glGetUniformLocation(postProgram, "uLutPassthrough");
+    lutInTransferLoc = glGetUniformLocation(postProgram, "uLutInTransfer");
+    lutOutTransferLoc = glGetUniformLocation(postProgram, "uLutOutTransfer");
+    lutWorkingToInputLoc = glGetUniformLocation(postProgram, "uLutWorkingToInput");
+    lutOutputToWorkingLoc = glGetUniformLocation(postProgram, "uLutOutputToWorking");
     if (postSrcLoc < 0 || postSizeLoc < 0 || exposureLoc < 0 ||
         highlightsLoc < 0 || tonemapLoc < 0 || oetfLoc < 0 ||
         blackPointLoc < 0 || whitePointLoc < 0 || shadowsLoc < 0 ||
@@ -807,7 +932,12 @@ bool PreviewSession::Impl::initOnGlThread(
         wheelShadowYLoc < 0 || wheelMidXLoc < 0 || wheelMidYLoc < 0 ||
         wheelHighXLoc < 0 || wheelHighYLoc < 0 || splitActiveLoc < 0 ||
         splitShadowHueLoc < 0 || splitHighlightHueLoc < 0 ||
-        splitBalanceLoc < 0 || saturationLoc < 0) {
+        splitBalanceLoc < 0 || saturationLoc < 0 ||
+        lutStrengthLoc < 0 || lutLoc < 0 || lutSizeLoc < 0 ||
+        lutDomainMinLoc < 0 || lutDomainMaxLoc < 0 || lutRoleLoc < 0 ||
+        lutPassthroughLoc < 0 || lutInTransferLoc < 0 ||
+        lutOutTransferLoc < 0 || lutWorkingToInputLoc < 0 ||
+        lutOutputToWorkingLoc < 0) {
         *detail = "shader-contract: missing a develop-post uniform";
         return false;
     }
@@ -854,12 +984,20 @@ bool PreviewSession::Impl::initOnGlThread(
     // --- static texture-unit bindings (the unit assignment never changes) --
     // Unit map: 0 = CFA, 1 = the chain's pass-source texture (rebound per
     // draw), 2 = the stats scratch, 3 = shading, 4 = the NR vertical
-    // pass's ORIGINAL guide (texA — a unit nothing else samples).
+    // pass's ORIGINAL guide (texA — a unit nothing else samples),
+    // 5 = the stage-24 LUT 3D texture (the LUT port, commit (a); bound
+    // once here — the upload block in runJob swaps the texture OBJECT on
+    // that unit per LUT revision, the unit assignment itself never moves).
     glUseProgram(preProgram);
     glUniform1i(cfaLoc, 0);      // CFA: GL_TEXTURE0
     glUniform1i(shadingLoc, 3);  // shading: GL_TEXTURE3
     glUseProgram(postProgram);
     glUniform1i(postSrcLoc, 1); // post source: GL_TEXTURE1
+    glUniform1i(lutLoc, 5);     // LUT 3D texture: GL_TEXTURE5 (pinned at
+                                // open — a statically-declared sampler3D
+                                // whose unit is never set would default to
+                                // 0 and collide with uCfa, the harness's
+                                // own lutDummy comment)
     glUseProgram(nrChromaHProgram);
     glUniform1i(nrChromaHSrcLoc, 1);  // NR sources: GL_TEXTURE1 (rebound
     glUseProgram(nrChromaVProgram);   // per draw along the chain)
@@ -1124,6 +1262,147 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
         shadingUploaded = mapSize;
     }
 
+    // --- stage 24 LUT: parse + binding + 3D texture, ONCE per revision -------
+    // The LUT port, commit (a) — the develop session's block verbatim (the
+    // second documented copy; keep the two in sync). The parse/binding
+    // semantics mirror the CPU seam (jni_bridge.cpp's resolveLut/
+    // resolveBinding) exactly:
+    //   - no path (empty) = no LUT: the dummy table + the strength gate
+    //     closed (uLutStrength 0) reproduce the no-LUT chain byte-for-byte;
+    //   - a MISSING file (parse IoError) renders as no LUT — LutStore's
+    //     Kotlin check already passed, so a file removed between the check
+    //     and this open degrades to the no-LUT look instead of failing the
+    //     whole clip (the resolveLut precedent);
+    //   - a PARSE failure (BadHeader/Unsupported/Truncated) fails the frame
+    //     LOUDLY — ok=false with the reason in [detail] (the resolveLut
+    //     precedent: never a silent drop of stage 24). The caller's latch
+    //     rule (the GL thread loop latches render failures) then falls the
+    //     preview back to CPU with this reason, the honest fallback.
+    // The texture: RGBA16F, hardware trilinear (GL_LINEAR — ES 3.x core
+    // filters 16-bit float), CLAMP_TO_EDGE on all three axes, ONE mip
+    // level. The table's memory order (entry (i,j,k) at
+    // rgb[(i + n*j + n*n*k)*3], red fastest) IS GL_TEXTURE_3D's s/r/t
+    // order, so the upload is a straight rgb->rgba interleave through
+    // floatToHalfBits — NO reordering. Half precision is the quantization
+    // the parity claim bounds (measured, never assumed away).
+    // The revision cache: [lutParsedPath]/[lutParsed] keep the LAST parse
+    // (keyed by path, SEPARATE from the upload key — a strength step across
+    // 0 unbinds the table but must NOT re-read the file on the way back),
+    // [lutUploadedPath] names the table currently in [lutTex] ("" = the
+    // dummy), so a path that did not change does not re-read or re-upload;
+    // the binding cache keys on the five ordinals. The dummy (2x2x2, all
+    // 1.0, bindLutDummyTex) keeps the sampler3D complete when no LUT is
+    // bound — the shading dummy's own rule — and the shader's strength
+    // gate means it is never sampled on the no-LUT path.
+    {
+        const std::string& path = req.lutPath;
+        const bool wantLut = !path.empty() && req.lutStrength != 0.0f;
+        // The binding compiles whenever the ordinals change (a legacy
+        // role < 0 needs none — the shader's role-0 branch is the legacy
+        // pair). Compiled BEFORE the table decision so a role change on
+        // the same path still rebinds.
+        if (req.lutRole >= 0) {
+            const int key[5] = {req.lutRole, req.lutInGamut, req.lutInTransfer,
+                                req.lutOutGamut, req.lutOutTransfer};
+            bool keyMatch = lutBindingOk;
+            for (int i = 0; i < 5; ++i) keyMatch = keyMatch && lutBindingKey[i] == key[i];
+            if (!keyMatch) {
+                rawedit::LutInterpretation interp;
+                interp.role = static_cast<rawedit::LutRole>(req.lutRole);
+                interp.input.gamut = static_cast<rawedit::GamutId>(req.lutInGamut);
+                interp.input.transfer = static_cast<rawedit::TransferId>(req.lutInTransfer);
+                interp.output.gamut = static_cast<rawedit::GamutId>(req.lutOutGamut);
+                interp.output.transfer = static_cast<rawedit::TransferId>(req.lutOutTransfer);
+                lutBinding = rawedit::compileLutBinding(interp);
+                for (int i = 0; i < 5; ++i) lutBindingKey[i] = key[i];
+                lutBindingOk = true;
+            }
+        }
+        if (!wantLut) {
+            // No LUT for this frame: bind the dummy table (the strength
+            // gate below keeps it unread). [lutUploadedPath] tracks the
+            // dummy so a later frame WITH a LUT re-uploads; the PARSE
+            // cache [lutParsedPath] survives this transition by design —
+            // a strength step 0 -> s > 0 on the same path re-uploads the
+            // table but never re-reads the file.
+            if (lutUploadedPath != "") {
+                if (lutTex == 0) glGenTextures(1, &lutTex);
+                bindLutDummyTex(lutTex);
+                if (glErrorAfter("glTexImage3D(RGBA16F lut dummy)", &out.detail) != GL_NO_ERROR) return;
+                lutUploadedPath.clear();
+            }
+        } else if (lutUploadedPath != path) {
+            // A LUT is active and the table on the unit is not this path's.
+            // Parse ONLY on a [lutParsedPath] miss (the file read is the
+            // expensive step; the upload alone may repeat after a
+            // strength 0 -> s transition, which is cheap GL work).
+            if (lutParsedPath != path || lutParsed == nullptr) {
+                auto parsed = rawedit::parseCubeFile(path);
+                if (!parsed.isOk()) {
+                    // The resolveLut split, verbatim: a MALFORMED cube is a
+                    // loud frame failure (never a silent drop of stage 24);
+                    // a MISSING file (IoError) degrades to the no-LUT look.
+                    lutParsed.reset();
+                    lutParsedPath.clear();
+                    if (parsed.code == rawedit::ErrorCode::IoError) {
+                        if (lutUploadedPath != "") {
+                            if (lutTex == 0) glGenTextures(1, &lutTex);
+                            bindLutDummyTex(lutTex);
+                            if (glErrorAfter("glTexImage3D(RGBA16F lut dummy)", &out.detail) != GL_NO_ERROR) return;
+                            lutUploadedPath.clear();
+                        }
+                        // This frame renders with the gate closed (the
+                        // strength pin below), the honest no-LUT look.
+                    } else {
+                        out.detail = std::string("lut: ") +
+                                     rawedit::errorName(parsed.code) + " — " +
+                                     parsed.detail +
+                                     " (recovery: pick a valid .cube file)";
+                        return;
+                    }
+                } else {
+                    lutParsed = std::make_unique<rawedit::Lut>(std::move(*parsed.value));
+                    lutParsedPath = path;
+                }
+            }
+            if (lutParsedPath == path && lutParsed != nullptr) {
+                const rawedit::Lut& lut = *lutParsed;
+                const size_t n = static_cast<size_t>(lut.n);
+                // rgb -> rgba interleave through the half converter, in the
+                // table's own s/r/t order (no reordering).
+                std::vector<uint16_t> rgba(n * n * n * 4);
+                const size_t count = n * n * n;
+                for (size_t e = 0; e < count; ++e) {
+                    rgba[e * 4 + 0] = floatToHalfBits(lut.rgb[e * 3 + 0]);
+                    rgba[e * 4 + 1] = floatToHalfBits(lut.rgb[e * 3 + 1]);
+                    rgba[e * 4 + 2] = floatToHalfBits(lut.rgb[e * 3 + 2]);
+                    rgba[e * 4 + 3] = 0x3c00u;  // alpha unused, pinned 1.0
+                }
+                if (lutTex == 0) glGenTextures(1, &lutTex);
+                glActiveTexture(GL_TEXTURE5);
+                glBindTexture(GL_TEXTURE_3D, lutTex);
+                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+                glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F,
+                             static_cast<GLsizei>(lut.n),
+                             static_cast<GLsizei>(lut.n),
+                             static_cast<GLsizei>(lut.n), 0,
+                             GL_RGBA, GL_HALF_FLOAT, rgba.data());
+                if (glErrorAfter("glTexImage3D(RGBA16F lut)", &out.detail) != GL_NO_ERROR) return;
+                lutUploadedPath = path;
+            }
+        }
+    }
+    // What the POST draw reads: a table is ACTIVE only when this frame
+    // wants the LUT AND the parse survived (a missing file degrades to
+    // the no-LUT look, so the pins below — not a stale table — carry the
+    // frame). The parsed table stays cached for the next frame's upload.
+    const bool lutActive = !req.lutPath.empty() && req.lutStrength != 0.0f
+        && lutParsed != nullptr && lutParsedPath == req.lutPath;
+
     // --- per-frame upload: the reduced CFA, into the immutable storage -----
     using SteadyClock = std::chrono::steady_clock;
     const SteadyClock::time_point tUpload0 = SteadyClock::now();
@@ -1267,6 +1546,31 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     glUniform1f(saturationLoc, req.saturation);
     glUniform1i(tonemapLoc, req.tonemap);
     glUniform1i(oetfLoc, 1);  // the preview shape: linearToRec709 in-shader
+    // Stage 24 LUT (the LUT port, commit (a)) — the develop session's binds
+    // verbatim: the raw strength ([0,1], Kotlin-mapped) + the table's
+    // shape/binding uniforms. The neutral pins when no LUT is active
+    // (strength 0, size 0, role 0) keep the POST draw byte-identical to the
+    // pre-LUT chain — the shader's own gate is the skip, exactly like every
+    // raw grade value above. The role rides the request's ordinal clamped
+    // to the shader's own vocabulary [0,3] — an ordinal the shader does not
+    // know falls back to role 0 (the legacy plain-sampler pair), the same
+    // honest fallback the CPU's nullptr binding takes, never a silent
+    // mis-render.
+    glUniform1f(lutStrengthLoc, req.lutStrength);
+    glUniform1i(lutSizeLoc, lutActive ? lutParsed->n : 0);
+    glUniform3fv(lutDomainMinLoc, 1, lutActive ? lutParsed->domainMin : kLutDomainMinDefault);
+    glUniform3fv(lutDomainMaxLoc, 1, lutActive ? lutParsed->domainMax : kLutDomainMaxDefault);
+    glUniform1i(lutRoleLoc, std::min(std::max(req.lutRole, 0), 3));
+    glUniform1i(lutPassthroughLoc, lutBindingOk && lutActive
+                   ? (lutBinding.passthroughEncodings ? 1 : 0) : 0);
+    glUniform1i(lutInTransferLoc, req.lutInTransfer);
+    glUniform1i(lutOutTransferLoc, req.lutOutTransfer);
+    // Row-major CPU contract matrices, uploaded with transpose=GL_TRUE —
+    // the uCam precedent (the GLSL text documents the same).
+    glUniformMatrix3fv(lutWorkingToInputLoc, 1, GL_TRUE,
+                       lutBindingOk && lutActive ? lutBinding.workingToInput : kLutIdentity);
+    glUniformMatrix3fv(lutOutputToWorkingLoc, 1, GL_TRUE,
+                       lutBindingOk && lutActive ? lutBinding.outputToWorking : kLutIdentity);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(post)", &out.detail) != GL_NO_ERROR) return;
     const SteadyClock::time_point tDevelop1 = SteadyClock::now();
@@ -1647,6 +1951,10 @@ void PreviewSession::Impl::teardownOnGlThread() {
     if (developFbo != 0) { glDeleteFramebuffers(1, &developFbo); developFbo = 0; }
     if (developTex != 0) { glDeleteTextures(1, &developTex); developTex = 0; }
     if (shadingTex != 0) { glDeleteTextures(1, &shadingTex); shadingTex = 0; }
+    // The stage-24 LUT 3D texture (the LUT port, commit (a)): a fixed-size
+    // table owned for the session's lifetime — deleted HERE, never in the
+    // resolution-change block (the shading texture's own rule).
+    if (lutTex != 0) { glDeleteTextures(1, &lutTex); lutTex = 0; }
     if (cfaTex != 0) { glDeleteTextures(1, &cfaTex); cfaTex = 0; }
     if (statsBuf != 0) { glDeleteBuffers(1, &statsBuf); statsBuf = 0; }
     if (fboA != 0) { glDeleteFramebuffers(1, &fboA); fboA = 0; }

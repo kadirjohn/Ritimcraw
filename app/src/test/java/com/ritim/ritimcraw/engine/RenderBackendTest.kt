@@ -224,19 +224,27 @@ class RenderBackendTest {
 
     @Test
     fun fragment_uncovered_stages_match_the_cpu_guards() {
-        // The map is the single uncovered list the line tokens come from.
-        // Stages 2, 3, 15 and 23 left it when they were ported into the
-        // fragment pass (they are covered now, map-state gate, the stage-15
-        // highlights shoulder and all five tonemap modes included). The ten
-        // pointwise grade stages (9-13, 16-20) left it with the pointwise
-        // port: each CPU loop's exact math sits behind its raw-value
-        // uniform in the shader. Stages 7 and 8 left it with the spatial-NR
-        // port: the NR passes carry the CPU's exact chroma two-direction
-        // filter (two passes, original luma guide) and the CPU's exact 3x3
-        // luma bilateral behind uChromaDenoise/uNoiseReduction.
-        assertEquals(3, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
+        // The map is the single UNCONDITIONALLY-uncovered list the line
+        // tokens come from. Stages 2, 3, 15 and 23 left it when they were
+        // ported into the fragment pass (they are covered now, map-state
+        // gate, the stage-15 highlights shoulder and all five tonemap
+        // modes included). The ten pointwise grade stages (9-13, 16-20)
+        // left it with the pointwise port: each CPU loop's exact math sits
+        // behind its raw-value uniform in the shader. Stages 7 and 8 left
+        // it with the spatial-NR port: the NR passes carry the CPU's exact
+        // chroma two-direction filter (two passes, original luma guide)
+        // and the CPU's exact 3x3 luma bilateral behind
+        // uChromaDenoise/uNoiseReduction. Stage 24 (LUT) left it with the
+        // LUT port — the ONLY conditional leave: the map does NOT carry
+        // the lut token because the shader covers the managed-LUT math;
+        // the token fires from fragmentUncoveredStages' runtime
+        // lutTexturePathOk leg when the device's LUT texture path is
+        // unavailable (the lut coverage tests below pin that shape), so
+        // the map keeps meaning "uncovered, period" and the disjointness
+        // lock below keeps its exact pre-LUT meaning.
+        assertEquals(2, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
         assertEquals(
-            setOf(21, 22, 24),
+            setOf(21, 22),
             BackendRules.FRAGMENT_UNCOVERED_STAGES.keys,
         )
         // Covered + uncovered = the full 24-stage contract, no overlap.
@@ -526,11 +534,106 @@ class RenderBackendTest {
     @Test
     fun lut_strength_zero_is_a_bypass_not_an_active_stage() {
         // lut selected but strength 0: the CPU stage is an exact bypass
-        // (Develop.h COL-07), so the rule must not call it active.
-        val active = BackendRules.fragmentUncoveredStages(
-            GradeK(lutId = "l1", lutStrength = 0f),
+        // (Develop.h COL-07), so the rule must not call it active — on
+        // EITHER side of the runtime gate (the path being healthy must
+        // not turn a bypass into an active stage, and vice versa).
+        listOf(false, true).forEach { pathOk ->
+            val active = BackendRules.fragmentUncoveredStages(
+                GradeK(lutId = "l1", lutStrength = 0f),
+                lutTexturePathOk = pathOk,
+            )
+            assertTrue(24 !in active.map { it.first })
+        }
+    }
+
+    @Test
+    fun lut_grade_falls_back_with_the_token_until_the_texture_path_is_healthy() {
+        // Stage 24 is the RUNTIME-CONDITIONAL leave: the shader carries
+        // the CPU's exact managed-LUT math (the covered set says so), so
+        // a LUT grade is covered ONLY when the device's LUT texture path
+        // is healthy. The DEFAULT is the honest false — until the
+        // dispatch site passes the real runtime fact, a LUT grade must
+        // take the CPU path with the lut token LOUDLY (never a silent
+        // GPU run that would drop the look: the JNI seam carries the LUT
+        // identity/strength, and commit (a)'s sessions default to the
+        // neutral no-LUT shape).
+        val lutGrade = GradeK(lutId = "l1", lutStrength = 100f)
+        // The static map no longer carries the token — it fires from the
+        // runtime leg only.
+        assertTrue(24 !in BackendRules.FRAGMENT_UNCOVERED_STAGES.keys)
+        assertTrue(24 in BackendRules.FRAGMENT_COVERED_STAGES)
+        // Default (path not known healthy): 24 active with the lut token,
+        // effective CPU, the fallback line names the token.
+        val active = BackendRules.fragmentUncoveredStages(lutGrade)
+        assertEquals(listOf(24 to "lut"), active)
+        assertEquals(
+            EffectiveRenderBackend.CPU,
+            BackendRules.fragmentEffectiveBackend(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), lutGrade,
+                gyroWarpActive = false,
+            ),
         )
-        assertTrue(24 !in active.map { it.first })
+        val line = BackendRules.fragmentFallbackLine(
+            RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), lutGrade,
+            gyroWarpActive = false,
+        )!!
+        assertTrue("lut token missing: $line", line.contains("lut"))
+        // Path healthy: 24 covered — no active uncovered stage, the
+        // fragment leg takes the frame.
+        assertTrue(
+            BackendRules.fragmentUncoveredStages(
+                lutGrade, lutTexturePathOk = true,
+            ).isEmpty(),
+        )
+        assertEquals(
+            EffectiveRenderBackend.GLES,
+            BackendRules.fragmentEffectiveBackend(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), lutGrade,
+                gyroWarpActive = false, lutTexturePathOk = true,
+            ),
+        )
+        assertNull(
+            BackendRules.fragmentFallbackLine(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), lutGrade,
+                gyroWarpActive = false, lutTexturePathOk = true,
+            ),
+        )
+    }
+
+    @Test
+    fun lut_grade_stays_covered_alongside_other_controls_when_the_path_is_healthy() {
+        // The owner's device-test shape: a LUT on top of a routine grade
+        // (the mission's whole point — LUT was the last routine-grade
+        // GPU blocker). With the texture path healthy the whole grade
+        // runs the fragment leg; with the default-false path fact the
+        // SAME grade falls back with the lut token named.
+        val grade = GradeK(
+            lutId = "l1",
+            lutStrength = 80f,
+            exposureEv = 0.5f,
+            highlights = -55f,
+            saturation = 5f,
+            tonemap = 2,
+        )
+        assertEquals(
+            EffectiveRenderBackend.GLES,
+            BackendRules.fragmentEffectiveBackend(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+                gyroWarpActive = false, lutTexturePathOk = true,
+            ),
+        )
+        assertEquals(
+            EffectiveRenderBackend.CPU,
+            BackendRules.fragmentEffectiveBackend(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+                gyroWarpActive = false,
+            ),
+        )
+        val line = BackendRules.fragmentFallbackLine(
+            RenderBackend.GPU_EXPERIMENTAL, fragmentGates(), grade,
+            gyroWarpActive = false,
+        )!!
+        assertTrue("lut token missing: $line", line.contains("lut"))
     }
 
     @Test

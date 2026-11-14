@@ -305,15 +305,22 @@ void main() {
      *      as the CPU tail leaves it; applied only when uOetf == 1.
      *
      * Stages NOT covered by THIS fused text (honest): 21-22
-     * sharpness/detail, 24 LUT, and the gyro warp — the BackendRules
+     * sharpness/detail and the gyro warp — the BackendRules
      * stage-coverage rules fall back to CPU with a reason line whenever
-     * one of those is active in the grade. Stages 7-8 (spatial NR) are
-     * fragment-covered since the NR port, but NOT by this fused pass:
-     * they are neighborhood stages, so the session chain runs them as
-     * the separate NR_* passes between DEVELOP_FRAGMENT_PRE and
-     * DEVELOP_FRAGMENT_POST (below); the fused text keeps its no-NR
-     * shape because the frozen device parity harness compiles it as ONE
-     * draw.
+     * one of those is active in the grade. Stage 24 (LUT) joined the
+     * covered set with the LUT port: the shader carries the CPU's exact
+     * role/transfer contract behind uLutStrength, sampling the parsed
+     * .cube through a 3D RGBA16F texture (hardware trilinear, the
+     * CPU's texel-center mapping) — CONDITIONAL at runtime: when the
+     * device's LUT texture path is unavailable the job falls back with
+     * the lut token (the session's upload check latches unhealthy; see
+     * BackendRules.fragmentUncoveredStages' lutTexturePathOk). Stages
+     * 7-8 (spatial NR) are fragment-covered since the NR port, but NOT
+     * by this fused pass: they are neighborhood stages, so the session
+     * chain runs them as the separate NR_* passes between
+     * DEVELOP_FRAGMENT_PRE and DEVELOP_FRAGMENT_POST (below); the
+     * fused text keeps its no-NR shape because the frozen device
+     * parity harness compiles it as ONE draw.
      *
      * Parity shape: the harness runs THREE cases against THIS pass. Case
      * 0 pins uHasShading = 0, uHr = 0, uHasProfile = 0, uExposure = 1.0,
@@ -430,6 +437,17 @@ uniform float uSplitBalance;       // raw grade.splitBalance
 uniform float uSaturation;     // raw grade.saturation (stage 20); 0.0 = the CPU's own skip
 uniform int uTonemap;           // grade.tonemap (stage 23): 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base
 uniform int uOetf;              // 1 = apply linearToRec709 (export shape); 0 = linear endpoint (parity)
+uniform float uLutStrength;      // raw grade.lutStrength (stage 24), ALREADY [0,1] (GradeK percent / 100, mapped Kotlin-side); 0.0 = the CPU's own skip
+uniform highp sampler3D uLut;    // the parsed .cube as RGBA16F (hardware trilinear); unit 5; a dummy 2x2x2 table when no LUT is bound
+uniform int uLutSize;            // the table's LUT_3D_SIZE N (2..128); 0 = no table uploaded (the strength gate keeps the sampler unread)
+uniform vec3 uLutDomainMin;      // the .cube DOMAIN_MIN per axis (default 0,0,0)
+uniform vec3 uLutDomainMax;      // the .cube DOMAIN_MAX per axis (default 1,1,1)
+uniform int uLutRole;            // rawedit LutRole: 0 LegacyLinear709, 1 DisplayLook, 2 SceneLook, 3 SceneToDisplay
+uniform int uLutPassthrough;     // 1 = the binding degenerates to the plain sampler (both matrices identity, both transfers Linear)
+uniform int uLutInTransfer;      // rawedit TransferId of the table's input encoding (0 Linear .. 12 Cineon)
+uniform int uLutOutTransfer;     // rawedit TransferId of the table's output encoding
+uniform mat3 uLutWorkingToInput;  // working (linear 709) -> LUT input gamut, row-major uploaded with transpose=GL_TRUE
+uniform mat3 uLutOutputToWorking; // LUT output gamut -> working, row-major uploaded with transpose=GL_TRUE
 """
 
     /** The shared single color output (the fused pass's own line). */
@@ -721,6 +739,187 @@ vec3 tonemapPixel(vec3 c) {
     o = clamp(o, 0.0, 1.0);
     return pow(o, vec3(2.2));
 }
+
+// ---- Stage 24: the LUT block (the LUT GPU port) ----
+//
+// The CPU reference is rawedit::applyManagedLutStage + evaluateManagedLutPixel
+// + sampleLutPixel + compileLutBinding (core/src/Color.cpp), transcribed
+// verbatim below. The table itself is NOT baked into the text: it lives in a
+// 3D texture uploaded once per LUT revision by the session (RGBA16F, one mip,
+// GL_LINEAR + CLAMP_TO_EDGE on all three axes - hardware trilinear, the GLES
+// 3.x core float format that needs no extension to filter), and the shader
+// reproduces the CPU's exact texel-center mapping so the hardware filter IS
+// the CPU lattice interpolation:
+//     fx = clamp((enc - domainMin) * (n-1)/max(domainMax - domainMin, 1e-20), 0, n-1)
+//     t = (fx + 0.5) / n        (texel i's center is (i + 0.5)/n)
+// The pre-clamped fx keeps t inside [0.5/n, (n-0.5)/n], so CLAMP_TO_EDGE
+// never distorts an edge sample. Half-float table quantization means the
+// result is a BOUNDED-error match to the CPU (max LSB measured by the JVM
+// parity harness), not a bit-exact one - the honest claim.
+
+// The CPU rawedit::spow (core/src/Color.cpp), verbatim: signed pow, so a
+// negative encoded value keeps its sign through the gamma curves.
+float spow(float x, float e) {
+    return x < 0.0 ? -pow(-x, e) : pow(x, e);
+}
+
+// The CPU rawedit::encodeTransfer (core/src/Color.cpp), verbatim per curve,
+// switching on the rawedit TransferId ordinals. GLSL ES has no log10: the
+// CPU's std::log10(x) is log2(x)/log2(10) (the ~1-ulp difference is part of
+// the bounded-error parity claim, measured by the harness).
+float lutLog10(float x) {
+    return log2(x) / 3.321928094887362;  // log2(10)
+}
+float lutEncodeTransfer(float lin, int t) {
+    if (t == 1) {  // Srgb
+        return lin <= 0.0031308 ? 12.92 * lin
+             : 1.055 * spow(lin, 1.0 / 2.4) - 0.055;
+    }
+    if (t == 2) {  // Rec709OETF - the shared linearToRec709 curve
+        return lin < 0.018 ? 4.5 * lin : 1.099 * pow(lin, 0.45) - 0.099;
+    }
+    if (t == 3) {  // Gamma24
+        return spow(lin, 1.0 / 2.4);
+    }
+    if (t == 4) {  // DaVinciIntermediate
+        return lin <= 0.00262409 ? 10.44426855 * lin
+             : 0.07329248 * (lutLog10(lin + 0.0075) + 7.0);
+    }
+    if (t == 5) {  // Acescct
+        return lin <= 0.0078125
+             ? 10.5402377416545 * lin + 0.0729055341958355
+             : (log2(lin) + 9.72) / 17.52;
+    }
+    if (t == 6) {  // ArriLogC3
+        return lin > 0.010591
+             ? 0.247190 * lutLog10(5.555556 * lin + 0.052272) + 0.385537
+             : 5.367655 * lin + 0.092809;
+    }
+    if (t == 7) {  // SonyLog3
+        return lin >= 0.01125000
+             ? (420.0 + lutLog10((lin + 0.01) / 0.19) * 261.5) / 1023.0
+             : (lin * (171.2102946929 - 95.0) / 0.01125000 + 95.0) / 1023.0;
+    }
+    if (t == 8) {  // CanonLog3
+        if (lin < -0.014) {
+            return -0.36726845 * lutLog10(1.0 - 14.98325 * lin) + 0.12783901;
+        }
+        return lin <= 0.014 ? 1.9754798 * lin + 0.12512219
+             : 0.36726845 * lutLog10(14.98325 * lin + 1.0) + 0.12240537;
+    }
+    if (t == 9) {  // AppleLog
+        return lin >= 0.01
+             ? 0.08550479 * log2(lin + 0.00964052) + 0.69336945
+             : lin >= -0.05641088
+             ? 47.28711236 * (lin + 0.05641088) * (lin + 0.05641088)
+             : 0.0;
+    }
+    if (t == 10) {  // VLog
+        return lin < 0.01 ? 5.6 * lin + 0.125
+             : 0.241514 * lutLog10(lin + 0.00873) + 0.598206;
+    }
+    if (t == 11) {  // FujifilmFLog
+        return lin < 0.00089 ? 8.735631 * lin + 0.092864
+             : 0.344676 * lutLog10(0.555556 * lin + 0.009468) + 0.790453;
+    }
+    if (t == 12) {  // Cineon
+        return (685.0 + 300.0 * lutLog10(
+            lin * (1.0 - 0.0107977516232771) + 0.0107977516232771)) / 1023.0;
+    }
+    return lin;  // 0 Linear
+}
+
+// The CPU rawedit::decodeTransfer (core/src/Color.cpp), verbatim per curve.
+float lutDecodeTransfer(float enc, int t) {
+    if (t == 1) {  // Srgb
+        return enc <= 0.040449936 ? enc / 12.92
+             : spow((enc + 0.055) / 1.055, 2.4);
+    }
+    if (t == 2) {  // Rec709OETF
+        return enc <= 0.081 ? enc / 4.5 : spow((enc + 0.099) / 1.099, 1.0 / 0.45);
+    }
+    if (t == 3) {  // Gamma24
+        return spow(enc, 2.4);
+    }
+    if (t == 4) {  // DaVinciIntermediate
+        return enc <= 0.02740668 ? enc / 10.44426855
+             : pow(2.0, enc / 0.07329248 - 7.0) - 0.0075;
+    }
+    if (t == 5) {  // Acescct
+        return enc > 0.155251141552511
+             ? pow(2.0, enc * 17.52 - 9.72)
+             : (enc - 0.0729055341958355) / 10.5402377416545;
+    }
+    if (t == 6) {  // ArriLogC3
+        return enc > 5.367655 * 0.010591 + 0.092809
+             ? (pow(10.0, (enc - 0.385537) / 0.247190) - 0.052272) / 5.555556
+             : (enc - 0.092809) / 5.367655;
+    }
+    if (t == 7) {  // SonyLog3
+        return enc >= 171.2102946929 / 1023.0
+             ? pow(10.0, (enc * 1023.0 - 420.0) / 261.5) * 0.19 - 0.01
+             : (enc * 1023.0 - 95.0) * 0.01125000 / (171.2102946929 - 95.0);
+    }
+    if (t == 8) {  // CanonLog3
+        if (enc < 1.9754798 * -0.014 + 0.12512219) {
+            return (1.0 - pow(10.0, (enc - 0.12783901) / -0.36726845)) / 14.98325;
+        }
+        return enc <= 1.9754798 * 0.014 + 0.12512219
+             ? (enc - 0.12512219) / 1.9754798
+             : (pow(10.0, (enc - 0.12240537) / 0.36726845) - 1.0) / 14.98325;
+    }
+    if (t == 9) {  // AppleLog
+        return enc >= 47.28711236 * 0.06641088 * 0.06641088
+             ? pow(2.0, (enc - 0.69336945) / 0.08550479) - 0.00964052
+             : enc >= 0.0
+             ? sqrt(enc / 47.28711236) - 0.05641088
+             : -0.05641088;
+    }
+    if (t == 10) {  // VLog
+        return enc < 0.181 ? (enc - 0.125) / 5.6
+             : pow(10.0, (enc - 0.598206) / 0.241514) - 0.00873;
+    }
+    if (t == 11) {  // FujifilmFLog
+        return enc < 0.100537775223865 ? (enc - 0.092864) / 8.735631
+             : pow(10.0, (enc - 0.790453) / 0.344676) / 0.555556
+               - 0.009468 / 0.555556;
+    }
+    if (t == 12) {  // Cineon
+        return (pow(10.0, (1023.0 * enc - 685.0) / 300.0)
+              - 0.0107977516232771) / (1.0 - 0.0107977516232771);
+    }
+    return enc;  // 0 Linear
+}
+
+// The CPU rawedit::sampleLutPixel's lattice math (core/src/Color.cpp),
+// reproduced through the 3D texture's hardware trilinear filter: the
+// domain-normalized texel-center mapping above. The CPU guards (n < 2,
+// rgb.size() == n^3*3) are the session's upload-time checks - a table that
+// failed them never reaches the texture.
+vec3 lutSample(vec3 enc) {
+    float n = float(uLutSize);
+    vec3 span = uLutDomainMax - uLutDomainMin;
+    vec3 scale = (n - 1.0) / max(span, vec3(1e-20));
+    vec3 fx = clamp((enc - uLutDomainMin) * scale, vec3(0.0), vec3(n - 1.0));
+    vec3 t = (fx + 0.5) / n;
+    return texture(uLut, t).rgb;
+}
+
+// The CPU rawedit::evaluateManagedLutPixel (core/src/Color.cpp), verbatim:
+// working -> input gamut -> encode -> sample -> decode -> output gamut.
+vec3 lutManagedPixel(vec3 px) {
+    vec3 gamutIn = uLutWorkingToInput * px;
+    vec3 enc = vec3(
+        lutEncodeTransfer(gamutIn.x, uLutInTransfer),
+        lutEncodeTransfer(gamutIn.y, uLutInTransfer),
+        lutEncodeTransfer(gamutIn.z, uLutInTransfer));
+    vec3 sampled = lutSample(enc);
+    vec3 dec = vec3(
+        lutDecodeTransfer(sampled.x, uLutOutTransfer),
+        lutDecodeTransfer(sampled.y, uLutOutTransfer),
+        lutDecodeTransfer(sampled.z, uLutOutTransfer));
+    return uLutOutputToWorking * dec;
+}
 """
 
     /** main()'s guard head - shared by the fused pass, PRE and POST. */
@@ -921,8 +1120,53 @@ vec3 tonemapPixel(vec3 c) {
         float luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
         c = luma + (c - luma) * f;
     }
+    // Stage 24: the LUT - the CPU rawedit::applyManagedLutStage role
+    // contract (core/src/Color.cpp), verbatim in each role's CPU order.
+    // uLutStrength carries the RAW grade value ALREADY mapped to rawedit's
+    // [0,1] scale (the Kotlin seam divides the GradeK percent by 100),
+    // and 0.0 skips the whole stage exactly like the CPU's own
+    // `if (!(lutStrength > 0.0f))` bypass. SceneLook (role 2) applies the
+    // LUT BEFORE tonemap (the CPU order); every other role applies it
+    // AFTER tonemap, before the OETF; SceneToDisplay (role 3) at full
+    // strength SKIPS tonemap (the CPU's s >= 1 branch). cScene preserves
+    // the pre-tonemap pixel for SceneToDisplay's mixed-strength blend,
+    // which samples the SCENE pixel like the CPU's baseline copy.
+    float lutS = min(uLutStrength, 1.0);  // the CPU's own clamp
+    vec3 cScene = c;  // the pre-tonemap pixel (SceneToDisplay's LUT input)
+    if (uLutRole == 2 && uLutStrength != 0.0) {
+        // SceneLook: LUT first, then tonemap (the CPU order).
+        vec3 lutPx = uLutPassthrough == 1 ? lutSample(c) : lutManagedPixel(c);
+        c = lutPx * lutS + c * (1.0 - lutS);
+    }
     if (uTonemap != 0) {
-        c = tonemapPixel(c);
+        if (!(uLutStrength != 0.0 && uLutRole == 3 && lutS >= 1.0)) {
+            c = tonemapPixel(c);
+        }
+    }
+    if (uLutStrength != 0.0 && uLutRole != 2) {
+        // Legacy (0), DisplayLook (1) and SceneToDisplay (3) all apply
+        // after tonemap, before the OETF. Legacy and DisplayLook blend
+        // against the tonemapped pixel; SceneToDisplay blends against
+        // the tonemapped BASELINE while its LUT samples the SCENE pixel
+        // (the CPU's per-pixel two-branch form), and at full strength
+        // it REPLACES the pixel outright (tonemap already skipped).
+        if (uLutRole == 3) {
+            vec3 lutPx = lutManagedPixel(cScene);
+            if (lutS >= 1.0) {
+                c = lutPx;
+            } else {
+                c = lutPx * lutS + c * (1.0 - lutS);
+            }
+        } else if (uLutPassthrough == 1 || uLutRole == 0) {
+            // Legacy (0) is always the plain sampler (the CPU's applyLut
+            // route); DisplayLook (1) takes the plain sampler only when
+            // the binding degenerates.
+            vec3 lutPx = lutSample(c);
+            c = lutPx * lutS + c * (1.0 - lutS);
+        } else {
+            vec3 lutPx = lutManagedPixel(c);
+            c = lutPx * lutS + c * (1.0 - lutS);
+        }
     }
     if (uOetf == 1) {
         c = vec3(linearToRec709(c.r), linearToRec709(c.g), linearToRec709(c.b));
@@ -932,7 +1176,7 @@ vec3 tonemapPixel(vec3 c) {
 """
 
     /** The fused pass's own banner + precision block (its own text). */
-    private const val kDevelopFusedBanner: String = """// Fused develop pass - stages 1+2+3+4+5+6+9+10+11+12+13+14+15+16+17+18+19+20+23+OETF
+    private const val kDevelopFusedBanner: String = """// Fused develop pass - stages 1+2+3+4+5+6+9+10+11+12+13+14+15+16+17+18+19+20+23+24+OETF
 // of rawedit::developCpu (core/src/Develop.cpp). See the Kotlin doc above.
 
 precision highp float;
@@ -963,7 +1207,7 @@ precision highp int;
 """
 
     /** POST's own banner + precision block. */
-    private const val kDevelopPostBanner: String = """// Develop post pass - stages 9+10+11+12+13+14+15+16+17+18+19+20+23+OETF
+    private const val kDevelopPostBanner: String = """// Develop post pass - stages 9+10+11+12+13+14+15+16+17+18+19+20+23+24+OETF
 // of rawedit::developCpu (core/src/Develop.cpp). The session chain's
 // last develop draw: reads the chain's RGBA32F intermediate (the pre
 // pass's output, or the NR passes' output when the grade uses spatial

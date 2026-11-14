@@ -63,6 +63,22 @@ class GpuPreviewSessionTest {
         val splitBalance: Float,
     )
 
+    /**
+     * The seven LUT controls ONE render carried, in the seam's parameter
+     * order — the verbatim pass-through lock's snapshot for stage 24 (a
+     * swapped or dropped parameter in GpuPreviewSession.render fails the
+     * data-class equality with the exact field named).
+     */
+    private data class LutCall(
+        val lutPath: String?,
+        val lutStrength: Float,
+        val lutRole: Int,
+        val lutInGamut: Int,
+        val lutInTransfer: Int,
+        val lutOutGamut: Int,
+        val lutOutTransfer: Int,
+    )
+
     /** Records every seam call; scripted verdicts per method. */
     private class FakeDevelop(
         var openResult: Long = 1L,
@@ -79,6 +95,7 @@ class GpuPreviewSessionTest {
         val renderedHighlights = mutableListOf<Float>() // grade.highlights per render
         val renderedNr = mutableListOf<NrCall>() // the two spatial-NR stages per render
         val renderedPointwise = mutableListOf<PointwiseCall>() // the ten stages per render
+        val renderedLut = mutableListOf<LutCall>() // the seven LUT controls per render
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
         var probeResult: DoubleArray? = null
@@ -135,6 +152,13 @@ class GpuPreviewSessionTest {
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
         ): PreviewFrame? {
             rendered += sessionHandle
             renderedHighlights += highlights
@@ -145,6 +169,10 @@ class GpuPreviewSessionTest {
                 wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
                 wheelHighX, wheelHighY,
                 splitShadowHue, splitHighlightHue, splitBalance,
+            )
+            renderedLut += LutCall(
+                lutPath, lutStrength, lutRole,
+                lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             )
             if (renderThrows) throw IllegalStateException("seam blew up")
             return renderResult
@@ -241,6 +269,9 @@ class GpuPreviewSessionTest {
             wheelMidX = 0.5f, wheelMidY = -0.5f,
             wheelHighX = 0.75f, wheelHighY = -0.75f,
             splitShadowHue = 30f, splitHighlightHue = 210f, splitBalance = -25f,
+            lutPath = "/data/luts/milog.cube", lutStrength = 0.85f,
+            lutRole = 3, lutInGamut = 8, lutInTransfer = 12,
+            lutOutGamut = 0, lutOutTransfer = 1,
         )
         // The SAME instance flows through — the pump publishes it exactly
         // as the CPU dispatch publishes its own frame.
@@ -275,6 +306,20 @@ class GpuPreviewSessionTest {
             ),
             develop.renderedPointwise,
         )
+        // The seven LUT controls ride the seam verbatim too — the resolved
+        // path, the [0,1] strength, and the five interpretation ordinals,
+        // each in the established order (a swapped pair or a dropped
+        // ordinal fails this equality with the field named).
+        assertEquals(
+            listOf(
+                LutCall(
+                    lutPath = "/data/luts/milog.cube", lutStrength = 0.85f,
+                    lutRole = 3, lutInGamut = 8, lutInTransfer = 12,
+                    lutOutGamut = 0, lutOutTransfer = 1,
+                )
+            ),
+            develop.renderedLut,
+        )
     }
 
     @Test
@@ -296,6 +341,9 @@ class GpuPreviewSessionTest {
                 wheelMidX = 0f, wheelMidY = 0f,
                 wheelHighX = 0f, wheelHighY = 0f,
                 splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
+                lutPath = null, lutStrength = 0f,
+                lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
+                lutOutGamut = -1, lutOutTransfer = -1,
             )
         )
         assertTrue(develop.rendered.isEmpty())
@@ -320,6 +368,9 @@ class GpuPreviewSessionTest {
                 wheelMidX = 0f, wheelMidY = 0f,
                 wheelHighX = 0f, wheelHighY = 0f,
                 splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
+                lutPath = null, lutStrength = 0f,
+                lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
+                lutOutGamut = -1, lutOutTransfer = -1,
             )
         )
     }
@@ -366,6 +417,9 @@ class GpuPreviewSessionTest {
                 wheelMidX = 0f, wheelMidY = 0f,
                 wheelHighX = 0f, wheelHighY = 0f,
                 splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
+                lutPath = null, lutStrength = 0f,
+                lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
+                lutOutGamut = -1, lutOutTransfer = -1,
             )
         )
         assertEquals(0, develop.rendered.size)
@@ -417,6 +471,13 @@ class GpuPreviewSessionTest {
                 highlightReconstruction: Boolean,
                 keepVignetting: Boolean,
                 tonemap: Int,
+                lutPath: String?,
+                lutStrength: Float,
+                lutRole: Int,
+                lutInGamut: Int,
+                lutInTransfer: Int,
+                lutOutGamut: Int,
+                lutOutTransfer: Int,
             ): PreviewFrame? = null
             override fun closeSession(sessionHandle: Long) {}
             override suspend fun lastDetail(): String? = throw IllegalStateException("seam blew up")
