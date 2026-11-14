@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.settings
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -19,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -98,6 +101,16 @@ fun SettingsScreen(
     // the store + the SAF launcher, the screen only renders + forwards.
     gyroFolderLabel: String? = null,
     onPickGyroFolder: () -> Unit = {},
+    // ---- Preview stats readback (debug A/B toggle, 2026-11-14) ----
+    // The persisted choice (AppNav reads PreviewStatsStore) and the
+    // change callback (AppNav persists + applies it to the engine's
+    // jniSetPreviewStatsEnabled). Debug-only row: it renders inside
+    // the BuildConfig.DEBUG block below (beside Measure), so release
+    // builds pass the values but never show or flip the toggle — the
+    // native default (on) is exactly the pre-toggle behavior there.
+    // Defaults keep every existing caller and preview working.
+    previewStats: Boolean = true,
+    onPreviewStatsChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // The device report dialog (owner request 2026-11-13): the codec list
@@ -271,6 +284,29 @@ fun SettingsScreen(
                         }
                     )
                 }
+                // The stats-readback A/B toggle (debug-only, beside the
+                // Measure action it exists to serve): flips the GPU
+                // preview's synchronous stats readback (draw 3 + the
+                // glMapBufferRange the trace line's stats= span measures)
+                // on/off so the owner can compare the span and the total
+                // on the 12MP clip without a local patch. The whole row
+                // is toggleable at the 48dp minimum (the editor's
+                // RawToggleRow convention); the Switch itself carries no
+                // own click handler so the row speaks as one control.
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.settings_preview_stats)) },
+                    supportingContent = {
+                        Text(stringResource(R.string.settings_preview_stats_body))
+                    },
+                    trailingContent = {
+                        Switch(checked = previewStats, onCheckedChange = null)
+                    },
+                    modifier = Modifier.toggleable(
+                        value = previewStats,
+                        role = Role.Switch,
+                        onValueChange = onPreviewStatsChange,
+                    ),
+                )
             }
             // The codec list's new home (see the screen KDoc): the dialog
             // below. This spacer keeps the version footer pinned to the
