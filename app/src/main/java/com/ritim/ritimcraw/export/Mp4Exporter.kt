@@ -404,6 +404,32 @@ interface GpuDevelop {
     /** Closes the session (idempotent; absorbs context loss at teardown). */
     fun closeSession(sessionHandle: Long)
 
+    /**
+     * M5: hands the MediaCodec input Surface to the session, which wraps
+     * it in an EGL window surface ONCE per export on its GL thread. The
+     * surface is typed Any? (the JVM-loadability rule — see
+     * nativePreviewSessionSetSurface). False names the step in
+     * [lastDetail]; the dispatcher answers with ONE fallback line.
+     */
+    fun setEncoderSurface(sessionHandle: Long, surface: Any?): Boolean = false
+
+    /**
+     * M5: develops one frame on the GPU and blits it straight to the
+     * encoder surface — no readback bytes cross the seam. [ptsUs] is the
+     * frame's normalized encoder presentation timestamp (the same value
+     * the writer path stamps). False names the step in [lastDetail].
+     */
+    fun renderFrameToEncoder(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        ptsUs: Long,
+        exposureEv: Float,
+        highlightReconstruction: Boolean,
+        keepVignetting: Boolean,
+        tonemap: Int,
+    ): Boolean = false
+
     /** The bridge's thread-local last-error detail (same thread as the failed call). */
     fun lastDetail(): String?
 }
@@ -427,6 +453,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         GlesShaderSources.FULLSCREEN_VERTEX_310,
         GlesShaderSources.DEVELOP_FRAGMENT,
         GlesShaderSources.STORE_FRAGMENT,
+        GlesShaderSources.BLIT_FRAGMENT,
     )
 
     override fun renderFrame(
@@ -439,6 +466,23 @@ internal object NativeGpuDevelop : GpuDevelop {
         tonemap: Int,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
         sessionHandle, clipHandle, frameIndex,
+        exposureEv, highlightReconstruction, keepVignetting, tonemap,
+    )
+
+    override fun setEncoderSurface(sessionHandle: Long, surface: Any?): Boolean =
+        NativeSource.jniDevelopSessionSetEncoderSurface(sessionHandle, surface)
+
+    override fun renderFrameToEncoder(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        ptsUs: Long,
+        exposureEv: Float,
+        highlightReconstruction: Boolean,
+        keepVignetting: Boolean,
+        tonemap: Int,
+    ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
+        sessionHandle, clipHandle, frameIndex, ptsUs,
         exposureEv, highlightReconstruction, keepVignetting, tonemap,
     )
 
@@ -571,6 +615,54 @@ interface Mp4MediaWriter {
      * offer is the decision.
      */
     fun surfaceInputActive(): Boolean = false
+
+    /**
+     * M5: the session-owns-EGL request. The pipeline calls this BEFORE
+     * start when the export job's render backend is GPU_EXPERIMENTAL AND
+     * the frame is 1:1-pixels eligible (no rotation/crop/straighten/
+     * scale): the writer configures the codec and creates its input
+     * Surface WITHOUT wrapping it in EGL and WITHOUT starting the codec
+     * (the single-producer BufferQueue rule — the GPU develop session
+     * will be the only producer), and start() finishes by starting the
+     * codec. The default no-op = this writer does not speak the mode:
+     * every existing writer (and every JVM fake) keeps its exact
+     * behavior; the pipeline then takes the writer's own Surface mode
+     * ([requestEncoderSurfaceInput]) or the byte path as before.
+     */
+    fun requestSessionEncoderSurface() {}
+
+    /**
+     * The codec input Surface created by [requestSessionEncoderSurface]
+     * (handed out UNWRAPPED, before the codec starts), or null when the
+     * mode was not requested/failed. The pipeline hands it to the GPU
+     * develop session's setEncoderSurface; the writer never touches it
+     * again until the export ends.
+     */
+    fun encoderInputSurface(): Any? = null
+
+    /**
+     * Per-frame codec drain for the session-owns-EGL mode (the
+     * Surface-input contract: the producer must dequeue the codec's
+     * output buffers or the pipeline stalls). The pipeline calls this
+     * after each session encoder blit. Default no-op.
+     */
+    fun drainEncoderInput() {}
+
+    /**
+     * The ADOPT fallback (M5): the session refused the encoder surface
+     * (its setEncoderSurface returned false), so the pipeline asks the
+     * writer to do the steps requestSessionEncoderSurface skipped —
+     * wrap the SAME input surface in the writer's own EGL (the recordable
+     * config path the writer already proved on device), make it current,
+     * probe eglPresentationTimeANDROID, build the blit program. After a
+     * successful adopt, frames flow through the EXISTING per-frame
+     * [writeVideoFrameRgb] offer (the CPU-RGB Surface mode, byte-for-
+     * byte the shipped path) — the export continues instead of dying.
+     * Failure throws [SurfaceInputUnavailable] (the exporter's clean
+     * whole-export CPU restart). Default no-op: a writer without the
+     * mode has nothing to adopt.
+     */
+    fun adoptEncoderSurface() {}
 }
 
 /** AAC input: one block = 1024 PCM frames per channel (the AAC frame size). */
@@ -1230,13 +1322,37 @@ class ExportPipeline(
             // silent skip.
             developFallback = developFallbackLine("auto-stays-cpu")
         }
+        // M5 — the encoder-surface geometry gate, computed BEFORE the
+        // writer request/start (the single decision point): the session
+        // blit is 1:1-pixels only, so the frame must reach the encoder
+        // with NO rotation, NO crop, NO straighten and NO scale — i.e.
+        // the develop output IS the encode input. gpuDevelopActive is
+        // not known yet (the probe/parity run above fills developBackend
+        // synchronously — it IS known: developBackend was computed before
+        // this line), so the gate uses the same developBackend the frame
+        // loop will. A not-eligible GPU_EXPERIMENTAL job takes the
+        // writer's OWN Surface mode (requestEncoderSurfaceInput, the
+        // shipped path) or the byte path — byte-identical to before.
+        val encoderDrawEligible = developBackend == EffectiveRenderBackend.GLES &&
+            effectiveDeg == 0 &&
+            CropState.isFull(cropRect) &&
+            grade.straightenDeg == 0f &&
+            encodeDims.width == info.width &&
+            encodeDims.height == info.height
         // GPU deliverable F (§10): the Surface request goes to the writer
         // BEFORE start — an explicit request from the job's render-backend
         // snapshot, never auto. A writer that cannot bring the mode up
         // throws SurfaceInputUnavailable from start (the exporter's clean
         // CPU restart); the default no-op means CPU bytes, unchanged.
+        // M5: an encoderDrawEligible job requests the session-owns-EGL
+        // mode INSTEAD — the writer hands the codec input Surface out
+        // unwrapped and the GPU develop session becomes the producer.
         if (renderBackend == RenderBackend.GPU_EXPERIMENTAL) {
-            writer.requestEncoderSurfaceInput()
+            if (encoderDrawEligible) {
+                writer.requestSessionEncoderSurface()
+            } else {
+                writer.requestEncoderSurfaceInput()
+            }
         }
         try {
             writer.start(outPath, encodeDims.width, encodeDims.height, 0, sampleRate, channels)
@@ -1255,6 +1371,14 @@ class ExportPipeline(
         // closeSession is idempotent and absorbs context loss at teardown.
         var gpuSessionHandle = 0L
         var gpuDevelopActive = developBackend == EffectiveRenderBackend.GLES
+        // M5 — the session encoder path's state: requested (the
+        // session-owns-EGL mode went to the writer), attached (the
+        // session accepted the input surface). The attach happens ONCE
+        // below, after openSession; a refusal falls back to the writer's
+        // adopt path (the CPU-RGB Surface mode) with ONE honest line —
+        // the export NEVER dies on this seam.
+        var encoderSurfaceRequested = encoderDrawEligible
+        var encoderSurfaceAttached = false
         try {
             if (gpuDevelopActive) {
                 try {
@@ -1268,6 +1392,76 @@ class ExportPipeline(
                         developFallbackLine(gpuDevelop.lastDetail() ?: "develop session open failed")
                     )
                 }
+            }
+            // M5 — attach the codec input Surface to the session, ONCE
+            // per export. Only when the geometry gate passed AND the GPU
+            // develop session actually opened (a session that never
+            // opened cannot blit). The request already went to the
+            // writer, so a session-mode writer holds a Surface-configured
+            // codec whose input buffers NOBODY can feed on the byte path
+            // (dequeueInputBuffer fails on a Surface-configured codec) —
+            // the else-if below ADOPTS the surface into the writer's own
+            // EGL so frames flow through the EXISTING writeVideoFrameRgb
+            // offer instead. The export NEVER dies on this seam.
+            if (encoderSurfaceRequested && gpuDevelopActive) {
+                val inputSurface = writer.encoderInputSurface()
+                if (inputSurface == null) {
+                    // The writer could not create the codec input surface
+                    // (its start already logged/throws per its contract);
+                    // fall back to the writer's own modes with ONE line.
+                    encoderSurfaceRequested = false
+                    stageLog?.invoke(
+                        "encoder surface fallback: requested=surface-gpu effective=bytes " +
+                            "reason=writer-had-no-input-surface"
+                    )
+                } else {
+                    val attached = try {
+                        gpuDevelop.setEncoderSurface(gpuSessionHandle, inputSurface)
+                    } catch (e: IllegalStateException) {
+                        false // no .so mid-export: the adopt path below
+                    }
+                    if (attached) {
+                        encoderSurfaceAttached = true
+                    } else {
+                        // The session refused (its GL thread named the
+                        // step). The ADOPT fallback: the writer does the
+                        // steps its session mode skipped — wraps the SAME
+                        // input surface in its own EGL (the recordable
+                        // path it proved on device) and frames flow
+                        // through the EXISTING writeVideoFrameRgb offer
+                        // (the CPU-RGB Surface mode, byte-identical to
+                        // the shipped path). adoptEncoderSurface throws
+                        // SurfaceInputUnavailable on failure = the
+                        // exporter's clean whole-export CPU restart.
+                        writer.adoptEncoderSurface()
+                        encoderSurfaceRequested = false
+                        stageLog?.invoke(
+                            "encoder surface fallback: requested=surface-gpu effective=surface " +
+                                "reason=" + (gpuDevelop.lastDetail()
+                                    ?: "session refused the encoder surface") +
+                                " (writer adopted the input surface)"
+                        )
+                    }
+                }
+            } else if (encoderSurfaceRequested) {
+                // The gap case: the geometry gate passed and the request
+                // went to the writer, but the GPU develop session never
+                // opened (openSession returned 0 — the honest CPU-continue
+                // line above already named it). The writer holds a
+                // Surface-configured codec that the byte path CANNOT feed
+                // (dequeueInputBuffer fails on a Surface-configured
+                // codec), so the writer ADOPTS the surface into its own
+                // EGL here and the frames flow through the EXISTING
+                // writeVideoFrameRgb offer — the CPU-RGB Surface mode,
+                // byte-for-byte the shipped path. adoptEncoderSurface
+                // throws SurfaceInputUnavailable on failure = the
+                // exporter's clean whole-export CPU restart.
+                writer.adoptEncoderSurface()
+                encoderSurfaceRequested = false
+                stageLog?.invoke(
+                    "encoder surface fallback: requested=surface-gpu effective=surface " +
+                        "reason=develop-session-unavailable (writer adopted the input surface)"
+                )
             }
             // 4. Encode loop, in presentation order across both tracks.
             // Progress counts VIDEO frames only (the frame counter the user
@@ -1286,6 +1480,69 @@ class ExportPipeline(
                     PtsTimeline.Sample.Track.VIDEO -> {
                         timing?.startFrame()
                         val t0 = System.nanoTime()
+                        // M5 — the encoder-surface fast path: the session
+                        // develops AND blits straight to the codec input
+                        // surface on its GL thread, stamping the frame's
+                        // normalized pts as media time. NO readback bytes
+                        // cross the seam, no rotate/crop/scale runs (the
+                        // geometry gate guaranteed 1:1 pixels), and the
+                        // codec drain follows per the Surface-input
+                        // contract. A refusal latches the fast path OFF
+                        // with ONE honest fallback line naming the reason.
+                        // An encoder-render failure ALSO latches the
+                        // session unhealthy natively (mid-render GL
+                        // failure semantics) — so the GPU readback below
+                        // dies with it and the CPU develop takes the
+                        // rest of the frames. The writer still holds a
+                        // Surface-configured codec the byte path CANNOT
+                        // feed, and the session's EGL window surface is
+                        // still the BufferQueue's producer (the
+                        // single-producer rule): detach the session's
+                        // surface first (a Surface job always processes,
+                        // even on a latched session), then ADOPT the
+                        // surface into the writer's own EGL — the frames
+                        // then flow through the EXISTING writeVideoFrameRgb
+                        // offer, byte-for-byte the shipped CPU-RGB Surface
+                        // mode. adoptEncoderSurface throws
+                        // SurfaceInputUnavailable on failure = the
+                        // exporter's clean whole-export CPU restart; the
+                        // export NEVER dies on this seam. Later frames
+                        // stay silent (the same one-line rule the develop
+                        // latch rides).
+                        if (encoderSurfaceAttached) {
+                            val drew = try {
+                                gpuDevelop.renderFrameToEncoder(
+                                    gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
+                                    grade.exposureEv, grade.highlightReconstruction,
+                                    grade.keepVignetting, grade.tonemap,
+                                )
+                            } catch (e: IllegalStateException) {
+                                false // no .so mid-export: latch below
+                            }
+                            if (drew) {
+                                writer.drainEncoderInput()
+                                timing?.endFrame()
+                                done++
+                                onProgress?.invoke(done, videoPts.size)
+                                continue
+                            }
+                            encoderSurfaceAttached = false
+                            try {
+                                gpuDevelop.setEncoderSurface(gpuSessionHandle, null)
+                            } catch (e: IllegalStateException) {
+                                // No .so: nothing to detach (unreachable
+                                // when a session opened — defensive only).
+                            }
+                            writer.adoptEncoderSurface()
+                            stageLog?.invoke(
+                                "encoder surface fallback: requested=surface-gpu " +
+                                    "effective=surface reason=" +
+                                    (gpuDevelop.lastDetail()
+                                        ?: "gpu develop encoder render failed") +
+                                    " (writer adopted the input surface after " +
+                                    "the encoder render failure)"
+                            )
+                        }
                         // Commit b — the develop dispatch per frame: the GPU
                         // session renders when it is active; the bytes flow
                         // through the SAME rotate/crop/offer/I420 tail below
@@ -1523,11 +1780,14 @@ class ExportPipeline(
             // coverage statement: "none" is the default grade after the
             // stage 2+3+23 ports. CPU exports log the same line
             // (effective=CPU): the requested axis is visible per export,
-            // never only on fallback. The encoder-input mode is its OWN
-            // unconditional line — surface when the writer took the Surface
-            // mode, bytes otherwise — read BEFORE writer.release() below
-            // (release tears the mode down). Null stageLog = nothing
-            // emitted, bytes identical, release pays nothing.
+            // never only on fallback. The encoder-input mode rides the
+            // SAME line (M5, append-only: encoder-input=surface-gpu /
+            // surface / bytes) — surface-gpu when the session blitted
+            // straight to the codec input surface, surface when the
+            // writer's own EGL took the CPU-RGB frames, bytes otherwise —
+            // read BEFORE writer.release() below (release tears the mode
+            // down). Null stageLog = nothing emitted, bytes identical,
+            // release pays nothing.
             if (stageLog != null) {
                 val effective = if (gpuDevelopActive) {
                     EffectiveRenderBackend.GLES
@@ -1537,7 +1797,21 @@ class ExportPipeline(
                 stageLog(
                     "render backend: requested=${renderBackend.name} " +
                         "effective=${effective.name} " +
-                        "unsupported=${uncoveredTokens.joinToString(",").ifEmpty { "none" }}"
+                        "unsupported=${uncoveredTokens.joinToString(",").ifEmpty { "none" }} " +
+                        // M5 (append-only): the encoder input mode this
+                        // export actually used — surface-gpu when the
+                        // session blitted straight to the codec input
+                        // surface, surface when the writer's own EGL took
+                        // the CPU-RGB frames, bytes otherwise. The state
+                        // is read HERE (the finally) because the frame
+                        // loop is what proves it: attached survived means
+                        // every frame blitted; a mid-stream refusal
+                        // already logged its own fallback line.
+                        "encoder-input=" + when {
+                            encoderSurfaceAttached -> "surface-gpu"
+                            writer.surfaceInputActive() -> "surface"
+                            else -> "bytes"
+                        }
                 )
                 // The develop dispatch's honest fallback line (commit b):
                 // null when the GPU develop ran (or CPU was requested — no
@@ -1545,6 +1819,11 @@ class ExportPipeline(
                 // the gate tokens, or the AUTO policy — whichever forced the
                 // CPU develop, never silently.
                 developFallback?.let { stageLog(it) }
+                // The encoder-input mode's own line (commit (c), kept
+                // verbatim for log parsers): surface when the writer's own
+                // EGL took the frames, bytes otherwise. The M5 surface-gpu
+                // mode rides the render-backend line above (encoder-input=)
+                // — this line reports the WRITER's axis only.
                 stageLog(
                     if (writer.surfaceInputActive()) "encoder input: surface" else "encoder input: bytes"
                 )

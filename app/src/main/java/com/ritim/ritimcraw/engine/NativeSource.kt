@@ -820,6 +820,7 @@ class NativeSource private constructor(
             vertex310Source: String,
             fragmentSource: String,
             storeFragmentSource: String,
+            blitFragmentSource: String,
         ): Long
 
         @JvmStatic private external fun nativeDevelopSessionRenderFrame(
@@ -831,6 +832,38 @@ class NativeSource private constructor(
             keepVignetting: Boolean,
             tonemap: Int,
         ): ByteArray?
+
+        /**
+         * M5 commit (a): the encoder-surface seam pair. SetEncoderSurface
+         * hands the MediaCodec input Surface to the session (it wraps the
+         * window in an EGL window surface ONCE per export on the session's
+         * GL thread); null detaches. The surface is typed Any? for the
+         * same JVM-loadability reason as nativePreviewSessionSetSurface
+         * (the unit tests reflect over Companion's declared methods).
+         * RenderFrameToEncoder develops the frame on the GPU and blits it
+         * straight to the encoder surface — no readback bytes cross the
+         * seam — stamping [ptsUs] (the SAME normalized encoder pts the
+         * writer path uses) as media time via eglPresentationTimeANDROID.
+         * Both return false with the reason in lastError on refusal; the
+         * Kotlin dispatcher answers with ONE honest fallback line, never
+         * a crash. Device-test-pending (the owner's GPU export is the
+         * production proof).
+         */
+        @JvmStatic private external fun nativeDevelopSessionSetEncoderSurface(
+            sessionHandle: Long,
+            surface: Any?,
+        ): Boolean
+
+        @JvmStatic private external fun nativeDevelopSessionRenderFrameToEncoder(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            ptsUs: Long,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): Boolean
 
         @JvmStatic private external fun nativeDevelopSessionClose(sessionHandle: Long)
 
@@ -1338,25 +1371,28 @@ class NativeSource private constructor(
         internal fun jniCloseSource(handle: Long): Long = nativeCloseSource(handle)
 
         /**
-         * JNI bridge: the production GPU develop session (M3 commit a).
-         * All three throw IllegalStateException when the .so is absent.
-         * Open returns 0 on failure (previewLastError names the EGL/
-         * compile/link step); RenderFrame returns null on failure (the
-         * session latches unhealthy with the same detail — the Kotlin
-         * dispatcher falls the export back to CPU). The session handle is
-         * NOT a clip handle: it addresses the session registry.
+         * JNI bridge: the production GPU develop session (M3 commit a +
+         * the M5 encoder-surface pair). All throw IllegalStateException
+         * when the .so is absent. Open returns 0 on failure
+         * (previewLastError names the EGL/compile/link step);
+         * RenderFrame returns null on failure (the session latches
+         * unhealthy with the same detail — the Kotlin dispatcher falls
+         * the export back to CPU). The session handle is NOT a clip
+         * handle: it addresses the session registry.
          */
         internal fun jniDevelopSessionOpen(
             vertexSource: String,
             vertex310Source: String,
             fragmentSource: String,
             storeFragmentSource: String,
+            blitFragmentSource: String,
         ): Long {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeDevelopSessionOpen(
-                vertexSource, vertex310Source, fragmentSource, storeFragmentSource)
+                vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+                blitFragmentSource)
         }
 
         internal fun jniDevelopSessionRenderFrame(
@@ -1373,6 +1409,43 @@ class NativeSource private constructor(
             }
             return nativeDevelopSessionRenderFrame(
                 sessionHandle, clipHandle, frameIndex, exposureEv,
+                highlightReconstruction, keepVignetting, tonemap)
+        }
+
+        /**
+         * JNI bridge: the encoder-surface seam (M5 commit a). Both throw
+         * IllegalStateException when the .so is absent. SetEncoderSurface
+         * takes the MediaCodec input Surface as Any? (the JVM-loadability
+         * rule); the ANativeWindow reference transfers to the session at
+         * call entry, so the caller never releases it. RenderFrameToEncoder
+         * returns false on refusal (lastError names the step; the
+         * dispatcher answers with ONE honest fallback line).
+         */
+        internal fun jniDevelopSessionSetEncoderSurface(
+            sessionHandle: Long,
+            surface: Any?,
+        ): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionSetEncoderSurface(sessionHandle, surface)
+        }
+
+        internal fun jniDevelopSessionRenderFrameToEncoder(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            ptsUs: Long,
+            exposureEv: Float,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            tonemap: Int,
+        ): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionRenderFrameToEncoder(
+                sessionHandle, clipHandle, frameIndex, ptsUs, exposureEv,
                 highlightReconstruction, keepVignetting, tonemap)
         }
 

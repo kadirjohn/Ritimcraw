@@ -70,6 +70,27 @@
 // Android but its runtime behavior is DEVICE-TEST-PENDING — the owner's
 // covered-grade GPU export is the production proof. The math it runs is
 // the math Measure already proved on device (developFragmentParity PASS).
+//
+// ENCODER SURFACE (M5): the session can additionally draw the developed
+// frame DIRECTLY to an EGLSurface wrapped around a MediaCodec input
+// Surface (eglCreateWindowSurface + eglSwapBuffers) — the readback pass
+// (store -> SSBO -> quantize) is skipped entirely on that path, which is
+// the point: the GPU pipeline ends at the encoder instead of round-
+// tripping through the CPU. The blit reuses the SAME BLIT_FRAGMENT the
+// Surface-mode writer proved on device (Y flip included — the develop
+// pass's texel row 0 is the image top, the encoder surface wants row 0
+// at the bottom). The presentation timestamp goes through
+// eglPresentationTimeANDROID (EGL_ANDROID_presentation_time), resolved
+// ONCE at open via eglGetProcAddress and honestly gated: a device
+// without it refuses the encoder path with that reason named — never a
+// crash, never a silent stamp of the wall clock. The encoder path is
+// 1:1-pixels only: the caller (Mp4Exporter) gates on no rotation/crop/
+// straighten/scale BEFORE requesting it, so the blit is a plain copy.
+// A setEncoderSurface failure NEVER latches the session (the context is
+// fine — the surface isn't) and the export falls back to the existing
+// readback path with the reason in ONE log line. A renderFrameToEncoder
+// GL failure DOES latch (it is a mid-render context event, same
+// semantics as renderFrame).
 
 #pragma once
 
@@ -77,6 +98,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+
+#include <android/native_window.h>
 
 #include <rawedit/Source.h>
 
@@ -114,13 +140,16 @@ public:
     // re-read in THIS context, never trusted from a probe's throwaway one),
     // compiles both programs and resolves every uniform location. Returns
     // null with *detail naming the first failing step on any failure (the
-    // GL thread is joined; nothing leaks). The four sources are the Kotlin
-    // single-source-of-truth texts (GlesShaderSources), host-validated.
+    // GL thread is joined; nothing leaks). The five sources are the Kotlin
+    // single-source-of-truth texts (GlesShaderSources), host-validated:
+    // vertex + develop + store (the M3 pair) and the blit fragment that
+    // draws the developed texture to the encoder surface (M5).
     static std::unique_ptr<DevelopSession> open(
         const std::string& vertexSource,
         const std::string& vertex310Source,
         const std::string& fragmentSource,
         const std::string& storeFragmentSource,
+        const std::string& blitFragmentSource,
         std::string* detail);
 
     // Drains (at most one in-flight render — the bounded design) and joins
@@ -140,6 +169,34 @@ public:
     // Blocking render; in-flight bounded at one by construction. Safe to
     // call from one non-GL thread at a time (the export engine thread).
     DevelopFrameResult renderFrame(const DevelopFrameRequest& req);
+
+    // ENCODER SURFACE (M5). Hands an ANativeWindow (from a MediaCodec
+    // input Surface) to the GL thread: it wraps the window in
+    // eglCreateWindowSurface ONCE per export, using the session's OWN
+    // config (opened window-capable + recordable for exactly this).
+    // Ownership transfers at call entry (the ANativeWindow acquired by
+    // ANativeWindow_fromSurface is released on the GL thread on every
+    // path — the M4 setSurface shape). A nullptr window detaches and
+    // destroys the current encoder surface. Returns true when the
+    // attach (or detach) succeeded; a failure returns false with the
+    // step named in *detail and NEVER latches the session unhealthy
+    // (the EGL context is fine — the window isn't). Callable from a
+    // different thread than renderFrame (the export engine thread);
+    // safe because both block on the same one-job handoff.
+    bool setEncoderSurface(ANativeWindow* window, std::string* detail);
+
+    // ENCODER RENDER (M5): develop the frame on the GPU (the exact M3
+    // develop pass) and blit the developed texture straight to the
+    // encoder window surface — the store/readback pass is skipped.
+    // [ptsUs] is the frame's encoder presentation timestamp in
+    // microseconds (the SAME normalized pts the writer path uses); it
+    // is stamped via eglPresentationTimeANDROID as ptsUs*1000 ns media
+    // time — never the wall clock. ok=false latches the session
+    // unhealthy (mid-render GL failure semantics, same as renderFrame).
+    // Requires a successful setEncoderSurface first; the refusal is
+    // honest and named, never a crash.
+    DevelopFrameResult renderFrameToEncoder(const DevelopFrameRequest& req,
+                                            int64_t ptsUs);
 
     // See the destructor. Callable from the owning thread.
     void close();

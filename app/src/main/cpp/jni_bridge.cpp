@@ -2713,10 +2713,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // function built the whole pipeline one-shot per call, these hold it. The
 // Kotlin exporter (commit b) drives one session per export job:
 //
-//   nativeDevelopSessionOpen(vertex, vertex310, develop, store) -> handle
+//   nativeDevelopSessionOpen(vertex, vertex310, develop, store, blit)
+//       -> handle
 //   nativeDevelopSessionRenderFrame(handle, clipHandle, frameIndex,
 //                                   exposureEv, highlightReconstruction,
 //                                   keepVignetting, tonemap) -> RGB888 bytes
+//   nativeDevelopSessionSetEncoderSurface(handle, surface) -> ok
+//   nativeDevelopSessionRenderFrameToEncoder(handle, clipHandle, frameIndex,
+//                                            ptsUs, exposureEv,
+//                                            highlightReconstruction,
+//                                            keepVignetting, tonemap) -> ok
 //   nativeDevelopSessionClose(handle)
 //
 // Open compiles the caller-provided Kotlin shader texts (the single source
@@ -2726,6 +2732,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // then hands the decoded CFA to the session's GL thread: only the GL work
 // marshals. Close is idempotent; the destructor also closes.
 //
+// The encoder-surface seams (M5) hand the MediaCodec input Surface to the
+// session: SetEncoderSurface wraps it in an EGL window surface ONCE per
+// export (the session's own config, opened recordable), RenderFrameToEncoder
+// develops on the GPU and blits straight to it — no readback on that path.
+// The surface ownership follows nativePreviewSessionSetSurface's shape
+// (ANativeWindow_fromSurface at entry, release on the GL thread on every
+// path); a refusal returns false with the reason in the last-error slot —
+// the Kotlin dispatcher falls back with ONE honest line, never a crash.
+//
 // The render takes ONLY the four covered grade controls — an uncovered
 // grade cannot even express itself here (the Kotlin coverage gate is the
 // upstream guard; this narrow signature is the second lock).
@@ -2733,11 +2748,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
         JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
-        jstring fragmentSource, jstring storeFragmentSource) {
+        jstring fragmentSource, jstring storeFragmentSource,
+        jstring blitFragmentSource) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
-    // The four sources, each read with the nativeGlesFragmentParity pattern
+    // The five sources, each read with the nativeGlesFragmentParity pattern
     // (GetStringUTFChars -> std::string copy -> Release; null = JNI OOM).
     const char* v300Chars = env->GetStringUTFChars(vertexSource, nullptr);
     if (v300Chars == nullptr) {
@@ -2779,6 +2795,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
     const std::string store(storeChars);
     env->ReleaseStringUTFChars(storeFragmentSource, storeChars);
 
+    const char* blitChars = env->GetStringUTFChars(blitFragmentSource, nullptr);
+    if (blitChars == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: out of memory reading the blit source "
+                 "(recovery: free memory and retry)");
+        return 0;
+    }
+    const std::string blit(blitChars);
+    env->ReleaseStringUTFChars(blitFragmentSource, blitChars);
+
     // Find a free slot (the registry's fixed array bounds the leak surface).
     int slot = -1;
     {
@@ -2799,7 +2825,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
 
     std::string detail;
     std::unique_ptr<gles::DevelopSession> session =
-        gles::DevelopSession::open(v300, v310, frag, store, &detail);
+        gles::DevelopSession::open(v300, v310, frag, store, blit, &detail);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "develop session: " + detail +
@@ -2886,6 +2912,133 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
                  std::string("develop session render: ") + e.what() +
                      " (recovery: reopen the export)");
         return nullptr;
+    }
+}
+
+// ENCODER SURFACE (M5). The MediaCodec input Surface reaches the session
+// through the same ownership shape as nativePreviewSessionSetSurface: the
+// ANativeWindow_fromSurface reference transfers to the session at call
+// entry (the session releases it on the GL thread on every path, so this
+// layer NEVER releases it after a successful fromSurface); a null surface
+// detaches. A refusal is honest — false with the step in the last-error
+// slot — and the Kotlin dispatcher turns it into ONE fallback line.
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionSetEncoderSurface(
+        JNIEnv* env, jclass, jlong sessionHandle, jobject surface) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: invalid session handle "
+                 "(recovery: reopen the export)");
+        return JNI_FALSE;
+    }
+    gles::DevelopSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        session = gDevelopSessions[sessionHandle - 1].get();
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session: session is closed "
+                 "(recovery: reopen the export)");
+        return JNI_FALSE;
+    }
+    ANativeWindow* window = nullptr;
+    if (surface != nullptr) {
+        window = ANativeWindow_fromSurface(env, surface);
+        if (window == nullptr) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                     "develop session: could not acquire the encoder surface "
+                     "(recovery: the export falls back to the CPU develop)");
+            return JNI_FALSE;
+        }
+    }
+    std::string detail;
+    if (!session->setEncoderSurface(window, &detail)) {
+        // Ownership already transferred at entry (even on refusal — the
+        // session released the window); the reason lands in the error slot.
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "develop session encoder surface: " + detail +
+                     " (recovery: the export falls back to the CPU develop)");
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+// ENCODER RENDER (M5). The same decode-on-the-calling-thread shape as
+// nativeDevelopSessionRenderFrame (Source's one-thread rule; the ring
+// amortizes sequential export frames), but the GL thread develops AND
+// blits straight to the encoder window surface — no readback bytes ever
+// cross the seam, so the return is a boolean, not a byte array. [ptsUs]
+// is the frame's normalized encoder presentation timestamp (the same
+// value the writer path's PtsTimeline would stamp); the session
+// multiplies it to nanoseconds media time. ok=false means the export
+// falls back per the dispatcher's one-line rule.
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoder(
+        JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
+        jint frameIndex, jlong ptsUs, jfloat exposureEv,
+        jboolean highlightReconstruction, jboolean keepVignetting,
+        jint tonemap) {
+    (void)env;
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "develop session: invalid session handle "
+                 "(recovery: reopen the export)");
+        return JNI_FALSE;
+    }
+    gles::DevelopSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        session = gDevelopSessions[sessionHandle - 1].get();
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "develop session: session is closed "
+                 "(recovery: reopen the export)");
+        return JNI_FALSE;
+    }
+    rawedit::Source* s = sourceFor(clipHandle);
+    if (!s) return JNI_FALSE;
+    try {
+        Entry& e = gEntries[clipHandle - 1];
+        const CfaBuffer cfa = loadRingFrame(*s, e, frameIndex);
+        if (cfa == nullptr) return JNI_FALSE; // decode failed (error set)
+        const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
+        const rawedit::RawMeta& meta = s->rawMeta();
+
+        gles::DevelopFrameRequest req;
+        req.cfa = cfa.get();
+        req.info = info;
+        req.meta = &meta;
+        req.exposureEv = exposureEv;
+        req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
+        req.keepVignetting = keepVignetting == JNI_TRUE;
+        req.tonemap = tonemap;
+        const gles::DevelopFrameResult res =
+            session->renderFrameToEncoder(req, static_cast<int64_t>(ptsUs));
+        if (!res.ok) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop session encoder render: " + res.detail +
+                         " (recovery: the export falls back to the CPU develop)");
+            return JNI_FALSE;
+        }
+        return JNI_TRUE;
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "develop session encoder render: out of memory decoding the "
+                 "frame (recovery: free memory and retry)");
+        return JNI_FALSE;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("develop session encoder render: ") + e.what() +
+                     " (recovery: reopen the export)");
+        return JNI_FALSE;
     }
 }
 
