@@ -319,12 +319,19 @@ struct PreviewSession::Impl {
     GLuint developProgram = 0;
     GLuint storeProgram = 0;
     GLuint windowProgram = 0;
-    // Uniform locations, resolved ONCE at open (17 develop + 2 store +
-    // 4 window).
+    // Uniform locations, resolved ONCE at open (36 develop + 2 store +
+    // 4 window). The develop set is the 17 base uniforms plus the
+    // pointwise port's 19 (see GlesDevelopSession.cpp's Impl).
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
-          exposureLoc = -1, highlightsLoc = -1, tonemapLoc = -1, oetfLoc = -1;
+          exposureLoc = -1, highlightsLoc = -1, tonemapLoc = -1, oetfLoc = -1,
+          blackPointLoc = -1, whitePointLoc = -1, shadowsLoc = -1,
+          midtonesLoc = -1, contrastLoc = -1, wbManualLoc = -1, tempKLoc = -1,
+          tintLoc = -1, wheelShadowXLoc = -1, wheelShadowYLoc = -1,
+          wheelMidXLoc = -1, wheelMidYLoc = -1, wheelHighXLoc = -1,
+          wheelHighYLoc = -1, splitActiveLoc = -1, splitShadowHueLoc = -1,
+          splitHighlightHueLoc = -1, splitBalanceLoc = -1, saturationLoc = -1;
     GLint storeSrcLoc = -1, storeSizeLoc = -1;
     GLint windowSrcLoc = -1, windowSrcSizeLoc = -1, windowRectLoc = -1,
           windowOrientationLoc = -1;
@@ -679,13 +686,39 @@ bool PreviewSession::Impl::initOnGlThread(
     hasProfileLoc = glGetUniformLocation(developProgram, "uHasProfile");
     exposureLoc = glGetUniformLocation(developProgram, "uExposure");
     highlightsLoc = glGetUniformLocation(developProgram, "uHighlights");
+    blackPointLoc = glGetUniformLocation(developProgram, "uBlackPoint");
+    whitePointLoc = glGetUniformLocation(developProgram, "uWhitePoint");
+    shadowsLoc = glGetUniformLocation(developProgram, "uShadows");
+    midtonesLoc = glGetUniformLocation(developProgram, "uMidtones");
+    contrastLoc = glGetUniformLocation(developProgram, "uContrast");
+    wbManualLoc = glGetUniformLocation(developProgram, "uWbManual");
+    tempKLoc = glGetUniformLocation(developProgram, "uTempK");
+    tintLoc = glGetUniformLocation(developProgram, "uTint");
+    wheelShadowXLoc = glGetUniformLocation(developProgram, "uWheelShadowX");
+    wheelShadowYLoc = glGetUniformLocation(developProgram, "uWheelShadowY");
+    wheelMidXLoc = glGetUniformLocation(developProgram, "uWheelMidX");
+    wheelMidYLoc = glGetUniformLocation(developProgram, "uWheelMidY");
+    wheelHighXLoc = glGetUniformLocation(developProgram, "uWheelHighX");
+    wheelHighYLoc = glGetUniformLocation(developProgram, "uWheelHighY");
+    splitActiveLoc = glGetUniformLocation(developProgram, "uSplitActive");
+    splitShadowHueLoc = glGetUniformLocation(developProgram, "uSplitShadowHue");
+    splitHighlightHueLoc = glGetUniformLocation(developProgram, "uSplitHighlightHue");
+    splitBalanceLoc = glGetUniformLocation(developProgram, "uSplitBalance");
+    saturationLoc = glGetUniformLocation(developProgram, "uSaturation");
     tonemapLoc = glGetUniformLocation(developProgram, "uTonemap");
     oetfLoc = glGetUniformLocation(developProgram, "uOetf");
     if (cfaLoc < 0 || sizeLoc < 0 || cellLoc < 0 || blackLoc < 0 ||
         rangeLoc < 0 || hasShadingLoc < 0 || shadingLoc < 0 ||
         shadingSizeLoc < 0 || hrLoc < 0 || hrGainLoc < 0 || wbLoc < 0 ||
         camLoc < 0 || hasProfileLoc < 0 || exposureLoc < 0 ||
-        highlightsLoc < 0 || tonemapLoc < 0 || oetfLoc < 0) {
+        highlightsLoc < 0 || tonemapLoc < 0 || oetfLoc < 0 ||
+        blackPointLoc < 0 || whitePointLoc < 0 || shadowsLoc < 0 ||
+        midtonesLoc < 0 || contrastLoc < 0 || wbManualLoc < 0 ||
+        tempKLoc < 0 || tintLoc < 0 || wheelShadowXLoc < 0 ||
+        wheelShadowYLoc < 0 || wheelMidXLoc < 0 || wheelMidYLoc < 0 ||
+        wheelHighXLoc < 0 || wheelHighYLoc < 0 || splitActiveLoc < 0 ||
+        splitShadowHueLoc < 0 || splitHighlightHueLoc < 0 ||
+        splitBalanceLoc < 0 || saturationLoc < 0) {
         *detail = "shader-contract: missing a develop uniform";
         return false;
     }
@@ -827,6 +860,11 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     const bool hasProfile = buildCameraToRec709(*req.meta, cam2rgb);
     // Stage 14: exposure = 2^ev (developCpu's own convention).
     const float exposure = std::pow(2.0f, req.exposureEv);
+    // Stages 16/17's asShot gate and stage 19's split guard, hoisted to the
+    // int uniforms the shader branches on (the develop session's shape).
+    const int wbManual = req.asShot ? 0 : 1;
+    const int splitActive =
+        (req.splitShadowHue >= 0.0f || req.splitHighlightHue >= 0.0f) ? 1 : 0;
     // The orientation fold's input, normalized exactly like developToArgb's.
     const int orient = ((req.info.orientationDeg % 360) + 360) % 360;
 
@@ -951,6 +989,27 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     glUniform1i(hasProfileLoc, hasProfile ? 1 : 0);
     glUniform1f(exposureLoc, exposure);
     glUniform1f(highlightsLoc, req.highlights);  // raw; the shader computes s
+    // The ten pointwise stages' raw grade values + the two hoisted int
+    // gates (the develop session's shape verbatim).
+    glUniform1f(blackPointLoc, req.blackPoint);
+    glUniform1f(whitePointLoc, req.whitePoint);
+    glUniform1f(shadowsLoc, req.shadows);
+    glUniform1f(midtonesLoc, req.midtones);
+    glUniform1f(contrastLoc, req.contrast);
+    glUniform1i(wbManualLoc, wbManual);
+    glUniform1f(tempKLoc, req.tempK);
+    glUniform1f(tintLoc, req.tint);
+    glUniform1f(wheelShadowXLoc, req.wheelShadowX);
+    glUniform1f(wheelShadowYLoc, req.wheelShadowY);
+    glUniform1f(wheelMidXLoc, req.wheelMidX);
+    glUniform1f(wheelMidYLoc, req.wheelMidY);
+    glUniform1f(wheelHighXLoc, req.wheelHighX);
+    glUniform1f(wheelHighYLoc, req.wheelHighY);
+    glUniform1i(splitActiveLoc, splitActive);
+    glUniform1f(splitShadowHueLoc, req.splitShadowHue);
+    glUniform1f(splitHighlightHueLoc, req.splitHighlightHue);
+    glUniform1f(splitBalanceLoc, req.splitBalance);
+    glUniform1f(saturationLoc, req.saturation);
     glUniform1i(tonemapLoc, req.tonemap);
     glUniform1i(oetfLoc, 1);  // the preview shape: linearToRec709 in-shader
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);

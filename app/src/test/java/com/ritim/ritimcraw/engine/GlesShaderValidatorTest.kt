@@ -1312,4 +1312,446 @@ class GlesShaderValidatorTest {
             assertEquals("highlights $highlights: max LSB", 0, maxLsb)
         }
     }
+
+    // ---- pointwise host numeric parity: the same TEXT-parity discipline
+    // as the stage-15 case above, one case per ported stage (9-13, 16-20).
+    // Each stage transcribes the CPU loop from core/src/Develop.cpp and
+    // the shipped GLSL block from GlesShaderSources.DEVELOP_FRAGMENT into
+    // Kotlin and compares after the readback quantize. HONESTY: this
+    // locks that the two shipped TEXTS evaluate identically over each
+    // stage's every branch — it is NOT a device parity claim (no GLSL
+    // compiler runs here; the device harness's cases still ride the
+    // neutral defaults of these uniforms, and the owner's multi-control
+    // grade preview/export is the production proof) ----
+
+    // The shared pixel set: every tonal band the smoothstep weights span,
+    // neutrals, saturated single channels, near-ties, out-of-range
+    // headroom and the exact band anchors (0, 0.18, 0.72, 1.0).
+    private val parityPixels = listOf(
+        Triple(0.0f, 0.0f, 0.0f),
+        Triple(0.18f, 0.18f, 0.18f),
+        Triple(0.72f, 0.72f, 0.72f),
+        Triple(1.0f, 1.0f, 1.0f),
+        Triple(0.5f, 0.25f, 0.1f),
+        Triple(0.1f, 0.5f, 0.25f),
+        Triple(0.25f, 0.1f, 0.5f),
+        Triple(0.9f, 0.9f, 0.9f),
+        Triple(1.2f, 0.7f, 0.3f),
+        Triple(0.3f, 1.1f, 0.05f),
+        Triple(0.8f, 0.8000001f, 0.1f),
+        Triple(0.85f, 0.0f, 0.0f),
+    )
+
+    private fun smoothstepfKt(e0: Float, e1: Float, x: Float): Float {
+        // The CPU rawedit::smoothstepf / the shader's smoothstepf, one
+        // shared body (the validator locks the two texts to each other).
+        val t = ((x - e0) / (e1 - e0)).coerceIn(0.0f, 1.0f)
+        return t * t * (3.0f - 2.0f * t)
+    }
+
+    private fun hueGainsKt(hueDeg: Float): FloatArray {
+        // The CPU hueGains lambda / the shader's hueGains helper.
+        val gains = FloatArray(3)
+        for (ch in 0..2) {
+            val center = 120.0f * ch
+            var d = Math.abs(hueDeg - center)
+            if (d > 180.0f) d = 360.0f - d
+            val rad = (d * 3.14159265f / 180.0f).toDouble()
+            gains[ch] = 2.0f * (0.5f + 0.5f * Math.cos(rad).toFloat())
+        }
+        return gains
+    }
+
+    private fun assertStageParity(
+        name: String,
+        values: List<Float>,
+        cpu: (r: Float, g: Float, b: Float, v: Float) -> Triple<Float, Float, Float>,
+        glsl: (r: Float, g: Float, b: Float, v: Float) -> Triple<Float, Float, Float>,
+    ) {
+        values.forEach { v ->
+            var mismatches = 0
+            var maxLsb = 0
+            parityPixels.forEach { (r, g, b) ->
+                val cpuOut = cpu(r, g, b, v)
+                val glslOut = glsl(r, g, b, v)
+                val cpuBytes = intArrayOf(
+                    toByte(cpuOut.first), toByte(cpuOut.second), toByte(cpuOut.third),
+                )
+                val glslBytes = intArrayOf(
+                    toByte(glslOut.first), toByte(glslOut.second), toByte(glslOut.third),
+                )
+                for (c in 0..2) {
+                    val lsb = Math.abs(cpuBytes[c] - glslBytes[c])
+                    if (lsb > 0) mismatches++
+                    if (lsb > maxLsb) maxLsb = lsb
+                }
+            }
+            assertEquals("$name $v: mismatched bytes", 0, mismatches)
+            assertEquals("$name $v: max LSB", 0, maxLsb)
+        }
+    }
+
+    @Test
+    fun stage9_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // CPU: lift remap pinned at white; GLSL: identical gate + math.
+        assertStageParity(
+            "blackPoint", listOf(5f, -5f, 100f, -100f, 0f),
+            cpu = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val lift = -0.25f * (v / 100.0f)
+                    Triple(lift + (1.0f - lift) * r, lift + (1.0f - lift) * g, lift + (1.0f - lift) * b)
+                } else Triple(r, g, b)
+            },
+            glsl = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val lift = -0.25f * (v / 100.0f)
+                    Triple(lift + (1.0f - lift) * r, lift + (1.0f - lift) * g, lift + (1.0f - lift) * b)
+                } else Triple(r, g, b)
+            },
+        )
+    }
+
+    @Test
+    fun stage10_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // Both halves of the ternary (positive brightens, negative pulls
+        // the ceiling down) plus the 0 fast path.
+        assertStageParity(
+            "whitePoint", listOf(5f, -5f, 100f, -100f, 0f),
+            cpu = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val scale = if (v > 0.0f) 1.0f / (1.0f - 0.25f * (v / 100.0f)) else 1.0f + 0.25f * (v / 100.0f)
+                    Triple(r * scale, g * scale, b * scale)
+                } else Triple(r, g, b)
+            },
+            glsl = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val scale = if (v > 0.0f) 1.0f / (1.0f - 0.25f * (v / 100.0f)) else 1.0f + 0.25f * (v / 100.0f)
+                    Triple(r * scale, g * scale, b * scale)
+                } else Triple(r, g, b)
+            },
+        )
+    }
+
+    @Test
+    fun stage11_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // The dark-band gain: wDark spans 1 at black to 0 at midgray.
+        assertStageParity(
+            "shadows", listOf(55f, -55f, 100f, -100f, 0f),
+            cpu = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val strength = v / 100.0f
+                    val mx = maxOf(r, maxOf(g, b))
+                    val wDark = smoothstepfKt(0.18f, 0.0f, mx)
+                    val gain = Math.pow(2.0, (strength * wDark).toDouble()).toFloat()
+                    Triple(r * gain, g * gain, b * gain)
+                } else Triple(r, g, b)
+            },
+            glsl = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val strength = v / 100.0f
+                    val mx = maxOf(r, maxOf(g, b))
+                    val wDark = smoothstepfKt(0.18f, 0.0f, mx)
+                    val gain = Math.pow(2.0, (strength * wDark).toDouble()).toFloat()
+                    Triple(r * gain, g * gain, b * gain)
+                } else Triple(r, g, b)
+            },
+        )
+    }
+
+    @Test
+    fun stage12_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // The midgray tent: 0 at black, 1 at 0.18, 0 again by 0.72.
+        assertStageParity(
+            "midtones", listOf(55f, -55f, 100f, -100f, 0f),
+            cpu = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val strength = v / 100.0f
+                    val mx = maxOf(r, maxOf(g, b))
+                    val wMid = smoothstepfKt(0.0f, 0.18f, mx) *
+                        (1.0f - smoothstepfKt(0.18f, 0.72f, mx))
+                    val gain = Math.pow(2.0, (strength * wMid).toDouble()).toFloat()
+                    Triple(r * gain, g * gain, b * gain)
+                } else Triple(r, g, b)
+            },
+            glsl = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val strength = v / 100.0f
+                    val mx = maxOf(r, maxOf(g, b))
+                    val wMid = smoothstepfKt(0.0f, 0.18f, mx) *
+                        (1.0f - smoothstepfKt(0.18f, 0.72f, mx))
+                    val gain = Math.pow(2.0, (strength * wMid).toDouble()).toFloat()
+                    Triple(r * gain, g * gain, b * gain)
+                } else Triple(r, g, b)
+            },
+        )
+    }
+
+    @Test
+    fun stage13_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // The pivot slope: +100 doubles the distance from 0.18, -100
+        // collapses to the pivot. The CPU local c is the contrast value;
+        // the shader names it slopeC — the rename the comments document,
+        // same number.
+        assertStageParity(
+            "contrast", listOf(55f, -55f, 100f, -100f, 0f),
+            cpu = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val c = v / 100.0f
+                    val slope = 1.0f + c
+                    val pivot = 0.18f
+                    Triple(
+                        pivot + (r - pivot) * slope,
+                        pivot + (g - pivot) * slope,
+                        pivot + (b - pivot) * slope,
+                    )
+                } else Triple(r, g, b)
+            },
+            glsl = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val slopeC = v / 100.0f
+                    val slope = 1.0f + slopeC
+                    val pivot = 0.18f
+                    Triple(
+                        pivot + (r - pivot) * slope,
+                        pivot + (g - pivot) * slope,
+                        pivot + (b - pivot) * slope,
+                    )
+                } else Triple(r, g, b)
+            },
+        )
+    }
+
+    @Test
+    fun stage16_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // The warm/cool diagonal: the asShot gate is CPU-side on both
+        // legs (the uWbManual hoist), so the parity case measures the
+        // in-gate math over warm (6500), cool (3200), the |tempShift|
+        // threshold boundary (5600 -> tempShift 0 -> skip) and the 0
+        // fast path.
+        assertStageParity(
+            "tempK", listOf(6500f, 3200f, 5600f, 0f),
+            cpu = { r, g, b, v ->
+                val tempShift = if (v > 0.0f) (Math.log((v / 5600.0f).toDouble()) / Math.log(2.0)).toFloat() else 0.0f
+                if (Math.abs(tempShift) > 1e-4f) {
+                    val warmGain = Math.pow(2.0, (0.35f * tempShift).toDouble()).toFloat()
+                    val coolGain = Math.pow(2.0, (-0.35f * tempShift).toDouble()).toFloat()
+                    Triple(
+                        r * warmGain,
+                        g * Math.sqrt((warmGain * coolGain).toDouble()).toFloat(),
+                        b * coolGain,
+                    )
+                } else Triple(r, g, b)
+            },
+            glsl = { r, g, b, v ->
+                val tempShift = if (v > 0.0f) (Math.log((v / 5600.0f).toDouble()) / Math.log(2.0)).toFloat() else 0.0f
+                if (Math.abs(tempShift) > 1e-4f) {
+                    val warmGain = Math.pow(2.0, (0.35f * tempShift).toDouble()).toFloat()
+                    val coolGain = Math.pow(2.0, (-0.35f * tempShift).toDouble()).toFloat()
+                    Triple(
+                        r * warmGain,
+                        g * Math.sqrt((warmGain * coolGain).toDouble()).toFloat(),
+                        b * coolGain,
+                    )
+                } else Triple(r, g, b)
+            },
+        )
+    }
+
+    @Test
+    fun stage17_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // The green-channel-only push; the asShot half of the CPU guard
+        // is the uWbManual hoist on both legs, the tint half is the 0.0
+        // fast path.
+        assertStageParity(
+            "tint", listOf(55f, -55f, 100f, -100f, 0f),
+            cpu = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val greenGain = Math.pow(2.0, (0.4f * (v / 100.0f)).toDouble()).toFloat()
+                    Triple(r, g * greenGain, b)
+                } else Triple(r, g, b)
+            },
+            glsl = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val greenGain = Math.pow(2.0, (0.4f * (v / 100.0f)).toDouble()).toFloat()
+                    Triple(r, g * greenGain, b)
+                } else Triple(r, g, b)
+            },
+        )
+    }
+
+    @Test
+    fun stage18_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // The wheel: one (x, y) pair per band weighted by the partition
+        // of unity. The case drives each band alone (a shadow-only offset,
+        // a mid-only offset, a high-only offset) so every weight term
+        // carries, plus the all-zero fast path.
+        data class Wheel(val sx: Float, val sy: Float, val mx: Float, val my: Float, val hx: Float, val hy: Float)
+        val wheels = listOf(
+            Wheel(0.2f, -0.1f, 0.0f, 0.0f, 0.0f, 0.0f),
+            Wheel(0.0f, 0.0f, 0.3f, 0.25f, 0.0f, 0.0f),
+            Wheel(0.0f, 0.0f, 0.0f, 0.0f, -0.4f, 0.5f),
+            Wheel(0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f),
+            Wheel(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f),
+        )
+        wheels.forEach { w ->
+            var mismatches = 0
+            var maxLsb = 0
+            parityPixels.forEach { (r, g, b) ->
+                fun cpuWheel(): Triple<Float, Float, Float> {
+                    val mx = maxOf(r, maxOf(g, b))
+                    val wDark = smoothstepfKt(0.18f, 0.0f, mx)
+                    val wMid = smoothstepfKt(0.0f, 0.18f, mx) *
+                        (1.0f - smoothstepfKt(0.18f, 0.72f, mx))
+                    val wHigh = smoothstepfKt(0.18f, 0.72f, mx)
+                    val xBlend = wDark * w.sx + wMid * w.mx + wHigh * w.hx
+                    val yBlend = wDark * w.sy + wMid * w.my + wHigh * w.hy
+                    return Triple(
+                        r * Math.pow(2.0, (0.5f * xBlend).toDouble()).toFloat(),
+                        g * Math.pow(2.0, (0.5f * yBlend).toDouble()).toFloat(),
+                        b * Math.pow(2.0, (-0.5f * xBlend).toDouble()).toFloat(),
+                    )
+                }
+                fun glslWheel(): Triple<Float, Float, Float> {
+                    val mx = maxOf(r, maxOf(g, b))
+                    val wDark = smoothstepfKt(0.18f, 0.0f, mx)
+                    val wMid = smoothstepfKt(0.0f, 0.18f, mx) *
+                        (1.0f - smoothstepfKt(0.18f, 0.72f, mx))
+                    val wHigh = smoothstepfKt(0.18f, 0.72f, mx)
+                    val xBlend = wDark * w.sx + wMid * w.mx + wHigh * w.hx
+                    val yBlend = wDark * w.sy + wMid * w.my + wHigh * w.hy
+                    return Triple(
+                        r * Math.pow(2.0, (0.5f * xBlend).toDouble()).toFloat(),
+                        g * Math.pow(2.0, (0.5f * yBlend).toDouble()).toFloat(),
+                        b * Math.pow(2.0, (-0.5f * xBlend).toDouble()).toFloat(),
+                    )
+                }
+                val cpuOut = cpuWheel()
+                val glslOut = glslWheel()
+                val cpuBytes = intArrayOf(
+                    toByte(cpuOut.first), toByte(cpuOut.second), toByte(cpuOut.third),
+                )
+                val glslBytes = intArrayOf(
+                    toByte(glslOut.first), toByte(glslOut.second), toByte(glslOut.third),
+                )
+                for (c in 0..2) {
+                    val lsb = Math.abs(cpuBytes[c] - glslBytes[c])
+                    if (lsb > 0) mismatches++
+                    if (lsb > maxLsb) maxLsb = lsb
+                }
+            }
+            assertEquals("wheel $w: mismatched bytes", 0, mismatches)
+            assertEquals("wheel $w: max LSB", 0, maxLsb)
+        }
+    }
+
+    @Test
+    fun stage19_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // The split tints: shadow hue alone, highlight hue alone, both,
+        // a balance-shifted crossover and the off sentinel. The -1 = off
+        // sentinel is the uSplitActive hoist's own input: the case feeds
+        // the in-gate math the same (>= 0 ? hueGains : unity) fallback
+        // both legs carry.
+        data class Split(val sh: Float, val hl: Float, val balance: Float)
+        val splits = listOf(
+            Split(30f, -1f, 0f),
+            Split(-1f, 200f, 0f),
+            Split(45f, 210f, 0f),
+            Split(30f, 200f, 50f),
+            Split(-1f, -1f, 0f),
+        )
+        splits.forEach { s ->
+            var mismatches = 0
+            var maxLsb = 0
+            parityPixels.forEach { (r, g, b) ->
+                // CPU: the Develop.cpp loop over the std::array gains,
+                // channel counter named c.
+                fun cpuSplit(): Triple<Float, Float, Float> {
+                    val m = 0.18f * Math.pow(2.0, (s.balance / 100.0f).toDouble()).toFloat()
+                    val shGains = if (s.sh >= 0.0f) hueGainsKt(s.sh) else floatArrayOf(1.0f, 1.0f, 1.0f)
+                    val hlGains = if (s.hl >= 0.0f) hueGainsKt(s.hl) else floatArrayOf(1.0f, 1.0f, 1.0f)
+                    val tintAmount = 0.35f
+                    val mx = maxOf(r, maxOf(g, b))
+                    val wShadow = smoothstepfKt(m, 0.0f, mx)
+                    val wHighlight = smoothstepfKt(m, 1.0f, mx)
+                    val out = FloatArray(3)
+                    for (c in 0..2) {
+                        val gain = Math.pow(
+                            2.0,
+                            (tintAmount * (wShadow * (shGains[c] - 1.0f) +
+                                wHighlight * (hlGains[c] - 1.0f))).toDouble(),
+                        ).toFloat()
+                        out[c] = floatArrayOf(r, g, b)[c] * gain
+                    }
+                    return Triple(out[0], out[1], out[2])
+                }
+                // GLSL: the shipped block, channel counter renamed ch
+                // (c is the pixel vector there) — the rename the shader
+                // comments document, same loop.
+                fun glslSplit(): Triple<Float, Float, Float> {
+                    val m = 0.18f * Math.pow(2.0, (s.balance / 100.0f).toDouble()).toFloat()
+                    val shGains = if (s.sh >= 0.0f) hueGainsKt(s.sh) else floatArrayOf(1.0f, 1.0f, 1.0f)
+                    val hlGains = if (s.hl >= 0.0f) hueGainsKt(s.hl) else floatArrayOf(1.0f, 1.0f, 1.0f)
+                    val tintAmount = 0.35f
+                    val mx = maxOf(r, maxOf(g, b))
+                    val wShadow = smoothstepfKt(m, 0.0f, mx)
+                    val wHighlight = smoothstepfKt(m, 1.0f, mx)
+                    val out = FloatArray(3)
+                    for (ch in 0..2) {
+                        val gain = Math.pow(
+                            2.0,
+                            (tintAmount * (wShadow * (shGains[ch] - 1.0f) +
+                                wHighlight * (hlGains[ch] - 1.0f))).toDouble(),
+                        ).toFloat()
+                        out[ch] = floatArrayOf(r, g, b)[ch] * gain
+                    }
+                    return Triple(out[0], out[1], out[2])
+                }
+                val cpuOut = cpuSplit()
+                val glslOut = glslSplit()
+                val cpuBytes = intArrayOf(
+                    toByte(cpuOut.first), toByte(cpuOut.second), toByte(cpuOut.third),
+                )
+                val glslBytes = intArrayOf(
+                    toByte(glslOut.first), toByte(glslOut.second), toByte(glslOut.third),
+                )
+                for (c in 0..2) {
+                    val lsb = Math.abs(cpuBytes[c] - glslBytes[c])
+                    if (lsb > 0) mismatches++
+                    if (lsb > maxLsb) maxLsb = lsb
+                }
+            }
+            assertEquals("split $s: mismatched bytes", 0, mismatches)
+            assertEquals("split $s: max LSB", 0, maxLsb)
+        }
+    }
+
+    @Test
+    fun stage20_host_parity_the_glsl_block_matches_the_cpu_loop() {
+        // The chroma scaling around luma, last of the color stages.
+        assertStageParity(
+            "saturation", listOf(55f, -55f, 100f, -100f, 0f),
+            cpu = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val f = Math.pow(2.0, (0.75f * (v / 100.0f)).toDouble()).toFloat()
+                    val luma = 0.2126f * r + 0.7152f * g + 0.0722f * b
+                    Triple(
+                        luma + (r - luma) * f,
+                        luma + (g - luma) * f,
+                        luma + (b - luma) * f,
+                    )
+                } else Triple(r, g, b)
+            },
+            glsl = { r, g, b, v ->
+                if (v != 0.0f) {
+                    val f = Math.pow(2.0, (0.75f * (v / 100.0f)).toDouble()).toFloat()
+                    val luma = 0.2126f * r + 0.7152f * g + 0.0722f * b
+                    Triple(
+                        luma + (r - luma) * f,
+                        luma + (g - luma) * f,
+                        luma + (b - luma) * f,
+                    )
+                } else Triple(r, g, b)
+            },
+        )
+    }
 }

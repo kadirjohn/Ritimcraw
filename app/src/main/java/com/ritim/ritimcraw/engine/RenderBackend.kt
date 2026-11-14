@@ -200,18 +200,26 @@ object BackendRules {
      * GlesShaderSources.DEVELOP_FRAGMENT): the per-pixel pure stages fused
      * into the one ES 3.00 draw — normalization (1), lens shading (2),
      * highlight reconstruction (3), demosaic (4), WB (5), color transform
-     * (6), exposure (14), highlights (15), tonemapping (23) and the OETF
-     * tail. Stages 2 and 3 are the DEFAULT grade's own toggles
-     * (keepVignetting and highlightReconstruction both default true), so
-     * porting them is what lets a default-grade GPU request actually stay
-     * on GPU; stage 23 is the ACES fit plus the full AgX family (modes
-     * 1-5, the CPU's exact math behind uTonemap); stage 15 is the
-     * highlights shoulder (knee 0.75, the monotone shoulder and the
-     * uniform gain, the CPU's exact math behind uHighlights — 0.0 is the
-     * CPU's own skip). Everything else in the 24-stage CPU contract
+     * (6), the ten pointwise grade stages (9 black point, 10 white point,
+     * 11 shadows, 12 midtones, 13 contrast, 16 temperature, 17 tint,
+     * 18 color wheel, 19 split tone, 20 saturation), exposure (14),
+     * highlights (15), tonemapping (23) and the OETF tail. Each of the ten
+     * pointwise stages is the CPU loop's exact math behind a raw-value
+     * uniform (0.0 = the CPU's own skip), with the 16/17 asShot gate
+     * hoisted to the CPU-computed uWbManual and the 19 split gate to
+     * uSplitActive; a multi-control grade therefore stays on GPU instead
+     * of falling back per control. Stages 2 and 3 are the DEFAULT grade's
+     * own toggles (keepVignetting and highlightReconstruction both default
+     * true), so porting them is what lets a default-grade GPU request
+     * actually stay on GPU; stage 23 is the ACES fit plus the full AgX
+     * family (modes 1-5, the CPU's exact math behind uTonemap); stage 15
+     * is the highlights shoulder (knee 0.75, the monotone shoulder and
+     * the uniform gain, the CPU's exact math behind uHighlights — 0.0 is
+     * the CPU's own skip). Everything else in the 24-stage CPU contract
      * falls back to CPU when active (see [fragmentUncoveredStages]).
      */
-    val FRAGMENT_COVERED_STAGES: Set<Int> = setOf(1, 2, 3, 4, 5, 6, 14, 15, 23)
+    val FRAGMENT_COVERED_STAGES: Set<Int> =
+        setOf(1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23)
 
     /**
      * The fragment path's honest uncovered list, as stage number ->
@@ -229,24 +237,17 @@ object BackendRules {
      * metadata shape. Stage 23 left it with the tonemap port: the shader
      * carries the ACES fit and every AgX mode (1-5) behind uTonemap,
      * the CPU's exact math, so an active tonemap grade no longer forces
-     * the CPU path. Stage 15 left it with the highlights port: the
-     * shader carries the CPU stage-15 shoulder (knee 0.75, the monotone
+     * the CPU path. Stage 15 left it with the highlights port: the shader
+     * carries the CPU stage-15 shoulder (knee 0.75, the monotone
      * shoulder, the uniform gain) behind uHighlights, so an active
-     * highlights grade no longer forces the CPU path.
+     * highlights grade no longer forces the CPU path. The ten pointwise
+     * grade stages (9-13, 16-20) left it with the pointwise port: the
+     * shader carries each CPU loop verbatim behind its raw-value uniform,
+     * so a multi-control grade no longer forces the CPU path per control.
      */
     val FRAGMENT_UNCOVERED_STAGES: Map<Int, String> = linkedMapOf(
         7 to "chroma-denoise",        // grade.chromaDenoise != 0
         8 to "noise-reduction",       // grade.noiseReduction != 0
-        9 to "black-point",           // grade.blackPoint != 0
-        10 to "white-point",          // grade.whitePoint != 0
-        11 to "shadows",              // grade.shadows != 0
-        12 to "midtones",             // grade.midtones != 0
-        13 to "contrast",             // grade.contrast != 0
-        16 to "temperature",          // !grade.asShot && grade.tempK != 5600
-        17 to "tint",                 // !grade.asShot && grade.tint != 0
-        18 to "color-wheel",          // any wheel offset != 0
-        19 to "split-tone",           // splitShadowHue/HighlightHue >= 0
-        20 to "saturation",           // grade.saturation != 0
         21 to "sharpness",            // grade.sharpness != 0
         22 to "detail",               // grade.detail != 0
         24 to "lut",                  // lut selected && grade.lutStrength > 0
@@ -270,37 +271,25 @@ object BackendRules {
      * deliverable D: no active effect is silently skipped; the GPU path
      * only takes a frame when EVERY active stage is covered).
      *
-     * Stages 2, 3, 15 and 23 are no longer listed: all four are covered
-     * by the fragment pass. Stage 2's map-state guard moved into the
-     * shader's uniform (uHasShading — the CPU-side gate computed where
-     * the map state is known; see [fragmentShadingApplies]), stage 3's
-     * toggle moved into uHr, stage 15's strength moved into uHighlights
-     * (the CPU's exact shoulder math), and stage 23's mode moved into
-     * uTonemap (the ACES fit and every AgX look, the CPU's exact math).
-     * A keepVignetting/highlightReconstruction/highlights/tonemap grade
-     * is therefore NOT an uncovered-stage fallback anymore.
+     * Stages 2, 3, 15, 23 and the ten pointwise grade stages (9-13,
+     * 16-20) are no longer listed: all of them are covered by the
+     * fragment pass. Stage 2's map-state guard moved into the shader's
+     * uniform (uHasShading — the CPU-side gate computed where the map
+     * state is known; see [fragmentShadingApplies]), stage 3's toggle
+     * moved into uHr, stage 15's strength moved into uHighlights (the
+     * CPU's exact shoulder math), and stage 23's mode moved into uTonemap
+     * (the ACES fit and every AgX look, the CPU's exact math). The ten
+     * pointwise stages moved with the pointwise port: each CPU loop's
+     * exact math sits behind its raw-value uniform (the 16/17 asShot
+     * half hoisted to uWbManual, the 19 split gate to uSplitActive), so
+     * an active black-point/white-point/shadows/midtones/contrast/
+     * temperature/tint/color-wheel/split-tone/saturation grade is NOT
+     * an uncovered-stage fallback anymore.
      */
     fun fragmentUncoveredStages(grade: GradeK): List<Pair<Int, String>> {
         val active = mutableListOf<Pair<Int, String>>()
         if (grade.chromaDenoise != 0f) active += 7 to "chroma-denoise"
         if (grade.noiseReduction != 0f) active += 8 to "noise-reduction"
-        if (grade.blackPoint != 0f) active += 9 to "black-point"
-        if (grade.whitePoint != 0f) active += 10 to "white-point"
-        if (grade.shadows != 0f) active += 11 to "shadows"
-        if (grade.midtones != 0f) active += 12 to "midtones"
-        if (grade.contrast != 0f) active += 13 to "contrast"
-        if (!grade.asShot && grade.tempK != 5600f) active += 16 to "temperature"
-        if (!grade.asShot && grade.tint != 0f) active += 17 to "tint"
-        if (grade.wheelShadowX != 0f || grade.wheelShadowY != 0f ||
-            grade.wheelMidX != 0f || grade.wheelMidY != 0f ||
-            grade.wheelHighX != 0f || grade.wheelHighY != 0f
-        ) {
-            active += 18 to "color-wheel"
-        }
-        if (grade.splitShadowHue >= 0f || grade.splitHighlightHue >= 0f) {
-            active += 19 to "split-tone"
-        }
-        if (grade.saturation != 0f) active += 20 to "saturation"
         if (grade.sharpness != 0f) active += 21 to "sharpness"
         if (grade.detail != 0f) active += 22 to "detail"
         if (grade.lutId != null && grade.lutStrength > 0f) active += 24 to "lut"

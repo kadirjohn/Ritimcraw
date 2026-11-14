@@ -767,15 +767,19 @@ class EditorPreviewLogicTest {
 
     @Test
     fun gpu_eligible_for_the_fragment_covered_controls() {
-        // The five controls the GPU session's render signature carries
-        // (exposure 14, highlights 15, highlight reconstruction 3,
-        // vignetting 2, tonemap 23) — all fragment-covered, so the GPU
-        // path may serve. This is the eligibility the playback use case
-        // rides: grade at HIGH with AgX tonemap and the owner's routine
-        // highlights recovery (-55 — the stage-15 shoulder behind
-        // uHighlights, the same covered knob the export gate rides).
-        // Contrast stays 0 here: stage 13 is UNCOVERED, so a contrast
-        // move forces the CPU path (the test below).
+        // The controls the GPU session's render signature carries — the
+        // five base ones (exposure 14, highlights 15, highlight
+        // reconstruction 3, vignetting 2, tonemap 23) plus the ten
+        // pointwise stages' raw values since the pointwise port (black
+        // point 9, white point 10, shadows 11, midtones 12, contrast 13,
+        // temperature 16, tint 17, the color wheel 18, split tone 19,
+        // saturation 20) — all fragment-covered, so the GPU path may
+        // serve a multi-control grade end to end. This is the
+        // eligibility the playback use case rides: grade at HIGH with
+        // AgX tonemap, the owner's routine highlights recovery (-55 —
+        // the stage-15 shoulder behind uHighlights), and a real
+        // multi-control move (shadows + manual temperature + saturation
+        // + the color wheel + split tone) all at once.
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(
@@ -784,6 +788,24 @@ class EditorPreviewLogicTest {
                     highlightReconstruction = false,
                     keepVignetting = false,
                     tonemap = 1,
+                    blackPoint = 5f,
+                    whitePoint = -5f,
+                    shadows = 55f,
+                    midtones = -55f,
+                    contrast = 100f,
+                    tempK = 6500f,
+                    tint = 30f,
+                    saturation = -40f,
+                    asShot = false,
+                    wheelShadowX = 0.25f,
+                    wheelShadowY = -0.25f,
+                    wheelMidX = 0.5f,
+                    wheelMidY = -0.5f,
+                    wheelHighX = 0.75f,
+                    wheelHighY = -0.75f,
+                    splitShadowHue = 30f,
+                    splitHighlightHue = 210f,
+                    splitBalance = -25f,
                 ),
                 gyroWarpActive = false,
                 cropActive = false,

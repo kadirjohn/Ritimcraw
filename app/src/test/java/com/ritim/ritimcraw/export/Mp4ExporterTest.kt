@@ -2178,16 +2178,26 @@ class Mp4ExporterTest {
         var lastKeepVignetting = false
         var lastTonemap = -1
 
+        // The ten pointwise stages' raw values the last READBACK render
+        // carried, in the seam's parameter order — the verbatim
+        // pass-through lock's snapshot (a swapped or dropped parameter in
+        // the dispatcher fails the data-class equality with the field
+        // named).
+        var lastPointwise: PointwiseControls? = null
+
         // M5 recorders: every setEncoderSurface call (handle + the surface
         // object handed in, or the null detach) and every encoder render.
         // lastEncoderRotationDeg records the rotation the dispatch carried
         // (the surface-gpu vertical deliverable: 0 for upright, the
-        // effective 90/180/270 for a rotated eligible job).
+        // effective 90/180/270 for a rotated eligible job). The encoder
+        // blit reuses the SAME develop program, so the pointwise recorder
+        // rides it too.
         val encoderSurfaces = ArrayList<Pair<Long, Any?>>()
         val encoderRendered = ArrayList<Int>()
         var lastEncoderPtsUs = -1L
         var lastEncoderSessionHandle = 0L
         var lastEncoderRotationDeg = Int.MIN_VALUE
+        var lastEncoderPointwise: PointwiseControls? = null
 
         override fun probe(): DoubleArray? {
             probeCalls++
@@ -2210,6 +2220,24 @@ class Mp4ExporterTest {
             frameIndex: Int,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -2226,6 +2254,13 @@ class Mp4ExporterTest {
             lastHighlightReconstruction = highlightReconstruction
             lastKeepVignetting = keepVignetting
             lastTonemap = tonemap
+            lastPointwise = PointwiseControls(
+                blackPoint, whitePoint, shadows, midtones, contrast,
+                tempK, tint, saturation, asShot,
+                wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+                wheelHighX, wheelHighY,
+                splitShadowHue, splitHighlightHue, splitBalance,
+            )
             return frameBytes
         }
 
@@ -2242,6 +2277,24 @@ class Mp4ExporterTest {
             ptsUs: Long,
             exposureEv: Float,
             highlights: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            asShot: Boolean,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
@@ -2254,6 +2307,13 @@ class Mp4ExporterTest {
             lastEncoderPtsUs = ptsUs
             lastEncoderSessionHandle = sessionHandle
             lastEncoderRotationDeg = rotationDeg
+            lastEncoderPointwise = PointwiseControls(
+                blackPoint, whitePoint, shadows, midtones, contrast,
+                tempK, tint, saturation, asShot,
+                wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+                wheelHighX, wheelHighY,
+                splitShadowHue, splitHighlightHue, splitBalance,
+            )
             return true
         }
 
@@ -2264,15 +2324,43 @@ class Mp4ExporterTest {
         override fun lastDetail(): String? = detail ?: encoderDetail
     }
 
+    /**
+     * The ten pointwise stages' raw values one render carried, in the
+     * seam's parameter order — shared by the readback and the encoder
+     * recorders so a swapped or dropped parameter fails the equality with
+     * the field named.
+     */
+    private data class PointwiseControls(
+        val blackPoint: Float,
+        val whitePoint: Float,
+        val shadows: Float,
+        val midtones: Float,
+        val contrast: Float,
+        val tempK: Float,
+        val tint: Float,
+        val saturation: Float,
+        val asShot: Boolean,
+        val wheelShadowX: Float,
+        val wheelShadowY: Float,
+        val wheelMidX: Float,
+        val wheelMidY: Float,
+        val wheelHighX: Float,
+        val wheelHighY: Float,
+        val splitShadowHue: Float,
+        val splitHighlightHue: Float,
+        val splitBalance: Float,
+    )
+
     @Test
     fun covered_gpu_job_develops_every_frame_on_the_gpu_session() {
         // The dispatch's happy path: GPU_EXPERIMENTAL + a covered grade +
         // green probe/parity -> the GPU session renders EVERY frame, the
         // CPU session's renderFrame is never called, and the session is
-        // opened and closed exactly once. The render call carries EXACTLY
-        // the five fragment-covered grade controls (the NativeSource
-        // signature lock's Kotlin mirror) — highlights rides through at
-        // the stage-15 value.
+        // opened and closed exactly once. The render call carries the
+        // fragment-covered grade controls (the NativeSource signature
+        // lock's Kotlin mirror) — highlights rides through at the stage-15
+        // value, and since the pointwise port the ten stages' raw values
+        // ride too, so a multi-control grade stays on GPU end to end.
         val session = FakeSession(frames = 2, audio = false)
         val writer = FakeWriter()
         val gpu = FakeGpuDevelop()
@@ -2289,6 +2377,24 @@ class Mp4ExporterTest {
                 highlightReconstruction = false,
                 keepVignetting = false,
                 tonemap = 2,
+                blackPoint = 5f,
+                whitePoint = -5f,
+                shadows = 55f,
+                midtones = -55f,
+                contrast = 100f,
+                tempK = 6500f,
+                tint = 30f,
+                saturation = -40f,
+                asShot = false,
+                wheelShadowX = 0.25f,
+                wheelShadowY = -0.25f,
+                wheelMidX = 0.5f,
+                wheelMidY = -0.5f,
+                wheelHighX = 0.75f,
+                wheelHighY = -0.75f,
+                splitShadowHue = 30f,
+                splitHighlightHue = 210f,
+                splitBalance = -25f,
             ),
             "/tmp/out.partial",
         )
@@ -2304,10 +2410,27 @@ class Mp4ExporterTest {
         assertFalse(gpu.lastHighlightReconstruction)
         assertFalse(gpu.lastKeepVignetting)
         assertEquals(2, gpu.lastTonemap)
+        // The ten pointwise stages ride the dispatch verbatim, each raw
+        // grade value in the established order — a swapped pair or a
+        // dropped stage fails this equality with the field named.
+        assertEquals(
+            PointwiseControls(
+                blackPoint = 5f, whitePoint = -5f,
+                shadows = 55f, midtones = -55f, contrast = 100f,
+                tempK = 6500f, tint = 30f, saturation = -40f,
+                asShot = false,
+                wheelShadowX = 0.25f, wheelShadowY = -0.25f,
+                wheelMidX = 0.5f, wheelMidY = -0.5f,
+                wheelHighX = 0.75f, wheelHighY = -0.75f,
+                splitShadowHue = 30f, splitHighlightHue = 210f,
+                splitBalance = -25f,
+            ),
+            gpu.lastPointwise,
+        )
         assertEquals(listOf(1L), gpu.closedHandles) // closed exactly once
         assertEquals(2, writer.videoFrames) // the packed tail consumed both
         // No develop fallback: the dispatch chose GLES and it held — the
-        // highlights grade is covered now, so it stays GPU.
+        // multi-control grade is covered now, so it stays GPU.
         assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
     }
 

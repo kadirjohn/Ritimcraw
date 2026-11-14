@@ -47,16 +47,20 @@
 // runs the fused covered stages 1 (black/white), 2 (lens shading), 3
 // (highlight reconstruction), 4 (bilinear demosaic), 5 (WB = guarded
 // 1/asShotNeutral), 6 (camera -> Rec.709 via the buildCameraToRec709
-// matrix, uploaded row-major with transpose=GL_TRUE), 14 (exposure =
-// 2^ev), 15 (highlights = the CPU stage-15 shoulder behind uHighlights),
-// 23 (tonemap modes 0-5) and the OETF tail (uOetf=1 — the shader's
-// linearToRec709 is textually identical to core/src/Transfer.cpp's, the
-// commit-verified match). The readback quantize is the toByte tail
-// verbatim (clamp [0,1], then v*255+0.5) — linearToRec709 is NOT applied
-// again: the shader already did. The caller's grade must have every active
-// stage inside the fragment-covered set (BackendRules' vocabulary gates
-// that on the Kotlin side; this API takes only the five covered grade
-// controls precisely so an uncovered grade cannot reach it).
+// matrix, uploaded row-major with transpose=GL_TRUE), the ten pointwise
+// grade stages (9 black point, 10 white point, 11 shadows, 12 midtones,
+// 13 contrast, 16 temperature, 17 tint, 18 color wheel, 19 split tone,
+// 20 saturation — each the CPU loop's exact math behind a raw-value
+// uniform), 14 (exposure = 2^ev), 15 (highlights = the CPU stage-15
+// shoulder behind uHighlights), 23 (tonemap modes 0-5) and the OETF tail
+// (uOetf=1 — the shader's linearToRec709 is textually identical to
+// core/src/Transfer.cpp's, the commit-verified match). The readback
+// quantize is the toByte tail verbatim (clamp [0,1], then v*255+0.5) —
+// linearToRec709 is NOT applied again: the shader already did. The
+// caller's grade must have every active stage inside the fragment-covered
+// set (BackendRules' vocabulary gates that on the Kotlin side; this API
+// takes the fragment-covered grade controls precisely so an uncovered
+// grade cannot reach it).
 //
 // FAILURE SEMANTICS: a GL failure mid-render returns ok=false with the
 // step named in [detail] AND LATCHES the session unhealthy — later
@@ -124,14 +128,36 @@ namespace gles {
 // One render request. [cfa] and [meta] are BORROWED: the caller must keep
 // them alive until renderFrame() returns (it blocks on the GL thread, so
 // stack locals are fine). [info] and the grade controls are copied.
-// The grade controls are exactly the fragment-covered set's knobs; see the
-// color contract above.
+// The grade controls are the fragment-covered set's knobs — every one a
+// RAW grade value the shader maps itself (0.0f is the CPU's own neutral
+// skip), with the two CPU-side gates hoisted C++-computed: asShot feeds
+// uWbManual (stages 16/17) and the split hues feed uSplitActive (stage
+// 19), exactly like keepVignetting feeds the shading gate. See the color
+// contract above.
 struct DevelopFrameRequest {
     const std::vector<uint16_t>* cfa = nullptr;  // w*h row-major
     rawedit::FrameInfo info{};
     const rawedit::RawMeta* meta = nullptr;
     float exposureEv = 0.0f;
     float highlights = 0.0f;  // raw grade.highlights; the shader computes s
+    float blackPoint = 0.0f;  // raw grade.blackPoint; the shader computes the lift
+    float whitePoint = 0.0f;  // raw grade.whitePoint; the shader computes the gain
+    float shadows = 0.0f;     // raw grade.shadows; the shader computes the gamma
+    float midtones = 0.0f;    // raw grade.midtones; the shader computes the curve
+    float contrast = 0.0f;    // raw grade.contrast; the shader computes the pivot
+    float tempK = 5600.0f;   // raw grade.tempK; the shader computes the gains
+    float tint = 0.0f;       // raw grade.tint; the shader computes the gains
+    float saturation = 0.0f; // raw grade.saturation; the shader computes the mix
+    bool asShot = true;      // grade.asShot; feeds uWbManual (stages 16/17)
+    float wheelShadowX = 0.0f;  // raw grade.wheelShadowX; the shader computes the offset
+    float wheelShadowY = 0.0f;  // raw grade.wheelShadowY; the shader computes the offset
+    float wheelMidX = 0.0f;     // raw grade.wheelMidX; the shader computes the offset
+    float wheelMidY = 0.0f;     // raw grade.wheelMidY; the shader computes the offset
+    float wheelHighX = 0.0f;    // raw grade.wheelHighX; the shader computes the offset
+    float wheelHighY = 0.0f;    // raw grade.wheelHighY; the shader computes the offset
+    float splitShadowHue = -1.0f;  // raw grade.splitShadowHue; -1 = off
+    float splitHighlightHue = -1.0f;  // raw grade.splitHighlightHue; -1 = off
+    float splitBalance = 0.0f;  // raw grade.splitBalance; the shader computes the mask
     bool highlightReconstruction = true;
     bool keepVignetting = true;
     int tonemap = 0;  // 0 off, 1 ACES, 2-5 AgX (Grade::tonemap)
