@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")

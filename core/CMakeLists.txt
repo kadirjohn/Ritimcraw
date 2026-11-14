@@ -60,6 +60,7 @@ add_library(rawedit STATIC
     src/Stabilization.cpp
     src/Warp.cpp
     src/RawStats.cpp
+    src/Parallel.cpp
     src/Yuv.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
