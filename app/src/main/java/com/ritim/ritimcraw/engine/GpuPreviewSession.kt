@@ -84,6 +84,8 @@ interface GpuPreviewDevelop {
         clipHandle: Long,
         frameIndex: Int,
         maxDim: Int,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -221,6 +223,8 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         clipHandle: Long,
         frameIndex: Int,
         maxDim: Int,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -252,6 +256,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                         renderArrayBlocking(
                             NativeSource.jniPreviewSessionRenderFrame(
                                 sessionHandle, clipHandle, frameIndex, maxDim,
+                                chromaDenoise, noiseReduction,
                                 exposureEv, highlights, blackPoint, whitePoint,
                                 shadows, midtones, contrast, tempK, tint,
                                 saturation, asShot,
@@ -422,6 +427,8 @@ class GpuPreviewSession(
         clipHandle: Long,
         frameIndex: Int,
         maxDim: Int,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -451,6 +458,7 @@ class GpuPreviewSession(
         return try {
             develop.renderFrame(
                 h, clipHandle, frameIndex, maxDim,
+                chromaDenoise, noiseReduction,
                 exposureEv, highlights, blackPoint, whitePoint,
                 shadows, midtones, contrast, tempK, tint,
                 saturation, asShot,

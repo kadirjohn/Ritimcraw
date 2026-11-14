@@ -2960,6 +2960,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //   nativeDevelopSessionOpen(vertex, vertex310, pre, post, nrChromaH,
 //                            nrChromaV, nrLuma, store, blit) -> handle
 //   nativeDevelopSessionRenderFrame(handle, clipHandle, frameIndex,
+//                                   chromaDenoise, noiseReduction,
 //                                   exposureEv, highlights,
 //                                   blackPoint, whitePoint, shadows,
 //                                   midtones, contrast, tempK, tint,
@@ -2973,7 +2974,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //                                   keepVignetting, tonemap) -> RGB888 bytes
 //   nativeDevelopSessionSetEncoderSurface(handle, surface) -> ok
 //   nativeDevelopSessionRenderFrameToEncoder(handle, clipHandle, frameIndex,
-//                                            ptsUs, exposureEv, highlights,
+//                                            ptsUs, chromaDenoise,
+//                                            noiseReduction, exposureEv,
+//                                            highlights,
 //                                            blackPoint, whitePoint, shadows,
 //                                            midtones, contrast, tempK, tint,
 //                                            saturation, asShot,
@@ -3005,12 +3008,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 //
 // The render takes the fragment-covered grade controls — the five base
 // ones (exposure, highlights, highlight reconstruction, vignetting,
-// tonemap) plus the ten pointwise stages' raw values (black point, white
-// point, shadows, midtones, contrast, temperature, tint, the color
-// wheel, split tone, saturation) with asShot as the 16/17 gate's input.
-// An uncovered grade still cannot even express itself here (the Kotlin
-// coverage gate is the upstream guard; this signature stays the second
-// lock — every parameter names a stage the shader covers).
+// tonemap), the two spatial-NR stages' raw values since the NR port
+// (chroma denoise, noise reduction — stages 7/8), plus the ten pointwise
+// stages' raw values (black point, white point, shadows, midtones,
+// contrast, temperature, tint, the color wheel, split tone, saturation)
+// with asShot as the 16/17 gate's input. An uncovered grade still cannot
+// even express itself here (the Kotlin coverage gate is the upstream
+// guard; this signature stays the second lock — every parameter names a
+// stage the shader covers).
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
@@ -3152,7 +3157,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
 JNIEXPORT jbyteArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jfloat exposureEv, jfloat highlights,
+        jint frameIndex, jfloat chromaDenoise, jfloat noiseReduction,
+        jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
         jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
         jfloat saturation, jboolean asShot,
@@ -3198,6 +3204,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         req.cfa = cfa.get();
         req.info = info;
         req.meta = &meta;
+        req.chromaDenoise = chromaDenoise;
+        req.noiseReduction = noiseReduction;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
         req.blackPoint = blackPoint;
@@ -3321,7 +3329,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionSetEncoderSurfa
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoder(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jlong ptsUs, jfloat exposureEv, jfloat highlights,
+        jint frameIndex, jlong ptsUs, jfloat chromaDenoise,
+        jfloat noiseReduction, jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
         jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
         jfloat saturation, jboolean asShot,
@@ -3365,6 +3374,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         req.cfa = cfa.get();
         req.info = info;
         req.meta = &meta;
+        req.chromaDenoise = chromaDenoise;
+        req.noiseReduction = noiseReduction;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
         req.blackPoint = blackPoint;
@@ -3428,11 +3439,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //                            nrChromaV, nrLuma, store, window) -> handle
 //   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
 //   nativePreviewSessionRenderFrame(handle, clipHandle, frameIndex, maxDim,
-//       exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
-//       contrast, tempK, tint, saturation, asShot, wheelShadowX,
-//       wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
-//       splitShadowHue, splitHighlightHue, splitBalance,
-//       highlightReconstruction, keepVignetting, tonemap)
+//       chromaDenoise, noiseReduction, exposureEv, highlights, blackPoint,
+//       whitePoint, shadows, midtones, contrast, tempK, tint, saturation,
+//       asShot, wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+//       wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue,
+//       splitBalance, highlightReconstruction, keepVignetting, tonemap)
 //       -> [w, h, pixels...] int array (the small published stats pack)
 //   nativePreviewSessionClose(handle)
 //
@@ -3647,7 +3658,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetSurface(
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jint maxDim, jfloat exposureEv, jfloat highlights,
+        jint frameIndex, jint maxDim, jfloat chromaDenoise,
+        jfloat noiseReduction, jfloat exposureEv, jfloat highlights,
         jfloat blackPoint, jfloat whitePoint, jfloat shadows,
         jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
         jfloat saturation, jboolean asShot,
@@ -3760,6 +3772,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.cfa = reducedCfa;
         req.info = reducedInfo;
         req.meta = &meta;
+        req.chromaDenoise = chromaDenoise;
+        req.noiseReduction = noiseReduction;
         req.exposureEv = exposureEv;
         req.highlights = highlights;
         req.blackPoint = blackPoint;

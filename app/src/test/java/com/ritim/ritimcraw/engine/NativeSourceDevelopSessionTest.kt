@@ -19,23 +19,25 @@ import org.junit.Test
  *      rides and the same one the commit-b dispatcher will catch;
  *   2. the render signatures carry the fragment-covered grade controls —
  *      the five base ones (exposure, highlights, highlight
- *      reconstruction, vignetting, tonemap) plus the ten pointwise
- *      stages' raw values since the pointwise port (black point, white
- *      point, shadows, midtones, contrast, temperature, tint, saturation,
- *      the color wheel, split tone, with asShot as the 16/17 gate's
- *      input) — beside the plumbing values. That narrow signature is the
- *      second lock against uncovered grades (the Kotlin coverage gate is
- *      the first): a stage the fragment pass does not cover — temporal NR
- *      strength, a tone-band knob, a LUT path — cannot even be expressed
- *      into the session, so widening this signature must be a deliberate
- *      act that edits this test too;
+ *      reconstruction, vignetting, tonemap) plus the two spatial-NR
+ *      stages' raw values since the spatial-NR port (chroma denoise,
+ *      noise reduction — stages 7/8, the multi-pass fragment chain) plus
+ *      the ten pointwise stages' raw values since the pointwise port
+ *      (black point, white point, shadows, midtones, contrast,
+ *      temperature, tint, saturation, the color wheel, split tone, with
+ *      asShot as the 16/17 gate's input) — beside the plumbing values.
+ *      That narrow signature is the second lock against uncovered grades
+ *      (the Kotlin coverage gate is the first): a stage the fragment pass
+ *      does not cover — temporal NR strength, a tone-band knob, a LUT
+ *      path — cannot even be expressed into the session, so widening
+ *      this signature must be a deliberate act that edits this test too;
  *   3. the encoder-surface pair's shapes: open carries the nine shader
  *      sources (the four the parity harness rides, the M5 blit source,
  *      and — since the spatial-NR port — the SPLIT develop pair plus
  *      the three NR fragments), and renderFrameToEncoder adds ptsUs (the
  *      encoder Surface's presentation time) and rotationDeg (the frame's
  *      effective orientation — the blit's uRotation fold) to the
- *      readback render's twenty-six.
+ *      readback render's twenty-eight.
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -74,6 +76,8 @@ class NativeSourceDevelopSessionTest {
                 sessionHandle = 1L,
                 clipHandle = 1L,
                 frameIndex = 0,
+                chromaDenoise = 0.0f,
+                noiseReduction = 0.0f,
                 exposureEv = 0.0f,
                 highlights = 0.0f,
                 blackPoint = 0.0f,
@@ -135,6 +139,8 @@ class NativeSourceDevelopSessionTest {
                 clipHandle = 1L,
                 frameIndex = 0,
                 ptsUs = 0L,
+                chromaDenoise = 0.0f,
+                noiseReduction = 0.0f,
                 exposureEv = 0.0f,
                 highlights = 0.0f,
                 blackPoint = 0.0f,
@@ -201,8 +207,11 @@ class NativeSourceDevelopSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 26 parameters: sessionHandle, clipHandle, frameIndex (the three
-        // plumbing values) + exposureEv, highlights, highlightReconstruction,
+        // 28 parameters: sessionHandle, clipHandle, frameIndex (the three
+        // plumbing values) + chromaDenoise, noiseReduction (the two
+        // spatial-NR stages' raw values since the spatial-NR port — stages
+        // 7/8, the multi-pass fragment chain behind uChromaDenoise/
+        // uNoiseReduction) + exposureEv, highlights, highlightReconstruction,
         // keepVignetting, tonemap (the five base fragment-covered grade
         // knobs) + the ten pointwise stages' raw values since the pointwise
         // port (blackPoint, whitePoint, shadows, midtones, contrast, tempK,
@@ -214,25 +223,26 @@ class NativeSourceDevelopSessionTest {
         // such a parameter here widens the session's promise and must fail
         // this test until the coverage gate is taught the new stage.
         val render = method("jniDevelopSessionRenderFrame")
-        assertEquals(26, render.parameterCount)
+        assertEquals(28, render.parameterCount)
     }
 
     @Test
     fun render_to_encoder_adds_only_the_presentation_time() {
-        // 28 parameters: the readback render's twenty-six (sessionHandle,
-        // clipHandle, frameIndex + the fragment-covered grade controls)
-        // plus ptsUs (the encoder Surface's presentation time, which the
-        // readback path never needs — the CPU path carries pts on
-        // writeVideoFrameRgb) plus rotationDeg (the surface-gpu vertical
-        // deliverable: the frame's effective orientation, applied by the
-        // blit's uRotation fold — 0/90/180/270, no default value so this
-        // reflection lock sees exactly one wrapper). The blit reuses the
-        // SAME develop program, so the grade controls are the same
-        // fragment-covered set; a TWENTY-NINTH parameter would widen the
-        // encoder blit's promise beyond the covered-grade contract and
-        // must fail here.
+        // 30 parameters: the readback render's twenty-eight (sessionHandle,
+        // clipHandle, frameIndex + the two spatial-NR stages' raw values +
+        // the fragment-covered grade controls) plus ptsUs (the encoder
+        // Surface's presentation time, which the readback path never needs
+        // — the CPU path carries pts on writeVideoFrameRgb) plus
+        // rotationDeg (the surface-gpu vertical deliverable: the frame's
+        // effective orientation, applied by the blit's uRotation fold —
+        // 0/90/180/270, no default value so this reflection lock sees
+        // exactly one wrapper). The blit reuses the SAME develop program
+        // family (the NR multi-pass chain included), so the grade controls
+        // are the same fragment-covered set; a THIRTY-FIRST parameter
+        // would widen the encoder blit's promise beyond the covered-grade
+        // contract and must fail here.
         val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoder")
-        assertEquals(28, renderToEncoder.parameterCount)
+        assertEquals(30, renderToEncoder.parameterCount)
     }
 
     @Test

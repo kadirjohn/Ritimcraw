@@ -2221,6 +2221,8 @@ fun ClipEditorScreen(
                             clipHandle = s.nativeClipHandle,
                             frameIndex = req.frameIndex,
                             maxDim = req.maxDim,
+                            chromaDenoise = req.grade.chromaDenoise,
+                            noiseReduction = req.grade.noiseReduction,
                             exposureEv = req.grade.exposureEv,
                             highlights = req.grade.highlights,
                             blackPoint = req.grade.blackPoint,

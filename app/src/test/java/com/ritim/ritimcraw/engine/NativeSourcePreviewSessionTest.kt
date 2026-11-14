@@ -19,12 +19,14 @@ import org.junit.Test
  *   2. the render signature carries the fragment-covered grade controls —
  *      the five base ones (exposure, highlights, highlight
  *      reconstruction, vignetting, tonemap — highlights joined with the
- *      stage-15 port) plus the ten pointwise stages' raw values since the
- *      pointwise port (black point, white point, shadows, midtones,
- *      contrast, temperature, tint, saturation, the color wheel, split
- *      tone, with asShot as the 16/17 gate's input) — beside the four
- *      plumbing values (session handle, clip handle, frame index,
- *      max dim). That narrow signature is the second lock against
+ *      stage-15 port) plus the two spatial-NR stages' raw values since
+ *      the spatial-NR port (chroma denoise, noise reduction — stages 7/8,
+ *      the multi-pass fragment chain) plus the ten pointwise stages' raw
+ *      values since the pointwise port (black point, white point,
+ *      shadows, midtones, contrast, temperature, tint, saturation, the
+ *      color wheel, split tone, with asShot as the 16/17 gate's input) —
+ *      beside the four plumbing values (session handle, clip handle,
+ *      frame index, max dim). That narrow signature is the second lock against
  *      uncovered grades (the Kotlin coverage gate is the first): a stage
  *      the fragment pass does not cover cannot even be expressed into the
  *      session, so widening this signature must be a deliberate act that
@@ -85,6 +87,8 @@ class NativeSourcePreviewSessionTest {
                 clipHandle = 1L,
                 frameIndex = 0,
                 maxDim = 1280,
+                chromaDenoise = 0.0f,
+                noiseReduction = 0.0f,
                 exposureEv = 0.0f,
                 highlights = 0.0f,
                 blackPoint = 0.0f,
@@ -153,8 +157,11 @@ class NativeSourcePreviewSessionTest {
 
     @Test
     fun render_carries_exactly_the_fragment_covered_controls() {
-        // 27 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
-        // four plumbing values) + exposureEv, highlights,
+        // 29 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
+        // four plumbing values) + chromaDenoise, noiseReduction (the two
+        // spatial-NR stages' raw values since the spatial-NR port — stages
+        // 7/8, the multi-pass fragment chain behind uChromaDenoise/
+        // uNoiseReduction) + exposureEv, highlights,
         // highlightReconstruction, keepVignetting, tonemap (the five base
         // fragment-covered grade knobs — highlights joined with the
         // stage-15 port) + the ten pointwise stages' raw values since the
@@ -168,7 +175,7 @@ class NativeSourcePreviewSessionTest {
         // promise and must fail this test until the coverage gate is taught
         // the new stage.
         val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(27, render.parameterCount)
+        assertEquals(29, render.parameterCount)
     }
 
     @Test

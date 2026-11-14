@@ -371,13 +371,15 @@ object NativeRgbToI420 : RgbToI420 {
  *
  * The render signature carries the fragment-covered grade controls —
  * the five base ones (exposure, highlights, highlight reconstruction,
- * vignetting, tonemap) plus the ten pointwise stages' raw values since
- * the pointwise port (black point, white point, shadows, midtones,
- * contrast, temperature, tint, saturation, the color wheel, split tone,
- * with asShot as the 16/17 gate's input) — beside the three plumbing
- * values, the second lock against uncovered grades (the Kotlin coverage
- * gate is the first). A stage the fragment pass does not cover cannot
- * even be expressed into the session.
+ * vignetting, tonemap) plus the two spatial-NR stages' raw values since
+ * the spatial-NR port (chroma denoise, noise reduction — stages 7/8,
+ * the multi-pass fragment chain) plus the ten pointwise stages' raw
+ * values since the pointwise port (black point, white point, shadows,
+ * midtones, contrast, temperature, tint, saturation, the color wheel,
+ * split tone, with asShot as the 16/17 gate's input) — beside the three
+ * plumbing values, the second lock against uncovered grades (the Kotlin
+ * coverage gate is the first). A stage the fragment pass does not cover
+ * cannot even be expressed into the session.
  */
 interface GpuDevelop {
     /** The capability probe: raw [contextOk, glesMajor, glesMinor, computeOk, floatFboOk, maxTextureSize]; null = JNI failure. */
@@ -399,6 +401,8 @@ interface GpuDevelop {
         sessionHandle: Long,
         clipHandle: Long,
         frameIndex: Int,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -452,6 +456,8 @@ interface GpuDevelop {
         clipHandle: Long,
         frameIndex: Int,
         ptsUs: Long,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -512,6 +518,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         sessionHandle: Long,
         clipHandle: Long,
         frameIndex: Int,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -536,7 +544,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         keepVignetting: Boolean,
         tonemap: Int,
     ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
-        sessionHandle, clipHandle, frameIndex,
+        sessionHandle, clipHandle, frameIndex, chromaDenoise, noiseReduction,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
         wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
@@ -552,6 +560,8 @@ internal object NativeGpuDevelop : GpuDevelop {
         clipHandle: Long,
         frameIndex: Int,
         ptsUs: Long,
+        chromaDenoise: Float,
+        noiseReduction: Float,
         exposureEv: Float,
         highlights: Float,
         blackPoint: Float,
@@ -577,7 +587,7 @@ internal object NativeGpuDevelop : GpuDevelop {
         tonemap: Int,
         rotationDeg: Int,
     ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
-        sessionHandle, clipHandle, frameIndex, ptsUs,
+        sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise, noiseReduction,
         exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
         contrast, tempK, tint, saturation, asShot,
         wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
@@ -1623,6 +1633,7 @@ class ExportPipeline(
                             val drew = try {
                                 gpuDevelop.renderFrameToEncoder(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
+                                    grade.chromaDenoise, grade.noiseReduction,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,
                                     grade.shadows, grade.midtones, grade.contrast,
@@ -1682,6 +1693,7 @@ class ExportPipeline(
                             val gpu = try {
                                 gpuDevelop.renderFrame(
                                     gpuSessionHandle, info.handle, s.frameIndex,
+                                    grade.chromaDenoise, grade.noiseReduction,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,
                                     grade.shadows, grade.midtones, grade.contrast,

@@ -875,11 +875,12 @@ class NativeSource private constructor(
          * thread (the clip handle's own ring) and renders it through the
          * session's GL thread — full-res RGB888, row-major, NOT rotated,
          * the same byte shape nativeExportFrame returns. The render takes
-         * the fragment-covered grade controls (the five base ones plus
-         * the ten pointwise stages' raw values); an uncovered grade
-         * cannot express itself through this signature. Close is
-         * idempotent. Device-test-pending (the owner's covered-grade GPU
-         * export is the production proof).
+         * the fragment-covered grade controls (the five base ones, the
+         * two spatial-NR stages' raw values since the spatial-NR port —
+         * stages 7/8 — plus the ten pointwise stages' raw values); an
+         * uncovered grade cannot express itself through this signature.
+         * Close is idempotent. Device-test-pending (the owner's
+         * covered-grade GPU export is the production proof).
          *
          * Spatial-NR port: the develop fragment is now the SPLIT pair
          * (pre/post) plus the three NR fragments — nine sources total
@@ -903,6 +904,8 @@ class NativeSource private constructor(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -957,6 +960,8 @@ class NativeSource private constructor(
             clipHandle: Long,
             frameIndex: Int,
             ptsUs: Long,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1009,8 +1014,11 @@ class NativeSource private constructor(
          * so the Compose overlays consume either path unchanged). NO
          * full-frame readback exists on this path (the audit's explicit
          * rule; glReadPixels is used nowhere). The render takes the
-         * fragment-covered grade controls (the five base ones plus the
-         * ten pointwise stages' raw values, highlights joined with the
+         * fragment-covered grade controls (the five base ones — exposure,
+         * highlights, highlight reconstruction, vignetting, tonemap — the
+         * two spatial-NR stages' raw values since the spatial-NR port
+         * (chroma denoise, noise reduction — stages 7/8), plus the ten
+         * pointwise stages' raw values, highlights joined with the
          * stage-15 port). Close is idempotent.
          * Device-test-pending (the owner's morning playback run is the
          * production proof).
@@ -1037,6 +1045,8 @@ class NativeSource private constructor(
             clipHandle: Long,
             frameIndex: Int,
             maxDim: Int,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1601,6 +1611,8 @@ class NativeSource private constructor(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1629,7 +1641,8 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeDevelopSessionRenderFrame(
-                sessionHandle, clipHandle, frameIndex, exposureEv, highlights,
+                sessionHandle, clipHandle, frameIndex, chromaDenoise,
+                noiseReduction, exposureEv, highlights,
                 blackPoint, whitePoint, shadows, midtones, contrast, tempK,
                 tint, saturation, asShot, wheelShadowX, wheelShadowY,
                 wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
@@ -1670,6 +1683,8 @@ class NativeSource private constructor(
             clipHandle: Long,
             frameIndex: Int,
             ptsUs: Long,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1699,8 +1714,9 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeDevelopSessionRenderFrameToEncoder(
-                sessionHandle, clipHandle, frameIndex, ptsUs, exposureEv,
-                highlights, blackPoint, whitePoint, shadows, midtones,
+                sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise,
+                noiseReduction, exposureEv, highlights,
+                blackPoint, whitePoint, shadows, midtones,
                 contrast, tempK, tint, saturation, asShot, wheelShadowX,
                 wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
                 splitShadowHue, splitHighlightHue, splitBalance,
@@ -1763,6 +1779,8 @@ class NativeSource private constructor(
             clipHandle: Long,
             frameIndex: Int,
             maxDim: Int,
+            chromaDenoise: Float,
+            noiseReduction: Float,
             exposureEv: Float,
             highlights: Float,
             blackPoint: Float,
@@ -1791,8 +1809,9 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativePreviewSessionRenderFrame(
-                sessionHandle, clipHandle, frameIndex, maxDim, exposureEv,
-                highlights, blackPoint, whitePoint, shadows, midtones,
+                sessionHandle, clipHandle, frameIndex, maxDim, chromaDenoise,
+                noiseReduction, exposureEv, highlights,
+                blackPoint, whitePoint, shadows, midtones,
                 contrast, tempK, tint, saturation, asShot, wheelShadowX,
                 wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
                 splitShadowHue, splitHighlightHue, splitBalance,
