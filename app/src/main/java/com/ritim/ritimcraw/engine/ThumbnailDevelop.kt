@@ -130,8 +130,11 @@ object ThumbnailBalance {
 /**
  * The icon decode sizing math (pure, JVM-testable): the full-res JPEG
  * master is NEVER decoded at full size into a list row — the canonical
- * power-of-2 inSampleSize picks the decode sample, and the exact-scale
- * decision bounds the persisted icon at the row's target.
+ * power-of-2 inSampleSize picks the decode sample, the halving chain
+ * steps the decoded bitmap down towards the target (each step a ~2x
+ * filtered halving — a single raw downscale from a huge source aliases,
+ * owner finding 2026-11-14), and the exact-scale decision bounds the
+ * persisted icon at the row's target.
  */
 object ThumbnailIcon {
 
@@ -221,11 +224,11 @@ internal class BitmapJpegWriter(private val quality: Int = 90) : JpegWriter {
 /**
  * The real [IconExtractor]: two-pass BitmapFactory decode of the JPEG
  * master (bounds first, then the sampled decode — the full-res bitmap
- * is never materialized into a row), the exact scale to the icon
- * target, and the icon persisted through the SAME [PngWriter] the
- * encoded path uses. The icon file keeps the `<id>.png` name every
- * build has persisted, so icons that already exist are never
- * re-developed.
+ * is never materialized into a row), the iterative-halving downscale
+ * to the icon target, and the icon persisted through the SAME
+ * [PngWriter] the encoded path uses. The icon file keeps the
+ * `<id>.png` name every build has persisted, so icons that already
+ * exist are never re-developed.
  */
 internal class BitmapIconExtractor(private val png: PngWriter) : IconExtractor {
 
@@ -241,13 +244,36 @@ internal class BitmapIconExtractor(private val png: PngWriter) : IconExtractor {
             }
             val decoded = BitmapFactory.decodeFile(masterPath, opts) ?: return false
             try {
-                val dims = ThumbnailIcon.iconDims(decoded.width, decoded.height, targetDim)
-                val icon = if (dims != null) {
-                    Bitmap.createScaledBitmap(decoded, dims.first, dims.second, true)
-                } else {
-                    decoded
-                }
+                var icon = decoded
                 try {
+                    // Iterative halving (owner finding 2026-11-14: the icon
+                    // looked soft — one raw filtered downscale from a
+                    // many-megapixel decode aliases): while either dimension
+                    // sits above 2x the target, halve with filtering; the
+                    // chain's last step is the one exact filtered scale onto
+                    // the target (a no-op when it already fits — never an
+                    // upscale).
+                    while (icon.width > 2 * targetDim || icon.height > 2 * targetDim) {
+                        // maxOf(1, ...) keeps a degenerate 1px edge at 1
+                        // (the old code's >= 1 clamp — createScaledBitmap
+                        // rejects a 0 dimension).
+                        val halved = Bitmap.createScaledBitmap(
+                            icon,
+                            maxOf(1, icon.width / 2),
+                            maxOf(1, icon.height / 2),
+                            true,
+                        )
+                        if (icon !== decoded) icon.recycle()
+                        icon = halved
+                    }
+                    val dims = ThumbnailIcon.iconDims(icon.width, icon.height, targetDim)
+                    if (dims != null) {
+                        val scaled = Bitmap.createScaledBitmap(
+                            icon, dims.first, dims.second, true,
+                        )
+                        if (icon !== decoded) icon.recycle()
+                        icon = scaled
+                    }
                     val pixels = IntArray(icon.width * icon.height)
                     icon.getPixels(pixels, 0, icon.width, 0, 0, icon.width, icon.height)
                     png.write(pixels, icon.width, icon.height, outPath)
