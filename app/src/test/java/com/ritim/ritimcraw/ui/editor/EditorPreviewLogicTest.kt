@@ -896,10 +896,16 @@ class EditorPreviewLogicTest {
     }
 
     @Test
-    fun an_uncovered_pre_stage_forces_the_cpu_path() {
-        // Temporal NR with a strength is a PRE-stage (the export gate's
-        // fragmentUncoveredPreStages) — CPU wholesale.
-        assertFalse(
+    fun a_temporal_nr_grade_is_eligible_since_the_hybrid() {
+        // The temporal hybrid's seam leg: the CPU temporal merge feeds
+        // the GPU sessions as THE CFA — the bridge's own
+        // temporalMergedCfa runs the merge BEFORE the CFA reduction,
+        // so a temporal-active grade rides the GPU preview like any
+        // other covered grade. The DN-08 tier fold (playback/drag skip
+        // the merge, the settle render lands it) is threaded at the
+        // render call, not here — the eligibility gate is tier-blind.
+        // The old CPU-forcing PRE-stage rule is gone.
+        assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(temporalNr = true, temporalStrength = 30f),
                 cropActive = false,

@@ -348,11 +348,13 @@ class GpuPreviewSessionTest {
         // uNoiseReduction binds need (the stages-7/8 port's own
         // pass-through lock, same shape as the pointwise one below).
         assertEquals(listOf(NrCall(chromaDenoise = 25f, noiseReduction = 40f)), develop.renderedNr)
-        // The temporal pair rides the seam INERT in commit (a) — the
-        // coverage gate still routes temporal grades to the CPU preview,
-        // so a GPU render here is temporal-off by construction; commit (b)
-        // switches the caller to the grade values verbatim and this lock
-        // flips with it.
+        // The temporal pair rides the seam verbatim since the hybrid — the
+        // bridge's own temporalMergedCfa consumes the pair to produce the
+        // CFA the request uploads (the pair dies at the bridge; the session
+        // request never sees it). This render passes temporal-OFF values at
+        // the call above, so the pass-through lock reads false/0 — the
+        // temporal-active grade's own GPU locks live in the exporter's
+        // temporal_grade_rides_the_gpu_path test.
         assertEquals(listOf(TemporalCall(temporalNr = false, temporalStrength = 0f)), develop.renderedTemporal)
         // The two unsharp stages ride the seam verbatim too — the raw
         // grade percents the four-pass unsharp chain's uSharpness/uDetail

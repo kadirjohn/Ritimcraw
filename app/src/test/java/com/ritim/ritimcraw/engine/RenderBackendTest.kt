@@ -242,7 +242,10 @@ class RenderBackendTest {
         // so the map keeps meaning "uncovered, period" and the disjointness
         // lock below holds trivially. The ONLY fallback left anywhere in
         // the develop pipeline is the RUNTIME lutTexturePathOk leg (the
-        // lut coverage tests below pin that shape).
+        // lut coverage tests below pin that shape) — and since the temporal
+        // hybrid every PRE-stage is covered too (the temporal merge feeds
+        // the sessions as the CFA through the bridge's own merge), so the
+        // pre-stage vocabulary is empty as well.
         assertEquals(0, BackendRules.FRAGMENT_UNCOVERED_STAGES.size)
         assertTrue(BackendRules.FRAGMENT_UNCOVERED_STAGES.isEmpty())
         // Covered + uncovered = the full 24-stage contract, no overlap.
@@ -688,16 +691,43 @@ class RenderBackendTest {
     }
 
     @Test
-    fun temporal_nr_counts_as_uncovered_pre_stage() {
+    fun temporal_nr_rides_the_gpu_path_since_the_hybrid() {
+        // The temporal hybrid: the CPU temporal merge (temporalMergedCfa,
+        // frozen in core/Temporal.cpp) feeds the GPU develop sessions as
+        // THE CFA — the bridge's own merge runs before the session ever
+        // sees the bytes, riding the SAME per-Entry caches the CPU path
+        // rides — so the temporal NR contributes NO pre-stage token
+        // anymore, ANYWHERE: the set is empty for a temporal-active grade
+        // exactly as for a temporal-off one, the effective backend rides
+        // GLES with gates green, and NO fallback line ever names a
+        // temporal. The pair dies at the bridge (the session request
+        // never sees it), so there is no second truth to keep honest —
+        // routing, not porting; the merge math stays the frozen CPU's.
         val active = BackendRules.fragmentUncoveredPreStages(
             GradeK(temporalNr = true, temporalStrength = 30f),
         )
-        assertEquals(listOf("temporal-nr"), active)
-        // Toggle off (the default): inert, not active.
+        assertTrue("temporal-active grade must contribute no token: $active", active.isEmpty())
+        // Toggle off (the default): inert, exactly the same empty shape.
         assertTrue(
             BackendRules.fragmentUncoveredPreStages(
                 GradeK(temporalNr = false, temporalStrength = 30f),
             ).isEmpty(),
+        )
+        // The temporal-active grade with gates green rides GLES.
+        assertEquals(
+            EffectiveRenderBackend.GLES,
+            BackendRules.fragmentEffectiveBackend(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(),
+                GradeK(temporalNr = true, temporalStrength = 30f),
+            ),
+        )
+        // And produces NO fallback line — the token is gone from the
+        // runtime vocabulary entirely (the warp precedent).
+        assertNull(
+            BackendRules.fragmentFallbackLine(
+                RenderBackend.GPU_EXPERIMENTAL, fragmentGates(),
+                GradeK(temporalNr = true, temporalStrength = 30f),
+            ),
         )
     }
 

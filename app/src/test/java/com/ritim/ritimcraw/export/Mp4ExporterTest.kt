@@ -2221,11 +2221,10 @@ class Mp4ExporterTest {
         var lastNr: NrControls? = null
 
         // The temporal pair the last READBACK render carried — the hybrid's
-        // routing lock's snapshot. In commit (a) the dispatcher threads the
-        // INERT pair (false/0) — the coverage gate still routes temporal
-        // grades to CPU, so a GPU dispatch is temporal-off by construction;
-        // commit (b) switches to the grade values verbatim and this
-        // recorder locks THAT pass-through.
+        // routing lock's snapshot: the dispatcher threads the grade values
+        // VERBATIM, and the bridge's own temporalMergedCfa consumes them
+        // to produce the CFA the render uploads (the pair dies at the
+        // bridge — the session request never sees it).
         var lastTemporal: TemporalControls? = null
 
         // The two unsharp stages' raw percents the last READBACK render
@@ -2261,7 +2260,7 @@ class Mp4ExporterTest {
 
         // Same for the temporal pair: the encoder blit's CFA comes from the
         // SAME bridge merge, so the encoder pass-through lock rides it too
-        // (INERT in commit (a), the grade values verbatim in commit (b)).
+        // (the grade values verbatim since the hybrid).
         var lastEncoderTemporal: TemporalControls? = null
 
         // Same for the unsharp pair: the encoder blit runs the same
@@ -2655,11 +2654,10 @@ class Mp4ExporterTest {
         // The two spatial-NR stages ride the dispatch verbatim too — the
         // stages-7/8 raw values in the seam's parameter order.
         assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastNr)
-        // The temporal pair rides the dispatch INERT in commit (a) — the
-        // coverage gate still routes temporal grades to CPU, so a GPU
-        // dispatch here is temporal-off by construction; commit (b)
-        // switches the dispatcher to the grade values verbatim and this
-        // lock flips with it.
+        // The temporal pair rides the dispatch verbatim since the hybrid —
+        // this grade is temporal-OFF (the default), so the pair reads
+        // false/0 here; the temporal-active grade's own pass-through lock
+        // lives in the temporal_grade_rides_the_gpu_path test above.
         assertEquals(TemporalControls(temporalNr = false, temporalStrength = 0f), gpu.lastTemporal)
         // The two unsharp stages ride the dispatch verbatim too — the
         // stages-21/22 raw percents in the seam's parameter order, the
@@ -2825,20 +2823,18 @@ class Mp4ExporterTest {
     }
 
     @Test
-    fun uncovered_grade_stays_cpu_and_never_probes() {
-        // The FREE coverage check runs first: an uncovered grade never
-        // pays the probe or the parity run, and the fallback line names
-        // the STAGE tokens only — never gate tokens (no gate was measured).
-        // A temporal-NR grade is the never-probe stand-in: temporal NR is
-        // a PRE-develop stage (fragmentUncoveredPreStages), so its
-        // coverage check is FREE and runs before any probe is paid.
-        // The stage-token vocabulary is down to the runtime LUT leg
-        // (chroma denoise is fragment-covered since the spatial-NR port
-        // and sharpness/detail since the sharpness/detail port) — but a
-        // LUT grade is the ONE exception that pays the probe BEFORE the
-        // coverage decision (the LUT fact can only come from the probe
-        // itself), so it cannot stand in for never-probes; the
-        // lut_grade_falls_back test owns that leg.
+    fun temporal_grade_rides_the_gpu_path_since_the_hybrid() {
+        // The temporal hybrid's dispatch lock: a temporal-NR grade rides
+        // GLES like any other covered grade — the bridge's own
+        // temporalMergedCfa runs the merge before the session ever sees
+        // the CFA (routing, not porting; the merge math stays the frozen
+        // CPU's), so the coverage vocabulary contributes NO temporal
+        // token anymore. The probe is paid ONCE (the grade is eligible —
+        // the never-probe shape died with the uncovered pre-stage), the
+        // renders run on the GPU session, the readback threads the grade
+        // pair verbatim (the pass-through lock), no fallback line ever
+        // names a temporal, and the visibility line reads effective=GLES
+        // unsupported=none — the hybrid's honest headline.
         val session = FakeSession(frames = 2, audio = false)
         val gpu = FakeGpuDevelop()
         val lines = ArrayList<String>()
@@ -2847,22 +2843,28 @@ class Mp4ExporterTest {
             renderBackend = RenderBackend.GPU_EXPERIMENTAL,
             gpuDevelop = gpu,
         ).run(7, GradeK(temporalNr = true, temporalStrength = 5f), "/tmp/out.partial")
-        assertEquals(0, gpu.probeCalls)
-        assertTrue(gpu.parityFds.isEmpty())
-        assertEquals(0, gpu.openCalls)
-        assertTrue(gpu.closedHandles.isEmpty())
-        assertEquals(listOf(0, 1), session.rendered)
-        val fallback = lines.first { it.startsWith("render backend fallback: ") }
-        assertTrue("requested missing: $fallback", fallback.contains("requested=GPU_EXPERIMENTAL"))
-        assertTrue("effective missing: $fallback", fallback.contains("effective=CPU"))
-        assertTrue("stage token missing: $fallback", fallback.contains("reason=temporal-nr"))
-        assertFalse(
-            "gate tokens must be absent: $fallback",
-            fallback.contains("no-egl-context"),
-        )
-        // The visibility line carries the SAME tokens (no second truth).
+        assertEquals(1, gpu.probeCalls)
+        assertEquals(1, gpu.openCalls)
+        assertEquals(listOf(0, 1), gpu.rendered)
+        assertTrue(session.rendered.isEmpty())
+        // The pass-through lock: the grade's temporal pair threads
+        // VERBATIM into the readback render (the dispatch never rewrites
+        // it — the bridge consumes the pair to produce the merged CFA).
+        assertEquals(TemporalControls(temporalNr = true, temporalStrength = 5f), gpu.lastTemporal)
+        // The bytes writer never runs the encoder blit (FakeWriter's
+        // encoderInputSurface is the null default), so the encoder leg's
+        // pair stays unset here — the session_encoder_temporal test
+        // below owns that leg.
+        assertNull(gpu.lastEncoderTemporal)
+        // No fallback line: the grade is covered, the job rode GLES.
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
         val backend = lines.first { it.startsWith("render backend: ") }
-        assertTrue("same tokens expected: $backend", backend.contains("temporal-nr"))
+        assertTrue("effective must be GLES: $backend", backend.contains("effective=GLES"))
+        assertTrue("unsupported must be none: $backend", backend.contains("unsupported=none"))
+        assertFalse(
+            "temporal token must be gone: $backend",
+            backend.contains("temporal-nr"),
+        )
     }
 
     @Test
@@ -3007,6 +3009,51 @@ class Mp4ExporterTest {
         assertEquals(2, writer.drainCalls)
         assertEquals(0, lines.count { it.startsWith("encoder surface fallback: ") })
         assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
+    }
+
+    @Test
+    fun session_encoder_temporal_threads_the_grade_pair_into_the_blit() {
+        // The temporal pair's ENCODER leg: the session-owns-EGL path (the
+        // M5 fast path — the session develops AND blits straight to the
+        // codec input surface, the readback renderFrame NEVER runs)
+        // threads the grade's temporal pair into renderFrameToEncoder
+        // VERBATIM since the hybrid — the bridge's own temporalMergedCfa
+        // consumes the pair to produce the CFA the blit uploads (the
+        // SAME merge the CPU path rides, the same per-Entry caches), so
+        // a temporal-active grade rides the fast path like any other
+        // covered grade. The bytes-writer test above owns the readback
+        // leg; this one owns the blit.
+        val gpu = FakeGpuDevelop()
+        val writer = SessionSurfaceWriter()
+        val lines = ArrayList<String>()
+        // The runSessionEncoderExport geometry recipe (the effective 0°
+        // that makes the job encoderDrawEligible) plus the temporal-active
+        // grade the hybrid threads.
+        ExportPipeline(
+            FakeSession(frames = 2, audio = false), writer, lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(
+            7,
+            GradeK(temporalNr = true, temporalStrength = 5f),
+            "/tmp/out.partial",
+            manualRotationDeg = 270,
+        )
+        // The blit ran per frame; the readback never did.
+        assertEquals(listOf(0, 1), gpu.encoderRendered)
+        assertTrue("the readback renderFrame must never run", gpu.rendered.isEmpty())
+        // The grade's temporal pair threads VERBATIM into the blit —
+        // the dispatch never rewrites it (the bridge consumes the pair
+        // to produce the merged CFA the blit uploads).
+        assertEquals(TemporalControls(temporalNr = true, temporalStrength = 5f), gpu.lastEncoderTemporal)
+        assertNull(gpu.lastTemporal)
+        // No fallback line: the temporal grade is covered, the job rode
+        // GLES end to end through the blit.
+        assertEquals(0, lines.count { it.startsWith("encoder surface fallback: ") })
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
+        val backend = lines.first { it.startsWith("render backend: ") }
+        assertTrue("effective must be GLES: $backend", backend.contains("effective=GLES"))
+        assertTrue("unsupported must be none: $backend", backend.contains("unsupported=none"))
     }
 
     @Test
@@ -3253,11 +3300,10 @@ class Mp4ExporterTest {
         // The two spatial-NR stages ride the blit verbatim too — the
         // stages-7/8 raw values in the seam's parameter order.
         assertEquals(NrControls(chromaDenoise = 25f, noiseReduction = 40f), gpu.lastEncoderNr)
-        // The temporal pair rides the blit INERT in commit (a) — the
-        // coverage gate still routes temporal grades to CPU, so a GPU
-        // blit here is temporal-off by construction; commit (b) switches
-        // the dispatcher to the grade values verbatim and this lock
-        // flips with it.
+        // The temporal pair rides the blit verbatim since the hybrid —
+        // this grade is temporal-OFF (the default), so the pair reads
+        // false/0 here; the temporal-active grade's own blit pass-through
+        // lock lives in the session_encoder_temporal test.
         assertEquals(TemporalControls(temporalNr = false, temporalStrength = 0f), gpu.lastEncoderTemporal)
         // The two unsharp stages ride the blit verbatim too — the
         // stages-21/22 raw percents in the seam's parameter order.

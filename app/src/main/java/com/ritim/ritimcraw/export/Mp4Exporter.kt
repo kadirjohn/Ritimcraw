@@ -1828,14 +1828,13 @@ class ExportPipeline(
                                 gpuDevelop.renderFrameToEncoder(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
                                     grade.chromaDenoise, grade.noiseReduction,
-                                    // Commit (a) threads the temporal pair
-                                    // INERT (false/0) — the coverage gate
-                                    // still routes temporal grades to CPU,
-                                    // so a GPU dispatch here is temporal-
-                                    // off by construction; commit (b)
-                                    // switches this to grade.temporalNr +
-                                    // grade.temporalStrength verbatim.
-                                    false, 0f,
+                                    // The temporal pair rides the hybrid's
+                                    // routing verbatim: the bridge's own
+                                    // temporalMergedCfa consumes them to
+                                    // produce the CFA this blit uploads
+                                    // (the SAME merge the CPU path rides,
+                                    // the same per-Entry caches).
+                                    grade.temporalNr, grade.temporalStrength,
                                     grade.sharpness, grade.detail,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,
@@ -1905,14 +1904,13 @@ class ExportPipeline(
                                 gpuDevelop.renderFrame(
                                     gpuSessionHandle, info.handle, s.frameIndex,
                                     grade.chromaDenoise, grade.noiseReduction,
-                                    // Commit (a) threads the temporal pair
-                                    // INERT (false/0) — the coverage gate
-                                    // still routes temporal grades to CPU,
-                                    // so a GPU dispatch here is temporal-
-                                    // off by construction; commit (b)
-                                    // switches this to grade.temporalNr +
-                                    // grade.temporalStrength verbatim.
-                                    false, 0f,
+                                    // The temporal pair rides the hybrid's
+                                    // routing verbatim: the bridge's own
+                                    // temporalMergedCfa consumes them to
+                                    // produce the CFA this render uploads
+                                    // (the SAME merge the CPU path rides,
+                                    // the same per-Entry caches).
+                                    grade.temporalNr, grade.temporalStrength,
                                     grade.sharpness, grade.detail,
                                     grade.exposureEv, grade.highlights,
                                     grade.blackPoint, grade.whitePoint,

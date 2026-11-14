@@ -568,6 +568,14 @@ object EditorPreviewLogic {
      * (the identity no-draw rule). A gyro-stabilized grade stays
      * GPU-eligible like any other covered grade.
      *
+     * The temporal NR contributes NO rule since the temporal hybrid:
+     * the bridge's own temporalMergedCfa runs the merge before the CFA
+     * reduction, so a temporal-active grade rides the GPU preview like
+     * any other covered grade — with the DN-08 tier fold threaded at
+     * the render call (the CPU preview's own gate, mirrored), so
+     * playback and drag renders skip the merge and the settle render
+     * lands it.
+     *
      * [cropActive] is the request's DISPLAY-grade crop state (the grade
      * the pump actually renders — crop-overlay mode swaps in the
      * crop-neutral display grade, so overlay mode stays GPU-eligible):
@@ -2289,14 +2297,24 @@ fun ClipEditorScreen(
                             maxDim = req.maxDim,
                             chromaDenoise = req.grade.chromaDenoise,
                             noiseReduction = req.grade.noiseReduction,
-                            // Commit (a) threads the temporal pair INERT
-                            // (false/0) — the coverage gate still routes
-                            // temporal grades to the CPU preview, so a GPU
-                            // render here is temporal-off by construction;
-                            // commit (b) switches this to the grade values
-                            // verbatim.
-                            temporalNr = false,
-                            temporalStrength = 0f,
+                            // The temporal pair rides the hybrid's routing
+                            // verbatim: the bridge's own temporalMergedCfa
+                            // consumes them to produce the CFA this render
+                            // uploads — BEFORE the CFA reduction, so the
+                            // reduced mosaic samples the MERGED CFA (the
+                            // SAME merge the CPU preview rides, the same
+                            // per-Entry caches). The DN-08 fold is the
+                            // CPU preview's own gate, mirrored here: the
+                            // merge is tier-INDEPENDENT (~85-107 ms at
+                            // full res), so playback and drag renders skip
+                            // it and the settle render lands the effect —
+                            // the RenderTrace's tnr= verdict computes this
+                            // same fold, so the trace stays honest.
+                            temporalNr = req.grade.temporalNr &&
+                                PreviewTiers.temporalNrAppliesAt(
+                                    req.maxDim, req.renderClass,
+                                ),
+                            temporalStrength = req.grade.temporalStrength,
                             // Stages 21/22 (commit b): the unsharp pair's raw
                             // percents ride the render seam exactly like the
                             // CPU preview — verbatim, NO clamp, because the
