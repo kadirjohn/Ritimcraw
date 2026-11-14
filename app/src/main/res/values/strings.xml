@@ -320,6 +320,11 @@
     <string name="exports_job_failed_written">Nothing was written.</string>
     <string name="exports_job_retry">Retry</string>
     <string name="exports_clear">Clear</string>
+    <!-- Export foreground notification (owner finding 2026-11-14): the
+         visible side of the process priority that keeps a backgrounded
+         export alive. IMPORTANCE_LOW channel — silent, no heads-up. -->
+    <string name="exports_notification_channel">Exports</string>
+    <string name="exports_notification_running">Export running</string>
 
     <!-- Projects -->
     <string name="projects_title">Projects</string>

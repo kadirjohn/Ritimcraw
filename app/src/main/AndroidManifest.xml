@@ -2,7 +2,22 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Export foreground service (owner finding 2026-11-14: Android's
+         OomAdjuster moved the app to the cached state and FROZE the
+         process mid-export once the owner backgrounded it — a 1749-frame
+         render died silently). While an export is RUNNING the app holds
+         the process at foreground priority through a dataSync foreground
+         service; the permissions targetSdk 36 makes mandatory for that
+         type. POST_NOTIFICATIONS: the service's priority works without
+         it, but the progress notification (the visible side of the
+         priority) needs the grant — declaring it lets the user give it;
+         the runtime request itself is UI work, out of this change. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
+        android:name=".export.ExportApp"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -40,6 +55,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Export foreground service (owner finding 2026-11-14): holds the
+             process at foreground priority while an export is RUNNING, so
+             the process is never moved to the cached state and frozen
+             mid-render. dataSync is the honest type — an export writes its
+             output file for the job's duration. Started and stopped by the
+             export queue's own state transitions (RUNNING start, terminal
+             stop); the service never outlives the job. -->
+        <service
+            android:name=".export.ExportForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <!-- Own exports through content:// (owner request 2026-11-11 §1): a
              DONE row whose media-store publish failed still opens, through
              FileProvider with a temporary read grant — the file never leaves
