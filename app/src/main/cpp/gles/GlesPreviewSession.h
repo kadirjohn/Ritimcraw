@@ -61,8 +61,10 @@
 // renderFrame()/setSurface() may be called from any ONE other thread
 // (the editor's engine thread); both block on their job.
 //
-// COLOR CONTRACT: the develop chain is the develop session's SPLIT shape
-// (the same thirteen programs since the gyro warp port): PRE runs
+// COLOR CONTRACT: the develop chain is the shared pipeline's SPLIT shape
+// (gles/GpuDevelopPipeline — the same split since the gyro warp port,
+// now compiled and drawn once by the pipeline object each session
+// owns): PRE runs
 // stages 1-6 into an RGBA32F intermediate, the three NR passes sit at
 // the CPU's exact stage 7/8 position (gated per grade — the preview
 // shares the develop program family, so chroma denoise and noise
@@ -115,121 +117,30 @@
 #include <rawedit/Source.h>
 
 #include "GradeParcel.h"
+#include "GpuDevelopPipeline.h"
 
 namespace gles {
 
-// One render request. [cfa] is the REDUCED mosaic (the JNI entry's
-// decimation — Thumbnail.h's cell-aligned math, so the 2x2 Bayer pattern
-// and the shading plane order stay valid at the preview tier), [info] its
-// FrameInfo (reduced dims; cfa pattern, dynamic levels and orientationDeg
-// preserved). [cfa] and [meta] are BORROWED: the caller keeps them alive
-// until renderFrame() returns (it blocks, so stack locals are fine). The
-// grade controls are the fragment-covered set's knobs — every one a RAW
-// grade value the shader maps itself (0.0f is the CPU's own neutral
-// skip), with the two CPU-side gates hoisted C++-computed exactly like
-// the develop session's request.
-struct PreviewFrameRequest {
-    const std::vector<uint16_t>* cfa = nullptr;  // reduced w*h row-major
-    rawedit::FrameInfo info{};
-    const rawedit::RawMeta* meta = nullptr;
-    float exposureEv = 0.0f;
-    float highlights = 0.0f;  // raw grade.highlights; the shader computes s
-    float blackPoint = 0.0f;  // raw grade.blackPoint; the shader computes the lift
-    float whitePoint = 0.0f;  // raw grade.whitePoint; the shader computes the gain
-    float shadows = 0.0f;     // raw grade.shadows; the shader computes the gamma
-    float midtones = 0.0f;    // raw grade.midtones; the shader computes the curve
-    float contrast = 0.0f;    // raw grade.contrast; the shader computes the pivot
-    float tempK = 5600.0f;   // raw grade.tempK; the shader computes the gains
-    float tint = 0.0f;       // raw grade.tint; the shader computes the gains
-    float saturation = 0.0f; // raw grade.saturation; the shader computes the mix
-    bool asShot = true;      // grade.asShot; feeds uWbManual (stages 16/17)
-    float wheelShadowX = 0.0f;  // raw grade.wheelShadowX; the shader computes the offset
-    float wheelShadowY = 0.0f;  // raw grade.wheelShadowY; the shader computes the offset
-    float wheelMidX = 0.0f;     // raw grade.wheelMidX; the shader computes the offset
-    float wheelMidY = 0.0f;     // raw grade.wheelMidY; the shader computes the offset
-    float wheelHighX = 0.0f;    // raw grade.wheelHighX; the shader computes the offset
-    float wheelHighY = 0.0f;    // raw grade.wheelHighY; the shader computes the offset
-    float splitShadowHue = -1.0f;  // raw grade.splitShadowHue; -1 = off
-    float splitHighlightHue = -1.0f;  // raw grade.splitHighlightHue; -1 = off
-    float splitBalance = 0.0f;  // raw grade.splitBalance; the shader computes the mask
-    bool highlightReconstruction = true;
-    bool keepVignetting = true;
-    int tonemap = 0;  // 0 off, 1 ACES, 2-5 AgX (Grade::tonemap)
-    // Spatial NR (stages 7/8), RAW grade values — 0.0f is the CPU call
-    // site's own skip. The session skips the NR draws entirely for a
-    // clamped strength of 0 or a frame under the CPU's own w/h guards
-    // (chroma w<2/h<2, luma w<3/h<3); the in-shader gate is the second
-    // lock. Populated through the JNI seam in commit (b); 0.0f here
-    // keeps commit (a)'s sessions byte-identical to the pre-NR chain.
-    float chromaDenoise = 0.0f;  // raw grade.chromaDenoise
-    float noiseReduction = 0.0f;  // raw grade.noiseReduction
-    // Unsharp (stages 21/22), RAW grade values — 0.0f is the CPU call
-    // site's own skip. NO clamp: the CPU's amount mapping
-    // min(max(0.5*(raw/100), -0.5), 0.5) runs in-shader, so NEGATIVE raw
-    // values are valid softening and a raw 0 is the only skip. The
-    // session skips the unsharp draws entirely for a raw 0 or a frame
-    // under the CPU's own w<2/h<2 guard; the in-shader gate is the
-    // second lock. Populated through the JNI seam in commit (b); 0.0f
-    // here keeps commit (a)'s sessions byte-identical to the pre-unsharp
-    // chain.
-    float sharpness = 0.0f;  // raw grade.sharpness (radius 1.5)
-    float detail = 0.0f;     // raw grade.detail (radius 0.75)
-    // Stage 24 LUT, the LUT port's session-side shape (commit (a) of the LUT
-    // mission). lutStrength is the RAW grade value on rawedit's own [0,1]
-    // scale (GradeK's percent / 100, mapped Kotlin-side before the seam —
-    // the CPU seam's own contract); 0.0f is the CPU call site's own skip
-    // and keeps commit (a)'s sessions byte-identical to the pre-LUT chain.
-    // lutPath empty = no LUT. The session parses the .cube ONCE per LUT
-    // revision (core's parseCubeFile, cached by path), compiles the
-    // managed binding (rawedit::compileLutBinding) and uploads the table
-    // as a 3D RGBA16F texture — hardware trilinear, one mip, GL_LINEAR +
-    // CLAMP_TO_EDGE on all three axes — through the texel-center mapping
-    // the shader carries (uLutSize/uLutDomainMin/uLutDomainMax). The five
-    // interpretation ordinals are the rawedit enum ordinals (LutRole,
-    // GamutId, TransferId); all five -1 = the legacy stage-24 shape.
-    // Populated through the JNI seam in commit (b); the neutral defaults
-    // here keep commit (a) honest.
-    float lutStrength = 0.0f;  // raw grade.lutStrength, already [0,1]
-    std::string lutPath;       // the resolved .cube path; empty = no LUT
-    int lutRole = 0;
-    int lutInGamut = 0;
-    int lutInTransfer = 0;
-    int lutOutGamut = 0;
-    int lutOutTransfer = 0;
-    // Gyro warp (NOT a develop stage — the CPU pipeline runs
-    // rawedit::warpFrame after developCpu, on the linear output). The
-    // CALLER resolves the frame's stabilization plan on ITS thread (the
-    // plan cache is not safe to touch from the GL thread), composes the
-    // per-frame inverse-sampling map M = Hinv * S once — cx/cy = the
-    // buffer center, s = 1/max(zoom, 1) — and crosses ONLY (warpActive,
-    // warpM): inactive, identity (H exactly identity AND zoom == 1 —
-    // the CPU's byte-identical fast path) and degenerate plans
-    // (non-finite zoom, singular H) all fold into warpActive = false.
-    // The session then skips the warp draw entirely — the pass's
-    // ABSENCE is the identity (a resampling pass on an identity map
-    // would blur); there is NO in-shader gate, warpActive is the only
-    // lock. warpM is row-major (the CPU composite loop's layout),
-    // uploaded with transpose=GL_TRUE — the uCam2rgb idiom. The
-    // identity default keeps warpless requests byte-identical.
-    // Populated through the JNI seam in commit (b); warpActive = false
-    // here keeps commit (a)'s sessions byte-identical to the
-    // pre-warp chain.
-    bool warpActive = false;
-    float warpM[9] = {1.0f, 0.0f, 0.0f,
-                      0.0f, 1.0f, 0.0f,
-                      0.0f, 0.0f, 1.0f};  // row-major M = Hinv * S
-    // The stats-readback measurement toggle (trace-dims fix 2026-11-14):
-    // true — the DEFAULT, and today's behavior — runs draw 3 + the
-    // mapped-SSBO readback and publishes the real stats pack; false skips
-    // BOTH entirely, and the published frame becomes the honest 1x1
-    // empty fallback (the zebra/scopes consumers degrade for the
-    // measurement run — the trace line reads stats=off). The flag RIDES
-    // the request (the gSyncRefine precedent) so the session reads it per
-    // render without a second native call; the JNI entry copies the
-    // bridge-level atomic onto every request. Release builds never flip
-    // the atomic, so the pack always publishes there.
-    bool statsEnabled = true;
-};
+// One render request — the SAME struct the develop session rides. The
+// struct was promoted VERBATIM into the shared pipeline header
+// (gles/GpuDevelopPipeline.h — DevelopFrameRequest) when the develop
+// chain became the shared pipeline: the two sessions' requests were
+// field-for-field identical (same 34 fields, same order, same types and
+// defaults), so the preview keeps the historical name as an alias and the
+// JNI bridge's `gles::PreviewFrameRequest` references compile unchanged.
+// [cfa] is the REDUCED mosaic (the JNI entry's decimation — Thumbnail.h's
+// cell-aligned math, so the 2x2 Bayer pattern and the shading plane order
+// stay valid at the preview tier), [info] its FrameInfo (reduced dims; cfa
+// pattern, dynamic levels and orientationDeg preserved). [cfa] and [meta]
+// are BORROWED: the caller keeps them alive until renderFrame() returns
+// (it blocks, so stack locals are fine). The grade controls are the
+// fragment-covered set's knobs — every one a RAW grade value the shader
+// maps itself (0.0f is the CPU's own neutral skip), with the two CPU-side
+// gates hoisted C++-computed exactly like the develop session's request.
+// statsEnabled is the PREVIEW-ONLY measurement toggle (the develop session
+// ignores it — its readback is the render's contract, not a measurement;
+// see the field's own comment in GpuDevelopPipeline.h).
+using PreviewFrameRequest = DevelopFrameRequest;
 
 // One render result. ok=false means the step named in [detail] failed (or
 // the session is latched unhealthy — [detail] repeats the latched
@@ -274,23 +185,18 @@ struct PreviewFrameResult {
 class PreviewSession {
 public:
     // Spawns the GL thread, opens the session's OWN window-capable EGL on
-    // it, checks the gates (ES 3.1+ — STORE_FRAGMENT is 310 es — and
-    // GL_EXT_color_buffer_float, re-read in THIS context, never trusted
-    // from a probe's throwaway one; OES_texture_float_linear is read the
-    // same way to pick the develop texture's filter, NOT a gate),
-    // compiles the thirteen programs (pre = FULLSCREEN_VERTEX +
-    // DEVELOP_FRAGMENT_PRE, post = FULLSCREEN_VERTEX +
-    // DEVELOP_FRAGMENT_POST, tail = FULLSCREEN_VERTEX +
-    // DEVELOP_FRAGMENT_TAIL, the four unsharp passes sharpnessH/
-    // sharpnessV/detailH/detailV = FULLSCREEN_VERTEX + SHARPNESS_H /
-    // SHARPNESS_V / DETAIL_H / DETAIL_V, the gyro warp pass warp =
-    // FULLSCREEN_VERTEX + WARP, the three spatial-NR passes
-    // chromaH/chromaV/luma = FULLSCREEN_VERTEX + NR_CHROMA_H /
-    // NR_CHROMA_V / NR_LUMA, store = FULLSCREEN_VERTEX_310 +
-    // STORE_FRAGMENT, window = FULLSCREEN_VERTEX + WINDOW_FRAGMENT) and
-    // resolves every uniform location. Returns null with *detail naming
-    // the first failing step on any failure (the GL thread is joined;
-    // nothing leaks). The fifteen sources are the Kotlin
+    // it, and hands the Kotlin single-source-of-truth texts to the shared
+    // pipeline (which checks the gates — ES 3.1+ — STORE_FRAGMENT is 310
+    // es — and GL_EXT_color_buffer_float, re-read in THIS context, never
+    // trusted from a probe's throwaway one — compiles the twelve
+    // chain+store programs and resolves every chain uniform location)
+    // and to the session's OWN window compile (window =
+    // FULLSCREEN_VERTEX + WINDOW_FRAGMENT — the pipeline's vertex shader
+    // is pipeline-private). OES_texture_float_linear is read in THIS
+    // context the same way to pick the develop texture's filter — a
+    // pipeline Config input, NOT a gate. Returns null with *detail
+    // naming the first failing step on any failure (the GL thread is
+    // joined; nothing leaks). The fifteen sources are the Kotlin
     // single-source-of-truth texts (GlesShaderSources), host-validated.
     static std::unique_ptr<PreviewSession> open(
         const std::string& vertexSource,
