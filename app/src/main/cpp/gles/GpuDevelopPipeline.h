@@ -190,7 +190,13 @@ public:
         // (GL_LINEAR when present — the window pass samples the develop
         // texture through aspect-fit scaling); the develop session
         // passes false (GL_NEAREST — its store draw and encoder blit are
-        // 1:1). A FILTER choice, not a gate.
+        // 1:1). A FILTER choice, not a gate. SINCE THE NEAREST PIN (owner
+        // device evidence 2026-11-15, the white window) the PREVIEW also
+        // passes false: on the failing Adreno the extension is advertised
+        // yet the window pass's LINEAR reads of the RGBA32F develop
+        // texture painted WHITE (the same texture's stats draw healthy),
+        // so the pin rides the session side — the probe stays honest, the
+        // verdict is simply no longer consumed here.
         bool developLinearFilter = false;
         // Whether the once-per-resolution allocation ALSO creates the
         // store-scratch pair the develop session's readback path needs:

@@ -526,15 +526,26 @@ bool PreviewSession::Impl::initOnGlThread(
         return false;
     }
     // OES_texture_float_linear is a FILTER choice, not a gate: without it
-    // RGBA32F is only NEAREST-filterable (the window pass still draws,
-    // aliased); with it, LINEAR. Read HERE, in THIS context — never trust
-    // a probe's throwaway one. Handed to the pipeline as a Config input;
-    // the ES 3.1 + EXT_color_buffer_float gates are checked by pipeline.init
-    // in this same context.
+    // RGBA32F is only NEAREST-filterable. Read HERE, in THIS context —
+    // never trust a probe's throwaway one. THE NEAREST PIN (owner device
+    // evidence 2026-11-15, the white window): the verdict is deliberately
+    // NOT fed to the develop texture's filter anymore — the Config below
+    // pins NEAREST unconditionally. The failing Adreno ADVERTISES the
+    // extension (the probe reads true), yet the WINDOW pass's LINEAR
+    // reads of the RGBA32F develop texture painted WHITE frame after
+    // frame (771 renders, zero GL errors, healthy stats packs) while the
+    // SAME texture through the SAME shader fed draw 3's stats pack real
+    // content — the two draws differ ONLY in the destination framebuffer
+    // (runJob draw 2: GL_FRAMEBUFFER 0, the window surface; draw 3:
+    // statsFbo), and the destination-dependent sampler path is the one
+    // leg LINEAR broke. NEAREST is the encoder blit's proven sampling
+    // shape. The probe read stays as the honest capability record for
+    // the day the pin lifts.
     const GLubyte* e = glGetString(GL_EXTENSIONS);
     const std::string extensions = e != nullptr ? reinterpret_cast<const char*>(e) : "";
-    const bool developLinearFilter =
+    const bool floatLinearAdvertised =
         extensions.find("GL_OES_texture_float_linear") != std::string::npos;
+    (void)floatLinearAdvertised;  // recorded above; never fed — the pin
 
     // --- the shared develop chain, compiled ONCE by the pipeline ------------
     // The pipeline owns the twelve chain+store programs, every chain uniform
@@ -545,7 +556,13 @@ bool PreviewSession::Impl::initOnGlThread(
     // stats scratch FBO + SSBO, so the pipeline's full-res store scratch is
     // never allocated.
     GpuDevelopPipeline::Config config;
-    config.developLinearFilter = developLinearFilter;  // the OES probe above
+    config.developLinearFilter = false;  // THE NEAREST PIN — see the probe
+                                         // comment above; the LINEAR read of
+                                         // the RGBA32F develop texture painted
+                                         // the window WHITE on the failing
+                                         // Adreno (device evidence
+                                         // 2026-11-15), NEAREST is the blit's
+                                         // proven shape
     config.withStoreScratch = false;  // the stats pack is session-owned
     if (!pipeline.init(vertexSource, vertex310Source, preFragmentSource,
                       postFragmentSource, tailFragmentSource, sharpnessHSource,
