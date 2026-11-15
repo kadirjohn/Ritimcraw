@@ -125,6 +125,7 @@ import com.ritim.ritimcraw.ui.editor.PublishCrop
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -2215,396 +2216,443 @@ fun ClipEditorScreen(
                 while (true) {
                     val req = gate.poll() ?: break
                     renderInFlight = true
-                    val s = session
-                    // COL-07: the request's grade carries the selected LUT id;
-                    // the resolved path travels with the render (null = no
-                    // LUT, the old look). Resolved per request so an import
-                    // or remove mid-session is picked up on the next render.
-                    val lutPath = lutPathFor(req.grade.lutId)
-                    // Gyro Phase 5: same per-request resolution for the
-                    // attached gyro log (null = no warp). The tier gate
-                    // itself lives at the seam (GradeMapping.stabilizationArgs
-                    // -> PreviewTiers.stabilizationAppliesAt), so the pump
-                    // stays policy-free and every arm just carries the path.
-                    val gyroPath = currentGyroId.takeIf { it.isNotBlank() }?.let(currentGyroPathFor)
-                    // Render trace (audit M0, 2026-11-13): wall time of the
-                    // render call itself (the PreviewMetrics precedent), so
-                    // the trace's ms= carries the develop pipeline the
-                    // audit's host harness measured — NOT the UI crop, which
-                    // is a publish-space resample the host numbers never
-                    // included.
-                    val renderStartedMs = System.currentTimeMillis()
-                    // ---- GPU preview dispatch (M4 commit b) ----
-                    // The M3 export per-frame dispatch pattern, mirrored
-                    // for the preview: when the GPU path is active (the
-                    // setting asks, a live GPU session exists, and THIS
-                    // request is eligible — every active stage covered, no
-                    // active crop in the request's display grade, zebra
-                    // off; the gyro warp stopped blocking eligibility with
-                    // its GPU port — the pass is unconditionally fragment-
-                    // covered), try the GPU session first. A
-                    // null verdict (render failure OR malformed pack)
-                    // LATCHES the path off for the clip's lifetime (the
-                    // session latches unhealthy on its side too — the M3
-                    // rule: never retry a dead session per frame) and THIS
-                    // request falls back to the CPU render below, so the
-                    // user never sees a dropped frame. Every other path —
-                    // CPU requested, encoded clip, failed open, an
-                    // ineligible grade — never reaches here: byte-for-
-                    // byte the existing CPU dispatch.
-                    var gpuServed = false
-                    var result: Result<PreviewFrame>? = null
-                    val gpu = gpuSession
-                    // gpuSurfaceLive is read at request time exactly like
-                    // session/gpuSession above (snapshot state reads inside
-                    // the coroutine see the current value): the surface
-                    // creates ASYNC after the session opens, so the first
-                    // requests take the CPU arm and the Image serves the
-                    // full-res frame — then surfaceCreated flips this true
-                    // and the GPU arm takes over. A surface death
-                    // (backgrounded app) flips it false mid-session: the
-                    // window can no longer serve, so the Image must serve —
-                    // and the Image needs the FULL-res frame, which only the
-                    // CPU render produces (the GPU publish is the 256
-                    // stats pack — right for the scope strip, blocky through
-                    // the Image). The session stays open across a surface
-                    // death (the destroy signal processes; surfaceCreated
-                    // re-hands it on resume), so the GPU path returns
-                    // without re-opening.
-                    if (gpuActive && gpu != null && s != null && gpuSurfaceLive &&
-                        currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
-                        EditorPreviewLogic.gpuPreviewEligible(
-                            grade = req.grade,
-                            cropActive = req.grade.straightenDeg != 0f ||
-                                !CropState.isFull(
-                                    CropState.RectF(
-                                        req.grade.cropX, req.grade.cropY,
-                                        req.grade.cropW, req.grade.cropH,
-                                    )
-                                ),
-                            zebraOn = currentZebraOn,
-                            lutTexturePathOk = gpuLutTexturePathOk,
-                        )
-                    ) {
-                        // Gyro warp (the GPU port's commit b): resolve the
-                        // frame's plan at the tier's maxDim — the SAME six
-                        // stab values the CPU preview threads, with the
-                        // export dispatch's gating (gyroPath and strength
-                        // only when stabilization is on AND a log is
-                        // attached). Null (no verdict — no log, dead
-                        // handle, parse failure) folds to inactive + the
-                        // identity M, and the render then skips draw 10
-                        // entirely: the pass's absence IS the identity.
-                        val warp = gpu.resolveWarp(
-                            clipHandle = s.nativeClipHandle,
-                            gyroPath = if (req.grade.stabilization && gyroPath != null) gyroPath else null,
-                            stabMode = req.grade.stabilizationMode,
-                            stabStrength = if (req.grade.stabilization && gyroPath != null) {
-                                req.grade.stabilizationStrength / 100f
-                            } else {
-                                0f
-                            },
-                            stabZoomLimit = req.grade.stabilizationZoomLimit,
-                            stabFocalMm = req.grade.stabilizationFocalMm,
-                            stabTrimMs = req.grade.stabilizationTrimMs,
-                            frameIndex = req.frameIndex,
-                            maxDim = req.maxDim,
-                        )
-                        val warpActive = warp != null && warp[0] != 0.0f
-                        val warpM = if (warp != null && warp.size >= 10) {
-                            warp.copyOfRange(1, 10)
-                        } else {
-                            floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
-                        }
-                        // GRADE PARCEL (commit b): the grade crosses as ONE
-                        // flat FloatArray, encoded HERE once per request —
-                        // AFTER the temporalNr tier fold (the DN-08 gate the
-                        // flat call threaded below), so the parcel carries
-                        // the EFFECTIVE value. The bridge decodes it once
-                        // per call; the 29 field arguments died with the
-                        // flat door.
-                        val gpuFrame = gpu.render(
-                            clipHandle = s.nativeClipHandle,
-                            frameIndex = req.frameIndex,
-                            maxDim = req.maxDim,
-                            gradeParcel = GradeParcel.encode(
-                                req.grade.copy(
-                                    // The temporal pair rides the hybrid's routing
-                                    // verbatim: the bridge's own temporalMergedCfa
-                                    // consumes them to produce the CFA this render
-                                    // uploads — BEFORE the CFA reduction, so the
-                                    // reduced mosaic samples the MERGED CFA (the
-                                    // SAME merge the CPU preview rides, the same
-                                    // per-Entry caches). The DN-08 fold is the
-                                    // CPU preview's own gate, mirrored here: the
-                                    // merge is tier-INDEPENDENT (~85-107 ms at
-                                    // full res), so playback and drag renders skip
-                                    // it and the settle render lands the effect —
-                                    // the RenderTrace's tnr= verdict computes this
-                                    // same fold, so the trace stays honest.
-                                    temporalNr = req.grade.temporalNr &&
-                                        PreviewTiers.temporalNrAppliesAt(
-                                            req.maxDim, req.renderClass,
-                                        ),
-                                ),
-                            ),
-                            // Stage 24 (commit b): the LUT thread rides the
-                            // render seam exactly like the CPU preview — the
-                            // resolved path, the [0,1] strength, and the
-                            // five interpretation ordinals (-1 = legacy).
-                            lutPath = lutPath,
-                            lutStrength = req.grade.lutStrength / 100f,
-                            lutRole = req.grade.lutInterp?.role?.value ?: -1,
-                            lutInGamut = req.grade.lutInterp?.input?.gamut?.value ?: -1,
-                            lutInTransfer = req.grade.lutInterp?.input?.transfer?.value ?: -1,
-                            lutOutGamut = req.grade.lutInterp?.output?.gamut?.value ?: -1,
-                            lutOutTransfer = req.grade.lutInterp?.output?.transfer?.value ?: -1,
-                            // Gyro warp: the resolved verdict rides the render
-                            // seam (warpActive=false skips draw 10 — the
-                            // identity no-draw rule).
-                            warpActive = warpActive,
-                            warpM = warpM,
-                        )
-                        if (gpuFrame != null) {
-                            result = Result.success(gpuFrame)
-                            gpuServed = true
-                        } else {
-                            // The latch: one failure turns the path off for
-                            // the clip's lifetime, with the honest detail
-                            // line (the M3 fallback-line pattern). The
-                            // window stops serving with the latch — and
-                            // the preparing window ends with the verdict.
-                            gpuActive = false
-                            gpuWindowLive = false
-                            gpuPreparing = false
-                            val detail = gpu.lastDetail() ?: "gpu preview render failed"
-                            errorText = "GPU preview fallback: $detail — recovery: the CPU preview path stays the default"
-                        }
-                    }
-                    if (result == null) {
-                        // The CPU dispatch, VERBATIM the pre-GPU code: the GPU
-                        // path never reaches here when it served (result set
-                        // above), so the CPU path stays byte-identical for
-                        // every request it handles.
-                        result = if (sessionRender && s != null) {
-                            if (req.cached) {
-                                // Interactive drag render: the bridge reuses the
-                                // cached CFA when the frame is unchanged.
-                                s.renderCached(
-                                    req.frameIndex, req.grade, req.maxDim,
-                                    lutPath, gyroPath, req.renderClass,
-                                )
-                            } else {
-                                s.render(
-                                    req.frameIndex, req.grade, req.maxDim,
-                                    lutPath, gyroPath, req.renderClass,
-                                )
-                            }
-                        } else {
-                            // No session. The per-render fallback is the MCRAW
-                            // engine's path (PreviewRenderer.render opens the
-                            // clip through the native MCRAW pipeline); it cannot
-                            // read an encoded container, so an encoded clip
-                            // without a session fails with the same
-                            // stage/cause/recovery shape instead of feeding an
-                            // MP4 to the RAW engine.
-                            if (sourcePath == SourcePath.ENCODED) {
-                                Result.failure(IllegalStateException(
-                                    "Preview failed (stage: open): encoded clip session unavailable — recovery: reopen the clip"
-                                ))
-                            } else {
-                                val fdForRender = sourceFdProvider()
-                                if (fdForRender < 0) {
-                                    Result.failure(IllegalStateException(
-                                        "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
-                                    ))
+                    // HARDENING (the recorded pump hazard, 2026-11-15, latent —
+                    // no known log has hit it): a throw from the body below used
+                    // to land TWO failures at once — renderInFlight stayed true
+                    // past the request (the reset was plain, not in a finally:
+                    // stateOf reports RENDERING forever, the eternal spinner) and
+                    // the exception unwound the whole pump (the LaunchedEffect
+                    // dies; every later request queues unrendered for the
+                    // session). The guard: the finally ALWAYS clears the latch —
+                    // cancellation and Error propagation included (an Error still
+                    // unwinds the pump, honestly, but never leaves the spinner);
+                    // CancellationException is rethrown (structured concurrency:
+                    // the sourceId change / composition exit must still cancel
+                    // the pump, and the remember(sourceId) reset covers the fresh
+                    // session's flag); every OTHER exception is recorded through
+                    // the same failure surfaces the fold's onFailure arm uses and
+                    // the loop CONTINUES — the failed sequence published nothing
+                    // (monotonic publication is safe) and its full-res follow-up
+                    // below was never queued (it would fail the same way).
+                    try {
+                        val s = session
+                        // COL-07: the request's grade carries the selected LUT id;
+                        // the resolved path travels with the render (null = no
+                        // LUT, the old look). Resolved per request so an import
+                        // or remove mid-session is picked up on the next render.
+                        val lutPath = lutPathFor(req.grade.lutId)
+                        // Gyro Phase 5: same per-request resolution for the
+                        // attached gyro log (null = no warp). The tier gate
+                        // itself lives at the seam (GradeMapping.stabilizationArgs
+                        // -> PreviewTiers.stabilizationAppliesAt), so the pump
+                        // stays policy-free and every arm just carries the path.
+                        val gyroPath = currentGyroId.takeIf { it.isNotBlank() }?.let(currentGyroPathFor)
+                        // Render trace (audit M0, 2026-11-13): wall time of the
+                        // render call itself (the PreviewMetrics precedent), so
+                        // the trace's ms= carries the develop pipeline the
+                        // audit's host harness measured — NOT the UI crop, which
+                        // is a publish-space resample the host numbers never
+                        // included.
+                        val renderStartedMs = System.currentTimeMillis()
+                        // ---- GPU preview dispatch (M4 commit b) ----
+                        // The M3 export per-frame dispatch pattern, mirrored
+                        // for the preview: when the GPU path is active (the
+                        // setting asks, a live GPU session exists, and THIS
+                        // request is eligible — every active stage covered, no
+                        // active crop in the request's display grade, zebra
+                        // off; the gyro warp stopped blocking eligibility with
+                        // its GPU port — the pass is unconditionally fragment-
+                        // covered), try the GPU session first. A
+                        // null verdict (render failure OR malformed pack)
+                        // LATCHES the path off for the clip's lifetime (the
+                        // session latches unhealthy on its side too — the M3
+                        // rule: never retry a dead session per frame) and THIS
+                        // request falls back to the CPU render below, so the
+                        // user never sees a dropped frame. Every other path —
+                        // CPU requested, encoded clip, failed open, an
+                        // ineligible grade — never reaches here: byte-for-
+                        // byte the existing CPU dispatch.
+                        var gpuServed = false
+                        var result: Result<PreviewFrame>? = null
+                        val gpu = gpuSession
+                        // gpuSurfaceLive is read at request time exactly like
+                        // session/gpuSession above (snapshot state reads inside
+                        // the coroutine see the current value): the surface
+                        // creates ASYNC after the session opens, so the first
+                        // requests take the CPU arm and the Image serves the
+                        // full-res frame — then surfaceCreated flips this true
+                        // and the GPU arm takes over. A surface death
+                        // (backgrounded app) flips it false mid-session: the
+                        // window can no longer serve, so the Image must serve —
+                        // and the Image needs the FULL-res frame, which only the
+                        // CPU render produces (the GPU publish is the 256
+                        // stats pack — right for the scope strip, blocky through
+                        // the Image). The session stays open across a surface
+                        // death (the destroy signal processes; surfaceCreated
+                        // re-hands it on resume), so the GPU path returns
+                        // without re-opening.
+                        if (gpuActive && gpu != null && s != null && gpuSurfaceLive &&
+                            currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
+                            EditorPreviewLogic.gpuPreviewEligible(
+                                grade = req.grade,
+                                cropActive = req.grade.straightenDeg != 0f ||
+                                    !CropState.isFull(
+                                        CropState.RectF(
+                                            req.grade.cropX, req.grade.cropY,
+                                            req.grade.cropW, req.grade.cropH,
+                                        )
+                                    ),
+                                zebraOn = currentZebraOn,
+                                lutTexturePathOk = gpuLutTexturePathOk,
+                            )
+                        ) {
+                            // Gyro warp (the GPU port's commit b): resolve the
+                            // frame's plan at the tier's maxDim — the SAME six
+                            // stab values the CPU preview threads, with the
+                            // export dispatch's gating (gyroPath and strength
+                            // only when stabilization is on AND a log is
+                            // attached). Null (no verdict — no log, dead
+                            // handle, parse failure) folds to inactive + the
+                            // identity M, and the render then skips draw 10
+                            // entirely: the pass's absence IS the identity.
+                            val warp = gpu.resolveWarp(
+                                clipHandle = s.nativeClipHandle,
+                                gyroPath = if (req.grade.stabilization && gyroPath != null) gyroPath else null,
+                                stabMode = req.grade.stabilizationMode,
+                                stabStrength = if (req.grade.stabilization && gyroPath != null) {
+                                    req.grade.stabilizationStrength / 100f
                                 } else {
-                                    PreviewRenderer.render(
-                                        sourceFd = fdForRender,
-                                        frameIndex = req.frameIndex,
-                                        grade = req.grade,
-                                        maxDim = req.maxDim,
-                                        lutPath = lutPath,
-                                        gyroPath = gyroPath,
-                                        renderClass = req.renderClass,
-                                    )
-                                }
+                                    0f
+                                },
+                                stabZoomLimit = req.grade.stabilizationZoomLimit,
+                                stabFocalMm = req.grade.stabilizationFocalMm,
+                                stabTrimMs = req.grade.stabilizationTrimMs,
+                                frameIndex = req.frameIndex,
+                                maxDim = req.maxDim,
+                            )
+                            val warpActive = warp != null && warp[0] != 0.0f
+                            val warpM = if (warp != null && warp.size >= 10) {
+                                warp.copyOfRange(1, 10)
+                            } else {
+                                floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
                             }
-                        }
-                    }
-                    val renderMs = System.currentTimeMillis() - renderStartedMs
-                    // The served verdict: the GPU window path served THIS
-                    // frame (the SurfaceView draws it; the Compose Image
-                    // suppresses) exactly when the GPU arm produced the
-                    // result. Computed BEFORE the fold so the publish
-                    // block reads it once; a stale publish (isFresh guard
-                    // below) never touches it.
-                    val servedByGpuWindow = gpuServed
-                    if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
-                        result!!.fold(
-                            onSuccess = { f ->
-                                // The window verdict, published in the SAME
-                                // state batch as the frame (Compose batches
-                                // the two writes): the SurfaceView takes
-                                // the display exactly when the GPU arm
-                                // served THIS frame AND the holder reported
-                                // a live surface. A CPU fallback publish
-                                // flips it back to false, so the Image
-                                // returns the moment the window path stops
-                                // serving — no black hole, no blocky flash
-                                // of the 256 stats pack through the Image.
-                                gpuWindowLive = servedByGpuWindow && gpuSurfaceLive
-                                // The first frame lands: the preparing
-                                // window is over (the frame itself shows
-                                // from here — FRAME outranks PREPARING,
-                                // this clear is the belt-and-braces end
-                                // of the flag's lifecycle).
-                                gpuPreparing = false
-                                // The uncropped effective dims, captured
-                                // BEFORE the crop fold (see the state
-                                // declaration): the aspect presets math
-                                // against this pair, never the cropped
-                                // `frame` dims.
-                                effectiveDims = RotationState.rotatedDims(
-                                    f.width, f.height, currentManualRotationDeg,
-                                )
-                                // Crop + straighten (RAW-09), OFF the
-                                // main thread (audit fix 2026-11-13): the
-                                // published preview is the GRADED frame
-                                // cut to the crop rect, in the same
-                                // effective space the user sees. The
-                                // native develop renders
-                                // CONTAINER-upright pixels and the
-                                // surface turns only the manual delta,
-                                // so the rect is mapped through the
-                                // delta first. PublishCrop plans the
-                                // fold: the NEUTRAL crop group publishes
-                                // inline (the input buffer by
-                                // reference — no dispatcher hop, the
-                                // pre-fix fast path), an ACTIVE
-                                // crop/straighten resamples on
-                                // Dispatchers.Default and publishes
-                                // under the same generation guard. The
-                                // pump AWAITS the resample, so it stays
-                                // serial: one render, one crop, one
-                                // publish, in sequence order.
-                                when (val plan = PublishCrop.plan(
-                                    frame = f,
-                                    grade = req.grade,
-                                    spaceDeltaDeg = currentManualRotationDeg,
-                                    sequence = req.sequence,
-                                    frameIndex = req.frameIndex,
-                                )) {
-                                    is PublishCrop.Plan.PublishInline -> frame = plan.frame
-                                    is PublishCrop.Plan.ResampleOffMain -> {
-                                        val cropped = PublishCrop.resample(plan.request)
-                                        if (PublishCrop.mayPublish(
-                                                plan.request.sequence, lastPublished,
-                                            )
-                                        ) {
-                                            frame = cropped
-                                        }
-                                    }
-                                }
-                                // The rendered frame's index, published
-                                // beside the frame (feature N6): the
-                                // scope compute's RAW fetch asks for
-                                // stats of THIS frame, never guessing
-                                // the index from transport state.
-                                renderedFrameIndex = req.frameIndex
-                                // The production render trace line (audit
-                                // M0): ONE line per COMPLETED render, at the
-                                // completion point. out= is the developed
-                                // buffer's own dims (f, pre-crop — the truth
-                                // the native strideFor produced, so a 720
-                                // request on a 4K clip logs 640x360); tnr
-                                // carries the tier gate's DECISION for this
-                                // render (class + tier, the M0 SOURCE fix
-                                // visible in the trace), not the grade's
-                                // toggle; stab only when a gyro log was
-                                // actually attached and carried. M4 commit c:
-                                // backend= names the pipeline that ACTUALLY
-                                // served — gles when the GPU window path
-                                // produced this frame, cpu otherwise (the
-                                // served verdict captured before this fold).
-                                // Debug builds only — no-op in release.
-                                RenderTrace.log(
-                                    RenderTrace.Record(
-                                        sequence = req.sequence,
-                                        frameIndex = req.frameIndex,
-                                        renderClass = req.renderClass,
-                                        requestedMaxDim = req.maxDim,
-                                        outW = f.width,
-                                        outH = f.height,
-                                        renderMs = renderMs,
-                                        grade = req.grade,
-                                        temporalNrApplied = req.grade.temporalNr &&
+                            // GRADE PARCEL (commit b): the grade crosses as ONE
+                            // flat FloatArray, encoded HERE once per request —
+                            // AFTER the temporalNr tier fold (the DN-08 gate the
+                            // flat call threaded below), so the parcel carries
+                            // the EFFECTIVE value. The bridge decodes it once
+                            // per call; the 29 field arguments died with the
+                            // flat door.
+                            val gpuFrame = gpu.render(
+                                clipHandle = s.nativeClipHandle,
+                                frameIndex = req.frameIndex,
+                                maxDim = req.maxDim,
+                                gradeParcel = GradeParcel.encode(
+                                    req.grade.copy(
+                                        // The temporal pair rides the hybrid's routing
+                                        // verbatim: the bridge's own temporalMergedCfa
+                                        // consumes them to produce the CFA this render
+                                        // uploads — BEFORE the CFA reduction, so the
+                                        // reduced mosaic samples the MERGED CFA (the
+                                        // SAME merge the CPU preview rides, the same
+                                        // per-Entry caches). The DN-08 fold is the
+                                        // CPU preview's own gate, mirrored here: the
+                                        // merge is tier-INDEPENDENT (~85-107 ms at
+                                        // full res), so playback and drag renders skip
+                                        // it and the settle render lands the effect —
+                                        // the RenderTrace's tnr= verdict computes this
+                                        // same fold, so the trace stays honest.
+                                        temporalNr = req.grade.temporalNr &&
                                             PreviewTiers.temporalNrAppliesAt(
                                                 req.maxDim, req.renderClass,
                                             ),
-                                        stabilizationApplied = req.grade.stabilization &&
-                                            gyroPath != null,
-                                        servedByGpu = servedByGpuWindow,
-                                        // The GPU-path measurement fields
-                                        // (trace-dims fix 2026-11-14): out=
-                                        // is the published stats pack's
-                                        // dims on these frames — these ride
-                                        // the PreviewFrame's tail (the
-                                        // renderArrayBlocking parse) and
-                                        // carry the real dims + per-stage
-                                        // spans. Neutral defaults on the
-                                        // CPU path (f is the 3-arg form),
-                                        // so its line stays byte-identical.
-                                        sourceW = f.sourceW,
-                                        sourceH = f.sourceH,
-                                        developW = f.developW,
-                                        developH = f.developH,
-                                        surfaceW = f.surfaceW,
-                                        surfaceH = f.surfaceH,
-                                        statsEnabled = f.statsEnabled,
-                                        decMs = f.decMs,
-                                        cfaMs = f.cfaMs,
-                                        upMs = f.upMs,
-                                        devMs = f.devMs,
-                                        presentMs = f.presentMs,
-                                        statsMs = f.statsMs,
+                                    ),
+                                ),
+                                // Stage 24 (commit b): the LUT thread rides the
+                                // render seam exactly like the CPU preview — the
+                                // resolved path, the [0,1] strength, and the
+                                // five interpretation ordinals (-1 = legacy).
+                                lutPath = lutPath,
+                                lutStrength = req.grade.lutStrength / 100f,
+                                lutRole = req.grade.lutInterp?.role?.value ?: -1,
+                                lutInGamut = req.grade.lutInterp?.input?.gamut?.value ?: -1,
+                                lutInTransfer = req.grade.lutInterp?.input?.transfer?.value ?: -1,
+                                lutOutGamut = req.grade.lutInterp?.output?.gamut?.value ?: -1,
+                                lutOutTransfer = req.grade.lutInterp?.output?.transfer?.value ?: -1,
+                                // Gyro warp: the resolved verdict rides the render
+                                // seam (warpActive=false skips draw 10 — the
+                                // identity no-draw rule).
+                                warpActive = warpActive,
+                                warpM = warpM,
+                            )
+                            if (gpuFrame != null) {
+                                result = Result.success(gpuFrame)
+                                gpuServed = true
+                            } else {
+                                // The latch: one failure turns the path off for
+                                // the clip's lifetime, with the honest detail
+                                // line (the M3 fallback-line pattern). The
+                                // window stops serving with the latch — and
+                                // the preparing window ends with the verdict.
+                                gpuActive = false
+                                gpuWindowLive = false
+                                gpuPreparing = false
+                                val detail = gpu.lastDetail() ?: "gpu preview render failed"
+                                errorText = "GPU preview fallback: $detail — recovery: the CPU preview path stays the default"
+                            }
+                        }
+                        if (result == null) {
+                            // The CPU dispatch, VERBATIM the pre-GPU code: the GPU
+                            // path never reaches here when it served (result set
+                            // above), so the CPU path stays byte-identical for
+                            // every request it handles.
+                            result = if (sessionRender && s != null) {
+                                if (req.cached) {
+                                    // Interactive drag render: the bridge reuses the
+                                    // cached CFA when the frame is unchanged.
+                                    s.renderCached(
+                                        req.frameIndex, req.grade, req.maxDim,
+                                        lutPath, gyroPath, req.renderClass,
+                                    )
+                                } else {
+                                    s.render(
+                                        req.frameIndex, req.grade, req.maxDim,
+                                        lutPath, gyroPath, req.renderClass,
+                                    )
+                                }
+                            } else {
+                                // No session. The per-render fallback is the MCRAW
+                                // engine's path (PreviewRenderer.render opens the
+                                // clip through the native MCRAW pipeline); it cannot
+                                // read an encoded container, so an encoded clip
+                                // without a session fails with the same
+                                // stage/cause/recovery shape instead of feeding an
+                                // MP4 to the RAW engine.
+                                if (sourcePath == SourcePath.ENCODED) {
+                                    Result.failure(IllegalStateException(
+                                        "Preview failed (stage: open): encoded clip session unavailable — recovery: reopen the clip"
+                                    ))
+                                } else {
+                                    val fdForRender = sourceFdProvider()
+                                    if (fdForRender < 0) {
+                                        Result.failure(IllegalStateException(
+                                            "Preview failed (stage: open): source unavailable — recovery: reopen the clip"
+                                        ))
+                                    } else {
+                                        PreviewRenderer.render(
+                                            sourceFd = fdForRender,
+                                            frameIndex = req.frameIndex,
+                                            grade = req.grade,
+                                            maxDim = req.maxDim,
+                                            lutPath = lutPath,
+                                            gyroPath = gyroPath,
+                                            renderClass = req.renderClass,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        val renderMs = System.currentTimeMillis() - renderStartedMs
+                        // The served verdict: the GPU window path served THIS
+                        // frame (the SurfaceView draws it; the Compose Image
+                        // suppresses) exactly when the GPU arm produced the
+                        // result. Computed BEFORE the fold so the publish
+                        // block reads it once; a stale publish (isFresh guard
+                        // below) never touches it.
+                        val servedByGpuWindow = gpuServed
+                        if (RenderDebounce.isFresh(req.sequence, lastPublished)) {
+                            result!!.fold(
+                                onSuccess = { f ->
+                                    // The window verdict, published in the SAME
+                                    // state batch as the frame (Compose batches
+                                    // the two writes): the SurfaceView takes
+                                    // the display exactly when the GPU arm
+                                    // served THIS frame AND the holder reported
+                                    // a live surface. A CPU fallback publish
+                                    // flips it back to false, so the Image
+                                    // returns the moment the window path stops
+                                    // serving — no black hole, no blocky flash
+                                    // of the 256 stats pack through the Image.
+                                    gpuWindowLive = servedByGpuWindow && gpuSurfaceLive
+                                    // The first frame lands: the preparing
+                                    // window is over (the frame itself shows
+                                    // from here — FRAME outranks PREPARING,
+                                    // this clear is the belt-and-braces end
+                                    // of the flag's lifecycle).
+                                    gpuPreparing = false
+                                    // The uncropped effective dims, captured
+                                    // BEFORE the crop fold (see the state
+                                    // declaration): the aspect presets math
+                                    // against this pair, never the cropped
+                                    // `frame` dims.
+                                    effectiveDims = RotationState.rotatedDims(
+                                        f.width, f.height, currentManualRotationDeg,
+                                    )
+                                    // Crop + straighten (RAW-09), OFF the
+                                    // main thread (audit fix 2026-11-13): the
+                                    // published preview is the GRADED frame
+                                    // cut to the crop rect, in the same
+                                    // effective space the user sees. The
+                                    // native develop renders
+                                    // CONTAINER-upright pixels and the
+                                    // surface turns only the manual delta,
+                                    // so the rect is mapped through the
+                                    // delta first. PublishCrop plans the
+                                    // fold: the NEUTRAL crop group publishes
+                                    // inline (the input buffer by
+                                    // reference — no dispatcher hop, the
+                                    // pre-fix fast path), an ACTIVE
+                                    // crop/straighten resamples on
+                                    // Dispatchers.Default and publishes
+                                    // under the same generation guard. The
+                                    // pump AWAITS the resample, so it stays
+                                    // serial: one render, one crop, one
+                                    // publish, in sequence order.
+                                    when (val plan = PublishCrop.plan(
+                                        frame = f,
+                                        grade = req.grade,
+                                        spaceDeltaDeg = currentManualRotationDeg,
+                                        sequence = req.sequence,
+                                        frameIndex = req.frameIndex,
+                                    )) {
+                                        is PublishCrop.Plan.PublishInline -> frame = plan.frame
+                                        is PublishCrop.Plan.ResampleOffMain -> {
+                                            val cropped = PublishCrop.resample(plan.request)
+                                            if (PublishCrop.mayPublish(
+                                                    plan.request.sequence, lastPublished,
+                                                )
+                                            ) {
+                                                frame = cropped
+                                            }
+                                        }
+                                    }
+                                    // The rendered frame's index, published
+                                    // beside the frame (feature N6): the
+                                    // scope compute's RAW fetch asks for
+                                    // stats of THIS frame, never guessing
+                                    // the index from transport state.
+                                    renderedFrameIndex = req.frameIndex
+                                    // The production render trace line (audit
+                                    // M0): ONE line per COMPLETED render, at the
+                                    // completion point. out= is the developed
+                                    // buffer's own dims (f, pre-crop — the truth
+                                    // the native strideFor produced, so a 720
+                                    // request on a 4K clip logs 640x360); tnr
+                                    // carries the tier gate's DECISION for this
+                                    // render (class + tier, the M0 SOURCE fix
+                                    // visible in the trace), not the grade's
+                                    // toggle; stab only when a gyro log was
+                                    // actually attached and carried. M4 commit c:
+                                    // backend= names the pipeline that ACTUALLY
+                                    // served — gles when the GPU window path
+                                    // produced this frame, cpu otherwise (the
+                                    // served verdict captured before this fold).
+                                    // Debug builds only — no-op in release.
+                                    RenderTrace.log(
+                                        RenderTrace.Record(
+                                            sequence = req.sequence,
+                                            frameIndex = req.frameIndex,
+                                            renderClass = req.renderClass,
+                                            requestedMaxDim = req.maxDim,
+                                            outW = f.width,
+                                            outH = f.height,
+                                            renderMs = renderMs,
+                                            grade = req.grade,
+                                            temporalNrApplied = req.grade.temporalNr &&
+                                                PreviewTiers.temporalNrAppliesAt(
+                                                    req.maxDim, req.renderClass,
+                                                ),
+                                            stabilizationApplied = req.grade.stabilization &&
+                                                gyroPath != null,
+                                            servedByGpu = servedByGpuWindow,
+                                            // The GPU-path measurement fields
+                                            // (trace-dims fix 2026-11-14): out=
+                                            // is the published stats pack's
+                                            // dims on these frames — these ride
+                                            // the PreviewFrame's tail (the
+                                            // renderArrayBlocking parse) and
+                                            // carry the real dims + per-stage
+                                            // spans. Neutral defaults on the
+                                            // CPU path (f is the 3-arg form),
+                                            // so its line stays byte-identical.
+                                            sourceW = f.sourceW,
+                                            sourceH = f.sourceH,
+                                            developW = f.developW,
+                                            developH = f.developH,
+                                            surfaceW = f.surfaceW,
+                                            surfaceH = f.surfaceH,
+                                            statsEnabled = f.statsEnabled,
+                                            decMs = f.decMs,
+                                            cfaMs = f.cfaMs,
+                                            upMs = f.upMs,
+                                            devMs = f.devMs,
+                                            presentMs = f.presentMs,
+                                            statsMs = f.statsMs,
+                                        )
+                                    )
+                                    lastRenderFailed = false
+                                    errorText = null
+                                },
+                                onFailure = { e ->
+                                    lastRenderFailed = true
+                                    errorText = e.message
+                                },
+                            )
+                            lastPublished = req.sequence
+                        }
+                        // Progressive pause settle (owner request 2026-11-11
+                        // section 2): the pause/clip-end render published its
+                        // fast intermediate tier — now queue the full-res
+                        // follow-up. offerIfEmpty: a request that arrived while
+                        // the intermediate rendered (seek, slider settle, a new
+                        // pause) stays pending and wins; the follow-up is
+                        // dropped, superseded by that newer sequence. The
+                        // follow-up bumps its OWN sequence, so it publishes
+                        // after the intermediate by monotonic publication, and a
+                        // render offered while IT runs replaces it in the slot
+                        // exactly like any other request.
+                        if (req.followUpMaxDim != null) {
+                            renderSeq += 1
+                            if (gate.offerIfEmpty(
+                                    RenderRequest(
+                                        req.frameIndex, req.grade, req.followUpMaxDim,
+                                        renderSeq, cached = true,
+                                        renderClass = req.renderClass,
                                     )
                                 )
-                                lastRenderFailed = false
-                                errorText = null
-                            },
-                            onFailure = { e ->
-                                lastRenderFailed = true
-                                errorText = e.message
-                            },
-                        )
-                        lastPublished = req.sequence
-                    }
-                    // Progressive pause settle (owner request 2026-11-11
-                    // section 2): the pause/clip-end render published its
-                    // fast intermediate tier — now queue the full-res
-                    // follow-up. offerIfEmpty: a request that arrived while
-                    // the intermediate rendered (seek, slider settle, a new
-                    // pause) stays pending and wins; the follow-up is
-                    // dropped, superseded by that newer sequence. The
-                    // follow-up bumps its OWN sequence, so it publishes
-                    // after the intermediate by monotonic publication, and a
-                    // render offered while IT runs replaces it in the slot
-                    // exactly like any other request.
-                    if (req.followUpMaxDim != null) {
-                        renderSeq += 1
-                        if (gate.offerIfEmpty(
-                                RenderRequest(
-                                    req.frameIndex, req.grade, req.followUpMaxDim,
-                                    renderSeq, cached = true,
-                                    renderClass = req.renderClass,
-                                )
-                            )
-                        ) {
-                            pumpKick.trySend(Unit)
+                            ) {
+                                pumpKick.trySend(Unit)
+                            }
                         }
+                    } catch (c: CancellationException) {
+                        // Structured concurrency: a cancelled render (sourceId
+                        // change, composition exit) propagates — never recorded
+                        // as a failure, never swallowed.
+                        throw c
+                    } catch (t: Throwable) {
+                        // Error subclasses deliberately rethrow (the one
+                        // realistic thrower is an OOM from the resample at
+                        // 12MP): a pump that hammers an OOM-ing bitmap path
+                        // request after request is worse than a dead one, so
+                        // an Error unwinds the pump honestly — the finally
+                        // below still clears the latch, never the spinner.
+                        if (t is Error) throw t
+                        // One bad request must not kill the pump: the same
+                        // failure surfaces the fold's onFailure arm uses
+                        // (the stage/cause/recovery shape the other failure
+                        // paths word alike), then the while-loop continues
+                        // to the next request.
+                        lastRenderFailed = true
+                        errorText = "Preview failed (stage: render): " +
+                            (t.message ?: t.javaClass.simpleName) +
+                            " — recovery: reopen the clip"
+                    } finally {
+                        // The latch never outlives the request: the normal
+                        // end, the catches above, cancellation, and the Error
+                        // subclasses they deliberately rethrow all land
+                        // here.
+                        renderInFlight = false
                     }
-                    renderInFlight = false
                 }
             }
         }
