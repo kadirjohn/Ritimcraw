@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.data
 
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * Pure thumbnail-state decisions for the Library row (owner request
@@ -85,5 +86,95 @@ class ThumbnailStore(private val dir: File) {
         if (f.exists()) f.delete()
         val master = masterPath(id)
         if (master.exists()) master.delete()
+    }
+
+    // ---- folder previews (owner request 2026-11-15) ----------------------
+    //
+    // A NOT-yet-imported folder file has NO MediaSource record — no id,
+    // no place in the id-keyed namespace above. Its pre-import preview
+    // keys on the DOCUMENT URI instead (stable within the tree grant),
+    // hashed to a flat file name and kept in a SEPARATE subfolder under
+    // the same store dir, so [remove] and every id-keyed read above
+    // structurally cannot touch these files and vice versa.
+
+    /**
+     * Pure: the folder-preview key of a document URI — the SHA-256 of
+     * the FULL uri string, first 16 hex chars (the SAME width as the
+     * library id's hex — [com.ritim.ritimcraw.data.SourceRepository]'s
+     * fingerprint cut — so both namespaces carry uniformly-sized names).
+     * The full uri (not the document id) is hashed: two grants of the
+     * same tree spell the same document uri identically, while the
+     * document id alone would collide across authorities. The prefix
+     * keeps the name out of the hex id space entirely (an id can never
+     * collide with a folder key — different alphabets).
+     */
+    fun folderKeyFor(documentUri: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val hex = md.digest(documentUri.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(FOLDER_HEX_CHARS)
+        return "$FOLDER_PREFIX$hex.png"
+    }
+
+    /**
+     * The folder-preview subdir under the store dir — [FOLDER_DIR]
+     * files only, never an id-keyed PNG.
+     */
+    val folderDir: File get() = File(dir, FOLDER_DIR)
+
+    /** Creates the folder-preview dir (idempotent). */
+    fun ensureFolderDir(): File = folderDir.apply { mkdirs() }
+
+    /** The persisted folder-preview PNG for [documentUri], or null. */
+    fun folderFileFor(documentUri: String): File? {
+        val f = File(folderDir, folderKeyFor(documentUri))
+        return if (f.exists()) f else null
+    }
+
+    /** True when [documentUri] has a persisted folder preview. */
+    fun folderHas(documentUri: String): Boolean = folderFileFor(documentUri) != null
+
+    /** The path a folder-preview pass writes [documentUri]'s PNG to. */
+    fun folderTargetPath(documentUri: String): String =
+        File(folderDir, folderKeyFor(documentUri)).absolutePath
+
+    /**
+     * Deletes [documentUri]'s folder preview — the import cleanup (owner
+     * request 2026-11-15): once the per-import pipeline generated the
+     * id-keyed icon, the pre-import preview is redundant. A no-op when
+     * none exists.
+     */
+    fun removeFolder(documentUri: String) {
+        val f = File(folderDir, folderKeyFor(documentUri))
+        if (f.exists()) f.delete()
+    }
+
+    /**
+     * Bounded retention for the folder namespace: un-imported files'
+     * previews accumulate as the owner browses (there is no import to
+     * clean them), so a sweep deletes OLDEST-first past [keep]. A no-op
+     * at or under the cap. Returns the number deleted.
+     */
+    fun trimFolder(keep: Int): Int {
+        val files = folderDir.listFiles { f -> f.isFile } ?: return 0
+        if (files.size <= keep) return 0
+        val excess = files.sortedBy { it.lastModified() }
+            .take(files.size - keep)
+        var deleted = 0
+        for (f in excess) {
+            if (f.delete()) deleted++
+        }
+        return deleted
+    }
+
+    private companion object {
+        /** The folder-preview subdir's name, inside the store dir. */
+        const val FOLDER_DIR = "folder"
+
+        /** The folder key's hex chars after the prefix (the id width). */
+        const val FOLDER_HEX_CHARS = 16
+
+        /** The alphabet separator: no library id starts with this. */
+        const val FOLDER_PREFIX = "doc-"
     }
 }
