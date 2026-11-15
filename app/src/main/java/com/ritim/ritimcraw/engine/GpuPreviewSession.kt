@@ -18,7 +18,7 @@ import kotlin.coroutines.suspendCoroutine
  * open, setSurface, renderFrame, close — is submitted to the SAME
  * single preview engine thread the CPU [PreviewSession] renders
  * through. The bridge's
- * nativePreviewSessionRenderFrame decodes the RAW CFA on the CALLING
+ * nativePreviewSessionRenderFrameParcel decodes the RAW CFA on the CALLING
  * thread (Source's one-thread rule + the ring buffer), so the GPU render
  * must run where the CPU renders run, and the bridge's thread-local error
  * state (lastDetail) must be read on that same thread. Submission order
@@ -78,66 +78,16 @@ interface GpuPreviewDevelop {
      * the caller latches GPU-off (the M3 per-frame dispatch rule) and
      * falls back to the CPU render for THIS and every later frame. Runs
      * on the engine thread.
+     *
+     * GRADE PARCEL (commit b): the 29 scalar grade fields cross as ONE
+     * flat FloatArray — GradeParcel.encode(grade), the GENERATED slot
+     * layout (tools/gen-grade-parcel.py is the single source of truth for
+     * both sides of the seam). The caller encodes per request, AFTER the
+     * temporalNr tier fold — the parcel carries the EFFECTIVE value (the
+     * built-once-per-grade-change rule; the preview builds once per
+     * request because the request itself folds the tier).
      */
     suspend fun renderFrame(
-        sessionHandle: Long,
-        clipHandle: Long,
-        frameIndex: Int,
-        maxDim: Int,
-        chromaDenoise: Float,
-        noiseReduction: Float,
-        temporalNr: Boolean,
-        temporalStrength: Float,
-        sharpness: Float,
-        detail: Float,
-        exposureEv: Float,
-        highlights: Float,
-        blackPoint: Float,
-        whitePoint: Float,
-        shadows: Float,
-        midtones: Float,
-        contrast: Float,
-        tempK: Float,
-        tint: Float,
-        saturation: Float,
-        asShot: Boolean,
-        wheelShadowX: Float,
-        wheelShadowY: Float,
-        wheelMidX: Float,
-        wheelMidY: Float,
-        wheelHighX: Float,
-        wheelHighY: Float,
-        splitShadowHue: Float,
-        splitHighlightHue: Float,
-        splitBalance: Float,
-        highlightReconstruction: Boolean,
-        keepVignetting: Boolean,
-        tonemap: Int,
-        lutPath: String?,
-        lutStrength: Float,
-        lutRole: Int,
-        lutInGamut: Int,
-        lutInTransfer: Int,
-        lutOutGamut: Int,
-        lutOutTransfer: Int,
-        warpActive: Boolean,
-        warpM: FloatArray,
-    ): PreviewFrame?
-
-    /**
-     * GRADE PARCEL (commit a, additive): the parcel twin of [renderFrame]
-     * above — the 29 scalar grade fields cross as ONE flat FloatArray
-     * (GradeParcel.encode; the slot layout is GENERATED from
-     * tools/gen-grade-parcel.py's schema, the single source of truth for
-     * both sides of the seam). The caller encodes per request, AFTER the
-     * temporalNr tier fold — the parcel carries the EFFECTIVE value. The
-     * default body forwards to the flat [renderFrame] field-by-field, so
-     * existing fakes and the anonymous inline objects keep compiling and
-     * keep their behavior; NativeGpuPreviewDevelop overrides it with the
-     * real JNI parcel twin. Commit (b) flips the dispatcher to this door
-     * and deletes the flat one.
-     */
-    suspend fun renderFrameParcel(
         sessionHandle: Long,
         clipHandle: Long,
         frameIndex: Int,
@@ -152,40 +102,7 @@ interface GpuPreviewDevelop {
         lutOutTransfer: Int,
         warpActive: Boolean,
         warpM: FloatArray,
-    ): PreviewFrame? = renderFrame(
-        sessionHandle, clipHandle, frameIndex, maxDim,
-        /* chromaDenoise */ gradeParcel[GradeParcel.SLOT_CHROMA_DENOISE],
-        /* noiseReduction */ gradeParcel[GradeParcel.SLOT_NOISE_REDUCTION],
-        /* temporalNr */ gradeParcel[GradeParcel.SLOT_TEMPORAL_NR] != 0.0f,
-        /* temporalStrength */ gradeParcel[GradeParcel.SLOT_TEMPORAL_STRENGTH],
-        /* sharpness */ gradeParcel[GradeParcel.SLOT_SHARPNESS],
-        /* detail */ gradeParcel[GradeParcel.SLOT_DETAIL],
-        /* exposureEv */ gradeParcel[GradeParcel.SLOT_EXPOSURE_EV],
-        /* highlights */ gradeParcel[GradeParcel.SLOT_HIGHLIGHTS],
-        /* blackPoint */ gradeParcel[GradeParcel.SLOT_BLACK_POINT],
-        /* whitePoint */ gradeParcel[GradeParcel.SLOT_WHITE_POINT],
-        /* shadows */ gradeParcel[GradeParcel.SLOT_SHADOWS],
-        /* midtones */ gradeParcel[GradeParcel.SLOT_MIDTONES],
-        /* contrast */ gradeParcel[GradeParcel.SLOT_CONTRAST],
-        /* tempK */ gradeParcel[GradeParcel.SLOT_TEMP_K],
-        /* tint */ gradeParcel[GradeParcel.SLOT_TINT],
-        /* saturation */ gradeParcel[GradeParcel.SLOT_SATURATION],
-        /* asShot */ gradeParcel[GradeParcel.SLOT_AS_SHOT] != 0.0f,
-        /* wheelShadowX */ gradeParcel[GradeParcel.SLOT_WHEEL_SHADOW_X],
-        /* wheelShadowY */ gradeParcel[GradeParcel.SLOT_WHEEL_SHADOW_Y],
-        /* wheelMidX */ gradeParcel[GradeParcel.SLOT_WHEEL_MID_X],
-        /* wheelMidY */ gradeParcel[GradeParcel.SLOT_WHEEL_MID_Y],
-        /* wheelHighX */ gradeParcel[GradeParcel.SLOT_WHEEL_HIGH_X],
-        /* wheelHighY */ gradeParcel[GradeParcel.SLOT_WHEEL_HIGH_Y],
-        /* splitShadowHue */ gradeParcel[GradeParcel.SLOT_SPLIT_SHADOW_HUE],
-        /* splitHighlightHue */ gradeParcel[GradeParcel.SLOT_SPLIT_HIGHLIGHT_HUE],
-        /* splitBalance */ gradeParcel[GradeParcel.SLOT_SPLIT_BALANCE],
-        /* highlightReconstruction */ gradeParcel[GradeParcel.SLOT_HIGHLIGHT_RECONSTRUCTION] != 0.0f,
-        /* keepVignetting */ gradeParcel[GradeParcel.SLOT_KEEP_VIGNETTING] != 0.0f,
-        /* tonemap */ gradeParcel[GradeParcel.SLOT_TONEMAP].toInt(),
-        lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
-        lutOutGamut, lutOutTransfer, warpActive, warpM,
-    )
+    ): PreviewFrame?
 
     /**
      * The gyro warp resolver (the GPU warp port's commit b): the per-frame
@@ -321,89 +238,13 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
             }
         }
 
-    override suspend fun renderFrame(
-        sessionHandle: Long,
-        clipHandle: Long,
-        frameIndex: Int,
-        maxDim: Int,
-        chromaDenoise: Float,
-        noiseReduction: Float,
-        temporalNr: Boolean,
-        temporalStrength: Float,
-        sharpness: Float,
-        detail: Float,
-        exposureEv: Float,
-        highlights: Float,
-        blackPoint: Float,
-        whitePoint: Float,
-        shadows: Float,
-        midtones: Float,
-        contrast: Float,
-        tempK: Float,
-        tint: Float,
-        saturation: Float,
-        asShot: Boolean,
-        wheelShadowX: Float,
-        wheelShadowY: Float,
-        wheelMidX: Float,
-        wheelMidY: Float,
-        wheelHighX: Float,
-        wheelHighY: Float,
-        splitShadowHue: Float,
-        splitHighlightHue: Float,
-        splitBalance: Float,
-        highlightReconstruction: Boolean,
-        keepVignetting: Boolean,
-        tonemap: Int,
-        lutPath: String?,
-        lutStrength: Float,
-        lutRole: Int,
-        lutInGamut: Int,
-        lutInTransfer: Int,
-        lutOutGamut: Int,
-        lutOutTransfer: Int,
-        warpActive: Boolean,
-        warpM: FloatArray,
-    ): PreviewFrame? = suspendCoroutine { cont ->
-        try {
-            PreviewRenderer.previewEngine.execute {
-                cont.resume(
-                    try {
-                        renderArrayBlocking(
-                            NativeSource.jniPreviewSessionRenderFrame(
-                                sessionHandle, clipHandle, frameIndex, maxDim,
-                                chromaDenoise, noiseReduction,
-                                temporalNr, temporalStrength,
-                                sharpness, detail,
-                                exposureEv, highlights, blackPoint, whitePoint,
-                                shadows, midtones, contrast, tempK, tint,
-                                saturation, asShot,
-                                wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-                                wheelHighX, wheelHighY,
-                                splitShadowHue, splitHighlightHue, splitBalance,
-                                highlightReconstruction, keepVignetting, tonemap,
-                                lutPath, lutStrength, lutRole, lutInGamut,
-                                lutInTransfer, lutOutGamut, lutOutTransfer,
-                                warpActive, warpM,
-                            )
-                        )
-                    } catch (t: Throwable) {
-                        null // unavailable guard / engine-side failure: fall back to CPU
-                    }
-                )
-            }
-        } catch (e: RejectedExecutionException) {
-            cont.resume(null)
-        }
-    }
-
     /**
-     * GRADE PARCEL (commit a): the REAL parcel twin — the JNI seam takes
+     * GRADE PARCEL (commit b): the REAL parcel door — the JNI seam takes
      * the parcel; the bridge decodes ONCE per call. The caller encodes per
      * request (after the temporalNr tier fold); this override runs on the
      * engine thread like every render entry.
      */
-    override suspend fun renderFrameParcel(
+    override suspend fun renderFrame(
         sessionHandle: Long,
         clipHandle: Long,
         frameIndex: Int,
@@ -508,7 +349,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
      * engine thread. The SAME shape the CPU preview publishes ([w, h,
      * pixels...]), so the publish fold downstream is engine-blind — PLUS
      * the trace-dims fix's (2026-11-14) 13-int measurement tail the
-     * nativePreviewSessionRenderFrame appends after the pixels:
+     * nativePreviewSessionRenderFrameParcel appends after the pixels:
      * [sourceW, sourceH, developW, developH, surfaceW, surfaceH,
      * statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs] (the
      * spans in MICROSECONDS; parsed into the PreviewFrame's ms fields).
@@ -617,41 +458,16 @@ class GpuPreviewSession(
     /**
      * Renders one frame through the GPU session; null = the pump falls
      * back to the CPU render for this request (and latches GPU-off, the
-     * M3 per-frame dispatch rule). Never throws.
+     * M3 per-frame dispatch rule). Never throws. GRADE PARCEL (commit b):
+     * the grade crosses as the ONE flat FloatArray the caller encoded
+     * (GradeParcel.encode, once per request after the temporalNr tier
+     * fold) — the field list died with the flat door.
      */
     suspend fun render(
         clipHandle: Long,
         frameIndex: Int,
         maxDim: Int,
-        chromaDenoise: Float,
-        noiseReduction: Float,
-        temporalNr: Boolean,
-        temporalStrength: Float,
-        sharpness: Float,
-        detail: Float,
-        exposureEv: Float,
-        highlights: Float,
-        blackPoint: Float,
-        whitePoint: Float,
-        shadows: Float,
-        midtones: Float,
-        contrast: Float,
-        tempK: Float,
-        tint: Float,
-        saturation: Float,
-        asShot: Boolean,
-        wheelShadowX: Float,
-        wheelShadowY: Float,
-        wheelMidX: Float,
-        wheelMidY: Float,
-        wheelHighX: Float,
-        wheelHighY: Float,
-        splitShadowHue: Float,
-        splitHighlightHue: Float,
-        splitBalance: Float,
-        highlightReconstruction: Boolean,
-        keepVignetting: Boolean,
-        tonemap: Int,
+        gradeParcel: FloatArray,
         lutPath: String?,
         lutStrength: Float,
         lutRole: Int,
@@ -667,16 +483,7 @@ class GpuPreviewSession(
         return try {
             develop.renderFrame(
                 h, clipHandle, frameIndex, maxDim,
-                chromaDenoise, noiseReduction,
-                temporalNr, temporalStrength,
-                sharpness, detail,
-                exposureEv, highlights, blackPoint, whitePoint,
-                shadows, midtones, contrast, tempK, tint,
-                saturation, asShot,
-                wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-                wheelHighX, wheelHighY,
-                splitShadowHue, splitHighlightHue, splitBalance,
-                highlightReconstruction, keepVignetting, tonemap,
+                gradeParcel,
                 lutPath, lutStrength, lutRole, lutInGamut,
                 lutInTransfer, lutOutGamut, lutOutTransfer,
                 warpActive, warpM,

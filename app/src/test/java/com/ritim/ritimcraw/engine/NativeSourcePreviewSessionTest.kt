@@ -16,41 +16,27 @@ import org.junit.Test
  *      the standard recovery message, never UnsatisfiedLinkError leaking
  *      out of the seam. This is the same contract the M3 seam rides and the
  *      same one the commit-b/c dispatcher will catch;
- *   2. the render signature carries the fragment-covered grade controls —
- *      the five base ones (exposure, highlights, highlight
- *      reconstruction, vignetting, tonemap — highlights joined with the
- *      stage-15 port) plus the two spatial-NR stages' raw values since
- *      the spatial-NR port (chroma denoise, noise reduction — stages 7/8,
- *      the multi-pass fragment chain) plus the temporal pair since the
- *      temporal-hybrid routing (temporalNr, temporalStrength — the SAME
- *      raw values the CPU export's temporal merge receives; the pair
+ *   2. the render signature carries the grade as ONE flat parcel —
+ *      GRADE PARCEL (commit b): the 29 fragment-covered scalar grade
+ *      fields (the five base ones plus the spatial-NR pair, the temporal
+ *      pair, the unsharp pair, the ten pointwise stages' values, the
+ *      color wheel, the split-tone values) cross as one FloatArray whose
+ *      layout is GENERATED from tools/gen-grade-parcel.py's schema on
+ *      BOTH sides of the seam (GradeParcelTest cross-checks the committed
+ *      C++ header against the Kotlin offsets — the stale-mirror catch).
+ *      The temporal pair rides the parcel like every other scalar and
  *      dies at the bridge, consumed by the bridge's own temporalMergedCfa
  *      BEFORE the CFA reduction, so the reduced mosaic samples the MERGED
  *      CFA — routing, not porting; the merge math stays core/Temporal.cpp's,
- *      frozen, and the session request itself never sees the pair) plus
- *      the two unsharp stages' raw
- *      values since the sharpness/detail port (sharpness, detail —
- *      stages 21/22, the four-pass unsharp chain, threaded with NO clamp
- *      because the CPU's amount mapping makes negative values valid
- *      softening) plus the ten pointwise stages' raw
- *      values since the pointwise port (black point, white point,
- *      shadows, midtones, contrast, temperature, tint, saturation, the
- *      color wheel, split tone, with asShot as the 16/17 gate's input)
- *      plus — since the stage-24 GPU port — the seven LUT controls (the
- *      resolved .cube path, the [0,1] strength, and the five
- *      interpretation ordinals, -1 = legacy) beside the four plumbing
- *      values (session handle, clip handle, frame index, max dim) plus —
- *      since the gyro warp port — the warp pair (the active flag and the
- *      nine-float composite inverse-sampling map; false skips the draw
- *      entirely, the identity no-draw rule). That
- *      narrow signature is the second lock against
- *      uncovered grades (the Kotlin coverage gate is the first): a stage
- *      the render path does not cover cannot even be expressed into the
- *      session, so widening this signature must be a deliberate act that
- *      edits this test too. The setSurface parameter is Any? on purpose —
- *      the JVM's declaredMethods reflection resolves parameter types, and
- *      an android.view.Surface type would fail class resolution here
- *      (NoClassDefFoundError): the JVM-loadability rule.
+ *      frozen, and the session request itself never sees the pair. The
+ *      parcel shape is the second lock against uncovered grades (the
+ *      Kotlin coverage gate is the first): a grade field the render path
+ *      does not cover cannot be expressed into the session without a
+ *      schema row + a regenerate, so widening it must be a deliberate act
+ *      that edits the schema and this test too. The setSurface parameter
+ *      is Any? on purpose — the JVM's declaredMethods reflection resolves
+ *      parameter types, and an android.view.Surface type would fail class
+ *      resolution here (NoClassDefFoundError): the JVM-loadability rule.
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -102,68 +88,14 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun render_frame_throws_the_unavailable_message_without_the_native_lib() {
-        if (NativeSource.nativeAvailable) return
-        try {
-            NativeSource.jniPreviewSessionRenderFrame(
-                sessionHandle = 1L,
-                clipHandle = 1L,
-                frameIndex = 0,
-                maxDim = 1280,
-                chromaDenoise = 0.0f,
-                noiseReduction = 0.0f,
-                temporalNr = false,
-                temporalStrength = 0.0f,
-                sharpness = 0.0f,
-                detail = 0.0f,
-                exposureEv = 0.0f,
-                highlights = 0.0f,
-                blackPoint = 0.0f,
-                whitePoint = 0.0f,
-                shadows = 0.0f,
-                midtones = 0.0f,
-                contrast = 0.0f,
-                tempK = 5600.0f,
-                tint = 0.0f,
-                saturation = 0.0f,
-                asShot = true,
-                wheelShadowX = 0.0f,
-                wheelShadowY = 0.0f,
-                wheelMidX = 0.0f,
-                wheelMidY = 0.0f,
-                wheelHighX = 0.0f,
-                wheelHighY = 0.0f,
-                splitShadowHue = -1.0f,
-                splitHighlightHue = -1.0f,
-                splitBalance = 0.0f,
-                highlightReconstruction = true,
-                keepVignetting = true,
-                tonemap = 0,
-                lutPath = null,
-                lutStrength = 0.0f,
-                lutRole = -1,
-                lutInGamut = -1,
-                lutInTransfer = -1,
-                lutOutGamut = -1,
-                lutOutTransfer = -1,
-                warpActive = false,
-                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
-            )
-            throw AssertionError("expected IllegalStateException")
-        } catch (expected: IllegalStateException) {
-            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
-        }
-    }
-
-    @Test
     fun render_frame_parcel_throws_the_unavailable_message_without_the_native_lib() {
-        // GRADE PARCEL (commit a, additive): the preview parcel twin's
-        // guard. The wrapper throws BEFORE the parcel is ever read, so the
-        // dummy parcel is an all-zero FloatArray(SLOT_COUNT) — the guard
-        // fires on nativeAvailable alone. The pump's renderFrameParcel
-        // folds Throwable to a null frame (the CPU fallback), so the guard
-        // is what stands between a no-.so build and an
-        // UnsatisfiedLinkError mid-pump.
+        // GRADE PARCEL (commit a + b): the preview render door's guard —
+        // the ONLY render wrapper since the flat door died. The wrapper
+        // throws BEFORE the parcel is ever read, so the dummy parcel is an
+        // all-zero FloatArray(SLOT_COUNT) — the guard fires on
+        // nativeAvailable alone. The pump folds Throwable to a null frame
+        // (the CPU fallback), so the guard is what stands between a no-.so
+        // build and an UnsatisfiedLinkError mid-pump.
         if (NativeSource.nativeAvailable) return
         try {
             NativeSource.jniPreviewSessionRenderFrameParcel(
@@ -219,10 +151,10 @@ class NativeSourcePreviewSessionTest {
         // Internal members are public in JVM bytecode; match by prefix so a
         // future mangling rule cannot silently break the lookup. The prefix
         // is name + "$" (the mangling delimiter), NOT the bare name: the
-        // GRADE PARCEL twins (commit a) added jniPreviewSessionRenderFrameParcel,
-        // and a bare-name prefix would match BOTH the flat wrapper and its
-        // parcel twin — the "exactly one" assertion would see two. The
-        // develop-session test's helper already used this convention.
+        // GRADE PARCEL twins (commit a) once sat beside the flat wrappers,
+        // and a bare-name prefix would have matched BOTH — the "exactly
+        // one" assertion would have seen two. The develop-session test's
+        // helper already used this convention.
         val methods = NativeSource.Companion::class.java.declaredMethods
         val matches = methods.filter { it.name.startsWith(name + "$") }
         assertEquals("exactly one $name wrapper", 1, matches.size)
@@ -230,48 +162,8 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
-    fun render_carries_exactly_the_fragment_covered_controls() {
-        // 42 parameters: sessionHandle, clipHandle, frameIndex, maxDim (the
-        // four plumbing values) + chromaDenoise, noiseReduction (the two
-        // spatial-NR stages' raw values since the spatial-NR port — stages
-        // 7/8, the multi-pass fragment chain behind uChromaDenoise/
-        // uNoiseReduction) + temporalNr, temporalStrength (the temporal
-        // pair since the temporal-hybrid routing — the SAME raw values
-        // the CPU export's temporal merge receives; the pair dies at the
-        // bridge, consumed by the bridge's own temporalMergedCfa BEFORE
-        // the CFA reduction, so the reduced mosaic samples the MERGED CFA
-        // — routing, not porting; the merge math stays core/Temporal.cpp's,
-        // frozen, and the session request itself never sees the pair) +
-        // sharpness, detail (the two unsharp stages'
-        // raw values since the sharpness/detail port — stages 21/22, the
-        // four-pass unsharp chain behind uSharpness/uDetail, threaded
-        // VERBATIM with no clamp because the CPU's amount mapping makes
-        // negative values valid softening) + exposureEv, highlights,
-        // highlightReconstruction, keepVignetting, tonemap (the five base
-        // fragment-covered grade knobs — highlights joined with the
-        // stage-15 port) + the ten pointwise stages' raw values since the
-        // pointwise port (blackPoint, whitePoint, shadows, midtones,
-        // contrast, tempK, tint, saturation, the six color-wheel offsets,
-        // the three split-tone values, with asShot as the 16/17 gate's
-        // input) + the seven LUT controls since the stage-24 GPU port
-        // (lutPath, lutStrength and the five interpretation ordinals — the
-        // SAME layout the CPU seam threads, -1 = legacy) + warpActive and
-        // warpM since the gyro warp port (the per-frame verdict the
-        // resolver produced at the caller — the Boolean locks the draw,
-        // the nine floats lock the composite inverse-sampling map; false
-        // skips draw 10 entirely, the identity no-draw rule). Tone-band
-        // controls remain deliberately absent — that stage is NOT
-        // fragment-covered, so a grade using it must take the CPU path
-        // wholesale; adding such a parameter here widens the session's
-        // promise and must fail this test until the coverage gate is
-        // taught the new stage.
-        val render = method("jniPreviewSessionRenderFrame")
-        assertEquals(42, render.parameterCount)
-    }
-
-    @Test
     fun render_parcel_carries_exactly_the_parcel_shape() {
-        // GRADE PARCEL (commit a, additive): the parcel twin's signature
+        // GRADE PARCEL (commit a + b): the preview render door's signature
         // lock — 14 parameters: sessionHandle, clipHandle, frameIndex,
         // maxDim (the four plumbing values) + gradeParcel (the ONE flat
         // FloatArray carrying all 29 scalar grade fields — the layout is
@@ -280,9 +172,9 @@ class NativeSourcePreviewSessionTest {
         // constexpr slots against the Kotlin offsets) + the seven LUT
         // controls (lutPath, lutStrength, the five ordinals — per-job,
         // documented OUT of the parcel) + warpActive, warpM (the
-        // caller-resolved per-frame verdict). Commit (b) flips the
-        // dispatcher to this door and re-counts this lock DOWN from the
-        // flat 42.
+        // caller-resolved per-frame verdict). Commit (b): the flat
+        // 42-parameter door died with its wrapper — the parcel is the ONLY
+        // render door, so this lock is re-counted DOWN from the flat 42.
         val render = method("jniPreviewSessionRenderFrameParcel")
         assertEquals(14, render.parameterCount)
     }

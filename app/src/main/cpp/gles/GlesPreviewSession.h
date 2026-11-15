@@ -325,20 +325,20 @@ public:
     bool healthy() const;
     std::string failureDetail() const;
 
-    // Blocking render; in-flight bounded at one job by construction. Safe
-    // to call from one non-GL thread at a time (the editor's engine
-    // thread). Draws the window present (when a window surface is
-    // attached) and ALWAYS produces the published stats pack.
-    PreviewFrameResult renderFrame(const PreviewFrameRequest& req);
-
-    // GRADE PARCEL (commit a, additive): the same render with the grade
-    // arriving as the decoded parcel struct. The body folds [grade] onto a
+    // GRADE PARCEL (commit a + b): blocking render, in-flight bounded at
+    // one job by construction. Safe to call from one non-GL thread at a
+    // time (the editor's engine thread). Draws the window present (when a
+    // window surface is attached) and ALWAYS produces the published stats
+    // pack. The grade arrives as the decoded parcel struct, folded onto a
     // stack copy of [req] via the GENERATED applyGradeToRequest
-    // (gles/GradeParcel.h) and delegates to the flat renderFrame above.
-    // [req] carries only the non-grade fields (cfa/info/meta, the LUT
-    // binding group, the warp pair, statsEnabled); the temporal pair
-    // never reaches the request — the bridge consumed it at
-    // temporalMergedCfa before this call.
+    // (gles/GradeParcel.h — the schema's single source of truth; a schema
+    // field with no matching PreviewFrameRequest member fails the compile
+    // here, the honest catch). [req] carries only the non-grade fields
+    // (cfa/info/meta, the LUT binding group, the warp pair, statsEnabled);
+    // the temporal pair never reaches the request — the bridge consumed it
+    // at temporalMergedCfa before this call. The flat pre-folded overload
+    // died with commit (b): every door into the session threads the grade
+    // through the parcel.
     PreviewFrameResult renderFrame(const PreviewFrameRequest& req,
                                    const DevelopGrade& grade);
 

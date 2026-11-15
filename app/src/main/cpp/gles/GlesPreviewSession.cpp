@@ -2104,7 +2104,20 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
 
 // ---- renderFrame / setSurface / close / health ---------------------------------
 
-PreviewFrameResult PreviewSession::renderFrame(const PreviewFrameRequest& req) {
+// GRADE PARCEL (commit a + b): the preview session's ONLY render entry —
+// the grade arrives as the decoded parcel struct, folded onto a stack copy
+// of the request via the GENERATED applyGradeToRequest (gles/GradeParcel.h
+// — the schema's single source of truth; a schema field with no matching
+// PreviewFrameRequest member fails the compile here, the honest catch).
+// The [req] the caller builds carries ONLY the non-grade fields
+// (cfa/info/meta, the LUT binding group, the warp pair); the temporal pair
+// never reaches the request — the bridge consumed it at temporalMergedCfa
+// before this call. The flat pre-folded overload died with commit (b):
+// every door into the session threads the grade through the parcel.
+PreviewFrameResult PreviewSession::renderFrame(
+        const PreviewFrameRequest& req, const DevelopGrade& grade) {
+    PreviewFrameRequest folded = req;
+    applyGradeToRequest(grade, &folded);
     PreviewFrameResult res;
     if (impl_ == nullptr) {
         res.detail = "session not open";
@@ -2135,7 +2148,7 @@ PreviewFrameResult PreviewSession::renderFrame(const PreviewFrameRequest& req) {
     // it before exiting — its exit condition requires the slot free) or
     // we saw it first and failed above. No posted job is ever abandoned.
     impl_->pendingKind = Impl::JobKind::Render;
-    impl_->pendingReq = &req;
+    impl_->pendingReq = &folded;
     impl_->pendingRes = &res;
     impl_->cvRequest.notify_one();
     impl_->cvDone.wait(lock, [&]() {
@@ -2144,19 +2157,6 @@ PreviewFrameResult PreviewSession::renderFrame(const PreviewFrameRequest& req) {
     // [res] was filled by the GL thread while we held the wait; the
     // unique_lock releases on return.
     return res;
-}
-
-// GRADE PARCEL (commit a, additive): fold the decoded parcel onto a stack
-// copy of the request and delegate to the flat path. The fold is
-// GENERATED from the schema (applyGradeToRequest in GradeParcel.h) — the
-// field list is never hand-mirrored here; a schema field with no matching
-// PreviewFrameRequest member fails the compile at this instantiation,
-// the honest catch.
-PreviewFrameResult PreviewSession::renderFrame(
-        const PreviewFrameRequest& req, const DevelopGrade& grade) {
-    PreviewFrameRequest folded = req;
-    applyGradeToRequest(grade, &folded);
-    return renderFrame(folded);
 }
 
 bool PreviewSession::setSurface(ANativeWindow* window, std::string* detail) {

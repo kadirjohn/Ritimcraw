@@ -33,7 +33,7 @@
 // (the shader computes s = -highlights/100 — the CPU stage-15 shoulder),
 // uOetf = 1 (the export shape — the shader's linearToRec709 is textually
 // identical to core/src/Transfer.cpp's, so the readback's toByte quantize
-// reproduces nativeExportFrame's pack loop: toByte(linearToRec709(rgb))
+// reproduces nativeExportFrameParcel's pack loop: toByte(linearToRec709(rgb))
 // with no second OETF application), and the ten pointwise grade stages'
 // raw values (uBlackPoint, uWhitePoint, uShadows, uMidtones, uContrast,
 // uTempK, uTint, the six color-wheel offsets, uSplitShadowHue,
@@ -1957,7 +1957,7 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
     out.rgb888.assign(n3, 0);
     for (size_t i = 0; i < n3; ++i) {
         // The shader applied the OETF (uOetf=1); the tail does what
-        // nativeExportFrame's pack loop does after linearToRec709: the
+        // nativeExportFrameParcel's pack loop does after linearToRec709: the
         // toByte quantize (clamp [0,1], v*255+0.5).
         out.rgb888[i] = toByte(gpu[i]);
     }
@@ -2143,7 +2143,21 @@ void DevelopSession::Impl::runEncoderJob(const DevelopFrameRequest& req,
 
 // ---- renderFrame / close / health ---------------------------------------------
 
-DevelopFrameResult DevelopSession::renderFrame(const DevelopFrameRequest& req) {
+// GRADE PARCEL (commit a + b): the develop session's ONLY readback render
+// entry — the grade arrives as the decoded parcel struct, folded onto a
+// stack copy of the request via the GENERATED applyGradeToRequest
+// (gles/GradeParcel.h — the schema's single source of truth; a schema
+// field with no matching DevelopFrameRequest member fails the compile
+// here, the honest catch). The [req] the caller builds carries ONLY the
+// non-grade fields (cfa/info/meta, the LUT binding group, the warp pair);
+// the temporal pair never reaches the request — the bridge consumed it at
+// temporalMergedCfa before this call. The flat pre-folded overload died
+// with commit (b): every door into the session threads the grade through
+// the parcel.
+DevelopFrameResult DevelopSession::renderFrame(
+        const DevelopFrameRequest& req, const DevelopGrade& grade) {
+    DevelopFrameRequest folded = req;
+    applyGradeToRequest(grade, &folded);
     DevelopFrameResult res;
     if (impl_ == nullptr) {
         res.detail = "session not open";
@@ -2168,26 +2182,13 @@ DevelopFrameResult DevelopSession::renderFrame(const DevelopFrameRequest& req) {
         return res;
     }
     impl_->pendingKind = Impl::JobKind::Render;
-    impl_->pendingReq = &req;
+    impl_->pendingReq = &folded;
     impl_->pendingRes = &res;
     impl_->cvRequest.notify_one();
     impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None; });
     // [res] was filled by the GL thread while we held the wait; the
     // unique_lock releases on return.
     return res;
-}
-
-// GRADE PARCEL (commit a, additive): fold the decoded parcel onto a stack
-// copy of the request and delegate to the flat path. The fold is
-// GENERATED from the schema (applyGradeToRequest in GradeParcel.h) — the
-// field list is never hand-mirrored here; a schema field with no matching
-// DevelopFrameRequest member fails the compile at this instantiation,
-// the honest catch.
-DevelopFrameResult DevelopSession::renderFrame(
-        const DevelopFrameRequest& req, const DevelopGrade& grade) {
-    DevelopFrameRequest folded = req;
-    applyGradeToRequest(grade, &folded);
-    return renderFrame(folded);
 }
 
 bool DevelopSession::setEncoderSurface(ANativeWindow* window,
@@ -2236,8 +2237,15 @@ bool DevelopSession::setEncoderSurface(ANativeWindow* window,
     return ok;
 }
 
+// GRADE PARCEL (commit a + b): the encoder twin of the struct-taking
+// renderFrame above — the ONLY encoder door. Same GENERATED fold onto a
+// stack copy, then the encoder handoff. The flat pre-folded overload died
+// with commit (b).
 DevelopFrameResult DevelopSession::renderFrameToEncoder(
-        const DevelopFrameRequest& req, int64_t ptsUs, int rotationDeg) {
+        const DevelopFrameRequest& req, const DevelopGrade& grade,
+        int64_t ptsUs, int rotationDeg) {
+    DevelopFrameRequest folded = req;
+    applyGradeToRequest(grade, &folded);
     DevelopFrameResult res;
     if (impl_ == nullptr) {
         res.detail = "session not open";
@@ -2268,23 +2276,13 @@ DevelopFrameResult DevelopSession::renderFrameToEncoder(
         return res;
     }
     impl_->pendingKind = Impl::JobKind::Encoder;
-    impl_->pendingReq = &req;
+    impl_->pendingReq = &folded;
     impl_->pendingRes = &res;
     impl_->pendingPtsUs = ptsUs;
     impl_->pendingRotationDeg = norm;
     impl_->cvRequest.notify_one();
     impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None; });
     return res;
-}
-
-// GRADE PARCEL (commit a, additive): the encoder twin of the struct-taking
-// renderFrame — same GENERATED fold, then the flat encoder path.
-DevelopFrameResult DevelopSession::renderFrameToEncoder(
-        const DevelopFrameRequest& req, const DevelopGrade& grade,
-        int64_t ptsUs, int rotationDeg) {
-    DevelopFrameRequest folded = req;
-    applyGradeToRequest(grade, &folded);
-    return renderFrameToEncoder(folded, ptsUs, rotationDeg);
 }
 
 void DevelopSession::close() {
