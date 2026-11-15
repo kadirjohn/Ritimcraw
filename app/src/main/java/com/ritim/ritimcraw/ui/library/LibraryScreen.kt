@@ -170,6 +170,14 @@ fun LibraryScreen(
     // browser's ONE end-of-batch message.
     onImportFromFolder: (uri: String, kind: SourceKind, editedName: String?) -> Result<MediaSource> = { _, _, _ -> Result.failure(UnsupportedOperationException()) },
     onImportManyFromFolder: (docs: List<VideoTree.VideoDocument>) -> BulkImportOutcome = { BulkImportOutcome(0, it.size, null) },
+    // Pre-import first-frame previews (owner request 2026-11-15): the
+    // browser's cells read the document-keyed folder namespace through
+    // [folderPreviewAt] and generate a missing one through
+    // [onGenerateFolderPreview] (the caller's bounded pass). Defaults
+    // keep every other caller compiling unchanged (no previews — the
+    // glyph placeholder stays).
+    folderPreviewAt: (uri: String) -> String? = { null },
+    onGenerateFolderPreview: suspend (uri: String, displayName: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
@@ -313,6 +321,8 @@ fun LibraryScreen(
             sources = sources,
             onImport = onImportFromFolder,
             onImportMany = onImportManyFromFolder,
+            folderPreviewAt = folderPreviewAt,
+            onGenerateFolderPreview = onGenerateFolderPreview,
             onClose = { folderUri = null },
             modifier = modifier,
         )
