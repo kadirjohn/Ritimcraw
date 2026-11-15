@@ -268,3 +268,50 @@ val NavSettings: ImageVector = strokeIcon(
         circlePath(cx = 17f, cy = 18f, r = 2.5f),
     ),
 )
+
+// ---- Library toolbar icons (library toolbar redesign, 2026-11-16):
+// the sort button, the view-mode toggle, the import "+" and the filter
+// chip's expand/check pair — the spec's own stroke paths, same contract
+// as the set above (24x24, strokeWidth 1.75, round cap/join, no fill;
+// tinted by the call site's color role). ----
+
+/** sort (Library toolbar sort button). */
+val Sort: ImageVector = strokeIcon(
+    name = "Sort",
+    paths = listOf("M3 6h18M3 12h12M3 18h6"),
+)
+
+/** grid_view (view toggle in list mode: switch to grid). */
+val GridView: ImageVector = strokeIcon(
+    name = "GridView",
+    paths = listOf(
+        rectPath(x = 4f, y = 4f, w = 6f, h = 6f, rx = 1.5f),
+        rectPath(x = 14f, y = 4f, w = 6f, h = 6f, rx = 1.5f),
+        rectPath(x = 4f, y = 14f, w = 6f, h = 6f, rx = 1.5f),
+        rectPath(x = 14f, y = 14f, w = 6f, h = 6f, rx = 1.5f),
+    ),
+)
+
+/** view_list (view toggle in grid mode: switch to list). */
+val ViewList: ImageVector = strokeIcon(
+    name = "ViewList",
+    paths = listOf("M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"),
+)
+
+/** add (Library toolbar import button). */
+val Add: ImageVector = strokeIcon(
+    name = "Add",
+    paths = listOf("M12 5v14M5 12h14"),
+)
+
+/** expand_more (filter chip's trailing arrow). */
+val ExpandMore: ImageVector = strokeIcon(
+    name = "ExpandMore",
+    paths = listOf("M6 9l6 6 6-6"),
+)
+
+/** check (selected filter/sort menu item's leading mark). */
+val Check: ImageVector = strokeIcon(
+    name = "Check",
+    paths = listOf("M5 12.5l4.5 4.5L19 7.5"),
+)

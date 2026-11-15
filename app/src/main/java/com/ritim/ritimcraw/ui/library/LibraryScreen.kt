@@ -4,27 +4,42 @@ import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -40,20 +55,36 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailRules
+import com.ritim.ritimcraw.ui.components.Add
+import com.ritim.ritimcraw.ui.components.Check
+import com.ritim.ritimcraw.ui.components.ExpandMore
 import com.ritim.ritimcraw.ui.components.FileListRow
-import com.ritim.ritimcraw.ui.components.FilterChipsRow
+import com.ritim.ritimcraw.ui.components.GridView
 import com.ritim.ritimcraw.ui.components.ScreenHeader
+import com.ritim.ritimcraw.ui.components.Sort
 import com.ritim.ritimcraw.ui.theme.Tnum
 import kotlinx.coroutines.launch
 
@@ -68,10 +99,11 @@ enum class LibraryFilter(val labelRes: Int) {
 }
 
 /**
- * Library of imported clips (DESIGN.md Library): a compact header, a
- * single-line scrollable chip row, thumbnail-first rows (the shared
- * FileListRow), and an extended FAB "Import" that opens the SAF document
- * picker (ACTION_OPEN_DOCUMENT).
+ * Library of imported clips (DESIGN.md Library): a title-only header, a
+ * pinned toolbar (library toolbar redesign 2026-11-16: filter chip, sort
+ * button, view-mode toggle, import "+", folder button), thumbnail-first
+ * rows (the shared FileListRow), and an extended FAB "Import" that opens
+ * the SAF document picker (ACTION_OPEN_DOCUMENT).
  *
  * The picked document is imported through [SourceRepository.import] with
  * takePersistableUriPermission so the clip survives reboots. Failures show
@@ -118,7 +150,7 @@ enum class LibraryFilter(val labelRes: Int) {
  * This screen is the CANONICAL header call site (ScreenHeader's doc
  * contract, owner finding 2026-11-12): the root Column pads NOTHING, the
  * header composes directly under it, and the 16dp gutter belongs to the
- * content below (chips, rows) — never to the header's parent.
+ * content below (toolbar, rows) — never to the header's parent.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -157,7 +189,7 @@ fun LibraryScreen(
     // ClipDeletion and refreshes the list. Default keeps previews and any
     // other caller compiling unchanged.
     onDeleteClips: (ids: List<String>) -> Unit = {},
-    // Folder import (owner request 2026-11-15): the header's folder button
+    // Folder import (owner request 2026-11-15): the toolbar's folder button
     // opens the tree picker; a granted tree takes over the screen with
     // the FolderImportBrowser. The single-file path runs the caller's
     // SAME per-file import pipeline (persistable grant, kind routed on
@@ -376,42 +408,22 @@ fun LibraryScreen(
                 }
             }
         } else {
-            // Folder import (owner request 2026-11-15): the title row gains
-            // a folder icon RIGHT of the Import action — two separate
-            // buttons in the header's actions slot. The FAB stays (its
-            // removal was not asked); the header's Import icon launches
-            // the SAME SAF document picker the FAB does.
-            ScreenHeader(
-                title = stringResource(R.string.library_title),
-                actions = {
-                    IconButton(onClick = { picker.launch(arrayOf("*/*")) }) {
-                        Icon(
-                            Icons.Filled.Add,
-                            contentDescription = stringResource(R.string.library_import),
-                        )
-                    }
-                    IconButton(onClick = { folderPicker.launch(null) }) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_folder),
-                            contentDescription = stringResource(R.string.library_import_folder),
-                        )
-                    }
-                },
-            )
-            // The chips hide while selecting: the selection lives in the
-            // visible (filtered) list, so switching filters mid-selection
-            // could orphan checked rows — the bar owns the top area
-            // instead. Single-line scrollable row (§4.2): chips measure at
-            // intrinsic width, "Encoded" never wraps.
-            FilterChipsRow(
-                count = LibraryFilter.entries.size,
-                selected = { index -> filter == LibraryFilter.entries[index] },
-                onSelect = { index -> filter = LibraryFilter.entries[index] },
-                // E5: the row emits the guarded single-line label Text
-                // itself; the caller passes the plain string.
-                label = { index ->
-                    stringResource(LibraryFilter.entries[index].labelRes)
-                },
+            // Library toolbar redesign (2026-11-16): the title row is
+            // title-only — the + and folder actions moved down into the
+            // pinned toolbar, with the SAME callbacks (the SAF document
+            // picker and the SAF tree picker). The toolbar composes in
+            // this outer Column, so it stays pinned above the scrolling
+            // list exactly where the chip strip was.
+            ScreenHeader(title = stringResource(R.string.library_title))
+            // The toolbar hides while selecting, exactly like the chips
+            // did: the selection lives in the visible (filtered) list, so
+            // switching filters mid-selection could orphan checked rows —
+            // the bar owns the top area instead.
+            LibraryToolbar(
+                filter = filter,
+                onFilterSelect = { filter = it },
+                onImport = { picker.launch(arrayOf("*/*")) },
+                onOpenFolder = { folderPicker.launch(null) },
             )
         }
         // The FAB hides while selecting (the trash bar owns the screen; an
@@ -544,6 +556,248 @@ fun LibraryScreen(
     // query each; a sources change mid-session does NOT re-kick it (the
     // key is Unit, not the list).
     LaunchedEffect(Unit) { onOpenRefresh() }
+}
+
+/**
+ * The Library toolbar (library toolbar redesign 2026-11-16): one pinned
+ * Row that replaces the old scrollable chip strip — the filter chip at
+ * start (at most the free share of the row, ellipsizing label), then the
+ * sort button, the view-mode toggle, the import "+" and the folder
+ * button at the end. All four controls are always visible; every control
+ * is a 48dp touch target. The + is the ONE emphasized control
+ * (primaryContainer tonal circle); the rest tint onSurfaceVariant.
+ *
+ * Width budget (the spec's own): at 360dp the fixed controls take
+ * 16+8 padding + 4x48 buttons + 8 spacer = 224dp, leaving >= 136dp of
+ * flexible space for the chip. The chip therefore rides in the row's
+ * ONE weighted slot (a Box that takes the whole leftover), so the chip
+ * measures at intrinsic width up to that full share — "MCRAW"/"Encoded"
+ * fit at default font scale and the label ellipsizes only past it
+ * (font scale ~1.3). The buttons are fixed-size children measured AFTER
+ * the weighted slot, so they can never be squeezed by a long label.
+ * (A literal chip.weight(1f) + Spacer.weight(1f) pair would split the
+ * free space 50/50 and cap the chip at ~68dp — half the spec's stated
+ * budget — so the weight sits on the wrapping Box instead; the chip
+ * still never stretches, which is what fill = false was for.)
+ *
+ * Boundary of THIS step (toolbar placement): the filter chip is fully
+ * interactive — its dropdown lists the SAME [LibraryFilter] options the
+ * chip strip did (the enum, not a hardcoded list, so the filter set stays
+ * final per QA-26). The sort button and the view toggle are placed with
+ * their icons and content descriptions but stay INERT here; their menus,
+ * state and persistence land with the sort/view state step.
+ *
+ * The toolbar composes in the screen's outer Column (pinned above the
+ * scrolling list, never inside it) and hides during selection mode,
+ * exactly like the chip strip did — the selection bar owns the top area.
+ */
+@Composable
+private fun LibraryToolbar(
+    filter: LibraryFilter,
+    onFilterSelect: (LibraryFilter) -> Unit,
+    onImport: () -> Unit,
+    onOpenFolder: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            // The spec's toolbar geometry: 16dp start / 8dp end (the end
+            // icon buttons carry their own extra target space), 4dp top
+            // separating it from the title, 8dp bottom before the list,
+            // and a 48dp minimum height so the row is never shorter than
+            // its touch targets.
+            .padding(start = 16.dp, top = 4.dp, end = 8.dp, bottom = 8.dp)
+            .heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // The row's single flexible slot: everything the fixed controls
+        // leave behind belongs to the chip's area (see the width budget
+        // note above). The chip inside measures at intrinsic width and
+        // ellipsizes past the slot; the empty remainder of the slot is
+        // what visually right-aligns the buttons.
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            LibraryFilterChip(
+                filter = filter,
+                onSelect = onFilterSelect,
+            )
+        }
+        // Sort button: placed with its icon + content description, INERT
+        // in this step — the sort menu, its state and its persistence
+        // land with the sort/view state step (the empty onClick keeps
+        // the 48dp target and ripple without changing anything).
+        IconButton(onClick = {}) {
+            Icon(
+                imageVector = Sort,
+                contentDescription = stringResource(R.string.library_sort),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        // View-mode toggle: same boundary as the sort button. The default
+        // view is the list, so the toggle shows the grid icon with the
+        // "switch to grid" action label; the state + persistence land
+        // with the sort/view state step.
+        IconButton(onClick = {}) {
+            Icon(
+                imageVector = GridView,
+                contentDescription = stringResource(R.string.view_switch_to_grid),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        // Import "+": the toolbar's ONE emphasized control — a tonal
+        // primaryContainer circle (40dp visual centered in the 48dp
+        // target by FilledTonalIconButton's own minimum-size handling),
+        // same callback as the removed title-row "+" and the FAB.
+        FilledTonalIconButton(
+            onClick = onImport,
+            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            ),
+        ) {
+            Icon(
+                imageVector = Add,
+                contentDescription = stringResource(R.string.library_import),
+                modifier = Modifier.size(24.dp),
+            )
+        }
+        // Folder import: the SAME tree-picker callback the removed
+        // title-row folder button had (the ic_folder drawable stays for
+        // continuity with the rest of the app's folder affordances).
+        IconButton(onClick = onOpenFolder) {
+            Icon(
+                painter = painterResource(R.drawable.ic_folder),
+                contentDescription = stringResource(R.string.library_import_folder),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * The toolbar's filter chip (library toolbar redesign 2026-11-16): one
+ * pill-shaped chip — the CURRENT filter's label plus a trailing
+ * expand_more arrow — that opens a dropdown with the SAME options the
+ * old chip strip offered ([LibraryFilter.entries], "All" first, straight
+ * from the enum). Single select: the chosen entry closes the menu and
+ * flows through the same state setter the chips used.
+ *
+ * Colors follow the spec's two states: "All" reads as a neutral
+ * surfaceContainerHigh pill with onSurface text; a specific filter reads
+ * as a secondaryContainer pill. The arrow rotates 180° over 150ms while
+ * the menu is open. The chip clips to its CircleShape BEFORE the
+ * clickable (the shape-clipped indication rule: the node with the shape
+ * is the clickable node), exposes the dropdown role with the current
+ * filter as its state description, and keeps a 48dp minimum touch target
+ * around its 40dp visual.
+ */
+@Composable
+private fun LibraryFilterChip(
+    filter: LibraryFilter,
+    onSelect: (LibraryFilter) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var open by remember { mutableStateOf(false) }
+    val label = stringResource(filter.labelRes)
+    val filterDescription = stringResource(R.string.library_filter_cd)
+    val arrow by animateFloatAsState(
+        targetValue = if (open) 180f else 0f,
+        animationSpec = tween(150),
+        label = "libraryFilterArrow",
+    )
+    val colorScheme = MaterialTheme.colorScheme
+    val containerColor = if (filter == LibraryFilter.ALL) {
+        colorScheme.surfaceContainerHigh
+    } else {
+        colorScheme.secondaryContainer
+    }
+    val labelColor = if (filter == LibraryFilter.ALL) {
+        colorScheme.onSurface
+    } else {
+        colorScheme.onSecondaryContainer
+    }
+    Box(modifier) {
+        Row(
+            Modifier
+                // 48dp touch target around the 40dp pill (the modifier
+                // reserves layout space only — the pill centers in it).
+                .minimumInteractiveComponentSize()
+                .heightIn(min = 40.dp)
+                // Shape-clipped indication: the CircleShape node is the
+                // clickable node (clip BEFORE clickable), so the ripple
+                // and the pill share one shape.
+                .clip(CircleShape)
+                .background(containerColor, CircleShape)
+                .clickable(role = Role.DropdownList) { open = true }
+                .semantics {
+                    contentDescription = filterDescription
+                    stateDescription = label
+                }
+                .padding(start = 16.dp, end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = label,
+                style = TextStyle(
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = labelColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Icon(
+                imageVector = ExpandMore,
+                contentDescription = null,
+                tint = labelColor,
+                modifier = Modifier
+                    .size(18.dp)
+                    .rotate(arrow),
+            )
+        }
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+        ) {
+            LibraryFilter.entries.forEach { entry ->
+                val selected = entry == filter
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(entry.labelRes),
+                            style = TextStyle(
+                                fontWeight = if (selected) FontWeight.SemiBold else null,
+                            ),
+                        )
+                    },
+                    leadingIcon = if (selected) {
+                        {
+                            Icon(
+                                imageVector = Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                    } else {
+                        // The unselected rows keep the check's 24dp slot so
+                        // every label aligns in one column.
+                        { Spacer(Modifier.size(24.dp)) }
+                    },
+                    onClick = {
+                        open = false
+                        onSelect(entry)
+                    },
+                    // Radio semantics: one of the filter options is
+                    // always the current value.
+                    modifier = Modifier.semantics { role = Role.RadioButton },
+                )
+            }
+        }
+    }
 }
 
 private fun matches(filter: LibraryFilter, s: MediaSource): Boolean = when (filter) {

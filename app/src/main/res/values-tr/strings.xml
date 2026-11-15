@@ -59,6 +59,21 @@
     <string name="library_folder_import_summary">%1$d içe aktarıldı, %2$d başarısız</string>
     <string name="library_folder_import_summary_all_failed">İçe aktarma başarısız: %2$d videodan %1$d tanesi içe aktarılamadı (%3$s)</string>
 
+    <!-- Kitaplık araç çubuğu (araç çubuğu yeniden tasarımı
+         2026-11-16): filtre çipinin açılır menüsü, sıralama menüsünün
+         iki bölümü ve görünüm modu düğmesinin eylem etiketleri. -->
+    <string name="library_filter_cd">Filtre</string>
+    <string name="library_sort">Sırala</string>
+    <string name="sort_by">Sıralama ölçütü</string>
+    <string name="sort_order">Düzen</string>
+    <string name="sort_name">Ad</string>
+    <string name="sort_duration">Süre</string>
+    <string name="sort_resolution">Çözünürlük</string>
+    <string name="order_ascending">Artan</string>
+    <string name="order_descending">Azalan</string>
+    <string name="view_switch_to_grid">Izgara görünümüne geç</string>
+    <string name="view_switch_to_list">Liste görünümüne geç</string>
+
     <!-- Clip editor -->
     <string name="editor_back">Kitaplığa dön</string>
     <string name="editor_preview_placeholder">Motor bağlandığında önizleme görünür</string>
