@@ -37,17 +37,17 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -131,9 +131,10 @@ private const val GRID_COLUMNS = 3
 /**
  * Library of imported clips (DESIGN.md Library): a title-only header, a
  * pinned toolbar (library toolbar redesign 2026-11-16: filter chip, sort
- * button, view-mode toggle, import "+", folder button), thumbnail-first
- * rows (the shared FileListRow), and an extended FAB "Import" that opens
- * the SAF document picker (ACTION_OPEN_DOCUMENT).
+ * button, view-mode toggle, import "+", folder button), and the clips as
+ * thumbnail-first list rows (the shared FileListRow) or the grid's square
+ * tiles, per the persisted view mode. The toolbar's "+" opens the SAF
+ * document picker (ACTION_OPEN_DOCUMENT).
  *
  * The picked document is imported through [SourceRepository.import] with
  * takePersistableUriPermission so the clip survives reboots. Failures show
@@ -175,7 +176,7 @@ private const val GRID_COLUMNS = 3
  * selection bar that replaces it) composes OUTSIDE the nested list
  * Scaffold, so the title's layout chain matches Projects/Exports/Settings
  * exactly — all four titles sit at the same height. The nested Scaffold
- * serves only the list + FAB + snackbar.
+ * serves only the list + snackbar.
  *
  * This screen is the CANONICAL header call site (ScreenHeader's doc
  * contract, owner finding 2026-11-12): the root Column pads NOTHING, the
@@ -495,26 +496,15 @@ fun LibraryScreen(
                 onOpenFolder = { folderPicker.launch(null) },
             )
         }
-        // The FAB hides while selecting (the trash bar owns the screen; an
-        // Import mid-selection would refresh the list under the selection).
         Scaffold(
             Modifier.weight(1f),
             // §4.1 compact header: the app shell's Scaffold already applies
             // the status-bar inset in its innerPadding — a nested Scaffold's
             // default contentWindowInsets would stack a SECOND one on top
             // (the excessive empty space above the title). Zero insets here;
-            // this Scaffold exists only for the list + FAB + snackbar.
+            // this Scaffold exists only for the list + snackbar.
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(data) } },
-            floatingActionButton = {
-                if (!selecting) {
-                    ExtendedFloatingActionButton(
-                        onClick = { picker.launch(arrayOf("*/*")) },
-                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                        text = { Text(stringResource(R.string.library_import)) },
-                    )
-                }
-            },
         ) { padding ->
             val pullState = rememberPullToRefreshState()
             PullToRefreshBox(
@@ -528,7 +518,13 @@ fun LibraryScreen(
                         .fillMaxSize()
                 ) {
                     if (visible.isEmpty()) {
-                        EmptyLibrary(Modifier.weight(1f))
+                        EmptyLibrary(
+                            modifier = Modifier.weight(1f),
+                            // The FAB is gone, so the empty state carries
+                            // the Import entry point itself: the SAME SAF
+                            // picker launch the toolbar's "+" runs.
+                            onImport = { picker.launch(arrayOf("*/*")) },
+                        )
                     } else if (viewMode == LibraryViewMode.GRID) {
                         LazyVerticalGrid(
                             state = gridState,
@@ -536,15 +532,15 @@ fun LibraryScreen(
                             modifier = Modifier.weight(1f).fillMaxWidth(),
                             // The spec's grid geometry: 16dp screen
                             // gutters, 4dp to the toolbar above, 8dp
-                            // between cells horizontally, 12dp rows.
-                            // The bottom keeps the list's 96dp FAB
-                            // clearance until the FAB's own removal
-                            // step retunes it.
+                            // between cells horizontally, 12dp rows,
+                            // 16dp below (the FAB is gone — the toolbar's
+                            // "+" owns Import — so the bottom keeps only
+                            // the screen's own gutter).
                             contentPadding = PaddingValues(
                                 start = 16.dp,
                                 end = 16.dp,
                                 top = 4.dp,
-                                bottom = 96.dp,
+                                bottom = 16.dp,
                             ),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -581,11 +577,12 @@ fun LibraryScreen(
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.weight(1f),
-                            // Vertical rhythm (§4.3 consistent spacing) plus bottom
-                            // clearance (§4.4): the last row must scroll fully
-                            // clear of the Import FAB — the button never
-                            // permanently obstructs a row.
-                            contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
+                            // Vertical rhythm (§4.3 consistent spacing). The
+                            // old 96dp bottom clearance existed for the
+                            // Import FAB, which is gone (the toolbar's "+"
+                            // owns Import) — the bottom keeps only the
+                            // screen's 16dp gutter.
+                            contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
                         ) {
                             items(visible, key = { it.id }) { source ->
                                 LibraryRow(
@@ -1355,8 +1352,19 @@ private fun LibraryThumbnailBackfill(
     }
 }
 
+/**
+ * The empty-library state (DESIGN.md Library): centered title + body, and
+ * — since the FAB's removal (library toolbar redesign, 2026-11-16) — the
+ * screen's own Import entry point: a FILLED, fully-rounded 56dp button
+ * (primary container, onPrimary label) that opens the SAME SAF document
+ * picker the toolbar's "+" opens. An empty library keeps a direct path
+ * to the first import; the toolbar still carries the everyday one.
+ */
 @Composable
-private fun EmptyLibrary(modifier: Modifier = Modifier) {
+private fun EmptyLibrary(
+    onImport: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
@@ -1372,5 +1380,21 @@ private fun EmptyLibrary(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp, start = 32.dp, end = 32.dp),
         )
+        Button(
+            onClick = onImport,
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+            modifier = Modifier
+                .padding(top = 24.dp)
+                .heightIn(min = 56.dp),
+        ) {
+            Text(
+                stringResource(R.string.library_import),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
     }
 }
