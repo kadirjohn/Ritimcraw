@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.engine
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -260,6 +261,120 @@ class GpuParityTest {
         assertEquals(
             "=== ritim gles (ritim-pm) ===\nprobe: context=1\nverdict: PASS (ok)\n=== end gles ===",
             block,
+        )
+    }
+
+    // ---- the fallback companion line (the parity-fix observability) ----
+
+    @Test
+    fun gate_detail_line_is_null_when_the_leg_was_never_paid() {
+        // A red probe (or a clip fd that never opened) never fabricates a
+        // measurement: the fallback line's tokens already name the red
+        // gate, and no companion line rides beside them.
+        assertNull(
+            GpuParityRules.gateDetailLine(
+                parityPaid = false,
+                parity = null,
+                errorDetail = null,
+            ),
+        )
+        assertNull(
+            GpuParityRules.gateDetailLine(
+                parityPaid = false,
+                parity = GlesParityResult(ran = false, maxDiffLsb = 0, mismatchCount = 0, samples = 0),
+                errorDetail = "link: develop",
+            ),
+        )
+    }
+
+    @Test
+    fun gate_detail_line_names_the_gl_step_for_a_run_that_refused() {
+        // NOT_RUN: the harness's own error detail (nativeLastError) names
+        // the GL step that refused — exactly what the owner's re-test
+        // needs to classify the latch.
+        assertEquals(
+            "parity gate: NOT_RUN (link: develop)",
+            GpuParityRules.gateDetailLine(
+                parityPaid = true,
+                parity = GlesParityResult(ran = false, maxDiffLsb = 0, mismatchCount = 0, samples = 0),
+                errorDetail = "link: develop",
+            ),
+        )
+    }
+
+    @Test
+    fun gate_detail_line_names_the_stage_when_a_refused_run_left_no_detail() {
+        assertEquals(
+            "parity gate: NOT_RUN (gpu stage failed)",
+            GpuParityRules.gateDetailLine(
+                parityPaid = true,
+                parity = GlesParityResult(ran = false, maxDiffLsb = 0, mismatchCount = 0, samples = 0),
+                errorDetail = null,
+            ),
+        )
+    }
+
+    @Test
+    fun gate_detail_line_carries_the_threshold_numbers_for_a_failed_run() {
+        // FAIL: the thresholds' own numbers — the verdict's reason plus the
+        // raw ran/maxDiffLsb/mismatch/samples the harness reported.
+        assertEquals(
+            "parity gate: FAIL (maxDiffLsb 2 > 1; " +
+                "ran=1 maxDiffLsb=2 mismatch=1 samples=24883200)",
+            GpuParityRules.gateDetailLine(
+                parityPaid = true,
+                parity = GlesParityResult(ran = true, maxDiffLsb = 2, mismatchCount = 1, samples = 24883200),
+                errorDetail = null,
+            ),
+        )
+    }
+
+    @Test
+    fun gate_detail_line_carries_the_share_numbers_for_a_share_failure() {
+        assertEquals(
+            "parity gate: FAIL (mismatch 49766/24883200 > 0.01%; " +
+                "ran=1 maxDiffLsb=1 mismatch=49766 samples=24883200)",
+            GpuParityRules.gateDetailLine(
+                parityPaid = true,
+                parity = GlesParityResult(ran = true, maxDiffLsb = 1, mismatchCount = 49766, samples = 24883200),
+                errorDetail = null,
+            ),
+        )
+    }
+
+    @Test
+    fun gate_detail_line_is_null_when_the_verdict_passed() {
+        // A green gate logs no fallback at all — no companion line rides
+        // beside nothing.
+        assertNull(
+            GpuParityRules.gateDetailLine(
+                parityPaid = true,
+                parity = GlesParityResult(ran = true, maxDiffLsb = 1, mismatchCount = 2488, samples = 24883200),
+                errorDetail = null,
+            ),
+        )
+    }
+
+    @Test
+    fun gate_detail_line_names_the_seam_error_when_the_call_returned_no_array() {
+        // A null array is the seam's own clip-level failure (open/decode):
+        // the "jni failure" vocabulary the Measure leg already logs, with
+        // the same error detail.
+        assertEquals(
+            "parity gate: jni failure (gles fragment parity: IoError — frame 0 decode)",
+            GpuParityRules.gateDetailLine(
+                parityPaid = true,
+                parity = null,
+                errorDetail = "gles fragment parity: IoError — frame 0 decode",
+            ),
+        )
+        assertEquals(
+            "parity gate: jni failure (no detail)",
+            GpuParityRules.gateDetailLine(
+                parityPaid = true,
+                parity = null,
+                errorDetail = null,
+            ),
         )
     }
 }
