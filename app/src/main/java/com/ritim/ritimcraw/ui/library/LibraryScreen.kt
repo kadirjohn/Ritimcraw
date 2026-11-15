@@ -1,13 +1,18 @@
 package com.ritim.ritimcraw.ui.library
 
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +20,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -23,11 +29,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -51,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -59,6 +75,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
@@ -89,7 +107,9 @@ import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.components.Sort
 import com.ritim.ritimcraw.ui.components.ViewList
 import com.ritim.ritimcraw.ui.theme.Tnum
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Library filter chips (DESIGN.md Library). */
 enum class LibraryFilter(val labelRes: Int) {
@@ -100,6 +120,13 @@ enum class LibraryFilter(val labelRes: Int) {
     ENCODED(R.string.library_filter_encoded),
     PHOTOS(R.string.library_filter_photos),
 }
+
+/**
+ * The grid rendering's fixed column count (library toolbar redesign,
+ * 2026-11-16): the spec's own GridCells.Fixed(3). A named constant so the
+ * scroll-sync comment and the grid's columns stay one truth.
+ */
+private const val GRID_COLUMNS = 3
 
 /**
  * Library of imported clips (DESIGN.md Library): a title-only header, a
@@ -234,6 +261,25 @@ fun LibraryScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    // The two renderings' own scroll states (library toolbar redesign,
+    // 2026-11-16): switching views keeps the FIRST-VISIBLE INDEX AT THE
+    // TOP — the spec's continuity rule. Both states index the SAME
+    // visible list (a grid's firstVisibleItemIndex is the FLAT item
+    // index, the list's own coordinate), so the anchor maps index for
+    // index with no row arithmetic: the same clip stays at the top, in
+    // the grid at its own column of the top row. scrollToItem is a snap,
+    // not an animation — the new view lands already at the anchor
+    // instead of visibly catching up.
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(viewMode) {
+        if (viewMode == LibraryViewMode.GRID) {
+            gridState.scrollToItem(listState.firstVisibleItemIndex)
+        } else {
+            listState.scrollToItem(gridState.firstVisibleItemIndex)
+        }
+    }
 
     // Selection mode (E2): active exactly while the set is non-empty —
     // every transition is a pure LibrarySelection rule. Stale ids (rows
@@ -483,8 +529,57 @@ fun LibraryScreen(
                 ) {
                     if (visible.isEmpty()) {
                         EmptyLibrary(Modifier.weight(1f))
+                    } else if (viewMode == LibraryViewMode.GRID) {
+                        LazyVerticalGrid(
+                            state = gridState,
+                            columns = GridCells.Fixed(GRID_COLUMNS),
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            // The spec's grid geometry: 16dp screen
+                            // gutters, 4dp to the toolbar above, 8dp
+                            // between cells horizontally, 12dp rows.
+                            // The bottom keeps the list's 96dp FAB
+                            // clearance until the FAB's own removal
+                            // step retunes it.
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 4.dp,
+                                bottom = 96.dp,
+                            ),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            gridItems(visible, key = { it.id }) { source ->
+                                LibraryGridCell(
+                                    source = source,
+                                    // Pinned to the generation revision —
+                                    // the same owner finding 2026-11-14 the
+                                    // list rows pin theirs to.
+                                    thumbnailPath = remember(thumbnailRevision) {
+                                        thumbnailAt(source.id)
+                                    },
+                                    selected = source.id in selection,
+                                    selecting = selecting,
+                                    onToggleSelected = {
+                                        selectedIds = LibrarySelection.toggle(selectedIds, source.id)
+                                    },
+                                    onOpen = { onOpenClip(source.id) },
+                                    onRelink = {
+                                        relinkTargetId = source.id
+                                        relinkPicker.launch(arrayOf("*/*"))
+                                    },
+                                )
+                            }
+                        }
+                        LibraryThumbnailBackfill(
+                            sources = visible,
+                            thumbnailAt = thumbnailAt,
+                            batchLimit = thumbnailBatchLimit,
+                            onGenerateThumbnails = onGenerateThumbnails,
+                        )
                     } else {
                         LazyColumn(
+                            state = listState,
                             modifier = Modifier.weight(1f),
                             // Vertical rhythm (§4.3 consistent spacing) plus bottom
                             // clearance (§4.4): the last row must scroll fully
@@ -607,10 +702,10 @@ fun LibraryScreen(
  * menu and the view toggle are fully interactive — the filter dropdown
  * lists the SAME [LibraryFilter] options the chip strip did (the enum,
  * not a hardcoded list, so the filter set stays final per QA-26), the
- * sort menu offers the spec's two sections, and the toggle flips the
- * persisted view mode's icon + label. The GRID RENDERING itself (the
- * 3-column LazyVerticalGrid) lands with the grid-mode step; until then
- * the toggle persists the choice and the list keeps rendering.
+ * sort menu offers the spec's two sections, and the toggle switches the
+ * persisted view mode's rendering: the list (the shared FileListRow) or
+ * the 3-column grid ([LibraryGridCell]), keeping the first-visible index
+ * at the top.
  *
  * The toolbar composes in the screen's outer Column (pinned above the
  * scrolling list, never inside it) and hides during selection mode,
@@ -668,8 +763,8 @@ private fun LibraryToolbar(
         )
         // View-mode toggle: the spec's icon pair — the list shows the
         // grid icon ("switch to grid"), the grid shows the list icon
-        // ("switch to list"). The grid rendering itself lands with the
-        // grid-mode step; the state + persistence are live here.
+        // ("switch to list"). The switch keeps the first-visible index
+        // at the top (the screen's scroll-sync effect).
         IconButton(onClick = { onViewModeToggle(viewMode.other()) }) {
             if (viewMode == LibraryViewMode.GRID) {
                 Icon(
@@ -1073,6 +1168,167 @@ private fun LibraryRow(
             null -> null
         },
     )
+}
+
+/**
+ * One grid cell (library toolbar redesign, 2026-11-16): a square tile —
+ * the persisted first-frame PNG fitted inside at its own ratio
+ * (ContentScale.Fit, the FileListRow ClipThumbnail contract: letterboxed
+ * on the tile's surfaceContainerHigh background, never cropped, never
+ * distorted) — with the duration badge at its bottom-end and the file
+ * name beneath. The WHOLE cell is one target: it clips to its 12dp
+ * rounded-corner shape BEFORE the combinedClickable (the shape-clipped
+ * indication rule — the node with the shape is the clickable node), so
+ * the ripple stays inside the cell and the tap area is the full cell.
+ *
+ * Selection (E2) keeps its exact behavior — the list rows' routing,
+ * unchanged: long-press enters selection with this cell checked, taps
+ * toggle while selecting (never open), a tap outside selection opens (or
+ * re-links a degraded record — the same routing the list rows run). The
+ * trailing CheckCircle pair rides the tile's top-end corner (the
+ * FolderImportBrowser cell precedent), the stock icons with the primary
+ * tint when checked.
+ *
+ * Degraded records (LOST / GONE, spec IN-12) keep their honest treatment:
+ * the Warning glyph rides the placeholder while the clip cannot be
+ * probed and the tap routes to the SAME re-link picker the list rows
+ * open. The grid never fakes a preview.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LibraryGridCell(
+    source: MediaSource,
+    thumbnailPath: String?,
+    selected: Boolean,
+    selecting: Boolean,
+    onToggleSelected: () -> Unit,
+    onOpen: () -> Unit,
+    onRelink: () -> Unit,
+) {
+    val status = LibraryRowModel.rowStatus(source)
+    val accessLost = status != null
+    Column(
+        Modifier
+            .fillMaxWidth()
+            // Shape-clipped indication: the 12dp rounded cell is the
+            // clickable node (clip BEFORE combinedClickable), so the
+            // ripple never escapes the tile's corners.
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickable(
+                onClick = {
+                    if (selecting) {
+                        onToggleSelected()
+                    } else if (accessLost) {
+                        onRelink()
+                    } else {
+                        onOpen()
+                    }
+                },
+                onLongClick = onToggleSelected,
+            ),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(12.dp))
+                // The tile reads one step above the list's placeholder
+                // gray (surfaceContainerHighest): the grid's larger
+                // letterbox area wants the calmer surfaceContainerHigh,
+                // the spec's own slot color.
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        ) {
+            // The tile's decode: the SAME produceState/BitmapFactory
+            // off-UI-thread pattern the list rows run (cancels when the
+            // cell leaves composition).
+            val bitmap by produceState<Bitmap?>(initialValue = null, thumbnailPath) {
+                value = withContext(Dispatchers.IO) {
+                    try {
+                        thumbnailPath?.let { BitmapFactory.decodeFile(it) }
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
+            val b = bitmap
+            when {
+                b != null -> {
+                    Image(
+                        bitmap = b.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                }
+                // The access-lost marker rides the placeholder while the
+                // clip cannot be probed (the list row's treatment).
+                accessLost -> {
+                    Icon(
+                        imageVector = Icons.Outlined.Warning,
+                        contentDescription = null,
+                        modifier = Modifier.align(Alignment.Center),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            // Duration badge (the spec's own): the recorded span when the
+            // record carries one (the pure durationText rule — null
+            // renders nothing, never a faked 0:00), a fully-rounded
+            // opaque surfaceContainerHighest pill at the tile's
+            // bottom-end, 6dp inset, 18dp tall with the text centered
+            // (a Box wrapper so the pill's height never depends on the
+            // text's own placement inside a taller node).
+            LibraryRowModel.durationText(source)?.let { text ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .heightIn(min = 18.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = text,
+                        style = TextStyle(
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            if (selecting) {
+                Icon(
+                    imageVector = if (selected) {
+                        Icons.Filled.CheckCircle
+                    } else {
+                        Icons.Outlined.CheckCircle
+                    },
+                    contentDescription = null,
+                    tint = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp),
+                )
+            }
+        }
+        // The file name beneath the tile (the spec's own): 12sp, onSurface,
+        // two lines with ellipsis, 6dp off the tile.
+        Text(
+            text = source.displayOrId,
+            style = TextStyle(fontSize = 12.sp),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
 }
 
 /**
