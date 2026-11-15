@@ -74,6 +74,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.LibrarySortKey
+import com.ritim.ritimcraw.data.LibraryViewMode
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.VideoTree
@@ -85,6 +87,7 @@ import com.ritim.ritimcraw.ui.components.FileListRow
 import com.ritim.ritimcraw.ui.components.GridView
 import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.components.Sort
+import com.ritim.ritimcraw.ui.components.ViewList
 import com.ritim.ritimcraw.ui.theme.Tnum
 import kotlinx.coroutines.launch
 
@@ -210,10 +213,24 @@ fun LibraryScreen(
     // glyph placeholder stays).
     folderPreviewAt: (uri: String) -> String? = { null },
     onGenerateFolderPreview: suspend (uri: String, displayName: String) -> Unit = { _, _ -> },
+    // The toolbar's sort + view state (library toolbar redesign,
+    // 2026-11-16): the caller (AppNav) owns the persistence; the screen
+    // renders from these values only. Defaults keep every other caller
+    // (previews, tests) compiling AND rendering exactly today's screen:
+    // null key = import order, ascending, list.
+    sortKey: LibrarySortKey? = null,
+    sortAscending: Boolean = true,
+    viewMode: LibraryViewMode = LibraryViewMode.DEFAULT,
+    onSortKeyChange: (LibrarySortKey?) -> Unit = {},
+    onSortAscendingChange: (Boolean) -> Unit = {},
+    onViewModeChange: (LibraryViewMode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
-    val visible = sources.filter { matches(filter, it) }
+    // The visible list: filter first (the chips' unchanged rule), then the
+    // toolbar's ordering (null key = today's import order, returned
+    // as-is — the pure LibrarySort rule; the screen stays a thin shell).
+    val visible = LibrarySort.apply(sources.filter { matches(filter, it) }, sortKey, sortAscending)
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -422,6 +439,12 @@ fun LibraryScreen(
             LibraryToolbar(
                 filter = filter,
                 onFilterSelect = { filter = it },
+                sortKey = sortKey,
+                sortAscending = sortAscending,
+                viewMode = viewMode,
+                onSortKeySelect = onSortKeyChange,
+                onSortAscendingSelect = onSortAscendingChange,
+                onViewModeToggle = onViewModeChange,
                 onImport = { picker.launch(arrayOf("*/*")) },
                 onOpenFolder = { folderPicker.launch(null) },
             )
@@ -580,12 +603,14 @@ fun LibraryScreen(
  * budget — so the weight sits on the wrapping Box instead; the chip
  * still never stretches, which is what fill = false was for.)
  *
- * Boundary of THIS step (toolbar placement): the filter chip is fully
- * interactive — its dropdown lists the SAME [LibraryFilter] options the
- * chip strip did (the enum, not a hardcoded list, so the filter set stays
- * final per QA-26). The sort button and the view toggle are placed with
- * their icons and content descriptions but stay INERT here; their menus,
- * state and persistence land with the sort/view state step.
+ * Boundary of THIS step (toolbar placement): the filter chip, the sort
+ * menu and the view toggle are fully interactive — the filter dropdown
+ * lists the SAME [LibraryFilter] options the chip strip did (the enum,
+ * not a hardcoded list, so the filter set stays final per QA-26), the
+ * sort menu offers the spec's two sections, and the toggle flips the
+ * persisted view mode's icon + label. The GRID RENDERING itself (the
+ * 3-column LazyVerticalGrid) lands with the grid-mode step; until then
+ * the toggle persists the choice and the list keeps rendering.
  *
  * The toolbar composes in the screen's outer Column (pinned above the
  * scrolling list, never inside it) and hides during selection mode,
@@ -595,6 +620,12 @@ fun LibraryScreen(
 private fun LibraryToolbar(
     filter: LibraryFilter,
     onFilterSelect: (LibraryFilter) -> Unit,
+    sortKey: LibrarySortKey?,
+    sortAscending: Boolean,
+    viewMode: LibraryViewMode,
+    onSortKeySelect: (LibrarySortKey?) -> Unit,
+    onSortAscendingSelect: (Boolean) -> Unit,
+    onViewModeToggle: (LibraryViewMode) -> Unit,
     onImport: () -> Unit,
     onOpenFolder: () -> Unit,
 ) {
@@ -624,27 +655,35 @@ private fun LibraryToolbar(
                 onSelect = onFilterSelect,
             )
         }
-        // Sort button: placed with its icon + content description, INERT
-        // in this step — the sort menu, its state and its persistence
-        // land with the sort/view state step (the empty onClick keeps
-        // the 48dp target and ripple without changing anything).
-        IconButton(onClick = {}) {
-            Icon(
-                imageVector = Sort,
-                contentDescription = stringResource(R.string.library_sort),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        // View-mode toggle: same boundary as the sort button. The default
-        // view is the list, so the toggle shows the grid icon with the
-        // "switch to grid" action label; the state + persistence land
-        // with the sort/view state step.
-        IconButton(onClick = {}) {
-            Icon(
-                imageVector = GridView,
-                contentDescription = stringResource(R.string.view_switch_to_grid),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        // Sort button: opens the sort menu — the spec's two sections
+        // (Sort by: Name/Duration/Resolution single-select with a leading
+        // check; Order: Ascending/Descending). Date and File size are
+        // NOT offered: MediaSource has no such fields (the store's
+        // discovery note).
+        LibrarySortMenuButton(
+            sortKey = sortKey,
+            sortAscending = sortAscending,
+            onSortKeySelect = onSortKeySelect,
+            onSortAscendingSelect = onSortAscendingSelect,
+        )
+        // View-mode toggle: the spec's icon pair — the list shows the
+        // grid icon ("switch to grid"), the grid shows the list icon
+        // ("switch to list"). The grid rendering itself lands with the
+        // grid-mode step; the state + persistence are live here.
+        IconButton(onClick = { onViewModeToggle(viewMode.other()) }) {
+            if (viewMode == LibraryViewMode.GRID) {
+                Icon(
+                    imageVector = ViewList,
+                    contentDescription = stringResource(R.string.view_switch_to_list),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Icon(
+                    imageVector = GridView,
+                    contentDescription = stringResource(R.string.view_switch_to_grid),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Spacer(Modifier.width(8.dp))
         // Import "+": the toolbar's ONE emphasized control — a tonal
@@ -799,6 +838,151 @@ private fun LibraryFilterChip(
         }
     }
 }
+
+/**
+ * The toolbar's sort button + its dropdown (library toolbar redesign,
+ * 2026-11-16): the "sort" icon opens a menu with the spec's two sections
+ * — "Sort by" (Name, Duration, Resolution; single select with a leading
+ * check on the chosen field) and "Order" (Ascending, Descending; single
+ * select with a leading check). The sections are plain label rows
+ * between the item groups (DropdownMenu's own column does the grouping).
+ *
+ * Date and File size are NOT offered: MediaSource carries no such fields
+ * (no timestamp, no size — only id, name, dimensions, duration, kind),
+ * so the menu lists only what a clip record can actually sort by.
+ *
+ * Selecting a field keeps the current direction; selecting a direction
+ * keeps the current field. The persisted pair rides the caller's
+ * callbacks (AppNav writes the store); the screen re-renders the list
+ * through the pure [LibrarySort] rule on the next composition.
+ */
+@Composable
+private fun LibrarySortMenuButton(
+    sortKey: LibrarySortKey?,
+    sortAscending: Boolean,
+    onSortKeySelect: (LibrarySortKey) -> Unit,
+    onSortAscendingSelect: (Boolean) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(
+                imageVector = Sort,
+                contentDescription = stringResource(R.string.library_sort),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+        ) {
+            // Section: Sort by. The nullable persisted key maps to the
+            // menu's check: null (today's order) checks nothing — the
+            // never-touched state, not a menu option.
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = stringResource(R.string.sort_by),
+                        style = TextStyle(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                enabled = false,
+                onClick = {},
+            )
+            sortKeyOptions().forEach { (key, labelRes) ->
+                val selected = key == sortKey
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(labelRes),
+                            style = TextStyle(
+                                fontWeight = if (selected) FontWeight.SemiBold else null,
+                            ),
+                        )
+                    },
+                    leadingIcon = if (selected) {
+                        {
+                            Icon(
+                                imageVector = Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                    } else {
+                        // The unselected rows keep the check's 24dp slot so
+                        // every label aligns in one column.
+                        { Spacer(Modifier.size(24.dp)) }
+                    },
+                    onClick = {
+                        open = false
+                        onSortKeySelect(key)
+                    },
+                    // Radio semantics: at most one field is chosen; null
+                    // (today's order) is the state where none is.
+                    modifier = Modifier.semantics { role = Role.RadioButton },
+                )
+            }
+            // Section: Order.
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = stringResource(R.string.sort_order),
+                        style = TextStyle(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                enabled = false,
+                onClick = {},
+            )
+            listOf(
+                true to R.string.order_ascending,
+                false to R.string.order_descending,
+            ).forEach { (ascending, labelRes) ->
+                val selected = ascending == sortAscending
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(labelRes),
+                            style = TextStyle(
+                                fontWeight = if (selected) FontWeight.SemiBold else null,
+                            ),
+                        )
+                    },
+                    leadingIcon = if (selected) {
+                        {
+                            Icon(
+                                imageVector = Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                    } else {
+                        { Spacer(Modifier.size(24.dp)) }
+                    },
+                    onClick = {
+                        open = false
+                        onSortAscendingSelect(ascending)
+                    },
+                    modifier = Modifier.semantics { role = Role.RadioButton },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The "Sort by" section's options in menu order: the three fields that
+ * exist on the record, Name first (the tiebreak field), then Duration,
+ * then Resolution. A pure mapping so the menu's order is testable and
+ * the composable stays declarative — no filter-name hardcoding beyond
+ * the enum itself (the label rides each entry's string resource).
+ */
+private fun sortKeyOptions(): List<Pair<LibrarySortKey, Int>> = listOf(
+    LibrarySortKey.NAME to R.string.sort_name,
+    LibrarySortKey.DURATION to R.string.sort_duration,
+    LibrarySortKey.RESOLUTION to R.string.sort_resolution,
+)
 
 private fun matches(filter: LibraryFilter, s: MediaSource): Boolean = when (filter) {
     LibraryFilter.ALL -> true
