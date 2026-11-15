@@ -133,6 +133,12 @@ class NativeSource private constructor(
                 // sample lines can split "native=..ms"; release reads one
                 // relaxed atomic per boundary and collects nothing.
                 if (BuildConfig.DEBUG) nativeSetExportTiming(true)
+                // Window probe (white-window round 2): the same debug
+                // gate — debug builds arm the one-shot window-surface
+                // readback (the rgb line under "ritim-trace" that decides
+                // the white-window class); release keeps the native
+                // default (off) and never reads a pixel.
+                if (BuildConfig.DEBUG) nativeSetPreviewWindowProbe(true)
             } catch (e: UnsatisfiedLinkError) {
                 nativeAvailable = false
             } catch (e: SecurityException) {
@@ -246,6 +252,23 @@ class NativeSource private constructor(
          * readback on vs off) isolates the synchronous readback's cost.
          */
         @JvmStatic private external fun nativeSetPreviewStatsEnabled(enabled: Boolean)
+
+        /**
+         * Toggles the window probe (white-window round 2, 2026-11-15): the
+         * DEBUG-ONLY one-shot readback of the GPU preview's window pass —
+         * one glReadPixels 1x1 at the rect center, from the back buffer
+         * before the swap, logged once per attach and once per develop
+         * resolution under the "ritim-trace" tag. The pragmatic exception
+         * to the preview path's no-readback rule: the white window is
+         * aspect-dependent (the WIDE clips paint white, the 4:3 healthy),
+         * zoom-proof and stats-healthy, and no host-side test can see the
+         * window surface — the probe's rgb decides the class (white =
+         * the DRAW produced it; black = the letterbox arm; real color =
+         * the surface/composition loses it). Companion-init gate, the
+         * nativeSetStabDebugLog pattern: called once with
+         * BuildConfig.DEBUG, so release builds never read a pixel.
+         */
+        @JvmStatic private external fun nativeSetPreviewWindowProbe(enabled: Boolean)
 
         /**
          * The six sub-stage slots of the frame nativeExportFrameParcel just

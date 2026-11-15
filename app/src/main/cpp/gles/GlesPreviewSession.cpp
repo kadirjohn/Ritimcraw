@@ -61,6 +61,7 @@
 #include "GlesPreviewSession.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -72,6 +73,7 @@
 
 #include <EGL/egl.h>
 #include <GLES3/gl31.h>
+#include <android/log.h>
 
 namespace gles {
 namespace {
@@ -182,6 +184,25 @@ inline double elapsedUs(const std::chrono::steady_clock::time_point& a,
 
 } // namespace
 
+// ---- THE WINDOW PROBE GATE (white-window round 2) -----------------------------
+//
+// The debug gate for the one-shot window readback (see GlesPreviewSession.h's
+// setWindowProbeEnabled comment for the full evidence chain). The atomic
+// lives HERE — next to its only consumer — and the JNI bridge's
+// nativeSetPreviewWindowProbe stores it (the jni_bridge.cpp gStabDebugLog
+// precedent, relocated to the consumer's TU): NativeSource's companion init
+// calls the setter with BuildConfig.DEBUG at library load, so a release
+// build reads ONE relaxed load per window draw and never reads a pixel.
+std::atomic<bool> gWindowProbe{false};
+
+void setWindowProbeEnabled(bool enabled) {
+    gWindowProbe.store(enabled, std::memory_order_relaxed);
+}
+
+bool windowProbeEnabled() {
+    return gWindowProbe.load(std::memory_order_relaxed);
+}
+
 // ---- Impl -----------------------------------------------------------------
 
 struct PreviewSession::Impl {
@@ -221,6 +242,17 @@ struct PreviewSession::Impl {
 
     uint32_t statsAllocW = 0, statsAllocH = 0;
     uint64_t statsBytes = 0;
+
+    // The window probe's one-shot latches (GL-thread state; the
+    // white-window round-2 debug instrument — see setWindowProbeEnabled's
+    // header comment). [probeGeometryLogged] fires the per-attach geometry
+    // line once (runSurfaceJob resets it on every attach); [probeW/H]
+    // re-arm the pixel line when the develop resolution changes — the
+    // session is clip-agnostic (the clip rides each request), so the
+    // resolution is the honest per-stream key: one probe line per clip
+    // shape per attach, none per frame.
+    bool probeGeometryLogged = false;
+    uint32_t probeW = 0, probeH = 0;
 
     // --- Handoff state (guarded by [mutex]) --------------------------------
     std::mutex mutex;
@@ -663,6 +695,13 @@ void PreviewSession::Impl::runSurfaceJob(ANativeWindow* window,
     // bounded handoff must not park the engine thread on vsync); the
     // compositor latches the latest frame.
     eglSwapInterval(display, 0);
+    // The window probe re-arms on every attach (white-window round 2): a
+    // new surface is a new stream, so the first window draw after this
+    // attach logs the geometry line and probes the pixel again. The
+    // latches are GL-thread state and this runs on the GL thread.
+    probeGeometryLogged = false;
+    probeW = 0;
+    probeH = 0;
     ANativeWindow_release(window);
     ok = true;
 }
@@ -730,8 +769,70 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             glUniform4f(windowRectLoc, rectX, rectY, rectW, rectH);
             glUniform1i(windowOrientationLoc, orient);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            // The draw's own error check runs FIRST — the probe below
+            // drains GL errors (its own), and a drain before this check
+            // would swallow a draw error and fake drawOk.
             const bool drawOk =
                 glErrorAfter("glDrawArrays(window)", &out.detail) == GL_NO_ERROR;
+            // THE WINDOW PROBE (white-window round 2, DEBUG-only — the
+            // pragmatic one-pixel exception to this path's no-readback
+            // rule; see setWindowProbeEnabled's header comment). ONE
+            // glReadPixels 1x1 at the rect CENTER, from the BACK buffer
+            // BEFORE eglSwapBuffers (post-swap the back buffer is
+            // undefined — the brief's own correction). One line per
+            // attach per develop resolution fires; the latches keep it
+            // one-shot so a playback run logs nothing per frame.
+            if (windowProbeEnabled() &&
+                (!probeGeometryLogged || probeW != w || probeH != h)) {
+                // The geometry line, once per attach: the pass's own
+                // values — the claimed uRect, the viewport, the surface's
+                // reported geometry and its dots-per-inch pair.
+                if (!probeGeometryLogged) {
+                    EGLint dotsH = 0, dotsV = 0;
+                    eglQuerySurface(display, windowSurface,
+                                    EGL_HORIZONTAL_RESOLUTION, &dotsH);
+                    eglQuerySurface(display, windowSurface,
+                                    EGL_VERTICAL_RESOLUTION, &dotsV);
+                    __android_log_print(
+                        ANDROID_LOG_INFO, "ritim-trace",
+                        "window probe: attach win=%dx%d dots=(%d,%d)",
+                        static_cast<int>(winW), static_cast<int>(winH),
+                        static_cast<int>(dotsH), static_cast<int>(dotsV));
+                    probeGeometryLogged = true;
+                }
+                // The pixel line, once per develop resolution: the draw's
+                // own inputs ride the line (rect/srcSize/orientation) so a
+                // white draw's uniforms can be diffed against a healthy
+                // clip's without a second build. glReadPixels reads the
+                // CURRENT read surface = the window surface's back
+                // buffer; the read is centered in uRect so the letterbox
+                // arm never covers it. The probe swallows its own GL
+                // error — the draw's error check above stays the only
+                // error the frame reports.
+                const GLint probeX = static_cast<GLint>(rectX + rectW * 0.5f);
+                const GLint probeY = static_cast<GLint>(rectY + rectH * 0.5f);
+                GLubyte probePx[4] = {0, 0, 0, 0};
+                glReadPixels(probeX, probeY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                             probePx);
+                while (glGetError() != GL_NO_ERROR) {}  // swallow the probe's own
+                __android_log_print(
+                    ANDROID_LOG_INFO, "ritim-trace",
+                    "window probe: rgb=(%d,%d,%d) win=%dx%d vp=%dx%d "
+                    "rect=(%.1f,%.1f,%.1f,%.1f) src=%ux%u orient=%d",
+                    static_cast<int>(probePx[0]), static_cast<int>(probePx[1]),
+                    static_cast<int>(probePx[2]),
+                    static_cast<int>(winW), static_cast<int>(winH),
+                    static_cast<int>(winW), static_cast<int>(winH),
+                    static_cast<double>(rectX), static_cast<double>(rectY),
+                    static_cast<double>(rectW), static_cast<double>(rectH),
+                    static_cast<unsigned>(w), static_cast<unsigned>(h),
+                    orient);
+                probeW = w;
+                probeH = h;
+            }
+            // The swap comes AFTER the probe — the probe reads the back
+            // buffer pre-swap (post-swap it is undefined, the brief's own
+            // correction).
             const bool swapOk = eglSwapBuffers(display, windowSurface) == EGL_TRUE;
             out.presented = drawOk && swapOk;
             if (!swapOk && out.detail.empty()) {

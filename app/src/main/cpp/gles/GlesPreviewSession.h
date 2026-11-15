@@ -284,4 +284,35 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// THE WINDOW PROBE (white-window round 2, 2026-11-15) — the DEBUG-ONLY
+// one-shot readback of the window pass, the pragmatic exception to this
+// path's no-readback rule. The white window is ASPECT-DEPENDENT (the WIDE
+// clips — 3840x2160 and 4096x2560 — paint white; the 4:3 clips are
+// healthy), ZOOM-PROOF (pinch-zoom brings nothing — the compositor's
+// buffer is white at composition level, not mis-rect'd) and
+// STATS-HEALTHY (the same develop texture's stats draw shows real
+// content), and the window draw+swap REPORTS SUCCESS — so no host-side
+// test can see it and the class (draw-white vs surface-white) is
+// undecidable without eyes on the window surface itself. The probe reads
+// ONE pixel (glReadPixels 1x1 at the rect center, from the back buffer
+// BEFORE eglSwapBuffers) and logs one line per attach per develop
+// resolution under the "ritim-trace" tag:
+//   window probe: rgb=(r,g,b) win=WxH vp=WxH rect=(x,y,W,H) src=WxH orient=N
+// White=(255,255,255) proves the DRAW produced white (the
+// shader/uniform/texture-input class); black proves the letterbox arm
+// (rect math); real color proves the draw is right and the SURFACE/
+// COMPOSITION loses it. The line carries the pass's own uniforms (rect,
+// srcSize, orientation) so a white draw's inputs can be compared against
+// a healthy clip's without a second build.
+//
+// The gate: a file-scope atomic HERE (the consumer's TU), set once from
+// the JNI bridge's nativeSetPreviewWindowProbe — the jni_bridge.cpp
+// gStabDebugLog precedent (NativeSource's companion init calls it with
+// BuildConfig.DEBUG at library load), relocated next to its consumer.
+// Release builds read one relaxed load per window draw and never read a
+// pixel; the probe also swallows its own GL error so the stats pass's
+// error check stays clean.
+void setWindowProbeEnabled(bool enabled);
+bool windowProbeEnabled();
+
 } // namespace gles
