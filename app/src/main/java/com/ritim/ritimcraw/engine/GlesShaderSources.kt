@@ -656,7 +656,7 @@ float smoothstepf(float e0, float e1, float x) {
 vec3 hueGains(float hueDeg) {
     vec3 gains;
     for (int ch = 0; ch < 3; ++ch) {
-        float center = 120.0 * ch;  // r, g, b peaks
+        float center = 120.0 * float(ch);  // r, g, b peaks (the explicit conversion the Adreno compiler requires; 120.0f * c is implicit on the CPU side)
         float d = abs(hueDeg - center);
         if (d > 180.0) d = 360.0 - d;  // circular distance
         gains[ch] = 2.0 * (0.5 + 0.5 * cos(d * 3.14159265 / 180.0));
