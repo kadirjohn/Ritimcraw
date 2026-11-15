@@ -220,6 +220,26 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
+    fun window_probe_gate_is_the_private_unmangled_one_boolean_external() {
+        // The window probe gate's signature + naming lock (white-window
+        // round 2, 2026-11-15): ONE Boolean, the nativeSetStabDebugLog
+        // companion-init pattern — a PRIVATE external with NO wrapper
+        // (the companion init is the only caller). THE NAMING RULE is
+        // the lock: private declarations do NOT get the $app_debug
+        // friend-module suffix, so the JVM name is the PLAIN name that
+        // matches the JNI symbol in jni_bridge.cpp in every build type —
+        // the exact-name lookup below finds it, while the internal
+        // wrappers' prefix+"$" lookup above would find nothing. Making
+        // the declaration non-private would mangle it
+        // (nativeSetPreviewWindowProbe$app_debug), the lookup would find
+        // zero methods and this test would fail — the same failure the
+        // device would show as an UnsatisfiedLinkError at library load.
+        val probe = NativeSource.Companion::class.java.declaredMethods
+            .single { it.name == "nativeSetPreviewWindowProbe" }
+        assertEquals(1, probe.parameterCount)
+    }
+
+    @Test
     fun the_fifteen_sources_are_the_validated_single_source_of_truth() {
         // The exact constants open() will be called with (commit b wires
         // them) pass the host validator under their own kinds — so the text

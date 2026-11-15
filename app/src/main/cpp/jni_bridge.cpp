@@ -1917,6 +1917,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetPreviewStatsEnabled(
     gPreviewStatsEnabled.store(enabled == JNI_TRUE, std::memory_order_relaxed);
 }
 
+// Window probe gate (white-window round 2, 2026-11-15): the DEBUG-ONLY
+// one-shot readback of the GPU preview's window pass — the pragmatic
+// one-pixel exception to that path's no-readback rule. The gate's atomic
+// lives in GlesPreviewSession.cpp (next to its consumer, the window
+// pass); this setter is the gStabDebugLog precedent — NativeSource's
+// companion init calls it once with BuildConfig.DEBUG at library load,
+// so release builds keep the native default (off) and the window pass
+// reads one relaxed load per draw, never a pixel. The probe's two
+// logcat lines ("window probe: ..." under the ritim-trace tag) are the
+// owner's replay instrument for the aspect-dependent white window (the
+// WIDE clips paint white, the 4:3 healthy; zoom-proof; stats-healthy).
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetPreviewWindowProbe(
+        JNIEnv*, jclass, jboolean enabled) {
+    gles::setWindowProbeEnabled(enabled == JNI_TRUE);
+}
+
 // The six sub-stage slots of the frame nativeExportFrameParcel just
 // produced, in the fixed order the Kotlin side renders:
 //   [decode, temporal, develop, warp, oetf_pack, jni_copy] (milliseconds).
