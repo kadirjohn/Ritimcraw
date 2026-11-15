@@ -42,12 +42,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.ui.components.FileListRow
 import com.ritim.ritimcraw.ui.components.FilterChipsRow
@@ -147,6 +149,19 @@ fun LibraryScreen(
     // ClipDeletion and refreshes the list. Default keeps previews and any
     // other caller compiling unchanged.
     onDeleteClips: (ids: List<String>) -> Unit = {},
+    // Folder import (owner request 2026-11-15): the header's folder button
+    // opens the tree picker; a granted tree takes over the screen with
+    // the FolderImportBrowser. The single-file path runs the caller's
+    // SAME per-file import pipeline (persistable grant, kind routed on
+    // the FILE's extension, thumbnail + metadata probe + gyro auto-match,
+    // combined success toast) and applies editedName as a rename AFTER
+    // the import (the dedupe branch refreshes displayName from the
+    // resolver, so the user's name must land last). The bulk path
+    // imports each document in sequence through that same pipeline
+    // (quiet — no per-file toast) and returns the summary for the
+    // browser's ONE end-of-batch message.
+    onImportFromFolder: (uri: String, kind: SourceKind, editedName: String?) -> Result<MediaSource> = { _, _, _ -> Result.failure(UnsupportedOperationException()) },
+    onImportManyFromFolder: (docs: List<VideoTree.VideoDocument>) -> BulkImportOutcome = { BulkImportOutcome(0, it.size, null) },
     modifier: Modifier = Modifier,
 ) {
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
@@ -255,6 +270,47 @@ fun LibraryScreen(
         )
     }
 
+    // Folder import (owner request 2026-11-15): ACTION_OPEN_DOCUMENT_TREE —
+    // the tree picker asks for a FOLDER, the granted tree takes over the
+    // screen with the FolderImportBrowser. The persistable grant on the
+    // tree IS the permission ("proper ayarlanmış olsun"): no manifest
+    // storage permission exists or is needed, and a SecurityException on
+    // the take is non-fatal (the browser's child query will surface the
+    // real state honestly if the grant truly is missing).
+    var folderUri by rememberSaveable { mutableStateOf<String?>(null) }
+    val folderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult // user backed out
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        } catch (e: SecurityException) {
+            // Non-fatal: the browser's enumeration reports the honest
+            // state if the grant really is required.
+        }
+        folderUri = uri.toString()
+    }
+
+    // The browser takes over the whole content area IN PLACE of the
+    // library list (the brief's full-screen takeover — never a sheet).
+    // The library's OWN selection state stays separate: the browser
+    // keeps its selection on document URIs, and exiting the browser
+    // returns to the library with its state intact.
+    if (folderUri != null) {
+        FolderImportBrowser(
+            treeUri = folderUri!!,
+            sources = sources,
+            onImport = onImportFromFolder,
+            onImportMany = onImportManyFromFolder,
+            onClose = { folderUri = null },
+            modifier = modifier,
+        )
+        return
+    }
+
     // E4 (owner finding 2026-11-11): the title must sit at the SAME height
     // as Projects/Exports/Settings. All four screens hang off AppNav's
     // Scaffold -> Box(padding) -> Crossfade; the other three continue
@@ -302,7 +358,28 @@ fun LibraryScreen(
                 }
             }
         } else {
-            ScreenHeader(title = stringResource(R.string.library_title))
+            // Folder import (owner request 2026-11-15): the title row gains
+            // a folder icon RIGHT of the Import action — two separate
+            // buttons in the header's actions slot. The FAB stays (its
+            // removal was not asked); the header's Import icon launches
+            // the SAME SAF document picker the FAB does.
+            ScreenHeader(
+                title = stringResource(R.string.library_title),
+                actions = {
+                    IconButton(onClick = { picker.launch(arrayOf("*/*")) }) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = stringResource(R.string.library_import),
+                        )
+                    }
+                    IconButton(onClick = { folderPicker.launch(null) }) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_folder),
+                            contentDescription = stringResource(R.string.library_import_folder),
+                        )
+                    }
+                },
+            )
             // The chips hide while selecting: the selection lives in the
             // visible (filtered) list, so switching filters mid-selection
             // could orphan checked rows — the bar owns the top area

@@ -75,6 +75,7 @@ import com.ritim.ritimcraw.data.metadata.MetadataStore
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.SourceRepository
 import com.ritim.ritimcraw.data.ThumbnailRules
+import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailStore
 import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.NativeSource
@@ -101,6 +102,7 @@ import com.ritim.ritimcraw.export.TimelineRef
 import com.ritim.ritimcraw.data.timeline.TimelineStore
 import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
 import com.ritim.ritimcraw.ui.exports.ExportsScreen
+import com.ritim.ritimcraw.ui.library.BulkImportOutcome
 import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
@@ -1631,6 +1633,102 @@ fun AppNav() {
                                     thumbnails = thumbnailStore,
                                 )
                                 sources = stores.sources.all()
+                            },
+                            // Folder import (owner request 2026-11-15), single
+                            // file: the SAME per-file pipeline the SAF picker
+                            // rides, plus two folder-flow additions. (1) The
+                            // KIND routes on the FILE's extension (mp4/mov are
+                            // ENCODED, everything else MCRAW) — the picker path
+                            // always defaulted to MCRAW because its picker
+                            // filtered to pick-worthy types; a folder holds
+                            // both, so the kind must come from the name.
+                            // (2) The dialog's edited name lands as a rename
+                            // AFTER the import: the import's dedupe branch
+                            // refreshes displayName from the resolver, so the
+                            // user's name must land LAST to survive (pinned by
+                            // rename_survives_a_reimport_of_the_same_file).
+                            // The rename never changes the id, so the
+                            // in-flight thumbnail/probe/gyro work below is
+                            // unaffected. A null editedName (the bulk path)
+                            // keeps the file's own name.
+                            onImportFromFolder = { uri, kind, editedName ->
+                                try {
+                                    val imported = stores.sources.import(uri, kind)
+                                    if (editedName != null) {
+                                        stores.sources.rename(imported.id, editedName)
+                                    }
+                                    sources = stores.sources.all()
+                                    scope.launch { generateThumbnail(imported) }
+                                    scope.launch { probeMetadata(imported) }
+                                    scope.launch {
+                                        val withGyro = autoMatchGyro(imported)
+                                        Toast.makeText(
+                                            context,
+                                            if (withGyro) gyroImportedWithText else importDoneText,
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                    Result.success(imported)
+                                } catch (e: Exception) {
+                                    Result.failure(e)
+                                }
+                            },
+                            // Folder import, bulk: each document rides the
+                            // SAME per-file pipeline in sequence — its own
+                            // takePersistableUriPermission (the tree grant
+                            // alone would not survive its revocation), the
+                            // kind its FILE's extension routes to, the async
+                            // thumbnail + metadata probe + gyro auto-match,
+                            // and its OWN display name (no rename dialog per
+                            // file in bulk mode — the owner's request names
+                            // the dialog for the single-file flow). Failures
+                            // are per-file honest: one bad file never stops
+                            // the batch, and the browser's ONE summary
+                            // (N imported, M failed) carries the batch's
+                            // verdict. The imports run on the caller's thread
+                            // (the browser's confirm click); each file's
+                            // async work is already on the main scope.
+                            onImportManyFromFolder = { docs ->
+                                var importedCount = 0
+                                var failedCount = 0
+                                var firstError: Throwable? = null
+                                for (doc in docs) {
+                                    try {
+                                        // The per-file persistable grant: the
+                                        // clip survives reboots even if the
+                                        // tree grant is later revoked. A
+                                        // SecurityException is non-fatal (the
+                                        // collection refresh surfaces a lost
+                                        // row if the grant really is needed) —
+                                        // the import attempt still runs.
+                                        try {
+                                            context.contentResolver.takePersistableUriPermission(
+                                                Uri.parse(doc.uri),
+                                                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                                            )
+                                        } catch (e: SecurityException) {
+                                            // Non-fatal: same contract as the
+                                            // single-file picker.
+                                        }
+                                        val imported = stores.sources.import(
+                                            doc.uri,
+                                            VideoTree.kindFor(doc.displayName),
+                                        )
+                                        sources = stores.sources.all()
+                                        scope.launch { generateThumbnail(imported) }
+                                        scope.launch { probeMetadata(imported) }
+                                        // Quiet per-file: the gyro match still
+                                        // runs (it attaches whatever it finds
+                                        // without a toast); the browser's ONE
+                                        // summary names the batch's verdict.
+                                        scope.launch { autoMatchGyro(imported) }
+                                        importedCount++
+                                    } catch (e: Exception) {
+                                        failedCount++
+                                        if (firstError == null) firstError = e
+                                    }
+                                }
+                                BulkImportOutcome(importedCount, failedCount, firstError)
                             },
                         )
                         Destination.PROJECTS -> ProjectsScreen(

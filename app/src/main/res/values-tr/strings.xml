@@ -40,6 +40,24 @@
     <string name="library_delete_title">Klipler kaldırılsın mı?</string>
     <string name="library_delete_confirm">Kaldır</string>
     <string name="library_delete_cancel">Vazgeç</string>
+    <!-- Folder import (owner request 2026-11-15): the title row's folder
+         button, the full-screen folder browser it opens, the
+         import-with-name dialog, and the multi-import summary. -->
+    <string name="library_import_folder">Klasörden içe aktar</string>
+    <string name="library_folder_browser_title">Klasörden içe aktar</string>
+    <string name="library_folder_browser_empty">Bu klasörde içe aktarılabilir video yok.</string>
+    <string name="library_folder_browser_failed">Klasör okunamadı (%1$s). Çözüm: geri dönün ve klasörü yeniden seçin.</string>
+    <string name="library_folder_browser_back">Kitaplığa dön</string>
+    <string name="library_folder_imported">İçe aktarıldı</string>
+    <string name="library_folder_import_dialog_title">Video içe aktar</string>
+    <string name="library_folder_import_dialog_name_label">Ad</string>
+    <string name="library_folder_import_dialog_confirm">İçe aktar</string>
+    <string name="library_folder_import_dialog_cancel">Vazgeç</string>
+    <string name="library_folder_selection_count">%1$d öğe seçildi</string>
+    <string name="library_folder_selection_close">Seçimden çık</string>
+    <string name="library_folder_selection_import">Seçilenleri içe aktar</string>
+    <string name="library_folder_import_summary">%1$d içe aktarıldı, %2$d başarısız</string>
+    <string name="library_folder_import_summary_all_failed">İçe aktarma başarısız: %2$d videodan %1$d tanesi içe aktarılamadı (%3$s)</string>
 
     <!-- Clip editor -->
     <string name="editor_back">Kitaplığa dön</string>
