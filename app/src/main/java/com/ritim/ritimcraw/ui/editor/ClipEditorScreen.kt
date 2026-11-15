@@ -1261,7 +1261,9 @@ fun ClipEditorScreen(
         // "16:9" would be computed off the already-cropped rect. Set in
         // the publish onSuccess BEFORE the crop fold; 0x0 before the
         // first publish (CropState.aspectRect guards to the full rect,
-        // the documented degradation).
+        // the documented degradation). A degenerate placeholder publish
+        // (both sides <= 1, the stats-off 1x1 — see the fold) never
+        // updates it, keeping the last real pair instead.
         var effectiveDims by remember(sourceId) {
             mutableStateOf(RotationState.Dims(0, 0))
         }
@@ -2344,10 +2346,23 @@ fun ClipEditorScreen(
                                 // BEFORE the crop fold (see the state
                                 // declaration): the aspect presets math
                                 // against this pair, never the cropped
-                                // `frame` dims.
-                                effectiveDims = RotationState.rotatedDims(
-                                    f.width, f.height, currentManualRotationDeg,
-                                )
+                                // `frame` dims. A degenerate placeholder
+                                // (both sides <= 1 — the GPU path's
+                                // stats-off 1x1 publish) carries NO shape:
+                                // skip the update and keep the previous
+                                // pair (0x0 pre-first-publish, else the
+                                // last real dims) — the same
+                                // PreviewSurfaceRatio.carriesShape rule
+                                // the ratio chain uses, so the crop
+                                // overlay, the aspect presets and the
+                                // slider ranges never math against 1x1
+                                // (a 16:9 preset on a 4:3 clip would
+                                // otherwise compute h=0.5625, not 0.75).
+                                if (PreviewSurfaceRatio.carriesShape(f.width, f.height)) {
+                                    effectiveDims = RotationState.rotatedDims(
+                                        f.width, f.height, currentManualRotationDeg,
+                                    )
+                                }
                                 // Crop + straighten (RAW-09), OFF the
                                 // main thread (audit fix 2026-11-13): the
                                 // published preview is the GRADED frame

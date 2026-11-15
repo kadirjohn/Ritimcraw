@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -53,6 +54,66 @@ class PreviewSurfaceRatioTest {
             PreviewSurfaceRatio.of(frameWidth = 2390, frameHeight = 1000, sourceWidth = 0, sourceHeight = 0),
             1e-6f,
         )
+    }
+
+    // ---- tier 1 guard: the stats-off 1x1 placeholder is not a shape ----
+
+    @Test
+    fun degenerate_1x1_frame_falls_through_to_the_source_pair() {
+        // The owner's live bug (2026-11-15, stats off): the GPU path's
+        // stats-off fallback publishes a 1x1 opaque-black placeholder, and
+        // tier 1 used to take it as truth -> ratio 1.0 -> a SQUARE
+        // 1080x1080 surface for a 4:3 clip. The guard skips it to tier 2.
+        assertEquals(
+            4f / 3f,
+            PreviewSurfaceRatio.of(frameWidth = 1, frameHeight = 1, sourceWidth = 4096, sourceHeight = 3072),
+            0f,
+        )
+    }
+
+    @Test
+    fun degenerate_1x1_frame_with_no_source_falls_back_to_default_not_square() {
+        // 1x1 with nothing else known must NOT become a square surface —
+        // it falls to the 16:9 default, same as a null frame.
+        assertEquals(
+            PreviewSurfaceRatio.DEFAULT_RATIO,
+            PreviewSurfaceRatio.of(frameWidth = 1, frameHeight = 1, sourceWidth = 0, sourceHeight = 0),
+            0f,
+        )
+    }
+
+    @Test
+    fun degenerate_0x1_and_1x0_frames_fall_through_to_the_source_pair() {
+        // The same poison in its half-degenerate forms (0x1 / 1x0): both
+        // sides <= 1, no shape either way.
+        assertEquals(
+            16f / 9f,
+            PreviewSurfaceRatio.of(frameWidth = 0, frameHeight = 1, sourceWidth = 3840, sourceHeight = 2160),
+            0f,
+        )
+        assertEquals(
+            9f / 16f,
+            PreviewSurfaceRatio.of(frameWidth = 1, frameHeight = 0, sourceWidth = 1080, sourceHeight = 1920),
+            0f,
+        )
+    }
+
+    @Test
+    fun carries_shape_locks_the_shared_degenerate_rule() {
+        // The ONE predicate gating every frame-dims consumer (the ratio
+        // chain's tier 1 AND the editor's effectiveDims update): the
+        // stats-off placeholder (both sides <= 1) carries no shape; a
+        // real square frame does; half-known pairs never do.
+        assertTrue(PreviewSurfaceRatio.carriesShape(1000, 1000))
+        assertTrue(PreviewSurfaceRatio.carriesShape(2, 1))
+        assertTrue(PreviewSurfaceRatio.carriesShape(4032, 3024))
+        assertFalse(PreviewSurfaceRatio.carriesShape(1, 1))
+        assertFalse(PreviewSurfaceRatio.carriesShape(0, 1))
+        assertFalse(PreviewSurfaceRatio.carriesShape(1, 0))
+        assertFalse(PreviewSurfaceRatio.carriesShape(0, 0))
+        assertFalse(PreviewSurfaceRatio.carriesShape(4032, 0))
+        assertFalse(PreviewSurfaceRatio.carriesShape(0, 3024))
+        assertFalse(PreviewSurfaceRatio.carriesShape(-1, -1))
     }
 
     // ---- tier 2: persisted import stats shape the placeholder ----

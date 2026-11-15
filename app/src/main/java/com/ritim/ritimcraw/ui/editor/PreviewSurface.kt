@@ -62,7 +62,12 @@ import kotlin.math.hypot
  *  3. [DEFAULT_RATIO] (16:9) when nothing is known.
  *
  * A pair with a non-positive side counts as unknown and is skipped; a
- * half-known pair never shapes the surface.
+ * half-known pair never shapes the surface. The frame tier additionally
+ * skips the degenerate placeholder (both sides <= 1, [carriesShape]): the
+ * GPU path's stats-off fallback publishes a 1x1 opaque-black frame, and
+ * that placeholder must never shape the surface (owner finding
+ * 2026-11-15: with stats off a 4:3 clip rendered a SQUARE 1080x1080
+ * surface). A real square frame (1000x1000) is still a shape.
  */
 object PreviewSurfaceRatio {
 
@@ -70,8 +75,26 @@ object PreviewSurfaceRatio {
     const val DEFAULT_RATIO = 16f / 9f
 
     /**
+     * True when a dimension pair carries real shape information: both
+     * sides positive AND at least one side > 1. The GPU path's stats-off
+     * fallback publishes a 1x1 opaque-black placeholder frame (the stats
+     * pack is its only pixel payload — GlesPreviewSession.cpp:1092), so
+     * "both sides <= 1" is the honest unknown marker, never a square
+     * shape. A real square (1000x1000) carries shape. This ONE predicate
+     * gates every frame-dims consumer (the ratio chain's tier 1 and the
+     * editor's effectiveDims update), so the placeholder is treated the
+     * same everywhere.
+     */
+    fun carriesShape(width: Int, height: Int): Boolean =
+        width > 0 && height > 0 && (width > 1 || height > 1)
+
+    /**
      * The preview surface aspect ratio (width / height) for the given
-     * dimension candidates, per the chain in the object KDoc.
+     * dimension candidates, per the chain in the object KDoc. The frame
+     * tier requires [carriesShape] — a 1x1 placeholder publish falls
+     * through to the source pair instead of shaping the surface square
+     * (owner finding 2026-11-15: stats off, source=4096x3072, every
+     * render read surface=1080x1080, out=1x1 stats=off).
      */
     fun of(
         frameWidth: Int,
@@ -79,7 +102,7 @@ object PreviewSurfaceRatio {
         sourceWidth: Int,
         sourceHeight: Int,
     ): Float = when {
-        frameWidth > 0 && frameHeight > 0 -> frameWidth.toFloat() / frameHeight
+        carriesShape(frameWidth, frameHeight) -> frameWidth.toFloat() / frameHeight
         sourceWidth > 0 && sourceHeight > 0 -> sourceWidth.toFloat() / sourceHeight
         else -> DEFAULT_RATIO
     }
