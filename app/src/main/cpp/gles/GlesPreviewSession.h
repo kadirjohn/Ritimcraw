@@ -157,6 +157,9 @@ using PreviewFrameRequest = DevelopFrameRequest;
 // RenderTrace.enabled precedent) so the JNI tail is one stable shape.
 struct PreviewFrameResult {
     bool ok = false;
+    // A developed/stats frame is not proof that the user saw a frame.
+    // Set only after the window draw AND eglSwapBuffers succeed.
+    bool presented = false;
     std::vector<uint32_t> argb8888;  // width*height pixels, row-major,
                                       // upright, top row first
     uint32_t width = 0;              // the published (stats) dims

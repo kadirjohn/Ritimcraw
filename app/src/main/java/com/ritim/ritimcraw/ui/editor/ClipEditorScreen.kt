@@ -1386,13 +1386,14 @@ fun ClipEditorScreen(
         var gpuSession by remember(sourceId) { mutableStateOf<GpuPreviewSession?>(null) }
         var gpuActive by remember(sourceId) { mutableStateOf(false) }
         var gpuWindowLive by remember(sourceId) { mutableStateOf(false) }
-        // The SurfaceHolder's own liveness, set by PreviewSurface's
-        // lifecycle callback (surfaceCreated → true, surfaceDestroyed →
-        // false): gpuWindowLive is servedByGpuWindow AND this, so the Image
+        // The acknowledged EGL attachment, set after the SurfaceHolder
+        // lifecycle handoff completes: gpuWindowLive is servedByGpuWindow
+        // AND this, so the Image
         // suppresses ONLY when the GPU window is really drawing (a served
         // frame AND a live surface) — never black-holes the preview on a
         // surface that died before its first frame.
         var gpuSurfaceLive by remember(sourceId) { mutableStateOf(false) }
+        var gpuSurfaceGeneration by remember(sourceId) { mutableStateOf(0L) }
         // The GPU session-open window's honesty flag (owner finding
         // 2026-11-14): true from the session-open request (the capability
         // gate's start) until its verdict — the first frame published by
@@ -2401,6 +2402,7 @@ fun ClipEditorScreen(
                                 gpuPreparing = false
                                 val detail = gpu.lastDetail() ?: "gpu preview render failed"
                                 errorText = "GPU preview fallback: $detail — recovery: the CPU preview path stays the default"
+                                Log.d(RenderTrace.TAG, "GPU preview render fallback: $detail")
                             }
                         }
                         if (result == null) {
@@ -3094,8 +3096,35 @@ fun ClipEditorScreen(
                     gpuWindowActive = gpuActive,
                     gpuWindowServing = gpuWindowLive,
                     onGpuSurfaceChanged = { surface ->
-                        gpuSurfaceLive = surface != null
-                        scope.launch { gpuSession?.onSurfaceChanged(surface) }
+                        // Holder liveness alone does not mean EGL accepted
+                        // the window. Never hide the CPU image until the
+                        // handoff has actually succeeded. Ignore an old
+                        // attach completing after a destroy/replacement.
+                        val generation = ++gpuSurfaceGeneration
+                        gpuSurfaceLive = false
+                        gpuWindowLive = false
+                        scope.launch {
+                            val gpu = gpuSession
+                            val attached = gpu?.onSurfaceChanged(surface) == true
+                            if (generation != gpuSurfaceGeneration) return@launch
+                            gpuSurfaceLive = surface != null && attached
+                            if (surface != null && !attached) {
+                                gpuActive = false
+                                gpuPreparing = false
+                                val detail = gpu?.lastDetail() ?: "window attachment failed"
+                                errorText = "GPU preview fallback: $detail — recovery: the CPU preview path stays the default"
+                                Log.d(RenderTrace.TAG, "GPU preview surface fallback: $detail")
+                            }
+                            // A paused preview also needs a new frame when
+                            // its surface appears, disappears or is replaced.
+                            if (canRender) {
+                                requestRender(
+                                    positionFrame, grade,
+                                    if (isPlaying) previewQuality.playbackMaxDim
+                                    else PreviewTiers.PAUSED_MAX_DIM,
+                                )
+                            }
+                        }
                     },
                     // The before/after press-hold gesture rides the surface's
                     // modifier (owner feature list W5): press-and-hold on the

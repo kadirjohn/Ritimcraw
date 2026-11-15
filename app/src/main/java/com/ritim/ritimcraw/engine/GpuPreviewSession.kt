@@ -71,7 +71,7 @@ interface GpuPreviewDevelop {
 
     /**
      * Renders one frame and publishes BOTH the window draw (aspect-fit
-     * into the SurfaceView — best-effort, never fails the render) and the
+     * into the SurfaceView — the JNI bridge requires a successful present) and the
      * stats pack ([w, h, pixels...] at the 256-long-edge tier, the same
      * shape the CPU preview publishes) for Compose's overlays. Null on
      * failure — the session latches unhealthy with the same detail, so

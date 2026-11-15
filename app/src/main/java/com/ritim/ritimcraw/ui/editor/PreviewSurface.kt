@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -304,6 +305,7 @@ fun PreviewSurface(
     onGpuSurfaceChanged: ((surface: Any?) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
+    val currentGpuSurfaceChanged by rememberUpdatedState(onGpuSurfaceChanged)
     // §6 zoom/pan state: keyed on the CLIP (a fresh clip starts at 1x
     // centered — the reset rule), saveable (a pinch survives a
     // configuration change), and independent of playback. listSaver
@@ -482,7 +484,7 @@ fun PreviewSurface(
                             setZOrderMediaOverlay(false)
                             holder.addCallback(object : SurfaceHolder.Callback {
                                 override fun surfaceCreated(holder: SurfaceHolder) {
-                                    onGpuSurfaceChanged(holder.surface)
+                                    currentGpuSurfaceChanged?.invoke(holder.surface)
                                 }
 
                                 override fun surfaceChanged(
@@ -491,14 +493,17 @@ fun PreviewSurface(
                                     width: Int,
                                     height: Int,
                                 ) {
-                                    // The session re-derives the window size
-                                    // per frame (eglQuerySurface), so a size
-                                    // change needs no re-handoff — the next
-                                    // render letterboxes to the new size.
+                                    // A resize may replace/clear the backing
+                                    // buffers. Reattach and request a frame
+                                    // even when playback is paused; waiting
+                                    // for a next playback tick strands black.
+                                    if (width > 0 && height > 0) {
+                                        currentGpuSurfaceChanged?.invoke(holder.surface)
+                                    }
                                 }
 
                                 override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                    onGpuSurfaceChanged(null)
+                                    currentGpuSurfaceChanged?.invoke(null)
                                 }
                             })
                         }

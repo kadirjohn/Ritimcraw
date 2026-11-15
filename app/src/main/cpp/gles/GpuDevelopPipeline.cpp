@@ -1281,7 +1281,9 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
             // cache [lutParsedPath] survives this transition by design —
             // a strength step 0 -> s > 0 on the same path re-uploads the
             // table but never re-reads the file.
-            if (lutUploadedPath != "") {
+            // An empty cache key is also the initial state; it does not
+            // prove a complete dummy texture has been created yet.
+            if (lutTex == 0 || lutUploadedPath != "") {
                 if (lutTex == 0) glGenTextures(1, &lutTex);
                 bindLutDummyTex(lutTex);
                 if (glErrorAfter("glTexImage3D(RGBA16F lut dummy)", &r.detail) != GL_NO_ERROR) return r;
@@ -1301,7 +1303,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
                     lutParsed.reset();
                     lutParsedPath.clear();
                     if (parsed.code == rawedit::ErrorCode::IoError) {
-                        if (lutUploadedPath != "") {
+                        if (lutTex == 0 || lutUploadedPath != "") {
                             if (lutTex == 0) glGenTextures(1, &lutTex);
                             bindLutDummyTex(lutTex);
                             if (glErrorAfter("glTexImage3D(RGBA16F lut dummy)", &r.detail) != GL_NO_ERROR) return r;

@@ -4028,7 +4028,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         // atomic, copied per render.
         req.statsEnabled = gPreviewStatsEnabled.load(std::memory_order_relaxed);
         const gles::PreviewFrameResult res = session->renderFrame(req, grade);
-        if (!res.ok) {
+        // The editor suppresses its CPU Image on success. A stats pack
+        // (or the stats-off black 1x1 marker) cannot substitute for a
+        // presented window frame. Route a failed present to CPU too.
+        if (!res.ok || !res.presented) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "preview session render: " + res.detail +
                          " (recovery: the preview falls back to the CPU develop)");

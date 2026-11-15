@@ -713,17 +713,18 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             glUniform4f(windowRectLoc, rectX, rectY, rectW, rectH);
             glUniform1i(windowOrientationLoc, orient);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            if (glErrorAfter("glDrawArrays(window)", &out.detail) != GL_NO_ERROR) {
-                // Non-fatal diagnostic: the published frame still ships.
-                // (glGetError above CLEARED the error flag, so the stats
-                // pass's checks start clean.)
-            }
-            if (!eglSwapBuffers(display, windowSurface) && out.detail.empty()) {
+            const bool drawOk =
+                glErrorAfter("glDrawArrays(window)", &out.detail) == GL_NO_ERROR;
+            const bool swapOk = eglSwapBuffers(display, windowSurface) == EGL_TRUE;
+            out.presented = drawOk && swapOk;
+            if (!swapOk && out.detail.empty()) {
                 out.detail = "window present: eglSwapBuffers";
             }
         } else if (out.detail.empty()) {
             out.detail = "window present: eglQuerySurface";
         }
+    } else {
+        out.detail = "window present: no attached surface";
     }
     const SteadyClock::time_point tPresent1 = SteadyClock::now();
     out.presentUs = elapsedUs(tPresent0, tPresent1);
