@@ -74,6 +74,7 @@ import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailStore
 import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.CodecProbe
+import com.ritim.ritimcraw.engine.FolderThumbnails
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.RenderBackend
@@ -108,7 +109,10 @@ import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.DeviceReportScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
 import com.ritim.ritimcraw.ui.timeline.TimelineScreen
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withContext
 import androidx.core.content.FileProvider
 import java.io.File
 
@@ -492,6 +496,22 @@ fun AppNav(
             pngWriter = BitmapPngWriter(),
         )
     }
+    // Folder-browser pre-import previews (owner request 2026-11-15): the
+    // document-keyed pass over the SAME store's separate folder namespace.
+    // The one whole-browser bound: a SUSPENDING gate (the cell's
+    // produceState producer runs on the MAIN dispatcher — a blocking
+    // java.util.concurrent acquire would jank the UI thread while queued
+    // cells wait), sized 2 so a 100+ video folder develops at most two
+    // previews at once while the lazy grid feeds it only the composed
+    // window. The retention cap keeps un-imported browsing from
+    // accumulating forever: previews of files the owner never imports
+    // are swept OLDEST-first past 300 (the import cleanup deletes the
+    // imported one's file outright).
+    val folderThumbnails = remember {
+        FolderThumbnails(store = thumbnailStore, pngWriter = BitmapPngWriter())
+    }
+    val folderPreviewGate = remember { Semaphore(2) }
+    val folderPreviewRetention = 300
     // How many missing thumbnails one Library open generates (bounded, so
     // a huge library opens instantly and fills in while the user looks).
     val thumbnailBatchLimit = 3
@@ -1746,6 +1766,40 @@ fun AppNav(
                                 )
                                 sources = stores.sources.all()
                             },
+                            // Folder-browser previews (owner request
+                            // 2026-11-15): the cells read the document-keyed
+                            // folder namespace, and a missing one generates
+                            // through the bounded pass — the fdProvider is
+                            // the same detachFd seam every import path uses.
+                            // The retention sweep rides the generation (the
+                            // only moment the namespace grows), so un-imported
+                            // browsing never accumulates past the cap without
+                            // a second scheduled pass.
+                            folderPreviewAt = { uri ->
+                                thumbnailStore.folderFileFor(uri)?.absolutePath
+                            },
+                            onGenerateFolderPreview = { uri, displayName ->
+                                folderThumbnails.preview(
+                                    uri = uri,
+                                    displayName = displayName,
+                                    fdProvider = {
+                                        try {
+                                            context.contentResolver
+                                                .openFileDescriptor(Uri.parse(uri), "r")
+                                                ?.detachFd() ?: -1
+                                        } catch (e: Exception) {
+                                            -1
+                                        }
+                                    },
+                                    gate = folderPreviewGate,
+                                )
+                                // The retention sweep rides the generation
+                                // (the only moment the namespace grows) —
+                                // a dir listing, off the main dispatcher.
+                                withContext(Dispatchers.IO) {
+                                    thumbnailStore.trimFolder(folderPreviewRetention)
+                                }
+                            },
                             // Folder import (owner request 2026-11-15), single
                             // file: the SAME per-file pipeline the SAF picker
                             // rides, plus two folder-flow additions. (1) The
@@ -1762,10 +1816,15 @@ fun AppNav(
                             // The rename never changes the id, so the
                             // in-flight thumbnail/probe/gyro work below is
                             // unaffected. A null editedName (the bulk path)
-                            // keeps the file's own name.
+                            // keeps the file's own name. (3) The SUCCESS
+                            // cleanup: the per-import pipeline generates the
+                            // id-keyed icon, so the document-keyed pre-import
+                            // preview is redundant — deleted (a no-op when
+                            // none existed).
                             onImportFromFolder = { uri, kind, editedName ->
                                 try {
                                     val imported = stores.sources.import(uri, kind)
+                                    thumbnailStore.removeFolder(uri)
                                     if (editedName != null) {
                                         stores.sources.rename(imported.id, editedName)
                                     }
@@ -1826,6 +1885,10 @@ fun AppNav(
                                             doc.uri,
                                             VideoTree.kindFor(doc.displayName),
                                         )
+                                        // The success cleanup: the id-keyed
+                                        // icon supersedes the pre-import
+                                        // preview (no-op when none existed).
+                                        thumbnailStore.removeFolder(doc.uri)
                                         sources = stores.sources.all()
                                         scope.launch { generateThumbnail(imported) }
                                         scope.launch { probeMetadata(imported) }

@@ -1,7 +1,10 @@
 package com.ritim.ritimcraw.ui.library
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +48,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -134,6 +139,19 @@ fun FolderImportBrowser(
     // through the same per-file path (quiet — no per-file toast) and
     // returns the summary.
     onImportMany: (docs: List<VideoTree.VideoDocument>) -> BulkImportOutcome,
+    // Pre-import first-frame previews (owner request 2026-11-15): the
+    // document-keyed generation pass + the store's folder namespace.
+    // The pass is the caller's because it owns the engine seams AND the
+    // whole-browser bound (the LibraryThumbnailBackfill precedent: the
+    // caller's shared suspending gate caps how many previews develop at
+    // once); the cell rides it through [folderPreviewAt] (persisted
+    // file or null) and [onGenerateFolderPreview] (ONE bounded
+    // generation when the file is missing). The LAZY grid bounds the
+    // queue to COMPOSED cells only — a cell that never composes never
+    // generates, so a 100+ video folder fills progressively, never
+    // all at once.
+    folderPreviewAt: (uri: String) -> String?,
+    onGenerateFolderPreview: suspend (uri: String, displayName: String) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -300,6 +318,8 @@ fun FolderImportBrowser(
                                     imported = VideoTree.isImported(doc.uri, sources),
                                     selecting = selecting,
                                     selected = doc.uri in selection,
+                                    previewAt = folderPreviewAt,
+                                    onGeneratePreview = onGenerateFolderPreview,
                                     onOpen = {
                                         nameTarget = doc
                                         nameDraft = doc.displayName
@@ -372,14 +392,31 @@ fun FolderImportBrowser(
 }
 
 /**
- * One grid cell: a 1:1 placeholder tile with the video glyph (no
- * thumbnail exists yet — the browser lists NOT-yet-imported files), the
- * file name beneath, and the stock CheckCircle pair while selecting
- * (the FileListRow affordance, moved to the tile's corner).
+ * One grid cell: a 1:1 tile with the file's REAL first-frame preview
+ * when one is persisted (owner request 2026-11-15: "import edilmemiş
+ * videoların bile thumbnailini göstermeli" — even NOT-yet-imported
+ * videos show their thumbnail), the video glyph as the placeholder
+ * while missing or loading (the Library row's placeholder-while-loading
+ * shape), the file name beneath, and the stock CheckCircle pair while
+ * selecting (the FileListRow affordance, moved to the tile's corner).
+ *
+ * The preview rides produceState keyed on the document's uri (the
+ * FileListRow thumbnail-decode precedent): the persisted folder-namespace
+ * PNG decodes off the UI thread when present; when missing, ONE bounded
+ * generation runs through [onGeneratePreview] (the caller's shared
+ * suspending gate — the LibraryThumbnailBackfill precedent) and the
+ * fresh file decodes the same way. produceState cancels when the cell
+ * leaves composition, so a fast scroll through a 100+ video folder
+ * never queues the whole folder — only the composed window generates,
+ * at most the gate's permits at a time. A failed generation keeps the
+ * glyph (honest placeholder, retried on the next browser open).
  *
  * An already-imported cell renders DIMMED (40% alpha) with an
  * "Imported" tag and takes NO gestures — visible for context, outside
- * the action set.
+ * the action set. Its preview comes from the SAME document-keyed
+ * namespace (the cell knows the document, not any library id): a
+ * re-import of the same file lands on the existing record either way,
+ * and the import cleanup deletes the folder-cache file.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -388,6 +425,8 @@ private fun FolderVideoCell(
     imported: Boolean,
     selecting: Boolean,
     selected: Boolean,
+    previewAt: (uri: String) -> String?,
+    onGeneratePreview: suspend (uri: String, displayName: String) -> Unit,
     onOpen: () -> Unit,
     onToggleSelected: () -> Unit,
 ) {
@@ -415,11 +454,41 @@ private fun FolderVideoCell(
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                imageVector = Icons.Filled.PlayArrow,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // The preview slot: the persisted folder-namespace PNG when
+            // one exists, else ONE bounded generation then the fresh
+            // file — the glyph stays underneath as the placeholder
+            // (decode ONCE, persisted, never re-developed per
+            // composition).
+            val bitmap by produceState<Bitmap?>(initialValue = null, doc.uri) {
+                var path = previewAt(doc.uri)
+                if (path == null) {
+                    onGeneratePreview(doc.uri, doc.displayName)
+                    path = previewAt(doc.uri)
+                }
+                if (path != null) {
+                    value = withContext(Dispatchers.IO) {
+                        try {
+                            BitmapFactory.decodeFile(path)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                }
+            }
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap!!.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (imported) {
                 Text(
                     text = stringResource(R.string.library_folder_imported),
