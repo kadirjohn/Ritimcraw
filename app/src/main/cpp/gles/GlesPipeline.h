@@ -144,7 +144,7 @@ struct ParityReport {
     bool ran = false;
     int maxDiffLsb = 0;           // largest |gpu - cpu| in 16-bit LSB units
     long long mismatchCount = 0;  // samples where the 16-bit outputs differ
-    long long samples = 0;        // w * h * 3
+    long long samples = 0;        // the measured slice's w * h * 3 (see the fixed-slice note)
     std::string detail;           // failure step, or the GL version on success
 };
 
@@ -237,6 +237,16 @@ ParityReport demosaicParity(const std::string& computeSource,
 // The fragment path does NOT need compute: the gate is contextOk +
 // floatFboOk, NOT computeOk (a compute-less ES 3.1 device can still pass
 // this leg). ran=false means a stage failed and [detail] names it.
+//
+// FIXED SAFE SLICE (owner-approved hardening): the parity run measures
+// SHADER MATH, not resolution, so a frame whose long edge exceeds 2048
+// runs as a CENTER CROP with even offsets and even dimensions (the crop
+// starts on a 2x2 cell boundary, so the CFA pattern alignment and
+// cellFor's layout stay valid; the CPU reference computes the SAME crop).
+// [samples] counts the slice the harness actually measured — a frame
+// within the 2048 budget passes through whole, keeping the
+// device-proven full-frame shape exactly. The verdict thresholds are
+// unchanged (they live in Kotlin, GpuParityRules).
 // Device-test-pending: no phone has run this.
 ParityReport developFragmentParity(const std::string& vertexSource,
                                     const std::string& vertex310Source,

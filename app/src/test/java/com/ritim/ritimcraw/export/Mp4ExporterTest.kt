@@ -3078,6 +3078,80 @@ class Mp4ExporterTest {
         assertEquals(listOf(0, 1), session.rendered)
         val fallback = lines.first { it.startsWith("render backend fallback: ") }
         assertTrue("gate token missing: $fallback", fallback.contains("parity-not-verified"))
+        // The parity-fix observability: the verdict's own detail rides
+        // BESIDE the fallback line as a companion line — the thresholds'
+        // numbers for a run that failed them (the token vocabulary stays
+        // byte-identical).
+        val detail = lines.first { it.startsWith("parity gate: ") }
+        assertEquals(
+            "parity gate: FAIL (maxDiffLsb 2 > 1; " +
+                "ran=1 maxDiffLsb=2 mismatch=398 samples=24800000)",
+            detail,
+        )
+    }
+
+    @Test
+    fun parity_not_run_logs_the_gl_step_that_refused() {
+        // The parity-fix observability, the NOT_RUN leg: a run that refused
+        // (an EGL/compile/link/fbo step failed) reports the harness's own
+        // error detail (nativeLastError) — exactly what classifies the
+        // parity-not-verified latch on the owner's device.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop(
+            parityArray = doubleArrayOf(0.0, 0.0, 0.0, 0.0),
+            detail = "link: develop",
+        )
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        val fallback = lines.first { it.startsWith("render backend fallback: ") }
+        assertTrue("gate token missing: $fallback", fallback.contains("parity-not-verified"))
+        assertEquals(
+            "parity gate: NOT_RUN (link: develop)",
+            lines.first { it.startsWith("parity gate: ") },
+        )
+    }
+
+    @Test
+    fun parity_jni_failure_logs_the_seam_error() {
+        // The parity-fix observability, the null-array leg: a seam that
+        // returned no array (the clip-level failure: open/decode) reports
+        // the "jni failure" vocabulary with the seam's own detail.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop(
+            parityArray = null,
+            detail = "gles fragment parity: IoError — frame 0 decode",
+        )
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(
+            "parity gate: jni failure (gles fragment parity: IoError — frame 0 decode)",
+            lines.first { it.startsWith("parity gate: ") },
+        )
+    }
+
+    @Test
+    fun parity_pass_logs_no_companion_line() {
+        // A green parity verdict logs NO companion line — the export rides
+        // GLES and the fallback line is absent, so nothing rides beside
+        // nothing.
+        val session = FakeSession(frames = 2, audio = false)
+        val gpu = FakeGpuDevelop()
+        val lines = ArrayList<String>()
+        ExportPipeline(
+            session, FakeWriter(), lines::add,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, lines.count { it.startsWith("parity gate: ") })
+        assertEquals(0, lines.count { it.startsWith("render backend fallback: ") })
     }
 
     @Test

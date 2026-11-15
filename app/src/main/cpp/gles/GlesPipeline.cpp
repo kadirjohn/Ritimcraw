@@ -502,7 +502,24 @@ ParityReport demosaicParity(const std::string& computeSource,
     return rep;
 }
 
-ParityReport developFragmentParity(const std::string& vertexSource,
+namespace {
+
+// The fixed slice's long-edge target (owner-approved hardening, brief
+// commit 3): the parity run measures SHADER MATH, not resolution, so it
+// runs on a center crop of frame 0 whose long edge fits this budget. The
+// crop keeps the CFA pattern aligned (even offsets, even dimensions —
+// the same 2x2 cell grid the full frame uses), and the CPU reference
+// computes the SAME crop, so the verdict is clip-size-independent (a
+// future 8K clip cannot OOM the gate) and the gate is cheaper at every
+// export start. A frame already within the budget passes through whole
+// (no copy) — the device-proven full-frame runs keep their exact shape.
+constexpr uint32_t kParitySliceLongEdge = 2048;
+
+// The full-frame parity worker: the exact body the harness shipped at
+// the device-proven commit (only renamed). The public
+// developFragmentParity below slices oversized frames and delegates to
+// it — the worker itself never knows the slice exists.
+ParityReport developFragmentParityFullFrame(const std::string& vertexSource,
                                     const std::string& vertex310Source,
                                     const std::string& fragmentSource,
                                     const std::string& storeFragmentSource,
@@ -1087,6 +1104,66 @@ ParityReport developFragmentParity(const std::string& vertexSource,
     rep.samples = static_cast<long long>(n) * 3 * (caseIndex == 2 ? 5 : 1);
     rep.detail = version;  // device context for the log line
     return rep;
+}
+
+} // namespace
+
+ParityReport developFragmentParity(const std::string& vertexSource,
+                                    const std::string& vertex310Source,
+                                    const std::string& fragmentSource,
+                                    const std::string& storeFragmentSource,
+                                    int caseIndex,
+                                    const std::vector<uint16_t>& cfa,
+                                    const rawedit::FrameInfo& info,
+                                    const rawedit::RawMeta& meta) {
+    // Input contract first (the worker's own check stays as the backstop):
+    // a malformed clip fails identically whether or not it needs slicing.
+    const uint32_t fullW = info.width;
+    const uint32_t fullH = info.height;
+    if (fullW == 0 || fullH == 0 ||
+        cfa.size() != static_cast<size_t>(fullW) * fullH) {
+        ParityReport rep;
+        rep.detail = "input: cfa size != w*h";
+        return rep;
+    }
+    if (fullW <= kParitySliceLongEdge && fullH <= kParitySliceLongEdge) {
+        // Within the budget: the frame passes through whole, no copy —
+        // the device-proven full-frame runs keep their exact shape.
+        return developFragmentParityFullFrame(
+            vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+            caseIndex, cfa, info, meta);
+    }
+    // Center crop, even offsets and even dimensions: the crop starts on a
+    // 2x2 cell boundary and spans whole cells, so the slice keeps the
+    // source's repeating pattern (an RGGB crop of an RGGB frame) and
+    // cellFor's layout stays valid. The crop is centered so the slice
+    // sees the frame's middle content, not a corner.
+    const uint32_t sliceW = fullW > kParitySliceLongEdge
+        ? kParitySliceLongEdge & ~1u
+        : fullW;
+    const uint32_t sliceH = fullH > kParitySliceLongEdge
+        ? kParitySliceLongEdge & ~1u
+        : fullH;
+    const uint32_t offX = ((fullW - sliceW) / 2) & ~1u;
+    const uint32_t offY = ((fullH - sliceH) / 2) & ~1u;
+    std::vector<uint16_t> sliced;
+    sliced.reserve(static_cast<size_t>(sliceW) * sliceH);
+    for (uint32_t y = 0; y < sliceH; ++y) {
+        const size_t rowStart = static_cast<size_t>(offY + y) * fullW + offX;
+        sliced.insert(sliced.end(),
+                      cfa.begin() + static_cast<std::ptrdiff_t>(rowStart),
+                      cfa.begin() + static_cast<std::ptrdiff_t>(rowStart + sliceW));
+    }
+    // The sliced FrameInfo: the crop's own width/height; every other field
+    // copied verbatim (developLinear/developCpu read no other geometry —
+    // activeArea is DngWriter-only, and the per-frame levels, the pattern
+    // and the timestamp are crop-invariant).
+    rawedit::FrameInfo slicedInfo = info;
+    slicedInfo.width = sliceW;
+    slicedInfo.height = sliceH;
+    return developFragmentParityFullFrame(
+        vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+        caseIndex, sliced, slicedInfo, meta);
 }
 
 } // namespace gles

@@ -1938,6 +1938,7 @@ fun ClipEditorScreen(
             // (no leg ran), and the line's reason tokens come from the
             // gates the assembly reported, never gatesFrom.
             var gates = BackendGates()
+            var parityGateDetail: String? = null
             val parityFd = sourceFdProvider()
             try {
                 val develop = NativeGpuPreviewDevelop
@@ -1960,17 +1961,31 @@ fun ClipEditorScreen(
                 // The parity leg is paid only when the probe's verdicts
                 // justify it AND the clip's fd opened — a doomed run is
                 // waste; the honest null keeps parityOk false either way.
-                val parityRaw = if (parityFd >= 0 &&
+                val parityFdOpened = parityFd >= 0
+                val parityPaid = parityFdOpened &&
                     EditorPreviewLogic.probePaysParity(probeRaw)
-                ) {
+                val parityRaw = if (parityPaid) {
                     develop.fragmentParity(parityFd)
                 } else {
                     null
                 }
+                val parityDetail = develop.lastDetail()
                 gates = EditorPreviewLogic.previewCapabilityGates(
                     probeRaw = probeRaw,
                     parityRaw = parityRaw,
-                    parityDetail = develop.lastDetail(),
+                    parityDetail = parityDetail,
+                )
+                // The parity verdict's own detail (the parity-fix
+                // observability): previewCapabilityGates keeps ONLY .pass
+                // (its JVM-pinned shape stays untouched), so the harness's
+                // why is computed HERE at the dispatch site — the same
+                // verdict call, same inputs — and logged beside the
+                // fallback line when the gates are red. Null when the leg
+                // was never paid or the verdict passed.
+                parityGateDetail = GpuParityRules.gateDetailLine(
+                    parityPaid = parityPaid,
+                    parity = parityRaw?.let { GlesParityResult.fromArray(it) },
+                    errorDetail = parityDetail,
                 )
             } catch (t: Throwable) {
                 // A malformed seam array (the fromArray contract: loud,
@@ -1992,6 +2007,15 @@ fun ClipEditorScreen(
                         RenderBackend.GPU_EXPERIMENTAL, reason,
                     ),
                 )
+                // The parity gate's companion line (the parity-fix
+                // observability): the verdict's own detail beside the
+                // fallback line — the GL step + error for a run that
+                // refused, the thresholds' numbers for a run that failed
+                // them, or the seam's own error when the call returned no
+                // array. Null when the parity leg was never paid (the
+                // fallback line's tokens already say which gate was red) or
+                // the verdict passed (no fallback happened).
+                parityGateDetail?.let { Log.d(RenderTrace.TAG, it) }
                 errorText = "GPU preview unavailable: $reason — recovery: the CPU preview path stays the default"
                 gpuPreparing = false
                 return@LaunchedEffect

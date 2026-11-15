@@ -165,6 +165,41 @@ object GpuParityRules {
         "fragment parity: skipped ($reason)"
 
     /**
+     * The parity gate's companion line for the fallback logs (the
+     * parity-fix observability): the harness's own verdict detail the
+     * gate TOKEN vocabulary cannot carry — the GL step + error for a
+     * run that refused (NOT_RUN), the thresholds' own numbers for a run
+     * that failed them (FAIL), or the seam's own error when the call
+     * returned no array at all (the "jni failure" vocabulary the
+     * Measure leg already logs).
+     *
+     * Null when there is nothing honest to add: the leg was never paid
+     * ([parityPaid] false — a red probe or a clip fd that never opened
+     * never fabricates a measurement) or the verdict passed (a green
+     * gate logs no fallback at all). The line is emitted BESIDE the
+     * fallback line, never inside it — the token vocabulary and every
+     * existing line format stay byte-identical (append-only shapes).
+     */
+    fun gateDetailLine(
+        parityPaid: Boolean,
+        parity: GlesParityResult?,
+        errorDetail: String?,
+    ): String? {
+        if (!parityPaid) return null
+        if (parity == null) {
+            return "parity gate: jni failure (${errorDetail ?: "no detail"})"
+        }
+        val v = verdict(parity, errorDetail)
+        if (v.pass) return null
+        if (!parity.ran) {
+            return "parity gate: ${v.status.name} (${v.reason})"
+        }
+        return "parity gate: ${v.status.name} (${v.reason}; " +
+            "ran=${bit(parity.ran)} maxDiffLsb=${parity.maxDiffLsb} " +
+            "mismatch=${parity.mismatchCount} samples=${parity.samples})"
+    }
+
+    /**
      * The Measure log block wrapper (the "ritim-pm" preview-metrics
      * block's shape; PreviewMetricsTest locks that sibling block's exact
      * strings — this one is the GLES leg's own).

@@ -1417,6 +1417,7 @@ class ExportPipeline(
         uncoveredTokens += BackendRules.fragmentUncoveredPreStages(grade)
         var developBackend = EffectiveRenderBackend.CPU
         var developFallback: String? = null
+        var parityGateDetail: String? = null
         if (renderBackend == RenderBackend.GPU_EXPERIMENTAL && uncoveredTokens.isEmpty()) {
             var gates = BackendGates()
             try {
@@ -1426,12 +1427,28 @@ class ExportPipeline(
                     if (probe.contextOk && probe.floatFboOk) {
                         val parityRaw = gpuDevelop.fragmentParity(sourceFd)
                         val parity = if (parityRaw != null) GlesParityResult.fromArray(parityRaw) else null
+                        // The parity verdict's own detail (the parity-fix
+                        // observability): the gate keeps ONLY .pass, so the
+                        // harness's why — the GL step + error for a run that
+                        // refused, the thresholds' numbers for a run that
+                        // failed them — is captured HERE into the companion
+                        // line and logged beside the fallback line. The
+                        // verdict itself is computed EXACTLY as before
+                        // (same call, same inputs): parityOk's semantics
+                        // stay byte-identical, the gates decide nothing new.
+                        val parityDetail = gpuDevelop.lastDetail()
+                        val parityVerdict =
+                            parity?.let { GpuParityRules.verdict(it, parityDetail) }
+                        parityGateDetail = GpuParityRules.gateDetailLine(
+                            parityPaid = true,
+                            parity = parity,
+                            errorDetail = parityDetail,
+                        )
                         gates = BackendGates(
                             contextOk = true,
                             computeOk = probe.computeOk,
                             floatFboOk = true,
-                            parityOk = parity != null &&
-                                GpuParityRules.verdict(parity, gpuDevelop.lastDetail()).pass,
+                            parityOk = parityVerdict?.pass ?: false,
                         )
                     } else {
                         // Parity is skipped when the context/float-FBO gates
@@ -2050,6 +2067,15 @@ class ExportPipeline(
                 // the gate tokens, or the AUTO policy — whichever forced the
                 // CPU develop, never silently.
                 developFallback?.let { stageLog(it) }
+                // The parity gate's companion line (the parity-fix
+                // observability): the verdict's own detail the fallback
+                // line's token vocabulary cannot carry — the GL step +
+                // error for a run that refused, the thresholds' numbers
+                // for a run that failed them, or the seam's own error
+                // when the call returned no array. Null when the parity
+                // leg was never paid or the verdict passed — no fallback
+                // happened, so nothing rides beside nothing.
+                parityGateDetail?.let { stageLog(it) }
                 // The encoder-input mode's own line (commit (c), kept
                 // verbatim for log parsers): surface when the writer's own
                 // EGL took the frames, bytes otherwise. The M5 surface-gpu
