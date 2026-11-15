@@ -43,7 +43,6 @@ import com.ritim.ritimcraw.ui.components.AppSegmentedControl
 import com.ritim.ritimcraw.ui.components.ArrowBack
 import com.ritim.ritimcraw.ui.components.Copy
 import com.ritim.ritimcraw.ui.components.Cpu
-import com.ritim.ritimcraw.ui.components.SettingsGroupCard
 
 /**
  * Device report screen (owner spec 2026-11-14, device_report_screen): the
@@ -63,19 +62,23 @@ import com.ritim.ritimcraw.ui.components.SettingsGroupCard
  *   scrolls as one (spec: "the whole screen scrolls as one, avoid nested
  *   scrolling of the same orientation" — one vertical scroll, no nested
  *   LazyColumn inside the scrolling page).
- * - summary card: the group-card container (20dp shape,
- *   surfaceContainerLow + 1dp outlineVariant border) with 20dp padding,
- *   margin top 8dp; a 56dp tile (16dp shape, primaryContainer) with the
- *   cpu icon at 28dp, then the codec count 32sp SemiBold lineHeight 1.0
- *   letterSpacing -0.02em onSurface and "video codecs on this device"
- *   13sp onSurfaceVariant.
+ * - summary card (v2 polish C1, interim until the C5 pass): a borderless
+ *   tonal container (20dp shape, surfaceContainer) on the surface
+ *   background, 16dp horizontal margin / 8dp top, 20dp inner padding; a
+ *   56dp tile (16dp shape, primaryContainer) with the cpu icon at 28dp,
+ *   then the codec count 32sp SemiBold lineHeight 1.0 letterSpacing
+ *   -0.02em onSurface and "video codecs on this device" 13sp
+ *   onSurfaceVariant.
  * - filter: the same segmented control (All / Decoders / Encoders), local
  *   state, default All.
- * - the grouped list: one group-card container (bottom margin 32dp)
- *   holding a plain Column — group headers ("AVC · Decoders", 12sp
- *   SemiBold ALL CAPS 0.08em onSurfaceVariant on surfaceContainerHighest)
- *   only on group change, then codec items (16dp/12dp padding, 1dp top
- *   divider outlineVariant): the FULL codec name in FontFamily.Monospace
+ * - the grouped list (v2 polish C1, interim until the C5/C6 pass): one
+ *   borderless tonal container (20dp shape, surfaceContainer, bottom
+ *   margin 32dp) holding a plain Column — group headers ("AVC ·
+ *   Decoders", 12sp SemiBold ALL CAPS 0.08em onSurfaceVariant on
+ *   surfaceContainerHighest) only on group change, then codec items
+ *   (16dp/12dp padding, 1dp top divider outlineVariant — the header
+ *   band and dividers are the C6 target, replaced by step 5 of the
+ *   polish pass): the FULL codec name in FontFamily.Monospace
  *   13sp lineHeight 1.35 onSurface, wrapping at any character, never
  *   truncated; under it a FlowRow of pills (gap 6dp, height 22dp,
  *   horizontal padding 8dp, fully rounded, 12sp SemiBold): HW
@@ -178,10 +181,18 @@ fun DeviceReportScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
             ) {
-                // Summary card (spec summary_card): the group-card
-                // container with 20dp padding; the 56dp primaryContainer
-                // tile with the cpu icon, the count and its caption.
-                SettingsGroupCard(modifier = Modifier.padding(top = 8.dp)) {
+                // Summary card (v2 polish C1, interim until the C5/C6
+                // restructure): no border — a tonal surfaceContainer fill
+                // on the surface background, 20dp shape, 16dp horizontal
+                // margin. Same content as v1; the C5 pass restyles tile
+                // size and typography to the polish spec.
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, top = 8.dp, end = 16.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -241,108 +252,116 @@ fun DeviceReportScreen(
                     onSelect = { filterIndex = it },
                     modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp),
                 )
-                // The grouped list (spec list): one group-card container,
-                // bottom margin 32dp. A filter that matches nothing on a
-                // device (real devices always have both kinds) renders no
-                // stray empty card.
+                // The grouped list (v2 polish C1, interim until the C5/C6
+                // restructure): the outlined card is gone — a borderless
+                // tonal container, 20dp shape, 16dp horizontal margin.
+                // The header band and item dividers inside are the C6
+                // target (step 5 of this pass replaces them with plain
+                // text headers and segmented items).
                 if (visibleGroups.isNotEmpty()) {
-                    SettingsGroupCard(
-                        modifier = Modifier.padding(top = 16.dp, bottom = 32.dp)
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 32.dp),
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
                     ) {
-                        visibleGroups.forEach { group ->
-                            // Group header: only on group change — one per
-                            // (codec, kind) group by construction.
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                                    .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 6.dp),
-                            ) {
-                                Text(
-                                    text = DeviceReportGrouping
-                                        .headerText(group, decodersFormat, encodersFormat)
-                                        .uppercase(),
-                                    style = TextStyle(
-                                        fontSize = 12.sp,
-                                        lineHeight = 16.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        letterSpacing = 0.08.em,
-                                    ),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            group.codecs.forEach { report ->
-                                Column(Modifier.fillMaxWidth()) {
-                                    // 1dp top divider (spec: on each item).
-                                    HorizontalDivider(
-                                        color = MaterialTheme.colorScheme.outlineVariant
+                        Column(Modifier.fillMaxWidth()) {
+                            visibleGroups.forEach { group ->
+                                // Group header: only on group change — one per
+                                // (codec, kind) group by construction.
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                                        .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 6.dp),
+                                ) {
+                                    Text(
+                                        text = DeviceReportGrouping
+                                            .headerText(group, decodersFormat, encodersFormat)
+                                            .uppercase(),
+                                        style = TextStyle(
+                                            fontSize = 12.sp,
+                                            lineHeight = 16.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            letterSpacing = 0.08.em,
+                                        ),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
-                                    Column(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 12.dp)
-                                    ) {
-                                        // Line 1: the FULL codec name,
-                                        // monospace, wrapping at any
-                                        // character, never truncated or
-                                        // ellipsized (no maxLines).
-                                        Text(
-                                            text = report.name,
-                                            style = TextStyle(
-                                                fontSize = 13.sp,
-                                                // Spec lineHeight 1.35x:
-                                                // 13 * 1.35 = 17.55 -> 18sp
-                                                // (the project's rounding
-                                                // precedent: 13 * 1.45 -> 19).
-                                                lineHeight = 18.sp,
-                                                fontWeight = FontWeight.Normal,
-                                                fontFamily = FontFamily.Monospace,
-                                            ),
-                                            color = MaterialTheme.colorScheme.onSurface,
+                                }
+                                group.codecs.forEach { report ->
+                                    Column(Modifier.fillMaxWidth()) {
+                                        // 1dp top divider (spec: on each item).
+                                        HorizontalDivider(
+                                            color = MaterialTheme.colorScheme.outlineVariant
                                         )
-                                        // Line 2: the pill flow (spec).
-                                        FlowRow(
-                                            modifier = Modifier.padding(top = 8.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                                        Column(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 12.dp)
                                         ) {
-                                            // HW (highlight) or SW (neutral)
-                                            // from the existing flag.
-                                            CodecPill(
-                                                text = stringResource(
-                                                    if (report.hardware) {
-                                                        R.string.settings_codec_hw
-                                                    } else {
-                                                        R.string.settings_codec_sw
-                                                    }
+                                            // Line 1: the FULL codec name,
+                                            // monospace, wrapping at any
+                                            // character, never truncated or
+                                            // ellipsized (no maxLines).
+                                            Text(
+                                                text = report.name,
+                                                style = TextStyle(
+                                                    fontSize = 13.sp,
+                                                    // Spec lineHeight 1.35x:
+                                                    // 13 * 1.35 = 17.55 -> 18sp
+                                                    // (the project's rounding
+                                                    // precedent: 13 * 1.45 -> 19).
+                                                    lineHeight = 18.sp,
+                                                    fontWeight = FontWeight.Normal,
+                                                    fontFamily = FontFamily.Monospace,
                                                 ),
-                                                highlight = report.hardware,
+                                                color = MaterialTheme.colorScheme.onSurface,
                                             )
-                                            // API pill: Codec2 / OMX from the
-                                            // name prefix, omitted otherwise.
-                                            // The spec names these as literal
-                                            // labels (proper nouns, not in
-                                            // its strings list): file-private
-                                            // constants, not resources.
-                                            when {
-                                                report.name.startsWith("c2.") -> CodecPill(
-                                                    text = Codec2PillLabel,
-                                                    highlight = false,
-                                                )
-                                                report.name.startsWith("OMX.") -> CodecPill(
-                                                    text = OmxPillLabel,
-                                                    highlight = false,
-                                                )
-                                            }
-                                            // Low latency: the ".low_latency"
-                                            // name suffix (spec).
-                                            if (report.name.endsWith(".low_latency")) {
+                                            // Line 2: the pill flow (spec).
+                                            FlowRow(
+                                                modifier = Modifier.padding(top = 8.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                            ) {
+                                                // HW (highlight) or SW (neutral)
+                                                // from the existing flag.
                                                 CodecPill(
                                                     text = stringResource(
-                                                        R.string.settings_device_report_pill_low_latency
+                                                        if (report.hardware) {
+                                                            R.string.settings_codec_hw
+                                                        } else {
+                                                            R.string.settings_codec_sw
+                                                        }
                                                     ),
-                                                    highlight = false,
+                                                    highlight = report.hardware,
                                                 )
+                                                // API pill: Codec2 / OMX from the
+                                                // name prefix, omitted otherwise.
+                                                // The spec names these as literal
+                                                // labels (proper nouns, not in
+                                                // its strings list): file-private
+                                                // constants, not resources.
+                                                when {
+                                                    report.name.startsWith("c2.") -> CodecPill(
+                                                        text = Codec2PillLabel,
+                                                        highlight = false,
+                                                    )
+                                                    report.name.startsWith("OMX.") -> CodecPill(
+                                                        text = OmxPillLabel,
+                                                        highlight = false,
+                                                    )
+                                                }
+                                                // Low latency: the ".low_latency"
+                                                // name suffix (spec).
+                                                if (report.name.endsWith(".low_latency")) {
+                                                    CodecPill(
+                                                        text = stringResource(
+                                                            R.string.settings_device_report_pill_low_latency
+                                                        ),
+                                                        highlight = false,
+                                                    )
+                                                }
                                             }
                                         }
                                     }
