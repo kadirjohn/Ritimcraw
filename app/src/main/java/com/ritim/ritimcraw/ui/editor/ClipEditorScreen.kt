@@ -99,6 +99,7 @@ import com.ritim.ritimcraw.engine.BackendRules
 import com.ritim.ritimcraw.engine.GlesParityResult
 import com.ritim.ritimcraw.engine.GlesProbeResult
 import com.ritim.ritimcraw.engine.GradeMapping
+import com.ritim.ritimcraw.engine.GradeParcel
 import com.ritim.ritimcraw.engine.GpuParityRules
 import com.ritim.ritimcraw.engine.GpuPreviewSession
 import com.ritim.ritimcraw.engine.NativeGpuPreviewDevelop
@@ -2291,60 +2292,38 @@ fun ClipEditorScreen(
                         } else {
                             floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
                         }
+                        // GRADE PARCEL (commit b): the grade crosses as ONE
+                        // flat FloatArray, encoded HERE once per request —
+                        // AFTER the temporalNr tier fold (the DN-08 gate the
+                        // flat call threaded below), so the parcel carries
+                        // the EFFECTIVE value. The bridge decodes it once
+                        // per call; the 29 field arguments died with the
+                        // flat door.
                         val gpuFrame = gpu.render(
                             clipHandle = s.nativeClipHandle,
                             frameIndex = req.frameIndex,
                             maxDim = req.maxDim,
-                            chromaDenoise = req.grade.chromaDenoise,
-                            noiseReduction = req.grade.noiseReduction,
-                            // The temporal pair rides the hybrid's routing
-                            // verbatim: the bridge's own temporalMergedCfa
-                            // consumes them to produce the CFA this render
-                            // uploads — BEFORE the CFA reduction, so the
-                            // reduced mosaic samples the MERGED CFA (the
-                            // SAME merge the CPU preview rides, the same
-                            // per-Entry caches). The DN-08 fold is the
-                            // CPU preview's own gate, mirrored here: the
-                            // merge is tier-INDEPENDENT (~85-107 ms at
-                            // full res), so playback and drag renders skip
-                            // it and the settle render lands the effect —
-                            // the RenderTrace's tnr= verdict computes this
-                            // same fold, so the trace stays honest.
-                            temporalNr = req.grade.temporalNr &&
-                                PreviewTiers.temporalNrAppliesAt(
-                                    req.maxDim, req.renderClass,
+                            gradeParcel = GradeParcel.encode(
+                                req.grade.copy(
+                                    // The temporal pair rides the hybrid's routing
+                                    // verbatim: the bridge's own temporalMergedCfa
+                                    // consumes them to produce the CFA this render
+                                    // uploads — BEFORE the CFA reduction, so the
+                                    // reduced mosaic samples the MERGED CFA (the
+                                    // SAME merge the CPU preview rides, the same
+                                    // per-Entry caches). The DN-08 fold is the
+                                    // CPU preview's own gate, mirrored here: the
+                                    // merge is tier-INDEPENDENT (~85-107 ms at
+                                    // full res), so playback and drag renders skip
+                                    // it and the settle render lands the effect —
+                                    // the RenderTrace's tnr= verdict computes this
+                                    // same fold, so the trace stays honest.
+                                    temporalNr = req.grade.temporalNr &&
+                                        PreviewTiers.temporalNrAppliesAt(
+                                            req.maxDim, req.renderClass,
+                                        ),
                                 ),
-                            temporalStrength = req.grade.temporalStrength,
-                            // Stages 21/22 (commit b): the unsharp pair's raw
-                            // percents ride the render seam exactly like the
-                            // CPU preview — verbatim, NO clamp, because the
-                            // CPU's own amount mapping makes negative values
-                            // valid (softening).
-                            sharpness = req.grade.sharpness,
-                            detail = req.grade.detail,
-                            exposureEv = req.grade.exposureEv,
-                            highlights = req.grade.highlights,
-                            blackPoint = req.grade.blackPoint,
-                            whitePoint = req.grade.whitePoint,
-                            shadows = req.grade.shadows,
-                            midtones = req.grade.midtones,
-                            contrast = req.grade.contrast,
-                            tempK = req.grade.tempK,
-                            tint = req.grade.tint,
-                            saturation = req.grade.saturation,
-                            asShot = req.grade.asShot,
-                            wheelShadowX = req.grade.wheelShadowX,
-                            wheelShadowY = req.grade.wheelShadowY,
-                            wheelMidX = req.grade.wheelMidX,
-                            wheelMidY = req.grade.wheelMidY,
-                            wheelHighX = req.grade.wheelHighX,
-                            wheelHighY = req.grade.wheelHighY,
-                            splitShadowHue = req.grade.splitShadowHue,
-                            splitHighlightHue = req.grade.splitHighlightHue,
-                            splitBalance = req.grade.splitBalance,
-                            highlightReconstruction = req.grade.highlightReconstruction,
-                            keepVignetting = req.grade.keepVignetting,
-                            tonemap = req.grade.tonemap,
+                            ),
                             // Stage 24 (commit b): the LUT thread rides the
                             // render seam exactly like the CPU preview — the
                             // resolved path, the [0,1] strength, and the

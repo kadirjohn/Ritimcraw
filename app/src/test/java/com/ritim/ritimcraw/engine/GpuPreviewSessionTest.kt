@@ -19,7 +19,10 @@ import org.junit.Test
  * (null folds to warpActive=false + identity M at the caller, never a
  * fabricated warp; false skips the draw entirely, the identity no-draw
  * rule) — locked verbatim in the render test below, same shape as the
- * pointwise and LUT pass-through locks.
+ * pointwise and LUT pass-through locks. Since the GRADE PARCEL (commit b)
+ * the grade crosses the render door as ONE flat FloatArray — the fake
+ * decodes it with the REAL decoder (GradeParcel.decode), so the
+ * pass-through locks assert the SAME wire format the bridge reads.
  *
  * HONESTY: the real boundary (NativeGpuPreviewDevelop) and the GL session
  * behind it are Android-only — the JVM suite locks the wrapper's contract
@@ -167,40 +170,21 @@ class GpuPreviewSessionTest {
             return setSurfaceResult
         }
 
+        /**
+         * GRADE PARCEL (commit a + b): the preview render door — the ONLY
+         * render entry since the flat 42-parameter door died with commit
+         * (b). Decodes the parcel via GradeParcel.decode (the REAL decoder,
+         * so the fake asserts the SAME wire format the bridge reads — the
+         * decode-refusal contract is exercised by GradeParcelTest) and
+         * records the same snapshots the flat recorder once did, field
+         * for field.
+         */
         override suspend fun renderFrame(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
             maxDim: Int,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -211,17 +195,18 @@ class GpuPreviewSessionTest {
             warpActive: Boolean,
             warpM: FloatArray,
         ): PreviewFrame? {
+            val g = GradeParcel.decode(gradeParcel)
             rendered += sessionHandle
-            renderedHighlights += highlights
-            renderedNr += NrCall(chromaDenoise, noiseReduction)
-            renderedTemporal += TemporalCall(temporalNr, temporalStrength)
-            renderedSharpnessDetail += SharpnessDetailCall(sharpness, detail)
+            renderedHighlights += g.highlights
+            renderedNr += NrCall(g.chromaDenoise, g.noiseReduction)
+            renderedTemporal += TemporalCall(g.temporalNr, g.temporalStrength)
+            renderedSharpnessDetail += SharpnessDetailCall(g.sharpness, g.detail)
             renderedPointwise += PointwiseCall(
-                blackPoint, whitePoint, shadows, midtones, contrast,
-                tempK, tint, saturation, asShot,
-                wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-                wheelHighX, wheelHighY,
-                splitShadowHue, splitHighlightHue, splitBalance,
+                g.blackPoint, g.whitePoint, g.shadows, g.midtones, g.contrast,
+                g.tempK, g.tint, g.saturation, g.asShot,
+                g.wheelShadowX, g.wheelShadowY, g.wheelMidX, g.wheelMidY,
+                g.wheelHighX, g.wheelHighY,
+                g.splitShadowHue, g.splitHighlightHue, g.splitBalance,
             )
             renderedLut += LutCall(
                 lutPath, lutStrength, lutRole,
@@ -310,8 +295,12 @@ class GpuPreviewSessionTest {
         val develop = FakeDevelop(openResult = 7L, renderResult = frame)
         val session = GpuPreviewSession(develop)
         assertTrue(session.open())
-        val out = session.render(
-            clipHandle = 11L, frameIndex = 5, maxDim = 1280,
+        // GRADE PARCEL (commit b): the grade crosses as ONE FloatArray —
+        // GradeParcel.encode of a GradeK carrying the SAME distinctive
+        // values the flat call once passed field by field, so the
+        // pass-through locks below still name every field through the
+        // REAL decoder (the fake decodes the parcel, not the flat args).
+        val grade = com.ritim.ritimcraw.data.GradeK(
             chromaDenoise = 25f, noiseReduction = 40f,
             temporalNr = false, temporalStrength = 0f,
             sharpness = 35f, detail = -15f,
@@ -325,6 +314,10 @@ class GpuPreviewSessionTest {
             wheelMidX = 0.5f, wheelMidY = -0.5f,
             wheelHighX = 0.75f, wheelHighY = -0.75f,
             splitShadowHue = 30f, splitHighlightHue = 210f, splitBalance = -25f,
+        )
+        val out = session.render(
+            clipHandle = 11L, frameIndex = 5, maxDim = 1280,
+            gradeParcel = GradeParcel.encode(grade),
             lutPath = "/data/luts/milog.cube", lutStrength = 0.85f,
             lutRole = 3, lutInGamut = 8, lutInTransfer = 12,
             lutOutGamut = 0, lutOutTransfer = 1,
@@ -425,19 +418,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
-                chromaDenoise = 0f, noiseReduction = 0f,
-                temporalNr = false, temporalStrength = 0f,
-                sharpness = 0f, detail = 0f,
-                exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
-                keepVignetting = true, tonemap = 0,
-                blackPoint = 0f, whitePoint = 0f,
-                shadows = 0f, midtones = 0f, contrast = 0f,
-                tempK = 5600f, tint = 0f, saturation = 0f,
-                asShot = true,
-                wheelShadowX = 0f, wheelShadowY = 0f,
-                wheelMidX = 0f, wheelMidY = 0f,
-                wheelHighX = 0f, wheelHighY = 0f,
-                splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
+                gradeParcel = GradeParcel.encode(com.ritim.ritimcraw.data.GradeK()),
                 lutPath = null, lutStrength = 0f,
                 lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
                 lutOutGamut = -1, lutOutTransfer = -1,
@@ -457,19 +438,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
-                chromaDenoise = 0f, noiseReduction = 0f,
-                temporalNr = false, temporalStrength = 0f,
-                sharpness = 0f, detail = 0f,
-                exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
-                keepVignetting = true, tonemap = 0,
-                blackPoint = 0f, whitePoint = 0f,
-                shadows = 0f, midtones = 0f, contrast = 0f,
-                tempK = 5600f, tint = 0f, saturation = 0f,
-                asShot = true,
-                wheelShadowX = 0f, wheelShadowY = 0f,
-                wheelMidX = 0f, wheelMidY = 0f,
-                wheelHighX = 0f, wheelHighY = 0f,
-                splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
+                gradeParcel = GradeParcel.encode(com.ritim.ritimcraw.data.GradeK()),
                 lutPath = null, lutStrength = 0f,
                 lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
                 lutOutGamut = -1, lutOutTransfer = -1,
@@ -511,19 +480,7 @@ class GpuPreviewSessionTest {
         assertNull(
             session.render(
                 clipHandle = 11L, frameIndex = 0, maxDim = 1280,
-                chromaDenoise = 0f, noiseReduction = 0f,
-                temporalNr = false, temporalStrength = 0f,
-                sharpness = 0f, detail = 0f,
-                exposureEv = 0f, highlights = 0f, highlightReconstruction = true,
-                keepVignetting = true, tonemap = 0,
-                blackPoint = 0f, whitePoint = 0f,
-                shadows = 0f, midtones = 0f, contrast = 0f,
-                tempK = 5600f, tint = 0f, saturation = 0f,
-                asShot = true,
-                wheelShadowX = 0f, wheelShadowY = 0f,
-                wheelMidX = 0f, wheelMidY = 0f,
-                wheelHighX = 0f, wheelHighY = 0f,
-                splitShadowHue = -1f, splitHighlightHue = -1f, splitBalance = 0f,
+                gradeParcel = GradeParcel.encode(com.ritim.ritimcraw.data.GradeK()),
                 lutPath = null, lutStrength = 0f,
                 lutRole = -1, lutInGamut = -1, lutInTransfer = -1,
                 lutOutGamut = -1, lutOutTransfer = -1,
@@ -556,35 +513,7 @@ class GpuPreviewSessionTest {
                 clipHandle: Long,
                 frameIndex: Int,
                 maxDim: Int,
-                chromaDenoise: Float,
-                noiseReduction: Float,
-                temporalNr: Boolean,
-                temporalStrength: Float,
-                sharpness: Float,
-                detail: Float,
-                exposureEv: Float,
-                highlights: Float,
-                blackPoint: Float,
-                whitePoint: Float,
-                shadows: Float,
-                midtones: Float,
-                contrast: Float,
-                tempK: Float,
-                tint: Float,
-                saturation: Float,
-                asShot: Boolean,
-                wheelShadowX: Float,
-                wheelShadowY: Float,
-                wheelMidX: Float,
-                wheelMidY: Float,
-                wheelHighX: Float,
-                wheelHighY: Float,
-                splitShadowHue: Float,
-                splitHighlightHue: Float,
-                splitBalance: Float,
-                highlightReconstruction: Boolean,
-                keepVignetting: Boolean,
-                tonemap: Int,
+                gradeParcel: FloatArray,
                 lutPath: String?,
                 lutStrength: Float,
                 lutRole: Int,

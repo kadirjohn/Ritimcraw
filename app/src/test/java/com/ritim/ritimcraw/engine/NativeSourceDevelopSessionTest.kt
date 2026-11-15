@@ -17,45 +17,33 @@ import org.junit.Test
  *      the standard recovery message, never UnsatisfiedLinkError leaking
  *      out of the seam. This is the same contract jniGlesFragmentParity
  *      rides and the same one the commit-b dispatcher will catch;
- *   2. the render signatures carry the fragment-covered grade controls —
- *      the five base ones (exposure, highlights, highlight
- *      reconstruction, vignetting, tonemap) plus the two spatial-NR
- *      stages' raw values since the spatial-NR port (chroma denoise,
- *      noise reduction — stages 7/8, the multi-pass fragment chain) plus
- *      the temporal pair since the temporal-hybrid routing (temporalNr,
- *      temporalStrength — the SAME raw values the CPU export's temporal
- *      merge receives; the pair dies at the bridge, consumed by the
- *      bridge's own temporalMergedCfa to produce the CFA the request
- *      uploads — routing, not porting; the merge math stays
- *      core/Temporal.cpp's, frozen, and the session request itself never
- *      sees the pair) plus
- *      the two unsharp stages' raw values since the sharpness/detail
- *      port (sharpness, detail — stages 21/22, the four-pass unsharp
- *      chain, threaded with NO clamp because the CPU's amount mapping
- *      makes negative values valid softening) plus the ten pointwise
- *      stages' raw values since the pointwise port
- *      (black point, white point, shadows, midtones, contrast,
- *      temperature, tint, saturation, the color wheel, split tone, with
- *      asShot as the 16/17 gate's input) plus — since the stage-24 GPU
- *      port — the seven LUT controls (the resolved .cube path, the [0,1]
- *      strength, and the five interpretation ordinals, -1 = legacy)
- *      beside the plumbing values plus — since the gyro warp port — the
- *      warp pair (the active flag and the nine-float composite
- *      inverse-sampling map; false skips the draw entirely, the identity
- *      no-draw rule).
- *      That narrow signature is the second lock against uncovered grades
- *      (the Kotlin coverage gate is the first): a stage the render path
- *      does not cover — a tone-band knob — cannot
- *      even be expressed into the session, so widening this signature
- *      must be a deliberate act that edits this test too;
+ *   2. the render signatures carry the grade as ONE flat parcel —
+ *      GRADE PARCEL (commit b): the 29 fragment-covered scalar grade
+ *      fields (the five base ones plus the spatial-NR pair, the temporal
+ *      pair, the unsharp pair, the ten pointwise stages' values, the
+ *      color wheel, the split-tone values) cross as one FloatArray whose
+ *      layout is GENERATED from tools/gen-grade-parcel.py's schema on
+ *      BOTH sides of the seam (GradeParcelTest cross-checks the committed
+ *      C++ header against the Kotlin offsets — the stale-mirror catch).
+ *      The temporal pair rides the parcel like every other scalar and
+ *      dies at the bridge, consumed by the bridge's own temporalMergedCfa
+ *      BEFORE the CFA reduction, so the reduced mosaic samples the MERGED
+ *      CFA — routing, not porting; the merge math stays core/Temporal.cpp's,
+ *      frozen, and the session request itself never sees the pair. The
+ *      parcel shape is the second lock against uncovered grades (the
+ *      Kotlin coverage gate is the first): a grade field the render path
+ *      does not cover cannot be expressed into the session without a
+ *      schema row + a regenerate, so widening it must be a deliberate act
+ *      that edits the schema and this test too;
  *   3. the encoder-surface pair's shapes: open carries the fifteen
  *      shader sources (the four the parity harness rides, the M5 blit
  *      source, the SPLIT three-way develop pair plus the four unsharp
  *      fragments plus the three NR fragments, and — since the gyro warp
- *      port — the warp fragment), and renderFrameToEncoder adds ptsUs (the
- *      encoder Surface's presentation time) and rotationDeg (the frame's
- *      effective orientation — the blit's uRotation fold) to the
- *      readback render's forty-one.
+ *      port — the warp fragment), and the encoder parcel door adds
+ *      ptsUs (the encoder Surface's presentation time) and rotationDeg
+ *      (the frame's effective orientation — the blit's uRotation fold)
+ *      to the readback parcel's thirteen — the flat forty-one and
+ *      forty-three parameter doors died with commit (b).
  *
  * The math the session runs is the math the parity harness already proved
  * on device; the production render itself is device-test-pending (the
@@ -93,59 +81,6 @@ class NativeSourceDevelopSessionTest {
     }
 
     @Test
-    fun render_frame_throws_the_unavailable_message_without_the_native_lib() {
-        if (NativeSource.nativeAvailable) return
-        try {
-            NativeSource.jniDevelopSessionRenderFrame(
-                sessionHandle = 1L,
-                clipHandle = 1L,
-                frameIndex = 0,
-                chromaDenoise = 0.0f,
-                noiseReduction = 0.0f,
-                temporalNr = false,
-                temporalStrength = 0.0f,
-                sharpness = 0.0f,
-                detail = 0.0f,
-                exposureEv = 0.0f,
-                highlights = 0.0f,
-                blackPoint = 0.0f,
-                whitePoint = 0.0f,
-                shadows = 0.0f,
-                midtones = 0.0f,
-                contrast = 0.0f,
-                tempK = 5600.0f,
-                tint = 0.0f,
-                saturation = 0.0f,
-                asShot = true,
-                wheelShadowX = 0.0f,
-                wheelShadowY = 0.0f,
-                wheelMidX = 0.0f,
-                wheelMidY = 0.0f,
-                wheelHighX = 0.0f,
-                wheelHighY = 0.0f,
-                splitShadowHue = -1.0f,
-                splitHighlightHue = -1.0f,
-                splitBalance = 0.0f,
-                highlightReconstruction = true,
-                keepVignetting = true,
-                tonemap = 0,
-                lutPath = null,
-                lutStrength = 0.0f,
-                lutRole = -1,
-                lutInGamut = -1,
-                lutInTransfer = -1,
-                lutOutGamut = -1,
-                lutOutTransfer = -1,
-                warpActive = false,
-                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
-            )
-            throw AssertionError("expected IllegalStateException")
-        } catch (expected: IllegalStateException) {
-            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
-        }
-    }
-
-    @Test
     fun close_throws_the_unavailable_message_without_the_native_lib() {
         if (NativeSource.nativeAvailable) return
         try {
@@ -168,43 +103,51 @@ class NativeSourceDevelopSessionTest {
     }
 
     @Test
-    fun render_frame_to_encoder_throws_the_unavailable_message_without_the_native_lib() {
+    fun render_frame_parcel_throws_the_unavailable_message_without_the_native_lib() {
+        // GRADE PARCEL (commit a + b): the readback render door's guard —
+        // the ONLY readback wrapper since the flat door died. The wrapper
+        // throws BEFORE the parcel is ever read, so the dummy parcel is an
+        // all-zero FloatArray(SLOT_COUNT) — the guard fires on
+        // nativeAvailable alone. The export dispatch folds Throwable to
+        // its refusal path, so the guard is what stands between a no-.so
+        // build and an UnsatisfiedLinkError mid-export.
         if (NativeSource.nativeAvailable) return
         try {
-            NativeSource.jniDevelopSessionRenderFrameToEncoder(
+            NativeSource.jniDevelopSessionRenderFrameParcel(
+                sessionHandle = 1L,
+                clipHandle = 1L,
+                frameIndex = 0,
+                gradeParcel = FloatArray(GradeParcel.SLOT_COUNT),
+                lutPath = null,
+                lutStrength = 0.0f,
+                lutRole = -1,
+                lutInGamut = -1,
+                lutInTransfer = -1,
+                lutOutGamut = -1,
+                lutOutTransfer = -1,
+                warpActive = false,
+                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+            )
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
+    @Test
+    fun render_frame_to_encoder_parcel_throws_the_unavailable_message_without_the_native_lib() {
+        // GRADE PARCEL (commit a + b): the encoder render door's guard —
+        // the ONLY encoder wrapper since the flat door died. Same shape
+        // as the readback twin's guard plus ptsUs and rotationDeg, the
+        // two plumbing values the encoder blit adds.
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniDevelopSessionRenderFrameToEncoderParcel(
                 sessionHandle = 1L,
                 clipHandle = 1L,
                 frameIndex = 0,
                 ptsUs = 0L,
-                chromaDenoise = 0.0f,
-                noiseReduction = 0.0f,
-                temporalNr = false,
-                temporalStrength = 0.0f,
-                sharpness = 0.0f,
-                detail = 0.0f,
-                exposureEv = 0.0f,
-                highlights = 0.0f,
-                blackPoint = 0.0f,
-                whitePoint = 0.0f,
-                shadows = 0.0f,
-                midtones = 0.0f,
-                contrast = 0.0f,
-                tempK = 5600.0f,
-                tint = 0.0f,
-                saturation = 0.0f,
-                asShot = true,
-                wheelShadowX = 0.0f,
-                wheelShadowY = 0.0f,
-                wheelMidX = 0.0f,
-                wheelMidY = 0.0f,
-                wheelHighX = 0.0f,
-                wheelHighY = 0.0f,
-                splitShadowHue = -1.0f,
-                splitHighlightHue = -1.0f,
-                splitBalance = 0.0f,
-                highlightReconstruction = true,
-                keepVignetting = true,
-                tonemap = 0,
+                gradeParcel = FloatArray(GradeParcel.SLOT_COUNT),
                 lutPath = null,
                 lutStrength = 0.0f,
                 lutRole = -1,
@@ -271,12 +214,16 @@ class NativeSourceDevelopSessionTest {
 
     private fun method(name: String): java.lang.reflect.Method {
         // Internal members are public in JVM bytecode but MANGLED with a
-        // build-variant suffix (e.g. jniDevelopSessionRenderFrame$app_debug),
-        // so match the plain name plus the mangling separator — that also
-        // disambiguates the M5 pair, where the readback render's name is a
-        // strict prefix of jniDevelopSessionRenderFrameToEncoder's: only
-        // "jniDevelopSessionRenderFrame$" matches the readback, only
-        // "jniDevelopSessionRenderFrameToEncoder$" the encoder blit.
+        // build-variant suffix (e.g.
+        // jniDevelopSessionRenderFrameParcel$app_debug), so match the plain
+        // name plus the mangling separator — that also disambiguates the
+        // pair, where the readback render's name is NOT a strict prefix of
+        // the encoder's but the convention still guards a future bare-name
+        // collision: "jniDevelopSessionRenderFrameParcel$" matches only the
+        // readback, "jniDevelopSessionRenderFrameToEncoderParcel$" only the
+        // encoder blit. The GRADE PARCEL twins (commit a) once sat beside
+        // the flat wrappers, and a bare-name prefix would have matched BOTH
+        // — the "exactly one" assertion would have seen two.
         val methods = NativeSource.Companion::class.java.declaredMethods
         val matches = methods.filter { it.name.startsWith(name + "$") }
         assertEquals("exactly one $name wrapper", 1, matches.size)
@@ -284,69 +231,36 @@ class NativeSourceDevelopSessionTest {
     }
 
     @Test
-    fun render_carries_exactly_the_fragment_covered_controls() {
-        // 41 parameters: sessionHandle, clipHandle, frameIndex (the three
-        // plumbing values) + chromaDenoise, noiseReduction (the two
-        // spatial-NR stages' raw values since the spatial-NR port — stages
-        // 7/8, the multi-pass fragment chain behind uChromaDenoise/
-        // uNoiseReduction) + temporalNr, temporalStrength (the temporal
-        // pair since the temporal-hybrid routing — the SAME raw values
-        // the CPU export's temporal merge receives; the pair dies at the
-        // bridge, consumed by the bridge's own temporalMergedCfa to
-        // produce the CFA the request uploads — routing, not porting; the
-        // merge math stays core/Temporal.cpp's, frozen, and the session
-        // request itself never sees the pair) + sharpness, detail (the two
-        // unsharp stages'
-        // raw values since the sharpness/detail port — stages 21/22, the
-        // four-pass unsharp chain behind uSharpness/uDetail, threaded
-        // VERBATIM with no clamp because the CPU's amount mapping makes
-        // negative values valid softening) + exposureEv, highlights,
-        // highlightReconstruction, keepVignetting, tonemap (the five base
-        // fragment-covered grade knobs) + the ten pointwise stages' raw
-        // values since the pointwise port (blackPoint, whitePoint,
-        // shadows, midtones, contrast, tempK, tint, saturation, the six
-        // color-wheel offsets, the three split-tone values, with asShot as
-        // the 16/17 gate's input) + the seven LUT controls since the
-        // stage-24 GPU port (lutPath, lutStrength and the five
-        // interpretation ordinals — the SAME layout the CPU seam's develop
-        // call threads, -1 = legacy) + warpActive and warpM since the gyro
-        // warp port (the per-frame verdict the resolver produced at the
-        // caller — the Boolean locks the draw, the nine floats lock the
-        // composite inverse-sampling map; false skips draw 10 entirely,
-        // the identity no-draw rule). Tone-band controls
-        // remain deliberately absent — that stage is NOT
-        // fragment-covered, so a grade using it must take the CPU
-        // path wholesale; adding such a parameter here widens the session's
-        // promise and must fail this test until the coverage gate is
-        // taught the new stage.
-        val render = method("jniDevelopSessionRenderFrame")
-        assertEquals(41, render.parameterCount)
+    fun render_parcel_carries_exactly_the_parcel_shape() {
+        // GRADE PARCEL (commit a + b): the readback render door's signature
+        // lock — 13 parameters: sessionHandle, clipHandle, frameIndex (the
+        // three plumbing values) + gradeParcel (the ONE flat FloatArray
+        // carrying all 29 scalar grade fields — the layout is GENERATED
+        // from tools/gen-grade-parcel.py's schema, the single source of
+        // truth for both sides of the seam; GradeParcelTest cross-checks
+        // the committed C++ header's constexpr slots against the Kotlin
+        // offsets) + the seven LUT controls (lutPath, lutStrength, the
+        // five ordinals — per-job, documented OUT of the parcel) +
+        // warpActive, warpM (the caller-resolved per-frame verdict). The
+        // temporal pair rides the parcel; the bridge consumes it at
+        // temporalMergedCfa. Commit (b): the flat 41-parameter door died
+        // with its wrapper — the parcel is the ONLY readback door, so
+        // this lock is re-counted DOWN from the flat 41.
+        val render = method("jniDevelopSessionRenderFrameParcel")
+        assertEquals(13, render.parameterCount)
     }
 
     @Test
-    fun render_to_encoder_adds_only_the_presentation_time() {
-        // 43 parameters: the readback render's forty-one (sessionHandle,
-        // clipHandle, frameIndex + the two spatial-NR stages' raw values +
-        // the temporal pair + the two unsharp stages' raw values + the
-        // fragment-covered grade controls + the seven LUT controls + the
-        // warp pair)
-        // plus ptsUs (the encoder Surface's presentation time, which the
-        // readback path never needs — the CPU path carries pts on
-        // writeVideoFrameRgb) plus rotationDeg (the surface-gpu vertical
-        // deliverable: the frame's effective orientation, applied by the
-        // blit's uRotation fold — 0/90/180/270, no default value so this
-        // reflection lock sees exactly one wrapper; the warp pair sits
-        // BEFORE it, keeping rotationDeg the tail parameter — the LUT
-        // precedent). The blit reuses the SAME develop program family (the
-        // NR multi-pass chain, the four-pass unsharp chain, the LUT
-        // 3D-texture sampler, and the warp pass included), so the grade
-        // controls are the same covered set — the temporal pair rides the
-        // SAME bridge merge the readback rides (the encoder's CFA comes
-        // from the same temporalMergedCfa); a FORTY-FOURTH
-        // parameter would widen the encoder blit's promise beyond the
-        // covered-grade contract and must fail here.
-        val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoder")
-        assertEquals(43, renderToEncoder.parameterCount)
+    fun render_to_encoder_parcel_carries_exactly_the_parcel_shape() {
+        // GRADE PARCEL (commit a + b): the encoder render door's signature
+        // lock — 15 parameters: the readback parcel door's thirteen plus
+        // ptsUs (the encoder presentation time) and rotationDeg (the
+        // blit's uRotation fold input, the tail parameter — the flat
+        // precedent). Commit (b): the flat 43-parameter door died with
+        // its wrapper — the parcel is the ONLY encoder door, so this
+        // lock is re-counted DOWN from the flat 43.
+        val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoderParcel")
+        assertEquals(15, renderToEncoder.parameterCount)
     }
 
     @Test

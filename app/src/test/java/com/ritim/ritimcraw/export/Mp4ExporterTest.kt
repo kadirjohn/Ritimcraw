@@ -7,6 +7,7 @@ import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.LutRole
 import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.engine.GradeParcel
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
 import kotlinx.coroutines.runBlocking
@@ -2186,12 +2187,13 @@ class Mp4ExporterTest {
         private val detail: String? = null,
         // M5: the session encoder path's knobs. refuseEncoderSurface makes
         // setEncoderSurface return false (the session-refused adopt case);
-        // failEncoderRenderFrom makes renderFrameToEncoder return false from
-        // that frame on (the mid-stream refusal case) — and, mirroring the
-        // native latch (an Encoder-job failure latches the session
-        // unhealthy, so the READBACK dies with it), the readback
-        // renderFrame refuses from that frame on too. Defaults keep every
-        // pre-M5 test's behavior untouched (the interface defaults served).
+        // failEncoderRenderFrom makes renderFrameToEncoderParcel return
+        // false from that frame on (the mid-stream refusal case) — and,
+        // mirroring the native latch (an Encoder-job failure latches the
+        // session unhealthy, so the READBACK dies with it), the readback
+        // renderFrameParcel refuses from that frame on too. Defaults keep
+        // every pre-M5 test's behavior untouched (the interface defaults
+        // served).
         private val refuseEncoderSurface: Boolean = false,
         private val failEncoderRenderFrom: Int = -1,
         private val encoderDetail: String? = null,
@@ -2310,39 +2312,20 @@ class Mp4ExporterTest {
             return openHandle
         }
 
-        override fun renderFrame(
+        /**
+         * GRADE PARCEL (commit a + b): the readback render door — the ONLY
+         * readback entry since the flat 41-parameter door died with commit
+         * (b). Decodes the parcel via GradeParcel.decode (the REAL decoder,
+         * so the fake asserts the SAME wire format the bridge reads — the
+         * decode-refusal contract is exercised by GradeParcelTest) and
+         * records the same snapshots the flat recorder once did, field
+         * for field.
+         */
+        override fun renderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -2353,6 +2336,7 @@ class Mp4ExporterTest {
             warpActive: Boolean,
             warpM: FloatArray,
         ): ByteArray? {
+            val g = GradeParcel.decode(gradeParcel)
             if (failRenderFrom >= 0 && frameIndex >= failRenderFrom) return null
             // The native latch mirror: an encoder-render failure latched
             // the session unhealthy, so the readback refuses too.
@@ -2360,20 +2344,20 @@ class Mp4ExporterTest {
             rendered.add(frameIndex)
             lastSessionHandle = sessionHandle
             lastClipHandle = clipHandle
-            lastExposureEv = exposureEv
-            lastHighlights = highlights
-            lastHighlightReconstruction = highlightReconstruction
-            lastKeepVignetting = keepVignetting
-            lastTonemap = tonemap
-            lastNr = NrControls(chromaDenoise, noiseReduction)
-            lastTemporal = TemporalControls(temporalNr, temporalStrength)
-            lastSharpnessDetail = SharpnessDetailControls(sharpness, detail)
+            lastExposureEv = g.exposureEv
+            lastHighlights = g.highlights
+            lastHighlightReconstruction = g.highlightReconstruction
+            lastKeepVignetting = g.keepVignetting
+            lastTonemap = g.tonemap
+            lastNr = NrControls(g.chromaDenoise, g.noiseReduction)
+            lastTemporal = TemporalControls(g.temporalNr, g.temporalStrength)
+            lastSharpnessDetail = SharpnessDetailControls(g.sharpness, g.detail)
             lastPointwise = PointwiseControls(
-                blackPoint, whitePoint, shadows, midtones, contrast,
-                tempK, tint, saturation, asShot,
-                wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-                wheelHighX, wheelHighY,
-                splitShadowHue, splitHighlightHue, splitBalance,
+                g.blackPoint, g.whitePoint, g.shadows, g.midtones, g.contrast,
+                g.tempK, g.tint, g.saturation, g.asShot,
+                g.wheelShadowX, g.wheelShadowY, g.wheelMidX, g.wheelMidY,
+                g.wheelHighX, g.wheelHighY,
+                g.splitShadowHue, g.splitHighlightHue, g.splitBalance,
             )
             lastLut = LutControls(
                 lutPath, lutStrength, lutRole,
@@ -2389,40 +2373,18 @@ class Mp4ExporterTest {
             return true
         }
 
-        override fun renderFrameToEncoder(
+        /**
+         * GRADE PARCEL (commit a + b): the encoder render door — the ONLY
+         * encoder entry since the flat 43-parameter door died with commit
+         * (b). Same decode-and-record shape as the readback door plus the
+         * two plumbing values the encoder blit adds (ptsUs, rotationDeg).
+         */
+        override fun renderFrameToEncoderParcel(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
             ptsUs: Long,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -2434,6 +2396,7 @@ class Mp4ExporterTest {
             warpM: FloatArray,
             rotationDeg: Int,
         ): Boolean {
+            val g = GradeParcel.decode(gradeParcel)
             if (failEncoderRenderFrom >= 0 && frameIndex >= failEncoderRenderFrom) {
                 return false
             }
@@ -2441,15 +2404,15 @@ class Mp4ExporterTest {
             lastEncoderPtsUs = ptsUs
             lastEncoderSessionHandle = sessionHandle
             lastEncoderRotationDeg = rotationDeg
-            lastEncoderNr = NrControls(chromaDenoise, noiseReduction)
-            lastEncoderTemporal = TemporalControls(temporalNr, temporalStrength)
-            lastEncoderSharpnessDetail = SharpnessDetailControls(sharpness, detail)
+            lastEncoderNr = NrControls(g.chromaDenoise, g.noiseReduction)
+            lastEncoderTemporal = TemporalControls(g.temporalNr, g.temporalStrength)
+            lastEncoderSharpnessDetail = SharpnessDetailControls(g.sharpness, g.detail)
             lastEncoderPointwise = PointwiseControls(
-                blackPoint, whitePoint, shadows, midtones, contrast,
-                tempK, tint, saturation, asShot,
-                wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-                wheelHighX, wheelHighY,
-                splitShadowHue, splitHighlightHue, splitBalance,
+                g.blackPoint, g.whitePoint, g.shadows, g.midtones, g.contrast,
+                g.tempK, g.tint, g.saturation, g.asShot,
+                g.wheelShadowX, g.wheelShadowY, g.wheelMidX, g.wheelMidY,
+                g.wheelHighX, g.wheelHighY,
+                g.splitShadowHue, g.splitHighlightHue, g.splitBalance,
             )
             lastEncoderLut = LutControls(
                 lutPath, lutStrength, lutRole,
@@ -2916,7 +2879,7 @@ class Mp4ExporterTest {
     fun gyro_warp_active_verdict_threads_verbatim_into_the_readback_render() {
         // The ACTIVE case's pass-through lock, readback leg: the resolver's
         // verdict (active + a non-identity M) threads VERBATIM into the
-        // readback renderFrame — the dispatcher never rewrites, clamps, or
+        // readback renderFrameParcel — the dispatcher never rewrites, clamps, or
         // fabricates the map the resolver produced. The encoder blit's leg
         // is the session_encoder_warp test below.
         val m = floatArrayOf(
@@ -2967,8 +2930,8 @@ class Mp4ExporterTest {
     fun session_encoder_warp_threads_the_verdict_into_the_blit() {
         // The warp pair's ENCODER leg: the session-owns-EGL path (the M5
         // fast path — the session develops AND blits straight to the codec
-        // input surface, the readback renderFrame NEVER runs) threads the
-        // SAME per-frame verdict into renderFrameToEncoder, verbatim,
+        // input surface, the readback renderFrameParcel NEVER runs) threads the
+        // SAME per-frame verdict into renderFrameToEncoderParcel, verbatim,
         // before rotationDeg (the LUT precedent keeps rotationDeg the
         // tail parameter). The bytes-writer tests above own the readback
         // leg; this one owns the blit.
@@ -3002,7 +2965,7 @@ class Mp4ExporterTest {
         assertEquals(listOf(0, 1), gpu.warpResolved)
         // The blit ran per frame; the readback never did.
         assertEquals(listOf(0, 1), gpu.encoderRendered)
-        assertTrue("the readback renderFrame must never run", gpu.rendered.isEmpty())
+        assertTrue("the readback renderFrameParcel must never run", gpu.rendered.isEmpty())
         // The ACTIVE verdict threads verbatim into the blit's pair.
         assertEquals(WarpControls(true, m), gpu.lastEncoderWarp)
         assertNull(gpu.lastWarp)
@@ -3015,8 +2978,8 @@ class Mp4ExporterTest {
     fun session_encoder_temporal_threads_the_grade_pair_into_the_blit() {
         // The temporal pair's ENCODER leg: the session-owns-EGL path (the
         // M5 fast path — the session develops AND blits straight to the
-        // codec input surface, the readback renderFrame NEVER runs)
-        // threads the grade's temporal pair into renderFrameToEncoder
+        // codec input surface, the readback renderFrameParcel NEVER runs)
+        // threads the grade's temporal pair into renderFrameToEncoderParcel
         // VERBATIM since the hybrid — the bridge's own temporalMergedCfa
         // consumes the pair to produce the CFA the blit uploads (the
         // SAME merge the CPU path rides, the same per-Entry caches), so
@@ -3041,7 +3004,7 @@ class Mp4ExporterTest {
         )
         // The blit ran per frame; the readback never did.
         assertEquals(listOf(0, 1), gpu.encoderRendered)
-        assertTrue("the readback renderFrame must never run", gpu.rendered.isEmpty())
+        assertTrue("the readback renderFrameParcel must never run", gpu.rendered.isEmpty())
         // The grade's temporal pair threads VERBATIM into the blit —
         // the dispatch never rewrites it (the bridge consumes the pair
         // to produce the merged CFA the blit uploads).
@@ -3272,9 +3235,9 @@ class Mp4ExporterTest {
         // The M5 happy path: an encoderDrawEligible job requests the
         // session-owns-EGL mode ONCE (never the writer's own Surface
         // request), the session attaches the writer's unwrapped input
-        // surface, EVERY frame blits through renderFrameToEncoder with
+        // surface, EVERY frame blits through renderFrameToEncoderParcel with
         // the frame's normalized pts, the writer drains per frame — and
-        // the readback renderFrame NEVER runs (no RGB bytes cross the
+        // the readback renderFrameParcel NEVER runs (no RGB bytes cross the
         // seam). The finally's visibility line says surface-gpu.
         val gpu = FakeGpuDevelop()
         val writer = SessionSurfaceWriter()
@@ -3289,7 +3252,7 @@ class Mp4ExporterTest {
         assertTrue("the writer's input surface must reach the session", gpu.encoderSurfaces[0].second === writer.inputSurface)
         // Every frame blitted; the readback never ran.
         assertEquals(listOf(0, 1), gpu.encoderRendered)
-        assertTrue("the readback renderFrame must never run", gpu.rendered.isEmpty())
+        assertTrue("the readback renderFrameParcel must never run", gpu.rendered.isEmpty())
         // The pts the session stamps is the frame's normalized media time —
         // frame 1's 33_333 (the FakeSession's ptsStepUs), the LAST blit.
         assertEquals(33_333L, gpu.lastEncoderPtsUs)
@@ -3374,7 +3337,7 @@ class Mp4ExporterTest {
     @Test
     fun mid_stream_encoder_render_refusal_detaches_then_adopts() {
         // The mid-stream refusal cascade: frame 0 blits, frame 1's
-        // renderFrameToEncoder refuses (a mid-render GL failure latches
+        // renderFrameToEncoderParcel refuses (a mid-render GL failure latches
         // the session unhealthy natively — the GPU readback dies with
         // it). The pipeline DETACHES the session's surface first (a
         // Surface job always processes, even latched — the
@@ -3528,7 +3491,7 @@ class Mp4ExporterTest {
         // with no crop/straighten/scale has encodeDims == the ROTATED
         // source dims, so the job IS encoderDrawEligible — the request
         // goes to the session mode, every frame blits through
-        // renderFrameToEncoder, and the render call CARRIES the effective
+        // renderFrameToEncoderParcel, and the render call CARRIES the effective
         // 90 (the uRotation fold's quarter-turn arm; the session swaps
         // the destination viewport to the source's swapped dims). The
         // UV math itself is device-proven (the owner's vertical clip);

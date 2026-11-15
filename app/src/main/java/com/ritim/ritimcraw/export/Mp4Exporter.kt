@@ -11,6 +11,7 @@ import com.ritim.ritimcraw.engine.GlesParityResult
 import com.ritim.ritimcraw.engine.GlesProbeResult
 import com.ritim.ritimcraw.engine.GlesShaderSources
 import com.ritim.ritimcraw.engine.GpuParityRules
+import com.ritim.ritimcraw.engine.GradeParcel
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
 import java.io.File
@@ -224,29 +225,18 @@ internal object NativeMp4Session : Mp4Session {
         } else {
             0f
         }
-        return NativeSource.jniExportFrame(
+        return NativeSource.jniExportFrameParcel(
             handle, frameIndex,
-            grade.exposureEv, grade.highlights, grade.tempK, grade.tint,
-            grade.saturation, grade.blackPoint, grade.whitePoint,
-            grade.shadows, grade.midtones, grade.contrast,
-            grade.asShot, grade.highlightReconstruction, grade.keepVignetting,
-            grade.sharpness, grade.detail, grade.tonemap,
+            // GRADE PARCEL (commit b): the 29 scalar fields cross as ONE
+            // packet (encoded here per call — the CPU session's own seam,
+            // one call per frame; the encode loop's export-grade parcel is
+            // the GPU twins' packet). The bridge decodes once and folds
+            // onto rawedit::Grade via the generated applyGradeToRawedit —
+            // field-for-field the same construction the flat door threaded.
+            GradeParcel.encode(grade),
             // COL-07: percent 0..100 -> rawedit's 0..1 blend, same mapping
             // as GradeMapping.toNative (every JNI call site passes 0..1).
             lutPath, grade.lutStrength / 100f,
-            // DN-01..08: native 0..100 scale already — pass through (the
-            // core clamps), same as GradeMapping.toNative.
-            grade.noiseReduction, grade.chromaDenoise,
-            grade.temporalNr, grade.temporalStrength,
-            // COL-13: the color package — six wheel offsets + three
-            // split-tone scalars, native scale already (same pass-through
-            // as GradeMapping.toNative). The SAME stages 18/19 run here as
-            // in the preview: identical math, identical order — export
-            // parity by construction.
-            grade.wheelShadowX, grade.wheelShadowY,
-            grade.wheelMidX, grade.wheelMidY,
-            grade.wheelHighX, grade.wheelHighY,
-            grade.splitShadowHue, grade.splitHighlightHue, grade.splitBalance,
             // Gyro Phase 5: null gyroPath (or stabilization off) = the
             // bridge's no-warp default (null path -> resolveStabilization
             // returns the default StabInput -> applyStabilization no-ops).
@@ -369,17 +359,24 @@ object NativeRgbToI420 : RgbToI420 {
  * the .so is absent — the dispatcher catches that and stays on CPU (the
  * same guard NativeMp4Session.requireNative rides).
  *
- * The render signature carries the fragment-covered grade controls —
- * the five base ones (exposure, highlights, highlight reconstruction,
- * vignetting, tonemap) plus the two spatial-NR stages' raw values since
- * the spatial-NR port (chroma denoise, noise reduction — stages 7/8,
- * the multi-pass fragment chain) plus the ten pointwise stages' raw
- * values since the pointwise port (black point, white point, shadows,
- * midtones, contrast, temperature, tint, saturation, the color wheel,
- * split tone, with asShot as the 16/17 gate's input) — beside the three
- * plumbing values, the second lock against uncovered grades (the Kotlin
- * coverage gate is the first). A stage the fragment pass does not cover
- * cannot even be expressed into the session.
+ * GRADE PARCEL (commit b): the render doors carry the grade as ONE flat
+ * FloatArray — GradeParcel.encode(grade), the GENERATED 29-slot layout
+ * (tools/gen-grade-parcel.py is the single source of truth for both
+ * sides of the seam; the parcel is built ONCE per grade change, the
+ * immutable parameter packet, not per frame). The parcel covers the
+ * fragment-covered grade controls — the five base ones (exposure,
+ * highlights, highlight reconstruction, vignetting, tonemap), the two
+ * spatial-NR stages' raw values (chroma denoise, noise reduction —
+ * stages 7/8, the multi-pass fragment chain), the temporal pair (the
+ * SAME raw values the CPU export's temporal merge receives; the pair
+ * dies at the bridge), the two unsharp stages' raw values (sharpness,
+ * detail) and the ten pointwise stages' raw values (black point, white
+ * point, shadows, midtones, contrast, temperature, tint, saturation,
+ * the color wheel, split tone, with asShot as the 16/17 gate's input) —
+ * beside the plumbing values, the second lock against uncovered grades
+ * (the Kotlin coverage gate is the first). A stage the fragment pass
+ * does not cover cannot even be expressed into the parcel; a new grade
+ * field is one schema row + a regenerate, never a signature widening.
  */
 interface GpuDevelop {
     /** The capability probe: raw [contextOk, glesMajor, glesMinor, computeOk, floatFboOk, maxTextureSize]; null = JNI failure. */
@@ -396,40 +393,24 @@ interface GpuDevelop {
     /** Opens the develop session: a nonzero handle, or 0 on failure (then [lastDetail] names the step). */
     fun openSession(): Long
 
-    /** Renders one frame; null on failure (the session latches unhealthy). */
-    fun renderFrame(
+    /** Closes the session (idempotent; absorbs context loss at teardown). */
+    fun closeSession(sessionHandle: Long)
+
+    /**
+     * Renders one frame; null on failure (the session latches unhealthy).
+     * GRADE PARCEL (commit b): the 29 scalar grade fields cross as ONE
+     * flat FloatArray — GradeParcel.encode(grade), the GENERATED slot
+     * layout (tools/gen-grade-parcel.py is the single source of truth for
+     * both sides of the seam). The parcel is the dispatcher's ONE
+     * immutable parameter packet, built once per export before the frame
+     * loop — never re-encoded per frame. NO default parameter values on
+     * purpose (the parcel wrappers mirror the JNI seam exactly).
+     */
+    fun renderFrameParcel(
         sessionHandle: Long,
         clipHandle: Long,
         frameIndex: Int,
-        chromaDenoise: Float,
-        noiseReduction: Float,
-        temporalNr: Boolean,
-        temporalStrength: Float,
-        sharpness: Float,
-        detail: Float,
-        exposureEv: Float,
-        highlights: Float,
-        blackPoint: Float,
-        whitePoint: Float,
-        shadows: Float,
-        midtones: Float,
-        contrast: Float,
-        tempK: Float,
-        tint: Float,
-        saturation: Float,
-        asShot: Boolean,
-        wheelShadowX: Float,
-        wheelShadowY: Float,
-        wheelMidX: Float,
-        wheelMidY: Float,
-        wheelHighX: Float,
-        wheelHighY: Float,
-        splitShadowHue: Float,
-        splitHighlightHue: Float,
-        splitBalance: Float,
-        highlightReconstruction: Boolean,
-        keepVignetting: Boolean,
-        tonemap: Int,
+        gradeParcel: FloatArray,
         lutPath: String?,
         lutStrength: Float,
         lutRole: Int,
@@ -440,9 +421,6 @@ interface GpuDevelop {
         warpActive: Boolean,
         warpM: FloatArray,
     ): ByteArray?
-
-    /** Closes the session (idempotent; absorbs context loss at teardown). */
-    fun closeSession(sessionHandle: Long)
 
     /**
      * M5: hands the MediaCodec input Surface to the session, which wraps
@@ -463,41 +441,20 @@ interface GpuDevelop {
      * that before dispatch; the session refuses again on the calling
      * thread). 0 is the byte-identical upright copy. False names the
      * step in [lastDetail].
+     *
+     * GRADE PARCEL (commit b): the 29 scalar grade fields cross as ONE
+     * flat FloatArray — GradeParcel.encode(grade), the GENERATED slot
+     * layout (tools/gen-grade-parcel.py is the single source of truth for
+     * both sides of the seam), built once per export before the frame
+     * loop. NO default parameter values on purpose (the parcel wrappers
+     * mirror the JNI seam exactly).
      */
-    fun renderFrameToEncoder(
+    fun renderFrameToEncoderParcel(
         sessionHandle: Long,
         clipHandle: Long,
         frameIndex: Int,
         ptsUs: Long,
-        chromaDenoise: Float,
-        noiseReduction: Float,
-        temporalNr: Boolean,
-        temporalStrength: Float,
-        sharpness: Float,
-        detail: Float,
-        exposureEv: Float,
-        highlights: Float,
-        blackPoint: Float,
-        whitePoint: Float,
-        shadows: Float,
-        midtones: Float,
-        contrast: Float,
-        tempK: Float,
-        tint: Float,
-        saturation: Float,
-        asShot: Boolean,
-        wheelShadowX: Float,
-        wheelShadowY: Float,
-        wheelMidX: Float,
-        wheelMidY: Float,
-        wheelHighX: Float,
-        wheelHighY: Float,
-        splitShadowHue: Float,
-        splitHighlightHue: Float,
-        splitBalance: Float,
-        highlightReconstruction: Boolean,
-        keepVignetting: Boolean,
-        tonemap: Int,
+        gradeParcel: FloatArray,
         lutPath: String?,
         lutStrength: Float,
         lutRole: Int,
@@ -507,8 +464,8 @@ interface GpuDevelop {
         lutOutTransfer: Int,
         warpActive: Boolean,
         warpM: FloatArray,
-        rotationDeg: Int = 0,
-    ): Boolean = false
+        rotationDeg: Int,
+    ): Boolean
 
     /**
      * The gyro warp resolver (the GPU warp port's commit b): the
@@ -566,39 +523,16 @@ internal object NativeGpuDevelop : GpuDevelop {
         GlesShaderSources.BLIT_FRAGMENT,
     )
 
-    override fun renderFrame(
+    /**
+     * GRADE PARCEL (commit b): the REAL parcel door — the JNI seam takes
+     * the parcel; the bridge decodes ONCE per call. The parcel is
+     * caller-built (GradeParcel.encode, once per grade change).
+     */
+    override fun renderFrameParcel(
         sessionHandle: Long,
         clipHandle: Long,
         frameIndex: Int,
-        chromaDenoise: Float,
-        noiseReduction: Float,
-        temporalNr: Boolean,
-        temporalStrength: Float,
-        sharpness: Float,
-        detail: Float,
-        exposureEv: Float,
-        highlights: Float,
-        blackPoint: Float,
-        whitePoint: Float,
-        shadows: Float,
-        midtones: Float,
-        contrast: Float,
-        tempK: Float,
-        tint: Float,
-        saturation: Float,
-        asShot: Boolean,
-        wheelShadowX: Float,
-        wheelShadowY: Float,
-        wheelMidX: Float,
-        wheelMidY: Float,
-        wheelHighX: Float,
-        wheelHighY: Float,
-        splitShadowHue: Float,
-        splitHighlightHue: Float,
-        splitBalance: Float,
-        highlightReconstruction: Boolean,
-        keepVignetting: Boolean,
-        tonemap: Int,
+        gradeParcel: FloatArray,
         lutPath: String?,
         lutStrength: Float,
         lutRole: Int,
@@ -608,56 +542,25 @@ internal object NativeGpuDevelop : GpuDevelop {
         lutOutTransfer: Int,
         warpActive: Boolean,
         warpM: FloatArray,
-    ): ByteArray? = NativeSource.jniDevelopSessionRenderFrame(
-        sessionHandle, clipHandle, frameIndex, chromaDenoise, noiseReduction,
-        temporalNr, temporalStrength,
-        sharpness, detail,
-        exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
-        contrast, tempK, tint, saturation, asShot,
-        wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-        wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
-        highlightReconstruction, keepVignetting, tonemap, lutPath, lutStrength,
-        lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
-        warpActive, warpM,
+    ): ByteArray? = NativeSource.jniDevelopSessionRenderFrameParcel(
+        sessionHandle, clipHandle, frameIndex, gradeParcel,
+        lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+        lutOutGamut, lutOutTransfer, warpActive, warpM,
     )
 
     override fun setEncoderSurface(sessionHandle: Long, surface: Any?): Boolean =
         NativeSource.jniDevelopSessionSetEncoderSurface(sessionHandle, surface)
 
-    override fun renderFrameToEncoder(
+    /**
+     * GRADE PARCEL (commit b): the REAL encoder parcel door — the JNI seam
+     * takes the parcel; the bridge decodes ONCE per call.
+     */
+    override fun renderFrameToEncoderParcel(
         sessionHandle: Long,
         clipHandle: Long,
         frameIndex: Int,
         ptsUs: Long,
-        chromaDenoise: Float,
-        noiseReduction: Float,
-        temporalNr: Boolean,
-        temporalStrength: Float,
-        sharpness: Float,
-        detail: Float,
-        exposureEv: Float,
-        highlights: Float,
-        blackPoint: Float,
-        whitePoint: Float,
-        shadows: Float,
-        midtones: Float,
-        contrast: Float,
-        tempK: Float,
-        tint: Float,
-        saturation: Float,
-        asShot: Boolean,
-        wheelShadowX: Float,
-        wheelShadowY: Float,
-        wheelMidX: Float,
-        wheelMidY: Float,
-        wheelHighX: Float,
-        wheelHighY: Float,
-        splitShadowHue: Float,
-        splitHighlightHue: Float,
-        splitBalance: Float,
-        highlightReconstruction: Boolean,
-        keepVignetting: Boolean,
-        tonemap: Int,
+        gradeParcel: FloatArray,
         lutPath: String?,
         lutStrength: Float,
         lutRole: Int,
@@ -668,17 +571,10 @@ internal object NativeGpuDevelop : GpuDevelop {
         warpActive: Boolean,
         warpM: FloatArray,
         rotationDeg: Int,
-    ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoder(
-        sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise, noiseReduction,
-        temporalNr, temporalStrength,
-        sharpness, detail,
-        exposureEv, highlights, blackPoint, whitePoint, shadows, midtones,
-        contrast, tempK, tint, saturation, asShot,
-        wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-        wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
-        highlightReconstruction, keepVignetting, tonemap, lutPath, lutStrength,
-        lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
-        warpActive, warpM, rotationDeg,
+    ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoderParcel(
+        sessionHandle, clipHandle, frameIndex, ptsUs, gradeParcel,
+        lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+        lutOutGamut, lutOutTransfer, warpActive, warpM, rotationDeg,
     )
 
     override fun resolveWarp(
@@ -1733,6 +1629,14 @@ class ExportPipeline(
             val tEncode0 = System.nanoTime()
             onProgress?.invoke(0, videoPts.size)
             var done = 0
+            // GRADE PARCEL (commit b): the grade crosses the encode loop as
+            // ONE immutable packet, encoded ONCE before the first frame —
+            // never re-encoded per frame. The grade is fixed for the whole
+            // export (the snapshot captured at enqueue), so the parcel is
+            // too. The parcel twins below decode it once per call on the
+            // native side; the flat per-field threading is gone (the old
+            // door is deleted).
+            val gradeParcel = GradeParcel.encode(grade)
             for (s in PtsTimeline.interleave(videoPts, audioPts)) {
                 when (s.track) {
                     PtsTimeline.Sample.Track.VIDEO -> {
@@ -1745,7 +1649,7 @@ class ExportPipeline(
                         // cache and the thread-local gyro cache are not
                         // GL-thread-safe; the render only READS the pair).
                         // The six request values are the IDENTICAL ones the
-                        // CPU seam threads (jniExportFrame above): the gyro
+                        // CPU seam threads (jniExportFrameParcel above): the gyro
                         // path gated on stabilization-on + attached log,
                         // strength /100, mode/zoomLimit/focalMm/trimMs raw.
                         // maxDim = 0 = full resolution (the export renders at
@@ -1756,7 +1660,7 @@ class ExportPipeline(
                         // identity no-draw rule), byte-identical to the CPU's
                         // honest no-op. The CPU branches below never touch
                         // this: they keep threading the six values into
-                        // jniExportFrame, whose bridge folds the same way.
+                        // jniExportFrameParcel, whose bridge folds the same way.
                         val warp = if (gpuDevelopActive || encoderSurfaceAttached) {
                             try {
                                 gpuDevelop.resolveWarp(
@@ -1825,29 +1729,9 @@ class ExportPipeline(
                         // latch rides).
                         if (encoderSurfaceAttached) {
                             val drew = try {
-                                gpuDevelop.renderFrameToEncoder(
+                                gpuDevelop.renderFrameToEncoderParcel(
                                     gpuSessionHandle, info.handle, s.frameIndex, s.ptsUs,
-                                    grade.chromaDenoise, grade.noiseReduction,
-                                    // The temporal pair rides the hybrid's
-                                    // routing verbatim: the bridge's own
-                                    // temporalMergedCfa consumes them to
-                                    // produce the CFA this blit uploads
-                                    // (the SAME merge the CPU path rides,
-                                    // the same per-Entry caches).
-                                    grade.temporalNr, grade.temporalStrength,
-                                    grade.sharpness, grade.detail,
-                                    grade.exposureEv, grade.highlights,
-                                    grade.blackPoint, grade.whitePoint,
-                                    grade.shadows, grade.midtones, grade.contrast,
-                                    grade.tempK, grade.tint, grade.saturation,
-                                    grade.asShot,
-                                    grade.wheelShadowX, grade.wheelShadowY,
-                                    grade.wheelMidX, grade.wheelMidY,
-                                    grade.wheelHighX, grade.wheelHighY,
-                                    grade.splitShadowHue, grade.splitHighlightHue,
-                                    grade.splitBalance,
-                                    grade.highlightReconstruction,
-                                    grade.keepVignetting, grade.tonemap,
+                                    gradeParcel,
                                     lutPath, grade.lutStrength / 100f,
                                     grade.lutInterp?.role?.value ?: -1,
                                     grade.lutInterp?.input?.gamut?.value ?: -1,
@@ -1901,29 +1785,9 @@ class ExportPipeline(
                         var rgb: ByteArray
                         if (gpuDevelopActive) {
                             val gpu = try {
-                                gpuDevelop.renderFrame(
+                                gpuDevelop.renderFrameParcel(
                                     gpuSessionHandle, info.handle, s.frameIndex,
-                                    grade.chromaDenoise, grade.noiseReduction,
-                                    // The temporal pair rides the hybrid's
-                                    // routing verbatim: the bridge's own
-                                    // temporalMergedCfa consumes them to
-                                    // produce the CFA this render uploads
-                                    // (the SAME merge the CPU path rides,
-                                    // the same per-Entry caches).
-                                    grade.temporalNr, grade.temporalStrength,
-                                    grade.sharpness, grade.detail,
-                                    grade.exposureEv, grade.highlights,
-                                    grade.blackPoint, grade.whitePoint,
-                                    grade.shadows, grade.midtones, grade.contrast,
-                                    grade.tempK, grade.tint, grade.saturation,
-                                    grade.asShot,
-                                    grade.wheelShadowX, grade.wheelShadowY,
-                                    grade.wheelMidX, grade.wheelMidY,
-                                    grade.wheelHighX, grade.wheelHighY,
-                                    grade.splitShadowHue, grade.splitHighlightHue,
-                                    grade.splitBalance,
-                                    grade.highlightReconstruction,
-                                    grade.keepVignetting, grade.tonemap,
+                                    gradeParcel,
                                     lutPath, grade.lutStrength / 100f,
                                     grade.lutInterp?.role?.value ?: -1,
                                     grade.lutInterp?.input?.gamut?.value ?: -1,

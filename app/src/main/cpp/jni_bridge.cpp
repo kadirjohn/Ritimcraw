@@ -46,6 +46,7 @@
 #include <rawedit/Yuv.h>
 
 #include "gles/GlesDevelopSession.h"
+#include "gles/GradeParcel.h"
 #include "gles/GlesPipeline.h"
 #include "gles/GlesPreviewSession.h"
 
@@ -131,8 +132,8 @@ std::atomic<bool> gSyncRefine{false};
 // the companion init): the owner's device A/B flips it between two
 // playback runs of the 12MP clip; release builds never flip it, so the
 // pack always publishes there. The flag rides the PreviewFrameRequest
-// (copied below in nativePreviewSessionRenderFrame) so the session reads
-// it per render without a second native call.
+// (copied below in nativePreviewSessionRenderFrameParcel) so the session
+// reads it per render without a second native call.
 std::atomic<bool> gPreviewStatsEnabled{true};
 
 // Export sub-stage timing (commit (d), owner request 2026-11-13): the
@@ -156,7 +157,7 @@ std::atomic<bool> gExportTiming{false};
 thread_local ExportFrameTiming gExportFrameTiming;
 
 // Milliseconds between two steady_clock points — the only arithmetic the
-// sub-stage boundaries do (kept out of nativeExportFrame's body).
+// sub-stage boundaries do (kept out of nativeExportFrameParcel's body).
 inline double elapsedMs(const std::chrono::steady_clock::time_point& a,
                         const std::chrono::steady_clock::time_point& b) {
     return std::chrono::duration<double, std::milli>(b - a).count();
@@ -1916,11 +1917,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetPreviewStatsEnabled(
     gPreviewStatsEnabled.store(enabled == JNI_TRUE, std::memory_order_relaxed);
 }
 
-// The six sub-stage slots of the frame nativeExportFrame just produced, in
-// the fixed order the Kotlin side renders:
+// The six sub-stage slots of the frame nativeExportFrameParcel just
+// produced, in the fixed order the Kotlin side renders:
 //   [decode, temporal, develop, warp, oetf_pack, jni_copy] (milliseconds).
 // Thread-local like the error accessors: call on the export thread right
-// after a successful nativeExportFrame — that is the only writer. Null when
+// after a successful nativeExportFrameParcel — that is the only writer. Null when
 // the gate is off (nothing was collected); the Kotlin side treats that as
 // "no sub-stage data" and keeps the plain "native=..ms" line.
 JNIEXPORT jdoubleArray JNICALL
@@ -2792,7 +2793,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
 //
 // The exporter opens a session with nativePreviewOpen (same handle registry,
 // same [handle, frameCount, w, h, cfa, orient] contract) and then calls
-// nativeExportFrame per frame: full-res developCpu (NO thumbnail
+// nativeExportFrameParcel per frame: full-res developCpu (NO thumbnail
 // downscale) -> linearToRec709 -> clamp [0,1] -> quantize 8-bit RGB888.
 // The clamp is inherent to 8-bit quantization (linearToRec709 itself is
 // unclamped); values above 1.0 clip at 255, below 0 at 0. A 4K frame is
@@ -2800,27 +2801,29 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
 // later). PTS comes from nativeFramePtsUs; audio description from
 // nativeAudioInfo, samples from nativeReadAudio (all existing entry points
 // except the two new ones below).
+//
+// The grade parcel crossing (commit a + b): the per-frame SCALAR grade set
+// crosses as ONE flat FloatArray. The ONE front door is
+// nativeExportFrameParcel (decodes the parcel ONCE into
+// gles::DevelopGrade, folds it onto rawedit::Grade via the GENERATED
+// applyGradeToRawedit, sets lutStrength from its own flat param — the LUT
+// binding group is deliberately not parcel fields). The temporal pair
+// rides the parcel like every other scalar and dies at temporalMergedCfa
+// below, exactly as the flat path's jboolean/jfloat pair always did. The
+// flat nativeExportFrame door died with commit (b) — its Kotlin decl is
+// gone, so no caller can reach this body with per-field params.
 
-JNIEXPORT jbyteArray JNICALL
-Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
-        JNIEnv* env, jclass, jlong handle, jint frameIndex,
-        jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
-        jfloat saturation, jfloat blackPoint, jfloat whitePoint,
-        jfloat shadows, jfloat midtones, jfloat contrast,
-        jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jfloat sharpness, jfloat detail, jint tonemap,
-        jstring lutPath, jfloat lutStrength,
-        jfloat noiseReduction, jfloat chromaDenoise,
-        jboolean temporalNr, jfloat temporalStrength,
-        jfloat wheelShadowX, jfloat wheelShadowY,
-        jfloat wheelMidX, jfloat wheelMidY,
-        jfloat wheelHighX, jfloat wheelHighY,
-        jfloat splitShadowHue, jfloat splitHighlightHue,
-        jfloat splitBalance,
-        jstring gyroPath, jint stabMode, jfloat stabStrength,
-        jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
-        jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer) {
+// The shared export body: everything except the grade's arrival shape.
+// grade is the job's grade snapshot (lutStrength already folded in);
+// the LUT binding and stabilization params are per-job/plan data that
+// stay flat. Returns nullptr (error state set) on any failure.
+jbyteArray exportFrameBody(JNIEnv* env, jlong handle, jint frameIndex,
+                           const rawedit::Grade& grade,
+                           jstring lutPath,
+                           jstring gyroPath, jint stabMode, jfloat stabStrength,
+                           jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
+                           jint lutRole, jint lutInGamut, jint lutInTransfer,
+                           jint lutOutGamut, jint lutOutTransfer) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2881,7 +2884,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
         // 2. Temporal NR on the CFA (pristine buffer back when off).
         const CfaBuffer cfa = temporalMergedCfa(
             *s, e, frameIndex, center, info,
-            temporalNr == JNI_TRUE, temporalStrength);
+            grade.temporalNr, grade.temporalStrength);
         if (cfa == nullptr) return nullptr; // neighbor decode failed
         if (timing) {
             tDevelop0 = SteadyClock::now();
@@ -2890,21 +2893,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
 
         // 3. Full-res develop with the job's grade snapshot (core/Develop.h).
         gLastErrorStage = kStageDevelop;
-        rawedit::ImageF img = rawedit::developCpu(
-            cfa->data(), info, meta,
-            gradeFromKotlin(exposureEv, highlights, tempK, tint,
-                            saturation, blackPoint, whitePoint,
-                            shadows, midtones, contrast,
-                            asShot, highlightReconstruction, keepVignetting,
-                            sharpness, detail, tonemap, lutStrength,
-                            noiseReduction, chromaDenoise,
-                            temporalNr == JNI_TRUE, temporalStrength,
-                            wheelShadowX, wheelShadowY,
-                            wheelMidX, wheelMidY,
-                            wheelHighX, wheelHighY,
-                            splitShadowHue, splitHighlightHue,
-                            splitBalance),
-            lut, binding);
+        rawedit::ImageF img = rawedit::developCpu(cfa->data(), info, meta, grade,
+                                                  lut, binding);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "
@@ -2971,6 +2961,53 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrame(
     }
 }
 
+// Decodes the grade parcel (one flat FloatArray, SLOT_COUNT floats) into
+// [out]. Returns false with the honest message in [error] on any refusal
+// (unknown length, non-finite value, boolean outside strict 0/1) — the
+// caller rides setError; no exception ever crosses the boundary.
+bool readGradeParcel(JNIEnv* env, jfloatArray parcel, gles::DevelopGrade* out,
+                     std::string* error) {
+    const jsize len = parcel == nullptr ? 0 : env->GetArrayLength(parcel);
+    float buf[gles::kGradeParcelSlotCount];
+    if (len == gles::kGradeParcelSlotCount) {
+        env->GetFloatArrayRegion(parcel, 0, len, buf);
+    }
+    return gles::decodeGradeParcel(buf, len, out, error);
+}
+
+// The CPU export's frame develop (GRADE PARCEL, commit a + b): the 29
+// scalar grade fields as ONE flat FloatArray. 16 parameters: handle,
+// frameIndex, gradeParcel + lutPath, lutStrength + the six stabilization
+// plan values + the five LUT-binding ordinals. The decode is ONCE per
+// call; a refusal fails the frame honestly (setError + nullptr), never a
+// silent misread. Commit (b): the CPU export rides THIS door — the flat
+// nativeExportFrame died with its Kotlin decl.
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrameParcel(
+        JNIEnv* env, jclass, jlong handle, jint frameIndex,
+        jfloatArray gradeParcel,
+        jstring lutPath, jfloat lutStrength,
+        jstring gyroPath, jint stabMode, jfloat stabStrength,
+        jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
+    gles::DevelopGrade decoded;
+    std::string parcelError;
+    if (!readGradeParcel(env, gradeParcel, &decoded, &parcelError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 parcelError);
+        return nullptr;
+    }
+    rawedit::Grade grade;
+    gles::applyGradeToRawedit(decoded, &grade);
+    grade.lutStrength = lutStrength;
+    return exportFrameBody(env, handle, frameIndex, grade,
+                           lutPath, gyroPath, stabMode, stabStrength,
+                           stabZoomLimit, stabFocalMm, stabTrimMs,
+                           lutRole, lutInGamut, lutInTransfer,
+                           lutOutGamut, lutOutTransfer);
+}
+
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
         JNIEnv*, jclass, jlong handle, jint index) {
@@ -2987,42 +3024,36 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // function built the whole pipeline one-shot per call, these hold it. The
 // Kotlin exporter (commit b) drives one session per export job:
 //
-//   nativeDevelopSessionOpen(vertex, vertex310, pre, post, nrChromaH,
-//                            nrChromaV, nrLuma, store, blit) -> handle
-//   nativeDevelopSessionRenderFrame(handle, clipHandle, frameIndex,
-//                                   chromaDenoise, noiseReduction,
-//                                   temporalNr, temporalStrength,
-//                                   sharpness, detail,
-//                                   exposureEv, highlights,
-//                                   blackPoint, whitePoint, shadows,
-//                                   midtones, contrast, tempK, tint,
-//                                   saturation, asShot,
-//                                   wheelShadowX, wheelShadowY,
-//                                   wheelMidX, wheelMidY,
-//                                   wheelHighX, wheelHighY,
-//                                   splitShadowHue, splitHighlightHue,
-//                                   splitBalance,
-//                                   highlightReconstruction,
-//                                   keepVignetting, tonemap) -> RGB888 bytes
+//   nativeDevelopSessionOpen(vertex, vertex310, pre, post, tail,
+//                           sharpnessH, sharpnessV, detailH, detailV,
+//                           warp, nrChromaH, nrChromaV, nrLuma, store,
+//                           blit) -> handle
+//   nativeDevelopSessionRenderFrameParcel(handle, clipHandle, frameIndex,
+//                                         gradeParcel,
+//                                         lutPath, lutStrength, lutRole,
+//                                         lutInGamut, lutInTransfer,
+//                                         lutOutGamut, lutOutTransfer,
+//                                         warpActive, warpM) -> RGB888 bytes
 //   nativeDevelopSessionSetEncoderSurface(handle, surface) -> ok
-//   nativeDevelopSessionRenderFrameToEncoder(handle, clipHandle, frameIndex,
-//                                            ptsUs, chromaDenoise,
-//                                            noiseReduction, temporalNr,
-//                                            temporalStrength, sharpness,
-//                                            detail, exposureEv,
-//                                            highlights,
-//                                            blackPoint, whitePoint, shadows,
-//                                            midtones, contrast, tempK, tint,
-//                                            saturation, asShot,
-//                                            wheelShadowX, wheelShadowY,
-//                                            wheelMidX, wheelMidY,
-//                                            wheelHighX, wheelHighY,
-//                                            splitShadowHue, splitHighlightHue,
-//                                            splitBalance,
-//                                            highlightReconstruction,
-//                                            keepVignetting, tonemap,
-//                                            rotationDeg) -> ok
+//   nativeDevelopSessionRenderFrameToEncoderParcel(handle, clipHandle,
+//                                                  frameIndex, ptsUs,
+//                                                  gradeParcel,
+//                                                  lutPath, lutStrength,
+//                                                  lutRole, lutInGamut,
+//                                                  lutInTransfer,
+//                                                  lutOutGamut,
+//                                                  lutOutTransfer,
+//                                                  warpActive, warpM,
+//                                                  rotationDeg) -> ok
 //   nativeDevelopSessionClose(handle)
+//
+// GRADE PARCEL (commit a + b): the 29 fragment-covered scalar grade
+// controls cross as ONE flat gradeParcel FloatArray — GENERATED from
+// tools/gen-grade-parcel.py's schema on both sides of the seam (the
+// flat 41/43-parameter doors died with commit (b); the parcel is the
+// ONLY render shape). The parcel is decoded ONCE at the top of each
+// door (a refusal fails the render honestly with setError + null/false,
+// never a silent misread).
 //
 // Open compiles the caller-provided Kotlin shader texts (the single source
 // of truth, host-validated — the same contract the parity harness rides).
@@ -3040,7 +3071,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // path); a refusal returns false with the reason in the last-error slot —
 // the Kotlin dispatcher falls back with ONE honest line, never a crash.
 //
-// The render takes the fragment-covered grade controls — the five base
+// The parcel covers the fragment-covered grade controls — the five base
 // ones (exposure, highlights, highlight reconstruction, vignetting,
 // tonemap), the two spatial-NR stages' raw values since the NR port
 // (chroma denoise, noise reduction — stages 7/8), the two unsharp stages'
@@ -3049,12 +3080,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // stages' raw values (black point, white point, shadows, midtones,
 // contrast, temperature, tint, the color wheel, split tone, saturation)
 // with asShot as the 16/17 gate's input. The temporal pair (temporalNr,
-// temporalStrength — the same raw values nativeExportFrame receives)
-// rides the SAME rule the CPU path rides: the pair dies at this bridge
-// (the session never sees it), consumed by temporalMergedCfa to produce
-// the CFA the request uploads — routing, not porting; the merge math
-// stays core/Temporal.cpp's, frozen. Every parameter names a stage the
-// shader covers OR a pre-stage the bridge's own merge covers.
+// temporalStrength — the same raw values nativeExportFrameParcel
+// receives) rides the SAME rule the CPU path rides: the pair dies at
+// this bridge (the session never sees it), consumed by
+// temporalMergedCfa to produce the CFA the request uploads — routing,
+// not porting; the merge math stays core/Temporal.cpp's, frozen. Every
+// parcel slot names a stage the shader covers OR a pre-stage the
+// bridge's own merge covers.
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
@@ -3258,26 +3290,33 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
     return static_cast<jlong>(slot) + 1;
 }
 
+// The develop session's render door (GRADE PARCEL, commit a + b): the 29
+// scalar grade fields as ONE flat FloatArray. 13 parameters:
+// sessionHandle, clipHandle, frameIndex, gradeParcel, lutPath,
+// lutStrength + the five LUT-binding ordinals + warpActive, warpM. The
+// parcel is decoded ONCE at the top (a refusal fails the render honestly
+// with setError + nullptr, never a silent misread), the temporal pair
+// feeds temporalMergedCfa from the decoded struct, and the request
+// carries ONLY the non-grade fields — the grade rides the struct-taking
+// session overload (the GENERATED applyGradeToRequest fold, no
+// hand-mirrored field list at this seam). Commit (b): the flat
+// nativeDevelopSessionRenderFrame died with its Kotlin decl — this is
+// the ONLY render door.
 JNIEXPORT jbyteArray JNICALL
-Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameParcel(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jfloat chromaDenoise, jfloat noiseReduction,
-        jboolean temporalNr, jfloat temporalStrength,
-        jfloat sharpness, jfloat detail,
-        jfloat exposureEv, jfloat highlights,
-        jfloat blackPoint, jfloat whitePoint, jfloat shadows,
-        jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
-        jfloat saturation, jboolean asShot,
-        jfloat wheelShadowX, jfloat wheelShadowY,
-        jfloat wheelMidX, jfloat wheelMidY,
-        jfloat wheelHighX, jfloat wheelHighY,
-        jfloat splitShadowHue, jfloat splitHighlightHue,
-        jfloat splitBalance,
-        jboolean highlightReconstruction, jboolean keepVignetting,
-        jint tonemap, jstring lutPath, jfloat lutStrength,
+        jint frameIndex, jfloatArray gradeParcel,
+        jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
         jint lutOutGamut, jint lutOutTransfer,
         jboolean warpActive, jfloatArray warpM) {
+    gles::DevelopGrade grade;
+    std::string parcelError;
+    if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 parcelError);
+        return nullptr;
+    }
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
@@ -3300,72 +3339,29 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
     rawedit::Source* s = sourceFor(clipHandle);
     if (!s) return nullptr;
     try {
-        // Decode + frame info on the CALLING thread (Source's one-thread
-        // rule; the ring amortizes sequential export frames exactly like
-        // nativeExportFrame's step 1). Only the GL work marshals.
+        // Same shape nativeExportFrameParcel rides: decode + frame info on
+        // the CALLING thread, the ring amortizing sequential export frames.
         Entry& e = gEntries[clipHandle - 1];
         const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
         if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
 
-        // Temporal NR (the hybrid's routing, nativeExportFrame's step 2
-        // verbatim): the SAME temporalMergedCfa the CPU export rides —
-        // the session render shares the per-Entry caches with it (the
-        // Entry is keyed by clipHandle and this body already held it):
-        // the ring LRU the neighbors decode into, the frame+strength-
-        // keyed merged-CFA cache a grade-only re-render at the same
-        // frame hits, the MAFD pair cache the trend gate reads. Off
-        // (false or strength <= 0) hands back the pristine center and
-        // DROPS the temporal caches — this render is byte-identical to
-        // the pre-hybrid session render. A neighbor decode failure
-        // fails the render (error set), never a silent pristine
-        // fallback — the same rule nativeExportFrame rides.
+        // Temporal NR — the temporal pair arrives IN the parcel here (the
+        // decoded struct), consumed by the merge before the request
+        // exists, exactly like the flat jboolean/jfloat pair once did.
         const CfaBuffer cfa = temporalMergedCfa(
             *s, e, frameIndex, center, info,
-            temporalNr == JNI_TRUE, temporalStrength);
+            grade.temporalNr, grade.temporalStrength);
         if (cfa == nullptr) return nullptr; // neighbor decode failed
 
         gles::DevelopFrameRequest req;
         req.cfa = cfa.get();
         req.info = info;
         req.meta = &meta;
-        req.chromaDenoise = chromaDenoise;
-        req.noiseReduction = noiseReduction;
-        // Stages 21/22 (the sharpness/detail seam commit): the raw grade
-        // percents threaded verbatim — NO clamp, because the CPU's own
-        // amount mapping makes NEGATIVE values valid (softening); the
-        // session gates the four unsharp draws on raw != 0 plus the
-        // CPU's own w >= 2 / h >= 2 guard.
-        req.sharpness = sharpness;
-        req.detail = detail;
-        req.exposureEv = exposureEv;
-        req.highlights = highlights;
-        req.blackPoint = blackPoint;
-        req.whitePoint = whitePoint;
-        req.shadows = shadows;
-        req.midtones = midtones;
-        req.contrast = contrast;
-        req.tempK = tempK;
-        req.tint = tint;
-        req.saturation = saturation;
-        req.asShot = asShot == JNI_TRUE;
-        req.wheelShadowX = wheelShadowX;
-        req.wheelShadowY = wheelShadowY;
-        req.wheelMidX = wheelMidX;
-        req.wheelMidY = wheelMidY;
-        req.wheelHighX = wheelHighX;
-        req.wheelHighY = wheelHighY;
-        req.splitShadowHue = splitShadowHue;
-        req.splitHighlightHue = splitHighlightHue;
-        req.splitBalance = splitBalance;
-        req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
-        req.keepVignetting = keepVignetting == JNI_TRUE;
-        req.tonemap = tonemap;
-        // Stage 24 LUT (commit b): the resolved .cube path + the [0,1]
-        // strength + the five interpretation ordinals, threaded verbatim
-        // (the CPU seam's own jniExportFrame layout: -1 ordinals = the
-        // legacy shape). A null jstring is an empty path = no LUT.
+        // Stage 24 LUT: the resolved .cube path + the [0,1] strength + the
+        // five interpretation ordinals (-1 = the legacy shape). A null
+        // jstring = no LUT.
         req.lutStrength = lutStrength;
         if (lutPath != nullptr) {
             const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
@@ -3379,17 +3375,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrame(
         req.lutInTransfer = lutInTransfer;
         req.lutOutGamut = lutOutGamut;
         req.lutOutTransfer = lutOutTransfer;
-        // Gyro warp (the GPU port's commit b): the caller resolved the
-        // frame's plan on THIS thread (nativeStabWarpResolve — the plan
-        // cache is not GL-thread-safe) and hands the two fragment-pass
-        // inputs verbatim. warpActive false = the session skips draw 10
-        // entirely (the identity no-draw rule); warpM may be null then,
-        // the request's identity default carries the pass.
+        // Gyro warp: the caller-resolved (warpActive, warpM) pair; warpM
+        // may be null when inactive.
         req.warpActive = warpActive == JNI_TRUE;
         if (warpM != nullptr) {
             env->GetFloatArrayRegion(warpM, 0, 9, req.warpM);
         }
-        const gles::DevelopFrameResult res = session->renderFrame(req);
+        const gles::DevelopFrameResult res = session->renderFrame(req, grade);
         if (!res.ok) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop session render: " + res.detail +
@@ -3474,7 +3466,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionSetEncoderSurfa
 }
 
 // ENCODER RENDER (M5). The same decode-on-the-calling-thread shape as
-// nativeDevelopSessionRenderFrame (Source's one-thread rule; the ring
+// nativeDevelopSessionRenderFrameParcel (Source's one-thread rule; the ring
 // amortizes sequential export frames), but the GL thread develops AND
 // blits straight to the encoder window surface — no readback bytes ever
 // cross the seam, so the return is a boolean, not a byte array. [ptsUs]
@@ -3486,26 +3478,29 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionSetEncoderSurfa
 // anything outside 0/90/180/270. ok=false means the export falls back
 // per the dispatcher's one-line rule.
 
+// The encoder-surface render door (GRADE PARCEL, commit a + b): 15
+// parameters — the 29-field grade block collapsed into gradeParcel,
+// ptsUs/rotationDeg kept (job mechanics, not grade scalars). The parcel
+// is decoded ONCE at the top (a refusal fails the render honestly with
+// setError + JNI_FALSE, never a silent misread); the grade rides the
+// struct-taking session overload (the GENERATED fold). Commit (b): the
+// flat nativeDevelopSessionRenderFrameToEncoder died with its Kotlin
+// decl — this is the ONLY encoder door.
 JNIEXPORT jboolean JNICALL
-Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoder(
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEncoderParcel(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jlong ptsUs, jfloat chromaDenoise,
-        jfloat noiseReduction, jboolean temporalNr, jfloat temporalStrength,
-        jfloat sharpness, jfloat detail,
-        jfloat exposureEv, jfloat highlights,
-        jfloat blackPoint, jfloat whitePoint, jfloat shadows,
-        jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
-        jfloat saturation, jboolean asShot,
-        jfloat wheelShadowX, jfloat wheelShadowY,
-        jfloat wheelMidX, jfloat wheelMidY,
-        jfloat wheelHighX, jfloat wheelHighY,
-        jfloat splitShadowHue, jfloat splitHighlightHue,
-        jfloat splitBalance,
-        jboolean highlightReconstruction, jboolean keepVignetting,
-        jint tonemap, jstring lutPath, jfloat lutStrength,
+        jint frameIndex, jlong ptsUs, jfloatArray gradeParcel,
+        jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
         jint lutOutGamut, jint lutOutTransfer,
         jboolean warpActive, jfloatArray warpM, jint rotationDeg) {
+    gles::DevelopGrade grade;
+    std::string parcelError;
+    if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 parcelError);
+        return JNI_FALSE;
+    }
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
@@ -3534,58 +3529,19 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
 
-        // Temporal NR (the hybrid's routing), same shape as the readback
-        // entry above: the SAME temporalMergedCfa the CPU export rides,
-        // the SAME per-Entry caches (this is the same clipHandle's Entry,
-        // so whichever entry renders a frame first, the next render of
-        // that frame at the same strength — readback, encoder, or the
-        // CPU path itself — hits the merged-CFA cache).
-        // Off hands back the pristine center and drops the temporal
-        // caches — byte-identical to the pre-hybrid render. A neighbor
-        // decode failure fails the render (error set), never a silent
-        // pristine fallback.
+        // Temporal NR — the temporal pair arrives IN the parcel here,
+        // consumed by the merge before the request exists.
         const CfaBuffer cfa = temporalMergedCfa(
             *s, e, frameIndex, center, info,
-            temporalNr == JNI_TRUE, temporalStrength);
+            grade.temporalNr, grade.temporalStrength);
         if (cfa == nullptr) return JNI_FALSE; // neighbor decode failed
 
         gles::DevelopFrameRequest req;
         req.cfa = cfa.get();
         req.info = info;
         req.meta = &meta;
-        req.chromaDenoise = chromaDenoise;
-        req.noiseReduction = noiseReduction;
-        // Stages 21/22 (the sharpness/detail seam commit), same shape as
-        // the readback entry above: the raw grade percents verbatim, NO
-        // clamp (negatives = the CPU's softening direction).
-        req.sharpness = sharpness;
-        req.detail = detail;
-        req.exposureEv = exposureEv;
-        req.highlights = highlights;
-        req.blackPoint = blackPoint;
-        req.whitePoint = whitePoint;
-        req.shadows = shadows;
-        req.midtones = midtones;
-        req.contrast = contrast;
-        req.tempK = tempK;
-        req.tint = tint;
-        req.saturation = saturation;
-        req.asShot = asShot == JNI_TRUE;
-        req.wheelShadowX = wheelShadowX;
-        req.wheelShadowY = wheelShadowY;
-        req.wheelMidX = wheelMidX;
-        req.wheelMidY = wheelMidY;
-        req.wheelHighX = wheelHighX;
-        req.wheelHighY = wheelHighY;
-        req.splitShadowHue = splitShadowHue;
-        req.splitHighlightHue = splitHighlightHue;
-        req.splitBalance = splitBalance;
-        req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
-        req.keepVignetting = keepVignetting == JNI_TRUE;
-        req.tonemap = tonemap;
-        // Stage 24 LUT (commit b), same layout as the readback entry above:
-        // the resolved path + the [0,1] strength + the five ordinals
-        // (-1 = the legacy shape); a null jstring is no LUT.
+        // Stage 24 LUT + gyro warp (the caller-resolved pair; warpM may be
+        // null when inactive).
         req.lutStrength = lutStrength;
         if (lutPath != nullptr) {
             const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
@@ -3599,15 +3555,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
         req.lutInTransfer = lutInTransfer;
         req.lutOutGamut = lutOutGamut;
         req.lutOutTransfer = lutOutTransfer;
-        // Gyro warp (the GPU port's commit b), same shape as the readback
-        // entry above: the caller-resolved (warpActive, warpM) pair, the
-        // session's identity no-draw rule on the false case.
         req.warpActive = warpActive == JNI_TRUE;
         if (warpM != nullptr) {
             env->GetFloatArrayRegion(warpM, 0, 9, req.warpM);
         }
         const gles::DevelopFrameResult res =
-            session->renderFrameToEncoder(req, static_cast<int64_t>(ptsUs),
+            session->renderFrameToEncoder(req, grade,
+                                          static_cast<int64_t>(ptsUs),
                                           static_cast<int>(rotationDeg));
         if (!res.ok) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
@@ -3646,15 +3600,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //                            sharpnessV, detailH, detailV, nrChromaH,
 //                            nrChromaV, nrLuma, store, window) -> handle
 //   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
-//   nativePreviewSessionRenderFrame(handle, clipHandle, frameIndex, maxDim,
-//       chromaDenoise, noiseReduction, temporalNr, temporalStrength,
-//       sharpness, detail, exposureEv,
-//       highlights, blackPoint, whitePoint, shadows, midtones, contrast,
-//       tempK, tint, saturation, asShot, wheelShadowX, wheelShadowY,
-//       wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
-//       splitHighlightHue, splitBalance, highlightReconstruction,
-//       keepVignetting, tonemap, lutPath, lutStrength, lutRole,
-//       lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer)
+//   nativePreviewSessionRenderFrameParcel(handle, clipHandle, frameIndex,
+//       maxDim, gradeParcel, lutPath, lutStrength, lutRole, lutInGamut,
+//       lutInTransfer, lutOutGamut, lutOutTransfer, warpActive, warpM)
 //       -> [w, h, pixels...] int array (the small published stats pack)
 //   nativePreviewSessionClose(handle)
 //
@@ -3674,16 +3622,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 // exists on this path — the audit's explicit rule; glReadPixels is used
 // NOWHERE.
 //
-// The grade controls are exactly the fragment-covered set's knobs (the
-// five base ones plus the two spatial-NR stages' raw values since the
-// NR port plus the two unsharp stages' raw values since the
-// sharpness/detail port plus the ten pointwise stages' raw values since
-// the pointwise port — the same narrow-signature lock as the export
-// seam: an uncovered grade cannot even be expressed here). The temporal
-// pair rides the hybrid's routing rule: it dies at this bridge,
-// consumed by temporalMergedCfa BEFORE the CFA reduction, so the reduced
-// mosaic samples the MERGED CFA (the merge math stays core/Temporal.cpp's,
-// frozen — routing, not porting).
+// The grade controls cross as the ONE flat grade parcel (GRADE PARCEL,
+// commit a + b: the 29 fragment-covered scalar knobs as one FloatArray,
+// GENERATED from tools/gen-grade-parcel.py's schema on both sides of the
+// seam — the same parcel the export and develop-session doors ride, so
+// a new grade field is a schema row, not a signature widening). The
+// temporal pair rides the parcel like every other scalar and dies at
+// this bridge, consumed by temporalMergedCfa BEFORE the CFA reduction,
+// so the reduced mosaic samples the MERGED CFA (the merge math stays
+// core/Temporal.cpp's, frozen — routing, not porting).
 
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionOpen(
@@ -3937,26 +3884,29 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetSurface(
     return JNI_TRUE;
 }
 
+// The preview session's render door (GRADE PARCEL, commit a + b): 14
+// parameters — the 29-field grade block collapsed into gradeParcel
+// (maxDim stays: job mechanics, not a grade scalar). The parcel is
+// decoded ONCE at the top (a refusal fails the render honestly with
+// setError + null, never a silent misread); the grade rides the
+// struct-taking session overload (the GENERATED fold). Commit (b): the
+// flat nativePreviewSessionRenderFrame died with its Kotlin decl — this
+// is the ONLY preview render door.
 JNIEXPORT jintArray JNICALL
-Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParcel(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
-        jint frameIndex, jint maxDim, jfloat chromaDenoise,
-        jfloat noiseReduction, jboolean temporalNr, jfloat temporalStrength,
-        jfloat sharpness, jfloat detail,
-        jfloat exposureEv, jfloat highlights,
-        jfloat blackPoint, jfloat whitePoint, jfloat shadows,
-        jfloat midtones, jfloat contrast, jfloat tempK, jfloat tint,
-        jfloat saturation, jboolean asShot,
-        jfloat wheelShadowX, jfloat wheelShadowY,
-        jfloat wheelMidX, jfloat wheelMidY,
-        jfloat wheelHighX, jfloat wheelHighY,
-        jfloat splitShadowHue, jfloat splitHighlightHue,
-        jfloat splitBalance,
-        jboolean highlightReconstruction, jboolean keepVignetting,
-        jint tonemap, jstring lutPath, jfloat lutStrength,
+        jint frameIndex, jint maxDim, jfloatArray gradeParcel,
+        jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
         jint lutOutGamut, jint lutOutTransfer,
         jboolean warpActive, jfloatArray warpM) {
+    gles::DevelopGrade grade;
+    std::string parcelError;
+    if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 parcelError);
+        return nullptr;
+    }
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     if (sessionHandle <= 0 || sessionHandle > kMaxPreviewSessions) {
@@ -3979,16 +3929,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
     rawedit::Source* s = sourceFor(clipHandle);
     if (!s) return nullptr;
     try {
-        // Decode + frame info on the CALLING thread (Source's one-thread
-        // rule; the ring amortizes sequential playback frames exactly like
-        // the export seam). Only the GL work marshals.
-        //
-        // The per-stage timing spans (trace-dims fix 2026-11-14) mirror the
-        // export timing block's steady_clock boundary pattern — ALWAYS
-        // collected (the trace's debug gate is the PRINTING gate, the
-        // RenderTrace.enabled precedent; the cost is a handful of clock
-        // reads per GPU frame, negligible next to the decode itself), and
-        // carried out through the array tail below.
+        // Decode + frame info on the CALLING thread, the per-stage timing
+        // spans ALWAYS collected.
         using SteadyClock = std::chrono::steady_clock;
         const SteadyClock::time_point tDecode0 = SteadyClock::now();
         Entry& e = gEntries[clipHandle - 1];
@@ -3996,35 +3938,19 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         if (center == nullptr) return nullptr; // decode failed (error set)
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
-        // Temporal NR (the hybrid's routing), same shape as the export
-        // seams above: the SAME temporalMergedCfa the CPU preview rides
-        // (nativePreviewRender's step 2), the SAME per-Entry caches —
-        // the preview pump and a GPU export of the same clip share the
-        // ring LRU, the frame+strength-keyed merged-CFA cache, and the
-        // MAFD pair cache. Off hands back the pristine center and drops
-        // the temporal caches (the interactive cachedCfa is untouched —
-        // the off-branch never touches it). A neighbor decode failure
-        // fails the render (error set), never a silent pristine
-        // fallback. The merge runs BEFORE the reduction below, so the
-        // reduced mosaic samples the MERGED CFA; its cost lands inside
-        // the decUs span (tDecode1 is read after it) — the honest
-        // placement, matching the export path's temporal= span shape.
+        // Temporal NR — the temporal pair arrives IN the parcel here (the
+        // decoded struct), consumed by the merge BEFORE the reduction
+        // below, so the reduced mosaic samples the MERGED CFA (the honest
+        // placement, decUs covers the merge).
         const CfaBuffer cfa = temporalMergedCfa(
             *s, e, frameIndex, center, info,
-            temporalNr == JNI_TRUE, temporalStrength);
+            grade.temporalNr, grade.temporalStrength);
         if (cfa == nullptr) return nullptr; // neighbor decode failed
         const SteadyClock::time_point tDecode1 = SteadyClock::now();
         const double decodeUs = elapsedUs(tDecode0, tDecode1);
 
         // The preview CFA reduction — Thumbnail.h's cell-aligned math,
-        // copied per the documented-copy rule (core/ is READ-ONLY; the
-        // same rule the other decimation copies in this file ride).
-        // N == 1 borrows the ring buffer directly (no copy, no decimation
-        // — the full-res tier); N >= 2 decimates into a reused thread_local
-        // scratch. Output cell (ocx, ocy) copies source cell (ocx*N, ocy*N)
-        // verbatim, so the 2x2 Bayer pattern survives: RGGB stays RGGB and
-        // uCell/uBlack/uRange plus the shading plane order stay valid at
-        // the reduced tier.
+        // copied per the documented-copy rule (core/ is READ-ONLY).
         const SteadyClock::time_point tCfa0 = SteadyClock::now();
         const int strideN = strideFor(info, maxDim);
         uint32_t reducedW = 0;
@@ -4076,41 +4002,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.cfa = reducedCfa;
         req.info = reducedInfo;
         req.meta = &meta;
-        req.chromaDenoise = chromaDenoise;
-        req.noiseReduction = noiseReduction;
-        // Stages 21/22 (the sharpness/detail seam commit), same shape as
-        // the develop-session entries above: the raw grade percents
-        // verbatim, NO clamp (negatives = the CPU's softening direction).
-        req.sharpness = sharpness;
-        req.detail = detail;
-        req.exposureEv = exposureEv;
-        req.highlights = highlights;
-        req.blackPoint = blackPoint;
-        req.whitePoint = whitePoint;
-        req.shadows = shadows;
-        req.midtones = midtones;
-        req.contrast = contrast;
-        req.tempK = tempK;
-        req.tint = tint;
-        req.saturation = saturation;
-        req.asShot = asShot == JNI_TRUE;
-        req.wheelShadowX = wheelShadowX;
-        req.wheelShadowY = wheelShadowY;
-        req.wheelMidX = wheelMidX;
-        req.wheelMidY = wheelMidY;
-        req.wheelHighX = wheelHighX;
-        req.wheelHighY = wheelHighY;
-        req.splitShadowHue = splitShadowHue;
-        req.splitHighlightHue = splitHighlightHue;
-        req.splitBalance = splitBalance;
-        req.highlightReconstruction = highlightReconstruction == JNI_TRUE;
-        req.keepVignetting = keepVignetting == JNI_TRUE;
-        req.tonemap = tonemap;
-        // Stage 24 LUT (commit b), same layout as the develop-session
-        // entries above: the resolved .cube path (per request, the
-        // lutPathFor resolution), the [0,1] strength and the five
-        // interpretation ordinals (-1 = the legacy shape). A null jstring
-        // is an empty path = no LUT (the old look).
+        // Stage 24 LUT + gyro warp: the resolved .cube path (per request,
+        // the lutPathFor resolution), the [0,1] strength and the five
+        // interpretation ordinals (-1 = the legacy shape); warpActive
+        // false = the session skips draw 10 entirely (warpM may be null
+        // when inactive).
         req.lutStrength = lutStrength;
         if (lutPath != nullptr) {
             const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
@@ -4124,40 +4020,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrame(
         req.lutInTransfer = lutInTransfer;
         req.lutOutGamut = lutOutGamut;
         req.lutOutTransfer = lutOutTransfer;
-        // Gyro warp (the GPU port's commit b), same shape as the develop
-        // session entries: the caller resolved the plan at this tier's
-        // dims on the engine thread (nativeStabWarpResolve with this
-        // render's own maxDim) and hands the pair verbatim; warpActive
-        // false = the session skips draw 10 entirely.
         req.warpActive = warpActive == JNI_TRUE;
         if (warpM != nullptr) {
             env->GetFloatArrayRegion(warpM, 0, 9, req.warpM);
         }
-        // The stats-readback toggle rides the request (the gSyncRefine
-        // precedent): the bridge-level atomic, flipped by the
-        // nativeSetPreviewStatsEnabled JNI setter, copied per render.
+        // The stats-readback toggle rides the request: the bridge-level
+        // atomic, copied per render.
         req.statsEnabled = gPreviewStatsEnabled.load(std::memory_order_relaxed);
-        const gles::PreviewFrameResult res = session->renderFrame(req);
+        const gles::PreviewFrameResult res = session->renderFrame(req, grade);
         if (!res.ok) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "preview session render: " + res.detail +
                          " (recovery: the preview falls back to the CPU develop)");
             return nullptr;
         }
-        // The published stats pack in developToArgb's int-array shape:
-        // [w, h, pixels...] (the SAME shape the CPU preview publishes, so
-        // the Compose overlays consume either path unchanged) — PLUS the
-        // trace-dims fix's 13-int measurement tail (2026-11-14):
-        // [sourceW, sourceH, developW, developH, surfaceW, surfaceH,
-        //  statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs].
-        // The dims are the ones the ritim-trace line logs on the GPU path
-        // (the published pack's dims are NOT the render dims — out= keeps
-        // logging the pack, the tail carries the truth); the six spans are
-        // the per-stage steady_clock timings in MICROSECONDS (the dec/cfa
-        // spans measured here, the four GL-thread spans measured inside
-        // runJob and returned on the result). renderArrayBlocking accepts
-        // BOTH the old (2 + w*h) and this new (2 + w*h + 13) length — the
-        // old parser stays byte-compatible.
+        // The published stats pack: [w, h, pixels...] (the SAME shape the
+        // CPU preview publishes, so the Compose overlays consume either
+        // path unchanged) + the 13-int measurement tail.
         const jsize n = static_cast<jsize>(res.argb8888.size());
         if (res.width == 0 || res.height == 0 ||
             n <= 0 || static_cast<size_t>(n) != res.argb8888.size()) {

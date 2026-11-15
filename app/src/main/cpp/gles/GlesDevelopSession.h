@@ -68,7 +68,7 @@
 // INPUT/OUTPUT: input is the DECODED full-res CFA (the CPU decode stays —
 // one motioncam Source belongs to one thread, so the caller decodes on its
 // own engine thread and hands the bytes over). Output is full-res RGB888,
-// row-major, NOT rotated — the SAME byte shape nativeExportFrame returns,
+// row-major, NOT rotated — the SAME byte shape nativeExportFrameParcel returns,
 // so the existing Kotlin rotate/crop/YUV/writer tail is shared verbatim.
 //
 // COLOR CONTRACT (why the output can replace the CPU develop): the shader
@@ -173,6 +173,8 @@
 #include <android/native_window.h>
 
 #include <rawedit/Source.h>
+
+#include "GradeParcel.h"
 
 namespace gles {
 
@@ -331,9 +333,20 @@ public:
     bool healthy() const;
     std::string failureDetail() const;
 
-    // Blocking render; in-flight bounded at one by construction. Safe to
-    // call from one non-GL thread at a time (the export engine thread).
-    DevelopFrameResult renderFrame(const DevelopFrameRequest& req);
+    // GRADE PARCEL (commit a + b): blocking render, in-flight bounded at
+    // one by construction. Safe to call from one non-GL thread at a time
+    // (the export engine thread). The grade arrives as the decoded parcel
+    // struct, folded onto a stack copy of [req] via the GENERATED
+    // applyGradeToRequest (gles/GradeParcel.h — the schema's single source
+    // of truth; a schema field with no matching request member fails the
+    // compile here, the honest catch). The [req] the caller builds carries
+    // ONLY the non-grade fields (cfa/info/meta, the LUT binding group, the
+    // warp pair); the temporal pair never reaches the request — the bridge
+    // consumed it at temporalMergedCfa before this call. The flat
+    // pre-folded overload died with commit (b): every door into the
+    // session threads the grade through the parcel.
+    DevelopFrameResult renderFrame(const DevelopFrameRequest& req,
+                                   const DevelopGrade& grade);
 
     // ENCODER SURFACE (M5). Hands an ANativeWindow (from a MediaCodec
     // input Surface) to the GL thread: it wraps the window in
@@ -364,10 +377,13 @@ public:
     // upright copy. ok=false latches the session unhealthy (mid-render
     // GL failure semantics, same as renderFrame). Requires a successful
     // setEncoderSurface first; the refusal is honest and named, never a
-    // crash.
+    // crash. GRADE PARCEL (commit a + b): the encoder twin of the
+    // struct-taking renderFrame above — the ONLY encoder door, same
+    // GENERATED fold; the flat pre-folded overload died with commit (b).
     DevelopFrameResult renderFrameToEncoder(const DevelopFrameRequest& req,
+                                            const DevelopGrade& grade,
                                             int64_t ptsUs,
-                                            int rotationDeg = 0);
+                                            int rotationDeg);
 
     // See the destructor. Callable from the owning thread.
     void close();

@@ -128,7 +128,7 @@ class NativeSource private constructor(
                 // never logs.
                 if (BuildConfig.DEBUG) nativeSetStabDebugLog(true)
                 // Export sub-stage timing (commit (d)): same gate — debug
-                // builds collect the six nativeExportFrame sub-stage slots
+                // builds collect the six nativeExportFrameParcel sub-stage slots
                 // (decode/temporal/develop/warp/oetf/copy) so the export
                 // sample lines can split "native=..ms"; release reads one
                 // relaxed atomic per boundary and collects nothing.
@@ -210,7 +210,7 @@ class NativeSource private constructor(
 
         /**
          * Toggles the export sub-stage timing collection (commit (d)):
-         * when on, nativeExportFrame records its six internals — decode,
+         * when on, nativeExportFrameParcel records its six internals — decode,
          * temporal NR, develop, gyro warp, OETF+pack, JNI copy — into
          * thread-local slots read by [nativeExportFrameTimingMs]. Called
          * once from the companion init with BuildConfig.DEBUG (the
@@ -248,12 +248,12 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeSetPreviewStatsEnabled(enabled: Boolean)
 
         /**
-         * The six sub-stage slots of the frame nativeExportFrame just
+         * The six sub-stage slots of the frame nativeExportFrameParcel just
          * produced, in milliseconds, in the fixed order
          * [decode, temporal, develop, warp, oetf_pack, jni_copy] — or null
          * when the gate is off (release) or nothing was collected.
          * Thread-local like the error accessors: call on the export thread
-         * right after a successful nativeExportFrame.
+         * right after a successful nativeExportFrameParcel.
          */
         @JvmStatic private external fun nativeExportFrameTimingMs(): DoubleArray?
 
@@ -494,6 +494,18 @@ class NativeSource private constructor(
         // ---- MP4 export JNI (full-res developCpu -> Rec709 -> RGB888) ----
 
         /**
+         * GRADE PARCEL (commit b): the CPU export's frame develop — the 29
+         * scalar grade fields cross as ONE flat FloatArray
+         * (engine/GradeParcel.kt's encode; the slot layout is GENERATED from
+         * tools/gen-grade-parcel.py's schema, the single source of truth for
+         * both sides of the seam). The bridge decodes ONCE per call into a
+         * struct; a wrong-length or malformed parcel refuses the frame
+         * honestly (setError + null, the lastError contract) — never a
+         * silent misread. The LUT binding group (lutPath/lutStrength + the
+         * five ordinals) and the stabilization plan stay flat parameters:
+         * they are per-job, not per-grade-change, and are documented OUT of
+         * the parcel in GradeParcel's KDoc.
+         *
          * Develops frame [frameIndex] of the opened export session
          * ([handle] from nativePreviewOpen) at FULL resolution with the job's
          * grade snapshot: developCpu -> linearToRec709 -> clamp -> 8-bit
@@ -507,49 +519,16 @@ class NativeSource private constructor(
          * no LUT) and the strength blend already mapped to 0..1 (percent /
          * 100). The SAME stage-24 apply as the preview, so the owner's
          * preview-vs-export acceptance check compares like with like.
-         * noiseReduction/chromaDenoise (DN-01..08): the job snapshot's
-         * denoise strengths at the native 0..100 scale (0 = stage skipped).
-         * wheel/split (COL-13): the job snapshot's wheel offsets and
-         * split-tone scalars — the SAME stage-18/19 apply as the preview
-         * (identical math, identical order; export parity by construction).
          * lutRole..lutOutTransfer (managed interpretations, 2026-11-13):
          * the snapshot's binding ordinals as in nativePreviewRender; all
          * five -1 = the legacy stage-24 path, byte-identical.
          */
-        @JvmStatic private external fun nativeExportFrame(
+        @JvmStatic private external fun nativeExportFrameParcel(
             handle: Long,
             frameIndex: Int,
-            exposureEv: Float,
-            highlights: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            asShot: Boolean,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            sharpness: Float,
-            detail: Float,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
-            noiseReduction: Float,
-            chromaDenoise: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
             gyroPath: String?,
             stabMode: Int,
             stabStrength: Float,
@@ -909,16 +888,14 @@ class NativeSource private constructor(
          * the step). RenderFrame decodes the clip's frame on the CALLING
          * thread (the clip handle's own ring) and renders it through the
          * session's GL thread — full-res RGB888, row-major, NOT rotated,
-         * the same byte shape nativeExportFrame returns. The render takes
-         * the fragment-covered grade controls (the five base ones, the
-         * two spatial-NR stages' raw values since the spatial-NR port —
-         * stages 7/8 — the two unsharp stages' raw values since the
-         * sharpness/detail port — stages 21/22, threaded with NO clamp
-         * because the CPU's amount mapping makes negative values valid
-         * (softening) — plus the ten pointwise stages' raw values); an
-         * uncovered grade cannot express itself through this signature.
-         * Close is idempotent. Device-test-pending (the owner's
-         * covered-grade GPU export is the production proof).
+         * the same byte shape nativeExportFrameParcel returns. The render
+         * takes the fragment-covered grade controls as the GRADE PARCEL
+         * (commit b: the 29 scalar fields as ONE flat FloatArray —
+         * GradeParcel.encode; the layout is GENERATED from
+         * tools/gen-grade-parcel.py's schema); an uncovered grade cannot
+         * express itself through the parcel. Close is idempotent.
+         * Device-test-pending (the owner's covered-grade GPU export is the
+         * production proof).
          *
          * Sharpness/detail port: the develop fragment is now the SPLIT
          * three-way pair (pre / pointwise post / tail) plus the four
@@ -946,39 +923,22 @@ class NativeSource private constructor(
             blitFragmentSource: String,
         ): Long
 
-        @JvmStatic private external fun nativeDevelopSessionRenderFrame(
+        /**
+         * GRADE PARCEL (commit b): the develop session's render door — the
+         * 29 scalar grade fields as ONE flat FloatArray
+         * (GradeParcel.encode; the layout is GENERATED from
+         * tools/gen-grade-parcel.py's schema, the single source of truth
+         * for both sides of the seam). The bridge decodes ONCE per call;
+         * the temporal pair rides the parcel and is consumed by the
+         * temporal merge before the request exists. A malformed parcel
+         * refuses the frame honestly (setError + null). The LUT binding
+         * group and the caller-resolved warp pair stay flat parameters.
+         */
+        @JvmStatic private external fun nativeDevelopSessionRenderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -1014,40 +974,22 @@ class NativeSource private constructor(
             surface: Any?,
         ): Boolean
 
-        @JvmStatic private external fun nativeDevelopSessionRenderFrameToEncoder(
+        /**
+         * GRADE PARCEL (commit b): the encoder-surface render door — the
+         * 29 scalar grade fields as ONE flat FloatArray
+         * (GradeParcel.encode; the layout is GENERATED from
+         * tools/gen-grade-parcel.py's schema, the single source of truth
+         * for both sides of the seam). Same contract as the M5 entry:
+         * false + lastError on refusal, the encoder pts stamping and
+         * rotation fold unchanged. A malformed parcel refuses the frame
+         * honestly (setError + false).
+         */
+        @JvmStatic private external fun nativeDevelopSessionRenderFrameToEncoderParcel(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
             ptsUs: Long,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -1121,40 +1063,23 @@ class NativeSource private constructor(
             surface: Any?,
         ): Boolean
 
-        @JvmStatic private external fun nativePreviewSessionRenderFrame(
+        /**
+         * GRADE PARCEL (commit b): the preview session's render door — the
+         * 29 scalar grade fields as ONE flat FloatArray
+         * (GradeParcel.encode; the layout is GENERATED from
+         * tools/gen-grade-parcel.py's schema, the single source of truth
+         * for both sides of the seam). The caller encodes per request,
+         * AFTER the temporalNr tier fold (PreviewTiers) — the parcel
+         * carries the EFFECTIVE value. A malformed parcel refuses the
+         * render honestly (setError + null; the Kotlin gate falls the
+         * preview back to CPU as always).
+         */
+        @JvmStatic private external fun nativePreviewSessionRenderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
             maxDim: Int,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -1336,41 +1261,19 @@ class NativeSource private constructor(
         ): Boolean =
             nativeLinearDngExport(fd, frameIndex, manualRotationDeg, cropX, cropY, cropW, cropH, outPath)
 
-        /** JNI bridge: see nativeExportFrame. */
-        internal fun jniExportFrame(
+        /**
+         * JNI bridge: see nativeExportFrameParcel. Expression-bodied with
+         * NO nativeAvailable guard — the caller (Mp4Exporter) goes through
+         * requireNative() first. The parcel is the caller-built
+         * GradeParcel.encode(grade) packet, built ONCE per grade change,
+         * not re-encoded per frame.
+         */
+        internal fun jniExportFrameParcel(
             handle: Long,
             frameIndex: Int,
-            exposureEv: Float,
-            highlights: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            asShot: Boolean,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            sharpness: Float,
-            detail: Float,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
-            noiseReduction: Float,
-            chromaDenoise: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
             gyroPath: String?,
             stabMode: Int,
             stabStrength: Float,
@@ -1382,17 +1285,9 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
-        ): ByteArray? = nativeExportFrame(
-            handle, frameIndex,
-            exposureEv, highlights, tempK, tint,
-            saturation, blackPoint, whitePoint, shadows, midtones, contrast,
-            asShot, highlightReconstruction, keepVignetting,
-            sharpness, detail, tonemap,
+        ): ByteArray? = nativeExportFrameParcel(
+            handle, frameIndex, gradeParcel,
             lutPath, lutStrength,
-            noiseReduction, chromaDenoise,
-            temporalNr, temporalStrength,
-            wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
-            wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
         )
@@ -1453,7 +1348,7 @@ class NativeSource private constructor(
 
         /**
          * JNI bridge: see nativeExportFrameTimingMs — the six sub-stage
-         * slots of the frame nativeExportFrame just produced, read on the
+         * slots of the frame nativeExportFrameParcel just produced, read on the
          * export thread right after a successful call.
          */
         internal fun jniExportFrameTimingMs(): DoubleArray? =
@@ -1735,39 +1630,18 @@ class NativeSource private constructor(
                 blitFragmentSource)
         }
 
-        internal fun jniDevelopSessionRenderFrame(
+        /**
+         * JNI bridge: see nativeDevelopSessionRenderFrameParcel. GRADE
+         * PARCEL (commit b): the develop session's ONLY render door — the
+         * flat per-field wrapper died with the flat external decl. Same
+         * no-default rule as every wrapper here (the signature-lock test
+         * reflects over declared methods).
+         */
+        internal fun jniDevelopSessionRenderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -1781,17 +1655,10 @@ class NativeSource private constructor(
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
             }
-            return nativeDevelopSessionRenderFrame(
-                sessionHandle, clipHandle, frameIndex, chromaDenoise,
-                noiseReduction, temporalNr, temporalStrength,
-                sharpness, detail, exposureEv, highlights,
-                blackPoint, whitePoint, shadows, midtones, contrast, tempK,
-                tint, saturation, asShot, wheelShadowX, wheelShadowY,
-                wheelMidX, wheelMidY, wheelHighX, wheelHighY, splitShadowHue,
-                splitHighlightHue, splitBalance, highlightReconstruction,
-                keepVignetting, tonemap, lutPath, lutStrength, lutRole,
-                lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
-                warpActive, warpM)
+            return nativeDevelopSessionRenderFrameParcel(
+                sessionHandle, clipHandle, frameIndex, gradeParcel,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM)
         }
 
         /**
@@ -1822,40 +1689,12 @@ class NativeSource private constructor(
          * explicitly (0 for the upright case). The same no-default rule
          * holds for every parameter of every wrapper here.
          */
-        internal fun jniDevelopSessionRenderFrameToEncoder(
+        internal fun jniDevelopSessionRenderFrameToEncoderParcel(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
             ptsUs: Long,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -1870,17 +1709,10 @@ class NativeSource private constructor(
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
             }
-            return nativeDevelopSessionRenderFrameToEncoder(
-                sessionHandle, clipHandle, frameIndex, ptsUs, chromaDenoise,
-                noiseReduction, temporalNr, temporalStrength,
-                sharpness, detail, exposureEv, highlights,
-                blackPoint, whitePoint, shadows, midtones,
-                contrast, tempK, tint, saturation, asShot, wheelShadowX,
-                wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
-                splitShadowHue, splitHighlightHue, splitBalance,
-                highlightReconstruction, keepVignetting, tonemap, lutPath,
-                lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut,
-                lutOutTransfer, warpActive, warpM, rotationDeg)
+            return nativeDevelopSessionRenderFrameToEncoderParcel(
+                sessionHandle, clipHandle, frameIndex, ptsUs, gradeParcel,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM, rotationDeg)
         }
 
         internal fun jniDevelopSessionClose(sessionHandle: Long) {
@@ -1942,40 +1774,19 @@ class NativeSource private constructor(
             return nativePreviewSessionSetSurface(sessionHandle, surface)
         }
 
-        internal fun jniPreviewSessionRenderFrame(
+        /**
+         * JNI bridge: see nativePreviewSessionRenderFrameParcel. GRADE
+         * PARCEL (commit b): the preview session's ONLY render door — the
+         * flat per-field wrapper died with the flat external decl. Same
+         * no-default rule (the signature-lock test reflects over declared
+         * methods).
+         */
+        internal fun jniPreviewSessionRenderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,
             frameIndex: Int,
             maxDim: Int,
-            chromaDenoise: Float,
-            noiseReduction: Float,
-            temporalNr: Boolean,
-            temporalStrength: Float,
-            sharpness: Float,
-            detail: Float,
-            exposureEv: Float,
-            highlights: Float,
-            blackPoint: Float,
-            whitePoint: Float,
-            shadows: Float,
-            midtones: Float,
-            contrast: Float,
-            tempK: Float,
-            tint: Float,
-            saturation: Float,
-            asShot: Boolean,
-            wheelShadowX: Float,
-            wheelShadowY: Float,
-            wheelMidX: Float,
-            wheelMidY: Float,
-            wheelHighX: Float,
-            wheelHighY: Float,
-            splitShadowHue: Float,
-            splitHighlightHue: Float,
-            splitBalance: Float,
-            highlightReconstruction: Boolean,
-            keepVignetting: Boolean,
-            tonemap: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -1989,17 +1800,10 @@ class NativeSource private constructor(
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
             }
-            return nativePreviewSessionRenderFrame(
-                sessionHandle, clipHandle, frameIndex, maxDim, chromaDenoise,
-                noiseReduction, temporalNr, temporalStrength,
-                sharpness, detail, exposureEv, highlights,
-                blackPoint, whitePoint, shadows, midtones,
-                contrast, tempK, tint, saturation, asShot, wheelShadowX,
-                wheelShadowY, wheelMidX, wheelMidY, wheelHighX, wheelHighY,
-                splitShadowHue, splitHighlightHue, splitBalance,
-                highlightReconstruction, keepVignetting, tonemap, lutPath,
-                lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut,
-                lutOutTransfer, warpActive, warpM)
+            return nativePreviewSessionRenderFrameParcel(
+                sessionHandle, clipHandle, frameIndex, maxDim, gradeParcel,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {
