@@ -563,6 +563,39 @@ class NativeSource private constructor(
             lutOutTransfer: Int,
         ): ByteArray?
 
+        /**
+         * GRADE PARCEL (commit a, additive): the parcel twin of
+         * nativeExportFrame above — the 29 scalar grade fields cross as ONE
+         * flat FloatArray (engine/GradeParcel.kt's encode; the slot layout is
+         * GENERATED from tools/gen-grade-parcel.py's schema, the single
+         * source of truth for both sides of the seam). The bridge decodes
+         * ONCE per call into a struct; a wrong-length or malformed parcel
+         * refuses the frame honestly (setError + null, the same lastError
+         * contract as above) — never a silent misread. The LUT binding
+         * group (lutPath/lutStrength + the five ordinals) and the
+         * stabilization plan stay flat parameters exactly as above: they are
+         * per-job, not per-grade-change, and are documented OUT of the
+         * parcel in GradeParcel's KDoc.
+         */
+        @JvmStatic private external fun nativeExportFrameParcel(
+            handle: Long,
+            frameIndex: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+        ): ByteArray?
+
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
         @JvmStatic private external fun nativeFramePtsUs(handle: Long, index: Int): Long
 
@@ -991,6 +1024,33 @@ class NativeSource private constructor(
         ): ByteArray?
 
         /**
+         * GRADE PARCEL (commit a, additive): the parcel twin of
+         * nativeDevelopSessionRenderFrame above — the 29 scalar grade
+         * fields as ONE flat FloatArray (GradeParcel.encode; the layout is
+         * GENERATED from tools/gen-grade-parcel.py's schema). The bridge
+         * decodes ONCE per call; the temporal pair rides the parcel and is
+         * consumed by the temporal merge before the request exists, exactly
+         * like the flat pair above. A malformed parcel refuses the frame
+         * honestly (setError + null). The LUT binding group and the
+         * caller-resolved warp pair stay flat parameters as above.
+         */
+        @JvmStatic private external fun nativeDevelopSessionRenderFrameParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+        ): ByteArray?
+
+        /**
          * M5 commit (a): the encoder-surface seam pair. SetEncoderSurface
          * hands the MediaCodec input Surface to the session (it wraps the
          * window in an EGL window surface ONCE per export on the session's
@@ -1048,6 +1108,34 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+            rotationDeg: Int,
+        ): Boolean
+
+        /**
+         * GRADE PARCEL (commit a, additive): the parcel twin of
+         * nativeDevelopSessionRenderFrameToEncoder above — the 29 scalar
+         * grade fields as ONE flat FloatArray (GradeParcel.encode; the
+         * layout is GENERATED from tools/gen-grade-parcel.py's schema).
+         * Same contract as the flat entry above: false + lastError on
+         * refusal, the encoder pts stamping and rotation fold unchanged.
+         * A malformed parcel refuses the frame honestly (setError +
+         * false).
+         */
+        @JvmStatic private external fun nativeDevelopSessionRenderFrameToEncoderParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            ptsUs: Long,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -1155,6 +1243,34 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+        ): IntArray?
+
+        /**
+         * GRADE PARCEL (commit a, additive): the parcel twin of
+         * nativePreviewSessionRenderFrame above — the 29 scalar grade
+         * fields as ONE flat FloatArray (GradeParcel.encode; the layout is
+         * GENERATED from tools/gen-grade-parcel.py's schema). The caller
+         * encodes per request, AFTER the temporalNr tier fold
+         * (PreviewTiers) — the parcel carries the EFFECTIVE value, exactly
+         * like the flat boolean above. A malformed parcel refuses the
+         * render honestly (setError + null; the Kotlin gate falls the
+         * preview back to CPU as always).
+         */
+        @JvmStatic private external fun nativePreviewSessionRenderFrameParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            maxDim: Int,
+            gradeParcel: FloatArray,
             lutPath: String?,
             lutStrength: Float,
             lutRole: Int,
@@ -1393,6 +1509,37 @@ class NativeSource private constructor(
             temporalNr, temporalStrength,
             wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
             wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
+            gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
+            lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+        )
+
+        /**
+         * JNI bridge: see nativeExportFrameParcel. Expression-bodied with
+         * NO nativeAvailable guard, same as jniExportFrame above — the
+         * caller (Mp4Exporter) goes through requireNative() first. The
+         * parcel is the caller-built GradeParcel.encode(grade) packet,
+         * built ONCE per grade change, not re-encoded per frame.
+         */
+        internal fun jniExportFrameParcel(
+            handle: Long,
+            frameIndex: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            gyroPath: String?,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            stabFocalMm: Float,
+            stabTrimMs: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+        ): ByteArray? = nativeExportFrameParcel(
+            handle, frameIndex, gradeParcel,
+            lutPath, lutStrength,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
         )
@@ -1795,6 +1942,36 @@ class NativeSource private constructor(
         }
 
         /**
+         * JNI bridge: see nativeDevelopSessionRenderFrameParcel — the
+         * parcel twin of jniDevelopSessionRenderFrame above. Same no-default
+         * rule as every wrapper here (the signature-lock test reflects over
+         * declared methods).
+         */
+        internal fun jniDevelopSessionRenderFrameParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+        ): ByteArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionRenderFrameParcel(
+                sessionHandle, clipHandle, frameIndex, gradeParcel,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM)
+        }
+
+        /**
          * JNI bridge: the encoder-surface seam (M5 commit a). Both throw
          * IllegalStateException when the .so is absent. SetEncoderSurface
          * takes the MediaCodec input Surface as Any? (the JVM-loadability
@@ -1881,6 +2058,38 @@ class NativeSource private constructor(
                 highlightReconstruction, keepVignetting, tonemap, lutPath,
                 lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut,
                 lutOutTransfer, warpActive, warpM, rotationDeg)
+        }
+
+        /**
+         * JNI bridge: see nativeDevelopSessionRenderFrameToEncoderParcel —
+         * the parcel twin of jniDevelopSessionRenderFrameToEncoder above.
+         * Same no-default rule (the signature-lock test reflects over
+         * declared methods).
+         */
+        internal fun jniDevelopSessionRenderFrameToEncoderParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            ptsUs: Long,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+            rotationDeg: Int,
+        ): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionRenderFrameToEncoderParcel(
+                sessionHandle, clipHandle, frameIndex, ptsUs, gradeParcel,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM, rotationDeg)
         }
 
         internal fun jniDevelopSessionClose(sessionHandle: Long) {
@@ -2000,6 +2209,37 @@ class NativeSource private constructor(
                 highlightReconstruction, keepVignetting, tonemap, lutPath,
                 lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut,
                 lutOutTransfer, warpActive, warpM)
+        }
+
+        /**
+         * JNI bridge: see nativePreviewSessionRenderFrameParcel — the
+         * parcel twin of jniPreviewSessionRenderFrame above. Same
+         * no-default rule (the signature-lock test reflects over declared
+         * methods).
+         */
+        internal fun jniPreviewSessionRenderFrameParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            maxDim: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+        ): IntArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativePreviewSessionRenderFrameParcel(
+                sessionHandle, clipHandle, frameIndex, maxDim, gradeParcel,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {

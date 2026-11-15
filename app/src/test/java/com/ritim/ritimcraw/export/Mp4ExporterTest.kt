@@ -7,6 +7,7 @@ import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.LutRole
 import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.engine.GradeParcel
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
 import kotlinx.coroutines.runBlocking
@@ -2482,6 +2483,89 @@ class Mp4ExporterTest {
 
         override fun closeSession(sessionHandle: Long) {
             closedHandles.add(sessionHandle)
+        }
+
+        /**
+         * GRADE PARCEL (commit a, additive): the parcel-aware twin of
+         * renderFrame above — decodes the parcel via GradeParcel.decode
+         * (the real decoder, so the fake asserts the SAME wire format the
+         * bridge reads) and records the SAME snapshots the flat recorder
+         * does, field for field. The dispatcher still rides the flat door
+         * until commit (b) flips it, so this override only fires once the
+         * dispatch switches; the decode-refusal contract (wrong length
+         * throws IllegalStateException) is exercised by GradeParcelTest.
+         */
+        override fun renderFrameParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+        ): ByteArray? {
+            val g = GradeParcel.decode(gradeParcel)
+            return renderFrame(
+                sessionHandle, clipHandle, frameIndex,
+                g.chromaDenoise, g.noiseReduction,
+                g.temporalNr, g.temporalStrength,
+                g.sharpness, g.detail,
+                g.exposureEv, g.highlights,
+                g.blackPoint, g.whitePoint, g.shadows, g.midtones,
+                g.contrast, g.tempK, g.tint, g.saturation, g.asShot,
+                g.wheelShadowX, g.wheelShadowY, g.wheelMidX, g.wheelMidY,
+                g.wheelHighX, g.wheelHighY,
+                g.splitShadowHue, g.splitHighlightHue, g.splitBalance,
+                g.highlightReconstruction, g.keepVignetting, g.tonemap,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM,
+            )
+        }
+
+        /**
+         * GRADE PARCEL (commit a, additive): the parcel-aware twin of
+         * renderFrameToEncoder above — same decode-and-forward shape as
+         * the readback twin.
+         */
+        override fun renderFrameToEncoderParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            ptsUs: Long,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+            rotationDeg: Int,
+        ): Boolean {
+            val g = GradeParcel.decode(gradeParcel)
+            return renderFrameToEncoder(
+                sessionHandle, clipHandle, frameIndex, ptsUs,
+                g.chromaDenoise, g.noiseReduction,
+                g.temporalNr, g.temporalStrength,
+                g.sharpness, g.detail,
+                g.exposureEv, g.highlights,
+                g.blackPoint, g.whitePoint, g.shadows, g.midtones,
+                g.contrast, g.tempK, g.tint, g.saturation, g.asShot,
+                g.wheelShadowX, g.wheelShadowY, g.wheelMidX, g.wheelMidY,
+                g.wheelHighX, g.wheelHighY,
+                g.splitShadowHue, g.splitHighlightHue, g.splitBalance,
+                g.highlightReconstruction, g.keepVignetting, g.tonemap,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM, rotationDeg,
+            )
         }
 
         override fun lastDetail(): String? = detail ?: encoderDetail

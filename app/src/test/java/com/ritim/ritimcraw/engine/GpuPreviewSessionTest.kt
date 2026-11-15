@@ -236,6 +236,49 @@ class GpuPreviewSessionTest {
             closed += sessionHandle
         }
 
+        /**
+         * GRADE PARCEL (commit a, additive): the parcel-aware twin of
+         * renderFrame above — decodes the parcel via GradeParcel.decode
+         * (the real decoder, so the fake asserts the SAME wire format the
+         * bridge reads) and records the SAME snapshots the flat recorder
+         * does, then forwards to the flat body so the renderThrows knob and
+         * renderResult behave identically. The dispatcher still rides the
+         * flat door until commit (b) flips it.
+         */
+        override suspend fun renderFrameParcel(
+            sessionHandle: Long,
+            clipHandle: Long,
+            frameIndex: Int,
+            maxDim: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+        ): PreviewFrame? {
+            val g = GradeParcel.decode(gradeParcel)
+            return renderFrame(
+                sessionHandle, clipHandle, frameIndex, maxDim,
+                g.chromaDenoise, g.noiseReduction,
+                g.temporalNr, g.temporalStrength,
+                g.sharpness, g.detail,
+                g.exposureEv, g.highlights,
+                g.blackPoint, g.whitePoint, g.shadows, g.midtones,
+                g.contrast, g.tempK, g.tint, g.saturation, g.asShot,
+                g.wheelShadowX, g.wheelShadowY, g.wheelMidX, g.wheelMidY,
+                g.wheelHighX, g.wheelHighY,
+                g.splitShadowHue, g.splitHighlightHue, g.splitBalance,
+                g.highlightReconstruction, g.keepVignetting, g.tonemap,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+                lutOutGamut, lutOutTransfer, warpActive, warpM,
+            )
+        }
+
         override suspend fun lastDetail(): String? = lastDetailValue
     }
 

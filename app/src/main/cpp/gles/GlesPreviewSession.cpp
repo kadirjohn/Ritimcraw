@@ -2146,6 +2146,19 @@ PreviewFrameResult PreviewSession::renderFrame(const PreviewFrameRequest& req) {
     return res;
 }
 
+// GRADE PARCEL (commit a, additive): fold the decoded parcel onto a stack
+// copy of the request and delegate to the flat path. The fold is
+// GENERATED from the schema (applyGradeToRequest in GradeParcel.h) — the
+// field list is never hand-mirrored here; a schema field with no matching
+// PreviewFrameRequest member fails the compile at this instantiation,
+// the honest catch.
+PreviewFrameResult PreviewSession::renderFrame(
+        const PreviewFrameRequest& req, const DevelopGrade& grade) {
+    PreviewFrameRequest folded = req;
+    applyGradeToRequest(grade, &folded);
+    return renderFrame(folded);
+}
+
 bool PreviewSession::setSurface(ANativeWindow* window, std::string* detail) {
     if (impl_ == nullptr) {
         // Ownership was transferred at entry: release it HERE (the only

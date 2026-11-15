@@ -125,6 +125,69 @@ interface GpuPreviewDevelop {
     ): PreviewFrame?
 
     /**
+     * GRADE PARCEL (commit a, additive): the parcel twin of [renderFrame]
+     * above — the 29 scalar grade fields cross as ONE flat FloatArray
+     * (GradeParcel.encode; the slot layout is GENERATED from
+     * tools/gen-grade-parcel.py's schema, the single source of truth for
+     * both sides of the seam). The caller encodes per request, AFTER the
+     * temporalNr tier fold — the parcel carries the EFFECTIVE value. The
+     * default body forwards to the flat [renderFrame] field-by-field, so
+     * existing fakes and the anonymous inline objects keep compiling and
+     * keep their behavior; NativeGpuPreviewDevelop overrides it with the
+     * real JNI parcel twin. Commit (b) flips the dispatcher to this door
+     * and deletes the flat one.
+     */
+    suspend fun renderFrameParcel(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        maxDim: Int,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
+    ): PreviewFrame? = renderFrame(
+        sessionHandle, clipHandle, frameIndex, maxDim,
+        /* chromaDenoise */ gradeParcel[GradeParcel.SLOT_CHROMA_DENOISE],
+        /* noiseReduction */ gradeParcel[GradeParcel.SLOT_NOISE_REDUCTION],
+        /* temporalNr */ gradeParcel[GradeParcel.SLOT_TEMPORAL_NR] != 0.0f,
+        /* temporalStrength */ gradeParcel[GradeParcel.SLOT_TEMPORAL_STRENGTH],
+        /* sharpness */ gradeParcel[GradeParcel.SLOT_SHARPNESS],
+        /* detail */ gradeParcel[GradeParcel.SLOT_DETAIL],
+        /* exposureEv */ gradeParcel[GradeParcel.SLOT_EXPOSURE_EV],
+        /* highlights */ gradeParcel[GradeParcel.SLOT_HIGHLIGHTS],
+        /* blackPoint */ gradeParcel[GradeParcel.SLOT_BLACK_POINT],
+        /* whitePoint */ gradeParcel[GradeParcel.SLOT_WHITE_POINT],
+        /* shadows */ gradeParcel[GradeParcel.SLOT_SHADOWS],
+        /* midtones */ gradeParcel[GradeParcel.SLOT_MIDTONES],
+        /* contrast */ gradeParcel[GradeParcel.SLOT_CONTRAST],
+        /* tempK */ gradeParcel[GradeParcel.SLOT_TEMP_K],
+        /* tint */ gradeParcel[GradeParcel.SLOT_TINT],
+        /* saturation */ gradeParcel[GradeParcel.SLOT_SATURATION],
+        /* asShot */ gradeParcel[GradeParcel.SLOT_AS_SHOT] != 0.0f,
+        /* wheelShadowX */ gradeParcel[GradeParcel.SLOT_WHEEL_SHADOW_X],
+        /* wheelShadowY */ gradeParcel[GradeParcel.SLOT_WHEEL_SHADOW_Y],
+        /* wheelMidX */ gradeParcel[GradeParcel.SLOT_WHEEL_MID_X],
+        /* wheelMidY */ gradeParcel[GradeParcel.SLOT_WHEEL_MID_Y],
+        /* wheelHighX */ gradeParcel[GradeParcel.SLOT_WHEEL_HIGH_X],
+        /* wheelHighY */ gradeParcel[GradeParcel.SLOT_WHEEL_HIGH_Y],
+        /* splitShadowHue */ gradeParcel[GradeParcel.SLOT_SPLIT_SHADOW_HUE],
+        /* splitHighlightHue */ gradeParcel[GradeParcel.SLOT_SPLIT_HIGHLIGHT_HUE],
+        /* splitBalance */ gradeParcel[GradeParcel.SLOT_SPLIT_BALANCE],
+        /* highlightReconstruction */ gradeParcel[GradeParcel.SLOT_HIGHLIGHT_RECONSTRUCTION] != 0.0f,
+        /* keepVignetting */ gradeParcel[GradeParcel.SLOT_KEEP_VIGNETTING] != 0.0f,
+        /* tonemap */ gradeParcel[GradeParcel.SLOT_TONEMAP].toInt(),
+        lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+        lutOutGamut, lutOutTransfer, warpActive, warpM,
+    )
+
+    /**
      * The gyro warp resolver (the GPU warp port's commit b): the per-frame
      * plan verdict the render consumes — a 10-element array ([0] active
      * flag, [1..9] the composite M) or null = no verdict (the caller folds
@@ -319,6 +382,51 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                                 wheelHighX, wheelHighY,
                                 splitShadowHue, splitHighlightHue, splitBalance,
                                 highlightReconstruction, keepVignetting, tonemap,
+                                lutPath, lutStrength, lutRole, lutInGamut,
+                                lutInTransfer, lutOutGamut, lutOutTransfer,
+                                warpActive, warpM,
+                            )
+                        )
+                    } catch (t: Throwable) {
+                        null // unavailable guard / engine-side failure: fall back to CPU
+                    }
+                )
+            }
+        } catch (e: RejectedExecutionException) {
+            cont.resume(null)
+        }
+    }
+
+    /**
+     * GRADE PARCEL (commit a): the REAL parcel twin — the JNI seam takes
+     * the parcel; the bridge decodes ONCE per call. The caller encodes per
+     * request (after the temporalNr tier fold); this override runs on the
+     * engine thread like every render entry.
+     */
+    override suspend fun renderFrameParcel(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        maxDim: Int,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
+    ): PreviewFrame? = suspendCoroutine { cont ->
+        try {
+            PreviewRenderer.previewEngine.execute {
+                cont.resume(
+                    try {
+                        renderArrayBlocking(
+                            NativeSource.jniPreviewSessionRenderFrameParcel(
+                                sessionHandle, clipHandle, frameIndex, maxDim,
+                                gradeParcel,
                                 lutPath, lutStrength, lutRole, lutInGamut,
                                 lutInTransfer, lutOutGamut, lutOutTransfer,
                                 warpActive, warpM,

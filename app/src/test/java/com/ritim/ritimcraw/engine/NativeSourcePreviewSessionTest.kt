@@ -156,6 +156,39 @@ class NativeSourcePreviewSessionTest {
     }
 
     @Test
+    fun render_frame_parcel_throws_the_unavailable_message_without_the_native_lib() {
+        // GRADE PARCEL (commit a, additive): the preview parcel twin's
+        // guard. The wrapper throws BEFORE the parcel is ever read, so the
+        // dummy parcel is an all-zero FloatArray(SLOT_COUNT) — the guard
+        // fires on nativeAvailable alone. The pump's renderFrameParcel
+        // folds Throwable to a null frame (the CPU fallback), so the guard
+        // is what stands between a no-.so build and an
+        // UnsatisfiedLinkError mid-pump.
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniPreviewSessionRenderFrameParcel(
+                sessionHandle = 1L,
+                clipHandle = 1L,
+                frameIndex = 0,
+                maxDim = 1280,
+                gradeParcel = FloatArray(GradeParcel.SLOT_COUNT),
+                lutPath = null,
+                lutStrength = 0.0f,
+                lutRole = -1,
+                lutInGamut = -1,
+                lutInTransfer = -1,
+                lutOutGamut = -1,
+                lutOutTransfer = -1,
+                warpActive = false,
+                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+            )
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
+    @Test
     fun close_throws_the_unavailable_message_without_the_native_lib() {
         if (NativeSource.nativeAvailable) return
         try {
@@ -184,9 +217,14 @@ class NativeSourcePreviewSessionTest {
 
     private fun method(name: String): java.lang.reflect.Method {
         // Internal members are public in JVM bytecode; match by prefix so a
-        // future mangling rule cannot silently break the lookup.
+        // future mangling rule cannot silently break the lookup. The prefix
+        // is name + "$" (the mangling delimiter), NOT the bare name: the
+        // GRADE PARCEL twins (commit a) added jniPreviewSessionRenderFrameParcel,
+        // and a bare-name prefix would match BOTH the flat wrapper and its
+        // parcel twin — the "exactly one" assertion would see two. The
+        // develop-session test's helper already used this convention.
         val methods = NativeSource.Companion::class.java.declaredMethods
-        val matches = methods.filter { it.name.startsWith(name) }
+        val matches = methods.filter { it.name.startsWith(name + "$") }
         assertEquals("exactly one $name wrapper", 1, matches.size)
         return matches.first()
     }
@@ -229,6 +267,24 @@ class NativeSourcePreviewSessionTest {
         // taught the new stage.
         val render = method("jniPreviewSessionRenderFrame")
         assertEquals(42, render.parameterCount)
+    }
+
+    @Test
+    fun render_parcel_carries_exactly_the_parcel_shape() {
+        // GRADE PARCEL (commit a, additive): the parcel twin's signature
+        // lock — 14 parameters: sessionHandle, clipHandle, frameIndex,
+        // maxDim (the four plumbing values) + gradeParcel (the ONE flat
+        // FloatArray carrying all 29 scalar grade fields — the layout is
+        // GENERATED from tools/gen-grade-parcel.py's schema, both sides of
+        // the seam; GradeParcelTest cross-checks the committed C++ header's
+        // constexpr slots against the Kotlin offsets) + the seven LUT
+        // controls (lutPath, lutStrength, the five ordinals — per-job,
+        // documented OUT of the parcel) + warpActive, warpM (the
+        // caller-resolved per-frame verdict). Commit (b) flips the
+        // dispatcher to this door and re-counts this lock DOWN from the
+        // flat 42.
+        val render = method("jniPreviewSessionRenderFrameParcel")
+        assertEquals(14, render.parameterCount)
     }
 
     @Test

@@ -11,6 +11,7 @@ import com.ritim.ritimcraw.engine.GlesParityResult
 import com.ritim.ritimcraw.engine.GlesProbeResult
 import com.ritim.ritimcraw.engine.GlesShaderSources
 import com.ritim.ritimcraw.engine.GpuParityRules
+import com.ritim.ritimcraw.engine.GradeParcel
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
 import java.io.File
@@ -445,6 +446,66 @@ interface GpuDevelop {
     fun closeSession(sessionHandle: Long)
 
     /**
+     * GRADE PARCEL (commit a, additive): the parcel twin of [renderFrame]
+     * above — the 29 scalar grade fields cross as ONE flat FloatArray
+     * (GradeParcel.encode; the slot layout is GENERATED from
+     * tools/gen-grade-parcel.py's schema, the single source of truth for
+     * both sides of the seam). The default body forwards to the flat
+     * [renderFrame] field-by-field, so existing fakes and the anonymous
+     * inline objects keep compiling and keep their behavior; NativeGpuDevelop
+     * overrides it with the real JNI parcel twin. Commit (b) flips the
+     * dispatchers to this door and deletes the flat one.
+     */
+    fun renderFrameParcel(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
+    ): ByteArray? = renderFrame(
+        sessionHandle, clipHandle, frameIndex,
+        /* chromaDenoise */ gradeParcel[GradeParcel.SLOT_CHROMA_DENOISE],
+        /* noiseReduction */ gradeParcel[GradeParcel.SLOT_NOISE_REDUCTION],
+        /* temporalNr */ gradeParcel[GradeParcel.SLOT_TEMPORAL_NR] != 0.0f,
+        /* temporalStrength */ gradeParcel[GradeParcel.SLOT_TEMPORAL_STRENGTH],
+        /* sharpness */ gradeParcel[GradeParcel.SLOT_SHARPNESS],
+        /* detail */ gradeParcel[GradeParcel.SLOT_DETAIL],
+        /* exposureEv */ gradeParcel[GradeParcel.SLOT_EXPOSURE_EV],
+        /* highlights */ gradeParcel[GradeParcel.SLOT_HIGHLIGHTS],
+        /* blackPoint */ gradeParcel[GradeParcel.SLOT_BLACK_POINT],
+        /* whitePoint */ gradeParcel[GradeParcel.SLOT_WHITE_POINT],
+        /* shadows */ gradeParcel[GradeParcel.SLOT_SHADOWS],
+        /* midtones */ gradeParcel[GradeParcel.SLOT_MIDTONES],
+        /* contrast */ gradeParcel[GradeParcel.SLOT_CONTRAST],
+        /* tempK */ gradeParcel[GradeParcel.SLOT_TEMP_K],
+        /* tint */ gradeParcel[GradeParcel.SLOT_TINT],
+        /* saturation */ gradeParcel[GradeParcel.SLOT_SATURATION],
+        /* asShot */ gradeParcel[GradeParcel.SLOT_AS_SHOT] != 0.0f,
+        /* wheelShadowX */ gradeParcel[GradeParcel.SLOT_WHEEL_SHADOW_X],
+        /* wheelShadowY */ gradeParcel[GradeParcel.SLOT_WHEEL_SHADOW_Y],
+        /* wheelMidX */ gradeParcel[GradeParcel.SLOT_WHEEL_MID_X],
+        /* wheelMidY */ gradeParcel[GradeParcel.SLOT_WHEEL_MID_Y],
+        /* wheelHighX */ gradeParcel[GradeParcel.SLOT_WHEEL_HIGH_X],
+        /* wheelHighY */ gradeParcel[GradeParcel.SLOT_WHEEL_HIGH_Y],
+        /* splitShadowHue */ gradeParcel[GradeParcel.SLOT_SPLIT_SHADOW_HUE],
+        /* splitHighlightHue */ gradeParcel[GradeParcel.SLOT_SPLIT_HIGHLIGHT_HUE],
+        /* splitBalance */ gradeParcel[GradeParcel.SLOT_SPLIT_BALANCE],
+        /* highlightReconstruction */ gradeParcel[GradeParcel.SLOT_HIGHLIGHT_RECONSTRUCTION] != 0.0f,
+        /* keepVignetting */ gradeParcel[GradeParcel.SLOT_KEEP_VIGNETTING] != 0.0f,
+        /* tonemap */ gradeParcel[GradeParcel.SLOT_TONEMAP].toInt(),
+        lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+        lutOutGamut, lutOutTransfer, warpActive, warpM,
+    )
+
+    /**
      * M5: hands the MediaCodec input Surface to the session, which wraps
      * it in an EGL window surface ONCE per export on its GL thread. The
      * surface is typed Any? (the JVM-loadability rule — see
@@ -509,6 +570,67 @@ interface GpuDevelop {
         warpM: FloatArray,
         rotationDeg: Int = 0,
     ): Boolean = false
+
+    /**
+     * GRADE PARCEL (commit a, additive): the parcel twin of
+     * [renderFrameToEncoder] above — the 29 scalar grade fields as ONE flat
+     * FloatArray (GradeParcel.encode; GENERATED layout). The default body
+     * forwards to the flat method field-by-field, so existing fakes keep
+     * compiling and keep their behavior; NativeGpuDevelop overrides it with
+     * the real JNI parcel twin. Commit (b) flips the dispatchers to this
+     * door and deletes the flat one. NO default parameter values on
+     * purpose (the parcel wrappers mirror the JNI seam exactly).
+     */
+    fun renderFrameToEncoderParcel(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        ptsUs: Long,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
+        rotationDeg: Int,
+    ): Boolean = renderFrameToEncoder(
+        sessionHandle, clipHandle, frameIndex, ptsUs,
+        /* chromaDenoise */ gradeParcel[GradeParcel.SLOT_CHROMA_DENOISE],
+        /* noiseReduction */ gradeParcel[GradeParcel.SLOT_NOISE_REDUCTION],
+        /* temporalNr */ gradeParcel[GradeParcel.SLOT_TEMPORAL_NR] != 0.0f,
+        /* temporalStrength */ gradeParcel[GradeParcel.SLOT_TEMPORAL_STRENGTH],
+        /* sharpness */ gradeParcel[GradeParcel.SLOT_SHARPNESS],
+        /* detail */ gradeParcel[GradeParcel.SLOT_DETAIL],
+        /* exposureEv */ gradeParcel[GradeParcel.SLOT_EXPOSURE_EV],
+        /* highlights */ gradeParcel[GradeParcel.SLOT_HIGHLIGHTS],
+        /* blackPoint */ gradeParcel[GradeParcel.SLOT_BLACK_POINT],
+        /* whitePoint */ gradeParcel[GradeParcel.SLOT_WHITE_POINT],
+        /* shadows */ gradeParcel[GradeParcel.SLOT_SHADOWS],
+        /* midtones */ gradeParcel[GradeParcel.SLOT_MIDTONES],
+        /* contrast */ gradeParcel[GradeParcel.SLOT_CONTRAST],
+        /* tempK */ gradeParcel[GradeParcel.SLOT_TEMP_K],
+        /* tint */ gradeParcel[GradeParcel.SLOT_TINT],
+        /* saturation */ gradeParcel[GradeParcel.SLOT_SATURATION],
+        /* asShot */ gradeParcel[GradeParcel.SLOT_AS_SHOT] != 0.0f,
+        /* wheelShadowX */ gradeParcel[GradeParcel.SLOT_WHEEL_SHADOW_X],
+        /* wheelShadowY */ gradeParcel[GradeParcel.SLOT_WHEEL_SHADOW_Y],
+        /* wheelMidX */ gradeParcel[GradeParcel.SLOT_WHEEL_MID_X],
+        /* wheelMidY */ gradeParcel[GradeParcel.SLOT_WHEEL_MID_Y],
+        /* wheelHighX */ gradeParcel[GradeParcel.SLOT_WHEEL_HIGH_X],
+        /* wheelHighY */ gradeParcel[GradeParcel.SLOT_WHEEL_HIGH_Y],
+        /* splitShadowHue */ gradeParcel[GradeParcel.SLOT_SPLIT_SHADOW_HUE],
+        /* splitHighlightHue */ gradeParcel[GradeParcel.SLOT_SPLIT_HIGHLIGHT_HUE],
+        /* splitBalance */ gradeParcel[GradeParcel.SLOT_SPLIT_BALANCE],
+        /* highlightReconstruction */ gradeParcel[GradeParcel.SLOT_HIGHLIGHT_RECONSTRUCTION] != 0.0f,
+        /* keepVignetting */ gradeParcel[GradeParcel.SLOT_KEEP_VIGNETTING] != 0.0f,
+        /* tonemap */ gradeParcel[GradeParcel.SLOT_TONEMAP].toInt(),
+        lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+        lutOutGamut, lutOutTransfer, warpActive, warpM, rotationDeg,
+    )
 
     /**
      * The gyro warp resolver (the GPU warp port's commit b): the
@@ -621,6 +743,31 @@ internal object NativeGpuDevelop : GpuDevelop {
         warpActive, warpM,
     )
 
+    /**
+     * GRADE PARCEL (commit a): the REAL parcel twin — the JNI seam takes
+     * the parcel; the bridge decodes ONCE per call. The parcel is
+     * caller-built (GradeParcel.encode, once per grade change).
+     */
+    override fun renderFrameParcel(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
+    ): ByteArray? = NativeSource.jniDevelopSessionRenderFrameParcel(
+        sessionHandle, clipHandle, frameIndex, gradeParcel,
+        lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+        lutOutGamut, lutOutTransfer, warpActive, warpM,
+    )
+
     override fun setEncoderSurface(sessionHandle: Long, surface: Any?): Boolean =
         NativeSource.jniDevelopSessionSetEncoderSurface(sessionHandle, surface)
 
@@ -679,6 +826,32 @@ internal object NativeGpuDevelop : GpuDevelop {
         highlightReconstruction, keepVignetting, tonemap, lutPath, lutStrength,
         lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
         warpActive, warpM, rotationDeg,
+    )
+
+    /**
+     * GRADE PARCEL (commit a): the REAL encoder parcel twin — the JNI seam
+     * takes the parcel; the bridge decodes ONCE per call.
+     */
+    override fun renderFrameToEncoderParcel(
+        sessionHandle: Long,
+        clipHandle: Long,
+        frameIndex: Int,
+        ptsUs: Long,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        warpActive: Boolean,
+        warpM: FloatArray,
+        rotationDeg: Int,
+    ): Boolean = NativeSource.jniDevelopSessionRenderFrameToEncoderParcel(
+        sessionHandle, clipHandle, frameIndex, ptsUs, gradeParcel,
+        lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
+        lutOutGamut, lutOutTransfer, warpActive, warpM, rotationDeg,
     )
 
     override fun resolveWarp(

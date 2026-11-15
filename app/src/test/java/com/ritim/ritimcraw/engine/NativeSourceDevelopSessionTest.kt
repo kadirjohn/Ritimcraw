@@ -223,6 +223,67 @@ class NativeSourceDevelopSessionTest {
     }
 
     @Test
+    fun render_frame_parcel_throws_the_unavailable_message_without_the_native_lib() {
+        // GRADE PARCEL (commit a, additive): the readback parcel twin's
+        // guard. The wrapper throws BEFORE the parcel is ever read, so the
+        // dummy parcel is an all-zero FloatArray(SLOT_COUNT) — the guard
+        // fires on nativeAvailable alone. Commit (b) makes this the door
+        // the dispatcher rides, so the guard is what stands between a
+        // no-.so build and an UnsatisfiedLinkError mid-render.
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniDevelopSessionRenderFrameParcel(
+                sessionHandle = 1L,
+                clipHandle = 1L,
+                frameIndex = 0,
+                gradeParcel = FloatArray(GradeParcel.SLOT_COUNT),
+                lutPath = null,
+                lutStrength = 0.0f,
+                lutRole = -1,
+                lutInGamut = -1,
+                lutInTransfer = -1,
+                lutOutGamut = -1,
+                lutOutTransfer = -1,
+                warpActive = false,
+                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+            )
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
+    @Test
+    fun render_frame_to_encoder_parcel_throws_the_unavailable_message_without_the_native_lib() {
+        // GRADE PARCEL (commit a, additive): the encoder parcel twin's
+        // guard — same shape as the readback twin's guard plus ptsUs and
+        // rotationDeg, the two plumbing values the encoder blit adds.
+        if (NativeSource.nativeAvailable) return
+        try {
+            NativeSource.jniDevelopSessionRenderFrameToEncoderParcel(
+                sessionHandle = 1L,
+                clipHandle = 1L,
+                frameIndex = 0,
+                ptsUs = 0L,
+                gradeParcel = FloatArray(GradeParcel.SLOT_COUNT),
+                lutPath = null,
+                lutStrength = 0.0f,
+                lutRole = -1,
+                lutInGamut = -1,
+                lutInTransfer = -1,
+                lutOutGamut = -1,
+                lutOutTransfer = -1,
+                warpActive = false,
+                warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+                rotationDeg = 0,
+            )
+            throw AssertionError("expected IllegalStateException")
+        } catch (expected: IllegalStateException) {
+            assertEquals(NativeSource.nativeUnavailableMessage, expected.message)
+        }
+    }
+
+    @Test
     fun set_sync_refine_throws_the_unavailable_message_without_the_native_lib() {
         // The M5 sync-refine toggle's wrapper: unlike the two build gates
         // (nativeSetStabDebugLog / nativeSetExportTiming, companion-init
@@ -321,6 +382,38 @@ class NativeSourceDevelopSessionTest {
         // taught the new stage.
         val render = method("jniDevelopSessionRenderFrame")
         assertEquals(41, render.parameterCount)
+    }
+
+    @Test
+    fun render_parcel_carries_exactly_the_parcel_shape() {
+        // GRADE PARCEL (commit a, additive): the parcel twin's signature
+        // lock — 13 parameters: sessionHandle, clipHandle, frameIndex (the
+        // three plumbing values) + gradeParcel (the ONE flat FloatArray
+        // carrying all 29 scalar grade fields — the layout is GENERATED
+        // from tools/gen-grade-parcel.py's schema, the single source of
+        // truth for both sides of the seam; GradeParcelTest cross-checks
+        // the committed C++ header's constexpr slots against the Kotlin
+        // offsets) + the seven LUT controls (lutPath, lutStrength, the
+        // five ordinals — per-job, documented OUT of the parcel) +
+        // warpActive, warpM (the caller-resolved per-frame verdict). The
+        // temporal pair rides the parcel; the bridge consumes it at
+        // temporalMergedCfa exactly like the flat pair. Commit (b) flips
+        // the dispatcher to this door and re-counts this lock DOWN from
+        // the flat 41.
+        val render = method("jniDevelopSessionRenderFrameParcel")
+        assertEquals(13, render.parameterCount)
+    }
+
+    @Test
+    fun render_to_encoder_parcel_carries_exactly_the_parcel_shape() {
+        // GRADE PARCEL (commit a, additive): the encoder twin's signature
+        // lock — 15 parameters: the readback parcel twin's thirteen plus
+        // ptsUs (the encoder presentation time) and rotationDeg (the
+        // blit's uRotation fold input, the tail parameter — the flat
+        // precedent). Commit (b) re-counts this lock DOWN from the flat
+        // 43.
+        val renderToEncoder = method("jniDevelopSessionRenderFrameToEncoderParcel")
+        assertEquals(15, renderToEncoder.parameterCount)
     }
 
     @Test

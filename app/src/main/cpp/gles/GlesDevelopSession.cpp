@@ -2177,6 +2177,19 @@ DevelopFrameResult DevelopSession::renderFrame(const DevelopFrameRequest& req) {
     return res;
 }
 
+// GRADE PARCEL (commit a, additive): fold the decoded parcel onto a stack
+// copy of the request and delegate to the flat path. The fold is
+// GENERATED from the schema (applyGradeToRequest in GradeParcel.h) — the
+// field list is never hand-mirrored here; a schema field with no matching
+// DevelopFrameRequest member fails the compile at this instantiation,
+// the honest catch.
+DevelopFrameResult DevelopSession::renderFrame(
+        const DevelopFrameRequest& req, const DevelopGrade& grade) {
+    DevelopFrameRequest folded = req;
+    applyGradeToRequest(grade, &folded);
+    return renderFrame(folded);
+}
+
 bool DevelopSession::setEncoderSurface(ANativeWindow* window,
                                        std::string* detail) {
     if (impl_ == nullptr) {
@@ -2262,6 +2275,16 @@ DevelopFrameResult DevelopSession::renderFrameToEncoder(
     impl_->cvRequest.notify_one();
     impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None; });
     return res;
+}
+
+// GRADE PARCEL (commit a, additive): the encoder twin of the struct-taking
+// renderFrame — same GENERATED fold, then the flat encoder path.
+DevelopFrameResult DevelopSession::renderFrameToEncoder(
+        const DevelopFrameRequest& req, const DevelopGrade& grade,
+        int64_t ptsUs, int rotationDeg) {
+    DevelopFrameRequest folded = req;
+    applyGradeToRequest(grade, &folded);
+    return renderFrameToEncoder(folded, ptsUs, rotationDeg);
 }
 
 void DevelopSession::close() {

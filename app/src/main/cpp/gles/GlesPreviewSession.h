@@ -114,6 +114,8 @@
 
 #include <rawedit/Source.h>
 
+#include "GradeParcel.h"
+
 namespace gles {
 
 // One render request. [cfa] is the REDUCED mosaic (the JNI entry's
@@ -328,6 +330,17 @@ public:
     // thread). Draws the window present (when a window surface is
     // attached) and ALWAYS produces the published stats pack.
     PreviewFrameResult renderFrame(const PreviewFrameRequest& req);
+
+    // GRADE PARCEL (commit a, additive): the same render with the grade
+    // arriving as the decoded parcel struct. The body folds [grade] onto a
+    // stack copy of [req] via the GENERATED applyGradeToRequest
+    // (gles/GradeParcel.h) and delegates to the flat renderFrame above.
+    // [req] carries only the non-grade fields (cfa/info/meta, the LUT
+    // binding group, the warp pair, statsEnabled); the temporal pair
+    // never reaches the request — the bridge consumed it at
+    // temporalMergedCfa before this call.
+    PreviewFrameResult renderFrame(const PreviewFrameRequest& req,
+                                   const DevelopGrade& grade);
 
     // Attaches ([window] != nullptr) or destroys ([window] == nullptr) the
     // SurfaceView's window, on the GL thread, blocking until done.

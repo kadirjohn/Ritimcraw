@@ -174,6 +174,8 @@
 
 #include <rawedit/Source.h>
 
+#include "GradeParcel.h"
+
 namespace gles {
 
 // One render request. [cfa] and [meta] are BORROWED: the caller must keep
@@ -335,6 +337,19 @@ public:
     // call from one non-GL thread at a time (the export engine thread).
     DevelopFrameResult renderFrame(const DevelopFrameRequest& req);
 
+    // GRADE PARCEL (commit a, additive): the same render with the grade
+    // arriving as the decoded parcel struct instead of pre-folded request
+    // fields. The body folds [grade] onto a stack copy of [req] via the
+    // GENERATED applyGradeToRequest (gles/GradeParcel.h — the schema's
+    // single source of truth; a schema field with no matching request
+    // member fails the compile here, the honest catch) and delegates to
+    // the flat renderFrame above. The [req] the caller builds carries ONLY
+    // the non-grade fields (cfa/info/meta, the LUT binding group, the warp
+    // pair); the temporal pair never reaches the request — the bridge
+    // consumed it at temporalMergedCfa before this call.
+    DevelopFrameResult renderFrame(const DevelopFrameRequest& req,
+                                   const DevelopGrade& grade);
+
     // ENCODER SURFACE (M5). Hands an ANativeWindow (from a MediaCodec
     // input Surface) to the GL thread: it wraps the window in
     // eglCreateWindowSurface ONCE per export, using the session's OWN
@@ -368,6 +383,15 @@ public:
     DevelopFrameResult renderFrameToEncoder(const DevelopFrameRequest& req,
                                             int64_t ptsUs,
                                             int rotationDeg = 0);
+
+    // GRADE PARCEL (commit a, additive): the encoder twin of the struct-
+    // taking renderFrame above — same fold via applyGradeToRequest, then
+    // the flat renderFrameToEncoder. [req] carries only the non-grade
+    // fields; [grade] is the decoded parcel.
+    DevelopFrameResult renderFrameToEncoder(const DevelopFrameRequest& req,
+                                            const DevelopGrade& grade,
+                                            int64_t ptsUs,
+                                            int rotationDeg);
 
     // See the destructor. Callable from the owning thread.
     void close();
