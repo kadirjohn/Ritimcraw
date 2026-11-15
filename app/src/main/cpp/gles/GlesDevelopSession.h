@@ -10,45 +10,59 @@
 //   - one EGL context (gles::EglSession from GlesPipeline.h, the grafika
 //     topology: display -> RGBA8888/pbuffer config -> ES 3 context -> 1x1
 //     pbuffer), confined to ONE dedicated GL thread;
-//   - the thirteen programs (pre = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_PRE,
-//     post = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_POST — the pointwise
-//     half — tail = FULLSCREEN_VERTEX + DEVELOP_FRAGMENT_TAIL, the four
-//     unsharp passes sharpnessH/sharpnessV/detailH/detailV =
-//     FULLSCREEN_VERTEX + SHARPNESS_H / SHARPNESS_V / DETAIL_H /
-//     DETAIL_V, the three spatial-NR passes chromaH/chromaV/luma =
-//     FULLSCREEN_VERTEX + NR_CHROMA_H / NR_CHROMA_V / NR_LUMA, the gyro
-//     warp pass warp = FULLSCREEN_VERTEX + WARP, store =
-//     FULLSCREEN_VERTEX_310 + STORE_FRAGMENT, blit = FULLSCREEN_VERTEX +
-//     BLIT_FRAGMENT), compiled ONCE at open — the caller provides the
-//     Kotlin single-source-of-truth texts, exactly like the harness does.
-//     The develop chain is the SPLIT of the fused DEVELOP_FRAGMENT at the
-//     CPU's stage 6/9 and 20/23 boundaries: pre runs stages 1-6 into an
-//     RGBA32F intermediate, the NR passes (gated per grade) sit at the
-//     CPU's exact stage 7/8 position, post runs the pointwise stages
-//     9-20, the four unsharp passes (gated per grade) run the CPU's
-//     stages 21/22 — H then V per stage, the V pass reading the stage's
-//     own input as its ORIGINAL-luma guide — then the gyro warp pass
-//     (gated per FRAME, not per grade) resamples the chain's live
-//     texture through the caller-composed inverse-sampling map M, and
-//     tail runs stages 23+24+OETF into the develop texture. The warp is
-//     NOT a develop stage: the CPU pipeline (rawedit::stabilizedFrame's
-//     call site) runs warpFrame AFTER developCpu on the linear output,
-//     so the chain draws it between the unsharp passes and the tail —
-//     the OETF stays in the tail, applied exactly once. The three-way split
-//     recomposes the fused text BYTE-IDENTICALLY (the host-checked
-//     invariant), and the fused text itself stays the frozen parity
-//     harness's own source (GlesPipeline.cpp) — the split passes compose
-//     the same shared fragments, so the two chains cannot drift;
-//   - every uniform location, resolved ONCE at open;
-//   - the CFA (GL_R16UI), shading (GL_R32F), develop (RGBA32F), the three
-//     chain intermediates (RGBA32F ping-pong textures A/B/C + their FBOs —
-//     the pre pass's output, the NR passes' scratch pair; A doubles as the
-//     ORIGINAL pre-NR guide the chroma vertical pass reads) and scratch
-//     (RGBA8) textures and their FBOs, allocated with immutable
-//     glTexStorage2D ONCE per resolution/resource change — per-frame work
-//     is glTexSubImage2D uploads and uniform writes ONLY. No glTexImage2D,
-//     no shader compilation, no storage allocation per frame (the audit's
-//     explicit finding against the one-shot shape).
+//   - one GpuDevelopPipeline (gles/GpuDevelopPipeline.h) — the SHARED
+//     develop chain as an object, constructed with THIS session's context
+//     current. The two sessions' GL contexts and resources are never
+//     shared; the shared thing is the CODE. The pipeline owns, for its
+//     lifetime: the twelve chain programs (pre = FULLSCREEN_VERTEX +
+//     DEVELOP_FRAGMENT_PRE, post = FULLSCREEN_VERTEX +
+//     DEVELOP_FRAGMENT_POST — the pointwise half — tail = FULLSCREEN_VERTEX
+//     + DEVELOP_FRAGMENT_TAIL, the four unsharp passes sharpnessH/
+//     sharpnessV/detailH/detailV = FULLSCREEN_VERTEX + SHARPNESS_H /
+//     SHARPNESS_V / DETAIL_H / DETAIL_V, the three spatial-NR passes
+//     chromaH/chromaV/luma = FULLSCREEN_VERTEX + NR_CHROMA_H /
+//     NR_CHROMA_V / NR_LUMA, the gyro warp pass warp = FULLSCREEN_VERTEX +
+//     WARP, store = FULLSCREEN_VERTEX_310 + STORE_FRAGMENT), compiled ONCE
+//     at open — the caller provides the Kotlin single-source-of-truth
+//     texts, exactly like the harness does. The develop chain is the SPLIT
+//     of the fused DEVELOP_FRAGMENT at the CPU's stage 6/9 and 20/23
+//     boundaries: pre runs stages 1-6 into an RGBA32F intermediate, the
+//     NR passes (gated per grade) sit at the CPU's exact stage 7/8
+//     position, post runs the pointwise stages 9-20, the four unsharp
+//     passes (gated per grade) run the CPU's stages 21/22 — H then V per
+//     stage, the V pass reading the stage's own input as its
+//     ORIGINAL-luma guide — then the gyro warp pass (gated per FRAME, not
+//     per grade) resamples the chain's live texture through the
+//     caller-composed inverse-sampling map M, and tail runs stages
+//     23+24+OETF into the develop texture. The warp is NOT a develop
+//     stage: the CPU pipeline (rawedit::stabilizedFrame's call site) runs
+//     warpFrame AFTER developCpu on the linear output, so the chain draws
+//     it between the unsharp passes and the tail — the OETF stays in the
+//     tail, applied exactly once. The three-way split recomposes the
+//     fused text BYTE-IDENTICALLY (the host-checked invariant), and the
+//     fused text itself stays the frozen parity harness's own source
+//     (GlesPipeline.cpp) — the split passes compose the same shared
+//     fragments, so the two chains cannot drift. The pipeline ALSO owns
+//     every chain uniform location (resolved ONCE at init), the static
+//     texture-unit bindings, the CFA (GL_R16UI), shading (GL_R32F),
+//     develop (RGBA32F), the three chain intermediates (RGBA32F
+//     ping-pong textures A/B/C + their FBOs — the pre pass's output, the
+//     NR passes' scratch pair; A doubles as the ORIGINAL pre-NR guide the
+//     chroma vertical pass reads) and scratch (RGBA8) textures and their
+//     FBOs, the LUT texture and its revision cache, the once-per-
+//     resolution glTexStorage2D allocation (per-frame work is
+//     glTexSubImage2D uploads and uniform writes ONLY. No glTexImage2D,
+//     no shader compilation, no storage allocation per frame — the
+//     audit's explicit finding against the one-shot shape), the ES 3.1 +
+//     GL_EXT_color_buffer_float capability gates, the CPU-side stage-1/5/6
+//     uniform math, and the whole PRE -> [NR] -> POST -> [unsharp] ->
+//     [WARP] -> TAIL draw sequence with its upload/develop span
+//     measurement — drawn SYNCHRONOUSLY on this session's GL thread;
+//   - the session's OWN blit program (M5): the SAME BLIT_FRAGMENT the
+//     Surface-mode writer proved on device, linked against the session's
+//     OWN plain 300es vertex compile (the pipeline's vertex shader is
+//     pipeline-private), with its uSrc/uSize/uRotation locations and the
+//     uSrc=1 unit binding — the encoder-surface copy with the Y flip.
 //
 // THREADING (the contract in one paragraph): open() spawns the GL thread;
 // every EGL/GL call for the session's lifetime — including teardown — runs
@@ -175,106 +189,9 @@
 #include <rawedit/Source.h>
 
 #include "GradeParcel.h"
+#include "GpuDevelopPipeline.h"
 
 namespace gles {
-
-// One render request. [cfa] and [meta] are BORROWED: the caller must keep
-// them alive until renderFrame() returns (it blocks on the GL thread, so
-// stack locals are fine). [info] and the grade controls are copied.
-// The grade controls are the fragment-covered set's knobs — every one a
-// RAW grade value the shader maps itself (0.0f is the CPU's own neutral
-// skip), with the two CPU-side gates hoisted C++-computed: asShot feeds
-// uWbManual (stages 16/17) and the split hues feed uSplitActive (stage
-// 19), exactly like keepVignetting feeds the shading gate. See the color
-// contract above.
-struct DevelopFrameRequest {
-    const std::vector<uint16_t>* cfa = nullptr;  // w*h row-major
-    rawedit::FrameInfo info{};
-    const rawedit::RawMeta* meta = nullptr;
-    float exposureEv = 0.0f;
-    float highlights = 0.0f;  // raw grade.highlights; the shader computes s
-    float blackPoint = 0.0f;  // raw grade.blackPoint; the shader computes the lift
-    float whitePoint = 0.0f;  // raw grade.whitePoint; the shader computes the gain
-    float shadows = 0.0f;     // raw grade.shadows; the shader computes the gamma
-    float midtones = 0.0f;    // raw grade.midtones; the shader computes the curve
-    float contrast = 0.0f;    // raw grade.contrast; the shader computes the pivot
-    float tempK = 5600.0f;   // raw grade.tempK; the shader computes the gains
-    float tint = 0.0f;       // raw grade.tint; the shader computes the gains
-    float saturation = 0.0f; // raw grade.saturation; the shader computes the mix
-    bool asShot = true;      // grade.asShot; feeds uWbManual (stages 16/17)
-    float wheelShadowX = 0.0f;  // raw grade.wheelShadowX; the shader computes the offset
-    float wheelShadowY = 0.0f;  // raw grade.wheelShadowY; the shader computes the offset
-    float wheelMidX = 0.0f;     // raw grade.wheelMidX; the shader computes the offset
-    float wheelMidY = 0.0f;     // raw grade.wheelMidY; the shader computes the offset
-    float wheelHighX = 0.0f;    // raw grade.wheelHighX; the shader computes the offset
-    float wheelHighY = 0.0f;    // raw grade.wheelHighY; the shader computes the offset
-    float splitShadowHue = -1.0f;  // raw grade.splitShadowHue; -1 = off
-    float splitHighlightHue = -1.0f;  // raw grade.splitHighlightHue; -1 = off
-    float splitBalance = 0.0f;  // raw grade.splitBalance; the shader computes the mask
-    bool highlightReconstruction = true;
-    bool keepVignetting = true;
-    int tonemap = 0;  // 0 off, 1 ACES, 2-5 AgX (Grade::tonemap)
-    // Spatial NR (stages 7/8), RAW grade values — 0.0f is the CPU call
-    // site's own skip. The session skips the NR draws entirely for a
-    // clamped strength of 0 or a frame under the CPU's own w/h guards
-    // (chroma w<2/h<2, luma w<3/h<3); the in-shader gate is the second
-    // lock. Populated through the JNI seam in commit (b); 0.0f here
-    // keeps commit (a)'s sessions byte-identical to the pre-NR chain.
-    float chromaDenoise = 0.0f;  // raw grade.chromaDenoise
-    float noiseReduction = 0.0f;  // raw grade.noiseReduction
-    // Stages 21/22 (sharpness/detail), RAW grade values — 0.0f is the CPU
-    // call site's own skip, and NEGATIVE values are valid softening (the
-    // CPU's own amount mapping min(max(0.5*(raw/100), -0.5), 0.5) runs
-    // in-shader; there is NO [0,100] clamp here, unlike the NR controls).
-    // The session skips the four unsharp draws entirely for a raw 0 or a
-    // frame under the CPU's own w<2/h<2 guard; the in-shader gate is the
-    // second lock. Populated through the JNI seam in commit (b); 0.0f
-    // here keeps commit (a)'s sessions byte-identical to the pre-21/22
-    // chain.
-    float sharpness = 0.0f;  // raw grade.sharpness (stage 21)
-    float detail = 0.0f;      // raw grade.detail (stage 22)
-    // Stage 24 LUT, the LUT port's session-side shape (commit (a) of the LUT
-    // mission). lutStrength is the RAW grade value on rawedit's own [0,1]
-    // scale (GradeK's percent / 100, mapped Kotlin-side before the seam —
-    // the CPU seam's own contract); 0.0f is the CPU call site's own skip
-    // and keeps commit (a)'s sessions byte-identical to the pre-LUT chain.
-    // lutPath empty = no LUT. The session parses the .cube ONCE per LUT
-    // revision (core's parseCubeFile, cached by path), compiles the
-    // managed binding (rawedit::compileLutBinding) and uploads the table
-    // as a 3D RGBA16F texture — hardware trilinear, one mip, GL_LINEAR +
-    // CLAMP_TO_EDGE on all three axes — through the texel-center mapping
-    // the shader carries (uLutSize/uLutDomainMin/uLutDomainMax). The five
-    // interpretation ordinals are the rawedit enum ordinals (LutRole,
-    // GamutId, TransferId); all five -1 = the legacy stage-24 shape.
-    // Populated through the JNI seam in commit (b); the neutral defaults
-    // here keep commit (a) honest.
-    float lutStrength = 0.0f;  // raw grade.lutStrength, already [0,1]
-    std::string lutPath;       // the resolved .cube path; empty = no LUT
-    int lutRole = 0;
-    int lutInGamut = 0;
-    int lutInTransfer = 0;
-    int lutOutGamut = 0;
-    int lutOutTransfer = 0;
-    // Gyro warp (the stabilization resample — NOT a develop stage; the CPU
-    // runs it after developCpu on the linear output). The caller resolves
-    // the frame's stabilization plan on ITS OWN thread (the plan cache is
-    // not GL-thread-safe), composes M = Hinv * S once per frame (S the
-    // scale-about-center map at the frame's zoom; the CPU's own loop in
-    // rawedit::warpFrame), narrows the 9 doubles to floats and uploads
-    // them row-major with transpose=GL_TRUE — the uCam2rgb idiom. The
-    // caller folds inactive (no gyro / the grade not stabilizing),
-    // identity (H == I and zoom == 1 — the CPU's byte-identical fast path)
-    // and degenerate (a singular H, a non-finite zoom) plans into
-    // warpActive = false; the session then SKIPS the draw entirely — the
-    // pass's absence is the identity, because a resampling pass on an
-    // identity map would blur. There is NO in-shader gate: warpActive is
-    // the only lock. The identity default keeps warpless requests
-    // byte-identical to the pre-warp chain.
-    bool warpActive = false;
-    float warpM[9] = {1.0f, 0.0f, 0.0f,
-                      0.0f, 1.0f, 0.0f,
-                      0.0f, 0.0f, 1.0f};  // row-major M = Hinv * S
-};
 
 // One render result. ok=false means the step named in [detail] failed (or
 // the session is latched unhealthy — [detail] repeats the latched reason).
@@ -288,13 +205,15 @@ struct DevelopFrameResult {
 
 class DevelopSession {
 public:
-    // Spawns the GL thread, opens the EGL context on it, checks the gates
-    // (ES 3.1+ — STORE_FRAGMENT is 310 es — and GL_EXT_color_buffer_float,
-    // re-read in THIS context, never trusted from a probe's throwaway one),
-    // compiles the thirteen programs and resolves every uniform location.
-    // Returns null with *detail naming the first failing step on any
-    // failure (the GL thread is joined; nothing leaks). The fifteen
-    // sources are the Kotlin single-source-of-truth texts
+    // Spawns the GL thread, opens the EGL context on it, and hands the
+    // Kotlin single-source-of-truth texts to the shared pipeline (which
+    // checks the gates — ES 3.1+ — STORE_FRAGMENT is 310 es — and
+    // GL_EXT_color_buffer_float, re-read in THIS context, never trusted
+    // from a probe's throwaway one — compiles the twelve chain programs
+    // and resolves every chain uniform location) and to the session's OWN
+    // blit compile. Returns null with *detail naming the first failing
+    // step on any failure (the GL thread is joined; nothing leaks). The
+    // fifteen sources are the Kotlin single-source-of-truth texts
     // (GlesShaderSources), host-validated: the two vertex variants
     // (vertex + vertex310) + the three-way split develop chain (pre /
     // pointwise post / tail) + the four unsharp fragments
