@@ -1,0 +1,18 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Material Symbols folder shape: the tabbed folder the import
+         browser opens from (owner request 2026-11-15 — the title row's
+         folder icon, right of the import icon). 48dp touch target comes
+         from the IconButton; Compose's Icon tints it via
+         LocalContentColor. Vendored because material-icons-core 1.7.3
+         has no Folder glyph. -->
+    <path
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round"
+        android:pathData="M3,6 h6 l2,2 h10 v11 h-18 z" />
+</vector>

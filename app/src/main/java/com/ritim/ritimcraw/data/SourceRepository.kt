@@ -289,6 +289,32 @@ class SourceRepository(
     }
 
     /**
+     * Renames a clip (owner request 2026-11-15, the folder-import name
+     * dialog): the user-edited name replaces the resolver-derived
+     * [MediaSource.displayName] — the record's id, fingerprint and grade
+     * are untouched, so this is a pure display change. The name is
+     * trimmed; a blank result is rejected (the record never loses its
+     * only fallback-safe field to whitespace) and the CURRENT name is
+     * returned unchanged, so the caller can show the honest "cannot be
+     * blank" state without a second read. A byte-identical rename is a
+     * no-op (no project.json rewrite). Returns null when the record is
+     * missing.
+     */
+    fun rename(id: String, name: String): MediaSource? {
+        val trimmed = name.trim()
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val current = sources[index]
+        if (trimmed.isBlank()) return current
+        if (trimmed == current.displayName) return current
+        val updated = current.copy(displayName = trimmed)
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
+
+    /**
      * Backfills the recorded stats of a record the generation pass probed
      * (owner request 2026-11-11 section 1: the Library row's resolution and
      * duration come from the clip's RECORDED frame data, never faked). No-op

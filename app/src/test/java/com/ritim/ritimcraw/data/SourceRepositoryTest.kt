@@ -793,6 +793,94 @@ class SourceRepositoryTest {
         assertEquals("0123456789abcdef", reimported.gyroId)
     }
 
+    // ---- rename (owner request 2026-11-15, the folder-import name dialog) ----
+
+    @Test
+    fun rename_sets_the_display_name_and_persists_across_reload() {
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val imported = repo.import("content://clip/1")
+
+        val renamed = repo.rename(imported.id, "sunset walk")
+
+        assertEquals("sunset walk", renamed?.displayName)
+        // The id (and its grade) is untouched — a pure display change.
+        assertEquals(imported.id, renamed?.id)
+        assertEquals(
+            "sunset walk",
+            SourceRepository(FakeResolver(), file).all().single().displayName,
+        )
+    }
+
+    @Test
+    fun rename_trims_and_a_blank_rename_changes_nothing() {
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val imported = repo.import("content://clip/1")
+        repo.rename(imported.id, "sunset walk")
+        val before = file.readText()
+
+        // Whitespace-only keeps the current name (the record never loses
+        // its display field) and writes nothing.
+        val unchanged = repo.rename(imported.id, "   ")
+        assertEquals("sunset walk", unchanged?.displayName)
+        assertEquals(before, file.readText())
+
+        // A rename with padding trims to the bare name.
+        assertEquals("dusk", repo.rename(imported.id, "  dusk  ")?.displayName)
+    }
+
+    @Test
+    fun rename_skips_noop_writes() {
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val imported = repo.import("content://clip/1")
+        repo.rename(imported.id, "sunset walk")
+        val before = file.readText()
+
+        // Re-applying the SAME name must not rewrite project.json.
+        repo.rename(imported.id, "sunset walk")
+        assertEquals(before, file.readText())
+    }
+
+    @Test
+    fun rename_is_null_for_a_missing_record() {
+        val file = projectFile()
+        SourceRepository(FakeResolver("clip".toByteArray()), file).import("content://clip/1")
+
+        assertNull(SourceRepository(FakeResolver(), file).rename("no-such-id", "name"))
+    }
+
+    @Test
+    fun rename_survives_a_reimport_of_the_same_file() {
+        // The folder browser can import a file the picker already landed:
+        // the fingerprint dedupe returns the existing record — and the
+        // existing-record branch REFRESHES displayName from the resolver
+        // (the reimport_backfills_the_display_name contract). The folder
+        // flow's ordering contract is therefore import FIRST, rename
+        // SECOND: the user's edited name lands last and wins.
+        val file = projectFile()
+        val resolver = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/1" to "clip.mcraw"),
+        )
+        val repo = SourceRepository(resolver, file)
+        val imported = repo.import("content://clip/1")
+
+        // A re-import dedupes to the same record and refreshes the name
+        // from the resolver (the honest existing-record behavior).
+        val reimported = repo.import("content://clip/1")
+        assertEquals(imported.id, reimported.id)
+        assertEquals("clip.mcraw", reimported.displayName)
+
+        // The rename applied AFTER the import is the name that sticks.
+        assertEquals("sunset walk", repo.rename(reimported.id, "sunset walk")?.displayName)
+        assertEquals(
+            "sunset walk",
+            SourceRepository(FakeResolver(), file).all().single().displayName,
+        )
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 
     /** A minimal record for the cadence tests (only id + status matter). */

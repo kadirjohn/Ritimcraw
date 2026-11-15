@@ -40,6 +40,24 @@
     <string name="library_delete_title">Remove clips?</string>
     <string name="library_delete_confirm">Remove</string>
     <string name="library_delete_cancel">Cancel</string>
+    <!-- Folder import (owner request 2026-11-15): the title row's folder
+         button, the full-screen folder browser it opens, the
+         import-with-name dialog, and the multi-import summary. -->
+    <string name="library_import_folder">Import from folder</string>
+    <string name="library_folder_browser_title">Import from folder</string>
+    <string name="library_folder_browser_empty">No importable videos in this folder.</string>
+    <string name="library_folder_browser_failed">The folder could not be read (%1$s). Recovery: go back and pick the folder again.</string>
+    <string name="library_folder_browser_back">Back to library</string>
+    <string name="library_folder_imported">Imported</string>
+    <string name="library_folder_import_dialog_title">Import video</string>
+    <string name="library_folder_import_dialog_name_label">Name</string>
+    <string name="library_folder_import_dialog_confirm">Import</string>
+    <string name="library_folder_import_dialog_cancel">Cancel</string>
+    <string name="library_folder_selection_count">%1$d selected</string>
+    <string name="library_folder_selection_close">Exit selection</string>
+    <string name="library_folder_selection_import">Import selected</string>
+    <string name="library_folder_import_summary">%1$d imported, %2$d failed</string>
+    <string name="library_folder_import_summary_all_failed">Import failed: %1$d of %2$d videos could not be imported (%3$s)</string>
 
     <!-- Clip editor -->
     <string name="editor_back">Back to library</string>
