@@ -2507,17 +2507,22 @@ void main() {
      * texel centers.
      *
      * Input: uSrc — the session's RGBA32F develop texture (top-row-first)
-     * for BOTH the window and stats draws, sampled NEAREST, or LINEAR
-     * when the device advertises OES_texture_float_linear (the session
-     * gates the extension at open and sets the develop texture's MIN/MAG
-     * filter at allocation; without the extension, 32F is only
-     * NEAREST-filterable). There is deliberately NO intermediate present
-     * texture: a second chained window pass would double-flip — one fold
-     * maps a top-row-first source to a bottom-up destination, and
-     * composing two folds yields an upside-down image (the fold family
-     * has no identity arm). Output: the window surface (RGBA8888) or the
-     * stats FBO (RGBA8). No readback of any kind — this pass only lands
-     * pixels.
+     * for BOTH the window and stats draws, sampled NEAREST — the NEAREST
+     * PIN (owner device evidence 2026-11-15, the white window): the
+     * session still reads OES_texture_float_linear in its own context at
+     * open, but since the white-window fix the verdict is NOT fed to the
+     * develop texture's MIN/MAG filter; on the failing Adreno the
+     * extension is advertised yet the WINDOW pass's LINEAR reads of the
+     * RGBA32F texture painted WHITE (771 frames, zero GL errors, the
+     * stats draw of the SAME texture healthy), so the pin rides the
+     * session side and the develop texture stays NEAREST — the encoder
+     * blit's proven sampling shape. There is deliberately NO intermediate
+     * present texture: a second chained window pass would double-flip —
+     * one fold maps a top-row-first source to a bottom-up destination,
+     * and composing two folds yields an upside-down image (the fold
+     * family has no identity arm). Output: the window surface (RGBA8888)
+     * or the stats FBO (RGBA8). No readback of any kind — this pass only
+     * lands pixels.
      */
     const val WINDOW_FRAGMENT: String = """#version 300 es
 

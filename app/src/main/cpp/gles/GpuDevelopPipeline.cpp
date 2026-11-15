@@ -1078,6 +1078,15 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         // only NEAREST-filterable without it — correct either way,
         // aliased without); the develop session's store draw and encoder
         // blit are 1:1, so it passes NEAREST. A FILTER choice, not a gate.
+        // THE NEAREST PIN (owner device evidence 2026-11-15, the white
+        // window): the PREVIEW session stopped feeding LINEAR through this
+        // config — on the failing Adreno the extension is ADVERTISED yet
+        // the window pass's LINEAR reads of this RGBA32F texture painted
+        // WHITE (771 frames, zero GL errors, the stats draw of the SAME
+        // texture healthy), so the preview pins NEAREST here; NEAREST is
+        // the encoder blit's proven sampling shape. The config field and
+        // this branch stay for the develop session's honest NEAREST and
+        // for the day the pin lifts.
         glGenTextures(1, &developTex);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, developTex);

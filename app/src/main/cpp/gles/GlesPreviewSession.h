@@ -196,8 +196,12 @@ public:
     // and to the session's OWN window compile (window =
     // FULLSCREEN_VERTEX + WINDOW_FRAGMENT — the pipeline's vertex shader
     // is pipeline-private). OES_texture_float_linear is read in THIS
-    // context the same way to pick the develop texture's filter — a
-    // pipeline Config input, NOT a gate. Returns null with *detail
+    // context the same way, but since the NEAREST PIN (owner device
+    // evidence 2026-11-15, the white window) the verdict is NOT a Config
+    // input anymore: the develop texture's filter is pinned NEAREST — a
+    // mis-advertising Adreno fed the window pass's LINEAR reads of the
+    // RGBA32F texture white while the same texture's stats draw stayed
+    // healthy. Returns null with *detail
     // naming the first failing step on any failure (the GL thread is
     // joined; nothing leaks). The fifteen sources are the Kotlin
     // single-source-of-truth texts (GlesShaderSources), host-validated.
