@@ -161,6 +161,42 @@ object PreviewSurfaceRatio {
 }
 
 /**
+ * Pure display-owner decision for the preview's content layer
+ * (JVM-testable without Compose, the [PreviewSurfaceRatio] precedent):
+ * when a frame exists, WHO serves the pixels — the GPU window (the
+ * SurfaceView drawn BEHIND the Compose window through its punched
+ * hole) or the Compose Image on top. [Owner.NONE] when no frame has
+ * published: the placeholder layer owns the surface then.
+ *
+ * The owner finding this locks (2026-11-15): a SERVING window with a
+ * published frame is the GPU path's steady state — during playback
+ * (stateOf keeps flipping RENDERING between frames) and paused (FRAME)
+ * alike — and the display layer must show NEITHER the Image (it would
+ * cover the window) NOR a placeholder (the RENDERING spinner or the
+ * "No preview yet" text over footage the window is visibly presenting
+ * reads broken). Before the GPU_WINDOW arm existed, the serving steady
+ * state fell through PreviewSurface's when to the placeholder arms, so
+ * the GPU-served preview never showed a clean frame even while its
+ * trace read healthy — the state machine advanced internally; the
+ * display layer discarded the verdict.
+ */
+object PreviewDisplayOwner {
+
+    /**
+     * Who serves the preview's pixels. NONE = no frame published, so the
+     * placeholder layer (access-lost / error / spinner / preparing /
+     * idle text, by way of [PreviewState]) owns the surface.
+     */
+    enum class Owner { GPU_WINDOW, COMPOSE_IMAGE, NONE }
+
+    fun ownerOf(frame: PreviewFrame?, gpuWindowServing: Boolean): Owner = when {
+        frame == null -> Owner.NONE
+        gpuWindowServing -> Owner.GPU_WINDOW
+        else -> Owner.COMPOSE_IMAGE
+    }
+}
+
+/**
  * Clip preview surface shaped like the clip itself (owner finding
  * 2026-11-10): the ratio comes from [PreviewSurfaceRatio], so the surface
  * is 4:3 for a 4:3 clip, 9:16 for a 9:16 clip, and so on — never a fixed
@@ -463,6 +499,23 @@ fun PreviewSurface(
             }
             val f = frame
             when {
+                // The GPU window serves the display (the display-owner
+                // decision, PreviewDisplayOwner.ownerOf): with a published
+                // frame and a serving window, compose NOTHING here — the
+                // SurfaceView behind the Compose window is the picture, and
+                // any placeholder arm below (the RENDERING spinner during
+                // playback, the PREPARING spinner+text, the idle "No
+                // preview yet" text) would draw its spinner/text OVER the
+                // footage the window is visibly presenting. This arm MUST
+                // outrank them all: stateOf keeps flipping RENDERING between
+                // playback frames (renderInFlight outranks hasFrame there),
+                // so without it the serving steady state fell through to the
+                // spinner/text placeholders and the GPU-served preview never
+                // showed a clean frame (owner finding 2026-11-15: black
+                // preview + spinner, "No preview yet" text overlapping the
+                // loading icon, while the render trace read healthy).
+                PreviewDisplayOwner.ownerOf(f, gpuWindowServing) ==
+                    PreviewDisplayOwner.Owner.GPU_WINDOW -> Unit
                 // The Image serves ONLY when the GPU window is not: the
                 // SurfaceView draws behind the Compose window, so a serving
                 // window under a visible Image would never show. The frame
