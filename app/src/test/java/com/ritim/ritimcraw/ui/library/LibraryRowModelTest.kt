@@ -112,4 +112,62 @@ class LibraryRowModelTest {
         // line (File missing), different action (Re-link).
         assertEquals(LibraryRowModel.RowStatus.GONE, LibraryRowModel.rowStatus(source(access = Access.GONE)))
     }
+
+    // ---- displayWrapName (toolbar redesign O1: names wrap at separators) ----
+
+    /** The zero-width space the wrap inserts, spelled for test literals. */
+    private val zwsp = "﻿"
+
+    @Test
+    fun wrap_name_breaks_after_underscore_and_before_dot() {
+        // Spec verbatim: U+200B AFTER '_' and BEFORE '.' — so the second
+        // line can start at "1234" or at ".MP4", never inside "MP4".
+        assertEquals("IMG_${zwsp}1234${zwsp}.MP4", LibraryRowModel.displayWrapName("IMG_1234.MP4"))
+    }
+
+    @Test
+    fun wrap_name_only_underscore() {
+        assertEquals("beach_${zwsp}sunset", LibraryRowModel.displayWrapName("beach_sunset"))
+    }
+
+    @Test
+    fun wrap_name_only_dot() {
+        assertEquals("clip${zwsp}.mp4", LibraryRowModel.displayWrapName("clip.mp4"))
+    }
+
+    @Test
+    fun wrap_name_without_separators_returns_unchanged() {
+        // The id fallback (no separators): the SAME string, no copies.
+        assertEquals("abc123", LibraryRowModel.displayWrapName("abc123"))
+    }
+
+    @Test
+    fun wrap_name_never_changes_the_visible_characters() {
+        // Display only: stripping the zero-width spaces restores the
+        // original name exactly — the transform adds nothing visible.
+        val original = "IMG_1234.MP4"
+        assertEquals(original, LibraryRowModel.displayWrapName(original).replace(zwsp, ""))
+    }
+
+    @Test
+    fun wrap_name_empty_and_short_names_unchanged() {
+        assertEquals("", LibraryRowModel.displayWrapName(""))
+        assertEquals("a", LibraryRowModel.displayWrapName("a"))
+        assertEquals("ab", LibraryRowModel.displayWrapName("ab"))
+    }
+
+    @Test
+    fun wrap_name_bare_separator_gains_only_invisible_breaks() {
+        // Degenerate names: the break lands before/after the lone
+        // separator, but nothing visible changes.
+        assertEquals("${zwsp}.", LibraryRowModel.displayWrapName("."))
+        assertEquals("_${zwsp}", LibraryRowModel.displayWrapName("_"))
+    }
+
+    @Test
+    fun wrap_name_consecutive_separators_each_get_their_break() {
+        // "clip..MP4" and "a__b": every separator is a wrap opportunity.
+        assertEquals("clip${zwsp}.${zwsp}.MP4", LibraryRowModel.displayWrapName("clip..MP4"))
+        assertEquals("a_${zwsp}_${zwsp}b", LibraryRowModel.displayWrapName("a__b"))
+    }
 }

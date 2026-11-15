@@ -1105,8 +1105,12 @@ private fun LibraryRow(
     val accessLost = status != null
     FileListRow(
         // The clip's real file name (owner request §2b); the id when the
-        // resolver could not name it — displayOrId is never blank.
-        fileName = source.displayOrId,
+        // resolver could not name it — displayOrId is never blank. The
+        // DISPLAY copy carries zero-width wrap breaks after '_' and
+        // before '.' (toolbar redesign O1) so the name's two lines break
+        // at its separators, never mid-extension; the record keeps the
+        // real name.
+        fileName = LibraryRowModel.displayWrapName(source.displayOrId),
         supportingLine = LibraryRowModel.supportingLine(
             source,
             LibraryRowModel.durationText(source),
@@ -1316,9 +1320,12 @@ private fun LibraryGridCell(
             }
         }
         // The file name beneath the tile (the spec's own): 12sp, onSurface,
-        // two lines with ellipsis, 6dp off the tile.
+        // two lines with ellipsis, 6dp off the tile. The DISPLAY copy
+        // carries zero-width wrap breaks after '_' and before '.' (the
+        // same toolbar O1 transform as the list row) so the two lines
+        // break at the name's separators, never mid-extension.
         Text(
-            text = source.displayOrId,
+            text = LibraryRowModel.displayWrapName(source.displayOrId),
             style = TextStyle(fontSize = 12.sp),
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 2,
