@@ -57,6 +57,7 @@ import com.ritim.ritimcraw.data.GyroFolderStore
 import com.ritim.ritimcraw.data.GyroMatcher
 import com.ritim.ritimcraw.data.GyroStore
 import com.ritim.ritimcraw.data.GyroTree
+import com.ritim.ritimcraw.data.ImportFolderStore
 import com.ritim.ritimcraw.data.PreviewQualityStore
 import com.ritim.ritimcraw.data.PreviewStatsStore
 import com.ritim.ritimcraw.data.PreviewStatsToggle
@@ -105,6 +106,7 @@ import com.ritim.ritimcraw.data.timeline.TimelineStore
 import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
 import com.ritim.ritimcraw.ui.exports.ExportsScreen
 import com.ritim.ritimcraw.ui.library.BulkImportOutcome
+import com.ritim.ritimcraw.ui.library.FolderFlow
 import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.DeviceReportScreen
@@ -244,6 +246,14 @@ fun AppNav(
             // library_view_mode), each omit-when-default — the
             // PreviewQualityStore pattern over the LibraryPrefsStore.
             libraryPrefs = LibraryPrefsStore(project),
+            // The remembered import folder (owner request 2026-11-16):
+            // the granted tree URI the library's folder button reopens
+            // DIRECTLY — no picker, no re-asking. A SEPARATE store from
+            // gyroFolder on purpose: the gyro folder is the BACKGROUND
+            // auto-match's source, this one is the INTERACTIVE browsing
+            // destination; swapping or clearing either must never touch
+            // the other (they are often the SAME tree on this device).
+            importFolder = ImportFolderStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -430,6 +440,13 @@ fun AppNav(
     var librarySortKey by remember { mutableStateOf(stores.libraryPrefs.sortKey()) }
     var librarySortAscending by remember { mutableStateOf(stores.libraryPrefs.ascending()) }
     var libraryViewMode by remember { mutableStateOf(stores.libraryPrefs.viewMode()) }
+    // The remembered import folder's tree URI (owner request 2026-11-16):
+    // read once at composition and refreshed on every pick — the
+    // previewQuality/gyroFolder pattern. The LibraryScreen's folder
+    // button routes on this value: non-null opens the browser DIRECTLY
+    // on the remembered tree (no picker), null routes a first-time user
+    // to the tree picker.
+    var importFolder by remember { mutableStateOf(stores.importFolder.get()) }
     // App start: apply the persisted choice to the engine (the restart
     // lock, run once per composition entry — the previewQuality pattern
     // has no equivalent because the editor re-reads the store; THIS
@@ -1941,6 +1958,42 @@ fun AppNav(
                                 }
                                 BulkImportOutcome(importedCount, failedCount, firstError)
                             },
+                            // The remembered folder (owner request 2026-11-16):
+                            // the toolbar's folder button routes on this value —
+                            // non-null opens the browser on the remembered tree
+                            // DIRECTLY (no picker, no re-asking), null routes a
+                            // first-time user to the tree picker.
+                            rememberedFolder = importFolder,
+                            // Every landed folder pick (first-time OR change —
+                            // the SAME launcher serves both): persist the new
+                            // tree, refresh the state, and release the OLD
+                            // grant under FolderFlow's guard. The guard is
+                            // load-bearing: a persistable grant is ONE entry per
+                            // URI per app, and the import and gyro folders are
+                            // often the SAME tree on this device (one MotionCam
+                            // folder holds the videos AND their .gcsv logs) —
+                            // releasing the old import tree when the gyro folder
+                            // still points at it would silently kill the gyro
+                            // auto-match's access. A re-pick of the SAME tree
+                            // also releases nothing (the pick just refreshed
+                            // the grant; a release-then-retake gap could drop
+                            // it). The release itself is best-effort: a dead
+                            // grant (already revoked) throws, and runCatching
+                            // swallows exactly that.
+                            onFolderPicked = { oldUri, newUri ->
+                                FolderFlow.grantToRelease(oldUri, newUri, gyroFolder)
+                                    ?.let { uri ->
+                                        runCatching {
+                                            context.contentResolver
+                                                .releasePersistableUriPermission(
+                                                    Uri.parse(uri),
+                                                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                                                )
+                                        }
+                                    }
+                                stores.importFolder.put(newUri)
+                                importFolder = newUri
+                            },
                         )
                         Destination.PROJECTS -> ProjectsScreen(
                             onOpenTimeline = { timelineOpen = true },
@@ -2125,6 +2178,14 @@ private class Stores(
     // The granted gyro-folder tree URI (owner request 2026-11-12, G1):
     // same shared project.json, own top-level "gyroFolder" scalar.
     val gyroFolder: GyroFolderStore,
+    // The remembered import folder's tree URI (owner request 2026-11-16):
+    // same shared project.json, own top-level "importFolder" scalar.
+    // SEPARATE from [gyroFolder] by design — different lifecycles: the
+    // gyro folder is the auto-match's background source, the import
+    // folder is the interactive browsing destination. Swapping or
+    // clearing one must never touch the other, even though both are
+    // often the SAME tree on this device.
+    val importFolder: ImportFolderStore,
     // The debug stats-readback A/B toggle (2026-11-14): the store +
     // native-apply seam (PreviewStatsToggle) over the same shared
     // project.json's "previewStats" boolean scalar.
