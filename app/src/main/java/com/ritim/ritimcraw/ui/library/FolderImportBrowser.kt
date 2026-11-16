@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -51,6 +52,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -127,6 +129,14 @@ private sealed interface FolderListing {
 @Composable
 fun FolderImportBrowser(
     treeUri: String,
+    // Re-enumeration nonce (owner request 2026-11-16): a same-tree
+    // re-pick — the dead-grant recovery, the user re-granting the SAME
+    // folder through the change-folder button — leaves [treeUri]
+    // unchanged, and produceState restarts only when a KEY changes; the
+    // browser would keep showing the stale Failed listing even though
+    // the grant now exists. The caller bumps this on EVERY pick, so the
+    // enumeration reruns in place.
+    listingGeneration: Int = 0,
     sources: List<MediaSource>,
     // One document import: the caller runs the SAME per-file path the
     // single-file picker uses (persistable grant, import with the kind
@@ -152,6 +162,15 @@ fun FolderImportBrowser(
     // all at once.
     folderPreviewAt: (uri: String) -> String?,
     onGenerateFolderPreview: suspend (uri: String, displayName: String) -> Unit,
+    // Change folder (owner request 2026-11-16): "sonrasında folder
+    // menüsünde de değiştirmek isterse folder değiştir butonu olmalı" —
+    // the top bar's folder button opens the SAF tree picker again. The
+    // browser does NOT own the launcher: the caller (LibraryScreen)
+    // routes the re-pick through the SAME launcher as a first-time pick,
+    // so one callback handles grant-take, persist, and the old grant's
+    // guarded release; the browser just re-keys on the new [treeUri] —
+    // produceState re-enumerates in place, selection prunes itself.
+    onChangeFolder: () -> Unit = {},
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -162,7 +181,7 @@ fun FolderImportBrowser(
     // The enumeration (device-gated): one child query, off the UI thread
     // (the FileListRow thumbnail-decode precedent). produceState cancels
     // when the tree changes or the browser leaves composition.
-    val listing by produceState<FolderListing?>(initialValue = null, treeUri) {
+    val listing by produceState<FolderListing?>(initialValue = null, treeUri, listingGeneration) {
         value = withContext(Dispatchers.IO) {
             try {
                 FolderListing.Ready(VideoTree.listVideos(context, treeUri))
@@ -206,7 +225,11 @@ fun FolderImportBrowser(
         Column(Modifier.padding(padding).fillMaxSize()) {
             // The takeover header: back to the library + the title, at
             // the Library title's own scale (the takeover swaps the
-            // screen's content, not its voice).
+            // screen's content, not its voice). The change-folder button
+            // (owner request 2026-11-16) sits at the row's end — the
+            // SAME ic_folder glyph the toolbar's folder button wears,
+            // so the affordance reads as "the folder, again" in both
+            // places.
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -221,6 +244,14 @@ fun FolderImportBrowser(
                     text = stringResource(R.string.library_folder_browser_title),
                     style = MaterialTheme.typography.headlineSmall,
                 )
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onChangeFolder) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_folder),
+                        contentDescription = stringResource(R.string.library_folder_browser_change),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             if (selecting) {
                 // The selection bar mirrors the library's (E2): close

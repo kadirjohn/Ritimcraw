@@ -46,8 +46,9 @@
     <string name="library_import_folder">Klasörden içe aktar</string>
     <string name="library_folder_browser_title">Klasörden içe aktar</string>
     <string name="library_folder_browser_empty">Bu klasörde içe aktarılabilir video yok.</string>
-    <string name="library_folder_browser_failed">Klasör okunamadı (%1$s). Çözüm: geri dönün ve klasörü yeniden seçin.</string>
+    <string name="library_folder_browser_failed">Klasör okunamadı (%1$s). Çözüm: klasör değiştir düğmesiyle klasörü yeniden seçin.</string>
     <string name="library_folder_browser_back">Kitaplığa dön</string>
+    <string name="library_folder_browser_change">Klasör değiştir</string>
     <string name="library_folder_imported">İçe aktarıldı</string>
     <string name="library_folder_import_dialog_title">Video içe aktar</string>
     <string name="library_folder_import_dialog_name_label">Ad</string>

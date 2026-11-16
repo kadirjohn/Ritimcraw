@@ -241,6 +241,20 @@ fun LibraryScreen(
     // glyph placeholder stays).
     folderPreviewAt: (uri: String) -> String? = { null },
     onGenerateFolderPreview: suspend (uri: String, displayName: String) -> Unit = { _, _ -> },
+    // The remembered folder (owner request 2026-11-16): the persisted
+    // tree URI the toolbar's folder button reopens DIRECTLY — no
+    // picker, no re-asking ("sürekli folder sormak mantıklı bir tasarım
+    // mı?"). Null (a first-time user) routes the button to the tree
+    // picker; the browser's change-folder button is the one path to a
+    // different folder. Every landed pick reports through
+    // [onFolderPicked] — the persist and the old grant's release live
+    // with the caller (AppNav owns the store and the gyro-folder state
+    // the release guard needs). A remembered URI whose grant died still
+    // opens the browser: the enumeration reports the honest failure and
+    // the recovery points at the change-folder button (the store KEEPS
+    // the URI — the user may re-grant the same folder).
+    rememberedFolder: String? = null,
+    onFolderPicked: (oldUri: String?, newUri: String) -> Unit = { _, _ -> },
     // The toolbar's sort + view state (library toolbar redesign,
     // 2026-11-16): the caller (AppNav) owns the persistence; the screen
     // renders from these values only. Defaults keep every other caller
@@ -389,7 +403,18 @@ fun LibraryScreen(
     // storage permission exists or is needed, and a SecurityException on
     // the take is non-fatal (the browser's child query will surface the
     // real state honestly if the grant truly is missing).
+    //
+    // Remembered folder (owner request 2026-11-16): ONE launcher serves
+    // BOTH entry points — the toolbar button's first-time pick and the
+    // browser's change-folder button — because a landed pick is the same
+    // event either way: take the grant, report it up (the caller
+    // persists and releases the old grant under FolderFlow's guard),
+    // and re-key the browser onto the new tree.
     var folderUri by rememberSaveable { mutableStateOf<String?>(null) }
+    // The browser's re-enumeration nonce: bumped on every landed pick so
+    // a SAME-tree re-pick (the dead-grant recovery) also re-runs the
+    // enumeration — produceState keys on treeUri AND this.
+    var folderListingGeneration by rememberSaveable { mutableStateOf(0) }
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -403,7 +428,12 @@ fun LibraryScreen(
             // Non-fatal: the browser's enumeration reports the honest
             // state if the grant really is required.
         }
+        // rememberedFolder (not folderUri) is the old value reported: a
+        // change-folder pick releases what the STORE held, which is also
+        // the tree the browser is showing.
+        onFolderPicked(rememberedFolder, uri.toString())
         folderUri = uri.toString()
+        folderListingGeneration++
     }
 
     // The browser takes over the whole content area IN PLACE of the
@@ -414,11 +444,18 @@ fun LibraryScreen(
     if (folderUri != null) {
         FolderImportBrowser(
             treeUri = folderUri!!,
+            listingGeneration = folderListingGeneration,
             sources = sources,
             onImport = onImportFromFolder,
             onImportMany = onImportManyFromFolder,
             folderPreviewAt = folderPreviewAt,
             onGenerateFolderPreview = onGenerateFolderPreview,
+            // The change-folder affordance (owner request 2026-11-16):
+            // "sonrasında folder menüsünde de değiştirmek isterse folder
+            // değiştir butonu olmalı" — one button in the top bar, and
+            // the SAME launcher handles the re-pick, so the browser
+            // re-enumerates in place on the new tree.
+            onChangeFolder = { folderPicker.launch(null) },
             onClose = { folderUri = null },
             modifier = modifier,
         )
@@ -493,7 +530,15 @@ fun LibraryScreen(
                 onSortAscendingSelect = onSortAscendingChange,
                 onViewModeToggle = onViewModeChange,
                 onImport = { picker.launch(arrayOf("*/*")) },
-                onOpenFolder = { folderPicker.launch(null) },
+                // Routing (owner request 2026-11-16): a remembered
+                // folder opens the browser on it DIRECTLY — no picker,
+                // no re-asking ("sürekli folder sormak mantıklı bir
+                // tasarım mı?"); only a first-time user (no remembered
+                // folder) sees the tree picker.
+                onOpenFolder = {
+                    FolderFlow.browserTree(rememberedFolder)?.let { folderUri = it }
+                        ?: folderPicker.launch(null)
+                },
             )
         }
         Scaffold(

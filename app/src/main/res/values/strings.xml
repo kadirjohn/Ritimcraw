@@ -46,8 +46,9 @@
     <string name="library_import_folder">Import from folder</string>
     <string name="library_folder_browser_title">Import from folder</string>
     <string name="library_folder_browser_empty">No importable videos in this folder.</string>
-    <string name="library_folder_browser_failed">The folder could not be read (%1$s). Recovery: go back and pick the folder again.</string>
+    <string name="library_folder_browser_failed">The folder could not be read (%1$s). Recovery: use the change-folder button to pick the folder again.</string>
     <string name="library_folder_browser_back">Back to library</string>
+    <string name="library_folder_browser_change">Change folder</string>
     <string name="library_folder_imported">Imported</string>
     <string name="library_folder_import_dialog_title">Import video</string>
     <string name="library_folder_import_dialog_name_label">Name</string>
