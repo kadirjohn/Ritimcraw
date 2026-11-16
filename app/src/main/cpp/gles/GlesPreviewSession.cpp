@@ -759,6 +759,69 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             const float rectH = static_cast<float>(uprightH) * scale;
             const float rectX = (static_cast<float>(winW) - rectW) * 0.5f;
             const float rectY = (static_cast<float>(winH) - rectH) * 0.5f;
+            // THE ENTRY-STATE CAPTURE (white-window round 3, DEBUG-only,
+            // the same gate and the same one-shot latches as the pixel
+            // probe below): the brief's candidate (a) verdict —
+            // glIsEnabled(GL_SCISSOR_TEST) + glGetIntegerv(GL_SCISSOR_BOX)
+            // at draw-2 entry tells all — extended to every candidate
+            // (blend, depth, stencil, the color write mask). Read BEFORE
+            // the clean entry below resets anything, so the probe line
+            // reports the state this draw INHERITED (the chain's TAIL +
+            // whatever the driver left on the window-surface path), not
+            // the state this pass pins. Runs ONLY on the frame the probe
+            // will log (the latch condition is frozen into probeThisFrame;
+            // the latches are written only inside the probe block below),
+            // so a release build and a mid-playback frame pay nothing.
+            const bool probeThisFrame = windowProbeEnabled() &&
+                (!probeGeometryLogged || probeW != w || probeH != h);
+            GLboolean entryScissor = GL_FALSE;
+            GLboolean entryBlend = GL_FALSE;
+            GLboolean entryDepth = GL_FALSE;
+            GLboolean entryStencil = GL_FALSE;
+            GLint entryScissorBox[4] = {0, 0, 0, 0};
+            GLint entryColorMask[4] = {0, 0, 0, 0};
+            if (probeThisFrame) {
+                entryScissor = glIsEnabled(GL_SCISSOR_TEST);
+                glGetIntegerv(GL_SCISSOR_BOX, entryScissorBox);
+                entryBlend = glIsEnabled(GL_BLEND);
+                entryDepth = glIsEnabled(GL_DEPTH_TEST);
+                entryStencil = glIsEnabled(GL_STENCIL_TEST);
+                glGetIntegerv(GL_COLOR_WRITEMASK, entryColorMask);
+                while (glGetError() != GL_NO_ERROR) {}  // swallow the
+                    // queries' own errors — the draw's error check below
+                    // stays the only error the frame reports
+            }
+            // THE CLEAN ENTRY (white-window round 3, the probe's verdict
+            // 2026-11-16: rgb=(255,255,255) at the uRect center from the
+            // back buffer PRE-swap — the draw produces white into the
+            // window surface while the SAME windowProgram + developTex +
+            // near-identical uniforms draw HEALTHY into the stats FBO,
+            // so the divergence is the DESTINATION: FBO 0, the EGL
+            // window surface). The audit behind every call below: NOTHING
+            // in app/src/main/cpp/ ever calls glEnable / glDisable /
+            // glScissor / glColorMask (the grep is empty), so no app
+            // code authors any poison candidate — the chain's TAIL
+            // (GpuDevelopPipeline.cpp draw 11) leaves only program /
+            // texture-unit / FBO / viewport state, ALL of which this
+            // pass resets below. These five calls pin the GL spec
+            // DEFAULTS explicitly, so no driver-level non-default state
+            // on the window-surface path can clip, blend, depth-test,
+            // stencil-test, or mask the draw's writes — and an EGL
+            // window buffer's initial contents are UNDEFINED (often
+            // white), so any unwritten region reads as that initial
+            // white, exactly the probe's line.
+            glDisable(GL_SCISSOR_TEST);  // a stale scissor rect is the
+                                        // one clip that leaves the
+                                        // buffer's initial white showing
+            glDisable(GL_BLEND);         // blending against the buffer's
+                                        // undefined initial contents is
+                                        // undefined output
+            glDisable(GL_DEPTH_TEST);    // the pass has no depth buffer;
+                                        // a leftover test discards
+            glDisable(GL_STENCIL_TEST);  // same, the stencil leg
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);  // a masked
+                                        // channel is an unwritten
+                                        // channel
             glUseProgram(windowProgram);
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, pipeline.developTex());
@@ -782,8 +845,7 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             // undefined — the brief's own correction). One line per
             // attach per develop resolution fires; the latches keep it
             // one-shot so a playback run logs nothing per frame.
-            if (windowProbeEnabled() &&
-                (!probeGeometryLogged || probeW != w || probeH != h)) {
+            if (probeThisFrame) {
                 // The geometry line, once per attach: the pass's own
                 // values — the claimed uRect, the viewport, the surface's
                 // reported geometry and its dots-per-inch pair.
@@ -818,7 +880,9 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                 __android_log_print(
                     ANDROID_LOG_INFO, "ritim-trace",
                     "window probe: rgb=(%d,%d,%d) win=%dx%d vp=%dx%d "
-                    "rect=(%.1f,%.1f,%.1f,%.1f) src=%ux%u orient=%d",
+                    "rect=(%.1f,%.1f,%.1f,%.1f) src=%ux%u orient=%d "
+                    "entry[scissor=%d box=(%d,%d,%d,%d) blend=%d depth=%d "
+                    "stencil=%d mask=(%d,%d,%d,%d)]",
                     static_cast<int>(probePx[0]), static_cast<int>(probePx[1]),
                     static_cast<int>(probePx[2]),
                     static_cast<int>(winW), static_cast<int>(winH),
@@ -826,7 +890,15 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                     static_cast<double>(rectX), static_cast<double>(rectY),
                     static_cast<double>(rectW), static_cast<double>(rectH),
                     static_cast<unsigned>(w), static_cast<unsigned>(h),
-                    orient);
+                    orient,
+                    entryScissor ? 1 : 0,
+                    entryScissorBox[0], entryScissorBox[1],
+                    entryScissorBox[2], entryScissorBox[3],
+                    entryBlend ? 1 : 0,
+                    entryDepth ? 1 : 0,
+                    entryStencil ? 1 : 0,
+                    entryColorMask[0], entryColorMask[1],
+                    entryColorMask[2], entryColorMask[3]);
                 probeW = w;
                 probeH = h;
             }
@@ -951,6 +1023,19 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // The window pass into the stats FBO: the SAME aspect-fit fold at the
     // stats dims (uRect covers the whole target — no letterbox bars; the
     // orientation fold makes it upright).
+    // THE CLEAN ENTRY, belt and braces (white-window round 3): this pass
+    // is HEALTHY on device today, but it survives either because draw 2's
+    // entry above already pinned the state (the window-surface path) or
+    // because it runs straight off the chain's TAIL with no window pass
+    // in between (the no-surface / query-failed path) — and an FBO bind
+    // does NOT reset enables or masks (the GL spec keeps them as context
+    // state). Pinning the same minimal clean state here makes the stats
+    // pack independent of whichever path ran before it.
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glUseProgram(windowProgram);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, pipeline.developTex());
