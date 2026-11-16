@@ -4,7 +4,6 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -60,11 +59,14 @@ import kotlinx.coroutines.launch
  * written exactly once, on release, and only if the slot changed.
  *
  * Geometry (spec, all dp):
- * - track 168x48dp, RoundedCornerShape(24dp), surfaceContainerHighest,
- *   1dp inset outlineVariant border,
+ * - track 168x48dp, RoundedCornerShape(24dp), surfaceContainerHighest —
+ *   a tonal fill only (settings v2 polish C4 removed the 1dp inset
+ *   stroke the v1 spec drew; the outline policy forbids strokes on
+ *   slider tracks),
  * - three 54dp slots starting at x = 3dp, each showing its icon (22dp,
- *   onSurfaceVariant): slot 0 = Light (sun), 1 = System (auto),
- *   2 = Dark (moon) — left to right. This is the VISUAL order only;
+ *   onSurfaceVariant): slot 0 = Light (sun), 1 = System (the filled "A"
+ *   vector, settings v2 C4), 2 = Dark (moon) — left to right. This is
+ *   the VISUAL order only;
  *   the stored enum and its values are untouched — the caller maps
  *   slot index ↔ ThemeMode,
  * - thumb 54x40dp, top offset 4dp, RoundedCornerShape(20dp),
@@ -126,12 +128,11 @@ private val ThumbWidth = 54.dp
 private val ThumbHeight = 40.dp
 private val ThumbTopOffset = 4.dp
 private val TrackCorner = 24.dp
-private val TrackBorderInset = 1.dp
 private val ThumbCorner = 20.dp
 private val SlotIconSize = 22.dp
 
 /** Slot icons in visual order: 0 = Light, 1 = System, 2 = Dark. */
-private val SlotIcons = listOf(Sun, Auto, Moon)
+private val SlotIcons = listOf(Sun, AutoThemeA, Moon)
 
 /** The spec's release/settle animation: spring, dampingRatio ~0.8, medium stiffness. */
 private val SettleSpec = spring<Float>(
@@ -419,8 +420,9 @@ fun ThemeSlider(
                 }
             },
     ) {
-        // Track: the spec's container + 1dp INSET border (the border
-        // sits 1dp inside the track edge, not on it).
+        // Track (settings v2 polish C4, 2026-11-15): the tonal fill only
+        // — the 1dp inset border is GONE, per the outline policy (a
+        // slider track is not one of the allowed border cases).
         Box(
             Modifier
                 .fillMaxSize()
@@ -429,16 +431,6 @@ fun ThemeSlider(
                     shape = RoundedCornerShape(TrackCorner),
                 )
         ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(TrackBorderInset)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(TrackCorner - TrackBorderInset),
-                    )
-            )
             // The three slots, from x = 3dp.
             Row(Modifier.padding(start = TrackInset)) {
                 SlotIcons.forEach { icon ->

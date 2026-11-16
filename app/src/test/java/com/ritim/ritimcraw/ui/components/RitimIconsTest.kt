@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.components
 
+import androidx.compose.ui.graphics.vector.PathNode
 import androidx.compose.ui.graphics.vector.addPathNodes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -52,10 +53,64 @@ class RitimIconsTest {
 
     @Test
     fun filled_half_paths_parse() {
-        // contrast/auto's filled halves (fill, no stroke).
+        // contrast's filled half (fill, no stroke).
         val contrastHalf = addPathNodes("M12 3a9 9 0 0 1 0 18z")
         assertTrue("contrast half must parse to nodes", contrastHalf.isNotEmpty())
-        val autoHalf = addPathNodes("M12 6a6 6 0 0 1 0 12z")
-        assertTrue("auto half must parse to nodes", autoHalf.isNotEmpty())
+    }
+
+    // ---- AutoThemeA (settings v2 polish C4: the System slot's "A") ----
+
+    /** The C4 spec's own path data for the filled even-odd "A" vector. */
+    private val autoThemeAPath =
+        "M5.48 19.2H7.86L9.15 15.4H14.81L16.14 19.2H18.52L13.3 4.8H10.6Z" +
+            "M9.78 13.57L10.58 11.19C10.94 10.09 11.38 8.59 11.94 6.53" +
+            "C12.51 8.57 12.95 10.04 13.33 11.19L14.16 13.57Z"
+
+    @Test
+    fun auto_theme_a_path_parses_to_nodes() {
+        // The "A" glyph's path data must parse cleanly through the
+        // Compose path parser — a malformed command would throw at
+        // parser level, a silently-wrong vector would render wrong on
+        // device where no test can see it.
+        val nodes = addPathNodes(autoThemeAPath)
+        assertTrue("the A glyph path must parse to nodes", nodes.isNotEmpty())
+    }
+
+    @Test
+    fun auto_theme_a_path_keeps_two_subpaths_for_the_even_odd_counter() {
+        // The letter is ONE path with TWO subpaths: the outer outline and
+        // the inner counter (the triangle hole). The even-odd fill rule
+        // cuts the counter out of the filled outline — with only one
+        // subpath there would be no hole, and the glyph would render as
+        // a solid triangle-ish blob.
+        val subpathStarts = addPathNodes(autoThemeAPath).count { it is PathNode.Close }
+        assertEquals("the A must close both subpaths (outline + counter)", 2, subpathStarts)
+    }
+
+    @Test
+    fun auto_theme_a_outline_bounds_stay_on_the_24_grid() {
+        // The glyph must land inside the 24x24 viewport with the spec's
+        // metrics: cap height 14.4 units on a baseline at y = 19.2 (top
+        // = 4.8) — pinning the parse against a silent coordinate shift.
+        val nodes = addPathNodes(autoThemeAPath)
+        val xs = nodes.flatMap { node ->
+            when (node) {
+                is PathNode.MoveTo -> listOf(node.x)
+                is PathNode.LineTo -> listOf(node.x)
+                is PathNode.CurveTo -> listOf(node.x1, node.x2, node.x3)
+                else -> emptyList()
+            }
+        }
+        val ys = nodes.flatMap { node ->
+            when (node) {
+                is PathNode.MoveTo -> listOf(node.y)
+                is PathNode.LineTo -> listOf(node.y)
+                is PathNode.CurveTo -> listOf(node.y1, node.y2, node.y3)
+                else -> emptyList()
+            }
+        }
+        assertTrue("the A must span the spec's width", xs.min() >= 5f && xs.max() <= 19f)
+        assertEquals("baseline y = 19.2 (14.4 cap height from y = 4.8)", 19.2f, ys.max()!!, 0.001f)
+        assertEquals("cap top y = 4.8", 4.8f, ys.min()!!, 0.001f)
     }
 }

@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.components
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -14,9 +15,10 @@ import androidx.compose.ui.unit.dp
  * path data — every path here is the spec's own, not a Material glyph).
  *
  * All icons are 24x24 viewBox, STROKE based: strokeWidth 1.75, round
- * line cap and join, no fill — except the two half-filled theme glyphs
- * ([Auto] and the [Contrast] disc) where the spec states a FILLED half
- * with the same tint. Icons are built as ImageVectors (the Destination
+ * line cap and join, no fill — except the filled theme glyphs (the
+ * [Contrast] disc's half and the settings v2 [AutoThemeA] letter,
+ * which is a filled even-odd vector, not a font). Icons are built as
+ * ImageVectors (the Destination
  * enum's existing pattern: core Material glyphs are ImageVectors, so
  * the custom paths materialize the same way) and tinted by the
  * component's color role at the call site — the vectors carry no color
@@ -211,18 +213,32 @@ val Sun: ImageVector = strokeIcon(
 )
 
 /**
- * auto (Theme slot 1, System; half sun, half moon): the 6-radius disc is
- * stroked; the RIGHT half is FILLED with the tint (spec: path
- * "M12 6a6 6 0 0 1 0 12z"); the rays run only on the left half.
+ * autoThemeA (Theme slot 1, System; settings v2 polish C4, 2026-11-15):
+ * a capital "A" as a FILLED vector — not a Text, not a font. The outline
+ * comes from Inter Medium (SIL Open Font License), scaled to a 14.4 unit
+ * cap height on the 24 unit grid, baseline y = 19.2; the counter (the
+ * triangle hole between the crossbar and the apex) is the second
+ * subpath, so the EVEN-ODD fill rule cuts it out of the filled letter.
+ * No proprietary platform font is traced here — the provenance is the
+ * OFL-licensed Inter outline only.
  */
-val Auto: ImageVector = filledIcon(
-    name = "Auto",
-    strokePaths = listOf(
-        circlePath(cx = 12f, cy = 12f, r = 6f),
-        "M12 3.5v-2M12 20.5v2M3.5 12h-2M5.99 5.99L4.58 4.58M5.99 18.01l-1.41 1.41",
-    ),
-    fillPaths = listOf("M12 6a6 6 0 0 1 0 12z"),
-)
+val AutoThemeA: ImageVector = ImageVector.Builder(
+    name = "AutoThemeA",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    addPath(
+        pathData = addPathNodes(
+            "M5.48 19.2H7.86L9.15 15.4H14.81L16.14 19.2H18.52L13.3 4.8H10.6Z" +
+                "M9.78 13.57L10.58 11.19C10.94 10.09 11.38 8.59 11.94 6.53" +
+                "C12.51 8.57 12.95 10.04 13.33 11.19L14.16 13.57Z",
+        ),
+        pathFillType = PathFillType.EvenOdd,
+        fill = SolidColor(Color.Black),
+    )
+}.build()
 
 /** moon (Theme slot 2, Dark). */
 val Moon: ImageVector = strokeIcon(
