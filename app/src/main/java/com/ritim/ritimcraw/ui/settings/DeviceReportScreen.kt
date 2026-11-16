@@ -7,29 +7,34 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerSnapDistance
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -39,55 +44,75 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.engine.CodecReport
-import com.ritim.ritimcraw.ui.components.AppSegmentedControl
 import com.ritim.ritimcraw.ui.components.ArrowBack
 import com.ritim.ritimcraw.ui.components.Copy
 import com.ritim.ritimcraw.ui.components.Cpu
+import com.ritim.ritimcraw.ui.components.SettingsGroupItem
+import kotlinx.coroutines.launch
 
 /**
- * Device report screen (owner spec 2026-11-14, device_report_screen): the
- * full-screen replacement for the codec AlertDialog. Same data source as
- * the dialog — AppNav's one CodecProbe.probe() per Settings-tab
- * composition, shared with the Settings row — only the container changed.
+ * Device report screen (owner spec 2026-11-14, device_report_screen; v2
+ * polish C5+C6, 2026-11-16): the full-screen replacement for the codec
+ * AlertDialog. Same data source as the dialog — AppNav's one
+ * CodecProbe.probe() per Settings-tab composition, shared with the
+ * Settings row — only the container changed.
  *
- * Layout (spec, verbatim geometry):
- * - top bar: back IconButton (arrow_back 24dp, 48dp target,
+ * Layout (v2 polish spec, verbatim geometry):
+ * - top bar (unchanged by C5): back IconButton (arrow_back 24dp,
  *   contentDescription "Back"), title "Device report" 22sp SemiBold
- *   onSurface, trailing Copy IconButton (copy icon 22dp, contentDescription
- *   "Copy report"); padding top 8dp, horizontal 8dp. The app shell's
- *   Scaffold already applies the status-bar inset through its innerPadding
- *   (default contentWindowInsets — same as the Settings screen), so the
- *   8dp here sits below that inset: nothing hardcodes a status bar height
- *   and nothing double-pads. The bar stays fixed while the content below
- *   scrolls as one (spec: "the whole screen scrolls as one, avoid nested
- *   scrolling of the same orientation" — one vertical scroll, no nested
- *   LazyColumn inside the scrolling page).
- * - summary card (v2 polish C1, interim until the C5 pass): a borderless
- *   tonal container (20dp shape, surfaceContainer) on the surface
- *   background, 16dp horizontal margin / 8dp top, 20dp inner padding; a
- *   56dp tile (16dp shape, primaryContainer) with the cpu icon at 28dp,
- *   then the codec count 32sp SemiBold lineHeight 1.0 letterSpacing
- *   -0.02em onSurface and "video codecs on this device" 13sp
- *   onSurfaceVariant.
- * - filter: the same segmented control (All / Decoders / Encoders), local
- *   state, default All.
- * - the grouped list (v2 polish C1, interim until the C5/C6 pass): one
- *   borderless tonal container (20dp shape, surfaceContainer, bottom
- *   margin 32dp) holding a plain Column — group headers ("AVC ·
- *   Decoders", 12sp SemiBold ALL CAPS 0.08em onSurfaceVariant on
- *   surfaceContainerHighest) only on group change, then codec items
- *   (16dp/12dp padding, 1dp top divider outlineVariant — the header
- *   band and dividers are the C6 target, replaced by step 5 of the
- *   polish pass): the FULL codec name in FontFamily.Monospace
- *   13sp lineHeight 1.35 onSurface, wrapping at any character, never
- *   truncated; under it a FlowRow of pills (gap 6dp, height 22dp,
- *   horizontal padding 8dp, fully rounded, 12sp SemiBold): HW
- *   (primaryContainer) or SW (neutral), Codec2 for "c2." names, OMX for
- *   "OMX." names, "Low latency" for ".low_latency" names.
+ *   onSurface, trailing Copy IconButton (copy icon 22dp,
+ *   contentDescription "Copy report"); padding top 8dp, horizontal 8dp.
+ *   The app shell's Scaffold already applies the status-bar inset through
+ *   its innerPadding (default contentWindowInsets), so the 8dp here sits
+ *   below that inset. System back and the back arrow are unchanged.
+ * - summary card (C5, fixed above the tabs, outside the pager): no
+ *   border; container surfaceContainer, shape 20dp; margin 16dp
+ *   horizontal / 8dp top / 12dp bottom; padding 14dp vertical x 16dp
+ *   horizontal; a 48dp x 48dp tile (14dp corners, primaryContainer) with
+ *   the cpu icon at 24dp on the left; to its right the codec count at
+ *   28sp SemiBold and "video codecs on this device" 13sp onSurfaceVariant
+ *   on the same baseline row, gap 8dp between the row's elements.
+ * - tabs (C5): [PrimaryTabRow] under the summary card — 3 tabs (All /
+ *   Decoders / Encoders), container transparent (the screen's surface
+ *   shows through), label 14sp Medium; the selected label is
+ *   colorScheme.primary SemiBold, the unselected onSurfaceVariant. The
+ *   stock Material indicator, the stock divider (PrimaryTabRow's own
+ *   default divider param — the outline policy's allowed stock case, not
+ *   a call in this file) and the default tab ripple are used. Tab click
+ *   animates the pager to the page.
+ * - pager (C5): [HorizontalPager] below the tab row filling the rest of
+ *   the screen. val pagerState = rememberPagerState { 3 } (saveable —
+ *   DefaultPagerState carries its own Saver, which replaces the v1
+ *   filterIndex's rememberSaveable). selectedTabIndex =
+ *   pagerState.currentPage. One swipe = one category: the default
+ *   snapping, constrained explicitly with PagerDefaults.flingBehavior(
+ *   state = pagerState, pagerSnapDistance = PagerSnapDistance.atMost(1)).
+ *   No custom page size, no free-scroll. Each page has its OWN
+ *   LazyColumn with its own LazyListState (rememberLazyListState() per
+ *   page inside the pager's page lambda), so scroll position persists
+ *   per tab. Pages: 0 = all codecs, 1 = decoders only, 2 = encoders
+ *   only. Edge swipes that start at the screen edge still trigger the
+ *   system back gesture: the pager only intercepts drags within its own
+ *   bounds and nothing here consumes system gesture insets.
+ * - the list (C6): each pager page is a LazyColumn (contentPadding
+ *   bottom 32dp). No outline box, no header band, no dividers. Per
+ *   group: a header that is a plain text row on the screen background —
+ *   12sp SemiBold ALL CAPS letterSpacing 0.08em onSurfaceVariant,
+ *   padding start/end 20dp, top 20dp, bottom 8dp, no container/fill;
+ *   text format unchanged ("AVC · Decoders", uppercased). Items: the
+ *   same segmented-item component as C1 ([SettingsGroupItem], index and
+ *   count computed PER GROUP), horizontal margin 16dp, 2dp gap,
+ *   container surfaceContainer, padding 16dp horizontal x 12dp vertical.
+ *   Item content unchanged from v1: the FULL codec name in
+ *   FontFamily.Monospace 13sp (wraps, never truncated), then a FlowRow
+ *   of pills (HW or SW, Codec2 or OMX, Low latency). Pill neutral
+ *   container = surfaceContainerHighest; HW pill container =
+ *   primaryContainer, text onPrimaryContainer. stickyHeader is not
+ *   used, so no header background is needed.
  *
  * Kind derivation (an honest deviation, documented for the handback): the
- * spec says the filter uses "the existing codec info (isEncoder flag), not
- * from name parsing" — but CodecReport (engine/) carries NO isEncoder
+ * spec says the filter uses "the existing codec info (isEncoder flag),
+ * not from name parsing" — but CodecReport (engine/) carries NO isEncoder
  * flag (name, mime, hardware, profiles, maxSize, main10Ok, detail), and
  * the engine package is outside this mission's file boundary, so the
  * flag cannot be added there. The kind is therefore derived from the
@@ -101,7 +126,7 @@ import com.ritim.ritimcraw.ui.components.Cpu
  * video/hevc -> HEVC, else the subtype uppercased) — never from the name.
  *
  * Copy: the screen builds the full plain-text report (one codec name per
- * line under the same group headers, the FULL list — the filter is a
+ * line under the same group headers, the FULL list — the pager is a
  * view, the copy is the report) and hands it to [onCopyReport]; AppNav
  * owns the clipboard write and shows the shell's existing snackbar.
  *
@@ -109,7 +134,7 @@ import com.ritim.ritimcraw.ui.components.Cpu
  * and pinned by unit tests (DeviceReportGroupingTest) so correctness does
  * not depend on seeing the UI.
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceReportScreen(
     reports: List<CodecReport>,
@@ -118,31 +143,34 @@ fun DeviceReportScreen(
     modifier: Modifier = Modifier,
 ) {
     BackHandler { onBack() }
-    // The filter (spec): local state, default All. 0 = All, 1 = Decoders,
-    // 2 = Encoders — the segmented control maps the index straight back.
-    var filterIndex by rememberSaveable { mutableIntStateOf(0) }
+    // The pager (C5): 3 pages — 0 = all, 1 = decoders, 2 = encoders.
+    // rememberPagerState's DefaultPagerState is saveable, so the page
+    // survives process death like the v1 filterIndex did.
+    val pagerState = rememberPagerState { 3 }
+    val scope = rememberCoroutineScope()
     val allGroups = remember(reports) { DeviceReportGrouping.group(reports) }
-    val visibleGroups = when (filterIndex) {
-        1 -> allGroups.filter { !it.encoders }
-        2 -> allGroups.filter { it.encoders }
-        else -> allGroups
-    }
     // The group header formats ("%1$s · Decoders") resolved once; the pure
     // header/copy builders below format the labels with them.
     val decodersFormat = stringResource(R.string.settings_device_report_group_decoders)
     val encodersFormat = stringResource(R.string.settings_device_report_group_encoders)
     // Copy text (spec): the FULL codec list, one name per line, grouped by
-    // the same headers — the filter does not change what gets copied.
+    // the same headers — the pager does not change what gets copied.
     val copyText = remember(allGroups, decodersFormat, encodersFormat) {
         DeviceReportGrouping.plainText(allGroups, decodersFormat, encodersFormat)
     }
+    // The tab labels, resolved once for both the tab row and the pages.
+    val tabLabels = listOf(
+        stringResource(R.string.settings_device_report_filter_all),
+        stringResource(R.string.settings_device_report_filter_decoders),
+        stringResource(R.string.settings_device_report_filter_encoders),
+    )
 
     Surface(
         modifier = modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.surface,
     ) {
         Column(Modifier.fillMaxSize()) {
-            // ---- Top bar (fixed while the content below scrolls) ----
+            // ---- Top bar (fixed; C5 keeps it unchanged) ----
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -175,135 +203,205 @@ fun DeviceReportScreen(
                     )
                 }
             }
-            // ---- The scrolling page: summary, filter, list as ONE scroll ----
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+            // ---- Summary card (C5: fixed above the tabs, outside the
+            // pager). No border — a tonal surfaceContainer fill on the
+            // surface background, 20dp shape, 16dp horizontal margin,
+            // 8dp top / 12dp bottom, 14dp vertical x 16dp horizontal
+            // padding. 48dp tile (14dp corners, primaryContainer) with
+            // the cpu icon at 24dp; count 28sp SemiBold and the summary
+            // text 13sp onSurfaceVariant on one baseline row, 8dp gaps.
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 12.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
-                // Summary card (v2 polish C1, interim until the C5/C6
-                // restructure): no border — a tonal surfaceContainer fill
-                // on the surface background, 20dp shape, 16dp horizontal
-                // margin. Same content as v1; the C5 pass restyles tile
-                // size and typography to the polish spec.
-                Surface(
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 16.dp, top = 8.dp, end = 16.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Row(
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            .size(48.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(14.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(56.dp)
-                                .background(
-                                    color = MaterialTheme.colorScheme.primaryContainer,
-                                    shape = RoundedCornerShape(16.dp),
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Cpu,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(28.dp),
-                            )
-                        }
-                        Column {
+                        Icon(
+                            imageVector = Cpu,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                    // The count and the summary text share a baseline row
+                    // (C5). alignByBaseline groups just these two texts;
+                    // the tile keeps the row's CenterVertically.
+                    Text(
+                        text = reports.size.toString(),
+                        style = TextStyle(
+                            fontSize = 28.sp,
+                            lineHeight = 32.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.alignByBaseline(),
+                    )
+                    Text(
+                        text = stringResource(R.string.settings_device_report_summary),
+                        style = TextStyle(
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            fontWeight = FontWeight.Normal,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.alignByBaseline(),
+                    )
+                }
+            }
+            // ---- Tabs (C5): PrimaryTabRow under the summary card.
+            // containerColor transparent — the screen's surface shows
+            // through. The stock indicator, the stock divider (the
+            // default divider param, drawn by the Material component
+            // itself — the outline policy's allowed case) and the
+            // default ripple; only the label typography and the two
+            // content colors are set.
+            PrimaryTabRow(
+                selectedTabIndex = pagerState.currentPage,
+                containerColor = Color.Transparent,
+                tabs = {
+                    tabLabels.forEachIndexed { index, label ->
+                        val selected = index == pagerState.currentPage
+                        Tab(
+                            selected = selected,
+                            onClick = {
+                                scope.launch {
+                                    pagerState.animateScrollToPage(index)
+                                }
+                            },
+                            text = {
+                                // 14sp Medium, SemiBold when selected
+                                // (C5); the tab's own ProvideTextStyle
+                                // (TitleSmall) is overridden here.
+                                Text(
+                                    text = label,
+                                    style = TextStyle(
+                                        fontSize = 14.sp,
+                                        lineHeight = 20.sp,
+                                        fontWeight = if (selected) {
+                                            FontWeight.SemiBold
+                                        } else {
+                                            FontWeight.Medium
+                                        },
+                                    ),
+                                    maxLines = 1,
+                                )
+                            },
+                            selectedContentColor = MaterialTheme.colorScheme.primary,
+                            unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+            )
+            // ---- The pager (C5): one page per category, filling the
+            // rest of the screen. One swipe = one category: default
+            // snapping constrained explicitly with atMost(1); no custom
+            // page size, no free-scroll. Each page owns its LazyColumn
+            // and LazyListState, so scroll position persists per tab.
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f),
+                flingBehavior = PagerDefaults.flingBehavior(
+                    state = pagerState,
+                    pagerSnapDistance = PagerSnapDistance.atMost(1),
+                ),
+            ) { page ->
+                val pageGroups = when (page) {
+                    1 -> allGroups.filter { !it.encoders }
+                    2 -> allGroups.filter { it.encoders }
+                    else -> allGroups
+                }
+                // Per-page list state (C5): remembered inside the page,
+                // so each tab's scroll position survives page switches.
+                // The pager keeps pages composed while swiping, so the
+                // state is retained across the round trip.
+                val listState = rememberLazyListState()
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 32.dp),
+                ) {
+                    pageGroups.forEach { group ->
+                        item(key = "header-${group.label}-${group.encoders}") {
+                            // Group header (C6): a PLAIN text row on the
+                            // screen background — no container, no
+                            // border, no fill. 12sp SemiBold ALL CAPS
+                            // 0.08em onSurfaceVariant, padding 20/20/20/8.
+                            // Text format unchanged from v1, uppercased.
                             Text(
-                                text = reports.size.toString(),
+                                text = DeviceReportGrouping
+                                    .headerText(group, decodersFormat, encodersFormat)
+                                    .uppercase(),
                                 style = TextStyle(
-                                    fontSize = 32.sp,
-                                    lineHeight = 32.sp,
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = (-0.02).em,
-                                ),
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = stringResource(R.string.settings_device_report_summary),
-                                style = TextStyle(
-                                    fontSize = 13.sp,
-                                    lineHeight = 18.sp,
-                                    fontWeight = FontWeight.Normal,
+                                    letterSpacing = 0.08.em,
                                 ),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        start = 20.dp,
+                                        top = 20.dp,
+                                        end = 20.dp,
+                                        bottom = 8.dp,
+                                    ),
                             )
                         }
-                    }
-                }
-                // Filter (spec filter): the same segmented control, local
-                // state, default All.
-                AppSegmentedControl(
-                    options = listOf(
-                        stringResource(R.string.settings_device_report_filter_all),
-                        stringResource(R.string.settings_device_report_filter_decoders),
-                        stringResource(R.string.settings_device_report_filter_encoders),
-                    ),
-                    selectedIndex = filterIndex,
-                    onSelect = { filterIndex = it },
-                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp),
-                )
-                // The grouped list (v2 polish C1, interim until the C5/C6
-                // restructure): the outlined card is gone — a borderless
-                // tonal container, 20dp shape, 16dp horizontal margin.
-                // The header band and item dividers inside are the C6
-                // target (step 5 of this pass replaces them with plain
-                // text headers and segmented items).
-                if (visibleGroups.isNotEmpty()) {
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 32.dp),
-                        shape = RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                    ) {
-                        Column(Modifier.fillMaxWidth()) {
-                            visibleGroups.forEach { group ->
-                                // Group header: only on group change — one per
-                                // (codec, kind) group by construction.
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                                        .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 6.dp),
-                                ) {
-                                    Text(
-                                        text = DeviceReportGrouping
-                                            .headerText(group, decodersFormat, encodersFormat)
-                                            .uppercase(),
-                                        style = TextStyle(
-                                            fontSize = 12.sp,
-                                            lineHeight = 16.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            letterSpacing = 0.08.em,
-                                        ),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                group.codecs.forEach { report ->
-                                    Column(Modifier.fillMaxWidth()) {
-                                        // 1dp top divider (spec: on each item).
-                                        HorizontalDivider(
-                                            color = MaterialTheme.colorScheme.outlineVariant
-                                        )
+                        // The group's codec items: the same segmented-item
+                        // component as C1, index/count computed PER GROUP,
+                        // 16dp horizontal margin, 2dp gap (C6). One
+                        // LazyColumn item holds the whole group's column
+                        // so the 2dp gap and the per-group shape stay
+                        // exact without spacing leaking into the header.
+                        item(
+                            key = "group-${group.label}-${group.encoders}",
+                            contentType = "codec-group",
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                group.codecs.forEachIndexed { index, report ->
+                                    SettingsGroupItem(
+                                        index = index,
+                                        count = group.codecs.size,
+                                    ) {
+                                        // Item content unchanged from v1
+                                        // (C6): padding 16dp horizontal x
+                                        // 12dp vertical (SettingsGroupItem
+                                        // applies none of its own).
                                         Column(
                                             Modifier
                                                 .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                                                .padding(
+                                                    horizontal = 16.dp,
+                                                    vertical = 12.dp,
+                                                )
                                         ) {
                                             // Line 1: the FULL codec name,
                                             // monospace, wrapping at any
-                                            // character, never truncated or
-                                            // ellipsized (no maxLines).
+                                            // character, never truncated
+                                            // or ellipsized (no maxLines).
                                             Text(
                                                 text = report.name,
                                                 style = TextStyle(
