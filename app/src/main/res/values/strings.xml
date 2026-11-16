@@ -59,6 +59,21 @@
     <string name="library_folder_import_summary">%1$d imported, %2$d failed</string>
     <string name="library_folder_import_summary_all_failed">Import failed: %1$d of %2$d videos could not be imported (%3$s)</string>
 
+    <!-- Library toolbar (toolbar redesign 2026-11-16): the filter chip's
+         dropdown, the sort menu's two sections, and the view-mode
+         toggle's action labels. -->
+    <string name="library_filter_cd">Filter</string>
+    <string name="library_sort">Sort</string>
+    <string name="sort_by">Sort by</string>
+    <string name="sort_order">Order</string>
+    <string name="sort_name">Name</string>
+    <string name="sort_duration">Duration</string>
+    <string name="sort_resolution">Resolution</string>
+    <string name="order_ascending">Ascending</string>
+    <string name="order_descending">Descending</string>
+    <string name="view_switch_to_grid">Switch to grid view</string>
+    <string name="view_switch_to_list">Switch to list view</string>
+
     <!-- Clip editor -->
     <string name="editor_back">Back to library</string>
     <string name="editor_preview_placeholder">Preview appears once the engine is wired</string>

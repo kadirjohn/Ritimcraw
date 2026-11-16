@@ -66,4 +66,30 @@ object LibraryRowModel {
         } else {
             null
         }
+
+    /** The zero-width space the name wrap inserts (display only). */
+    private const val WRAP = '﻿'
+
+    /**
+     * The name as the Library RENDERS it (library toolbar redesign O1,
+     * 2026-11-16): a zero-width space after each '_' and before each '.',
+     * so a long file name's two lines break at its separators instead of
+     * mid-extension ("IMG_1234.MP4" can wrap after the '_' or before the
+     * '.', never inside "MP4").
+     *
+     * DISPLAY ONLY — the record keeps its real name; this copy is never
+     * persisted, compared, or matched, so the invisible characters cannot
+     * leak anywhere but the rendered Text. A name without separators (the
+     * id fallback) returns unchanged.
+     */
+    fun displayWrapName(name: String): String {
+        if ('_' !in name && '.' !in name) return name
+        val sb = StringBuilder(name.length + 4)
+        for (ch in name) {
+            if (ch == '.') sb.append(WRAP)
+            sb.append(ch)
+            if (ch == '_') sb.append(WRAP)
+        }
+        return sb.toString()
+    }
 }

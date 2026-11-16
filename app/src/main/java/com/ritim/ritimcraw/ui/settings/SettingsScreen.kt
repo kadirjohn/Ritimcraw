@@ -1,8 +1,8 @@
 package com.ritim.ritimcraw.ui.settings
 
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -50,8 +50,8 @@ import com.ritim.ritimcraw.ui.components.Eye
 import com.ritim.ritimcraw.ui.components.Folder
 import com.ritim.ritimcraw.ui.components.Gauge
 import com.ritim.ritimcraw.ui.components.Report
-import com.ritim.ritimcraw.ui.components.SettingsGroupCard
-import com.ritim.ritimcraw.ui.components.SettingsGroupCardRow
+import com.ritim.ritimcraw.ui.components.SettingsGroup
+import com.ritim.ritimcraw.ui.components.SettingsGroupItem
 import com.ritim.ritimcraw.ui.components.SettingsSectionLabel
 import com.ritim.ritimcraw.ui.components.SettingRowBase
 import com.ritim.ritimcraw.ui.components.SettingRowExpandable
@@ -60,29 +60,41 @@ import com.ritim.ritimcraw.ui.components.SettingRowSwitch
 import com.ritim.ritimcraw.ui.components.ThemeSlider
 
 /**
- * Settings screen (owner spec 2026-11-14, target_layout, rebuilt): the
- * same rows, the same state hoisting and callbacks as before — only the
- * PRESENTATION changed. The screen is a vertically scrolling column over
- * the app shell's Scaffold (the bottom NavigationBar stays below it),
- * composed from the redesign's shared components:
+ * Settings screen (owner spec 2026-11-14, target_layout; v2 polish
+ * 2026-11-15 C1/C3): the same rows, the same state hoisting and
+ * callbacks as before — only the PRESENTATION changed. The screen is a
+ * vertically scrolling column over the app shell's Scaffold (the bottom
+ * NavigationBar stays below it), composed from the redesign's shared
+ * components:
  *
  * - the spec's own 32sp SemiBold title (the redesign replaces the title
  *   on THIS screen only; the other browse screens keep ScreenHeader),
- * - "Playback" card: Preview quality + Image processing as expandable
+ * - "Playback" group: Preview quality + Image processing as expandable
  *   rows — the long descriptions moved behind the info buttons, so no
  *   multi-line description renders by default,
- * - "Storage & device" card: Gyro log folder + Device report navigation
+ * - "Storage & device" group: Gyro log folder + Device report navigation
  *   rows,
- * - the Measure button outside any card (spec geometry: 56dp pill, the
+ * - the Measure button outside any group (spec geometry: 56dp pill, the
  *   gauge icon and label centered as ONE group, never a start-aligned
  *   leading slot),
- * - "Advanced" card: the stats-readback switch row (debug only, gated
+ * - "Advanced" group: the stats-readback switch row (debug only, gated
  *   exactly as before — release builds render neither the button nor
  *   the section),
- * - "Appearance" card: the Theme row with the compact slider pill
+ * - "Appearance" group: the Theme row with the compact slider pill
  *   (spec theme_slider): tap or drag horizontally, the preference
  *   commits once on release — the segmented control is gone,
  * - the centered version footer (the old divider line is gone).
+ *
+ * v2 C1: groups are no longer outlined cards — each group is a
+ * [SettingsGroup] (16dp margin, 2dp gaps) of separate tonal
+ * [SettingsGroupItem] containers (surfaceContainer on the surface
+ * background) whose 20dp/4dp corner pattern makes the group read as one
+ * rounded block. No borders, no dividers, no elevation anywhere
+ * (outline_policy). Each row passes its group position (index/count)
+ * so its container gets the right corners; the screen background is
+ * colorScheme.surface (the app shell's Scaffold paints `background`,
+ * so this column paints `surface` itself — the tonal items need the
+ * surface role under them).
  *
  * The Device report row navigates to the full report screen
  * ([DeviceReportScreen], the owner spec's replacement for the old
@@ -160,6 +172,11 @@ fun SettingsScreen(
     Column(
         modifier
             .fillMaxSize()
+            // C1: the screen background is colorScheme.surface — the
+            // tonal surfaceContainer items sit on the surface role.
+            // The app shell's Scaffold paints `background` (its m3
+            // default), so this column paints the surface itself.
+            .background(MaterialTheme.colorScheme.surface)
             .verticalScroll(scrollState)
     ) {
         // The spec's title (spec section_screen): 32sp SemiBold,
@@ -186,116 +203,120 @@ fun SettingsScreen(
             text = stringResource(R.string.settings_section_playback),
             first = true,
         )
-        SettingsGroupCard {
-            SettingsGroupCardRow(divider = false) {
-                SettingRowExpandable(
-                    icon = Eye,
-                    title = stringResource(R.string.settings_preview_quality),
-                    // The dims of the selected level (spec hint: the
-                    // current value, not the old caption under the row).
-                    hint = stringResource(
-                        R.string.settings_preview_quality_hint,
-                        previewQuality.playbackMaxDim,
-                        previewQuality.scrubMaxDim,
+        SettingsGroup {
+            SettingRowExpandable(
+                icon = Eye,
+                title = stringResource(R.string.settings_preview_quality),
+                // The dims of the selected level (spec hint: the
+                // current value, not the old caption under the row).
+                hint = stringResource(
+                    R.string.settings_preview_quality_hint,
+                    previewQuality.playbackMaxDim,
+                    previewQuality.scrubMaxDim,
+                ),
+                infoContentDescription = stringResource(R.string.settings_preview_quality_about),
+                infoNote = stringResource(R.string.settings_preview_quality_info),
+                expandedText = stringResource(R.string.settings_expanded),
+                collapsedText = stringResource(R.string.settings_collapsed),
+                index = 0,
+                count = 2,
+            ) {
+                AppSegmentedControl(
+                    options = listOf(
+                        stringResource(R.string.settings_preview_quality_low),
+                        stringResource(R.string.settings_preview_quality_balanced),
+                        stringResource(R.string.settings_preview_quality_high),
                     ),
-                    infoContentDescription = stringResource(R.string.settings_preview_quality_about),
-                    infoNote = stringResource(R.string.settings_preview_quality_info),
-                    expandedText = stringResource(R.string.settings_expanded),
-                    collapsedText = stringResource(R.string.settings_collapsed),
-                ) {
-                    AppSegmentedControl(
-                        options = listOf(
-                            stringResource(R.string.settings_preview_quality_low),
-                            stringResource(R.string.settings_preview_quality_balanced),
-                            stringResource(R.string.settings_preview_quality_high),
-                        ),
-                        // Options keep the enum's own order (LOW,
-                        // BALANCED, HIGH) — the index maps straight back.
-                        selectedIndex = previewQuality.ordinal,
-                        onSelect = { index ->
-                            onPreviewQualityChange(PreviewQuality.entries[index])
-                        },
-                    )
-                }
-            }
-            SettingsGroupCardRow(divider = true) {
-                SettingRowExpandable(
-                    icon = Cpu,
-                    title = stringResource(R.string.settings_render_backend),
-                    // State-dependent hint (spec): the requested axis in
-                    // one line — the semantics stay in the info note.
-                    hint = when (renderBackend) {
-                        RenderBackend.CPU ->
-                            stringResource(R.string.settings_render_backend_hint_cpu)
-                        RenderBackend.AUTO ->
-                            stringResource(R.string.settings_render_backend_hint_auto)
-                        RenderBackend.GPU_EXPERIMENTAL ->
-                            stringResource(R.string.settings_render_backend_hint_gpu)
+                    // Options keep the enum's own order (LOW,
+                    // BALANCED, HIGH) — the index maps straight back.
+                    selectedIndex = previewQuality.ordinal,
+                    onSelect = { index ->
+                        onPreviewQualityChange(PreviewQuality.entries[index])
                     },
-                    infoContentDescription = stringResource(R.string.settings_render_backend_about),
-                    infoNote = stringResource(R.string.settings_render_backend_info),
-                    expandedText = stringResource(R.string.settings_expanded),
-                    collapsedText = stringResource(R.string.settings_collapsed),
-                ) {
-                    AppSegmentedControl(
-                        options = listOf(
-                            stringResource(R.string.settings_render_backend_cpu),
-                            stringResource(R.string.settings_render_backend_auto),
-                            stringResource(R.string.settings_render_backend_gpu),
-                        ),
-                        // Options keep the enum's own order (CPU, AUTO,
-                        // GPU_EXPERIMENTAL) — the index maps straight back.
-                        selectedIndex = renderBackend.ordinal,
-                        onSelect = { index ->
-                            onRenderBackendChange(RenderBackend.entries[index])
-                        },
-                    )
-                }
+                )
+            }
+            SettingRowExpandable(
+                icon = Cpu,
+                title = stringResource(R.string.settings_render_backend),
+                // State-dependent hint (spec): the requested axis in
+                // one line — the semantics stay in the info note.
+                hint = when (renderBackend) {
+                    RenderBackend.CPU ->
+                        stringResource(R.string.settings_render_backend_hint_cpu)
+                    RenderBackend.AUTO ->
+                        stringResource(R.string.settings_render_backend_hint_auto)
+                    RenderBackend.GPU_EXPERIMENTAL ->
+                        stringResource(R.string.settings_render_backend_hint_gpu)
+                },
+                infoContentDescription = stringResource(R.string.settings_render_backend_about),
+                infoNote = stringResource(R.string.settings_render_backend_info),
+                expandedText = stringResource(R.string.settings_expanded),
+                collapsedText = stringResource(R.string.settings_collapsed),
+                index = 1,
+                count = 2,
+            ) {
+                AppSegmentedControl(
+                    options = listOf(
+                        stringResource(R.string.settings_render_backend_cpu),
+                        stringResource(R.string.settings_render_backend_auto),
+                        stringResource(R.string.settings_render_backend_gpu),
+                    ),
+                    // Options keep the enum's own order (CPU, AUTO,
+                    // GPU_EXPERIMENTAL) — the index maps straight back.
+                    selectedIndex = renderBackend.ordinal,
+                    onSelect = { index ->
+                        onRenderBackendChange(RenderBackend.entries[index])
+                    },
+                )
             }
         }
         // ---- Storage & device ----
         SettingsSectionLabel(text = stringResource(R.string.settings_section_storage_device))
-        SettingsGroupCard {
-            SettingsGroupCardRow(divider = false) {
-                SettingRowNavigation(
-                    icon = Folder,
-                    title = stringResource(R.string.settings_gyro_folder),
-                    // The spec's hint: the folder path only (or "Not
-                    // set") — the chevron carries the affordance, no
-                    // "Current:" prefix, no "tap to change" suffix.
-                    hint = gyroFolderLabel
-                        ?: stringResource(R.string.settings_gyro_folder_not_set),
-                    onClick = onPickGyroFolder,
-                )
-            }
-            SettingsGroupCardRow(divider = true) {
-                if (reports.isEmpty()) {
-                    // The probe's empty placeholder keeps its designed
-                    // wording and no false affordance (the pre-probe
-                    // contract): no chevron, no click — the report
-                    // screen would have nothing to show.
+        SettingsGroup {
+            SettingRowNavigation(
+                icon = Folder,
+                title = stringResource(R.string.settings_gyro_folder),
+                // The spec's hint: the folder path only (or "Not
+                // set") — the chevron carries the affordance, no
+                // "Current:" prefix, no "tap to change" suffix.
+                hint = gyroFolderLabel
+                    ?: stringResource(R.string.settings_gyro_folder_not_set),
+                onClick = onPickGyroFolder,
+                index = 0,
+                count = 2,
+            )
+            if (reports.isEmpty()) {
+                // The probe's empty placeholder keeps its designed
+                // wording and no false affordance (the pre-probe
+                // contract): no chevron, no click — the report
+                // screen would have nothing to show.
+                SettingsGroupItem(index = 1, count = 2) {
                     SettingRowBase(
                         icon = Report,
                         title = stringResource(R.string.settings_device_report),
                         hint = stringResource(R.string.settings_device_report_body),
-                    )
-                } else {
-                    SettingRowNavigation(
-                        icon = Report,
-                        title = stringResource(R.string.settings_device_report),
-                        // "{n} codecs" from a plurals resource (spec).
-                        hint = pluralStringResource(
-                            R.plurals.settings_device_report_codec_count,
-                            reports.size,
-                            reports.size,
-                        ),
-                        onClick = onOpenDeviceReport,
+                        // Single-line non-tappable row: the spec's 14dp
+                        // vertical exception (the base default).
                     )
                 }
+            } else {
+                SettingRowNavigation(
+                    icon = Report,
+                    title = stringResource(R.string.settings_device_report),
+                    // "{n} codecs" from a plurals resource (spec).
+                    hint = pluralStringResource(
+                        R.plurals.settings_device_report_codec_count,
+                        reports.size,
+                        reports.size,
+                    ),
+                    onClick = onOpenDeviceReport,
+                    index = 1,
+                    count = 2,
+                )
             }
         }
         // ---- Measure preview performance (debug) + Advanced ----
-        // Spec button: outside any card, 56dp pill (extraLarge = 28dp on
+        // Spec button: outside any group, 56dp pill (extraLarge = 28dp on
         // a 56dp height), primary/onPrimary, ONE centered Row (gauge 30dp
         // + 14dp spacer + 16sp SemiBold label) — the icon+label group
         // centers as a whole, never a start-aligned leading slot. The
@@ -340,57 +361,57 @@ fun SettingsScreen(
                 }
             }
             SettingsSectionLabel(text = stringResource(R.string.settings_section_advanced))
-            SettingsGroupCard {
-                SettingsGroupCardRow(divider = false) {
-                    SettingRowSwitch(
-                        icon = Activity,
-                        title = stringResource(R.string.settings_preview_stats),
-                        // State-dependent hint (spec switch_row): the old
-                        // long debug description is dropped from the
-                        // screen — one line states what the toggle does.
-                        hint = if (previewStats) {
-                            stringResource(R.string.settings_preview_stats_hint_on)
-                        } else {
-                            stringResource(R.string.settings_preview_stats_hint_off)
-                        },
-                        checked = previewStats,
-                        onCheckedChange = onPreviewStatsChange,
-                    )
-                }
+            SettingsGroup {
+                SettingRowSwitch(
+                    icon = Activity,
+                    title = stringResource(R.string.settings_preview_stats),
+                    // State-dependent hint (spec switch_row): the old
+                    // long debug description is dropped from the
+                    // screen — one line states what the toggle does.
+                    hint = if (previewStats) {
+                        stringResource(R.string.settings_preview_stats_hint_on)
+                    } else {
+                        stringResource(R.string.settings_preview_stats_hint_off)
+                    },
+                    checked = previewStats,
+                    onCheckedChange = onPreviewStatsChange,
+                    index = 0,
+                    count = 1,
+                )
             }
         }
         // ---- Appearance ----
         SettingsSectionLabel(text = stringResource(R.string.settings_section_appearance))
-        SettingsGroupCard {
-            SettingsGroupCardRow(divider = false) {
-                // The Theme row (owner request 2026-11-14, spec
-                // theme_slider): the compact pill replaces the segmented
-                // System/Light/Dark control. The row hint names the slot
-                // under the thumb LIVE (during a drag the hint follows
-                // the finger; the preference itself is written only on
-                // release, so the app never flickers mid-drag).
-                // The slider's visual order is 0 = Light, 1 = System,
-                // 2 = Dark — the spec's VISUAL order only; the stored
-                // enum and its values are untouched, the mapping lives
-                // here at the call site.
-                val themeSlots = listOf(
-                    ThemeMode.LIGHT,
-                    ThemeMode.SYSTEM,
-                    ThemeMode.DARK,
-                )
-                val slotNames = mapOf(
-                    ThemeMode.LIGHT to stringResource(R.string.settings_theme_light),
-                    ThemeMode.SYSTEM to stringResource(R.string.settings_theme_system),
-                    ThemeMode.DARK to stringResource(R.string.settings_theme_dark),
-                )
-                var displaySlot by remember(themeMode) {
-                    mutableIntStateOf(themeSlots.indexOf(themeMode).coerceAtLeast(0))
-                }
+        SettingsGroup {
+            // The Theme row (owner request 2026-11-14, spec
+            // theme_slider): the compact pill replaces the segmented
+            // System/Light/Dark control. The row hint names the slot
+            // under the thumb LIVE (during a drag the hint follows
+            // the finger; the preference itself is written only on
+            // release, so the app never flickers mid-drag).
+            // The slider's visual order is 0 = Light, 1 = System,
+            // 2 = Dark — the spec's VISUAL order only; the stored
+            // enum and its values are untouched, the mapping lives
+            // here at the call site.
+            val themeSlots = listOf(
+                ThemeMode.LIGHT,
+                ThemeMode.SYSTEM,
+                ThemeMode.DARK,
+            )
+            val slotNames = mapOf(
+                ThemeMode.LIGHT to stringResource(R.string.settings_theme_light),
+                ThemeMode.SYSTEM to stringResource(R.string.settings_theme_system),
+                ThemeMode.DARK to stringResource(R.string.settings_theme_dark),
+            )
+            var displaySlot by remember(themeMode) {
+                mutableIntStateOf(themeSlots.indexOf(themeMode).coerceAtLeast(0))
+            }
+            SettingsGroupItem(index = 0, count = 1) {
                 SettingRowBase(
                     icon = Contrast,
                     title = stringResource(R.string.settings_theme),
                     hint = slotNames[themeSlots[displaySlot.coerceIn(0, 2)]],
-                    // Spec row: the 168dp pill fits the card at readable
+                    // Spec row: the 168dp pill fits the group at readable
                     // widths. The spec's "end padding 12dp (not 16dp)"
                     // was expressed as a NEGATIVE padding on the row —
                     // illegal in Compose (runtime assertion; the owner's
@@ -399,21 +420,28 @@ fun SettingsScreen(
                     // applied: the pill's trailing slot simply sits at
                     // the standard inset.
                     modifier = Modifier.fillMaxWidth(),
-                ) {
-                    ThemeSlider(
-                        selectedIndex = themeSlots.indexOf(themeMode).coerceAtLeast(0),
-                        onCommit = { slot -> onThemeModeChange(themeSlots[slot]) },
-                        onDisplayIndexChange = { slot -> displaySlot = slot },
-                        sliderLabel = stringResource(R.string.settings_theme_slider),
-                        previousLabel = stringResource(R.string.settings_theme_previous),
-                        nextLabel = stringResource(R.string.settings_theme_next),
-                        stateLabels = listOf(
-                            stringResource(R.string.settings_theme_light),
-                            stringResource(R.string.settings_theme_system),
-                            stringResource(R.string.settings_theme_dark),
-                        ),
-                    )
-                }
+                    // Single-line non-tappable row: the spec's 14dp
+                    // vertical exception (the base default). The slider
+                    // rides the TRAILING slot: SettingRowBase has no
+                    // content slot, and its last parameter is
+                    // verticalPadding — a trailing lambda would bind
+                    // THERE (the compile error this comment replaced).
+                    trailing = {
+                        ThemeSlider(
+                            selectedIndex = themeSlots.indexOf(themeMode).coerceAtLeast(0),
+                            onCommit = { slot -> onThemeModeChange(themeSlots[slot]) },
+                            onDisplayIndexChange = { slot -> displaySlot = slot },
+                            sliderLabel = stringResource(R.string.settings_theme_slider),
+                            previousLabel = stringResource(R.string.settings_theme_previous),
+                            nextLabel = stringResource(R.string.settings_theme_next),
+                            stateLabels = listOf(
+                                stringResource(R.string.settings_theme_light),
+                                stringResource(R.string.settings_theme_system),
+                                stringResource(R.string.settings_theme_dark),
+                            ),
+                        )
+                    },
+                )
             }
         }
         // ---- Version footer (spec footer) ----

@@ -49,6 +49,7 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.LibraryPrefsStore
 import com.ritim.ritimcraw.data.audio.AudioStore
 import com.ritim.ritimcraw.data.CollectionRefresh
 import com.ritim.ritimcraw.data.GradeStore
@@ -237,6 +238,12 @@ fun AppNav(
             // — the audio model's own store, same file as every other
             // section-scoped store.
             audio = AudioStore(project),
+            // The Library toolbar's sort + view choices (library toolbar
+            // redesign, 2026-11-16): same shared project.json, own THREE
+            // top-level scalars (library_sort_key, library_sort_ascending,
+            // library_view_mode), each omit-when-default — the
+            // PreviewQualityStore pattern over the LibraryPrefsStore.
+            libraryPrefs = LibraryPrefsStore(project),
         )
     }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
@@ -415,6 +422,14 @@ fun AppNav(
     // default); every change applies immediately through the toggle's
     // own seam (persist + apply, one call per flip).
     var previewStats by remember { mutableStateOf(stores.previewStats.current()) }
+    // The Library toolbar's sort + view state (library toolbar redesign,
+    // 2026-11-16): read once at composition and refreshed on every
+    // change — the previewQuality/renderBackend pattern. Defaults are
+    // today's behavior (null key = import order, ascending, list), so an
+    // untouched project.json renders exactly the pre-toolbar screen.
+    var librarySortKey by remember { mutableStateOf(stores.libraryPrefs.sortKey()) }
+    var librarySortAscending by remember { mutableStateOf(stores.libraryPrefs.ascending()) }
+    var libraryViewMode by remember { mutableStateOf(stores.libraryPrefs.viewMode()) }
     // App start: apply the persisted choice to the engine (the restart
     // lock, run once per composition entry — the previewQuality pattern
     // has no equivalent because the editor re-reads the store; THIS
@@ -1626,6 +1641,27 @@ fun AppNav(
                     when (d) {
                         Destination.LIBRARY -> LibraryScreen(
                             sources = sources,
+                            // The toolbar's persisted sort + view state
+                            // (library toolbar redesign, 2026-11-16):
+                            // AppNav owns the store writes so the choices
+                            // survive restarts; the screen renders from
+                            // the passed values only — the
+                            // previewQuality/renderBackend wiring shape.
+                            sortKey = librarySortKey,
+                            sortAscending = librarySortAscending,
+                            viewMode = libraryViewMode,
+                            onSortKeyChange = { key ->
+                                stores.libraryPrefs.putSortKey(key)
+                                librarySortKey = key
+                            },
+                            onSortAscendingChange = { ascending ->
+                                stores.libraryPrefs.putAscending(ascending)
+                                librarySortAscending = ascending
+                            },
+                            onViewModeChange = { mode ->
+                                stores.libraryPrefs.putViewMode(mode)
+                                libraryViewMode = mode
+                            },
                             onOpenClip = { sourceId -> editorSourceId = sourceId },
                             onImport = { uri ->
                                 // SAF pick landed: import through the repository
@@ -2093,6 +2129,11 @@ private class Stores(
     // native-apply seam (PreviewStatsToggle) over the same shared
     // project.json's "previewStats" boolean scalar.
     val previewStats: PreviewStatsToggle,
+    // The Library toolbar's sort + view choices (library toolbar
+    // redesign, 2026-11-16): same shared project.json, own THREE
+    // top-level scalars (library_sort_key, library_sort_ascending,
+    // library_view_mode), each omit-when-default.
+    val libraryPrefs: LibraryPrefsStore,
     // Per-source metadata records (spec IN-13, Stage A): same shared
     // project.json, own "metadata" section keyed by sourceId.
     val metadata: MetadataStore,

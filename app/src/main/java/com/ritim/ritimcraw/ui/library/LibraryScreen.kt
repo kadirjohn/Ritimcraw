@@ -1,30 +1,60 @@
 package com.ritim.ritimcraw.ui.library
 
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -36,26 +66,50 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.LibrarySortKey
+import com.ritim.ritimcraw.data.LibraryViewMode
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailRules
+import com.ritim.ritimcraw.ui.components.Add
+import com.ritim.ritimcraw.ui.components.Check
+import com.ritim.ritimcraw.ui.components.ExpandMore
 import com.ritim.ritimcraw.ui.components.FileListRow
-import com.ritim.ritimcraw.ui.components.FilterChipsRow
+import com.ritim.ritimcraw.ui.components.GridView
 import com.ritim.ritimcraw.ui.components.ScreenHeader
+import com.ritim.ritimcraw.ui.components.Sort
+import com.ritim.ritimcraw.ui.components.ViewList
 import com.ritim.ritimcraw.ui.theme.Tnum
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Library filter chips (DESIGN.md Library). */
 enum class LibraryFilter(val labelRes: Int) {
@@ -68,10 +122,19 @@ enum class LibraryFilter(val labelRes: Int) {
 }
 
 /**
- * Library of imported clips (DESIGN.md Library): a compact header, a
- * single-line scrollable chip row, thumbnail-first rows (the shared
- * FileListRow), and an extended FAB "Import" that opens the SAF document
- * picker (ACTION_OPEN_DOCUMENT).
+ * The grid rendering's fixed column count (library toolbar redesign,
+ * 2026-11-16): the spec's own GridCells.Fixed(3). A named constant so the
+ * scroll-sync comment and the grid's columns stay one truth.
+ */
+private const val GRID_COLUMNS = 3
+
+/**
+ * Library of imported clips (DESIGN.md Library): a title-only header, a
+ * pinned toolbar (library toolbar redesign 2026-11-16: filter chip, sort
+ * button, view-mode toggle, import "+", folder button), and the clips as
+ * thumbnail-first list rows (the shared FileListRow) or the grid's square
+ * tiles, per the persisted view mode. The toolbar's "+" opens the SAF
+ * document picker (ACTION_OPEN_DOCUMENT).
  *
  * The picked document is imported through [SourceRepository.import] with
  * takePersistableUriPermission so the clip survives reboots. Failures show
@@ -113,12 +176,12 @@ enum class LibraryFilter(val labelRes: Int) {
  * selection bar that replaces it) composes OUTSIDE the nested list
  * Scaffold, so the title's layout chain matches Projects/Exports/Settings
  * exactly — all four titles sit at the same height. The nested Scaffold
- * serves only the list + FAB + snackbar.
+ * serves only the list + snackbar.
  *
  * This screen is the CANONICAL header call site (ScreenHeader's doc
  * contract, owner finding 2026-11-12): the root Column pads NOTHING, the
  * header composes directly under it, and the 16dp gutter belongs to the
- * content below (chips, rows) — never to the header's parent.
+ * content below (toolbar, rows) — never to the header's parent.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -157,7 +220,7 @@ fun LibraryScreen(
     // ClipDeletion and refreshes the list. Default keeps previews and any
     // other caller compiling unchanged.
     onDeleteClips: (ids: List<String>) -> Unit = {},
-    // Folder import (owner request 2026-11-15): the header's folder button
+    // Folder import (owner request 2026-11-15): the toolbar's folder button
     // opens the tree picker; a granted tree takes over the screen with
     // the FolderImportBrowser. The single-file path runs the caller's
     // SAME per-file import pipeline (persistable grant, kind routed on
@@ -178,13 +241,46 @@ fun LibraryScreen(
     // glyph placeholder stays).
     folderPreviewAt: (uri: String) -> String? = { null },
     onGenerateFolderPreview: suspend (uri: String, displayName: String) -> Unit = { _, _ -> },
+    // The toolbar's sort + view state (library toolbar redesign,
+    // 2026-11-16): the caller (AppNav) owns the persistence; the screen
+    // renders from these values only. Defaults keep every other caller
+    // (previews, tests) compiling AND rendering exactly today's screen:
+    // null key = import order, ascending, list.
+    sortKey: LibrarySortKey? = null,
+    sortAscending: Boolean = true,
+    viewMode: LibraryViewMode = LibraryViewMode.DEFAULT,
+    onSortKeyChange: (LibrarySortKey?) -> Unit = {},
+    onSortAscendingChange: (Boolean) -> Unit = {},
+    onViewModeChange: (LibraryViewMode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
-    val visible = sources.filter { matches(filter, it) }
+    // The visible list: filter first (the chips' unchanged rule), then the
+    // toolbar's ordering (null key = today's import order, returned
+    // as-is — the pure LibrarySort rule; the screen stays a thin shell).
+    val visible = LibrarySort.apply(sources.filter { matches(filter, it) }, sortKey, sortAscending)
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    // The two renderings' own scroll states (library toolbar redesign,
+    // 2026-11-16): switching views keeps the FIRST-VISIBLE INDEX AT THE
+    // TOP — the spec's continuity rule. Both states index the SAME
+    // visible list (a grid's firstVisibleItemIndex is the FLAT item
+    // index, the list's own coordinate), so the anchor maps index for
+    // index with no row arithmetic: the same clip stays at the top, in
+    // the grid at its own column of the top row. scrollToItem is a snap,
+    // not an animation — the new view lands already at the anchor
+    // instead of visibly catching up.
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(viewMode) {
+        if (viewMode == LibraryViewMode.GRID) {
+            gridState.scrollToItem(listState.firstVisibleItemIndex)
+        } else {
+            listState.scrollToItem(gridState.firstVisibleItemIndex)
+        }
+    }
 
     // Selection mode (E2): active exactly while the set is non-empty —
     // every transition is a pure LibrarySelection rule. Stale ids (rows
@@ -376,64 +472,39 @@ fun LibraryScreen(
                 }
             }
         } else {
-            // Folder import (owner request 2026-11-15): the title row gains
-            // a folder icon RIGHT of the Import action — two separate
-            // buttons in the header's actions slot. The FAB stays (its
-            // removal was not asked); the header's Import icon launches
-            // the SAME SAF document picker the FAB does.
-            ScreenHeader(
-                title = stringResource(R.string.library_title),
-                actions = {
-                    IconButton(onClick = { picker.launch(arrayOf("*/*")) }) {
-                        Icon(
-                            Icons.Filled.Add,
-                            contentDescription = stringResource(R.string.library_import),
-                        )
-                    }
-                    IconButton(onClick = { folderPicker.launch(null) }) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_folder),
-                            contentDescription = stringResource(R.string.library_import_folder),
-                        )
-                    }
-                },
-            )
-            // The chips hide while selecting: the selection lives in the
-            // visible (filtered) list, so switching filters mid-selection
-            // could orphan checked rows — the bar owns the top area
-            // instead. Single-line scrollable row (§4.2): chips measure at
-            // intrinsic width, "Encoded" never wraps.
-            FilterChipsRow(
-                count = LibraryFilter.entries.size,
-                selected = { index -> filter == LibraryFilter.entries[index] },
-                onSelect = { index -> filter = LibraryFilter.entries[index] },
-                // E5: the row emits the guarded single-line label Text
-                // itself; the caller passes the plain string.
-                label = { index ->
-                    stringResource(LibraryFilter.entries[index].labelRes)
-                },
+            // Library toolbar redesign (2026-11-16): the title row is
+            // title-only — the + and folder actions moved down into the
+            // pinned toolbar, with the SAME callbacks (the SAF document
+            // picker and the SAF tree picker). The toolbar composes in
+            // this outer Column, so it stays pinned above the scrolling
+            // list exactly where the chip strip was.
+            ScreenHeader(title = stringResource(R.string.library_title))
+            // The toolbar hides while selecting, exactly like the chips
+            // did: the selection lives in the visible (filtered) list, so
+            // switching filters mid-selection could orphan checked rows —
+            // the bar owns the top area instead.
+            LibraryToolbar(
+                filter = filter,
+                onFilterSelect = { filter = it },
+                sortKey = sortKey,
+                sortAscending = sortAscending,
+                viewMode = viewMode,
+                onSortKeySelect = onSortKeyChange,
+                onSortAscendingSelect = onSortAscendingChange,
+                onViewModeToggle = onViewModeChange,
+                onImport = { picker.launch(arrayOf("*/*")) },
+                onOpenFolder = { folderPicker.launch(null) },
             )
         }
-        // The FAB hides while selecting (the trash bar owns the screen; an
-        // Import mid-selection would refresh the list under the selection).
         Scaffold(
             Modifier.weight(1f),
             // §4.1 compact header: the app shell's Scaffold already applies
             // the status-bar inset in its innerPadding — a nested Scaffold's
             // default contentWindowInsets would stack a SECOND one on top
             // (the excessive empty space above the title). Zero insets here;
-            // this Scaffold exists only for the list + FAB + snackbar.
+            // this Scaffold exists only for the list + snackbar.
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(data) } },
-            floatingActionButton = {
-                if (!selecting) {
-                    ExtendedFloatingActionButton(
-                        onClick = { picker.launch(arrayOf("*/*")) },
-                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                        text = { Text(stringResource(R.string.library_import)) },
-                    )
-                }
-            },
         ) { padding ->
             val pullState = rememberPullToRefreshState()
             PullToRefreshBox(
@@ -447,15 +518,71 @@ fun LibraryScreen(
                         .fillMaxSize()
                 ) {
                     if (visible.isEmpty()) {
-                        EmptyLibrary(Modifier.weight(1f))
+                        EmptyLibrary(
+                            modifier = Modifier.weight(1f),
+                            // The FAB is gone, so the empty state carries
+                            // the Import entry point itself: the SAME SAF
+                            // picker launch the toolbar's "+" runs.
+                            onImport = { picker.launch(arrayOf("*/*")) },
+                        )
+                    } else if (viewMode == LibraryViewMode.GRID) {
+                        LazyVerticalGrid(
+                            state = gridState,
+                            columns = GridCells.Fixed(GRID_COLUMNS),
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            // The spec's grid geometry: 16dp screen
+                            // gutters, 4dp to the toolbar above, 8dp
+                            // between cells horizontally, 12dp rows,
+                            // 16dp below (the FAB is gone — the toolbar's
+                            // "+" owns Import — so the bottom keeps only
+                            // the screen's own gutter).
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 4.dp,
+                                bottom = 16.dp,
+                            ),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            gridItems(visible, key = { it.id }) { source ->
+                                LibraryGridCell(
+                                    source = source,
+                                    // Pinned to the generation revision —
+                                    // the same owner finding 2026-11-14 the
+                                    // list rows pin theirs to.
+                                    thumbnailPath = remember(thumbnailRevision) {
+                                        thumbnailAt(source.id)
+                                    },
+                                    selected = source.id in selection,
+                                    selecting = selecting,
+                                    onToggleSelected = {
+                                        selectedIds = LibrarySelection.toggle(selectedIds, source.id)
+                                    },
+                                    onOpen = { onOpenClip(source.id) },
+                                    onRelink = {
+                                        relinkTargetId = source.id
+                                        relinkPicker.launch(arrayOf("*/*"))
+                                    },
+                                )
+                            }
+                        }
+                        LibraryThumbnailBackfill(
+                            sources = visible,
+                            thumbnailAt = thumbnailAt,
+                            batchLimit = thumbnailBatchLimit,
+                            onGenerateThumbnails = onGenerateThumbnails,
+                        )
                     } else {
                         LazyColumn(
+                            state = listState,
                             modifier = Modifier.weight(1f),
-                            // Vertical rhythm (§4.3 consistent spacing) plus bottom
-                            // clearance (§4.4): the last row must scroll fully
-                            // clear of the Import FAB — the button never
-                            // permanently obstructs a row.
-                            contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
+                            // Vertical rhythm (§4.3 consistent spacing). The
+                            // old 96dp bottom clearance existed for the
+                            // Import FAB, which is gone (the toolbar's "+"
+                            // owns Import) — the bottom keeps only the
+                            // screen's 16dp gutter.
+                            contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
                         ) {
                             items(visible, key = { it.id }) { source ->
                                 LibraryRow(
@@ -546,6 +673,409 @@ fun LibraryScreen(
     LaunchedEffect(Unit) { onOpenRefresh() }
 }
 
+/**
+ * The Library toolbar (library toolbar redesign 2026-11-16): one pinned
+ * Row that replaces the old scrollable chip strip — the filter chip at
+ * start (at most the free share of the row, ellipsizing label), then the
+ * sort button, the view-mode toggle, the import "+" and the folder
+ * button at the end. All four controls are always visible; every control
+ * is a 48dp touch target. The + is the ONE emphasized control
+ * (primaryContainer tonal circle); the rest tint onSurfaceVariant.
+ *
+ * Width budget (the spec's own): at 360dp the fixed controls take
+ * 16+8 padding + 4x48 buttons + 8 spacer = 224dp, leaving >= 136dp of
+ * flexible space for the chip. The chip therefore rides in the row's
+ * ONE weighted slot (a Box that takes the whole leftover), so the chip
+ * measures at intrinsic width up to that full share — "MCRAW"/"Encoded"
+ * fit at default font scale and the label ellipsizes only past it
+ * (font scale ~1.3). The buttons are fixed-size children measured AFTER
+ * the weighted slot, so they can never be squeezed by a long label.
+ * (A literal chip.weight(1f) + Spacer.weight(1f) pair would split the
+ * free space 50/50 and cap the chip at ~68dp — half the spec's stated
+ * budget — so the weight sits on the wrapping Box instead; the chip
+ * still never stretches, which is what fill = false was for.)
+ *
+ * Boundary of THIS step (toolbar placement): the filter chip, the sort
+ * menu and the view toggle are fully interactive — the filter dropdown
+ * lists the SAME [LibraryFilter] options the chip strip did (the enum,
+ * not a hardcoded list, so the filter set stays final per QA-26), the
+ * sort menu offers the spec's two sections, and the toggle switches the
+ * persisted view mode's rendering: the list (the shared FileListRow) or
+ * the 3-column grid ([LibraryGridCell]), keeping the first-visible index
+ * at the top.
+ *
+ * The toolbar composes in the screen's outer Column (pinned above the
+ * scrolling list, never inside it) and hides during selection mode,
+ * exactly like the chip strip did — the selection bar owns the top area.
+ */
+@Composable
+private fun LibraryToolbar(
+    filter: LibraryFilter,
+    onFilterSelect: (LibraryFilter) -> Unit,
+    sortKey: LibrarySortKey?,
+    sortAscending: Boolean,
+    viewMode: LibraryViewMode,
+    onSortKeySelect: (LibrarySortKey?) -> Unit,
+    onSortAscendingSelect: (Boolean) -> Unit,
+    onViewModeToggle: (LibraryViewMode) -> Unit,
+    onImport: () -> Unit,
+    onOpenFolder: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            // The spec's toolbar geometry: 16dp start / 8dp end (the end
+            // icon buttons carry their own extra target space), 4dp top
+            // separating it from the title, 8dp bottom before the list,
+            // and a 48dp minimum height so the row is never shorter than
+            // its touch targets.
+            .padding(start = 16.dp, top = 4.dp, end = 8.dp, bottom = 8.dp)
+            .heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // The row's single flexible slot: everything the fixed controls
+        // leave behind belongs to the chip's area (see the width budget
+        // note above). The chip inside measures at intrinsic width and
+        // ellipsizes past the slot; the empty remainder of the slot is
+        // what visually right-aligns the buttons.
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            LibraryFilterChip(
+                filter = filter,
+                onSelect = onFilterSelect,
+            )
+        }
+        // Sort button: opens the sort menu — the spec's two sections
+        // (Sort by: Name/Duration/Resolution single-select with a leading
+        // check; Order: Ascending/Descending). Date and File size are
+        // NOT offered: MediaSource has no such fields (the store's
+        // discovery note).
+        LibrarySortMenuButton(
+            sortKey = sortKey,
+            sortAscending = sortAscending,
+            onSortKeySelect = onSortKeySelect,
+            onSortAscendingSelect = onSortAscendingSelect,
+        )
+        // View-mode toggle: the spec's icon pair — the list shows the
+        // grid icon ("switch to grid"), the grid shows the list icon
+        // ("switch to list"). The switch keeps the first-visible index
+        // at the top (the screen's scroll-sync effect).
+        IconButton(onClick = { onViewModeToggle(viewMode.other()) }) {
+            if (viewMode == LibraryViewMode.GRID) {
+                Icon(
+                    imageVector = ViewList,
+                    contentDescription = stringResource(R.string.view_switch_to_list),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Icon(
+                    imageVector = GridView,
+                    contentDescription = stringResource(R.string.view_switch_to_grid),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        // Import "+": the toolbar's ONE emphasized control — a tonal
+        // primaryContainer circle (40dp visual centered in the 48dp
+        // target by FilledTonalIconButton's own minimum-size handling),
+        // same callback as the removed title-row "+" and the FAB.
+        FilledTonalIconButton(
+            onClick = onImport,
+            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            ),
+        ) {
+            Icon(
+                imageVector = Add,
+                contentDescription = stringResource(R.string.library_import),
+                modifier = Modifier.size(24.dp),
+            )
+        }
+        // Folder import: the SAME tree-picker callback the removed
+        // title-row folder button had (the ic_folder drawable stays for
+        // continuity with the rest of the app's folder affordances).
+        IconButton(onClick = onOpenFolder) {
+            Icon(
+                painter = painterResource(R.drawable.ic_folder),
+                contentDescription = stringResource(R.string.library_import_folder),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * The toolbar's filter chip (library toolbar redesign 2026-11-16): one
+ * pill-shaped chip — the CURRENT filter's label plus a trailing
+ * expand_more arrow — that opens a dropdown with the SAME options the
+ * old chip strip offered ([LibraryFilter.entries], "All" first, straight
+ * from the enum). Single select: the chosen entry closes the menu and
+ * flows through the same state setter the chips used.
+ *
+ * Colors follow the spec's two states: "All" reads as a neutral
+ * surfaceContainerHigh pill with onSurface text; a specific filter reads
+ * as a secondaryContainer pill. The arrow rotates 180° over 150ms while
+ * the menu is open. The chip clips to its CircleShape BEFORE the
+ * clickable (the shape-clipped indication rule: the node with the shape
+ * is the clickable node), exposes the dropdown role with the current
+ * filter as its state description, and keeps a 48dp minimum touch target
+ * around its 40dp visual.
+ */
+@Composable
+private fun LibraryFilterChip(
+    filter: LibraryFilter,
+    onSelect: (LibraryFilter) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var open by remember { mutableStateOf(false) }
+    val label = stringResource(filter.labelRes)
+    val filterDescription = stringResource(R.string.library_filter_cd)
+    val arrow by animateFloatAsState(
+        targetValue = if (open) 180f else 0f,
+        animationSpec = tween(150),
+        label = "libraryFilterArrow",
+    )
+    val colorScheme = MaterialTheme.colorScheme
+    val containerColor = if (filter == LibraryFilter.ALL) {
+        colorScheme.surfaceContainerHigh
+    } else {
+        colorScheme.secondaryContainer
+    }
+    val labelColor = if (filter == LibraryFilter.ALL) {
+        colorScheme.onSurface
+    } else {
+        colorScheme.onSecondaryContainer
+    }
+    Box(modifier) {
+        Row(
+            Modifier
+                // 48dp touch target around the 40dp pill (the modifier
+                // reserves layout space only — the pill centers in it).
+                .minimumInteractiveComponentSize()
+                .heightIn(min = 40.dp)
+                // Shape-clipped indication: the CircleShape node is the
+                // clickable node (clip BEFORE clickable), so the ripple
+                // and the pill share one shape.
+                .clip(CircleShape)
+                .background(containerColor, CircleShape)
+                .clickable(role = Role.DropdownList) { open = true }
+                .semantics {
+                    contentDescription = filterDescription
+                    stateDescription = label
+                }
+                .padding(start = 16.dp, end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = label,
+                style = TextStyle(
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = labelColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Icon(
+                imageVector = ExpandMore,
+                contentDescription = null,
+                tint = labelColor,
+                modifier = Modifier
+                    .size(18.dp)
+                    .rotate(arrow),
+            )
+        }
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+        ) {
+            LibraryFilter.entries.forEach { entry ->
+                val selected = entry == filter
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(entry.labelRes),
+                            style = TextStyle(
+                                fontWeight = if (selected) FontWeight.SemiBold else null,
+                            ),
+                        )
+                    },
+                    leadingIcon = if (selected) {
+                        {
+                            Icon(
+                                imageVector = Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                    } else {
+                        // The unselected rows keep the check's 24dp slot so
+                        // every label aligns in one column.
+                        { Spacer(Modifier.size(24.dp)) }
+                    },
+                    onClick = {
+                        open = false
+                        onSelect(entry)
+                    },
+                    // Radio semantics: one of the filter options is
+                    // always the current value.
+                    modifier = Modifier.semantics { role = Role.RadioButton },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The toolbar's sort button + its dropdown (library toolbar redesign,
+ * 2026-11-16): the "sort" icon opens a menu with the spec's two sections
+ * — "Sort by" (Name, Duration, Resolution; single select with a leading
+ * check on the chosen field) and "Order" (Ascending, Descending; single
+ * select with a leading check). The sections are plain label rows
+ * between the item groups (DropdownMenu's own column does the grouping).
+ *
+ * Date and File size are NOT offered: MediaSource carries no such fields
+ * (no timestamp, no size — only id, name, dimensions, duration, kind),
+ * so the menu lists only what a clip record can actually sort by.
+ *
+ * Selecting a field keeps the current direction; selecting a direction
+ * keeps the current field. The persisted pair rides the caller's
+ * callbacks (AppNav writes the store); the screen re-renders the list
+ * through the pure [LibrarySort] rule on the next composition.
+ */
+@Composable
+private fun LibrarySortMenuButton(
+    sortKey: LibrarySortKey?,
+    sortAscending: Boolean,
+    onSortKeySelect: (LibrarySortKey) -> Unit,
+    onSortAscendingSelect: (Boolean) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(
+                imageVector = Sort,
+                contentDescription = stringResource(R.string.library_sort),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+        ) {
+            // Section: Sort by. The nullable persisted key maps to the
+            // menu's check: null (today's order) checks nothing — the
+            // never-touched state, not a menu option.
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = stringResource(R.string.sort_by),
+                        style = TextStyle(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                enabled = false,
+                onClick = {},
+            )
+            sortKeyOptions().forEach { (key, labelRes) ->
+                val selected = key == sortKey
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(labelRes),
+                            style = TextStyle(
+                                fontWeight = if (selected) FontWeight.SemiBold else null,
+                            ),
+                        )
+                    },
+                    leadingIcon = if (selected) {
+                        {
+                            Icon(
+                                imageVector = Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                    } else {
+                        // The unselected rows keep the check's 24dp slot so
+                        // every label aligns in one column.
+                        { Spacer(Modifier.size(24.dp)) }
+                    },
+                    onClick = {
+                        open = false
+                        onSortKeySelect(key)
+                    },
+                    // Radio semantics: at most one field is chosen; null
+                    // (today's order) is the state where none is.
+                    modifier = Modifier.semantics { role = Role.RadioButton },
+                )
+            }
+            // Section: Order.
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = stringResource(R.string.sort_order),
+                        style = TextStyle(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                enabled = false,
+                onClick = {},
+            )
+            listOf(
+                true to R.string.order_ascending,
+                false to R.string.order_descending,
+            ).forEach { (ascending, labelRes) ->
+                val selected = ascending == sortAscending
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(labelRes),
+                            style = TextStyle(
+                                fontWeight = if (selected) FontWeight.SemiBold else null,
+                            ),
+                        )
+                    },
+                    leadingIcon = if (selected) {
+                        {
+                            Icon(
+                                imageVector = Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                    } else {
+                        { Spacer(Modifier.size(24.dp)) }
+                    },
+                    onClick = {
+                        open = false
+                        onSortAscendingSelect(ascending)
+                    },
+                    modifier = Modifier.semantics { role = Role.RadioButton },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The "Sort by" section's options in menu order: the three fields that
+ * exist on the record, Name first (the tiebreak field), then Duration,
+ * then Resolution. A pure mapping so the menu's order is testable and
+ * the composable stays declarative — no filter-name hardcoding beyond
+ * the enum itself (the label rides each entry's string resource).
+ */
+private fun sortKeyOptions(): List<Pair<LibrarySortKey, Int>> = listOf(
+    LibrarySortKey.NAME to R.string.sort_name,
+    LibrarySortKey.DURATION to R.string.sort_duration,
+    LibrarySortKey.RESOLUTION to R.string.sort_resolution,
+)
+
 private fun matches(filter: LibraryFilter, s: MediaSource): Boolean = when (filter) {
     LibraryFilter.ALL -> true
     LibraryFilter.MCRAW -> s.kind == SourceKind.MCRAW
@@ -575,8 +1105,12 @@ private fun LibraryRow(
     val accessLost = status != null
     FileListRow(
         // The clip's real file name (owner request §2b); the id when the
-        // resolver could not name it — displayOrId is never blank.
-        fileName = source.displayOrId,
+        // resolver could not name it — displayOrId is never blank. The
+        // DISPLAY copy carries zero-width wrap breaks after '_' and
+        // before '.' (toolbar redesign O1) so the name's two lines break
+        // at its separators, never mid-extension; the record keeps the
+        // real name.
+        fileName = LibraryRowModel.displayWrapName(source.displayOrId),
         supportingLine = LibraryRowModel.supportingLine(
             source,
             LibraryRowModel.durationText(source),
@@ -638,6 +1172,170 @@ private fun LibraryRow(
 }
 
 /**
+ * One grid cell (library toolbar redesign, 2026-11-16): a square tile —
+ * the persisted first-frame PNG fitted inside at its own ratio
+ * (ContentScale.Fit, the FileListRow ClipThumbnail contract: letterboxed
+ * on the tile's surfaceContainerHigh background, never cropped, never
+ * distorted) — with the duration badge at its bottom-end and the file
+ * name beneath. The WHOLE cell is one target: it clips to its 12dp
+ * rounded-corner shape BEFORE the combinedClickable (the shape-clipped
+ * indication rule — the node with the shape is the clickable node), so
+ * the ripple stays inside the cell and the tap area is the full cell.
+ *
+ * Selection (E2) keeps its exact behavior — the list rows' routing,
+ * unchanged: long-press enters selection with this cell checked, taps
+ * toggle while selecting (never open), a tap outside selection opens (or
+ * re-links a degraded record — the same routing the list rows run). The
+ * trailing CheckCircle pair rides the tile's top-end corner (the
+ * FolderImportBrowser cell precedent), the stock icons with the primary
+ * tint when checked.
+ *
+ * Degraded records (LOST / GONE, spec IN-12) keep their honest treatment:
+ * the Warning glyph rides the placeholder while the clip cannot be
+ * probed and the tap routes to the SAME re-link picker the list rows
+ * open. The grid never fakes a preview.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LibraryGridCell(
+    source: MediaSource,
+    thumbnailPath: String?,
+    selected: Boolean,
+    selecting: Boolean,
+    onToggleSelected: () -> Unit,
+    onOpen: () -> Unit,
+    onRelink: () -> Unit,
+) {
+    val status = LibraryRowModel.rowStatus(source)
+    val accessLost = status != null
+    Column(
+        Modifier
+            .fillMaxWidth()
+            // Shape-clipped indication: the 12dp rounded cell is the
+            // clickable node (clip BEFORE combinedClickable), so the
+            // ripple never escapes the tile's corners.
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickable(
+                onClick = {
+                    if (selecting) {
+                        onToggleSelected()
+                    } else if (accessLost) {
+                        onRelink()
+                    } else {
+                        onOpen()
+                    }
+                },
+                onLongClick = onToggleSelected,
+            ),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(12.dp))
+                // The tile reads one step above the list's placeholder
+                // gray (surfaceContainerHighest): the grid's larger
+                // letterbox area wants the calmer surfaceContainerHigh,
+                // the spec's own slot color.
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        ) {
+            // The tile's decode: the SAME produceState/BitmapFactory
+            // off-UI-thread pattern the list rows run (cancels when the
+            // cell leaves composition).
+            val bitmap by produceState<Bitmap?>(initialValue = null, thumbnailPath) {
+                value = withContext(Dispatchers.IO) {
+                    try {
+                        thumbnailPath?.let { BitmapFactory.decodeFile(it) }
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
+            val b = bitmap
+            when {
+                b != null -> {
+                    Image(
+                        bitmap = b.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                }
+                // The access-lost marker rides the placeholder while the
+                // clip cannot be probed (the list row's treatment).
+                accessLost -> {
+                    Icon(
+                        imageVector = Icons.Outlined.Warning,
+                        contentDescription = null,
+                        modifier = Modifier.align(Alignment.Center),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            // Duration badge (the spec's own): the recorded span when the
+            // record carries one (the pure durationText rule — null
+            // renders nothing, never a faked 0:00), a fully-rounded
+            // opaque surfaceContainerHighest pill at the tile's
+            // bottom-end, 6dp inset, 18dp tall with the text centered
+            // (a Box wrapper so the pill's height never depends on the
+            // text's own placement inside a taller node).
+            LibraryRowModel.durationText(source)?.let { text ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .heightIn(min = 18.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = text,
+                        style = TextStyle(
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            if (selecting) {
+                Icon(
+                    imageVector = if (selected) {
+                        Icons.Filled.CheckCircle
+                    } else {
+                        Icons.Outlined.CheckCircle
+                    },
+                    contentDescription = null,
+                    tint = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp),
+                )
+            }
+        }
+        // The file name beneath the tile (the spec's own): 12sp, onSurface,
+        // two lines with ellipsis, 6dp off the tile. The DISPLAY copy
+        // carries zero-width wrap breaks after '_' and before '.' (the
+        // same toolbar O1 transform as the list row) so the two lines
+        // break at the name's separators, never mid-extension.
+        Text(
+            text = LibraryRowModel.displayWrapName(source.displayOrId),
+            style = TextStyle(fontSize = 12.sp),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+/**
  * Bounded, cancellable backfill (owner request 2026-11-11 section 1): on
  * every Library composition, records that still lack a thumbnail are
  * handed to [onGenerateThumbnails] — at most [batchLimit] per pass, in
@@ -661,8 +1359,19 @@ private fun LibraryThumbnailBackfill(
     }
 }
 
+/**
+ * The empty-library state (DESIGN.md Library): centered title + body, and
+ * — since the FAB's removal (library toolbar redesign, 2026-11-16) — the
+ * screen's own Import entry point: a FILLED, fully-rounded 56dp button
+ * (primary container, onPrimary label) that opens the SAME SAF document
+ * picker the toolbar's "+" opens. An empty library keeps a direct path
+ * to the first import; the toolbar still carries the everyday one.
+ */
 @Composable
-private fun EmptyLibrary(modifier: Modifier = Modifier) {
+private fun EmptyLibrary(
+    onImport: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
@@ -678,5 +1387,21 @@ private fun EmptyLibrary(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp, start = 32.dp, end = 32.dp),
         )
+        Button(
+            onClick = onImport,
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+            modifier = Modifier
+                .padding(top = 24.dp)
+                .heightIn(min = 56.dp),
+        ) {
+            Text(
+                stringResource(R.string.library_import),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
     }
 }
