@@ -298,12 +298,22 @@ private:
 // BEFORE eglSwapBuffers) and logs one line per attach per develop
 // resolution under the "ritim-trace" tag:
 //   window probe: rgb=(r,g,b) win=WxH vp=WxH rect=(x,y,W,H) src=WxH orient=N
+//     entry[scissor=S box=(x,y,W,H) blend=B depth=D stencil=T mask=(r,g,b,a)]
 // White=(255,255,255) proves the DRAW produced white (the
 // shader/uniform/texture-input class); black proves the letterbox arm
 // (rect math); real color proves the draw is right and the SURFACE/
 // COMPOSITION loses it. The line carries the pass's own uniforms (rect,
 // srcSize, orientation) so a white draw's inputs can be compared against
 // a healthy clip's without a second build.
+//
+// ROUND 3 (2026-11-16): the probe answered rgb=(255,255,255) — the draw
+// produces white — so the line now ALSO carries the draw-2 ENTRY STATE
+// (the entry[...] fields): glIsEnabled/glGetIntegerv for scissor, blend,
+// depth, stencil and the color write mask, read BEFORE the pass's clean
+// entry resets them. The fields name the poison if the clean entry does
+// not fix the white (a nonzero enable/mask is the culprit line), and a
+// clean all-defaults entry with the white persisting rules the whole
+// state class OUT for round 4.
 //
 // The gate: a file-scope atomic HERE (the consumer's TU), set once from
 // the JNI bridge's nativeSetPreviewWindowProbe — the jni_bridge.cpp
