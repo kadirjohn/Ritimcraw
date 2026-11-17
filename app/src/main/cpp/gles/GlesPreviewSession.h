@@ -32,7 +32,10 @@
 // owns its EGL end-to-end with a WINDOW-capable config
 // (EGL_WINDOW_BIT | EGL_PBUFFER_BIT, the config KEPT for
 // eglCreateWindowSurface — the grafika topology GlesPipeline.h
-// documents, with those two preview differences). setSurface()
+// documents, with those two preview differences — plus
+// EGL_RECORDABLE_ANDROID, the config-class match to the develop
+// session's device-proven encoder window path; white-window round 4,
+// see the openEglOnGlThread block comment in the .cpp). setSurface()
 // marshals the SurfaceHolder's window onto the GL thread as a SECOND
 // job kind on the same bounded one-job handoff: the session takes
 // OWNERSHIP of the ANativeWindow reference at CALL ENTRY (releasing it
