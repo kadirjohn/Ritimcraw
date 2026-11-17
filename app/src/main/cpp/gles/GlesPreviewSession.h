@@ -7,10 +7,20 @@
 // documented copy of Thumbnail.h's cell-aligned math lives in the JNI
 // entry; this session receives the reduced mosaic) — and then:
 //
-//   - draws the developed texture to the Android Surface (the
-//     SurfaceHolder's window) with aspect-fit letterbox geometry and the
-//     frame orientation folded in-shader — the window pass
-//     (WINDOW_FRAGMENT), one TRIANGLE_STRIP draw + eglSwapBuffers;
+//   - draws the developed texture into an RGBA8 FBO TWIN at the
+//     SurfaceView window's dims and blits the twin to the Android
+//     Surface (the SurfaceHolder's window) — the round-6 present path
+//     (white-window fix): the SAME window pass (WINDOW_FRAGMENT) with
+//     aspect-fit letterbox geometry and the frame orientation folded
+//     in-shader, one TRIANGLE_STRIP draw INTO THE TWIN + one
+//     shader-less glBlitFramebuffer to the window surface +
+//     eglSwapBuffers. No fragment shader executes against the window
+//     surface — the five-way elimination (filter / composition / GL
+//     state / config / first-present timing, all device-falsified)
+//     left the shader-into-window execution as the only suspect, so the
+//     window pass now runs the stats path's own proven-healthy shape
+//     (an RGBA8 FBO destination) and the twin becomes THE present
+//     path;
 //   - ALWAYS ALSO produces the small published frame (~256 long edge,
 //     upright, the SAME [w, h, 0xFF000000|(r<<16)|(g<<8)|b] int32 pack
 //     shape developToArgb returns) that the Compose overlays (zebra,
@@ -303,16 +313,20 @@ private:
 //   window probe: attach win=WxH dots=(h,v) cfg[renderable=0x.. surface=0x..
 //     visual=N recordable=R]     (once per attach; the config's class —
 //     round 4's confirmation that the config match took effect)
-//   window probe: shot=N rgb=(r,g,b) win=WxH vp=WxH rect=(x,y,W,H) src=WxH
-//     orient=N entry[scissor=S box=(x,y,W,H) blend=B depth=D stencil=T
-//     mask=(r,g,b,a)]     (twice per attach/resolution since round 5: shot=1
-//     the first frame, shot=2 the frame after the next swap)
-// White=(255,255,255) proves the DRAW produced white (the
-// shader/uniform/texture-input class); black proves the letterbox arm
-// (rect math); real color proves the draw is right and the SURFACE/
-// COMPOSITION loses it. The line carries the pass's own uniforms (rect,
-// srcSize, orientation) so a white draw's inputs can be compared against
-// a healthy clip's without a second build.
+//   window probe: shot=N twin=(r,g,b) rgb=(r,g,b) win=WxH vp=WxH
+//     rect=(x,y,W,H) src=WxH orient=N entry[scissor=S box=(x,y,W,H)
+//     blend=B depth=D stencil=T mask=(r,g,b,a)]     (twice per
+//     attach/resolution since round 5: shot=1 the first frame, shot=2
+//     the frame after the next swap; since round 6 ONE line carries BOTH
+//     the twin's pre-blit color — what the draw produced — and the
+//     window's post-blit color)
+// Round 6's verdict reads the PAIR directly (see the ROUND 6 block
+// below): twin color + window color -> fixed; twin color + window white
+// -> the blit's window write is broken too; twin white -> impossible
+// per the stats pack's health on the same frame (STOP — the model is
+// wrong). The line still carries the pass's own uniforms (rect,
+// srcSize, orientation) and the round-3 entry state so a broken replay
+// diffs against a healthy one without a second build.
 //
 // ROUND 3 (2026-11-16): the probe answered rgb=(255,255,255) — the draw
 // produces white — so the line now ALSO carries the draw-2 ENTRY STATE
@@ -336,17 +350,51 @@ private:
 // ROUND 5 (2026-11-17): the replay confirmed recordable=1 with the white
 // persisting — the config class is dead too — and the owner's new clue
 // decoded the symptom: on zebra toggling "once the CENTER of the video
-// (a square) renders, then everything" — THE PICTURE ARRIVES. The first
-// present after an eligibility flip is broken (white or partial);
-// subsequent presents converge. The fix is the vsync-aligned present +
-// the first-frame fence (see runSurfaceJob's interval comment and
-// runJob's fence block); the probe's pixel line now fires TWICE per
-// attach/resolution — the first frame AND the frame after the next
-// swap (shot=1 / shot=2 on the line) — so the replay shows BOTH the
-// first frame's rgb AND the second frame's rgb: the mechanism's
-// on-device signature is a white/partial shot 1 with a colored shot 2.
-// If the fix works, BOTH shots read real color from the first visible
-// frame.
+// (a square) renders, then everything" — THE PICTURE ARRIVES. The fix
+// was the vsync-aligned present + the first-frame fence (see
+// runSurfaceJob's interval comment and runJob's fence block); the
+// probe's pixel line fired TWICE per attach/resolution — the first
+// frame AND the frame after the next swap (shot=1 / shot=2).
+//
+// ROUND 6 (2026-11-17, THE FBO-TWIN + BLIT): the round-5 replay read
+// shot=1 AND shot=2 BOTH white — the first-present timing class is dead
+// too (the white persists across CONSECUTIVE frames; the healing
+// moments the owner saw were RE-ATTACHES, not frame-index
+// convergence), and the owner's AUTO note confirmed the class bound
+// (AUTO — the CPU path — plays immediately; only the GPU window path
+// breaks). FIVE classes are now PROVEN dead on-device: filter (round
+// 1's NEAREST pin), composition (round 2 read the white IN the back
+// buffer, pre-swap), GL state (round 3 read all spec defaults), config
+// (round 4's recordable=1), timing (round 5's shot=1 AND shot=2 both
+// white). THE CONSTANT across every round: the SAME windowProgram +
+// developTex + uniform family draws HEALTHY into the stats FBO (RGBA8 —
+// the zebra strip shows real content on the very frames the window
+// reads white) and WHITE into the EGL window surface — the window
+// draw's own execution against the window surface is the only suspect
+// left. THE PRESENT PATH REWRITE: no fragment shader ever executes
+// against the window surface again. The SAME window draw (the SAME
+// WINDOW_FRAGMENT, the same uRect/orientation fold, the same texture
+// unit) lands in an RGBA8 FBO TWIN at the window's dims — the stats
+// path's own proven-healthy shape; the ONLY difference from the old
+// draw is the destination, an FBO instead of the window surface — and
+// the twin is then glBlitFramebuffer'd to the window surface
+// (shader-less, same dims, full-buffer rects, no orientation fold —
+// the fold already happened in the draw). The twin is allocated once
+// per window-dims change (the stats allocation's once-per-dims shape,
+// keyed on the per-frame eglQuerySurface pair). The probe moved with
+// the draw: the pixel line now carries BOTH sides on ONE line —
+// twin=(r,g,b) (the pre-blit readback of the twin, what the draw
+// produced) and rgb=(r,g,b) (the post-blit read of the window
+// surface's back buffer, pre-swap; the existing second latch's
+// shot=1/shot=2 ladder stays) so the replay's verdict is DIRECT:
+//   twin color + window color -> FIXED (the driver's shader-into-window
+//     path was the culprit; the app never draws a shader into the
+//     window again — the twin becomes THE present path);
+//   twin color + window white -> the blit's window write is broken
+//     too (round 7: the Kotlin SurfaceView side — the holder's surface
+//     format, setZOrder, the buffer transform hint);
+//   twin white -> IMPOSSIBLE per the stats pack's health on the same
+//     frame — STOP, the whole model is wrong.
 //
 // The gate: a file-scope atomic HERE (the consumer's TU), set once from
 // the JNI bridge's nativeSetPreviewWindowProbe — the jni_bridge.cpp
