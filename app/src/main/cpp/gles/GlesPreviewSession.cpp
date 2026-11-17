@@ -258,6 +258,27 @@ struct PreviewSession::Impl {
     bool probeGeometryLogged = false;
     uint32_t probeW = 0, probeH = 0;
 
+    // The first-frame fence's latch (white-window round 5, GL-thread
+    // state): the develop resolution whose first window draw last paid
+    // the glFinish() in runJob — 0/0 means no frame has paid it on this
+    // attach (runSurfaceJob resets it on every attach; a develop
+    // resolution change re-arms it). Deliberately NOT the debug probe's
+    // latch: the fence runs in RELEASE builds too — the probe is the
+    // instrument, the fence is the fix (see runJob's window-pass block).
+    uint32_t fencedW = 0, fencedH = 0;
+
+    // The probe's second-shot latch (white-window round 5, GL-thread
+    // state, DEBUG probe only — the fence above is the release-side fix).
+    // [probeSecondShot] is true on exactly ONE frame after the first
+    // pixel line of each attach/resolution has fired (the first line
+    // sets it; the second line clears it), so the device replay shows
+    // BOTH the first frame's rgb AND the second frame's rgb — the
+    // first-present mechanism's on-device confirmation: a white/partial
+    // FIRST line with a colored SECOND line is the broken-first-present
+    // signature, whatever the display does. A resolution change re-arms
+    // the whole ladder (probeW/H reset re-fires the first line).
+    bool probeSecondShot = false;
+
     // --- Handoff state (guarded by [mutex]) --------------------------------
     std::mutex mutex;
     std::condition_variable cvRequest;
@@ -722,17 +743,52 @@ void PreviewSession::Impl::runSurfaceJob(ANativeWindow* window,
         return;
     }
     windowSurface = created;
-    // Non-blocking presents: the preview pump is the rate authority (the
+    // VSYNC-ALIGNED PRESENTS (white-window round 5, 2026-11-17). This
+    // call used to read eglSwapInterval(display, 0) under the comment
+    // "Non-blocking presents: the preview pump is the rate authority (the
     // bounded handoff must not park the engine thread on vsync); the
-    // compositor latches the latest frame.
-    eglSwapInterval(display, 0);
+    // compositor latches the latest frame." That reasoning was wrong
+    // about WHERE the pump's authority lives: the pump is the rate
+    // authority for ISSUING renders, and it stays so — renderFrame()
+    // blocks on the bounded one-job handoff, so at most one render is
+    // ever in flight and no queue of presents can pile up behind vsync.
+    // What interval 0 bought was presents that outrun vsync — and what it
+    // cost is the owner's center-then-whole clue: on zebra toggling "once
+    // the CENTER of the video (a square) renders, then everything" — the
+    // FIRST present after an eligibility flip latches a buffer whose
+    // rasterization has not completed (no vsync alignment; this driver's
+    // interval-0 fast path skips the first-present fence discipline a
+    // compliant queue would keep — the acquire-fence contract a
+    // SurfaceFlinger latch waits on), so the compositor shows whatever
+    // gralloc handed it: partial content (the center square) or the
+    // buffer's initial contents (white). Subsequent presents converge
+    // (the queue drains, the latches align) — exactly the observed
+    // arrive-late behavior. The evidence chain that leaves this as the
+    // last suspect standing: the filter class (round 1's NEAREST pin —
+    // white persisted), the composition class (round 2's probe read the
+    // white IN the back buffer, pre-swap), the GL-state class (round 3's
+    // entry[...] read all spec defaults), and the config class (round 4's
+    // recordable=1 confirmed on the attach line — white persisted). A
+    // vsync-aligned present is the compositor's own latch contract; the
+    // driver's internals are unverifiable host-side — the device replay
+    // is the proof. The pump's latency budget is unaffected in practice:
+    // the develop chain already costs tens of ms per frame, so the pump
+    // never outpaced vsync in the first place.
+    eglSwapInterval(display, 1);
     // The window probe re-arms on every attach (white-window round 2): a
     // new surface is a new stream, so the first window draw after this
     // attach logs the geometry line and probes the pixel again. The
-    // latches are GL-thread state and this runs on the GL thread.
+    // latches are GL-thread state and this runs on the GL thread. The
+    // round-5 second-shot latch re-arms with them (a new attach's ladder
+    // starts at shot 1).
     probeGeometryLogged = false;
     probeW = 0;
     probeH = 0;
+    probeSecondShot = false;
+    // The first-frame fence re-arms with it: a new surface is a new
+    // first present (see the fencedW/H field comment).
+    fencedW = 0;
+    fencedH = 0;
     ANativeWindow_release(window);
     ok = true;
 }
@@ -803,8 +859,15 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             // will log (the latch condition is frozen into probeThisFrame;
             // the latches are written only inside the probe block below),
             // so a release build and a mid-playback frame pay nothing.
+            // THE SECOND-SHOT ARM (white-window round 5): probeSecondShot
+            // keeps the probe alive for exactly ONE frame after the first
+            // pixel line of each attach/resolution — the round-5 replay
+            // must show BOTH the first frame's rgb AND the second frame's
+            // rgb (the first-present mechanism's on-device signature: a
+            // white/partial first line with a colored second line).
             const bool probeThisFrame = windowProbeEnabled() &&
-                (!probeGeometryLogged || probeW != w || probeH != h);
+                (!probeGeometryLogged || probeW != w || probeH != h ||
+                 probeSecondShot);
             GLboolean entryScissor = GL_FALSE;
             GLboolean entryBlend = GL_FALSE;
             GLboolean entryDepth = GL_FALSE;
@@ -868,6 +931,33 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             // would swallow a draw error and fake drawOk.
             const bool drawOk =
                 glErrorAfter("glDrawArrays(window)", &out.detail) == GL_NO_ERROR;
+            // THE FIRST-FRAME FENCE (white-window round 5): one glFinish()
+            // after the FIRST window draw of each attach / develop
+            // resolution, BEFORE the swap queues the buffer — so the
+            // first present hands the compositor a buffer whose
+            // rasterization is COMPLETE (the acquire fence it rides is
+            // already signaled at queue time), not whatever an interval-0
+            // first-swap fast path handed gralloc. Interval 1 (the attach
+            // fix) paces presents once the queue is full, but the FIRST
+            // present queues into an EMPTY queue — nothing to wait for —
+            // so alignment alone does not provably cover the one present
+            // that is broken (the owner's center-then-whole clue: the
+            // picture arrives — the first present after an eligibility
+            // flip is white/partial, subsequent presents converge). This
+            // fence is the direct, mechanism-targeted leg. Gated on the
+            // session-side fencedW/fencedH latch, DELIBERATELY NOT the
+            // debug probe's latch: the fence must run in RELEASE builds
+            // too — the probe is the instrument, the fence is the fix.
+            // One flush per attach per resolution — the once-per-clip-
+            // shape frequency of the bug itself, free next to the
+            // tens-of-ms develop chain already on that frame; every
+            // subsequent frame pays nothing (GL command ordering within
+            // the context already serializes the draws).
+            if (fencedW != w || fencedH != h) {
+                glFinish();
+                fencedW = w;
+                fencedH = h;
+            }
             // THE WINDOW PROBE (white-window round 2, DEBUG-only — the
             // pragmatic one-pixel exception to this path's no-readback
             // rule; see setWindowProbeEnabled's header comment). ONE
@@ -918,27 +1008,36 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                         static_cast<int>(recordable));
                     probeGeometryLogged = true;
                 }
-                // The pixel line, once per develop resolution: the draw's
-                // own inputs ride the line (rect/srcSize/orientation) so a
-                // white draw's uniforms can be diffed against a healthy
-                // clip's without a second build. glReadPixels reads the
-                // CURRENT read surface = the window surface's back
-                // buffer; the read is centered in uRect so the letterbox
-                // arm never covers it. The probe swallows its own GL
-                // error — the draw's error check above stays the only
-                // error the frame reports.
+                // The pixel line, once per develop resolution PLUS the
+                // round-5 second shot (one frame later, shot=2 on the
+                // line): the draw's own inputs ride the line (rect/
+                // srcSize/orientation) so a white draw's uniforms can be
+                // diffed against a healthy clip's without a second build.
+                // glReadPixels reads the CURRENT read surface = the
+                // window surface's back buffer; the read is centered in
+                // uRect so the letterbox arm never covers it. The probe
+                // swallows its own GL error — the draw's error check above
+                // stays the only error the frame reports.
                 const GLint probeX = static_cast<GLint>(rectX + rectW * 0.5f);
                 const GLint probeY = static_cast<GLint>(rectY + rectH * 0.5f);
                 GLubyte probePx[4] = {0, 0, 0, 0};
                 glReadPixels(probeX, probeY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
                              probePx);
                 while (glGetError() != GL_NO_ERROR) {}  // swallow the probe's own
+                // The shot label: 1 when this is the first probed frame at
+                // this resolution (the first after attach included —
+                // probeW/H reset to 0 there), 2 when it is the armed
+                // second shot of the SAME resolution. A resolution flip
+                // mid-ladder restarts the new resolution at shot 1 (the
+                // label follows the resolution, not the arm state).
+                const bool probeResChanged = probeW != w || probeH != h;
                 __android_log_print(
                     ANDROID_LOG_INFO, "ritim-trace",
-                    "window probe: rgb=(%d,%d,%d) win=%dx%d vp=%dx%d "
+                    "window probe: shot=%d rgb=(%d,%d,%d) win=%dx%d vp=%dx%d "
                     "rect=(%.1f,%.1f,%.1f,%.1f) src=%ux%u orient=%d "
                     "entry[scissor=%d box=(%d,%d,%d,%d) blend=%d depth=%d "
                     "stencil=%d mask=(%d,%d,%d,%d)]",
+                    probeResChanged ? 1 : 2,
                     static_cast<int>(probePx[0]), static_cast<int>(probePx[1]),
                     static_cast<int>(probePx[2]),
                     static_cast<int>(winW), static_cast<int>(winH),
@@ -955,6 +1054,20 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                     entryStencil ? 1 : 0,
                     entryColorMask[0], entryColorMask[1],
                     entryColorMask[2], entryColorMask[3]);
+                if (probeResChanged) {
+                    // A new resolution's first line fired: arm the second
+                    // shot so the NEXT frame at THIS resolution logs the
+                    // converged present's color (the mechanism's
+                    // confirmation — first white/partial, second
+                    // colored). Stays armed if it already was: a flip
+                    // mid-ladder restarts the new resolution's ladder.
+                    probeSecondShot = true;
+                } else {
+                    // The second line fired: the ladder is complete for
+                    // this attach/resolution — disarm until the next
+                    // re-arm (a new attach or a new resolution).
+                    probeSecondShot = false;
+                }
                 probeW = w;
                 probeH = h;
             }

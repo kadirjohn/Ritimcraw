@@ -303,8 +303,10 @@ private:
 //   window probe: attach win=WxH dots=(h,v) cfg[renderable=0x.. surface=0x..
 //     visual=N recordable=R]     (once per attach; the config's class —
 //     round 4's confirmation that the config match took effect)
-//   window probe: rgb=(r,g,b) win=WxH vp=WxH rect=(x,y,W,H) src=WxH orient=N
-//     entry[scissor=S box=(x,y,W,H) blend=B depth=D stencil=T mask=(r,g,b,a)]
+//   window probe: shot=N rgb=(r,g,b) win=WxH vp=WxH rect=(x,y,W,H) src=WxH
+//     orient=N entry[scissor=S box=(x,y,W,H) blend=B depth=D stencil=T
+//     mask=(r,g,b,a)]     (twice per attach/resolution since round 5: shot=1
+//     the first frame, shot=2 the frame after the next swap)
 // White=(255,255,255) proves the DRAW produced white (the
 // shader/uniform/texture-input class); black proves the letterbox arm
 // (rect math); real color proves the draw is right and the SURFACE/
@@ -330,6 +332,21 @@ private:
 // chosen config's cfg[...] fields so the replay CONFIRMS the class
 // changed (recordable=1) on the same line that already reports the
 // surface geometry.
+//
+// ROUND 5 (2026-11-17): the replay confirmed recordable=1 with the white
+// persisting — the config class is dead too — and the owner's new clue
+// decoded the symptom: on zebra toggling "once the CENTER of the video
+// (a square) renders, then everything" — THE PICTURE ARRIVES. The first
+// present after an eligibility flip is broken (white or partial);
+// subsequent presents converge. The fix is the vsync-aligned present +
+// the first-frame fence (see runSurfaceJob's interval comment and
+// runJob's fence block); the probe's pixel line now fires TWICE per
+// attach/resolution — the first frame AND the frame after the next
+// swap (shot=1 / shot=2 on the line) — so the replay shows BOTH the
+// first frame's rgb AND the second frame's rgb: the mechanism's
+// on-device signature is a white/partial shot 1 with a colored shot 2.
+// If the fix works, BOTH shots read real color from the first visible
+// frame.
 //
 // The gate: a file-scope atomic HERE (the consumer's TU), set once from
 // the JNI bridge's nativeSetPreviewWindowProbe — the jni_bridge.cpp
