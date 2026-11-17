@@ -24,11 +24,16 @@
 // one-job handoff (Render + Surface kinds) with the latched failure
 // semantics (Render failures latch, Surface failures never), the session's
 // OWN window program (the pipeline's vertex shader is pipeline-private),
-// the window present (best-effort, never fails the frame), the stats pack
+// the window present (best-effort, never fails the frame) — SINCE
+// WHITE-WINDOW ROUND 6 the FBO-twin shape: the window draw lands in the
+// session's RGBA8 twin (the stats path's proven-healthy destination) and
+// a shader-less glBlitFramebuffer presents it to the window surface; no
+// fragment shader executes against the window surface — the stats pack
 // (the session's own small RGBA8 scratch pair + FBOs + SSBO readback +
-// toByte quantize + row-flip pack; glReadPixels is used NOWHERE — the
-// recorded baseline invariant), and the statsEnabled toggle (false skips
-// the stats draws + readback and publishes the honest 1x1 empty fallback).
+// toByte quantize + row-flip pack; glReadPixels is used NOWHERE except
+// the DEBUG probe's two 1x1 reads — the recorded baseline invariant),
+// and the statsEnabled toggle (false skips the stats draws + readback
+// and publishes the honest 1x1 empty fallback).
 //
 // THREADING (the contract in one paragraph): open() spawns the GL thread;
 // every EGL/GL call for the session's lifetime — including teardown — runs
@@ -247,6 +252,19 @@ struct PreviewSession::Impl {
     uint32_t statsAllocW = 0, statsAllocH = 0;
     uint64_t statsBytes = 0;
 
+    // THE WINDOW TWIN (white-window round 6): the RGBA8 texture+FBO the
+    // window pass draws into before the shader-less glBlitFramebuffer to
+    // the window surface — the stats path's own proven-healthy shape (the
+    // same WINDOW_FRAGMENT, the same uRect/orientation fold, the same
+    // texture unit), with the destination being an FBO instead of the EGL
+    // window surface. The allocation is the stats allocation's
+    // once-per-dims shape (delete + realloc when the WINDOW dims change,
+    // keyed on the per-frame eglQuerySurface pair): the twin is
+    // context-owned, so a surface re-attach at the same dims reuses it
+    // and a dims change mid-attach reallocates it.
+    GLuint twinTex = 0, twinFbo = 0;
+    uint32_t twinAllocW = 0, twinAllocH = 0;
+
     // The window probe's one-shot latches (GL-thread state; the
     // white-window round-2 debug instrument — see setWindowProbeEnabled's
     // header comment). [probeGeometryLogged] fires the per-attach geometry
@@ -258,13 +276,15 @@ struct PreviewSession::Impl {
     bool probeGeometryLogged = false;
     uint32_t probeW = 0, probeH = 0;
 
-    // The first-frame fence's latch (white-window round 5, GL-thread
-    // state): the develop resolution whose first window draw last paid
-    // the glFinish() in runJob — 0/0 means no frame has paid it on this
-    // attach (runSurfaceJob resets it on every attach; a develop
-    // resolution change re-arms it). Deliberately NOT the debug probe's
-    // latch: the fence runs in RELEASE builds too — the probe is the
-    // instrument, the fence is the fix (see runJob's window-pass block).
+    // The first-frame fence's latch (white-window round 5, kept through
+    // round 6, GL-thread state): the develop resolution whose first
+    // window-bound write last paid the glFinish() in runJob (round 5:
+    // the direct draw; round 6: the blit — the window-bound write
+    // either way) — 0/0 means no frame has paid it on this attach
+    // (runSurfaceJob resets it on every attach; a develop resolution
+    // change re-arms it). Deliberately NOT the debug probe's latch: the
+    // fence runs in RELEASE builds too — the probe is the instrument,
+    // the fence is the fix (see runJob's window-pass block).
     uint32_t fencedW = 0, fencedH = 0;
 
     // The probe's second-shot latch (white-window round 5, GL-thread
@@ -743,7 +763,11 @@ void PreviewSession::Impl::runSurfaceJob(ANativeWindow* window,
         return;
     }
     windowSurface = created;
-    // VSYNC-ALIGNED PRESENTS (white-window round 5, 2026-11-17). This
+    // VSYNC-ALIGNED PRESENTS (white-window round 5, 2026-11-17 — KEPT
+    // through round 6; round 5's replay read shot=1 AND shot=2 both white,
+    // so this fix's class is dead, but a vsync-aligned present stays the
+    // honest present discipline and costs nothing against the tens-of-ms
+    // develop chain). This
     // call used to read eglSwapInterval(display, 0) under the comment
     // "Non-blocking presents: the preview pump is the rate authority (the
     // bounded handoff must not park the engine thread on vsync); the
@@ -763,24 +787,29 @@ void PreviewSession::Impl::runSurfaceJob(ANativeWindow* window,
     // gralloc handed it: partial content (the center square) or the
     // buffer's initial contents (white). Subsequent presents converge
     // (the queue drains, the latches align) — exactly the observed
-    // arrive-late behavior. The evidence chain that leaves this as the
-    // last suspect standing: the filter class (round 1's NEAREST pin —
-    // white persisted), the composition class (round 2's probe read the
-    // white IN the back buffer, pre-swap), the GL-state class (round 3's
-    // entry[...] read all spec defaults), and the config class (round 4's
-    // recordable=1 confirmed on the attach line — white persisted). A
-    // vsync-aligned present is the compositor's own latch contract; the
-    // driver's internals are unverifiable host-side — the device replay
-    // is the proof. The pump's latency budget is unaffected in practice:
-    // the develop chain already costs tens of ms per frame, so the pump
-    // never outpaced vsync in the first place.
+    // arrive-late behavior, which round 5's replay then REFUTED as the
+    // mechanism (two consecutive whites): the observed healing moments
+    // were RE-ATTACHES, not frame-index convergence. The five-dead-class
+    // chain that ends in round 6's twin+blit rewrite: the filter class
+    // (round 1's NEAREST pin — white persisted), the composition class
+    // (round 2's probe read the white IN the back buffer, pre-swap), the
+    // GL-state class (round 3's entry[...] read all spec defaults), the
+    // config class (round 4's recordable=1 confirmed — white persisted),
+    // and the timing class (round 5's shot=1 AND shot=2 both white).
+    // Round 6's twin+blit rewrite (runJob's window-pass block) is what
+    // the five-way elimination earned. A vsync-aligned present stays the
+    // compositor's own latch contract regardless; the driver's internals
+    // are unverifiable host-side — the device replay is the proof. The
+    // pump's latency budget is unaffected in practice: the develop chain
+    // already costs tens of ms per frame, so the pump never outpaced
+    // vsync in the first place.
     eglSwapInterval(display, 1);
     // The window probe re-arms on every attach (white-window round 2): a
-    // new surface is a new stream, so the first window draw after this
-    // attach logs the geometry line and probes the pixel again. The
-    // latches are GL-thread state and this runs on the GL thread. The
-    // round-5 second-shot latch re-arms with them (a new attach's ladder
-    // starts at shot 1).
+    // new surface is a new stream, so the first window pass after this
+    // attach logs the geometry line and probes the twin + window pixel
+    // pair again (round 6's two-read line). The latches are GL-thread
+    // state and this runs on the GL thread. The round-5 second-shot
+    // latch re-arms with them (a new attach's ladder starts at shot 1).
     probeGeometryLogged = false;
     probeW = 0;
     probeH = 0;
@@ -824,10 +853,13 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // kept at the same scope the kept tail uses it in).
     using SteadyClock = std::chrono::steady_clock;
 
-    // --- draw 2: the WINDOW present (only when a window surface is current);
-    // --- BEST-EFFORT — never fails the frame, never latches (the stats pack
-    // --- below is the render's contract; a dead/dying surface is the UI's
-    // --- lifecycle signal, not a pipeline error) ---------------------------
+    // --- draw 2: the WINDOW present (only when a window surface is current)
+    // --- — SINCE ROUND 6 THE FBO-TWIN + BLIT SHAPE: the draw lands in the
+    // --- RGBA8 twin (the stats path's proven-healthy destination), the
+    // --- twin blits to the window surface; BEST-EFFORT — never fails the
+    // --- frame, never latches (the stats pack below is the render's
+    // --- contract; a dead/dying surface is the UI's lifecycle signal, not
+    // --- a pipeline error) ---------------------------------------------
     const SteadyClock::time_point tPresent0 = SteadyClock::now();
     if (windowSurface != EGL_NO_SURFACE) {
         EGLint winW = 0, winH = 0;
@@ -885,13 +917,12 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                     // queries' own errors — the draw's error check below
                     // stays the only error the frame reports
             }
-            // THE CLEAN ENTRY (white-window round 3, the probe's verdict
-            // 2026-11-16: rgb=(255,255,255) at the uRect center from the
-            // back buffer PRE-swap — the draw produces white into the
-            // window surface while the SAME windowProgram + developTex +
-            // near-identical uniforms draw HEALTHY into the stats FBO,
-            // so the divergence is the DESTINATION: FBO 0, the EGL
-            // window surface). The audit behind every call below: NOTHING
+            // THE CLEAN ENTRY (white-window round 3, kept through round 6):
+            // the probe read rgb=(255,255,255) at the uRect center from the
+            // window's back buffer PRE-swap while the SAME windowProgram +
+            // developTex + near-identical uniforms drew HEALTHY into the
+            // stats FBO — the divergence was the DESTINATION, and the
+            // round-3 fixes below pinned every state class dead. NOTHING
             // in app/src/main/cpp/ ever calls glEnable / glDisable /
             // glScissor / glColorMask (the grep is empty), so no app
             // code authors any poison candidate — the chain's TAIL
@@ -899,11 +930,15 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             // texture-unit / FBO / viewport state, ALL of which this
             // pass resets below. These five calls pin the GL spec
             // DEFAULTS explicitly, so no driver-level non-default state
-            // on the window-surface path can clip, blend, depth-test,
-            // stencil-test, or mask the draw's writes — and an EGL
-            // window buffer's initial contents are UNDEFINED (often
-            // white), so any unwritten region reads as that initial
-            // white, exactly the probe's line.
+            // can clip, blend, depth-test, stencil-test, or mask the
+            // draw's writes into the twin or the blit's writes into the
+            // window. Round 6 keeps them deliberately: the twin is a
+            // fresh FBO destination (no undefined-initial-contents
+            // concern the way an EGL window buffer has), but the blit
+            // still writes the window surface, and any unwritten region
+            // of either reads as its initial contents — the pins make
+            // the twin's content exactly the draw's fragment output and
+            // nothing else.
             glDisable(GL_SCISSOR_TEST);  // a stale scissor rect is the
                                         // one clip that leaves the
                                         // buffer's initial white showing
@@ -916,168 +951,305 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);  // a masked
                                         // channel is an unwritten
                                         // channel
-            glUseProgram(windowProgram);
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, pipeline.developTex());
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);  // the window surface
-            glViewport(0, 0, winW, winH);
-            glUniform2i(windowSrcSizeLoc,
-                        static_cast<GLint>(w), static_cast<GLint>(h));
-            glUniform4f(windowRectLoc, rectX, rectY, rectW, rectH);
-            glUniform1i(windowOrientationLoc, orient);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            // The draw's own error check runs FIRST — the probe below
-            // drains GL errors (its own), and a drain before this check
-            // would swallow a draw error and fake drawOk.
-            const bool drawOk =
-                glErrorAfter("glDrawArrays(window)", &out.detail) == GL_NO_ERROR;
-            // THE FIRST-FRAME FENCE (white-window round 5): one glFinish()
-            // after the FIRST window draw of each attach / develop
-            // resolution, BEFORE the swap queues the buffer — so the
-            // first present hands the compositor a buffer whose
-            // rasterization is COMPLETE (the acquire fence it rides is
-            // already signaled at queue time), not whatever an interval-0
-            // first-swap fast path handed gralloc. Interval 1 (the attach
-            // fix) paces presents once the queue is full, but the FIRST
-            // present queues into an EMPTY queue — nothing to wait for —
-            // so alignment alone does not provably cover the one present
-            // that is broken (the owner's center-then-whole clue: the
-            // picture arrives — the first present after an eligibility
-            // flip is white/partial, subsequent presents converge). This
-            // fence is the direct, mechanism-targeted leg. Gated on the
-            // session-side fencedW/fencedH latch, DELIBERATELY NOT the
-            // debug probe's latch: the fence must run in RELEASE builds
-            // too — the probe is the instrument, the fence is the fix.
-            // One flush per attach per resolution — the once-per-clip-
-            // shape frequency of the bug itself, free next to the
-            // tens-of-ms develop chain already on that frame; every
-            // subsequent frame pays nothing (GL command ordering within
-            // the context already serializes the draws).
-            if (fencedW != w || fencedH != h) {
-                glFinish();
-                fencedW = w;
-                fencedH = h;
+            // --- THE FBO TWIN (white-window round 6): the present path's
+            // --- rewrite — the hammer the five-way elimination earned.
+            // --- Five classes are PROVEN dead on-device, each with its
+            // --- probe line: the filter class (round 1's NEAREST pin —
+            // --- white persisted), the composition class (round 2's probe
+            // --- read the white IN the back buffer, pre-swap), the
+            // --- GL-state class (round 3's entry line read all spec
+            // --- defaults), the config class (round 4's recordable=1
+            // --- confirmed on the attach line — white persisted), and the
+            // --- first-present timing class (round 5's shot=1 AND shot=2
+            // --- BOTH white — the white persists across consecutive
+            // --- frames; the healing moments the owner saw were
+            // --- RE-ATTACHES, not frame-index convergence). THE CONSTANT:
+            // --- the SAME windowProgram + developTex + uniform family
+            // --- draws HEALTHY into the stats FBO (RGBA8 — the zebra
+            // --- strip shows real content on the very frames the window
+            // --- reads white) and WHITE into the EGL window surface. The
+            // --- window pass's own execution against the window surface
+            // --- is the only suspect left, so it never runs there again:
+            // --- the pass draws into an RGBA8 FBO TWIN at the window's
+            // --- dims — the stats path's own proven-healthy shape, the
+            // --- ONLY difference from the old draw being the destination
+            // --- — and the twin is then glBlitFramebuffer'd to the window
+            // --- surface (shader-less, same dims, full-buffer rects, no
+            // --- orientation fold — the fold already happened in the
+            // --- draw). The allocation is the stats allocation's
+            // --- once-per-dims shape keyed on the window dims (the
+            // --- per-frame eglQuerySurface pair): a re-attach at the
+            // --- same dims reuses the twin, a dims change reallocates.
+            bool twinOk = true;
+            if (twinAllocW != static_cast<uint32_t>(winW) ||
+                twinAllocH != static_cast<uint32_t>(winH)) {
+                if (twinTex != 0) { glDeleteTextures(1, &twinTex); twinTex = 0; }
+                if (twinFbo != 0) { glDeleteFramebuffers(1, &twinFbo); twinFbo = 0; }
+                twinAllocW = 0;
+                twinAllocH = 0;
+                glGenTextures(1, &twinTex);
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, twinTex);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8,
+                               static_cast<GLsizei>(winW),
+                               static_cast<GLsizei>(winH));
+                if (glErrorAfter("glTexStorage2D(RGBA8 twin)", &out.detail) != GL_NO_ERROR) {
+                    twinOk = false;
+                } else {
+                    glGenFramebuffers(1, &twinFbo);
+                    glBindFramebuffer(GL_FRAMEBUFFER, twinFbo);
+                    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                           GL_TEXTURE_2D, twinTex, 0);
+                    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                        if (out.detail.empty()) {
+                            out.detail = "window present: twin fbo incomplete";
+                        }
+                        twinOk = false;
+                    } else {
+                        twinAllocW = static_cast<uint32_t>(winW);
+                        twinAllocH = static_cast<uint32_t>(winH);
+                    }
+                }
             }
-            // THE WINDOW PROBE (white-window round 2, DEBUG-only — the
-            // pragmatic one-pixel exception to this path's no-readback
-            // rule; see setWindowProbeEnabled's header comment). ONE
-            // glReadPixels 1x1 at the rect CENTER, from the BACK buffer
-            // BEFORE eglSwapBuffers (post-swap the back buffer is
-            // undefined — the brief's own correction). One line per
-            // attach per develop resolution fires; the latches keep it
-            // one-shot so a playback run logs nothing per frame.
-            if (probeThisFrame) {
-                // The geometry line, once per attach: the pass's own
-                // values — the claimed uRect, the viewport, the surface's
-                // reported geometry and its dots-per-inch pair. Since
-                // round 4 the line ALSO carries the CHOSEN CONFIG's class
-                // (white-window round 4, the config-match fix): the four
-                // eglGetConfigAttrib reads that name what eglChooseConfig
-                // actually handed this session — RENDERABLE_TYPE,
-                // SURFACE_TYPE, NATIVE_VISUAL_ID and the
-                // EGL_RECORDABLE_ANDROID verdict — so the device replay
-                // CONFIRMS the config class changed (recordable=1) without
-                // a second build. Four one-shot int reads per attach;
-                // release builds never reach this block.
-                if (!probeGeometryLogged) {
-                    EGLint dotsH = 0, dotsV = 0;
-                    eglQuerySurface(display, windowSurface,
-                                    EGL_HORIZONTAL_RESOLUTION, &dotsH);
-                    eglQuerySurface(display, windowSurface,
-                                    EGL_VERTICAL_RESOLUTION, &dotsV);
-                    EGLint renderable = 0, surfaceBits = 0, visualId = 0,
-                          recordable = 0;
-                    eglGetConfigAttrib(display, config,
-                                       EGL_RENDERABLE_TYPE, &renderable);
-                    eglGetConfigAttrib(display, config,
-                                       EGL_SURFACE_TYPE, &surfaceBits);
-                    eglGetConfigAttrib(display, config,
-                                       EGL_NATIVE_VISUAL_ID, &visualId);
-                    eglGetConfigAttrib(display, config,
-                                       EGL_RECORDABLE_ANDROID, &recordable);
+            // The present legs run ONLY on a healthy twin — a failed
+            // allocation leaves presented=false with the step named in
+            // [detail] (the present is best-effort; the stats pass below
+            // still publishes). The draw, the blit, the probe and the
+            // swap all live inside the guard: nothing ever executes a
+            // fragment shader with the window surface as its
+            // framebuffer.
+            if (twinOk) {
+                // The window draw, INTO THE TWIN: the same
+                // WINDOW_FRAGMENT, the same uRect/orientation fold, the
+                // same texture unit — the letterbox rect is the SAME
+                // rect (the twin is at the window's dims, so the blit
+                // below is 1:1 and the window shows the identical
+                // letterboxed image).
+                glUseProgram(windowProgram);
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, pipeline.developTex());
+                glBindFramebuffer(GL_FRAMEBUFFER, twinFbo);  // the twin, NOT the window
+                glViewport(0, 0, winW, winH);
+                glUniform2i(windowSrcSizeLoc,
+                            static_cast<GLint>(w), static_cast<GLint>(h));
+                glUniform4f(windowRectLoc, rectX, rectY, rectW, rectH);
+                glUniform1i(windowOrientationLoc, orient);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                // The draw's own error check runs FIRST — the probe below
+                // drains GL errors (its own), and a drain before this
+                // check would swallow a draw error and fake drawOk.
+                const bool drawOk =
+                    glErrorAfter("glDrawArrays(window twin)", &out.detail) ==
+                    GL_NO_ERROR;
+                // THE PROBE'S TWIN READ (round 6): read the twin FIRST —
+                // the pre-blit readback, what the draw PRODUCED. Same
+                // 1x1-at-rect-center shape as the window read; the READ
+                // binding is the twin (the draw left the twin bound as
+                // the plain framebuffer). One read per probed frame per
+                // side, and only on probed frames — a release build never
+                // reads a pixel. The probe swallows its own GL error so
+                // the blit's error check below stays the only error the
+                // present reports.
+                GLubyte twinPx[4] = {0, 0, 0, 0};
+                if (probeThisFrame) {
+                    const GLint probeX = static_cast<GLint>(rectX + rectW * 0.5f);
+                    const GLint probeY = static_cast<GLint>(rectY + rectH * 0.5f);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, twinFbo);
+                    glReadPixels(probeX, probeY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                                 twinPx);
+                    while (glGetError() != GL_NO_ERROR) {}  // swallow the probe's own
+                }
+                // THE FIRST-FRAME FENCE (white-window round 5, carried
+                // into the round-6 present path): one glFinish() after
+                // the FIRST window-bound write of each attach / develop
+                // resolution, BEFORE the swap queues the buffer — so
+                // the first present hands the compositor a buffer whose
+                // writes are COMPLETE (the acquire fence it rides is
+                // already signaled at queue time). In the round-6 path
+                // the window-bound write is the BLIT (no fragment shader
+                // ever executes against the window surface). The fence
+                // runs BELOW, fused between the blit and the probe's
+                // window read: the blit must land before the probe reads
+                // it, and the whole raster must land before the swap.
+                // Gated on the session-side fencedW/fencedH latch,
+                // DELIBERATELY NOT the debug probe's latch: the fence
+                // must run in RELEASE builds too — the probe is the
+                // instrument, the fence is the fix. One flush per attach
+                // per resolution — the once-per-clip-shape frequency of
+                // the bug itself, free next to the tens-of-ms develop
+                // chain already on that frame; every subsequent frame
+                // pays nothing (GL command ordering within the context
+                // already serializes the draws).
+                //
+                // THE PRESENT — the shader-less blit, twin -> the window
+                // surface. Full-buffer rects on both sides (the
+                // orientation fold already happened in the draw above —
+                // the blit is a straight copy, no flip, no scaling), and
+                // GL_NEAREST (a 1:1 copy — the filter argument is a
+                // formality NEAREST satisfies exactly; the twin is at
+                // the window's own dims). This is the round-6 verdict's
+                // pivot: no shader, no sampler, no uniform — if the
+                // window is still white after THIS, the divergence is
+                // the driver's window-surface WRITE path (round 7: the
+                // Kotlin SurfaceView side), if the window shows color
+                // the shader-into-window execution was the culprit and
+                // the twin becomes THE present path permanently.
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, twinFbo);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);  // the window surface
+                glBlitFramebuffer(0, 0, winW, winH,
+                                  0, 0, winW, winH,
+                                  GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                const bool blitOk =
+                    glErrorAfter("glBlitFramebuffer(window)", &out.detail) ==
+                    GL_NO_ERROR;
+                if (fencedW != w || fencedH != h) {
+                    glFinish();
+                    fencedW = w;
+                    fencedH = h;
+                }
+                // THE PROBE's window read + ONE LINE (white-window
+                // rounds 2-6, DEBUG-only — the pragmatic one-pixel
+                // exception to this path's no-readback rule; see
+                // setWindowProbeEnabled's header comment). Since round 6
+                // the line carries BOTH sides of the present on ONE
+                // line: twin=(r,g,b) — the pre-blit readback above, what
+                // the draw produced into the FBO twin — and rgb=(r,g,b)
+                // — the ONE glReadPixels 1x1 at the rect center from the
+                // WINDOW SURFACE's back buffer AFTER the blit, BEFORE
+                // eglSwapBuffers (post-swap the back buffer is
+                // undefined — the round-2 correction). The replay reads
+                // the pair directly: twin color + window color -> fixed
+                // (the shader-into-window execution was the culprit);
+                // twin color + window white -> the blit's window write
+                // is broken too (round 7: the Kotlin SurfaceView side);
+                // twin white -> impossible per the stats pack's health
+                // on the same frame — stop and re-examine the model. The
+                // draw's own inputs still ride the line (rect/srcSize/
+                // orientation, and the round-3 entry[...] capture) so a
+                // broken replay diffs against a healthy one without a
+                // second build. Both reads swallow their own GL errors —
+                // the draw/blit error checks above stay the only errors
+                // the frame reports.
+                if (probeThisFrame) {
+                    // The geometry line, once per attach: the pass's own
+                    // values — the claimed uRect, the viewport, the
+                    // surface's reported geometry and its dots-per-inch
+                    // pair. Since round 4 the line ALSO carries the
+                    // CHOSEN CONFIG's class (white-window round 4, the
+                    // config-match fix): the four eglGetConfigAttrib
+                    // reads that name what eglChooseConfig actually
+                    // handed this session — RENDERABLE_TYPE,
+                    // SURFACE_TYPE, NATIVE_VISUAL_ID and the
+                    // EGL_RECORDABLE_ANDROID verdict — so the device
+                    // replay CONFIRMS the config class changed
+                    // (recordable=1) without a second build. Four
+                    // one-shot int reads per attach; release builds never
+                    // reach this block.
+                    if (!probeGeometryLogged) {
+                        EGLint dotsH = 0, dotsV = 0;
+                        eglQuerySurface(display, windowSurface,
+                                        EGL_HORIZONTAL_RESOLUTION, &dotsH);
+                        eglQuerySurface(display, windowSurface,
+                                        EGL_VERTICAL_RESOLUTION, &dotsV);
+                        EGLint renderable = 0, surfaceBits = 0, visualId = 0,
+                              recordable = 0;
+                        eglGetConfigAttrib(display, config,
+                                           EGL_RENDERABLE_TYPE, &renderable);
+                        eglGetConfigAttrib(display, config,
+                                           EGL_SURFACE_TYPE, &surfaceBits);
+                        eglGetConfigAttrib(display, config,
+                                           EGL_NATIVE_VISUAL_ID, &visualId);
+                        eglGetConfigAttrib(display, config,
+                                           EGL_RECORDABLE_ANDROID, &recordable);
+                        __android_log_print(
+                            ANDROID_LOG_INFO, "ritim-trace",
+                            "window probe: attach win=%dx%d dots=(%d,%d) "
+                            "cfg[renderable=0x%x surface=0x%x visual=%d "
+                            "recordable=%d]",
+                            static_cast<int>(winW), static_cast<int>(winH),
+                            static_cast<int>(dotsH), static_cast<int>(dotsV),
+                            static_cast<unsigned>(renderable),
+                            static_cast<unsigned>(surfaceBits),
+                            static_cast<int>(visualId),
+                            static_cast<int>(recordable));
+                        probeGeometryLogged = true;
+                    }
+                    // The pixel line, once per develop resolution PLUS
+                    // the round-5 second shot (one frame later, shot=2 on
+                    // the line): BOTH sides on one line since round 6.
+                    // The probe swallows its own GL errors.
+                    const GLint probeX = static_cast<GLint>(rectX + rectW * 0.5f);
+                    const GLint probeY = static_cast<GLint>(rectY + rectH * 0.5f);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);  // the window's back buffer
+                    GLubyte probePx[4] = {0, 0, 0, 0};
+                    glReadPixels(probeX, probeY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                                 probePx);
+                    while (glGetError() != GL_NO_ERROR) {}  // swallow the probe's own
+                    // The shot label: 1 when this is the first probed frame at
+                    // this resolution (the first after attach included —
+                    // probeW/H reset to 0 there), 2 when it is the armed
+                    // second shot of the SAME resolution. A resolution flip
+                    // mid-ladder restarts the new resolution at shot 1 (the
+                    // label follows the resolution, not the arm state).
+                    const bool probeResChanged = probeW != w || probeH != h;
                     __android_log_print(
                         ANDROID_LOG_INFO, "ritim-trace",
-                        "window probe: attach win=%dx%d dots=(%d,%d) "
-                        "cfg[renderable=0x%x surface=0x%x visual=%d "
-                        "recordable=%d]",
+                        "window probe: shot=%d twin=(%d,%d,%d) rgb=(%d,%d,%d) "
+                        "win=%dx%d vp=%dx%d "
+                        "rect=(%.1f,%.1f,%.1f,%.1f) src=%ux%u orient=%d "
+                        "entry[scissor=%d box=(%d,%d,%d,%d) blend=%d depth=%d "
+                        "stencil=%d mask=(%d,%d,%d,%d)]",
+                        probeResChanged ? 1 : 2,
+                        static_cast<int>(twinPx[0]), static_cast<int>(twinPx[1]),
+                        static_cast<int>(twinPx[2]),
+                        static_cast<int>(probePx[0]), static_cast<int>(probePx[1]),
+                        static_cast<int>(probePx[2]),
                         static_cast<int>(winW), static_cast<int>(winH),
-                        static_cast<int>(dotsH), static_cast<int>(dotsV),
-                        static_cast<unsigned>(renderable),
-                        static_cast<unsigned>(surfaceBits),
-                        static_cast<int>(visualId),
-                        static_cast<int>(recordable));
-                    probeGeometryLogged = true;
+                        static_cast<int>(winW), static_cast<int>(winH),
+                        static_cast<double>(rectX), static_cast<double>(rectY),
+                        static_cast<double>(rectW), static_cast<double>(rectH),
+                        static_cast<unsigned>(w), static_cast<unsigned>(h),
+                        orient,
+                        entryScissor ? 1 : 0,
+                        entryScissorBox[0], entryScissorBox[1],
+                        entryScissorBox[2], entryScissorBox[3],
+                        entryBlend ? 1 : 0,
+                        entryDepth ? 1 : 0,
+                        entryStencil ? 1 : 0,
+                        entryColorMask[0], entryColorMask[1],
+                        entryColorMask[2], entryColorMask[3]);
+                    if (probeResChanged) {
+                        // A new resolution's first line fired: arm the second
+                        // shot so the NEXT frame at THIS resolution logs the
+                        // same two-read pair one frame later (the round-5
+                        // ladder, kept so the replay shows the pair on
+                        // CONSECUTIVE frames — the timing class died by this
+                        // very evidence, but the pair-on-two-frames shape
+                        // still proves the blit's consistency). Stays armed
+                        // if it already was: a flip mid-ladder restarts the
+                        // new resolution's ladder.
+                        probeSecondShot = true;
+                    } else {
+                        // The second line fired: the ladder is complete for
+                        // this attach/resolution — disarm until the next
+                        // re-arm (a new attach or a new resolution).
+                        probeSecondShot = false;
+                    }
+                    probeW = w;
+                    probeH = h;
                 }
-                // The pixel line, once per develop resolution PLUS the
-                // round-5 second shot (one frame later, shot=2 on the
-                // line): the draw's own inputs ride the line (rect/
-                // srcSize/orientation) so a white draw's uniforms can be
-                // diffed against a healthy clip's without a second build.
-                // glReadPixels reads the CURRENT read surface = the
-                // window surface's back buffer; the read is centered in
-                // uRect so the letterbox arm never covers it. The probe
-                // swallows its own GL error — the draw's error check above
-                // stays the only error the frame reports.
-                const GLint probeX = static_cast<GLint>(rectX + rectW * 0.5f);
-                const GLint probeY = static_cast<GLint>(rectY + rectH * 0.5f);
-                GLubyte probePx[4] = {0, 0, 0, 0};
-                glReadPixels(probeX, probeY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
-                             probePx);
-                while (glGetError() != GL_NO_ERROR) {}  // swallow the probe's own
-                // The shot label: 1 when this is the first probed frame at
-                // this resolution (the first after attach included —
-                // probeW/H reset to 0 there), 2 when it is the armed
-                // second shot of the SAME resolution. A resolution flip
-                // mid-ladder restarts the new resolution at shot 1 (the
-                // label follows the resolution, not the arm state).
-                const bool probeResChanged = probeW != w || probeH != h;
-                __android_log_print(
-                    ANDROID_LOG_INFO, "ritim-trace",
-                    "window probe: shot=%d rgb=(%d,%d,%d) win=%dx%d vp=%dx%d "
-                    "rect=(%.1f,%.1f,%.1f,%.1f) src=%ux%u orient=%d "
-                    "entry[scissor=%d box=(%d,%d,%d,%d) blend=%d depth=%d "
-                    "stencil=%d mask=(%d,%d,%d,%d)]",
-                    probeResChanged ? 1 : 2,
-                    static_cast<int>(probePx[0]), static_cast<int>(probePx[1]),
-                    static_cast<int>(probePx[2]),
-                    static_cast<int>(winW), static_cast<int>(winH),
-                    static_cast<int>(winW), static_cast<int>(winH),
-                    static_cast<double>(rectX), static_cast<double>(rectY),
-                    static_cast<double>(rectW), static_cast<double>(rectH),
-                    static_cast<unsigned>(w), static_cast<unsigned>(h),
-                    orient,
-                    entryScissor ? 1 : 0,
-                    entryScissorBox[0], entryScissorBox[1],
-                    entryScissorBox[2], entryScissorBox[3],
-                    entryBlend ? 1 : 0,
-                    entryDepth ? 1 : 0,
-                    entryStencil ? 1 : 0,
-                    entryColorMask[0], entryColorMask[1],
-                    entryColorMask[2], entryColorMask[3]);
-                if (probeResChanged) {
-                    // A new resolution's first line fired: arm the second
-                    // shot so the NEXT frame at THIS resolution logs the
-                    // converged present's color (the mechanism's
-                    // confirmation — first white/partial, second
-                    // colored). Stays armed if it already was: a flip
-                    // mid-ladder restarts the new resolution's ladder.
-                    probeSecondShot = true;
-                } else {
-                    // The second line fired: the ladder is complete for
-                    // this attach/resolution — disarm until the next
-                    // re-arm (a new attach or a new resolution).
-                    probeSecondShot = false;
+                // The swap comes AFTER the probe — the probe reads the
+                // back buffer pre-swap (post-swap it is undefined, the
+                // brief's own correction).
+                const bool swapOk = eglSwapBuffers(display, windowSurface) == EGL_TRUE;
+                out.presented = drawOk && blitOk && swapOk;
+                if (!swapOk && out.detail.empty()) {
+                    out.detail = "window present: eglSwapBuffers";
                 }
-                probeW = w;
-                probeH = h;
-            }
-            // The swap comes AFTER the probe — the probe reads the back
-            // buffer pre-swap (post-swap it is undefined, the brief's own
-            // correction).
-            const bool swapOk = eglSwapBuffers(display, windowSurface) == EGL_TRUE;
-            out.presented = drawOk && swapOk;
-            if (!swapOk && out.detail.empty()) {
-                out.detail = "window present: eglSwapBuffers";
             }
         } else if (out.detail.empty()) {
             out.detail = "window present: eglQuerySurface";
@@ -1436,6 +1608,10 @@ void PreviewSession::Impl::teardownOnGlThread() {
     // deletes them, on this same GL thread with this session's context
     // still current.
     pipeline.teardown();
+    if (twinFbo != 0) { glDeleteFramebuffers(1, &twinFbo); twinFbo = 0; }
+    if (twinTex != 0) { glDeleteTextures(1, &twinTex); twinTex = 0; }
+    twinAllocW = 0;
+    twinAllocH = 0;
     if (statsScratchFbo != 0) { glDeleteFramebuffers(1, &statsScratchFbo); statsScratchFbo = 0; }
     if (statsFbo != 0) { glDeleteFramebuffers(1, &statsFbo); statsFbo = 0; }
     if (statsScratchTex != 0) { glDeleteTextures(1, &statsScratchTex); statsScratchTex = 0; }
