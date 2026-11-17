@@ -1031,6 +1031,18 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // audit's finding against glTexImage2D-per-frame. The shading map is
     // per-CLIP (constant across frames), so its texture uploads when its
     // identity changes (below); the CFA is per-frame.
+    //
+    // [r.developReallocated] (white-window round 7): the entry mismatch is
+    // the once-per-resolution branch's own key — the frame this branch
+    // runs on is the frame the develop texture (and the chain siblings)
+    // were DELETED and RE-CREATED. Recorded at ENTRY, before any delete:
+    // a mid-branch failure still reports the realloc frame honestly (the
+    // session maps the failure to its own latch rule; the flag only names
+    // the allocation event). The probe prints it as realloc= on the same
+    // line as the three-way pixel pair — see DrawResult's field comment
+    // for why THIS is the real reportable state where the round-7 brief
+    // imagined a "chain skip" (there is none; the TAIL always writes).
+    r.developReallocated = (cfaW != w || cfaH != h);
     if (cfaW != w || cfaH != h) {
         // (Re)allocate the resolution-dependent storage. Any previous
         // allocation is deleted first (the preview session's tier ladder

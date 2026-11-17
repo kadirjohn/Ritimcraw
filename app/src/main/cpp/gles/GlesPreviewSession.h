@@ -307,19 +307,24 @@ private:
 // content), and the window draw+swap REPORTS SUCCESS — so no host-side
 // test can see it and the class (draw-white vs surface-white) is
 // undecidable without eyes on the window surface itself. The probe reads
-// ONE pixel (glReadPixels 1x1 at the rect center, from the back buffer
-// BEFORE eglSwapBuffers) and logs one line per attach per develop
+// ONE 1x1 PIXEL PER SIDE (glReadPixels 1x1: the develop texture itself
+// through the probe's FBO, the twin at the rect center pre-blit, and the
+// back buffer at the rect center BEFORE eglSwapBuffers) and logs one
+// line per attach per develop
 // resolution under the "ritim-trace" tag:
 //   window probe: attach win=WxH dots=(h,v) cfg[renderable=0x.. surface=0x..
 //     visual=N recordable=R]     (once per attach; the config's class —
 //     round 4's confirmation that the config match took effect)
-//   window probe: shot=N twin=(r,g,b) rgb=(r,g,b) win=WxH vp=WxH
-//     rect=(x,y,W,H) src=WxH orient=N entry[scissor=S box=(x,y,W,H)
-//     blend=B depth=D stencil=T mask=(r,g,b,a)]     (twice per
-//     attach/resolution since round 5: shot=1 the first frame, shot=2
+//   window probe: shot=N tex=(r,g,b) twin=(r,g,b) rgb=(r,g,b) realloc=R
+//     win=WxH vp=WxH rect=(x,y,W,H) src=WxH orient=N entry[scissor=S
+//     box=(x,y,W,H) blend=B depth=D stencil=T mask=(r,g,b,a)]     (twice
+//     per attach/resolution since round 5: shot=1 the first frame, shot=2
 //     the frame after the next swap; since round 6 ONE line carries BOTH
 //     the twin's pre-blit color — what the draw produced — and the
-//     window's post-blit color)
+//     window's post-blit color; since round 7 the line leads with tex=
+//     — the develop texture's OWN center texel read directly through
+//     the probe's FBO — and carries realloc=, the frame's once-per-
+//     resolution allocation verdict)
 // Round 6's verdict reads the PAIR directly (see the ROUND 6 block
 // below): twin color + window color -> fixed; twin color + window white
 // -> the blit's window write is broken too; twin white -> impossible
@@ -395,6 +400,54 @@ private:
 //     format, setZOrder, the buffer transform hint);
 //   twin white -> IMPOSSIBLE per the stats pack's health on the same
 //     frame — STOP, the whole model is wrong.
+//
+// ROUND 7 (2026-11-18, THE STOP CONDITION HIT — FIRST THE PROBE'S OWN
+// CORRECTNESS): the round-6 replay hit the line the brief called
+// impossible: shot=1 AND shot=2 both read twin=(255,255,255)
+// rgb=(255,255,255) — the twin drew white on the same frame the stats
+// pack (the same develop texture's stats window pass) was healthy. The
+// manager's ruling before ANY further fixing: verify the probe itself
+// first, then decide. The two candidate readings died IN THE CODE:
+//   (1) THE BINDING-ORDER READBACK BUG: dead by citation — the twin's
+//       glReadPixels pins GL_READ_FRAMEBUFFER=twinFbo explicitly
+//       BEFORE reading, and that read runs BEFORE the blit (the only
+//       call that ever moves the READ binding is the blit itself, which
+//       pins both sides explicitly, and the window read re-pins READ=0
+//       itself). ONE white reading reported twice was impossible; both
+//       whites were real readings of their own side.
+//   (2) THE REALLOC-FRAME CHAIN SKIP: dead by citation — draw() has NO
+//       chain skip anywhere. The per-grade/per-frame gates bypass
+//       individual NR/unsharp/warp passes; the TAIL pass
+//       (draw 11, "The TAIL pass ALWAYS writes developTex") is
+//       UNCONDITIONAL, and the allocation branch and the draws are
+//       sequential lines of the one draw() body — a frame that
+//       re-allocated the develop texture PAID the chain in the same
+//       call (ok=true proves it). dev=0.1ms is the CPU-side ENQUEUE
+//       span of eleven async glDrawArrays calls, not a skip signature
+//       — the healthy 4:3 clips' own trace lines read dev=0.1ms.
+// So the probe was extended INSTEAD of any blind fix — THE THREE-WAY
+// LINE: tex=(r,g,b) is the develop texture's OWN center texel, read
+// DIRECTLY through the probe's throwaway FBO (attach
+// pipeline.developTex() as the color attachment, glReadPixels
+// RGBA/GL_FLOAT, toByte quantize — no draw, no sampler, no filter, no
+// aspect-fit fold; a DIFFERENT mechanism from both destinations),
+// twin= stays (the draw's output), rgb= stays (the blit's window).
+// tex=(-1,-1,-1) names a failed read, never a quiet white; realloc=
+// names the once-per-resolution frames the develop texture was
+// deleted + re-created (the DrawResult flag — the honest reportable
+// state where reading 2 imagined a skip). The three-way verdict, every
+// combination decisive:
+//   tex WHITE + any twin -> the develop texture itself is WHITE on the
+//     probe frames (whatever the host-side reading said) — the chain's
+//     output on those frames is the wrong thing; the realloc=
+//     correlation decides the follow-up;
+//   tex COLOR + twin WHITE -> the develop texture is healthy and the
+//     WINDOW DRAW itself produces white into FBOs on this driver
+//     despite the healthy stats pass of the same texture — the twin
+//     draw vs the stats draw line-by-line diff is round 8;
+//   tex COLOR + twin COLOR + rgb WHITE -> the draw works, the blit's
+//     window write is the broken leg — round 8 goes to the Kotlin
+//     SurfaceView side (surface format, z-order, buffer transform).
 //
 // The gate: a file-scope atomic HERE (the consumer's TU), set once from
 // the JNI bridge's nativeSetPreviewWindowProbe — the jni_bridge.cpp
