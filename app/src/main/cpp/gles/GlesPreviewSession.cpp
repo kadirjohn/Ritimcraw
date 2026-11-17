@@ -879,18 +879,43 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             if (probeThisFrame) {
                 // The geometry line, once per attach: the pass's own
                 // values — the claimed uRect, the viewport, the surface's
-                // reported geometry and its dots-per-inch pair.
+                // reported geometry and its dots-per-inch pair. Since
+                // round 4 the line ALSO carries the CHOSEN CONFIG's class
+                // (white-window round 4, the config-match fix): the four
+                // eglGetConfigAttrib reads that name what eglChooseConfig
+                // actually handed this session — RENDERABLE_TYPE,
+                // SURFACE_TYPE, NATIVE_VISUAL_ID and the
+                // EGL_RECORDABLE_ANDROID verdict — so the device replay
+                // CONFIRMS the config class changed (recordable=1) without
+                // a second build. Four one-shot int reads per attach;
+                // release builds never reach this block.
                 if (!probeGeometryLogged) {
                     EGLint dotsH = 0, dotsV = 0;
                     eglQuerySurface(display, windowSurface,
                                     EGL_HORIZONTAL_RESOLUTION, &dotsH);
                     eglQuerySurface(display, windowSurface,
                                     EGL_VERTICAL_RESOLUTION, &dotsV);
+                    EGLint renderable = 0, surfaceBits = 0, visualId = 0,
+                          recordable = 0;
+                    eglGetConfigAttrib(display, config,
+                                       EGL_RENDERABLE_TYPE, &renderable);
+                    eglGetConfigAttrib(display, config,
+                                       EGL_SURFACE_TYPE, &surfaceBits);
+                    eglGetConfigAttrib(display, config,
+                                       EGL_NATIVE_VISUAL_ID, &visualId);
+                    eglGetConfigAttrib(display, config,
+                                       EGL_RECORDABLE_ANDROID, &recordable);
                     __android_log_print(
                         ANDROID_LOG_INFO, "ritim-trace",
-                        "window probe: attach win=%dx%d dots=(%d,%d)",
+                        "window probe: attach win=%dx%d dots=(%d,%d) "
+                        "cfg[renderable=0x%x surface=0x%x visual=%d "
+                        "recordable=%d]",
                         static_cast<int>(winW), static_cast<int>(winH),
-                        static_cast<int>(dotsH), static_cast<int>(dotsV));
+                        static_cast<int>(dotsH), static_cast<int>(dotsV),
+                        static_cast<unsigned>(renderable),
+                        static_cast<unsigned>(surfaceBits),
+                        static_cast<int>(visualId),
+                        static_cast<int>(recordable));
                     probeGeometryLogged = true;
                 }
                 // The pixel line, once per develop resolution: the draw's
