@@ -32,7 +32,10 @@
 // owns its EGL end-to-end with a WINDOW-capable config
 // (EGL_WINDOW_BIT | EGL_PBUFFER_BIT, the config KEPT for
 // eglCreateWindowSurface — the grafika topology GlesPipeline.h
-// documents, with those two preview differences). setSurface()
+// documents, with those two preview differences — plus
+// EGL_RECORDABLE_ANDROID, the config-class match to the develop
+// session's device-proven encoder window path; white-window round 4,
+// see the openEglOnGlThread block comment in the .cpp). setSurface()
 // marshals the SurfaceHolder's window onto the GL thread as a SECOND
 // job kind on the same bounded one-job handoff: the session takes
 // OWNERSHIP of the ANativeWindow reference at CALL ENTRY (releasing it
@@ -297,6 +300,9 @@ private:
 // ONE pixel (glReadPixels 1x1 at the rect center, from the back buffer
 // BEFORE eglSwapBuffers) and logs one line per attach per develop
 // resolution under the "ritim-trace" tag:
+//   window probe: attach win=WxH dots=(h,v) cfg[renderable=0x.. surface=0x..
+//     visual=N recordable=R]     (once per attach; the config's class —
+//     round 4's confirmation that the config match took effect)
 //   window probe: rgb=(r,g,b) win=WxH vp=WxH rect=(x,y,W,H) src=WxH orient=N
 //     entry[scissor=S box=(x,y,W,H) blend=B depth=D stencil=T mask=(r,g,b,a)]
 // White=(255,255,255) proves the DRAW produced white (the
@@ -314,6 +320,16 @@ private:
 // not fix the white (a nonzero enable/mask is the culprit line), and a
 // clean all-defaults entry with the white persisting rules the whole
 // state class OUT for round 4.
+//
+// ROUND 4 (2026-11-17): the owner's replay delivered exactly that
+// all-defaults verdict with the white persisting, so the state class is
+// dead and the remaining divergence is the CONFIG CLASS — the encoder
+// blit's config carries EGL_RECORDABLE_ANDROID, this session's did not.
+// The fix rides the session's eglChooseConfig attribs (see the
+// openEglOnGlThread block comment); the per-attach line now carries the
+// chosen config's cfg[...] fields so the replay CONFIRMS the class
+// changed (recordable=1) on the same line that already reports the
+// surface geometry.
 //
 // The gate: a file-scope atomic HERE (the consumer's TU), set once from
 // the JNI bridge's nativeSetPreviewWindowProbe — the jni_bridge.cpp

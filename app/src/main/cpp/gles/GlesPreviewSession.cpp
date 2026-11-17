@@ -72,6 +72,10 @@
 #include <utility>
 
 #include <EGL/egl.h>
+// EGL_RECORDABLE_ANDROID (the config-class flag the develop session's
+// working encoder window rides) lives only in the extension header —
+// egl.h does not define it.
+#include <EGL/eglext.h>
 #include <GLES3/gl31.h>
 #include <android/log.h>
 
@@ -309,6 +313,30 @@ struct PreviewSession::Impl {
 // for EGL_WINDOW_BIT | EGL_PBUFFER_BIT, and the CHOSEN CONFIG IS KEPT
 // (eglCreateWindowSurface needs it later; EglSession discards it because
 // a pbuffer-only session never creates a window surface).
+//
+// THE CONFIG MATCH (white-window round 4, 2026-11-17): the app has TWO
+// EGL-window-surface draws and only one of them works on the failing
+// Adreno — the develop session's encoder blit (the owner's exports are
+// correct) and THIS session's window pass (white). Four rounds of device
+// evidence narrowed the divergence to the CONFIG CLASS: round 2's probe
+// read rgb=(255,255,255) at the uRect center PRE-swap (the DRAW produces
+// white into the window surface, not composition), round 3's clean-entry
+// fix + self-diagnosing probe replayed with the white UNCHANGED and the
+// entry line reading
+//   entry[scissor=0 box=(0,0,1,1) blend=0 depth=0 stencil=0
+//   mask=(1,1,1,1)]  ->  all GL spec defaults
+// — per the round-3 brief's own decision rule the entire GL-state class
+// is ruled out. The one line-level difference left between the two
+// window-surface paths is the config: the encoder blit's config carries
+// EGL_RECORDABLE_ANDROID=1 (GlesPipeline.cpp EglSession::open,
+// recordable=true — the grafika/MediaCodec convention), this one did
+// not. The attrib is added HERE so the preview's window surface shares
+// the encoder blit's proven config class; it is a config-selection
+// attribute only (harmless for SurfaceView windows on modern Android —
+// the same Xiaomi EGL that device-proves the encoder path accepted this
+// exact attrib list in the develop session's config). The 1x1 pbuffer
+// below is created from the SAME config on the working path — a
+// recordable config still allocates it.
 
 bool PreviewSession::Impl::openEglOnGlThread(std::string* detail) {
     const char* step = "eglGetDisplay";
@@ -325,6 +353,9 @@ bool PreviewSession::Impl::openEglOnGlThread(std::string* detail) {
             EGL_ALPHA_SIZE, 8,
             EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
             EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_PBUFFER_BIT,
+            // THE CONFIG MATCH: the encoder blit's proven config class —
+            // see the block comment above for the four-round evidence.
+            EGL_RECORDABLE_ANDROID, EGL_TRUE,
             EGL_NONE,
         };
         EGLint n = 0;
@@ -848,18 +879,43 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             if (probeThisFrame) {
                 // The geometry line, once per attach: the pass's own
                 // values — the claimed uRect, the viewport, the surface's
-                // reported geometry and its dots-per-inch pair.
+                // reported geometry and its dots-per-inch pair. Since
+                // round 4 the line ALSO carries the CHOSEN CONFIG's class
+                // (white-window round 4, the config-match fix): the four
+                // eglGetConfigAttrib reads that name what eglChooseConfig
+                // actually handed this session — RENDERABLE_TYPE,
+                // SURFACE_TYPE, NATIVE_VISUAL_ID and the
+                // EGL_RECORDABLE_ANDROID verdict — so the device replay
+                // CONFIRMS the config class changed (recordable=1) without
+                // a second build. Four one-shot int reads per attach;
+                // release builds never reach this block.
                 if (!probeGeometryLogged) {
                     EGLint dotsH = 0, dotsV = 0;
                     eglQuerySurface(display, windowSurface,
                                     EGL_HORIZONTAL_RESOLUTION, &dotsH);
                     eglQuerySurface(display, windowSurface,
                                     EGL_VERTICAL_RESOLUTION, &dotsV);
+                    EGLint renderable = 0, surfaceBits = 0, visualId = 0,
+                          recordable = 0;
+                    eglGetConfigAttrib(display, config,
+                                       EGL_RENDERABLE_TYPE, &renderable);
+                    eglGetConfigAttrib(display, config,
+                                       EGL_SURFACE_TYPE, &surfaceBits);
+                    eglGetConfigAttrib(display, config,
+                                       EGL_NATIVE_VISUAL_ID, &visualId);
+                    eglGetConfigAttrib(display, config,
+                                       EGL_RECORDABLE_ANDROID, &recordable);
                     __android_log_print(
                         ANDROID_LOG_INFO, "ritim-trace",
-                        "window probe: attach win=%dx%d dots=(%d,%d)",
+                        "window probe: attach win=%dx%d dots=(%d,%d) "
+                        "cfg[renderable=0x%x surface=0x%x visual=%d "
+                        "recordable=%d]",
                         static_cast<int>(winW), static_cast<int>(winH),
-                        static_cast<int>(dotsH), static_cast<int>(dotsV));
+                        static_cast<int>(dotsH), static_cast<int>(dotsV),
+                        static_cast<unsigned>(renderable),
+                        static_cast<unsigned>(surfaceBits),
+                        static_cast<int>(visualId),
+                        static_cast<int>(recordable));
                     probeGeometryLogged = true;
                 }
                 // The pixel line, once per develop resolution: the draw's
