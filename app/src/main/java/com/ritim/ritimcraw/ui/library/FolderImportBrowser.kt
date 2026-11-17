@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -230,9 +229,29 @@ fun FolderImportBrowser(
             // SAME ic_folder glyph the toolbar's folder button wears,
             // so the affordance reads as "the folder, again" in both
             // places.
+            //
+            // Title y-alignment (owner request 2026-11-17: "import from
+            // folder'da title biraz yukarıda görünüyor" — the title must
+            // sit at the SAME y as the Library title): the old row had
+            // NO vertical rhythm, so CenterVertically in the 48dp back
+            // button's row centered the 32dp title line at (48-32)/2 =
+            // 8dp — 4dp ABOVE the Library title's 12dp. The row now
+            // applies ScreenHeader's own vertical rhythm (top 12 /
+            // bottom 8) and Top-aligns its children — the exact shape
+            // ScreenHeader's KDoc prescribes for a row with a 48dp
+            // child: the back IconButton's 48dp target grows the row,
+            // and Top pins the title's line box at the row's top in
+            // both cases, so it lands at the same y as the Library
+            // title (which sits 12dp below the same Scaffold inset
+            // chain). The title carries the row's weight + single-line
+            // ellipsis like ScreenHeader's title; the back button keeps
+            // its 48dp minimum touch target (no negative padding —
+            // Compose asserts).
             Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.Top,
             ) {
                 IconButton(onClick = onClose) {
                     Icon(
@@ -243,8 +262,10 @@ fun FolderImportBrowser(
                 Text(
                     text = stringResource(R.string.library_folder_browser_title),
                     style = MaterialTheme.typography.headlineSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.weight(1f))
                 IconButton(onClick = onChangeFolder) {
                     Icon(
                         painter = painterResource(R.drawable.ic_folder),

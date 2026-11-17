@@ -33,7 +33,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
@@ -50,6 +49,7 @@ import com.ritim.ritimcraw.ui.components.Eye
 import com.ritim.ritimcraw.ui.components.Folder
 import com.ritim.ritimcraw.ui.components.Gauge
 import com.ritim.ritimcraw.ui.components.Report
+import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.components.SettingsGroup
 import com.ritim.ritimcraw.ui.components.SettingsGroupItem
 import com.ritim.ritimcraw.ui.components.SettingsSectionLabel
@@ -67,8 +67,9 @@ import com.ritim.ritimcraw.ui.components.ThemeSlider
  * NavigationBar stays below it), composed from the redesign's shared
  * components:
  *
- * - the spec's own 32sp SemiBold title (the redesign replaces the title
- *   on THIS screen only; the other browse screens keep ScreenHeader),
+ * - the shared [ScreenHeader] title, identical to Library/Projects/
+ *   Exports (owner request 2026-11-17 overrules the spec's own 32sp
+ *   SemiBold title — all screen titles share one size and y position),
  * - "Playback" group: Preview quality + Image processing as expandable
  *   rows — the long descriptions moved behind the info buttons, so no
  *   multi-line description renders by default,
@@ -179,25 +180,16 @@ fun SettingsScreen(
             .background(MaterialTheme.colorScheme.surface)
             .verticalScroll(scrollState)
     ) {
-        // The spec's title (spec section_screen): 32sp SemiBold,
-        // letterSpacing -0.01em, onSurface. The app shell's Scaffold
-        // already applies the status-bar inset through its innerPadding
-        // (default contentWindowInsets), so the 16dp top padding here
-        // sits below that inset — nothing hardcodes a status bar height.
-        // 20dp horizontal padding: the spec's title/section gutter.
-        Text(
-            text = stringResource(R.string.settings_title),
-            style = TextStyle(
-                fontSize = 32.sp,
-                lineHeight = 40.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = (-0.01).em,
-            ),
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 8.dp),
-        )
+        // The shared header (owner request 2026-11-17: "settings'i de
+        // diğerleriyle uyumlu hale getir. hepsini library projects
+        // exports gibi yap" — every screen title matches those three).
+        // The spec's own 32sp SemiBold title is overruled: ScreenHeader
+        // gives the same headlineSmall size, the same 16dp start, the
+        // same 12/8 vertical rhythm — the same y as the other browse
+        // titles. This root Column pads nothing (ScreenHeader's
+        // call-site contract), so the title's left edge is the header's
+        // own 16dp and the groups below keep their own gutters.
+        ScreenHeader(title = stringResource(R.string.settings_title))
         // ---- Playback ----
         SettingsSectionLabel(
             text = stringResource(R.string.settings_section_playback),

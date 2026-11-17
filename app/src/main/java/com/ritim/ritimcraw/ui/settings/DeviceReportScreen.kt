@@ -39,6 +39,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -57,14 +58,20 @@ import kotlinx.coroutines.launch
  * CodecProbe.probe() per Settings-tab composition, shared with the
  * Settings row — only the container changed.
  *
- * Layout (v2 polish spec, verbatim geometry):
- * - top bar (unchanged by C5): back IconButton (arrow_back 24dp,
- *   contentDescription "Back"), title "Device report" 22sp SemiBold
- *   onSurface, trailing Copy IconButton (copy icon 22dp,
- *   contentDescription "Copy report"); padding top 8dp, horizontal 8dp.
- *   The app shell's Scaffold already applies the status-bar inset through
- *   its innerPadding (default contentWindowInsets), so the 8dp here sits
- *   below that inset. System back and the back arrow are unchanged.
+ * Layout (v2 polish spec, verbatim geometry — EXCEPT the title, see the
+ * top-bar note):
+ * - top bar: back IconButton (arrow_back 24dp,
+ *   contentDescription "Back"), title "Device report", trailing Copy
+ *   IconButton (copy icon 22dp, contentDescription "Copy report");
+ *   padding horizontal 8dp. TITLE (owner request 2026-11-17, overruling
+ *   the v2 spec's 22sp SemiBold: "hepsini library projects exports gibi
+ *   yap"): ScreenHeader's headlineSmall size and vertical rhythm (top
+ *   12dp / bottom 8dp, Top-aligned — the ScreenHeader 48dp-child rule),
+ *   so the title sits at the same size and y as every other screen
+ *   title. The app shell's Scaffold already applies the status-bar
+ *   inset through its innerPadding (default contentWindowInsets), so
+ *   the 12dp here sits below that inset. System back and the back
+ *   arrow are unchanged.
  * - summary card (C5, fixed above the tabs, outside the pager): no
  *   border; container surfaceContainer, shape 20dp; margin 16dp
  *   horizontal / 8dp top / 12dp bottom; padding 14dp vertical x 16dp
@@ -170,12 +177,26 @@ fun DeviceReportScreen(
         color = MaterialTheme.colorScheme.surface,
     ) {
         Column(Modifier.fillMaxSize()) {
-            // ---- Top bar (fixed; C5 keeps it unchanged) ----
+            // ---- Top bar (title consistency, owner request 2026-11-17:
+            // "hepsini library projects exports gibi yap" — every screen
+            // title the same size at the same y) ----
+            // The v2 spec's 22sp SemiBold title is overruled: the title
+            // wears ScreenHeader's own headlineSmall and the row applies
+            // ScreenHeader's vertical rhythm (top 12 / bottom 8) with
+            // Top alignment — the exact shape ScreenHeader's KDoc
+            // prescribes for a row with 48dp children: the back and copy
+            // IconButtons' 48dp targets grow the row, and CenterVertically
+            // would drop the 32dp title line ~8dp lower than the browse
+            // screens; Top pins the title's line box at the row top in
+            // both cases, so it lands at the same y as the Library title.
+            // The 8dp horizontal padding stays (the buttons' inset, not
+            // the title's); the title carries the row's weight +
+            // single-line ellipsis like ScreenHeader's title.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 8.dp, top = 8.dp, end = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(start = 8.dp, top = 12.dp, end = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.Top,
             ) {
                 IconButton(onClick = onBack) {
                     Icon(
@@ -186,14 +207,10 @@ fun DeviceReportScreen(
                 }
                 Text(
                     text = stringResource(R.string.settings_device_report),
-                    style = TextStyle(
-                        fontSize = 22.sp,
-                        lineHeight = 28.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineSmall,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
                 IconButton(onClick = { onCopyReport(copyText) }) {
                     Icon(
