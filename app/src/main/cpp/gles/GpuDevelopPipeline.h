@@ -218,6 +218,23 @@ public:
     // always collected" rule (the cost is four clock reads per frame,
     // negligible next to any draw). The develop session ignores the two
     // span fields; the preview session copies them onto its result.
+    //
+    // [developReallocated] (white-window round 7, APPEND-ONLY): true when
+    // THIS draw entered the once-per-resolution branch (a cfaW/cfaH
+    // mismatch at entry) — the frame that DELETED + RE-CREATED the develop
+    // texture and its chain siblings. THE HONEST NOTE ON THE ROUND-7
+    // BRIEF'S "skip boolean": THERE IS NO CHAIN SKIP ANYWHERE IN draw().
+    // The per-grade/per-frame gates bypass individual NR/unsharp/warp
+    // passes, but the chain ALWAYS ends in the UNCONDITIONAL TAIL pass
+    // (draw 11), which always writes developTex — ok=true PROVES the
+    // chain ran THIS frame, after any allocation, in the same call body
+    // (the allocation branch and the eleven draws are sequential lines
+    // of one function; nothing between them returns). The realloc flag is
+    // therefore the only real reportable state near the brief's reading 2
+    // (the manager's "chain skips the realloc frame" key): it names the
+    // frames the develop texture was re-created on, so the probe line can
+    // correlate them with the white directly. The develop session ignores
+    // it; the preview session's window probe prints it (realloc=).
     struct DrawResult {
         bool ok = false;
         std::string detail;
@@ -225,6 +242,7 @@ public:
         uint32_t height = 0;
         double uploadUs = 0.0;
         double developUs = 0.0;
+        bool developReallocated = false;
     };
 
     GpuDevelopPipeline();

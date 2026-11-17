@@ -265,6 +265,41 @@ struct PreviewSession::Impl {
     GLuint twinTex = 0, twinFbo = 0;
     uint32_t twinAllocW = 0, twinAllocH = 0;
 
+    // THE PROBE'S DEVELOP-READ FBO (white-window round 7): a throwaway
+    // framebuffer that attaches the PIPELINE'S develop texture itself as
+    // its color attachment, so the probe's third read can glReadPixels
+    // the develop texture's own center texel DIRECTLY — no draw, no
+    // sampler, no filter, no orientation fold, no aspect-fit rect; a
+    // different mechanism entirely from the window draw the twin and the
+    // window both consume. THE ROUND-6 STOP CONDITION demanded it: the
+    // replay read twin=(255,255,255) rgb=(255,255,255) — "impossible"
+    // per the stats pack's same-frame health — and the round-7 brief's
+    // two candidate readings (a binding-order readback bug in the probe;
+    // a chain skip leaving the develop texture unwritten on realloc
+    // frames) are both DEAD host-side (the twin read pins
+    // GL_READ_FRAMEBUFFER=twinFbo BEFORE the blit ever touches the READ
+    // binding, and draw() has NO chain skip — the TAIL pass always
+    // writes developTex, ok=true proves it ran; see
+    // GpuDevelopPipeline.h's DrawResult comment). The develop texture's
+    // own pixel is therefore the ONE reading that can still discriminate:
+    //   tex COLOR + twin WHITE -> the develop texture is healthy and the
+    //     WINDOW draw itself produces white into FBOs on this driver
+    //     despite the healthy stats pass — diff the twin draw against the
+    //     stats draw (the round-8 job);
+    //   tex WHITE -> the develop texture itself is white on the probe
+    //     frames — the chain DID leave something undefined (or produced
+    //     white), whatever the host-side reading said, and the realloc=
+    //     flag on the line correlates the frames;
+    //   tex COLOR + twin COLOR + rgb WHITE -> the blit/window-write path
+    //     — round 8 goes to the Kotlin SurfaceView side.
+    // The FBO is created lazily INSIDE the probe block (debug-only; a
+    // release build never allocates it) and re-attached to the CURRENT
+    // develop texture every probed frame — the pipeline's realloc hands
+    // out a NEW texture name, and a stale attachment would read the
+    // DELETED texture (a use-after-free the readback could not trust).
+    // Teardown deletes it with the session's own objects.
+    GLuint probeReadFbo = 0;
+
     // The window probe's one-shot latches (GL-thread state; the
     // white-window round-2 debug instrument — see setWindowProbeEnabled's
     // header comment). [probeGeometryLogged] fires the per-attach geometry
@@ -846,6 +881,14 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     out.developW = w;
     out.developH = h;
     out.developUs = r.developUs;
+    // The pipeline's realloc flag — read here, near its ONLY consumer (the
+    // debug probe pixel line, which prints realloc= on the line with the
+    // three-way pixel pair). The "chain ran or skipped" question the
+    // round-7 brief asked to thread: ok ITSELF is the ran flag (the TAIL
+    // pass is unconditional — see GpuDevelopPipeline.h's DrawResult
+    // comment); develReallocated is the real once-per-dims state worth
+    // reporting, the frame the develop texture was deleted + re-created.
+    const bool developReallocatedThisFrame = r.developReallocated;
     // The orientation fold's input, normalized exactly like
     // developToArgb's.
     const int orient = ((req.info.orientationDeg % 360) + 360) % 360;
@@ -1058,10 +1101,72 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                 if (probeThisFrame) {
                     const GLint probeX = static_cast<GLint>(rectX + rectW * 0.5f);
                     const GLint probeY = static_cast<GLint>(rectY + rectH * 0.5f);
+                    // (a) THE TWIN READ, BINDING-PINNED (round 7's fix for
+                    // reading 1, though the round-6 shape already had it):
+                    // GL_READ_FRAMEBUFFER is EXPLICITLY pinned to the twin
+                    // BEFORE this glReadPixels — and this read runs BEFORE
+                    // the blit below, so no blit binding can leak into it
+                    // (reading 1's "the twin read may have read the window"
+                    // is dead: the pin is here, the blit is BELOW, and the
+                    // window read re-pins READ=0 explicitly — every white
+                    // observation is real, one per side).
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, twinFbo);
                     glReadPixels(probeX, probeY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
                                  twinPx);
                     while (glGetError() != GL_NO_ERROR) {}  // swallow the probe's own
+                }
+                // (c) THE DEVELOP TEXTURE'S OWN PIXEL (round 7's third
+                // reading): attach the pipeline's develop texture to the
+                // probe's throwaway FBO and read its CENTER texel
+                // directly — GL_RGBA/GL_FLOAT from the RGBA32F texture,
+                // the SAME toByte quantize the stats pack uses, no draw,
+                // no sampler, no filter, no fold. Independent of BOTH the
+                // window draw (which the twin consumes) and the stats
+                // window pass (whose health the stats pack already
+                // proved): this reading names the develop texture's TRUE
+                // content on the probe frame. Runs AFTER the twin's read
+                // under this Debug-only latch; the error drain last keeps
+                // the draw's own error check above the only draw error.
+                // A failed read reports tex=(-1,-1,-1) on the line (the
+                // invalid-fbo sentinel), never a quiet white.
+                GLubyte devPx[3] = {0, 0, 0};
+                bool devReadOk = false;
+                if (probeThisFrame) {
+                    if (probeReadFbo == 0) {
+                        glGenFramebuffers(1, &probeReadFbo);
+                    }
+                    glBindFramebuffer(GL_FRAMEBUFFER, probeReadFbo);
+                    glFramebufferTexture2D(GL_FRAMEBUFFER,
+                                           GL_COLOR_ATTACHMENT0,
+                                           GL_TEXTURE_2D,
+                                           pipeline.developTex(), 0);
+                    devReadOk =
+                        glCheckFramebufferStatus(GL_FRAMEBUFFER) ==
+                            GL_FRAMEBUFFER_COMPLETE;
+                    if (devReadOk) {
+                        // The develop texture's dims are the developed
+                        // frame's own w x h; center in ITS space. The
+                        // read drains its own GL error (never into
+                        // [out.detail] — the probe's discipline: the
+                        // draw/blit error checks stay the only errors
+                        // the frame reports). A FULL drain right before
+                        // the read pins the queue empty, so the one
+                        // glGetError after it reads the read's own
+                        // error and nothing stale from the attach.
+                        const GLint devX = static_cast<GLint>(w) / 2;
+                        const GLint devY = static_cast<GLint>(h) / 2;
+                        GLfloat devPxF[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                        glBindFramebuffer(GL_READ_FRAMEBUFFER, probeReadFbo);
+                        while (glGetError() != GL_NO_ERROR) {}  // pin the queue empty
+                        glReadPixels(devX, devY, 1, 1, GL_RGBA, GL_FLOAT,
+                                     devPxF);
+                        devPx[0] = toByte(devPxF[0]);
+                        devPx[1] = toByte(devPxF[1]);
+                        devPx[2] = toByte(devPxF[2]);
+                        devReadOk = glGetError() == GL_NO_ERROR;
+                    } else {
+                        while (glGetError() != GL_NO_ERROR) {}  // swallow the attach's
+                    }
                 }
                 // THE FIRST-FRAME FENCE (white-window round 5, carried
                 // into the round-6 present path): one glFinish() after
@@ -1180,8 +1285,15 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                     }
                     // The pixel line, once per develop resolution PLUS
                     // the round-5 second shot (one frame later, shot=2 on
-                    // the line): BOTH sides on one line since round 6.
-                    // The probe swallows its own GL errors.
+                    // the line): THREE readings on one line since round 7
+                    // — tex= (the develop texture's own center texel,
+                    // read directly through the probe's FBO, the true
+                    // content independent of both destinations), twin=
+                    // (the pre-blit twin readback, what the window draw
+                    // produced) and rgb= (the post-blit, pre-swap window
+                    // back buffer). The probe swallows its own GL errors;
+                    // a failed develop read prints tex=(-1,-1,-1), never a
+                    // quiet white.
                     const GLint probeX = static_cast<GLint>(rectX + rectW * 0.5f);
                     const GLint probeY = static_cast<GLint>(rectY + rectH * 0.5f);
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);  // the window's back buffer
@@ -1198,16 +1310,21 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                     const bool probeResChanged = probeW != w || probeH != h;
                     __android_log_print(
                         ANDROID_LOG_INFO, "ritim-trace",
-                        "window probe: shot=%d twin=(%d,%d,%d) rgb=(%d,%d,%d) "
+                        "window probe: shot=%d tex=(%d,%d,%d) twin=(%d,%d,%d) "
+                        "rgb=(%d,%d,%d) realloc=%d "
                         "win=%dx%d vp=%dx%d "
                         "rect=(%.1f,%.1f,%.1f,%.1f) src=%ux%u orient=%d "
                         "entry[scissor=%d box=(%d,%d,%d,%d) blend=%d depth=%d "
                         "stencil=%d mask=(%d,%d,%d,%d)]",
                         probeResChanged ? 1 : 2,
+                        devReadOk ? static_cast<int>(devPx[0]) : -1,
+                        devReadOk ? static_cast<int>(devPx[1]) : -1,
+                        devReadOk ? static_cast<int>(devPx[2]) : -1,
                         static_cast<int>(twinPx[0]), static_cast<int>(twinPx[1]),
                         static_cast<int>(twinPx[2]),
                         static_cast<int>(probePx[0]), static_cast<int>(probePx[1]),
                         static_cast<int>(probePx[2]),
+                        developReallocatedThisFrame ? 1 : 0,
                         static_cast<int>(winW), static_cast<int>(winH),
                         static_cast<int>(winW), static_cast<int>(winH),
                         static_cast<double>(rectX), static_cast<double>(rectY),
@@ -1612,6 +1729,15 @@ void PreviewSession::Impl::teardownOnGlThread() {
     if (twinTex != 0) { glDeleteTextures(1, &twinTex); twinTex = 0; }
     twinAllocW = 0;
     twinAllocH = 0;
+    // The probe's develop-read FBO (round 7; created lazily inside the
+    // DEBUG-only probe block, so a release build never allocates it and
+    // this delete is a guarded no-op there — the twin's own pattern). It
+    // deleted AFTER pipeline.teardown() above, which is legal: deleting
+    // the pipeline's develop texture detached it from this FBO
+    // automatically, and deleting an FBO whose attachment is already
+    // gone is a spec-clean no-op. Kept in the session block with the twin
+    // — the two throwaway FBOs are peers.
+    if (probeReadFbo != 0) { glDeleteFramebuffers(1, &probeReadFbo); probeReadFbo = 0; }
     if (statsScratchFbo != 0) { glDeleteFramebuffers(1, &statsScratchFbo); statsScratchFbo = 0; }
     if (statsFbo != 0) { glDeleteFramebuffers(1, &statsFbo); statsFbo = 0; }
     if (statsScratchTex != 0) { glDeleteTextures(1, &statsScratchTex); statsScratchTex = 0; }
