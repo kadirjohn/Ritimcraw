@@ -702,4 +702,62 @@ class GradeStoreTest {
     }
 
     private fun projectFile(): File = File(tmp.root, "project.json")
+
+    // ---- schema migration chain + atomic save (plan 3.2) ----
+
+    @Test
+    fun newer_schema_file_is_rejected_and_never_overwritten() {
+        val f = File(tmp.root, "project.json")
+        val newer = "{\"version\":2,\"grades\":{\"a\":{\"exposureEv\":1.5}},\"future\":{\"x\":1}}"
+        f.writeText(newer)
+        val store = GradeStore(f)
+
+        // reads as empty (an older build must not reinterpret v2) ...
+        assertEquals(GradeK(), store.get("a"))
+        assertEquals(2, store.rejectedNewerVersion)
+
+        // ... and writes are refused, so the newer file survives byte for byte.
+        store.put("b", GradeK(exposureEv = 1f))
+        store.remove("a")
+        assertEquals(newer, f.readText())
+    }
+
+    @Test
+    fun current_schema_file_is_not_flagged_and_still_writes() {
+        val f = File(tmp.root, "project.json")
+        val store = GradeStore(f)
+        store.put("a", GradeK(exposureEv = 0.5f))
+        assertNull(store.rejectedNewerVersion)
+        assertEquals(0.5f, GradeStore(f).get("a").exposureEv, 1e-6f)
+        assertTrue(f.readText().startsWith("{\"version\":1"))
+        assertTrue(!File(tmp.root, "project.json.tmp").exists())
+    }
+
+    @Test
+    fun unversioned_legacy_file_loads_as_schema_one() {
+        val f = File(tmp.root, "project.json")
+        f.writeText("{\"grades\":{\"a\":{\"exposureEv\":2}}}")
+        assertEquals(2f, GradeStore(f).get("a").exposureEv, 1e-6f)
+    }
+
+    @Test
+    fun migration_chain_feeds_the_grade_parser() {
+        // A test-only v1->v2 step renames a field; the parser sees the
+        // migrated root, a too-new file reports its version.
+        val step: MigrationStep = { root ->
+            @Suppress("UNCHECKED_CAST")
+            val grades = (root["grades"] as Map<String, Map<String, Any?>>).mapValues { (_, g) ->
+                g + ("exposureEv" to (g["ev"] ?: 0.0))
+            }
+            root + ("grades" to grades)
+        }
+        val text = "{\"version\":1,\"grades\":{\"a\":{\"ev\":1.25}}}"
+        val g = GradeStore.parseGradesMigrated(text, listOf(step))
+        assertEquals(1.25f, g.getValue("a").exposureEv, 1e-6f)
+
+        var newer = -1
+        val none = GradeStore.parseGradesMigrated("{\"version\":9,\"grades\":{}}", listOf(step)) { newer = it }
+        assertTrue(none.isEmpty())
+        assertEquals(9, newer)
+    }
 }

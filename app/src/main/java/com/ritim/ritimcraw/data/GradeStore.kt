@@ -238,6 +238,7 @@ class GradeStore(private val file: File) {
     fun put(sourceId: String, grade: GradeK) {
         synchronized(lock) {
             val all = load().toMutableMap()
+            if (rejectedNewerVersion != null) return // never overwrite a newer file
             all[sourceId] = grade
             write(all)
         }
@@ -246,16 +247,31 @@ class GradeStore(private val file: File) {
     fun remove(sourceId: String) {
         synchronized(lock) {
             val all = load()
+            if (rejectedNewerVersion != null) return // never overwrite a newer file
             if (sourceId in all) {
                 write(all - sourceId)
             }
         }
     }
 
+    /**
+     * Set when the last load found a project.json written by a NEWER
+     * schema than this build supports (plan section 3.2). The store then
+     * behaves read-only: get() returns defaults, put()/remove() do not
+     * write, so an older build never reinterprets or overwrites a newer
+     * file. Null = the file is ours (or absent).
+     */
+    @Volatile
+    var rejectedNewerVersion: Int? = null
+        private set
+
     private fun load(): Map<String, GradeK> {
+        rejectedNewerVersion = null
         if (!file.exists()) return emptyMap()
         return try {
-            parseGrades(file.readText(StandardCharsets.UTF_8))
+            parseGradesMigrated(file.readText(StandardCharsets.UTF_8)) { newer ->
+                rejectedNewerVersion = newer
+            }
         } catch (e: IllegalArgumentException) {
             // Corrupt store: keep the app usable; grades reset to defaults.
             // Recovery note is surfaced by callers that show error states.
@@ -263,17 +279,10 @@ class GradeStore(private val file: File) {
         }
     }
 
+    /** Crash-safe: temp -> fsync -> atomic rename (see [AtomicFiles]). */
     private fun write(grades: Map<String, GradeK>) {
-        file.parentFile?.mkdirs()
         val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
-        val merged = mergeInto(text, grades)
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(merged, StandardCharsets.UTF_8)
-        if (!tmp.renameTo(file)) {
-            // Rename can fail across filesystems; fall back to copy+delete.
-            file.writeText(merged, StandardCharsets.UTF_8)
-            tmp.delete()
-        }
+        AtomicFiles.writeText(file, mergeInto(text, grades))
     }
 
     companion object {
@@ -289,7 +298,7 @@ class GradeStore(private val file: File) {
                 existingText = existingText,
                 section = "grades",
                 renderedSection = renderGrades(grades),
-                version = GradeK.SCHEMA_VERSION,
+                version = ProjectMigrations.CURRENT_VERSION,
             )
         }
 
@@ -499,12 +508,39 @@ class GradeStore(private val file: File) {
         }
 
         // ---- reader ----
-        internal fun parseGrades(text: String): Map<String, GradeK> {
+        /**
+         * [parseGrades] behind the migration chain: a file newer than the
+         * supported schema reports its version through [onTooNew] and
+         * yields no grades; an older one is migrated first.
+         */
+        internal fun parseGradesMigrated(
+            text: String,
+            migrations: List<MigrationStep> = ProjectMigrations.MIGRATIONS,
+            onTooNew: (Int) -> Unit = {},
+        ): Map<String, GradeK> {
+            val root = parseRoot(text)
+            @Suppress("UNCHECKED_CAST")
+            return when (val r = ProjectMigrations.migrate(root as Map<String, Any?>, migrations)) {
+                is ProjectMigrations.Result.TooNew -> {
+                    onTooNew(r.fileVersion)
+                    emptyMap()
+                }
+                is ProjectMigrations.Result.Ok -> gradesOf(r.root)
+            }
+        }
+
+        private fun parseRoot(text: String): Map<*, *> {
             val p = JsonParser(text)
             val root = p.parseValue()
             p.skipWs()
             if (!p.atEnd()) throw IllegalArgumentException("trailing content")
             if (root !is Map<*, *>) throw IllegalArgumentException("root is not an object")
+            return root
+        }
+
+        internal fun parseGrades(text: String): Map<String, GradeK> = gradesOf(parseRoot(text))
+
+        private fun gradesOf(root: Map<*, *>): Map<String, GradeK> {
             val grades = root["grades"]
             if (grades !is Map<*, *>) return emptyMap()
             val out = LinkedHashMap<String, GradeK>()
