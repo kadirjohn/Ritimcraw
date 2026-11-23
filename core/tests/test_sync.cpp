@@ -498,3 +498,19 @@ TEST_CASE("real fixture ptsUs relationship: pts == captureNs/1000 (floor)"
         FAIL("decoder threw: " << e.what());
     }
 }
+
+TEST_CASE("anchored estimate: the receive-lag prior recenters and widens") {
+    // Round 3: the recorder's frame0WallMs is the RECEIVE time; a measured
+    // delivery lag moves the capture instant earlier by that lag, i.e. the
+    // offset by -lag, and the bound becomes the prior's own spread.
+    const int64_t recvd = 1794260528798, hdr = 1794260510503, capNs = 258175962047287;
+    const SyncEstimate base = estimateOffsetFromAnchors(recvd, hdr, capNs);
+    const SyncEstimate lag = estimateOffsetFromAnchors(recvd, hdr, capNs, 110.0, 50.0);
+    CHECK(lag.model.offsetNs == base.model.offsetNs - 110 * 1000000LL);
+    CHECK(lag.errorBoundMs == doctest::Approx(50.0));
+    CHECK(lag.confidence == SyncConfidence::Anchored);
+    // 0 keeps the original estimate bit-for-bit.
+    const SyncEstimate zero = estimateOffsetFromAnchors(recvd, hdr, capNs, 0.0, 50.0);
+    CHECK(zero.model.offsetNs == base.model.offsetNs);
+    CHECK(zero.errorBoundMs == base.errorBoundMs);
+}

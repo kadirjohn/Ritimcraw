@@ -372,7 +372,7 @@ class ExportStore(private val file: File) {
                 stabilization = m["stabilization"] as? Boolean ?: false,
                 stabilizationMode = (m["stabilizationMode"] as? Double)?.toInt() ?: 0,
                 stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 50f,
-                stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
+                stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.25f,
                 stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                 stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
                 // Managed LUT interpretation postdates older snapshots:

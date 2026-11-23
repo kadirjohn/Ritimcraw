@@ -966,7 +966,12 @@ TEST_CASE("computeStabilization: acceptance — very low crop budget and high st
     for (int i = 1; i < n; ++i)
         jump = std::fmax(jump, std::fabs(r.correctionScale[i]
                                          - r.correctionScale[i - 1]));
-    CHECK(jump < 0.05);                // ...and still smooth over time
+    // ...and still smooth over time. Round 3: the scale is now the
+    // position along a two-leg path (identity -> fast-smoothed -> full,
+    // reported as a/2), and the only step above the old 0.05 pin is the
+    // clip's first frame (the one-sided smoothing window at the edge:
+    // measured 0.065); no pumping anywhere inside the clip.
+    CHECK(jump < 0.07);
 
     // (a') a TRUE zero budget (limit 1.0): no correction at all fits,
     // so every scale is exactly 0 and the plan is the identity warp —
@@ -1331,9 +1336,12 @@ TEST_CASE("computeStabilization: Smooth strength 0.95 stabilizes for real") {
     CHECK(r.requiredZoom > 1.0);
     CHECK(r.requiredZoom < 1.5);
     CHECK(r.appliedZoom == r.requiredZoom);
-    // The zoom is clip-wide uniform.
-    for (const auto& f : r.frames)
-        CHECK(f.zoom == r.appliedZoom);
+    // Round 3 dynamic zoom: each frame's crop is its own (smoothed) need,
+    // never above the clip budget and never a magnification.
+    for (const auto& f : r.frames) {
+        CHECK(f.zoom <= r.appliedZoom + 1e-12);
+        CHECK(f.zoom >= 1.0);
+    }
 }
 
 TEST_CASE("computeStabilization: LockFirstFrame pins the first frame") {
@@ -1554,8 +1562,10 @@ TEST_CASE("computeStabilization: zoom limit clamps applied, required stays hones
     CHECK(r.appliedZoom == 1.1);
     // required stays honest (unclamped).
     CHECK(r.requiredZoom > r.appliedZoom);
-    for (const auto& f : r.frames)
-        CHECK(f.zoom == 1.1);
+    for (const auto& f : r.frames) {
+        CHECK(f.zoom <= 1.1 + 1e-12);  // dynamic zoom: within the budget
+        CHECK(f.zoom >= 1.0);
+    }
 
     // Budget-short (required ~1.238 > limit 1.1): the correction SCALES
     // DOWN to fit the budget instead of edge-clamping out-of-source
@@ -1802,7 +1812,8 @@ void stCheckPlanHonesty(const StabilizationResult& r, int width, int height) {
     for (size_t i = 0; i < r.frames.size(); ++i) {
         CHECK(r.correctionScale[i] >= 0.0);
         CHECK(r.correctionScale[i] <= 1.0);
-        CHECK(r.frames[i].zoom == r.appliedZoom);
+        CHECK(r.frames[i].zoom <= r.appliedZoom + 1e-12);  // dynamic zoom
+        CHECK(r.frames[i].zoom >= 1.0);
         CHECK(samplerFootprintViolation(r.frames[i].h, r.frames[i].zoom,
                                         cx, cy, width, height) <= 0.0);
         aMin = std::fmin(aMin, r.correctionScale[i]);
@@ -1923,8 +1934,10 @@ TEST_CASE("fixture evidence: 261110_004150 stabilization numbers") {
     // smoothOrientationSeries(actual-on-frames) vs actual — to 1e-9.
     par.mode = StabilizationMode::Smooth;
     par.strength = 0.95;
+    par.adaptiveSmoothing = false;  // this pin is about the fixed-tau smoother
     r = computeStabilization(p.orientation, p.sync, p.frameTs, p.gravityCamera,
                              true, true, par);
+    par.adaptiveSmoothing = true;
     OrientationSeries actualOnFrames;
     actualOnFrames.timestampsNs = p.frameTs;
     actualOnFrames.quats.resize(4 * p.frameTs.size());
@@ -2028,4 +2041,97 @@ TEST_CASE("fixture evidence: 261110_004208 stabilization numbers") {
     CHECK(stMaxAngle(r) < 2.0);
     CHECK(r.requiredZoom > 1.0);
     CHECK(r.requiredZoom < 1.2);
+}
+
+// ---------------------------------------------------------------------------
+// Round 3 (2026-11-23): velocity-adaptive smoothing + dynamic zoom
+// ---------------------------------------------------------------------------
+TEST_CASE("adaptive smoothing: strength 0 is an exact pass-through") {
+    std::vector<double> angles(40);
+    for (int i = 0; i < 40; ++i) angles[i] = 2.0 * std::sin(i * 0.7);
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 1);
+    const OrientationSeries out = smoothOrientationSeriesAdaptive(raw, 0.0, 80.0);
+    REQUIRE(out.quats.size() == raw.quats.size());
+    for (size_t k = 0; k < raw.quats.size(); ++k)
+        CHECK(out.quats[k] == doctest::Approx(raw.quats[k]).epsilon(1e-12));
+}
+
+TEST_CASE("adaptive smoothing: tracks a fast pan, still removes jitter") {
+    // 4 s at 30 fps: 1.5 s still with +-0.5 deg 6 Hz jitter, a 1 s pan of
+    // 60 deg (60 deg/s), then still with jitter again. The fixed 1 s smoother
+    // lags the pan by tens of degrees (the crop such a lag demands is what
+    // starved the correction on real clips); the adaptive one must stay
+    // close to the pan while damping the jitter as much at rest.
+    const int n = 120;
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i) {
+        const double t = i / 30.0;
+        const double pan = t < 1.5 ? 0.0 : (t < 2.5 ? 60.0 * (t - 1.5) : 60.0);
+        angles[i] = pan + 0.5 * std::sin(2.0 * kPi * 6.0 * t);
+    }
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 1);
+    const OrientationSeries fixed = smoothOrientationSeries(raw, 1.0);  // tau 1 s
+    const OrientationSeries adapt = smoothOrientationSeriesAdaptive(raw, 0.5, 80.0);
+    auto lagDeg = [&](const OrientationSeries& s, int i) {
+        double qRel[4];
+        relativeRotation(&s.quats[4 * i], &raw.quats[4 * i], qRel);
+        return relativeRotationAngleDeg(qRel);
+    };
+    double maxFixed = 0.0, maxAdapt = 0.0;
+    for (int i = 0; i < n; ++i) {
+        maxFixed = std::fmax(maxFixed, lagDeg(fixed, i));
+        maxAdapt = std::fmax(maxAdapt, lagDeg(adapt, i));
+    }
+    MESSAGE("pan lag: fixed=" << maxFixed << " adaptive=" << maxAdapt);
+    CHECK(maxAdapt < 0.5 * maxFixed);
+    // At rest (first second) the adaptive target barely moves: its
+    // frame-to-frame step is far below the jitter's.
+    double stepRaw = 0.0, stepAdapt = 0.0;
+    for (int i = 1; i < 30; ++i) {
+        double a[4], b[4];
+        relativeRotation(&raw.quats[4 * (i - 1)], &raw.quats[4 * i], a);
+        relativeRotation(&adapt.quats[4 * (i - 1)], &adapt.quats[4 * i], b);
+        stepRaw += relativeRotationAngleDeg(a);
+        stepAdapt += relativeRotationAngleDeg(b);
+    }
+    MESSAGE("rest path: raw=" << stepRaw << " adaptive=" << stepAdapt);
+    CHECK(stepAdapt < 0.2 * stepRaw);
+}
+
+TEST_CASE("dynamic zoom: crop follows the local need, within the budget") {
+    // 6 s: calm, a 1 s burst of 3 deg shake in the middle, calm again.
+    const int n = 180;
+    std::vector<double> angles(n);
+    for (int i = 0; i < n; ++i) {
+        const double t = i / 30.0;
+        const double amp = (t > 2.5 && t < 3.5) ? 3.0 : 0.05;
+        angles[i] = amp * std::sin(2.0 * kPi * 3.0 * t);
+    }
+    const OrientationSeries raw = seriesFromAngles(angles, 0, 33333333, 2);
+    SyncModel sync;
+    StabilizationParams p;
+    p.strength = 0.5;
+    p.focalLengthPx = 2554.0;
+    p.width = 3840;
+    p.height = 2160;
+    p.zoomLimit = 1.3;
+    const StabilizationResult r = computeStabilization(raw, sync, raw.timestampsNs,
+                                                       nullptr, true, false, p);
+    double zMin = 10.0, zMax = 0.0;
+    for (const auto& f : r.frames) {
+        CHECK(f.zoom <= r.appliedZoom + 1e-12);
+        CHECK(f.zoom >= 1.0);
+        CHECK(samplerFootprintViolation(f.h, f.zoom, 1920.0, 1080.0, 3840, 2160) <= 0.0);
+        zMin = std::fmin(zMin, f.zoom);
+        zMax = std::fmax(zMax, f.zoom);
+    }
+    MESSAGE("dynamic zoom: min=" << zMin << " max=" << zMax << " applied=" << r.appliedZoom);
+    CHECK(zMax > zMin + 0.02);                 // the burst really cropped more
+    CHECK(r.frames.front().zoom < zMax - 0.02); // and the calm start less
+    // Off: the legacy uniform crop.
+    p.dynamicZoom = false;
+    const StabilizationResult s = computeStabilization(raw, sync, raw.timestampsNs,
+                                                       nullptr, true, false, p);
+    for (const auto& f : s.frames)
+        CHECK(f.zoom == s.appliedZoom);
 }

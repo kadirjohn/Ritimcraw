@@ -40,8 +40,8 @@ object SliderSteps {
      */
     const val STABILIZATION_STRENGTH_DEFAULT = 50f
 
-    /** Zoom limit the Stabilization switch seeds: 1.1x auto-crop ceiling. */
-    const val STABILIZATION_ZOOM_DEFAULT = 1.1f
+    /** Zoom limit the Stabilization switch seeds: 1.25x auto-crop ceiling (round 3; the crop is dynamic, so the mean sits lower). */
+    const val STABILIZATION_ZOOM_DEFAULT = 1.25f
 
     /** Zoom limit slider step: 1.0..1.5 at 0.05 = 10 intervals, 11 values. */
     const val STABILIZATION_ZOOM_STEP = 0.05f

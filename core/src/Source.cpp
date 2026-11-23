@@ -389,6 +389,13 @@ FrameInfo Source::frameInfo(size_t i) const {
             info.recvdMs = recvd;
     }
 
+    // Exposure time (ns) — present in the MotionCam frame JSON as a number
+    // ("exposureTime": 20000000.0). Out-of-range keeps the -1 sentinel.
+    double exposure = -1.0;
+    getJson(meta, "exposureTime", exposure);
+    if (exposure > 0.0 && exposure < 10e9)
+        info.exposureNs = static_cast<int64_t>(exposure);
+
     return info;
 }
 

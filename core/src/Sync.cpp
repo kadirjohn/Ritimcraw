@@ -36,7 +36,9 @@ static constexpr double kAnchorErrorBoundMs = 25.0;
 
 SyncEstimate estimateOffsetFromAnchors(int64_t frame0WallMs,
                                        int64_t gyroStartWallMs,
-                                       int64_t frame0CaptureNs) {
+                                       int64_t frame0CaptureNs,
+                                       double receiveLagMs,
+                                       double receiveLagBoundMs) {
     SyncEstimate est;
     if (frame0WallMs <= 0 || gyroStartWallMs <= 0 || frame0CaptureNs < 0)
         return est; // no anchor on both sides -> ManualRequired, no fabrication
@@ -45,6 +47,11 @@ SyncEstimate estimateOffsetFromAnchors(int64_t frame0WallMs,
     est.confidence = SyncConfidence::Anchored;
     est.source = "anchored:recvdMs-vs-gcsvHeader";
     est.errorBoundMs = kAnchorErrorBoundMs;
+    if (receiveLagMs != 0.0) {
+        est.model.offsetNs -= static_cast<int64_t>(receiveLagMs * SyncModel::nsPerMs);
+        est.source += "-lagPrior";
+        est.errorBoundMs = receiveLagBoundMs > 0.0 ? receiveLagBoundMs : kAnchorErrorBoundMs;
+    }
     return est;
 }
 

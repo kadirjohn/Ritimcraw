@@ -189,9 +189,23 @@ struct SyncEstimate {
 //
 // Returns ManualRequired (not a fabricated number) when either anchor is
 // absent (<= 0 or NaN) — the caller then needs the manual path.
+//
+// receiveLagMs (stabilization round 3, 2026-11-23): frame0WallMs is when
+// the recorder RECEIVED frame 0, not when it was captured; the difference
+// is the camera pipeline's delivery lag, which the original formula took
+// as 0 (and bounded at +-25 ms). Measured against the optical sync on the
+// owner's device (Xiaomi 25010PN30G, MotionCam Pro 5.0.9, six clips): the
+// anchor was LATE by 83-135 ms (mean ~112 ms) every time — enough to turn
+// the stabilization into a shake AMPLIFIER (a 40 ms sync error leaves
+// ~1.5x the raw high-frequency shake). A caller with a measured lag
+// prior passes it here: the capture instant becomes frame0WallMs -
+// receiveLagMs, and the bound widens to receiveLagBoundMs (the prior's own
+// spread). 0 keeps the original behavior exactly.
 SyncEstimate estimateOffsetFromAnchors(int64_t frame0WallMs,
                                        int64_t gyroStartWallMs,
-                                       int64_t frame0CaptureNs);
+                                       int64_t frame0CaptureNs,
+                                       double receiveLagMs = 0.0,
+                                       double receiveLagBoundMs = 0.0);
 
 // ---------------------------------------------------------------------------
 // Method C — manual offset (deliverable 3). The user-facing fallback (and
