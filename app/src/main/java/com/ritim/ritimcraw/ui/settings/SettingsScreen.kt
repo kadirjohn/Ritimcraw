@@ -131,6 +131,13 @@ fun SettingsScreen(
     // Debug-only GPU-vs-CPU per-control parity sweep (2026-11-23, owner
     // report: GPU preview shows no change on slider moves); null in release.
     onGradeSweep: (() -> Unit)? = null,
+    // Export A/B regression harness (guide §A7, owner request 2026-11-23):
+    // the whole-pipeline check the per-control sweep is not — 4 composite
+    // cases (neutral / grade / stab / grade+stab) x 3 frames through the CPU
+    // export door AND the GPU develop session, one sync offset, byte-comared
+    // with an EXPORT_MISMATCH flag under "ritim-parity". Null in release; the
+    // button renders only inside the sweep's debug block below.
+    onExportAb: (() -> Unit)? = null,
     measuring: Boolean = false,
     // ---- Preview quality (owner request 2026-11-11b section 3) ----
     // The persisted level (AppNav reads PreviewQualityStore) and the
@@ -380,6 +387,26 @@ fun SettingsScreen(
                 ) {
                     Text(
                         text = stringResource(R.string.settings_grade_sweep),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            // Export A/B (guide §A7, 2026-11-23): below the sweep button,
+            // same debug block, same one-at-a-time `measuring` gate — one
+            // tap = one run over the first gyro-attached clip (AppNav
+            // picks it; a clip without a gyro is a toast + log skip there,
+            // not here).
+            if (onExportAb != null) {
+                OutlinedButton(
+                    onClick = onExportAb,
+                    enabled = !measuring,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_export_ab),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
