@@ -77,6 +77,15 @@ set_source_files_properties(src/Yuv.cpp PROPERTIES
 # on every target (preview == export == timeline); same opt-out.
 set_source_files_properties(src/ImageStabPlan.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
+# Loudness.cpp (E5-A): the BS.1770-4 meter is a numeric port of the
+# filmcraft audio-dsp crate whose test vectors (test_loudness) pin exact
+# values (1e-8 on the K-weighting coefficient table, bit-equality across
+# feeding patterns). The desktop script already compiles this TU with the
+# flag; the NDK build goes through THIS file, so without the same opt-out
+# the device could contract multiplies into FMAs and drift off the port's
+# expected numbers (Yuv.cpp precedent).
+set_source_files_properties(src/Loudness.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)
