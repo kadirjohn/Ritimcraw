@@ -41,8 +41,35 @@ object GradeParitySweep {
     /** Debug builds only — never runs or logs in release. */
     val enabled: Boolean get() = BuildConfig.DEBUG
 
-    /** One control at one value: a label for the log line + the grade. */
-    data class Case(val control: String, val label: String, val grade: GradeK)
+    /**
+     * One control at one value: a label for the log line + the grade.
+     * [warpM] != null runs the GPU side with warpActive=true and that
+     * row-major 3x3 output->source map (2026-11-23: the warp pass wrote the
+     * wrong ping-pong slot, so with stabilization on the TAIL read the
+     * un-graded PRE image and no grade control did anything).
+     */
+    data class Case(
+        val control: String,
+        val label: String,
+        val grade: GradeK,
+        val warpM: FloatArray? = null,
+    ) {
+        /** Warp cases compared against the CPU door: identity is the CPU's
+         *  own no-warp fast path, so the CPU render IS the reference. */
+        val isWarpIdentity: Boolean get() = control == CONTROL_WARP_IDENTITY
+        /** A real warp: the CPU door takes a gyro FILE, not a matrix, so
+         *  there is no CPU reference; the stats compare GPU(warp) vs
+         *  GPU(no warp) (expected to differ) and the INERT flag uses
+         *  GPU(warp, grade) vs GPU(warp, neutral). */
+        val isWarpReal: Boolean get() = warpM != null && !isWarpIdentity
+    }
+
+    const val CONTROL_WARP_IDENTITY = "warp-identity"
+    const val CONTROL_WARP_ROT = "warp-rot"
+
+    private val IDENTITY_M = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    // ~1.15 deg rotation about the origin + a (12, -8) px translation.
+    private val ROT_M = floatArrayOf(0.9998f, -0.0200f, 12f, 0.0200f, 0.9998f, -8f, 0f, 0f, 1f)
 
     /** Raw numbers for one compared pair (pure; JVM-tested). */
     data class Stats(
@@ -94,6 +121,12 @@ object GradeParitySweep {
                 asShot = false, tempK = 7100f, tint = 30f, sharpness = 50f, detail = 50f,
             ),
         )
+        // Warp cases (grade non-neutral so an un-graded TAIL input is visible):
+        // identity must equal the CPU render; a small rotation+translation
+        // must still follow the grade.
+        out += Case(CONTROL_WARP_IDENTITY, "+1EV", GradeK(exposureEv = 1f), IDENTITY_M)
+        out += Case(CONTROL_WARP_ROT, "+1EV", GradeK(exposureEv = 1f), ROT_M)
+        out += Case(CONTROL_WARP_ROT, "-1EV", GradeK(exposureEv = -1f), ROT_M)
         return out
     }
 
@@ -144,7 +177,8 @@ object GradeParitySweep {
         )
 
     fun summaryLine(lines: List<Triple<Case, Stats, Pair<Double, Double>>>, skipped: Int): String {
-        val worst = lines.maxByOrNull { it.second.maxDiffLsb }
+        // warp-rot stats are GPU-vs-GPU(no warp): large by design, not a parity number.
+        val worst = lines.filter { !it.first.isWarpReal }.maxByOrNull { it.second.maxDiffLsb }
         val inert = lines.count { it.third.first >= 0.5 && it.third.second < 0.05 }
         return "grade-sweep summary: cases=${lines.size} skipped=$skipped " +
             "worstMaxDiffLsb=${worst?.second?.maxDiffLsb ?: 0}" +
@@ -154,7 +188,7 @@ object GradeParitySweep {
 
     /**
      * Runs the sweep over the clip at [fd] (TAKES OWNERSHIP of the fd:
-     * closed here, always). Frame 0, full resolution, no LUT, no warp.
+     * closed here, always). Frame 0, full resolution, no LUT; warp only in the warp-* cases.
      * Everything touching the clip handle runs on the shared preview engine
      * thread (the one-thread rule). Logs one line per case plus a summary
      * under [TAG]; returns the summary line, or null when disabled /
@@ -198,9 +232,9 @@ object GradeParitySweep {
             return null
         }
         val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
-        fun gpu(g: GradeK): ByteArray? = NativeGpuDevelop.renderFrameParcel(
+        fun gpu(g: GradeK, warpM: FloatArray? = null): ByteArray? = NativeGpuDevelop.renderFrameParcel(
             session, clip, 0, GradeParcel.encode(g),
-            null, 0f, -1, -1, -1, -1, -1, false, identity,
+            null, 0f, -1, -1, -1, -1, -1, warpM != null, warpM ?: identity,
         )
         fun cpu(g: GradeK): ByteArray? = NativeSource.jniExportFrameParcel(
             clip, 0, GradeParcel.encode(g),
@@ -220,16 +254,23 @@ object GradeParitySweep {
             val rows = ArrayList<Triple<Case, Stats, Pair<Double, Double>>>()
             var skipped = 0
             for (c in cases()) {
-                val g = gpu(c.grade)
-                val r = cpu(c.grade)
-                if (g == null || r == null) {
+                val g = gpu(c.grade, c.warpM)
+                val cpuRef = cpu(c.grade)
+                // Real warp: reference for the stats is the GPU's own
+                // no-warp render (no CPU door for a matrix).
+                val r = if (c.isWarpReal) gpu(c.grade) else cpuRef
+                if (g == null || r == null || cpuRef == null) {
                     skipped++
                     Log.w(TAG, "grade-sweep ${c.control} ${c.label}: render failed " +
                         "gpu=${g != null} cpu=${r != null} (${NativeSource.previewLastError()})")
                     continue
                 }
                 val stats = compare(g, r)
-                val moved = movedPct(r, cpuNeutral) to movedPct(g, gpuNeutral)
+                // gpuMoved: the grade moved the GPU image, measured against the
+                // GPU's neutral render WITH THE SAME WARP (so a warp that
+                // swallows the grade shows up as INERT_ON_GPU).
+                val gpuBase = if (c.warpM != null) gpu(neutralGrade, c.warpM) ?: gpuNeutral else gpuNeutral
+                val moved = movedPct(cpuRef, cpuNeutral) to movedPct(g, gpuBase)
                 rows += Triple(c, stats, moved)
                 Log.i(TAG, line(c, stats, moved.first, moved.second))
             }
