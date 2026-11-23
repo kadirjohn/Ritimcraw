@@ -26,7 +26,12 @@ object CodecNames {
         else -> "mode $mode"
     }
 
-    fun profileName(mime: String, profile: Int): String = when (mime) {
+    /**
+     * [profileWord] is the localized word "Profile" the Dolby Vision names
+     * carry ("Profile 8 (DvheSt)" / "Profil 8 (DvheSt)"); the other codecs'
+     * profile names are proper names and need no translation.
+     */
+    fun profileName(mime: String, profile: Int, profileWord: String = "Profile"): String = when (mime) {
         MIME_AVC -> when (profile) {
             1 -> "Baseline"; 2 -> "Main"; 4 -> "Extended"; 8 -> "High"
             16 -> "High10"; 32 -> "High422"; 64 -> "High444"
@@ -47,13 +52,52 @@ object CodecNames {
             1 -> "422-10"; 4096 -> "422-10HDR10"; 8192 -> "422-10HDR10Plus"
             else -> raw(profile)
         }
-        MIME_DV -> when (profile) {
-            1 -> "Dvav.Per"; 2 -> "Dvav.Pen"; 4 -> "Dvhe.Der"; 8 -> "Dvhe.Den"
-            16 -> "Dvhe.Dtr"; 32 -> "Dvhe.Stn"; 64 -> "Dvhe.Dth"; 128 -> "Dvhe.Dtb"
-            256 -> "Dvhe.St (8.4)"; 512 -> "Dvav.Se"; 1024 -> "Dvav.110"
-            else -> raw(profile)
-        }
+        // Dolby Vision: the DV profile NUMBER (dvhe.08 = profile 8) beside the
+        // platform's DolbyVisionProfile* name, never the raw flag. The 15 Ultra's
+        // encoder declares 256 = DvheSt = profile 8 (device dump 2026-11-23).
+        MIME_DV -> DV_PROFILES[profile]?.let { (n, name) -> "$profileWord $n ($name)" } ?: raw(profile)
         else -> raw(profile)
+    }
+
+    /** DolbyVisionProfile* flag -> (DV profile number, platform name). */
+    private val DV_PROFILES = mapOf(
+        0x1 to (0 to "DvavPer"), 0x2 to (1 to "DvavPen"), 0x4 to (2 to "DvheDer"),
+        0x8 to (3 to "DvheDen"), 0x10 to (4 to "DvheDtr"), 0x20 to (5 to "DvheStn"),
+        0x40 to (6 to "DvheDth"), 0x80 to (7 to "DvheDtb"), 0x100 to (8 to "DvheSt"),
+        0x200 to (9 to "DvavSe"), 0x400 to (10 to "Dvav110"),
+    )
+
+    /** DolbyVisionLevel* flags: the level names the platform gives, readable. 0x800 = 8k60 is confirmed on the 15 Ultra. */
+    private val DV_LEVELS = mapOf(
+        0x1 to "HD 24", 0x2 to "HD 30", 0x4 to "FHD 24", 0x8 to "FHD 30", 0x10 to "FHD 60",
+        0x20 to "UHD 24", 0x40 to "UHD 30", 0x80 to "UHD 48", 0x100 to "UHD 60", 0x200 to "UHD 120",
+        0x400 to "8K 30", 0x800 to "8K 60",
+    )
+
+    /** AV1Level2..7.3 flags: bit n = major (2..7) / minor (0..3), 2.0 = 0x1 ... 4.1 = 0x200 ... 6.1 = 0x20000 (both confirmed on the 15 Ultra). */
+    private fun av1Level(level: Int): String? {
+        if (level <= 0 || level and (level - 1) != 0) return null
+        val bit = Integer.numberOfTrailingZeros(level)
+        if (bit > 23) return null
+        return "${2 + bit / 4}.${bit % 4}"
+    }
+
+    private val APV_LEVELS = listOf("1", "1.1", "2", "2.1", "3", "3.1", "4", "4.1", "5", "5.1", "6", "6.1", "7", "7.1")
+
+    /**
+     * APV level + band. Decoded ONLY for the one shape the 15 Ultra's dump
+     * confirms (2097160 = 0x200008 = "Level 7.1, Band 3"): one band flag in
+     * the low nibble and one level flag from bit 8 up, in the order 1, 1.1,
+     * 2 ... 7.1. Anything else stays raw hex: the other levels are not
+     * verified against a device.
+     */
+    private fun apvLevel(level: Int): String? {
+        val band = level and 0xF
+        val lv = level ushr 8
+        if (band == 0 || band and (band - 1) != 0 || lv <= 0 || lv and (lv - 1) != 0) return null
+        val idx = Integer.numberOfTrailingZeros(lv)
+        if (idx >= APV_LEVELS.size) return null
+        return "${APV_LEVELS[idx]} Band ${Integer.numberOfTrailingZeros(band)}"
     }
 
     private val AVC_LEVELS = mapOf(
@@ -75,10 +119,13 @@ object CodecNames {
         2097152 to "6", 8388608 to "6.1", 33554432 to "6.2",
     )
 
-    /** AVC/HEVC levels by name ("5.1", "5 High"); everything else raw hex. */
+    /** Level names for AVC/HEVC ("5.1", "5 High"), Dolby Vision ("8K 60"), AV1 ("4.1") and APV ("7.1 Band 3"); anything unknown raw hex. */
     fun levelName(mime: String, level: Int): String = when (mime) {
         MIME_AVC -> AVC_LEVELS[level] ?: raw(level)
         MIME_HEVC -> HEVC_MAIN[level] ?: HEVC_HIGH[level]?.let { "$it High" } ?: raw(level)
+        MIME_DV -> DV_LEVELS[level] ?: raw(level)
+        MIME_AV1 -> av1Level(level) ?: raw(level)
+        MIME_APV -> apvLevel(level) ?: raw(level)
         else -> raw(level)
     }
 
@@ -87,10 +134,10 @@ object CodecNames {
      * codec declares for it (levels are monotone flags/ints per profile),
      * in the declared profile order. Empty list -> empty list.
      */
-    fun describeProfileLevels(mime: String, pls: List<ProfileLevel>): List<String> =
+    fun describeProfileLevels(mime: String, pls: List<ProfileLevel>, profileWord: String = "Profile"): List<String> =
         pls.groupBy { it.profile }
             .map { (profile, group) ->
-                profileName(mime, profile) + "@" + levelName(mime, group.maxOf { it.level })
+                profileName(mime, profile, profileWord) + "@" + levelName(mime, group.maxOf { it.level })
             }
 
     /** COLOR_Format* ints: the ones this app cares about by name, the rest raw hex. */

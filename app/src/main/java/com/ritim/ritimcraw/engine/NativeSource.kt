@@ -946,6 +946,33 @@ class NativeSource private constructor(
         ): String?
 
         /**
+         * E1d: the same session opened on an RGBA1010102 + window +
+         * recordable EGL config (found by query in native). 0 = this device
+         * has no such config or the session failed (previewLastError names
+         * the step).
+         */
+        @JvmStatic private external fun nativeDevelopSessionOpenTenBit(
+            vertexSource: String,
+            vertex310Source: String,
+            preFragmentSource: String,
+            postFragmentSource: String,
+            tailFragmentSource: String,
+            sharpnessHSource: String,
+            sharpnessVSource: String,
+            detailHSource: String,
+            detailVSource: String,
+            warpFragmentSource: String,
+            nrChromaHSource: String,
+            nrChromaVSource: String,
+            nrLumaSource: String,
+            storeFragmentSource: String,
+            blitFragmentSource: String,
+        ): Long
+
+        /** E1d: can this device make an RGBA1010102 + pbuffer + window + recordable ES3 EGL config? */
+        @JvmStatic private external fun nativeDevelopTenBitProbe(): Boolean
+
+        /**
          * M3 commit (a): the production GPU develop session's three entry
          * points (the persistent counterpart of the one-shot parity
          * harness). Open compiles the caller-provided shader texts and
@@ -1750,6 +1777,43 @@ class NativeSource private constructor(
                 detailHSource, detailVSource, warpFragmentSource,
                 nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
                 blitFragmentSource)
+        }
+
+        /** E1d: [jniDevelopSessionOpen] on an RGBA1010102 config (see [nativeDevelopSessionOpenTenBit]). */
+        internal fun jniDevelopSessionOpenTenBit(
+            vertexSource: String,
+            vertex310Source: String,
+            preFragmentSource: String,
+            postFragmentSource: String,
+            tailFragmentSource: String,
+            sharpnessHSource: String,
+            sharpnessVSource: String,
+            detailHSource: String,
+            detailVSource: String,
+            warpFragmentSource: String,
+            nrChromaHSource: String,
+            nrChromaVSource: String,
+            nrLumaSource: String,
+            storeFragmentSource: String,
+            blitFragmentSource: String,
+        ): Long {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopSessionOpenTenBit(
+                vertexSource, vertex310Source, preFragmentSource, postFragmentSource,
+                tailFragmentSource, sharpnessHSource, sharpnessVSource,
+                detailHSource, detailVSource, warpFragmentSource,
+                nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
+                blitFragmentSource)
+        }
+
+        /** E1d: the 10-bit EGL config probe (a throwaway context on the calling thread). */
+        internal fun jniDevelopTenBitProbe(): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeDevelopTenBitProbe()
         }
 
         /**

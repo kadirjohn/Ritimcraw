@@ -28,6 +28,8 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.export.ExportEta
 import com.ritim.ritimcraw.export.ExportJob
+import com.ritim.ritimcraw.export.ExportReport
+import com.ritim.ritimcraw.export.ExportText
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.ui.components.ScreenHeader
@@ -288,11 +290,64 @@ private fun ExportJobCard(
                             Text(stringResource(R.string.exports_job_open))
                         }
                     }
+                    job.report?.let { ExportReportBlock(it) }
                 }
                 State.CANCELLED ->
                     StatusLine(stringResource(R.string.exports_job_cancelled))
                 State.FAILED -> Unit // handled by FailedJobCard
             }
+        }
+    }
+}
+
+/**
+ * What the export REALLY produced (E1b): size, fps, codec, depth, the encoder
+ * that ran, and the bitrate asked beside the real one (file size / duration).
+ * Only DONE jobs that carried settings have a report; a retried or fixed run
+ * says so instead of silently differing from the request.
+ */
+@Composable
+private fun ExportReportBlock(r: ExportReport) {
+    Column(Modifier.padding(top = 4.dp)) {
+        Text(
+            stringResource(
+                R.string.exports_report_format,
+                r.width.toString(), r.height.toString(), ExportText.fps(r.fps),
+                ExportText.codec(r.mime), r.bitDepth,
+            ),
+            style = MaterialTheme.typography.bodySmall.merge(Tnum),
+        )
+        Text(
+            when {
+                r.encoder == null -> stringResource(R.string.exports_report_encoder_unknown)
+                r.hardware == false -> stringResource(R.string.exports_report_encoder_sw, r.encoder)
+                else -> stringResource(R.string.exports_report_encoder_hw, r.encoder)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        val real = r.actualVideoBps
+        val bytes = r.fileBytes
+        Text(
+            if (real != null && bytes != null) {
+                stringResource(
+                    R.string.exports_report_bitrate,
+                    ExportText.mbps(r.requestedBps.toLong()), ExportText.mbps(real), ExportText.megabytes(bytes),
+                )
+            } else {
+                stringResource(R.string.exports_report_bitrate_asked, ExportText.mbps(r.requestedBps.toLong()))
+            },
+            style = MaterialTheme.typography.bodySmall.merge(Tnum),
+        )
+        if (ExportText.wasFixed(r)) {
+            Text(stringResource(R.string.exports_report_fixed), style = MaterialTheme.typography.bodySmall)
+        }
+        if (ExportText.tenBitDropped(r)) {
+            Text(stringResource(R.string.exports_report_ten_bit_dropped), style = MaterialTheme.typography.bodySmall)
+        }
+        if (ExportText.fellBackToCpu(r)) {
+            Text(stringResource(R.string.exports_report_cpu), style = MaterialTheme.typography.bodySmall)
         }
     }
 }

@@ -50,7 +50,25 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalContext
+import com.ritim.ritimcraw.export.DeviceEncoderFacts
+import com.ritim.ritimcraw.export.EncoderFacts
+import com.ritim.ritimcraw.export.ExportFps
+import com.ritim.ritimcraw.export.ExportSettings
+import com.ritim.ritimcraw.export.ExportSettingsPrefs
+import com.ritim.ritimcraw.export.ExportSheetModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.engine.BackendRules
+import com.ritim.ritimcraw.export.NativeGpuDevelop
 import com.ritim.ritimcraw.data.GradePreset
 import com.ritim.ritimcraw.export.ExportResolution
 import com.ritim.ritimcraw.export.Target
@@ -98,8 +116,10 @@ fun EditorTopBar(
     // exactly what every export before the picker produced). DNG/LINEAR
     // taps pass nulls — those targets have no resolution seam; the
     // MP4 tap passes the selected entry's bound.
-    onExport: (Target, Int?, Int?) -> Unit,
+    onExport: (Target, Int?, Int?, ExportSettings?) -> Unit,
     exportEnabled: Boolean,
+    // (E1c) how fast this device exported last time, for the sheet's time estimate; null = no estimate yet.
+    exportRate: ExportSheetModel.Rate? = null,
     clipInfo: ClipInfo,
     // (Export resolution) the clip's persisted manual rotation delta —
     // the ladder's effective size composes it (RotationState.effectiveDeg
@@ -214,9 +234,10 @@ fun EditorTopBar(
             clipInfo = clipInfo,
             grade = grade,
             manualRotationDeg = manualRotationDeg,
-            onExport = { target, resolutionW, resolutionH ->
+            exportRate = exportRate,
+            onExport = { target, resolutionW, resolutionH, settings ->
                 exportSheetOpen = false
-                onExport(target, resolutionW, resolutionH)
+                onExport(target, resolutionW, resolutionH, settings)
             },
             onDismiss = { exportSheetOpen = false },
         )
@@ -285,7 +306,8 @@ private fun ExportSheet(
     clipInfo: ClipInfo,
     grade: GradeK,
     manualRotationDeg: Int,
-    onExport: (Target, Int?, Int?) -> Unit,
+    exportRate: ExportSheetModel.Rate?,
+    onExport: (Target, Int?, Int?, ExportSettings?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     // The selection state lives here, not in the caller: the sheet is the
@@ -294,88 +316,150 @@ private fun ExportSheet(
     var selectedKind by remember { mutableStateOf(ExportResolution.Kind.ORIGINAL) }
     var customWidthText by remember { mutableStateOf("") }
     var customHeightText by remember { mutableStateOf("") }
+    // (E1c) The MP4 settings start from the LAST ones the user exported with
+    // (a per-viewer convenience, SharedPreferences); the job snapshots its
+    // own copy at queue time.
+    val context = LocalContext.current
+    var settings by remember { mutableStateOf(ExportSettingsPrefs.load(context)) }
+    // The device's encoder facts load off the UI thread; until they arrive
+    // the plan is by MIME (no encoder named) and nothing is claimed.
+    val facts by produceState(emptyList<EncoderFacts>()) {
+        value = withContext(Dispatchers.Default) { DeviceEncoderFacts.all() }
+    }
+    val dimsKnown = clipInfo.width > 0 && clipInfo.height > 0
+    // What the encode will be: the selected entry's bound, else the effective size.
+    val bound = if (dimsKnown) {
+        resolvedBound(clipInfo, grade, manualRotationDeg, selectedKind, customWidthText, customHeightText)
+    } else {
+        null
+    }
+    val subject = if (dimsKnown) {
+        val size = bound ?: ExportResolution.effectiveSourceSize(
+            clipInfo.width, clipInfo.height, 0, manualRotationDeg,
+            grade.cropX, grade.cropY, grade.cropW, grade.cropH,
+        ).let { Pair(it.width, it.height) }
+        ExportSheetModel.Subject(
+            width = size.first and 1.inv(),
+            height = size.second and 1.inv(),
+            fps = if (clipInfo.fps > 0f) ExportFps.snap(clipInfo.fps.toDouble()) else 30.0,
+            durationSec = clipInfo.totalUs / 1_000_000.0,
+        )
+    } else {
+        null
+    }
+    // (E1d) 10-bit availability for THIS export: the device offers an
+    // RGBA1010102 EGL config (a throwaway native probe, off the UI thread),
+    // the size is Original, nothing is cropped/straightened, and every grade
+    // stage runs on the GPU. The exporter re-checks it at run time.
+    val tenBitProbe by produceState(false) {
+        value = withContext(Dispatchers.Default) {
+            try {
+                NativeGpuDevelop.tenBitProbe()
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+    val gradeOnGpu = remember(grade) {
+        BackendRules.fragmentUncoveredStages(grade, true).isEmpty() &&
+            BackendRules.fragmentUncoveredPreStages(grade).isEmpty()
+    }
+    val exportContext = ExportSheetModel.tenBitContext(
+        probeOk = tenBitProbe,
+        originalSize = bound == null,
+        cropFull = CropState.isFull(CropState.RectF(grade.cropX, grade.cropY, grade.cropW, grade.cropH)),
+        straightenZero = grade.straightenDeg == 0f,
+        gradeOnGpu = gradeOnGpu,
+    )
+    val plan = subject?.let { ExportSheetModel.plan(settings, it, facts, exportContext) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Text(
-            stringResource(R.string.editor_export_sheet_title),
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-        // ---- The resolution row (MP4-only) ----
-        // The ladder needs a usable source size; 0 dims (unknown) hide the
-        // row entirely — the honest degrade, never a fake ladder.
-        if (clipInfo.width > 0 && clipInfo.height > 0) {
-            ResolutionRow(
-                clipInfo = clipInfo,
-                grade = grade,
-                manualRotationDeg = manualRotationDeg,
-                selectedKind = selectedKind,
-                customWidthText = customWidthText,
-                customHeightText = customHeightText,
-                onSelect = { kind -> selectedKind = kind },
-                onCustomWidth = { customWidthText = it },
-                onCustomHeight = { customHeightText = it },
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text(
+                stringResource(R.string.editor_export_sheet_title),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
-        }
-        ListItem(
-            headlineContent = { Text(stringResource(R.string.editor_export_choice_mp4)) },
-            supportingContent = {
-                // The selected entry's resolved size rides the row (the
-                // chip already showed it; this is the tap-time echo), or
-                // the format alone when the ladder is hidden (unknown
-                // dims — Original, the pre-picker behavior).
-                val format = stringResource(R.string.exports_format_mp4)
-                val dims = if (clipInfo.width > 0 && clipInfo.height > 0) {
-                    resolutionSummary(
-                        clipInfo, grade, manualRotationDeg,
-                        selectedKind, customWidthText, customHeightText,
+            // ---- The resolution row (MP4-only) ----
+            // The ladder needs a usable source size; 0 dims (unknown) hide the
+            // row entirely — the honest degrade, never a fake ladder.
+            if (dimsKnown) {
+                ResolutionRow(
+                    clipInfo = clipInfo,
+                    grade = grade,
+                    manualRotationDeg = manualRotationDeg,
+                    selectedKind = selectedKind,
+                    customWidthText = customWidthText,
+                    customHeightText = customHeightText,
+                    onSelect = { kind -> selectedKind = kind },
+                    onCustomWidth = { customWidthText = it },
+                    onCustomHeight = { customHeightText = it },
+                )
+            }
+            // ---- The MP4 settings (E1c): presets, the produced summary, issues, Advanced ----
+            if (subject != null && plan != null) {
+                ExportSettingsPanel(
+                    settings = settings,
+                    onSettings = { settings = it },
+                    plan = plan,
+                    subject = subject,
+                    facts = facts,
+                    rate = exportRate,
+                    tenBitAvailable = exportContext.tenBitPathAvailable,
+                    onUseResolution = { w, h ->
+                        selectedKind = ExportResolution.Kind.CUSTOM
+                        customWidthText = w.toString()
+                        customHeightText = h.toString()
+                    },
+                )
+            }
+            // The Export MP4 action: queues the job with the SELECTED bound and
+            // a snapshot of the settings; a plan the device cannot make (ERROR)
+            // cannot be queued - its issue says why and offers the fix.
+            Button(
+                onClick = {
+                    ExportSettingsPrefs.save(context, settings)
+                    onExport(Target.MP4, bound?.first, bound?.second, settings)
+                },
+                enabled = plan?.ok != false,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+                Text(stringResource(R.string.editor_export_mp4))
+            }
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.editor_export_choice_dng)) },
+                supportingContent = {
+                    // The DNG write format, separate from the RAW source info
+                    // (owner request 2026-11-11 section 2): the export always
+                    // writes 16-bit uncompressed CFA — that is the writer's
+                    // contract, not the sensor's bit depth. No resolution
+                    // seam: the DNG develops pixels, it does not encode a
+                    // frame size — the nulls are honest, not a fallback.
+                    Text(
+                        stringResource(R.string.exports_format_dng) + " · " +
+                            stringResource(R.string.exports_format_dng_detail)
                     )
-                } else {
-                    null
-                }
-                Text(if (dims == null) format else "$format · $dims")
-            },
-            modifier = Modifier.clickable {
-                // The MP4 tap carries the SELECTED entry's resolved bound;
-                // Original (the default) passes nulls — byte-identical to
-                // every export before the picker.
-                val bound = resolvedBound(
-                    clipInfo, grade, manualRotationDeg,
-                    selectedKind, customWidthText, customHeightText,
-                )
-                onExport(Target.MP4, bound?.first, bound?.second)
-            },
-        )
-        ListItem(
-            headlineContent = { Text(stringResource(R.string.editor_export_choice_dng)) },
-            supportingContent = {
-                // The DNG write format, separate from the RAW source info
-                // (owner request 2026-11-11 section 2): the export always
-                // writes 16-bit uncompressed CFA — that is the writer's
-                // contract, not the sensor's bit depth. No resolution
-                // seam: the DNG develops pixels, it does not encode a
-                // frame size — the nulls are honest, not a fallback.
-                Text(
-                    stringResource(R.string.exports_format_dng) + " · " +
-                        stringResource(R.string.exports_format_dng_detail)
-                )
-            },
-            modifier = Modifier.clickable { onExport(Target.DNG, null, null) },
-        )
-        ListItem(
-            headlineContent = { Text(stringResource(R.string.editor_export_choice_dng_linear)) },
-            supportingContent = {
-                // RAW-13: the second DNG file contract — the demosaiced,
-                // scene-referred linear deliverable, next to the raw
-                // mosaic. Same no-seam honesty as the raw DNG above.
-                Text(
-                    stringResource(R.string.exports_format_dng_linear) + " · " +
-                        stringResource(R.string.exports_format_dng_linear_detail)
-                )
-            },
-            modifier = Modifier.clickable { onExport(Target.LINEAR, null, null) },
-        )
-        Spacer(Modifier.height(16.dp))
+                },
+                modifier = Modifier.clickable { onExport(Target.DNG, null, null, null) },
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.editor_export_choice_dng_linear)) },
+                supportingContent = {
+                    // RAW-13: the second DNG file contract — the demosaiced,
+                    // scene-referred linear deliverable, next to the raw
+                    // mosaic. Same no-seam honesty as the raw DNG above.
+                    Text(
+                        stringResource(R.string.exports_format_dng_linear) + " · " +
+                            stringResource(R.string.exports_format_dng_linear_detail)
+                    )
+                },
+                modifier = Modifier.clickable { onExport(Target.LINEAR, null, null, null) },
+            )
+            Spacer(Modifier.height(16.dp))
+        }
     }
 }
 

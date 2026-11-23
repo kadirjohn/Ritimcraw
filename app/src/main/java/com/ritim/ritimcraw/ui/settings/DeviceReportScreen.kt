@@ -650,7 +650,9 @@ internal object DeviceReportGrouping {
  */
 @Composable
 private fun CodecCapabilityLines(report: CodecReport) {
-    val profiles = CodecNames.describeProfileLevels(report.mime, report.profileLevels)
+    val profiles = CodecNames.describeProfileLevels(
+        report.mime, report.profileLevels, stringResource(R.string.settings_device_report_profile_word),
+    )
     val colors = CodecNames.describeColorFormats(report.colorFormats)
     val modes = report.bitrateModes.map { CodecNames.bitrateModeName(it) }
     val upper = report.bitrateUpper?.takeIf { it > 0 }?.let { CodecNames.formatBitrate(it) }

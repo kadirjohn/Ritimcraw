@@ -3366,16 +3366,18 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeFramePtsUs(
 // parcel slot names a stage the shader covers OR a pre-stage the
 // bridge's own merge covers.
 
-JNIEXPORT jlong JNICALL
-Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
-        JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
+// The one open path behind both JNI doors (E1d): [tenBit] asks for the
+// RGBA1010102 + window + recordable EGL config (found by query). The
+// RGBA8888 door passes false and is byte-identical to before.
+static jlong developSessionOpenImpl(
+        JNIEnv* env, jstring vertexSource, jstring vertex310Source,
         jstring preFragmentSource, jstring postFragmentSource,
         jstring tailFragmentSource, jstring sharpnessHSource,
         jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
         jstring warpFragmentSource, jstring nrChromaHSource,
         jstring nrChromaVSource,
         jstring nrLumaSource, jstring storeFragmentSource,
-        jstring blitFragmentSource) {
+        jstring blitFragmentSource, bool tenBit) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
 
@@ -3554,7 +3556,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
         gles::DevelopSession::open(v300, v310, pre, post, tail, sharpnessH,
                                    sharpnessV, detailH, detailV, warp,
                                    nrChromaH, nrChromaV, nrLuma, store, blit,
-                                   &detail);
+                                   &detail, tenBit);
     if (session == nullptr) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                  "develop session: " + detail +
@@ -3566,6 +3568,61 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
         gDevelopSessions[slot] = std::move(session);
     }
     return static_cast<jlong>(slot) + 1;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpen(
+        JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
+        jstring preFragmentSource, jstring postFragmentSource,
+        jstring tailFragmentSource, jstring sharpnessHSource,
+        jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
+        jstring warpFragmentSource, jstring nrChromaHSource,
+        jstring nrChromaVSource,
+        jstring nrLumaSource, jstring storeFragmentSource,
+        jstring blitFragmentSource) {
+    return developSessionOpenImpl(
+        env, vertexSource, vertex310Source, preFragmentSource,
+        postFragmentSource, tailFragmentSource, sharpnessHSource,
+        sharpnessVSource, detailHSource, detailVSource, warpFragmentSource,
+        nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
+        blitFragmentSource, /*tenBit=*/false);
+}
+
+// E1d: the same session on an RGBA1010102 config (10-bit encoder surface).
+JNIEXPORT jlong JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionOpenTenBit(
+        JNIEnv* env, jclass, jstring vertexSource, jstring vertex310Source,
+        jstring preFragmentSource, jstring postFragmentSource,
+        jstring tailFragmentSource, jstring sharpnessHSource,
+        jstring sharpnessVSource, jstring detailHSource, jstring detailVSource,
+        jstring warpFragmentSource, jstring nrChromaHSource,
+        jstring nrChromaVSource,
+        jstring nrLumaSource, jstring storeFragmentSource,
+        jstring blitFragmentSource) {
+    return developSessionOpenImpl(
+        env, vertexSource, vertex310Source, preFragmentSource,
+        postFragmentSource, tailFragmentSource, sharpnessHSource,
+        sharpnessVSource, detailHSource, detailVSource, warpFragmentSource,
+        nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
+        blitFragmentSource, /*tenBit=*/true);
+}
+
+// E1d: can this device make an RGBA1010102 + pbuffer + window + recordable
+// ES3 config? A throwaway EGL open on the calling thread; the failing step
+// lands in the error state's detail (previewLastError) when false.
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopTenBitProbe(
+        JNIEnv*, jclass) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    std::string detail;
+    const bool ok = gles::DevelopSession::probeTenBitConfig(&detail);
+    if (!ok) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "ten-bit probe: " + detail +
+                     " (recovery: 10-bit export stays unavailable on this device)");
+    }
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 // The develop session's render door (GRADE PARCEL, commit a + b): the 29

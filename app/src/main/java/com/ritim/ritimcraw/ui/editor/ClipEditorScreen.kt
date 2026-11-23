@@ -881,7 +881,9 @@ fun ClipEditorScreen(
     // Original = the source's effective size, exactly what every export
     // before the picker produced. DNG/LINEAR taps pass nulls (no
     // resolution seam); the MP4 tap carries the selected bound.
-    onExport: (Target, Int?, Int?) -> Unit = { _, _, _ -> },
+    onExport: (Target, Int?, Int?, com.ritim.ritimcraw.export.ExportSettings?) -> Unit = { _, _, _, _ -> },
+    // (E1c) the device's last measured export speed, for the export sheet's time estimate.
+    exportRate: com.ritim.ritimcraw.export.ExportSheetModel.Rate? = null,
     sourceFd: Int = -1,
     sourceFdProvider: () -> Int = { -1 },
     accessLost: Boolean = false,
@@ -4286,6 +4288,7 @@ fun ClipEditorScreen(
                     sourceId = sourceName ?: sourceId,
                     onBack = onBack,
                     onExport = onExport,
+                    exportRate = exportRate,
                     exportEnabled = sourceFd >= 0,
                     clipInfo = clipInfo,
                     // The export sheet's ladder composes the manual

@@ -52,6 +52,10 @@ struct EglSession {
     // causes). Nullptr for the default pbuffer-only open (nobody uses
     // it there) and after release().
     EGLConfig config = nullptr;
+    // The color depth of [config] as the driver REPORTS it
+    // (eglGetConfigAttrib after the choice — never assumed from the
+    // request). 0 until open() succeeds.
+    EGLint redBits = 0, greenBits = 0, blueBits = 0, alphaBits = 0;
 
     ~EglSession();
 
@@ -68,8 +72,17 @@ struct EglSession {
     // (EGL_ANDROID_recordable) — required when the window surface will
     // wrap a MediaCodec input Surface, so the codec's BufferQueue
     // accepts the producer. Only meaningful with windowCapable.
+    //
+    // tenBit (E1d): ask for an RGBA1010102 config INSTEAD of RGBA8888.
+    // The constant is not trusted: eglChooseConfig sorts by "at least"
+    // sizes and may rank a 16-bit float or 8-bit-alpha config first, so
+    // open() asks for up to 64 candidates and keeps the first whose
+    // REPORTED sizes (eglGetConfigAttrib) are exactly R=G=B=10, A=2 and
+    // that still carries the pbuffer + window (+ recordable) bits asked
+    // for. No such config = open() fails at step "ten-bit-config" and the
+    // caller reports 10-bit as unavailable (the probe the plan gates on).
     bool open(std::string* detail, bool windowCapable = false,
-              bool recordable = false);
+              bool recordable = false, bool tenBit = false);
 
     // Safe to call more than once; a no-op when nothing was created.
     void release();
