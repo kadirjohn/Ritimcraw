@@ -1107,6 +1107,12 @@ class NativeSource private constructor(
          * carries the EFFECTIVE value. A malformed parcel refuses the
          * render honestly (setError + null; the Kotlin gate falls the
          * preview back to CPU as always).
+         *
+         * A1 async stats (2026-11-23): statsMode is the LAST parameter —
+         * the per-request readback mode's native int
+         * (PreviewStatsMode.native: 0=off 1=sync 2=async). The bridge
+         * folds the master kill switch (gPreviewStatsEnabled) natively;
+         * the toggle can only force OFF, never upgrade.
          */
         @JvmStatic private external fun nativePreviewSessionRenderFrameParcel(
             sessionHandle: Long,
@@ -1123,6 +1129,7 @@ class NativeSource private constructor(
             lutOutTransfer: Int,
             warpActive: Boolean,
             warpM: FloatArray,
+            statsMode: Int,
         ): IntArray?
 
         @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
@@ -1816,7 +1823,9 @@ class NativeSource private constructor(
          * PARCEL (commit b): the preview session's ONLY render door — the
          * flat per-field wrapper died with the flat external decl. Same
          * no-default rule (the signature-lock test reflects over declared
-         * methods).
+         * methods). A1 async stats (2026-11-23): statsMode rides LAST —
+         * the per-request readback mode's native int (PreviewStatsMode.
+         * native), folded with the master kill switch on the native side.
          */
         internal fun jniPreviewSessionRenderFrameParcel(
             sessionHandle: Long,
@@ -1833,6 +1842,7 @@ class NativeSource private constructor(
             lutOutTransfer: Int,
             warpActive: Boolean,
             warpM: FloatArray,
+            statsMode: Int,
         ): IntArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
@@ -1840,7 +1850,7 @@ class NativeSource private constructor(
             return nativePreviewSessionRenderFrameParcel(
                 sessionHandle, clipHandle, frameIndex, maxDim, gradeParcel,
                 lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
-                lutOutGamut, lutOutTransfer, warpActive, warpM)
+                lutOutGamut, lutOutTransfer, warpActive, warpM, statsMode)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {

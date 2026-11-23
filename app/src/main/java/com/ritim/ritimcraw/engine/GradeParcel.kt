@@ -40,7 +40,7 @@ import com.ritim.ritimcraw.data.GradeK
  *   - the warp verdict: warpActive, warpM - per-frame plan output;
  *   - job mechanics: handles, frameIndex, maxDim, ptsUs, rotationDeg;
  *   - GradeK-only fields: version, lutId, lutInterp, the stabilization
- *     group, the crop group, statsEnabled.
+ *     group, the crop group, statsMode.
  *
  * REFUSAL CHANNELS (both honest, never a silent misread): the Kotlin
  * decode throws IllegalStateException with a recovery message; the C++

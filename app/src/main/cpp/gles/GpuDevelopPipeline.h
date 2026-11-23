@@ -40,7 +40,7 @@
 // readback + the encoder blit (the blit program stays session-side);
 // the preview session keeps the window pass (the window program stays
 // session-side), the stats pack (its own small scratch + SSBO) and the
-// statsEnabled toggle. The pipeline exposes accessors (developTex; the
+// statsMode readback mode. The pipeline exposes accessors (developTex; the
 // store program + its uniform locations; the withStoreScratch config's
 // scratch FBO + outBuf + outBytes) so each session runs its own store
 // draw and its own present.
@@ -175,20 +175,22 @@ struct DevelopFrameRequest {
     float warpM[9] = {1.0f, 0.0f, 0.0f,
                       0.0f, 1.0f, 0.0f,
                       0.0f, 0.0f, 1.0f};  // row-major M = Hinv * S
-    // The stats-readback measurement toggle (trace-dims fix 2026-11-14):
-    // true — the DEFAULT, and today's behavior — runs draw 3 + the
-    // mapped-SSBO readback and publishes the real stats pack; false skips
-    // BOTH entirely, and the published frame becomes the honest 1x1
-    // empty fallback (the zebra/scopes consumers degrade for the
-    // measurement run — the trace line reads stats=off). The flag RIDES
-    // the request (the gSyncRefine precedent) so the session reads it per
-    // render without a second native call; the JNI entry copies the
-    // bridge-level atomic onto every request. Release builds never flip
-    // the atomic, so the pack always publishes there. The PREVIEW session
-    // reads it; the develop session ignores it (its readback is the
+    // The stats-readback MODE (A1 async stats, 2026-11-23): the
+    // StatsRing.h StatsReadbackMode vocabulary — 0 = off (draw 3 + the
+    // readback skipped entirely; the honest 1x1 empty fallback publishes,
+    // the trace line reads stats=off), 1 = sync (the trace-dims fix's
+    // blocking mapped-SSBO readback, 2026-11-14 — the DEFAULT, and
+    // today's behavior), 2 = async (the 2-SSBO + fence ring: publish the
+    // frame N-1 pack only when its fence already signaled, never block).
+    // The Kotlin side computes it per request from scope demand + render
+    // class; the JNI entry folds the bridge-level master kill switch
+    // (gPreviewStatsEnabled) natively — toggle false forces 0. The mode
+    // RIDES the request (the gSyncRefine precedent) so the session reads
+    // it per render without a second native call. The PREVIEW session
+    // reads it; the develop session IGNORES it (its readback is the
     // render's contract, not a measurement); the pipeline itself never
     // touches it — the stats stage is session-side.
-    bool statsEnabled = true;
+    int statsMode = 1;
 };
 
 class GpuDevelopPipeline {

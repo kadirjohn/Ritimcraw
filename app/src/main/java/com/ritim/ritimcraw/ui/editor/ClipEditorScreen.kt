@@ -106,6 +106,7 @@ import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
 import com.ritim.ritimcraw.engine.PreviewSessions
 import com.ritim.ritimcraw.engine.PreviewQuality
+import com.ritim.ritimcraw.engine.PreviewStatsMode
 import com.ritim.ritimcraw.engine.PreviewTiers
 import com.ritim.ritimcraw.engine.RawHistogram
 import com.ritim.ritimcraw.engine.SourcePath
@@ -118,6 +119,8 @@ import com.ritim.ritimcraw.engine.PreviewTiers.RenderClass
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.engine.RenderTrace
+import com.ritim.ritimcraw.engine.keepsLastPublishedFrame
+import com.ritim.ritimcraw.engine.statsModeFor
 import com.ritim.ritimcraw.ui.editor.PublishCrop
 import com.ritim.ritimcraw.ui.components.CompactSegmentedRow
 import com.ritim.ritimcraw.ui.theme.RitimTheme
@@ -990,6 +993,15 @@ fun ClipEditorScreen(
     // takes the existing CPU path byte-identical. AUTO is a commit-c
     // concern (the capability gate); until then it reads as CPU here.
     renderBackend: RenderBackend = RenderBackend.CPU,
+    // A1 async stats (owner request 2026-11-23, guide A1): the debug
+    // Settings row's persisted stats-readback state (stores.previewStats),
+    // read fresh at editor composition — the Settings screen is a
+    // different screen, so the value is snapshotted here rather than
+    // observed. The NATIVE gPreviewStatsEnabled atomic remains the
+    // authoritative fold either way (the render door folds it); this
+    // parameter only keeps the Kotlin-side statsModeFor decision honest.
+    // Default true keeps every other caller byte-identical.
+    previewStatsEnabled: Boolean = true,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -2369,6 +2381,24 @@ fun ClipEditorScreen(
                                     req.grade, req.frameIndex, req.maxDim, req.sequence,
                                 )
                             }
+                            // A1 async stats (owner request 2026-11-23, guide
+                            // A1(a)): the per-request stats readback mode,
+                            // from the Task-1 pure fold. scopePresentation
+                            // != OFF covers the strip AND the mini — the
+                            // only consumers of the published pixels (the
+                            // scope compute reads `frame`, both shapes draw
+                            // from it); zebra forces the CPU path until A3,
+                            // so it is not a GPU-arm input. No scope visible
+                            // = OFF = the stats stage is skipped entirely
+                            // (the honest 1x1 placeholder path); PLAYBACK
+                            // with a scope = ASYNC (the fence ring);
+                            // settle/drag with a scope = SYNC (the paused
+                            // edit's scopes stay exact).
+                            val statsMode = statsModeFor(
+                                scopeVisible = scopePresentation != ScopePresentation.OFF,
+                                renderClass = req.renderClass,
+                                toggle = previewStatsEnabled,
+                            )
                             val gpuFrame = gpu.render(
                                 clipHandle = s.nativeClipHandle,
                                 frameIndex = req.frameIndex,
@@ -2410,6 +2440,9 @@ fun ClipEditorScreen(
                                 // identity no-draw rule).
                                 warpActive = warpActive,
                                 warpM = warpM,
+                                // A1: the per-request stats readback mode
+                                // (the demand x class x toggle fold above).
+                                statsMode = statsMode,
                             )
                             if (gpuFrame != null) {
                                 result = Result.success(gpuFrame)
@@ -2528,6 +2561,23 @@ fun ClipEditorScreen(
                                             f.width, f.height, currentManualRotationDeg,
                                         )
                                     }
+                                    // A1 async stats (owner request 2026-11-23,
+                                    // guide A1(b).3): an ASYNC frame that
+                                    // published the 1x1 miss marker carries NO
+                                    // pack — the fence for frame N-1 had not
+                                    // signaled yet. KEEP the last published
+                                    // frame state (the Compose `frame`, and
+                                    // with it the scope compute and the RAW
+                                    // histogram index) so the scopes simply
+                                    // hold one frame longer — the guide's
+                                    // documented one-frame lag, "the Kotlin
+                                    // side keeps the last scopes". Everything
+                                    // else (the window verdict, the dims, the
+                                    // trace line) still publishes: the render
+                                    // DID complete.
+                                    val keepLastStats = servedByGpuWindow &&
+                                        keepsLastPublishedFrame(f.statsMode, f.width, f.height)
+                                    if (!keepLastStats) {
                                     // Crop + straighten (RAW-09), OFF the
                                     // main thread (audit fix 2026-11-13): the
                                     // published preview is the GRADED frame
@@ -2570,8 +2620,13 @@ fun ClipEditorScreen(
                                     // beside the frame (feature N6): the
                                     // scope compute's RAW fetch asks for
                                     // stats of THIS frame, never guessing
-                                    // the index from transport state.
+                                    // the index from transport state. An
+                                    // async miss keeps the LAST index too
+                                    // (inside the same keep-last guard) —
+                                    // the RAW fetch stays keyed to the pack
+                                    // the scopes still show.
                                     renderedFrameIndex = req.frameIndex
+                                    }
                                     // The production render trace line (audit
                                     // M0): ONE line per COMPLETED render, at the
                                     // completion point. out= is the developed
@@ -2621,7 +2676,7 @@ fun ClipEditorScreen(
                                             developH = f.developH,
                                             surfaceW = f.surfaceW,
                                             surfaceH = f.surfaceH,
-                                            statsEnabled = f.statsEnabled,
+                                            statsMode = f.statsMode,
                                             decMs = f.decMs,
                                             cfaMs = f.cfaMs,
                                             upMs = f.upMs,

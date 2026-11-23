@@ -36,7 +36,7 @@ class RenderTraceTest {
         developH: Int = 0,
         surfaceW: Int = 0,
         surfaceH: Int = 0,
-        statsEnabled: Boolean = true,
+        statsMode: PreviewStatsMode = PreviewStatsMode.SYNC,
         decMs: Double = 0.0,
         cfaMs: Double = 0.0,
         upMs: Double = 0.0,
@@ -47,7 +47,7 @@ class RenderTraceTest {
         sequence, frameIndex, renderClass, requestedMaxDim,
         outW, outH, renderMs, grade, temporalNrApplied, stabilizationApplied,
         servedByGpu, sourceW, sourceH, developW, developH, surfaceW, surfaceH,
-        statsEnabled, decMs, cfaMs, upMs, devMs, presentMs, statsMs,
+        statsMode, decMs, cfaMs, upMs, devMs, presentMs, statsMs,
     )
 
     // ---- the line: field order and naming ----
@@ -112,7 +112,7 @@ class RenderTraceTest {
             "seq=12 frame=34 class=settle req=1280 out=256x144 " +
                 "backend=gles ms=62 grade=neutral " +
                 "source=4032x3024 develop=1280x960 surface=1080x810 " +
-                "stats=256x144 dec=18.4ms cfa=2.7ms up=1.2ms dev=3.9ms " +
+                "stats=256x144 statsMode=sync dec=18.4ms cfa=2.7ms up=1.2ms dev=3.9ms " +
                 "present=1.1ms stats=0.8ms",
             RenderTrace.line(
                 record(
@@ -129,16 +129,47 @@ class RenderTraceTest {
     }
 
     @Test
-    fun gpu_served_with_stats_disabled_reads_stats_off() {
-        // The A/B instrument: the toggle off skips draw 3 + the readback
-        // entirely — the stats= dims field reads "off" (the ms field still
+    fun gpu_served_async_line_carries_the_async_mode_field() {
+        // A1 async stats (2026-11-23): the playback leg — statsMode=async
+        // immediately after stats=<dims>, before dec=. The one-frame-late
+        // pack publishes with real dims; the owner's grep key.
+        assertEquals(
+            "seq=9 frame=210 class=playback req=720 out=256x144 " +
+                "backend=gles ms=27 grade=neutral " +
+                "source=3840x2160 develop=1280x720 surface=1080x607 " +
+                "stats=256x144 statsMode=async dec=18.6ms cfa=1.2ms up=0.5ms dev=0.1ms " +
+                "present=0.3ms stats=1.2ms",
+            RenderTrace.line(
+                record(
+                    sequence = 9L, frameIndex = 210,
+                    renderClass = PreviewTiers.RenderClass.PLAYBACK,
+                    requestedMaxDim = PreviewTiers.PLAYBACK_MAX_DIM,
+                    servedByGpu = true,
+                    outW = 256, outH = 144,
+                    sourceW = 3840, sourceH = 2160,
+                    developW = 1280, developH = 720,
+                    surfaceW = 1080, surfaceH = 607,
+                    statsMode = PreviewStatsMode.ASYNC,
+                    renderMs = 27L,
+                    decMs = 18.6, cfaMs = 1.2, upMs = 0.5,
+                    devMs = 0.1, presentMs = 0.3, statsMs = 1.2,
+                )
+            ),
+        )
+    }
+
+    @Test
+    fun gpu_served_with_mode_off_reads_stats_off_and_the_off_mode_field() {
+        // The A/B instrument (A1, 2026-11-23): no scope visible — the
+        // stats stage skipped entirely, so the stats= dims field reads
+        // "off", the mode field reads statsMode=off (the ms field still
         // prints, 0.0 — the stage never ran, the honest zero), and the
         // published pack degraded to the 1x1 fallback shows in out=.
         assertEquals(
             "seq=12 frame=34 class=settle req=1280 out=1x1 " +
                 "backend=gles ms=62 grade=neutral " +
                 "source=4032x3024 develop=1280x960 surface=1080x810 " +
-                "stats=off dec=18.4ms cfa=2.7ms up=1.2ms dev=3.9ms " +
+                "stats=off statsMode=off dec=18.4ms cfa=2.7ms up=1.2ms dev=3.9ms " +
                 "present=1.1ms stats=0.0ms",
             RenderTrace.line(
                 record(
@@ -147,7 +178,7 @@ class RenderTraceTest {
                     sourceW = 4032, sourceH = 3024,
                     developW = 1280, developH = 960,
                     surfaceW = 1080, surfaceH = 810,
-                    statsEnabled = false,
+                    statsMode = PreviewStatsMode.OFF,
                     decMs = 18.4, cfaMs = 2.7, upMs = 1.2,
                     devMs = 3.9, presentMs = 1.1, statsMs = 0.0,
                 )
@@ -181,7 +212,7 @@ class RenderTraceTest {
         // (the A/B's per-stage story) stay exactly what the CPU legs pin —
         // the measurement block appends AFTER grade=.
         assertEquals(
-            "tonemap=agx source=0x0 develop=0x0 surface=0x0 stats=1280x720 " +
+            "tonemap=agx source=0x0 develop=0x0 surface=0x0 stats=1280x720 statsMode=sync " +
                 "dec=0.0ms cfa=0.0ms up=0.0ms dev=0.0ms present=0.0ms stats=0.0ms",
             RenderTrace.line(record(grade = GradeK(tonemap = 2), servedByGpu = true))
                 .substringAfter("grade="),
