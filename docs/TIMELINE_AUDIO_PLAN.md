@@ -590,6 +590,15 @@ gone, undo returns the previous state.
   commit).
 - This plan document: **planned / review-pending** — the owner reads
   it; the integrator owns every §3.4/§4.3/§5.3 decision.
+- 2026-11-23: the pure MIX PASS reference landed —
+  `data/timeline/AudioMixer.kt` (+10 host tests) walks an AudioMixPlan
+  block by block into interleaved stereo 16-bit PCM: equal-rate
+  passthrough bit-exact, cross-rate by timestamp with an explicit
+  LINEAR / NEAREST kernel (the §6.3 item 1 listening decision is still
+  the owner's), window/decoded-length clamps to silence, saturation +
+  clipping count + peak/RMS meters (AUD-07), missing sources reported.
+  It is the arithmetic both §5.3 homes (export pass, playback mixer)
+  should call; the codec-side wiring is still the integrator's.
 - Nothing in the app imports the model yet; no runtime behavior
   changed. Timeline playback still plays one clip at the source rate;
   timeline export still starts the writer video-only — wiring those
