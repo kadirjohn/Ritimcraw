@@ -362,7 +362,7 @@
     <string name="export_preset_smaller">Smaller</string>
     <string name="export_preset_quality">Quality</string>
     <string name="export_preset_custom">Custom</string>
-    <string name="export_preset_quality_note">Quality uses HEVC at the highest bitrate level. A 10-bit version comes later.</string>
+    <string name="export_preset_quality_note">Quality uses HEVC at the highest bitrate level. It becomes 10-bit when this export can use the GPU path.</string>
     <string name="export_produced_title">What will be produced</string>
     <string name="export_produced_line">%1$s × %2$s · %3$s fps · %4$s · %5$d-bit · %6$s Mbps</string>
     <string name="export_estimate_both">About %1$s · about %2$s to export</string>
@@ -401,7 +401,7 @@
     <string name="export_issue_size_unknown">The phone does not say whether %1$s works. The encode will decide.</string>
     <string name="export_issue_rate_unlisted">The encoder does not list %1$s fps at this size. It may choose another rate.</string>
     <string name="export_issue_ten_bit_unsupported">No encoder here takes 10-bit. The file will be 8-bit.</string>
-    <string name="export_issue_ten_bit_unavailable">10-bit export is not available for this export. The file will be 8-bit.</string>
+    <string name="export_issue_ten_bit_unavailable">10-bit needs the original size, no crop or straighten, a grade the GPU path supports and a 10-bit encoder. Here it is not available, so the file will be 8-bit.</string>
     <string name="export_issue_range_unavailable">%1$s is not available yet. The file will be SDR.</string>
     <string name="export_issue_rate_mode">The encoder does not offer %1$s. The export will use %2$s.</string>
     <string name="export_issue_above_ceiling">%1$s Mbps is above the encoder\'s listed maximum. It is lowered to %2$s Mbps.</string>
@@ -416,6 +416,10 @@
     <string name="export_help_keyframes">How often a full picture is stored. Shorter is easier to edit and seek, longer is smaller. Every frame is the largest and the easiest to edit.</string>
     <string name="export_help_profile">Auto lets the encoder choose. Pick one only if a player needs it.</string>
     <string name="export_help_audio">Audio quality of the AAC track. The sample rate and channel count follow the clip.</string>
+    <string name="export_bit_depth">Bit depth</string>
+    <string name="export_ten_bit_needs">10-bit needs the original size, no crop or straighten, a grade the GPU path supports and a 10-bit encoder. It is made on the GPU path only.</string>
+    <string name="export_help_bit_depth">10-bit (HEVC Main10) keeps smooth gradients like skies without banding. It is rendered on the GPU path at the original size. Players need to support 10-bit HEVC.</string>
+    <string name="exports_report_ten_bit_dropped">10-bit was asked for but not available for this export. The file is 8-bit.</string>
     <string name="exports_job_open">Open</string>
     <string name="exports_open_missing_title">Export not available</string>
     <string name="exports_open_missing_body">The finished file could not be found or opened. Recovery: export the clip again.</string>

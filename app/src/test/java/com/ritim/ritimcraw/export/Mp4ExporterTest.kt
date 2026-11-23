@@ -3854,4 +3854,151 @@ class Mp4ExporterTest {
         assertEquals(2, gpu.encoderRendered.size)
         assertEquals(0, writer.adoptCalls.size)
     }
+
+    // ---- E1d: 10-bit HEVC Main10 on the GPU encoder-surface path ----
+
+    /** The fake GPU seam plus the 10-bit door: [tenBitSession] is what openSessionTenBit returns. */
+    private class TenBitGpu(
+        val inner: FakeGpuDevelop,
+        private val probeOk: Boolean = true,
+        private val tenBitSession: Long = 2L,
+    ) : GpuDevelop by inner {
+        var tenBitOpens = 0
+        override fun tenBitProbe(): Boolean = probeOk
+        override fun openSessionTenBit(): Long {
+            tenBitOpens++
+            return tenBitSession
+        }
+    }
+
+    private val tenFacts = listOf(
+        EncoderFacts(
+            "c2.test.hevc", "video/hevc", true, profiles = setOf(1, 2),
+            colorFormats = setOf(54, 0x7F00AAA2), bitrateModes = setOf(1, 2),
+            bitrateRangeBps = 1_000_000..160_000_000, maxWidth = 8192, maxHeight = 8192,
+        ),
+    )
+
+    private fun tenRun(settings: ExportSettings = ExportSettings(codec = ExportCodec.HEVC, bitDepth = 10)) =
+        ExportPlanRun(settings, { tenFacts })
+
+    /** The eligible 1:1 geometry recipe (container 90 + manual 270 = effective 0 on a 4x4 square). */
+    private fun runTen(gpu: GpuDevelop, writer: Mp4MediaWriter, run: ExportPlanRun, backend: RenderBackend = RenderBackend.GPU_EXPERIMENTAL) =
+        ExportPipeline(
+            FakeSession(frames = 3, audio = false), writer,
+            renderBackend = backend, gpuDevelop = gpu, planRun = run,
+        ).run(7, GradeK(), "/tmp/out.partial", manualRotationDeg = 270)
+
+    @Test
+    fun ten_bit_gpu_path_opens_the_ten_bit_session_and_plans_main10() {
+        val inner = FakeGpuDevelop()
+        val gpu = TenBitGpu(inner)
+        val writer = SessionSurfaceWriter()
+        val run = tenRun()
+        runTen(gpu, writer, run)
+        val plan = run.plan!!
+        assertEquals(10, plan.bitDepth)
+        assertEquals(2, plan.profile) // HEVC Main10
+        assertEquals("c2.test.hevc", plan.encoderName)
+        assertEquals(1, gpu.tenBitOpens)
+        assertEquals(0, inner.openCalls) // the 8-bit door never ran
+        assertEquals(listOf(0, 1, 2), inner.encoderRendered)
+        assertEquals(0, writer.adoptCalls.size)
+        assertFalse(plan.issues.any { it.kind == ExportIssue.Kind.TEN_BIT_UNAVAILABLE })
+    }
+
+    @Test
+    fun ten_bit_without_the_gpu_backend_plans_8_bit_with_the_issue() {
+        val inner = FakeGpuDevelop()
+        val run = tenRun()
+        val writer = FakeWriter()
+        ExportPipeline(
+            FakeSession(frames = 2, audio = false), writer,
+            renderBackend = RenderBackend.CPU, gpuDevelop = TenBitGpu(inner), planRun = run,
+        ).run(7, GradeK(), "/tmp/out.partial")
+        val plan = run.plan!!
+        assertEquals(8, plan.bitDepth) // the CPU develop is 8-bit RGB888: no CPU 10-bit
+        assertTrue(plan.issues.any { it.kind == ExportIssue.Kind.TEN_BIT_UNAVAILABLE })
+        assertEquals(10, plan.requested.bitDepth)
+        assertTrue(plan.differsFromRequest)
+        assertTrue(run.steps.any { it.startsWith("ten-bit path:") })
+    }
+
+    @Test
+    fun ten_bit_needs_the_egl_config_probe() {
+        val inner = FakeGpuDevelop()
+        val gpu = TenBitGpu(inner, probeOk = false)
+        val run = tenRun()
+        runTen(gpu, SessionSurfaceWriter(), run)
+        assertEquals(8, run.plan!!.bitDepth)
+        assertEquals(0, gpu.tenBitOpens)
+        assertEquals(1, inner.openCalls) // the ordinary 8-bit session served it
+    }
+
+    @Test
+    fun a_refused_ten_bit_surface_throws_instead_of_adopting_8_bit_frames() {
+        val inner = FakeGpuDevelop(refuseEncoderSurface = true)
+        val writer = SessionSurfaceWriter()
+        val run = tenRun()
+        val e = runCatching { runTen(TenBitGpu(inner), writer, run) }.exceptionOrNull()
+        assertTrue(e is TenBitUnavailable)
+        assertFalse((e as TenBitUnavailable).midStream)
+        assertEquals(0, writer.adoptCalls.size) // no 8-bit-in-10-bit adoption
+        assertEquals(0, writer.rgbFrames)
+    }
+
+    @Test
+    fun a_ten_bit_session_that_cannot_open_throws_before_any_frame() {
+        val e = runCatching {
+            runTen(TenBitGpu(FakeGpuDevelop(), tenBitSession = 0L), SessionSurfaceWriter(), tenRun())
+        }.exceptionOrNull()
+        assertTrue(e is TenBitUnavailable)
+        assertFalse((e as TenBitUnavailable).midStream)
+    }
+
+    @Test
+    fun a_ten_bit_render_failure_after_frames_fails_the_export_not_a_mixed_file() {
+        val inner = FakeGpuDevelop(failEncoderRenderFrom = 1)
+        val writer = SessionSurfaceWriter()
+        val e = runCatching { runTen(TenBitGpu(inner), writer, tenRun()) }.exceptionOrNull()
+        assertTrue(e is TenBitUnavailable)
+        assertTrue((e as TenBitUnavailable).midStream)
+        assertEquals(0, writer.adoptCalls.size)
+    }
+
+    @Test
+    fun the_exporter_replans_8_bit_once_with_the_reason_when_the_ten_bit_session_fails() {
+        val gpu = TenBitGpu(FakeGpuDevelop(refuseEncoderSurface = true))
+        val seen = ArrayList<SessionSurfaceWriter>()
+        // the session writer plus a staged file at finish (the exporter renames it)
+        class FileWriter(val inner: SessionSurfaceWriter) : Mp4MediaWriter by inner {
+            var path: String? = null
+            override fun start(outPath: String, width: Int, height: Int, orientationDeg: Int, sampleRate: Int, channels: Int) {
+                path = outPath
+                inner.start(outPath, width, height, orientationDeg, sampleRate, channels)
+            }
+            override fun finish(): Boolean { File(path!!).writeBytes(ByteArray(64)); return true }
+        }
+        val exporter = Mp4Exporter(
+            session = FakeSession(frames = 3, audio = false),
+            writerFactory = { FileWriter(SessionSurfaceWriter().also { seen += it }) },
+            engine = freshEngine(),
+            gpuDevelop = gpu,
+            encoderFacts = { tenFacts },
+            planLog = {},
+        )
+        val job = ExportJob(
+            "j", "src", GradeK(), Target.MP4, State.QUEUED, renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            manualRotationDeg = 270, settings = ExportSettings(codec = ExportCodec.HEVC, bitDepth = 10),
+        )
+        val out = File(tmp.root, "ten.mp4")
+        val r = runBlocking { exporter.export(job, 7, out) }
+        assertEquals(r.detail, State.DONE, r.state)
+        assertEquals(2, seen.size) // the first attempt, then ONE 8-bit re-plan
+        val rep = r.report!!
+        assertEquals(8, rep.bitDepth) // honest: the file is 8-bit and says why
+        assertTrue(rep.issues.any { it.startsWith("TEN_BIT_UNAVAILABLE:") })
+        assertTrue(rep.steps.any { it.startsWith("fix: 10-bit -> 8-bit") })
+        assertTrue(ExportText.tenBitDropped(rep))
+    }
 }

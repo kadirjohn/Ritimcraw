@@ -223,6 +223,21 @@ class ExportPlannerTest {
     }
 
     @Test
+    fun avc_ten_bit_asks_for_high10_not_high() {
+        val avc10 = listOf(
+            EncoderFacts(
+                "c2.t.avc", "video/avc", true, profiles = setOf(1, 2, 8, 16),
+                colorFormats = setOf(P010, SURFACE), bitrateModes = CBR_VBR, maxWidth = 4096, maxHeight = 4096,
+            ),
+        )
+        val p = ExportPlanner.resolve(
+            ExportSettings(codec = ExportCodec.AVC, bitDepth = 10), fhd30, avc10, ExportContext(tenBitPathAvailable = true),
+        )
+        assertEquals(10, p.bitDepth)
+        assertEquals(16, p.profile)
+    }
+
+    @Test
     fun ten_bit_the_encoder_cannot_do_degrades_to_8_bit_with_an_issue() {
         val ctx = ExportContext(tenBitPathAvailable = true)
         val plan = ExportPlanner.resolve(ExportSettings(bitDepth = 10), fhd30, weak, ctx)

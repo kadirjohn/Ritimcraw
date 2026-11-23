@@ -317,8 +317,9 @@ object ExportPlanner {
         // 4. Profile.
         var profile: Int? = when {
             eff.profile != null -> eff.profile
-            eff.codec == ExportCodec.AVC -> ExportPlan.AVC_PROFILE_HIGH
+            // 10-bit first: AVC 10-bit is High10, not High (E1d).
             eff.bitDepth == 10 -> EncoderFacts.tenBitProfile(eff.codec.mime)
+            eff.codec == ExportCodec.AVC -> ExportPlan.AVC_PROFILE_HIGH
             else -> null
         }
         if (eff.profile != null && encoder != null && encoder.profiles.isNotEmpty() && eff.profile !in encoder.profiles) {

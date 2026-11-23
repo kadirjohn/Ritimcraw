@@ -1519,7 +1519,16 @@ fun AppNav(
                                     // in-flight export. Only MP4 jobs reach
                                     // the GPU seam (the writer's Surface
                                     // mode); DNG/PHOTO/LINEAR ignore it.
-                                    renderBackend = renderBackend,
+                                    // (E1d) a 10-bit export exists only on the GPU
+                                    // encoder-surface path, so such a job asks for it
+                                    // whatever the settings picker holds; the exporter
+                                    // re-plans 8-bit (reason on the report) when the
+                                    // grade, size or device cannot use it.
+                                    renderBackend = if (target == Target.MP4 && exportSettings?.bitDepth == 10) {
+                                        RenderBackend.GPU_EXPERIMENTAL
+                                    } else {
+                                        renderBackend
+                                    },
                                     // Resolution bound snapshot at queue time
                                     // (owner request 2026-11-13, the same
                                     // grade-snapshot rule): the pair the

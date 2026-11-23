@@ -39,6 +39,9 @@ object ExportFormats {
      * planner resolves them to SDR, so this builder only ever sees SDR.
      */
     fun video(plan: ExportPlan, surface: Boolean): FormatSpec {
+        // 10-bit frames exist only on the GPU encoder-surface path: the CPU
+        // develop output is 8-bit RGB888, so a 10-bit CPU format would be a lie.
+        require(!(plan.bitDepth == 10 && !surface)) { "10-bit needs the encoder-Surface input" }
         val v = LinkedHashMap<String, Number>()
         v[MediaFormat.KEY_COLOR_FORMAT] = if (surface) {
             MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface

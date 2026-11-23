@@ -65,7 +65,10 @@ import com.ritim.ritimcraw.export.ExportSettingsPrefs
 import com.ritim.ritimcraw.export.ExportSheetModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.engine.BackendRules
+import com.ritim.ritimcraw.export.NativeGpuDevelop
 import com.ritim.ritimcraw.data.GradePreset
 import com.ritim.ritimcraw.export.ExportResolution
 import com.ritim.ritimcraw.export.Target
@@ -344,7 +347,31 @@ private fun ExportSheet(
     } else {
         null
     }
-    val plan = subject?.let { ExportSheetModel.plan(settings, it, facts) }
+    // (E1d) 10-bit availability for THIS export: the device offers an
+    // RGBA1010102 EGL config (a throwaway native probe, off the UI thread),
+    // the size is Original, nothing is cropped/straightened, and every grade
+    // stage runs on the GPU. The exporter re-checks it at run time.
+    val tenBitProbe by produceState(false) {
+        value = withContext(Dispatchers.Default) {
+            try {
+                NativeGpuDevelop.tenBitProbe()
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+    val gradeOnGpu = remember(grade) {
+        BackendRules.fragmentUncoveredStages(grade, true).isEmpty() &&
+            BackendRules.fragmentUncoveredPreStages(grade).isEmpty()
+    }
+    val exportContext = ExportSheetModel.tenBitContext(
+        probeOk = tenBitProbe,
+        originalSize = bound == null,
+        cropFull = CropState.isFull(CropState.RectF(grade.cropX, grade.cropY, grade.cropW, grade.cropH)),
+        straightenZero = grade.straightenDeg == 0f,
+        gradeOnGpu = gradeOnGpu,
+    )
+    val plan = subject?.let { ExportSheetModel.plan(settings, it, facts, exportContext) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -378,6 +405,7 @@ private fun ExportSheet(
                     subject = subject,
                     facts = facts,
                     rate = exportRate,
+                    tenBitAvailable = exportContext.tenBitPathAvailable,
                     onUseResolution = { w, h ->
                         selectedKind = ExportResolution.Kind.CUSTOM
                         customWidthText = w.toString()

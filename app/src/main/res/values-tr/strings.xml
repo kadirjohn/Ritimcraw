@@ -359,7 +359,7 @@
     <string name="export_preset_smaller">Küçük</string>
     <string name="export_preset_quality">Kalite</string>
     <string name="export_preset_custom">Özel</string>
-    <string name="export_preset_quality_note">Kalite, en yüksek bit hızı seviyesinde HEVC kullanır. 10-bit sürümü sonra gelecek.</string>
+    <string name="export_preset_quality_note">Kalite, en yüksek bit hızı seviyesinde HEVC kullanır. Bu dışa aktarma GPU yolunu kullanabiliyorsa 10-bit olur.</string>
     <string name="export_produced_title">Ne üretilecek</string>
     <string name="export_produced_line">%1$s × %2$s · %3$s kare/sn · %4$s · %5$d-bit · %6$s Mbps</string>
     <string name="export_estimate_both">Yaklaşık %1$s · dışa aktarma yaklaşık %2$s</string>
@@ -398,7 +398,7 @@
     <string name="export_issue_size_unknown">Telefon %1$s boyutunun çalışıp çalışmadığını bildirmiyor. Kodlama sırasında anlaşılacak.</string>
     <string name="export_issue_rate_unlisted">Kodlayıcı bu boyutta %1$s kare/sn bildirmiyor. Başka bir hız seçebilir.</string>
     <string name="export_issue_ten_bit_unsupported">Burada hiçbir kodlayıcı 10-bit almıyor. Dosya 8-bit olacak.</string>
-    <string name="export_issue_ten_bit_unavailable">10-bit dışa aktarma bu dışa aktarma için kullanılamıyor. Dosya 8-bit olacak.</string>
+    <string name="export_issue_ten_bit_unavailable">10-bit için özgün boyut, kırpma ve düzeltme olmaması, GPU yolunun desteklediği bir ayar ve 10-bit kodlayıcı gerekir. Burada kullanılamıyor, dosya 8-bit olacak.</string>
     <string name="export_issue_range_unavailable">%1$s henüz kullanılamıyor. Dosya SDR olacak.</string>
     <string name="export_issue_rate_mode">Kodlayıcı %1$s sunmuyor. Dışa aktarma %2$s kullanacak.</string>
     <string name="export_issue_above_ceiling">%1$s Mbps, kodlayıcının bildirdiği üst sınırın üstünde. %2$s Mbps\'ye düşürülür.</string>
@@ -413,6 +413,10 @@
     <string name="export_help_keyframes">Tam bir görüntünün ne sıklıkla saklandığı. Kısa olan düzenlemesi ve ileri sarması kolay, uzun olan daha küçüktür. Her kare en büyük ve düzenlemesi en kolay olandır.</string>
     <string name="export_help_profile">Otomatik, seçimi kodlayıcıya bırakır. Yalnızca bir oynatıcı istiyorsa seçin.</string>
     <string name="export_help_audio">AAC ses parçasının kalitesi. Örnekleme hızı ve kanal sayısı klibi izler.</string>
+    <string name="export_bit_depth">Bit derinliği</string>
+    <string name="export_ten_bit_needs">10-bit için özgün boyut, kırpma ve düzeltme olmaması, GPU yolunun desteklediği bir ayar ve 10-bit kodlayıcı gerekir. Yalnızca GPU yolunda üretilir.</string>
+    <string name="export_help_bit_depth">10-bit (HEVC Main10) gökyüzü gibi yumuşak geçişleri bantlaşma olmadan korur. Özgün boyutta GPU yolunda üretilir. Oynatıcının 10-bit HEVC desteklemesi gerekir.</string>
+    <string name="exports_report_ten_bit_dropped">10-bit istendi ama bu dışa aktarma için kullanılamadı. Dosya 8-bit.</string>
     <string name="exports_job_open">Aç</string>
     <string name="exports_open_missing_title">Dışa aktarım kullanılamıyor</string>
     <string name="exports_open_missing_body">Tamamlanan dosya bulunamadı veya açılamadı. Çözüm: klibi tekrar dışa aktarın.</string>

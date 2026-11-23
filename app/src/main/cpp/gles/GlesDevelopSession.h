@@ -236,7 +236,17 @@ public:
         const std::string& nrLumaSource,
         const std::string& storeFragmentSource,
         const std::string& blitFragmentSource,
-        std::string* detail);
+        std::string* detail,
+        // E1d: open the session on an RGBA1010102 + window + recordable
+        // EGL config (chosen by query, see EglSession::open). False =
+        // RGBA8888, byte-identical to before.
+        bool tenBit = false);
+
+    // E1d: can this device make an RGBA1010102 + pbuffer + window +
+    // recordable ES3 config at all? A throwaway EGL open on the calling
+    // thread (the capabilities-probe shape); *detail names the failing
+    // step. The plan gates 10-bit on this, never on an assumed constant.
+    static bool probeTenBitConfig(std::string* detail);
 
     // Drains (at most one in-flight render — the bounded design) and joins
     // the GL thread; all GL teardown happens on that thread. Idempotent.

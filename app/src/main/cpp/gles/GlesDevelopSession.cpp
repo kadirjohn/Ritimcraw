@@ -234,7 +234,11 @@ struct DevelopSession::Impl {
                         const std::string& nrLumaSource,
                         const std::string& storeFragmentSource,
                         const std::string& blitFragmentSource,
-                        std::string* detail);
+                        std::string* detail,
+                        bool tenBit);
+    // E1d: true when the session's EGL config is RGBA1010102 (the
+    // encoder surface then receives 10-bit frames). Set by init.
+    bool tenBitConfig = false;
     void runJob(const DevelopFrameRequest& req, DevelopFrameResult& out);
     // The shared develop pass — the pipeline.draw() delegate above; the
     // part runJob and runEncoderJob share verbatim. False with out.detail
@@ -326,6 +330,12 @@ void DevelopSession::Impl::glThreadLoop() {
 
 // ---- open -------------------------------------------------------------------
 
+bool DevelopSession::probeTenBitConfig(std::string* detail) {
+    EglSession egl;
+    return egl.open(detail, /*windowCapable=*/true, /*recordable=*/true,
+                    /*tenBit=*/true);
+}
+
 std::unique_ptr<DevelopSession> DevelopSession::open(
         const std::string& vertexSource,
         const std::string& vertex310Source,
@@ -342,7 +352,8 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
         const std::string& nrLumaSource,
         const std::string& storeFragmentSource,
         const std::string& blitFragmentSource,
-        std::string* detail) {
+        std::string* detail,
+        bool tenBit) {
     std::unique_ptr<DevelopSession> session(new DevelopSession);
     session->impl_ = std::unique_ptr<Impl>(new Impl);
     Impl* impl = session->impl_.get();
@@ -366,7 +377,7 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
          postFragmentSource, tailFragmentSource, sharpnessHSource,
          sharpnessVSource, detailHSource, detailVSource, warpFragmentSource,
          nrChromaHSource, nrChromaVSource, nrLumaSource, storeFragmentSource,
-         blitFragmentSource, &initMutex,
+         blitFragmentSource, tenBit, &initMutex,
          &initCv, &initReported, &initOk, &initDetail]() {
             std::string d;
             const bool ok = impl->initOnGlThread(
@@ -375,7 +386,8 @@ std::unique_ptr<DevelopSession> DevelopSession::open(
                 sharpnessVSource, detailHSource, detailVSource,
                 warpFragmentSource,
                 nrChromaHSource, nrChromaVSource,
-                nrLumaSource, storeFragmentSource, blitFragmentSource, &d);
+                nrLumaSource, storeFragmentSource, blitFragmentSource, &d,
+                tenBit);
             // Report init's outcome to open() FIRST, then serve the loop
             // (or exit it on failure — open() joins the thread below).
             {
@@ -439,7 +451,8 @@ bool DevelopSession::Impl::initOnGlThread(
         const std::string& nrLumaSource,
         const std::string& storeFragmentSource,
         const std::string& blitFragmentSource,
-        std::string* detail) {
+        std::string* detail,
+        bool tenBit) {
     // --- EGL + capability gates (THIS context, not the probe's) ------------
     std::string d;
     // windowCapable + recordable: the session's config must be able to
@@ -448,10 +461,15 @@ bool DevelopSession::Impl::initOnGlThread(
     // the session's own current surface; the recordable flag is what the
     // codec's BufferQueue consumer needs from the producer config
     // (EGL_ANDROID_recordable).
-    if (!egl.open(&d, /*windowCapable=*/true, /*recordable=*/true)) {
+    // tenBit (E1d): the same window + recordable config, but RGBA1010102
+    // found by QUERY (EglSession::open) - the encoder surface then takes
+    // 10-bit frames from the SAME blit (the develop tail already applied the
+    // OETF once; the surface only quantizes to 10 bits).
+    if (!egl.open(&d, /*windowCapable=*/true, /*recordable=*/true, tenBit)) {
         *detail = "egl: " + d;
         return false;
     }
+    tenBitConfig = tenBit;
     // The ES 3.1 + EXT_color_buffer_float gates now live INSIDE the
     // pipeline's init (the same messages, the same order — the chain owns
     // them because they gate the chain's own renderability, and both

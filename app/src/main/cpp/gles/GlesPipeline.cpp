@@ -158,7 +158,7 @@ GLuint linkProgram(GLuint vert, GLuint frag, const char* stage, std::string* det
 EglSession::~EglSession() { release(); }
 
 bool EglSession::open(std::string* detail, bool windowCapable,
-                      bool recordable) {
+                      bool recordable, bool tenBit) {
     const char* step = "eglGetDisplay";
     display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (display == EGL_NO_DISPLAY) goto fail;
@@ -173,11 +173,16 @@ bool EglSession::open(std::string* detail, bool windowCapable,
         // Surface's consumer needs from the producer config.
         EGLint surfaceType = EGL_PBUFFER_BIT;
         if (windowCapable) surfaceType |= EGL_WINDOW_BIT;
+        // The color request: RGBA8888 by default; with tenBit the
+        // 10/10/10/2 request (a minimum - the exact-depth filter below
+        // keeps only a true RGBA1010102 config).
+        const EGLint rgb = tenBit ? 10 : 8;
+        const EGLint alpha = tenBit ? 2 : 8;
         std::vector<EGLint> configAttribs = {
-            EGL_RED_SIZE, 8,
-            EGL_GREEN_SIZE, 8,
-            EGL_BLUE_SIZE, 8,
-            EGL_ALPHA_SIZE, 8,
+            EGL_RED_SIZE, rgb,
+            EGL_GREEN_SIZE, rgb,
+            EGL_BLUE_SIZE, rgb,
+            EGL_ALPHA_SIZE, alpha,
             EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
             EGL_SURFACE_TYPE, surfaceType,
         };
@@ -187,9 +192,40 @@ bool EglSession::open(std::string* detail, bool windowCapable,
         }
         configAttribs.push_back(EGL_NONE);
         EGLint n = 0;
-        if (!eglChooseConfig(display, configAttribs.data(), &config, 1, &n) || n < 1) {
-            goto fail;
+        if (!tenBit) {
+            if (!eglChooseConfig(display, configAttribs.data(), &config, 1, &n) || n < 1) {
+                goto fail;
+            }
+        } else {
+            // Query, never assume: pick the first candidate whose
+            // REPORTED sizes are exactly 10/10/10/2.
+            EGLConfig candidates[64];
+            if (!eglChooseConfig(display, configAttribs.data(), candidates, 64, &n) || n < 1) {
+                step = "ten-bit-config";
+                goto fail;
+            }
+            config = nullptr;
+            for (EGLint i = 0; i < n; ++i) {
+                EGLint r = 0, g = 0, b = 0, a = 0;
+                if (eglGetConfigAttrib(display, candidates[i], EGL_RED_SIZE, &r) &&
+                    eglGetConfigAttrib(display, candidates[i], EGL_GREEN_SIZE, &g) &&
+                    eglGetConfigAttrib(display, candidates[i], EGL_BLUE_SIZE, &b) &&
+                    eglGetConfigAttrib(display, candidates[i], EGL_ALPHA_SIZE, &a) &&
+                    r == 10 && g == 10 && b == 10 && a == 2) {
+                    config = candidates[i];
+                    break;
+                }
+            }
+            if (config == nullptr) {
+                step = "ten-bit-config";
+                goto fail;
+            }
         }
+        // The depth the driver reports for the chosen config.
+        eglGetConfigAttrib(display, config, EGL_RED_SIZE, &redBits);
+        eglGetConfigAttrib(display, config, EGL_GREEN_SIZE, &greenBits);
+        eglGetConfigAttrib(display, config, EGL_BLUE_SIZE, &blueBits);
+        eglGetConfigAttrib(display, config, EGL_ALPHA_SIZE, &alphaBits);
         step = "eglCreateContext";
         const EGLint ctxAttribs[] = {
             EGL_CONTEXT_CLIENT_VERSION, 3,

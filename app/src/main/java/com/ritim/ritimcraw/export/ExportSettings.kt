@@ -92,15 +92,19 @@ enum class ExportPreset {
     SMALLER,
 
     /**
-     * HEVC, the MAX level. 8-bit until package E1d lands the 10-bit path;
-     * then it becomes 10-bit where the device and the render path allow it.
+     * HEVC, the MAX level; 10-bit (Main10) where the device and the render
+     * path allow it (E1d: the GPU encoder-surface path only), else 8-bit.
      */
     QUALITY,
 
     CUSTOM;
 
-    /** [s] with this preset applied (unchanged for CUSTOM); [hevcAvailable] false falls back to AVC. */
-    fun apply(s: ExportSettings, hevcAvailable: Boolean = true): ExportSettings {
+    /**
+     * [s] with this preset applied (unchanged for CUSTOM); [hevcAvailable]
+     * false falls back to AVC; [tenBitAvailable] true lets QUALITY be 10-bit
+     * (HEVC only - without HEVC there is no Main10 encoder to ask for).
+     */
+    fun apply(s: ExportSettings, hevcAvailable: Boolean = true, tenBitAvailable: Boolean = false): ExportSettings {
         val hevc = if (hevcAvailable) ExportCodec.HEVC else ExportCodec.AVC
         val base = s.copy(
             dynamicRange = ExportDynamicRange.SDR,
@@ -113,15 +117,27 @@ enum class ExportPreset {
         return when (this) {
             COMPATIBLE -> base.copy(codec = ExportCodec.AVC, bitDepth = 8, bitrateLevel = BitrateLevel.STANDARD, audioKbps = 192)
             SMALLER -> base.copy(codec = hevc, bitDepth = 8, bitrateLevel = BitrateLevel.LOW, audioKbps = 128)
-            QUALITY -> base.copy(codec = hevc, bitDepth = 8, bitrateLevel = BitrateLevel.MAX, audioKbps = 320)
+            QUALITY -> base.copy(
+                codec = hevc,
+                bitDepth = if (tenBitAvailable && hevcAvailable) 10 else 8,
+                bitrateLevel = BitrateLevel.MAX,
+                audioKbps = 320,
+            )
             CUSTOM -> s
         }
     }
 
     companion object {
-        /** The preset [s] is exactly, or CUSTOM. */
+        /**
+         * The preset [s] is exactly, or CUSTOM. A preset's 10-bit and 8-bit
+         * variants are the SAME preset: when the 10-bit path stops being
+         * available (the resolution changed), QUALITY must not turn Custom -
+         * the plan reports the 8-bit result instead.
+         */
         fun of(s: ExportSettings, hevcAvailable: Boolean = true): ExportPreset =
-            entries.firstOrNull { it != CUSTOM && it.apply(s, hevcAvailable) == s } ?: CUSTOM
+            entries.firstOrNull {
+                it != CUSTOM && (it.apply(s, hevcAvailable, true) == s || it.apply(s, hevcAvailable, false) == s)
+            } ?: CUSTOM
     }
 }
 

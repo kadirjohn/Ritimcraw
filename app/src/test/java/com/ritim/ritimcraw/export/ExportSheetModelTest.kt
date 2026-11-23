@@ -105,4 +105,50 @@ class ExportSheetModelTest {
         assertNull(ExportSettingsPrefs.decode("not json"))
         assertNull(ExportSettingsPrefs.decode("{\"v\":99,\"codec\":\"AVC\"}")) // a newer version
     }
+
+    @Test
+    fun the_ten_bit_context_needs_every_condition() {
+        fun ctx(probe: Boolean = true, orig: Boolean = true, crop: Boolean = true, straight: Boolean = true, gpu: Boolean = true) =
+            ExportSheetModel.tenBitContext(probe, orig, crop, straight, gpu).tenBitPathAvailable
+        assertTrue(ctx())
+        assertFalse(ctx(probe = false))
+        assertFalse(ctx(orig = false))
+        assertFalse(ctx(crop = false))
+        assertFalse(ctx(straight = false))
+        assertFalse(ctx(gpu = false))
+    }
+
+    @Test
+    fun quality_is_10_bit_only_where_the_path_and_the_encoder_allow_it() {
+        val tenEnc = listOf(
+            EncoderFacts("c2.t.hevc", "video/hevc", true, profiles = setOf(1, 2), colorFormats = setOf(54), maxWidth = 8192, maxHeight = 8192),
+        )
+        val noTen = listOf(
+            EncoderFacts("c2.t.hevc", "video/hevc", true, profiles = setOf(1), colorFormats = setOf(0x7F420888), maxWidth = 8192, maxHeight = 8192),
+        )
+        assertEquals(10, ExportSheetModel.applyPreset(ExportSettings(), ExportPreset.QUALITY, tenEnc, tenBit = true).bitDepth)
+        assertEquals(8, ExportSheetModel.applyPreset(ExportSettings(), ExportPreset.QUALITY, tenEnc, tenBit = false).bitDepth)
+        assertEquals(8, ExportSheetModel.applyPreset(ExportSettings(), ExportPreset.QUALITY, noTen, tenBit = true).bitDepth)
+        // the 10-bit and 8-bit variants are the same preset, so a resolution change does not turn it Custom
+        val q10 = ExportSheetModel.applyPreset(ExportSettings(), ExportPreset.QUALITY, tenEnc, tenBit = true)
+        assertEquals(ExportPreset.QUALITY, ExportPreset.of(q10))
+        assertEquals(ExportPreset.QUALITY, ExportPreset.of(q10.copy(bitDepth = 8)))
+        // 10-bit without HEVC does not exist
+        assertEquals(8, ExportPreset.QUALITY.apply(ExportSettings(), hevcAvailable = false, tenBitAvailable = true).bitDepth)
+    }
+
+    @Test
+    fun a_ten_bit_request_the_path_cannot_serve_plans_8_bit_with_a_fix() {
+        val facts = listOf(
+            EncoderFacts("c2.t.hevc", "video/hevc", true, profiles = setOf(1, 2), colorFormats = setOf(54), maxWidth = 8192, maxHeight = 8192),
+        )
+        val s = ExportSettings(codec = ExportCodec.HEVC, bitDepth = 10)
+        val no = ExportSheetModel.plan(s, subject, facts, ExportContext(tenBitPathAvailable = false))
+        assertEquals(8, no.bitDepth)
+        val issue = no.issues.single { it.kind == ExportIssue.Kind.TEN_BIT_UNAVAILABLE }
+        assertEquals(8, issue.fix!!.bitDepth)
+        val yes = ExportSheetModel.plan(s, subject, facts, ExportContext(tenBitPathAvailable = true))
+        assertEquals(10, yes.bitDepth)
+        assertEquals(2, yes.profile)
+    }
 }

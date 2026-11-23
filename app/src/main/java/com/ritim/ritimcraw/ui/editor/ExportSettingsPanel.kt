@@ -79,6 +79,7 @@ internal fun ExportSettingsPanel(
     subject: ExportSheetModel.Subject,
     facts: List<EncoderFacts>,
     rate: ExportSheetModel.Rate?,
+    tenBitAvailable: Boolean,
     onUseResolution: (Int, Int) -> Unit,
 ) {
     val hevcOk = ExportSheetModel.hevcAvailable(facts)
@@ -94,7 +95,7 @@ internal fun ExportSettingsPanel(
         for (p in ExportPreset.entries) {
             FilterChip(
                 selected = preset == p,
-                onClick = { if (p != ExportPreset.CUSTOM) onSettings(ExportSheetModel.applyPreset(settings, p, facts)) },
+                onClick = { if (p != ExportPreset.CUSTOM) onSettings(ExportSheetModel.applyPreset(settings, p, facts, tenBitAvailable)) },
                 label = { Text(stringResource(presetName(p))) },
                 // Custom is a state, not an action: it shows when the settings
                 // match no preset and cannot be picked.
@@ -102,7 +103,7 @@ internal fun ExportSettingsPanel(
             )
         }
     }
-    if (preset == ExportPreset.QUALITY) {
+    if (preset == ExportPreset.QUALITY && !tenBitAvailable) {
         Text(
             stringResource(R.string.export_preset_quality_note),
             style = MaterialTheme.typography.bodySmall,
@@ -129,7 +130,7 @@ internal fun ExportSettingsPanel(
         )
     }
     if (advanced) {
-        AdvancedSection(settings, onSettings, plan, subject, hevcOk)
+        AdvancedSection(settings, onSettings, plan, subject, hevcOk, tenBitAvailable && ExportSheetModel.tenBitEncoderAvailable(facts))
     }
 }
 
@@ -277,6 +278,7 @@ private fun AdvancedSection(
     plan: ExportPlan,
     subject: ExportSheetModel.Subject,
     hevcOk: Boolean,
+    tenBitOk: Boolean,
 ) {
     // Codec
     HelpTitle(R.string.export_codec, R.string.export_help_codec)
@@ -289,6 +291,26 @@ private fun AdvancedSection(
                 enabled = c == ExportCodec.AVC || hevcOk,
             )
         }
+    }
+    // Bit depth (E1d): 10-bit only where the GPU path can make it
+    HelpTitle(R.string.export_bit_depth, R.string.export_help_bit_depth)
+    ChipRow {
+        for (d in listOf(8, 10)) {
+            FilterChip(
+                selected = s.bitDepth == d,
+                onClick = { set(s.copy(bitDepth = d, profile = null)) },
+                label = { Text("$d-bit") },
+                enabled = d == 8 || tenBitOk || s.bitDepth == 10,
+            )
+        }
+    }
+    if (!tenBitOk) {
+        Text(
+            stringResource(R.string.export_ten_bit_needs),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
     }
     // Bitrate level + custom
     HelpTitle(R.string.export_bitrate, R.string.export_help_bitrate)

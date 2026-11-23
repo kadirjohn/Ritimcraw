@@ -394,6 +394,18 @@ interface GpuDevelop {
     /** Opens the develop session: a nonzero handle, or 0 on failure (then [lastDetail] names the step). */
     fun openSession(): Long
 
+    /**
+     * (E1d) Opens the develop session on an RGBA1010102 + window +
+     * recordable EGL config, found by query in native - the session whose
+     * encoder surface takes 10-bit frames. 0 on failure ([lastDetail] names
+     * the step). The default 0 keeps every fake and 8-bit-only seam honest:
+     * "no 10-bit session".
+     */
+    fun openSessionTenBit(): Long = 0L
+
+    /** (E1d) Can this device make that 10-bit EGL config at all? A throwaway probe; default false. */
+    fun tenBitProbe(): Boolean = false
+
     /** Closes the session (idempotent; absorbs context loss at teardown). */
     fun closeSession(sessionHandle: Long)
 
@@ -523,6 +535,35 @@ internal object NativeGpuDevelop : GpuDevelop {
         GlesShaderSources.STORE_FRAGMENT,
         GlesShaderSources.BLIT_FRAGMENT,
     )
+
+    override fun openSessionTenBit(): Long = NativeSource.jniDevelopSessionOpenTenBit(
+        GlesShaderSources.FULLSCREEN_VERTEX,
+        GlesShaderSources.FULLSCREEN_VERTEX_310,
+        GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+        GlesShaderSources.DEVELOP_FRAGMENT_POST,
+        GlesShaderSources.DEVELOP_FRAGMENT_TAIL,
+        GlesShaderSources.SHARPNESS_H,
+        GlesShaderSources.SHARPNESS_V,
+        GlesShaderSources.DETAIL_H,
+        GlesShaderSources.DETAIL_V,
+        GlesShaderSources.WARP,
+        GlesShaderSources.NR_CHROMA_H,
+        GlesShaderSources.NR_CHROMA_V,
+        GlesShaderSources.NR_LUMA,
+        GlesShaderSources.STORE_FRAGMENT,
+        GlesShaderSources.BLIT_FRAGMENT,
+    )
+
+    // One probe per process: the EGL config set does not change while the app runs.
+    private val tenBitProbeResult: Boolean by lazy {
+        try {
+            NativeSource.jniDevelopTenBitProbe()
+        } catch (e: IllegalStateException) {
+            false // no .so: no 10-bit
+        }
+    }
+
+    override fun tenBitProbe(): Boolean = tenBitProbeResult
 
     /**
      * GRADE PARCEL (commit b): the REAL parcel door — the JNI seam takes
@@ -1556,6 +1597,8 @@ class ExportPipeline(
                 writer.requestEncoderSurfaceInput()
             }
         }
+        // E1d: true when the resolved plan is a 10-bit one (GPU encoder-surface only).
+        var tenBit = false
         try {
             val run = planRun
             if (run != null) {
@@ -1563,8 +1606,30 @@ class ExportPipeline(
                 // (never a setting). An unresolvable plan fails here, before
                 // any encoder exists, with the planner's reason.
                 val fps = ExportFps.fromPts(rawPts)
-                val plan = run.planFor(encodeDims.width, encodeDims.height, fps)
+                // 10-bit is GPU-only (see TenBitUnavailable): it needs the GPU
+                // develop session on the encoder-surface fast path (1:1 pixels,
+                // every grade stage on the GPU) AND an RGBA1010102 EGL config
+                // the device actually offers (probed by query, never assumed).
+                // Anything else plans 8-bit with TEN_BIT_UNAVAILABLE on the report.
+                val wantsTen = run.current.bitDepth == 10
+                val tenBitPath = wantsTen && renderBackend == RenderBackend.GPU_EXPERIMENTAL &&
+                    encoderDrawEligible && try {
+                        gpuDevelop.tenBitProbe()
+                    } catch (e: IllegalStateException) {
+                        false
+                    }
+                if (wantsTen) {
+                    run.note(
+                        "ten-bit path: gpu=${renderBackend == RenderBackend.GPU_EXPERIMENTAL} " +
+                            "encoderSurface=$encoderDrawEligible available=$tenBitPath"
+                    )
+                }
+                val plan = run.planFor(
+                    encodeDims.width, encodeDims.height, fps,
+                    ExportContext(tenBitPathAvailable = tenBitPath),
+                )
                 run.durationSec = (videoPts.last() / 1_000_000.0) + 1.0 / fps
+                tenBit = plan.bitDepth == 10
                 if (!plan.ok) throw IllegalStateException(plan.errorMessage())
                 writer.expectVideoConfig()
                 writer.configureVideo(plan)
@@ -1597,9 +1662,16 @@ class ExportPipeline(
         try {
             if (gpuDevelopActive) {
                 try {
-                    gpuSessionHandle = gpuDevelop.openSession()
+                    gpuSessionHandle = if (tenBit) gpuDevelop.openSessionTenBit() else gpuDevelop.openSession()
                 } catch (e: IllegalStateException) {
                     // No .so: the honest CPU continue (the seam's guard).
+                }
+                if (gpuSessionHandle == 0L && tenBit) {
+                    // No CPU continue for a 10-bit plan: the CPU develop is 8-bit.
+                    throw TenBitUnavailable(
+                        "the 10-bit GPU session could not open (" +
+                            (gpuDevelop.lastDetail() ?: "no detail") + ")"
+                    )
                 }
                 if (gpuSessionHandle == 0L) {
                     gpuDevelopActive = false
@@ -1620,6 +1692,9 @@ class ExportPipeline(
             // offer instead. The export NEVER dies on this seam.
             if (encoderSurfaceRequested && gpuDevelopActive) {
                 val inputSurface = writer.encoderInputSurface()
+                if (inputSurface == null && tenBit) {
+                    throw TenBitUnavailable("the writer had no encoder input surface for the 10-bit path")
+                }
                 if (inputSurface == null) {
                     // The writer could not create the codec input surface
                     // (its start already logged/throws per its contract);
@@ -1634,6 +1709,14 @@ class ExportPipeline(
                         gpuDevelop.setEncoderSurface(gpuSessionHandle, inputSurface)
                     } catch (e: IllegalStateException) {
                         false // no .so mid-export: the adopt path below
+                    }
+                    if (!attached && tenBit) {
+                        // The adopt fallback below feeds 8-bit RGB: for 10-bit that
+                        // would be an 8-bit image in a 10-bit file. Refuse instead.
+                        throw TenBitUnavailable(
+                            "the 10-bit session refused the encoder surface (" +
+                                (gpuDevelop.lastDetail() ?: "no detail") + ")"
+                        )
                     }
                     if (attached) {
                         encoderSurfaceAttached = true
@@ -1658,6 +1741,8 @@ class ExportPipeline(
                         )
                     }
                 }
+            } else if (encoderSurfaceRequested && tenBit) {
+                throw TenBitUnavailable("the GPU develop session was not active for the 10-bit path")
             } else if (encoderSurfaceRequested) {
                 // The gap case: the geometry gate passed and the request
                 // went to the writer, but the GPU develop session never
@@ -1811,6 +1896,14 @@ class ExportPipeline(
                                 done++
                                 onProgress?.invoke(done, videoPts.size)
                                 continue
+                            }
+                            if (tenBit) {
+                                // No adoption of an 8-bit CPU feed into a 10-bit file.
+                                throw TenBitUnavailable(
+                                    "the 10-bit GPU render failed (" +
+                                        (gpuDevelop.lastDetail() ?: "no detail") + ")",
+                                    midStream = done > 0,
+                                )
                             }
                             encoderSurfaceAttached = false
                             try {
@@ -2340,6 +2433,15 @@ class Mp4Exporter(
                                 )
                                 run?.note("surface->cpu: $reason")
                                 backend = RenderBackend.CPU
+                            } catch (e: TenBitUnavailable) {
+                                // E1d: the 10-bit GPU path could not serve the
+                                // export. Before the first frame: ONE re-plan as
+                                // 8-bit (this is the run's single plan fix), the
+                                // reason on the report. After frames were
+                                // encoded: the job FAILS with the reason - a file
+                                // never mixes depths and is never silently 8-bit.
+                                if (e.midStream || run == null || !run.fixToEightBit(e.message ?: "unavailable")) throw e
+                                ExportStaging.discard(partial)
                             } catch (e: VideoConfigRejected) {
                                 // E1b: the encoder refused the plan's format
                                 // before any frame (start() failed). AT MOST ONE

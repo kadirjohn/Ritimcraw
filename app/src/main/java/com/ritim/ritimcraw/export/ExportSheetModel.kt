@@ -82,9 +82,38 @@ object ExportSheetModel {
         }
     }
 
-    /** Settings with [preset] applied; AVC when the device has no HEVC encoder. */
-    fun applyPreset(current: ExportSettings, preset: ExportPreset, facts: List<EncoderFacts>): ExportSettings =
-        preset.apply(current, hevcAvailable(facts))
+    /**
+     * The 10-bit path of THIS export (E1d), from the facts the sheet can know
+     * before the export: the device offers an RGBA1010102 EGL config
+     * ([probeOk]), the size is the original (no scale), nothing is cropped
+     * or straightened, and every grade stage runs on the GPU. The exporter
+     * re-checks all of it at run time and re-plans 8-bit, with the reason on
+     * the report, if any of it fails there.
+     */
+    fun tenBitContext(
+        probeOk: Boolean,
+        originalSize: Boolean,
+        cropFull: Boolean,
+        straightenZero: Boolean,
+        gradeOnGpu: Boolean,
+    ): ExportContext = ExportContext(
+        tenBitPathAvailable = probeOk && originalSize && cropFull && straightenZero && gradeOnGpu,
+    )
+
+    /** True when an HEVC Main10 video encoder (10-bit input) is on the device; unknown facts = assumed. */
+    fun tenBitEncoderAvailable(facts: List<EncoderFacts>): Boolean =
+        facts.isEmpty() || facts.any {
+            it.mime == ExportCodec.HEVC.mime && it.role == EncoderFacts.Role.GENERAL &&
+                it.acceptsTenBitInput() && it.supportsTenBitProfile(it.mime)
+        }
+
+    /** Settings with [preset] applied; AVC when the device has no HEVC encoder, 10-bit QUALITY when [tenBit]. */
+    fun applyPreset(
+        current: ExportSettings,
+        preset: ExportPreset,
+        facts: List<EncoderFacts>,
+        tenBit: Boolean = false,
+    ): ExportSettings = preset.apply(current, hevcAvailable(facts), tenBit && tenBitEncoderAvailable(facts))
 
     /** What a first-time sheet shows: the Compatible preset. */
     fun defaultSettings(): ExportSettings = ExportPreset.COMPATIBLE.apply(ExportSettings())

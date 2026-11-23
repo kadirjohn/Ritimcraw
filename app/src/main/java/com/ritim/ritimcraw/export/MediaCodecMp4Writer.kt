@@ -167,6 +167,12 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
             )
         }
         plan = p
+        if (p.bitDepth == 10 && !sessionSurfaceMode) {
+            // 10-bit exists only on the session-owned GPU surface path (the
+            // pipeline plans it only then); anything else is a wiring bug and
+            // must not become an 8-bit file in a 10-bit container.
+            throw TenBitUnavailable("the 10-bit plan reached a writer without the session-owned encoder surface")
+        }
 
         // Encoder-Surface mode (§10 order): the EGL display/config/context
         // come up FIRST — before the muxer and before any codec is created.
@@ -528,6 +534,10 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
      * restart, never a mid-encode death.
      */
     override fun adoptEncoderSurface() {
+        if (plan?.bitDepth == 10) {
+            // The adopt path feeds 8-bit RGB through the writer's RGBA8888 EGL.
+            throw TenBitUnavailable("adopting the encoder surface would feed 8-bit frames into a 10-bit file")
+        }
         if (surfaceInputActive) return
         if (!sessionSurfaceMode) {
             throw surfaceInputUnavailable("the writer is not in session encoder-surface mode", null)

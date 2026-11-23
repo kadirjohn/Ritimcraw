@@ -151,6 +151,9 @@ object ExportText {
     /** True when the report's trail shows the export retried with a fixed plan. */
     fun wasFixed(r: ExportReport): Boolean = r.steps.any { it.startsWith("fix:") }
 
+    /** True when 10-bit was wanted but the file is 8-bit (the report's issues say why). */
+    fun tenBitDropped(r: ExportReport): Boolean = r.issues.any { it.startsWith("TEN_BIT_") }
+
     /** True when the Surface path fell back to the CPU path. */
     fun fellBackToCpu(r: ExportReport): Boolean = r.steps.any { it.startsWith("surface->cpu") }
 }

@@ -8,6 +8,19 @@ package com.ritim.ritimcraw.export
  */
 class VideoConfigRejected(message: String) : IllegalStateException(message)
 
+/**
+ * The 10-bit GPU path cannot serve this export (the session has no
+ * RGBA1010102 config, the encoder surface was refused, or the render failed).
+ * 10-bit is GPU-only on purpose: the CPU develop path outputs 8-bit RGB888
+ * and 10-bit made from it would be a lie (an 8-bit image in a 10-bit
+ * container, still banded), so there is no CPU 10-bit and no silent
+ * 8-bit-in-10-bit adoption. Before any frame was encoded ([midStream] false)
+ * the exporter re-plans ONCE as 8-bit with the reason on the report; after
+ * frames were encoded the export FAILS with this message rather than mix
+ * depths.
+ */
+class TenBitUnavailable(message: String, val midStream: Boolean = false) : IllegalStateException(message)
+
 /** The source frame rate of a single clip, from its own pts (never a setting; plan 7.3). */
 object ExportFps {
     private val COMMON = doubleArrayOf(
@@ -51,6 +64,9 @@ class ExportPlanRun(
     private val context: ExportContext = ExportContext(),
     private val diag: (String) -> Unit = {},
 ) {
+    /** The settings the next plan resolves from: the request, or its relaxed copy after the fix. */
+    val current: ExportSettings get() = relaxed ?: settings
+
     private val trail = ArrayList<String>()
     val steps: List<String> get() = trail
 
@@ -68,6 +84,8 @@ class ExportPlanRun(
         private set
 
     private var relaxed: ExportSettings? = null
+    private val extraIssues = ArrayList<ExportIssue>()
+    private var lastContext: ExportContext = context
     private val excluded = HashSet<String>()
     private var factsCache: List<EncoderFacts>? = null
 
@@ -80,17 +98,37 @@ class ExportPlanRun(
     }
 
     /** Resolves (and remembers) the plan for the encode size and fps. */
-    fun planFor(width: Int, height: Int, fps: Double): ExportPlan {
+    fun planFor(width: Int, height: Int, fps: Double, context: ExportContext = this.context): ExportPlan {
+        lastContext = context
         val input = ExportInput(width, height, fps)
-        val p = if (encoders().isEmpty()) {
+        val resolved = if (encoders().isEmpty()) {
             ExportPlanner.resolveWithoutFacts(relaxed ?: settings, input, context)
         } else {
             ExportPlanner.resolve(relaxed ?: settings, input, encoders(), context, excluded)
         }
+        // The report compares against what the USER asked, not the relaxed copy.
+        val p = resolved.copy(requested = settings, issues = resolved.issues + extraIssues)
         plan = p
         note(EncoderDiagnostics.planLine(if (fixUsed) "fix" else "plan", p))
         for (i in p.issues) note(EncoderDiagnostics.issueLine(i))
         return p
+    }
+
+    /**
+     * The 10-bit GPU path failed before the first frame ([reason]): re-plan
+     * as 8-bit, ONCE (this is the run's single plan fix). The issue stays on
+     * the report so the file's 8-bit depth is explained, never silent.
+     * False when the fix was already used.
+     */
+    fun fixToEightBit(reason: String): Boolean {
+        note("ten-bit unavailable: $reason")
+        if (fixUsed) { note("no second fix: the plan was already fixed once"); return false }
+        val eight = (relaxed ?: settings).copy(bitDepth = 8)
+        relaxed = eight
+        fixUsed = true
+        extraIssues += ExportIssue(ExportIssue.Kind.TEN_BIT_UNAVAILABLE, ExportIssue.Severity.WARNING, listOf(reason), eight)
+        note("fix: 10-bit -> 8-bit")
+        return true
     }
 
     /**
@@ -114,14 +152,14 @@ class ExportPlanRun(
         val relax = base.copy(profile = null, uncapped = false)
         // A: another encoder, the profile left to the encoder.
         val exA = excluded + listOfNotNull(failed.encoderName)
-        val a = ExportPlanner.resolve(relax, input, encoders(), context, exA)
+        val a = ExportPlanner.resolve(relax, input, encoders(), lastContext, exA)
         if (failed.encoderName != null && differs(a)) {
             excluded += exA; relaxed = relax; fixUsed = true
             note("fix: another encoder (${a.encoderName}), profile AUTO")
             return true
         }
         // B: the same encoder with a relaxed profile/bitrate cap.
-        val b = ExportPlanner.resolve(relax, input, encoders(), context, excluded)
+        val b = ExportPlanner.resolve(relax, input, encoders(), lastContext, excluded)
         if (differs(b)) {
             relaxed = relax; fixUsed = true
             note("fix: same encoder, profile AUTO, bitrate capped")

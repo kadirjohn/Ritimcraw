@@ -43,7 +43,6 @@ class ExportSettingsTest {
         val base = ExportPreset.QUALITY.apply(ExportSettings())
         val changed = listOf(
             base.copy(codec = ExportCodec.AVC),
-            base.copy(bitDepth = 10),
             base.copy(dynamicRange = ExportDynamicRange.HLG),
             base.copy(rateMode = ExportRateMode.CBR),
             base.copy(bitrateLevel = BitrateLevel.HIGH),
@@ -54,6 +53,8 @@ class ExportSettingsTest {
             base.copy(audioKbps = 128),
         )
         for (s in changed) assertEquals("$s", ExportPreset.CUSTOM, ExportPreset.of(s))
+        // E1d: Quality's 10-bit and 8-bit variants are the same preset (the 10-bit path is per export)
+        assertEquals(ExportPreset.QUALITY, ExportPreset.of(base.copy(bitDepth = 10)))
         assertEquals(ExportPreset.QUALITY, ExportPreset.of(base))
     }
 

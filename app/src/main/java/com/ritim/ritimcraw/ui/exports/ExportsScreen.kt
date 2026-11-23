@@ -343,6 +343,9 @@ private fun ExportReportBlock(r: ExportReport) {
         if (ExportText.wasFixed(r)) {
             Text(stringResource(R.string.exports_report_fixed), style = MaterialTheme.typography.bodySmall)
         }
+        if (ExportText.tenBitDropped(r)) {
+            Text(stringResource(R.string.exports_report_ten_bit_dropped), style = MaterialTheme.typography.bodySmall)
+        }
         if (ExportText.fellBackToCpu(r)) {
             Text(stringResource(R.string.exports_report_cpu), style = MaterialTheme.typography.bodySmall)
         }
