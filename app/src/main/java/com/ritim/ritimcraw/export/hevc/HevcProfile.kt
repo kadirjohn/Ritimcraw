@@ -38,8 +38,8 @@ package com.ritim.ritimcraw.export.hevc
  *  - [HDR10] — 10-bit Main10HDR10, Perceptual Quantizer. BT2020 gamut,
  *    SMPTE ST2084 transfer (COLOR_TRANSFER_ST2084), CTA-861.3 static
  *    metadata via the "hdr-static-info" key. Gates on the codec's HDR
- *    editing capability (FEATURE_HdrEditing, present since API 29's
- *    constant — readable at minSdk 34).
+ *    editing capability (FEATURE_HdrEditing, which arrived with
+ *    Android 13 / API 33 — readable at minSdk 34).
  *
  * EVERY profile carries its FULL MediaFormat contract as data:
  *  - [mime] — the KEY_MIME value ("video/avc" / "video/hevc"; the docs'
@@ -229,7 +229,7 @@ enum class HevcProfile(
         requiresHdrStaticInfo = true,
         feature = HevcFeatureGate(
             featureName = "hdr-editing",   // FEATURE_HdrEditing
-            requiredApiLevel = 29,         // constant exists since API 29
+            requiredApiLevel = 33,         // FEATURE_HdrEditing arrived with Android 13
             docName = "FEATURE_HdrEditing",
         ),
     );

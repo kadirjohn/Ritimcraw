@@ -174,9 +174,10 @@ class HevcProfileTest {
         assertTrue(gate != null)
         assertEquals("hdr-editing", gate!!.featureName)   // FEATURE_HdrEditing
         assertEquals("FEATURE_HdrEditing", gate.docName)
-        // Present in the android-34 SDK jar — queryable at minSdk 34.
+        // FEATURE_HdrEditing arrived with Android 13 / API 33 (the old
+        // value 29 was wrong) — still queryable at minSdk 34.
         assertTrue(gate.requiredApiLevel <= 34)
-        assertEquals(29, gate.requiredApiLevel)
+        assertEquals(33, gate.requiredApiLevel)
     }
 
     // ---- the three HEVC experiments differ field by field ----

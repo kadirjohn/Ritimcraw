@@ -244,6 +244,41 @@ class HevcPreflightTest {
         assertTrue(verdict is HevcVerdict.Supported)
     }
 
+    @Test
+    fun hdr10_verdicts_are_the_same_for_every_api_the_app_can_run_on() {
+        // minSdk is 34, so moving the HDR10 gate from 29 to 33 must not
+        // change a single verdict on a supported device: compare every
+        // API from 34 up, and the probed-absent case, against each other.
+        for (hdrEditing in listOf(true, false)) {
+            val base = decide(
+                HevcProfile.HDR10,
+                syntheticApi34(hdr10Profile = true, hdrEditing = hdrEditing),
+            )
+            for (api in 34..40) {
+                val probe = syntheticApi34(hdr10Profile = true, hdrEditing = hdrEditing)
+                    .copy(deviceApiLevel = api)
+                assertEquals("api $api hdrEditing=$hdrEditing", base.kind(), decide(HevcProfile.HDR10, probe).kind())
+            }
+        }
+    }
+
+    @Test
+    fun hdr10_gate_edge_is_api_33() {
+        val at33 = syntheticApi34(hdr10Profile = true, hdrEditing = true).copy(deviceApiLevel = 33)
+        assertTrue(decide(HevcProfile.HDR10, at33) is HevcVerdict.Supported)
+        // 29..32 used to pass under the wrong gate; they now refuse on the
+        // API gate (unreachable at minSdk 34, correct for the data).
+        val at32 = at33.copy(deviceApiLevel = 32)
+        val refused = decide(HevcProfile.HDR10, at32) as HevcVerdict.Refused
+        assertEquals(HevcRefusalStage.FEATURE_API, refused.stage)
+        assertTrue(refused.reason.contains("API 33"))
+    }
+
+    private fun HevcVerdict.kind(): String = when (this) {
+        is HevcVerdict.Supported -> "supported"
+        is HevcVerdict.Refused -> "refused:" + stage.token
+    }
+
     // ---- REFUSED: the probed feature absent at API 34 ----
 
     @Test
