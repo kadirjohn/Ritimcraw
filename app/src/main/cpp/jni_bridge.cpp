@@ -5401,6 +5401,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jbyteArray yPlane, jbyteArray uPlane, jbyteArray vPlane,
         jint width, jint height, jint stride, jint uvStride,
         jboolean semiPlanar, jboolean isBt709, jint orientationDeg,
+        jint bitDepth, jboolean fullRange, jint matrix, jint transfer, jint primaries,
         jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
@@ -5449,8 +5450,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
     const jsize yLen = env->GetArrayLength(yPlane);
     const jsize uLen = env->GetArrayLength(uPlane);
     const jsize vLen = vPlane != nullptr ? env->GetArrayLength(vPlane) : 0;
-    const int s = stride > 0 ? stride : width;
-    const int us = uvStride > 0 ? uvStride : width / 2;
+    // E0: 10-bit frames carry 16-bit little-endian MSB-aligned words, so
+    // every sample is two bytes and strides stay in BYTES.
+    if (bitDepth != 8 && bitDepth != 10) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: unsupported — the decoded frame's bit depth is not 8 or 10 "
+                 "(recovery: re-import the clip)");
+        return nullptr;
+    }
+    const int bps = bitDepth > 8 ? 2 : 1;
+    const int s = stride > 0 ? stride : width * bps;
+    const int us = uvStride > 0 ? uvStride : ((width + 1) / 2) * (semiPlanar != JNI_FALSE ? 2 : 1) * bps;
 
     rawedit::YuvFrame frame;
     frame.width = static_cast<uint32_t>(width);
@@ -5458,16 +5468,27 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
     frame.semiPlanar = semiPlanar != JNI_FALSE;
     frame.stride = s;
     frame.uvStride = us;
+    frame.bitDepth = bitDepth;
+    frame.fullRange = fullRange != JNI_FALSE;
+    frame.matrix = matrix == 0 ? rawedit::YuvMatrix::BT601
+                 : matrix == 2 ? rawedit::YuvMatrix::BT2020
+                 : rawedit::YuvMatrix::BT709;
+    frame.transfer = transfer == 1 ? rawedit::EncodedTransfer::Rec709
+                   : transfer == 2 ? rawedit::EncodedTransfer::Srgb
+                   : transfer == 3 ? rawedit::EncodedTransfer::Linear
+                   : rawedit::EncodedTransfer::MiLog;
+    frame.primaries = primaries == 1 ? rawedit::EncodedPrimaries::BT2020
+                                     : rawedit::EncodedPrimaries::BT709;
 
     // Size check before any copy: the develop indexes y up to
     // (height-1)*stride + width-1 and the chroma grid up to
     // (ch-1)*uvStride + (cw-1)*2 (+1 for the interleaved V byte).
     const long long cw = (static_cast<long long>(width) + 1) / 2;
     const long long ch = (static_cast<long long>(height) + 1) / 2;
-    const long long yNeed = static_cast<long long>(height - 1) * s + width;
+    const long long yNeed = static_cast<long long>(height - 1) * s + static_cast<long long>(width) * bps;
     const long long cNeed = frame.semiPlanar
-        ? static_cast<long long>(ch - 1) * us + (cw - 1) * 2 + 2
-        : static_cast<long long>(ch - 1) * us + cw;
+        ? static_cast<long long>(ch - 1) * us + ((cw - 1) * 2 + 2) * bps
+        : static_cast<long long>(ch - 1) * us + cw * bps;
     if (yLen < yNeed || uLen < cNeed ||
         (!frame.semiPlanar && (vLen < cNeed))) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,

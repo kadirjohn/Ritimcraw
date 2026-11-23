@@ -1,7 +1,9 @@
 package com.ritim.ritimcraw.engine
 
+import android.graphics.ImageFormat
 import android.media.Image
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.os.ParcelFileDescriptor
@@ -99,18 +101,20 @@ internal class MediaExtractorTrackReader : EncodedTrackReader {
                 )
             }
 
-            // Color tags (sprint plan Task 6): the track's color standard
-            // decides the YUV matrix. An untagged SDR stream defaults to
-            // BT.709 (the H.264/HEVC SDR convention); only an explicit
-            // BT.601 tag switches the matrix. The Mi-Log transfer itself is
-            // the developEncoded stage, independent of this choice.
-            var isBt709 = true
-            if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD)) {
-                isBt709 = format.getInteger(MediaFormat.KEY_COLOR_STANDARD) !=
-                    MediaFormat.COLOR_STANDARD_BT601_NTSC &&
-                    format.getInteger(MediaFormat.KEY_COLOR_STANDARD) !=
-                    MediaFormat.COLOR_STANDARD_BT601_PAL
-            }
+            // Color (E0): the container's declared range / standard / transfer
+            // and the track profile become ONE EncodedColorSpec - the value
+            // preview and export both develop with. The pre-E0 code read
+            // only the standard (and routed BT.2020 to BT.709); range, depth
+            // and transfer were never read.
+            fun intOrNull(key: String): Int? =
+                if (format.containsKey(key)) format.getInteger(key) else null
+            val color = EncodedColorSpec.fromMediaFormat(
+                mime = mime,
+                colorStandard = intOrNull(MediaFormat.KEY_COLOR_STANDARD),
+                colorRange = intOrNull(MediaFormat.KEY_COLOR_RANGE),
+                colorTransfer = intOrNull(MediaFormat.KEY_COLOR_TRANSFER),
+                codecProfile = intOrNull(MediaFormat.KEY_PROFILE),
+            )
 
             // Rotation hint (absent = 0): the develop tail rotates upright.
             val orientation = if (format.containsKey(MediaFormat.KEY_ROTATION)) {
@@ -138,7 +142,7 @@ internal class MediaExtractorTrackReader : EncodedTrackReader {
                     width = format.getInteger(MediaFormat.KEY_WIDTH),
                     height = format.getInteger(MediaFormat.KEY_HEIGHT),
                     orientationDeg = orientation,
-                    isBt709 = isBt709,
+                    color = color,
                     codecConfig = csd,
                 ),
                 index = EncodedSampleIndex(pts.toLongArray(), sync.toBooleanArray()),
@@ -208,6 +212,26 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
             MediaCodec.createDecoderByType(format.mime)
         } catch (e: Exception) {
             return "createDecoderByType(${format.mime}): ${e.message}"
+        }
+        // E0: a 10-bit track is decoded to P010 (16-bit words, 10 significant
+        // bits) when the decoder offers it - without the request most
+        // decoders hand back 8-bit YUV420 and the two low bits are gone. The
+        // delivered depth is read back from the Image itself (imageToPlanes),
+        // never assumed, so a decoder that ignores the request is reported
+        // as 8-bit rather than mis-read.
+        if (format.color.declaredBitDepth > 8) {
+            val offersP010 = try {
+                c.codecInfo.getCapabilitiesForType(format.mime).colorFormats
+                    .contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010)
+            } catch (e: Exception) {
+                false
+            }
+            if (offersP010) {
+                mediaFormat.setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010,
+                )
+            }
         }
         try {
             c.configure(mediaFormat, null, null, 0)
@@ -279,6 +303,9 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
             buf.get(bytes)
             return YuvPlane(bytes, 0, p.rowStride, p.pixelStride)
         }
+        // Depth from the delivered layout: P010 is a 16-bit word per sample
+        // (luma pixelStride 2); 8-bit YUV420 is one byte (pixelStride 1).
+        val depth = if (image.format == ImageFormat.YCBCR_P010 || image.planes[0].pixelStride == 2) 10 else 8
         return YuvPlanes(
             ptsUs = ptsUs,
             width = image.width,
@@ -286,6 +313,7 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
             y = plane(image.planes[0]),
             u = plane(image.planes[1]),
             v = plane(image.planes[2]),
+            bitDepth = depth,
         )
     }
 
