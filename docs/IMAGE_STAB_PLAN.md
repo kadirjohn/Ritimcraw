@@ -329,9 +329,115 @@ Okuma: Gauss(rollingMax ±1 s) zoom'u zaten ≤0.055 1/s hızda; 0.05 sınırı 
 
 **Ham-CFA luma vs. `developThumbnail` luma (S2 kabulü, `lumacheck`, klip 261110_004150, 12 çift):** çift hareketi farkı ort 0.041, medyan 0.040, **maks 0.089 px** (360 yüksekliğinde) < 0.1 px eşiği; ancak hareketler çok küçük (|t| < 0.25 px), test zayıf; büyük hareketli klipte tekrar edilmeli.
 
-**Yapılmayanlar / doğrulanamayanlar:** `.gcsv` gyro çapraz kontrolü yazılmadı (S2 kapsamındaydı; fikstürler zaten nearly-static, bilgi vermezdi → gerçek sallantılı kliple birlikte); iki iş parçacıklı analiz; MP4 fikstürü (encoded v1 dışı, §6 madde 3); cihaz süresi/termal; Smooth hız eşiği `panSpeed=0.5 h/s` hipotez olarak duruyor, kalibre EDİLMEDİ (fikstürlerde pan yok); güven formülü ve İyi/Orta/Zayıf eşikleri (§3.10) hesaplanmadı (S4/S5).
+### 4.1b El sallantılı gerçek klip ölçümleri (2026-11-24 gece, Xiaomi 15 Ultra, MotionCam)
 
-**Kullanıcı onayına getirilecek sayılar (§6 madde 11; fikstürler nearly-static olduğundan henüz SABİTLENEMEZ, öneri):** ivme oranı ≤ 0.35 ve jerk oranı için ayrı hedef (sentetik genlik 1x'te 0.03/0.006, 4x'te 0.12/0.10; gerçek kliple doğrulanacak); ortalama zoom ≤ 1.15 (tavan 1.15; sentetik 4x'te 1.148 ort, 1x'te 1.06); `zoomRate` varsayılanı 0.10 1/s (A/B ayırt etmedi); `zoomWindowSec` 1.0 s; analiz ≤ 1.5x klip süresi (masaüstü 0.38x).
+Üç GERÇEK el sallantılı klip (aynı telefon, MotionCam Pro; 3840x2160 CFA, ~30 fps; `STEPS/media/test/`; worktree'de değil, ana checkout'ta): **yavas_pan** (280 kare, 9.28 s, yavaş pan), **elde_sabit** (251 kare, 8.32 s, elde "sabit" tutulan), **yurumek** (923 kare, 30.68 s, yürüyüş; indirme gece 00:48'de tamamlandı, iki ölçüm 30 sn arayla aynı boyutla doğrulandı). Her sayı `build/desktop/image_stab_measure` ile yeniden üretilir; doğrulama ortamı masaüstü (Apple silicon, `-O2`), cihaz ölçülmedi (S12). Yeni alt komut: `gyrocheck <clip.mcraw> <clip.gcsv> [scanMs]` (5. madde) + `plan` çıktısına pan-hızı ve güven bileşenleri eklendi (7. ve 8. madde); kod `core/tests/` içinde (`image_stab_measure.cpp`, yeni `image_stab_gyro.hpp`), üretim gyro kodu SALT-OKUNUR kullanıldı.
+
+#### 1) analyze — aşama süreleri, çift durumları, gerçek zaman faktörü
+
+| Klip | kare | decode | cfaToLuma | piramit | köşe | LK | fit | Ok/Weak/Lost | duvar | klip | faktör |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| yavas_pan | 280 | 3.97 | 2.68 | 0.33 | 3.12 | 1.70 | 0.02 | 279/0/0 | 3.3 s | 9.28 s | **0.36x** |
+| elde_sabit | 251 | 3.87 | 2.73 | 0.34 | 3.17 | 2.03 | 0.02 | 250/0/0 | 3.1 s | 8.32 s | **0.37x** |
+| yurumek | 923 | 3.89 | 2.72 | 0.33 | 3.20 | 2.18 | 0.01 | 731/122/69 | 11.5 s | 30.68 s | **0.37x** |
+
+(ms/kare.) Aşama dağılımı değişmedi (köşe tespiti en pahalı ~3.2, ardından decode ~3.9); gerçek el klipleri masaüstünde **0.36–0.37x klip süresi** ile hedefin (≤1.0x, kabul 1.5x) çok altında. yürüyüş 69 Lost (%7.5) + 122 Weak (%13.2) içerir: hareket halinde büyük sahne değişimi + muhtemelen kaybolan İYİ doku — tracker'ın "hızlı pan'da kaybolma" modu gerçek klipte ÇALIŞIYOR (vaadedilen davranış, hata değil).
+
+#### 2) plan — ivme/jerk oranları (gerçek sallantıda ilk kez anlamlı)
+
+| Klip | güç | ivme ham | ivme çıkış | ivme oranı | jerk ham | jerk çıkış | jerk oranı | artık px (ham) | zoom ort/maks | limit% | inval |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| yavas_pan | 0.25 | 5665.5 | 1028.4 | **0.182** | 272456 | 12969 | **0.048** | 29.6 (36.3) | 1.035/1.051 | 0 | 0 |
+| yavas_pan | 0.50 | 5665.5 | 1028.2 | 0.181 | 272456 | 12954 | 0.048 | 29.6 (36.3) | 1.036/1.051 | 0 | 0 |
+| yavas_pan | 1.00 | 5665.5 | 1028.5 | 0.182 | 272456 | 12941 | 0.047 | 29.7 (36.3) | 1.036/1.051 | 0 | 0 |
+| elde_sabit | 0.25 | 618.7 | 20.4 | **0.033** | 29167 | 123 | **0.004** | 0.67 (4.34) | 1.027/1.061 | 0 | 0 |
+| elde_sabit | 0.50 | 618.7 | 14.2 | 0.023 | 29167 | 86 | 0.003 | 0.47 (4.34) | 1.029/1.066 | 0 | 0 |
+| elde_sabit | 1.00 | 618.7 | 7.7 | **0.012** | 29167 | 48 | 0.002 | 0.25 (4.34) | 1.034/1.073 | 0 | 0 |
+| yurumek* | hepsi | 83.9M | 83.9M | 1.000 | 3.68G | 3.68G | 1.000 | 525142 (525170) | 1.108/1.148 | **100** | 0 |
+
+(px @1080 yükseklik, PTS ölçekli; * aşağıdaki uyarı ile.) **Fikstür turundan farklı olarak bu kez oranlar ANLAMLI:** gerçek sallantıda elde 0.012–0.033 ivme oranı, pan'de 0.18. Pan'ın artığı 29.6 px'i bilinçli pan hareketinin kendisidir (Smooth pan'i izler; hız-uyarlamalı tauHigh=0.1 s devrede, artık beklenen davranış). `invalidSampleFrames=0` her üç klipte. **yurumek satırı bir plan-başarısızlık örneğidir, klip kalitesi değil** — aşağıda.
+
+#### 3) yurumek uyarısı: ölçek kanalı birikmesi ölçümde GÖRÜLDÜ
+
+yurumek ham yolunda ölçek kanalı **1.0 → 22.49**'a kadar sapıyor (plan çıktısına eklendi: `scale 1.0000..22493.5`), ham öteleme sapması px @1080 milyonları aşıyor, pan-hızı p50 215 h/s (fiziksel olarak imkansız). Neden: v1 similarity modeli ölçek kanalını serbest bırakır; yürüyüşte parallax (kamera ÖTELEMESİ — rotasyon değil!) + 69 kayıp çiftin "son iyi hızı 2 kare tut" kuralının birikimli etkisi, ölçüm gürültüsünü expo üzerinden biriktirir. Plan bu sapmış yolda zoom bütçesini karşılayamaz (`limit% 100`, ivme oranı 1.000 = hiç düzeltme uygulanmıyor). Bu §3.10'daki "hızlı pan → Lost + toparlanma" davranışının uzun klipte artıkları değil; **bilinen v1 sınırlaması, plan §5 S11'in "atlamalı çiftlerle döngü kapatma / drift" maddesinin AMPİRİK KANITI.** Sayılar olduğu gibi raporlanır; yürüyüş ölçümleri (gyrocheck, güven puanı) kayanın *çift-düzey* ölçümleridir ve bu birikimden etkilenmez (çiftler bağımsız).
+
+#### 4) zoomRate A/B gerçek klipte (0.05/0.10/0.20 + sınırsız)
+
+| Klip | zoomLimit | değişken | zoom ort | zoom maks | ölçülen maks hız | sınırlanan % |
+|---|---|---|---|---|---|---|
+| yavas_pan | 1.15 | 0.05 / 0.10 / 0.20 / sınırsız | 1.036 | 1.051 | 0.026 (hepsi) | 0 |
+| yavas_pan | 1.25 | 0.05 / 0.10 / 0.20 / sınırsız | 1.036 | 1.051 | 0.026 (hepsi) | 0 |
+| elde_sabit | 1.15 | 0.05 / 0.10 / 0.20 / sınırsız | 1.029 | 1.066 | 0.038 (hepsi) | 0 |
+| elde_sabit | 1.25 | 0.05 / 0.10 / 0.20 / sınırsız | 1.029 | 1.066 | 0.038 (hepsi) | 0 |
+| yurumek | 1.15 | 0.05 / 0.10 / 0.20 / sınırsız | 1.108 | 1.148 | 0.033 (hepsi) | 100** |
+| yurumek | 1.25 | 0.05 | 1.164 | 1.247 | **0.050** | 98.2** |
+| yurumek | 1.25 | 0.10 / 0.20 / sınırsız | 1.163 | 1.247 | **0.058** | 98.2** |
+
+(** ölçek-birikim uyarısı: yurumek satırında plan zaten bütçe dışı; değerler yol bozulmuşken ölçüldü.) **Okuma:** Gauss(rollingMax ±1 s) zoom'u gerçek kliplerde de zaten ≤0.026–0.058 1/s hızda yükseliyor; `zoomRate=0.05` yalnız yürüyüşte birkaç kareyi bağlar (0.050→0.058 sınırın altında kalıyor), ortalama zoom bedeli üç ondalıkta 0. 0.10 / 0.20 gerçekte de ayırt EDİLEMİYOR. Envelope-ref karşısında fark yine küçük (yurumek 1.25'te izleyici tek başına %4.3 karede yetersiz).
+
+#### 5) gyro çapraz kontrolü (yeni `gyrocheck`; ±150 ms senkron taraması, VQF + bias-düzeltilmiş gyro-only)
+
+Yöntem: `parseGcsv` + `axisRemapForImu` (salt okunur üretim yardımcıları) + `estimateOrientationVqf` / bias-düzeltilmiş `integrateGyro` → kare PTS'leri `estimateOffsetFromAnchors` (recvdMs vs GCSV başlığı) köprüsüyle IMU saatine, ±150 ms 5 ms adımlarla taranır; her çift için gyro-predicted merkez ötelemesi (`gyroPairImageMotion`: saf-rotasyon pinhole H(c)−c, odak `focalLengthPxFromEquivalent(23.95 mm)` — 640 genişlikte 425.8 px, İŞARETLİ VARSAYIM) ve görüntü ölçümü (toMotion(recs[i]), çalışma 360 yüksekliğine ölçekli) kıyaslanır. Kayıp çiftler ve gyro aralığı dışı çiftler atılır.
+
+| Klip | en iyi ofset δ (tarama) | kullanılan çift | x RMS | y RMS | 2D RMS | p90 | corr x / y | slope x / y | θ RMS (deg → px @180) | corr θ | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| yavas_pan (VQF) | **−85 ms** | 279 | 1.589 | 0.741 | 1.753 | 2.62 | **0.979** / 0.576 | **1.222** / 0.455 | 0.087° → 0.273 px | 0.874 | öteleme eşik üstü; rotasyon PASS |
+| elde_sabit (VQF) | **−65 ms** | 250 | 0.417 | 0.442 | **0.607** | 1.04 | 0.286 / 0.539 | 0.068 / 0.381 | 0.013° → 0.039 px | 0.965 | **PASS (0.61 px < 1 px)** |
+| yurumek (VQF) | **−90 ms** | 853 | 3.807 | 3.250 | 5.005 | 7.33 | **0.973** / 0.741 | **1.216** / 0.953 | 0.255° → 0.803 px | 0.865 | öteleme eşik üstü; rotasyon PASS |
+
+(gyro-only hemen hemen aynı; tablo VQF satırları.) **Bulgular:**
+- **Rotasyon kanalı DOĞRULANDI** (her üç klip θ RMS < 1 px @çalışma çöz.; elde 0.04, pan 0.27, yürüyüş 0.80 px).
+- **Öteleme kanalı kısmen doğrulandı:** elde_sabit tam PASS (0.61 px); yavas_pan ve yurumek'te kalan RMS 1.75 / 5.0 px — ama **x korelasyonu 0.97+**: gyro öngörüsü ölçümü izliyor, sapma senkronfarkı değil sistematik ölçek farkı. Tarama deltaları (−65/−85/−90 ms) `receive lag` öncülüyle uyumlu (Sync.h: ölçülmüş −83..−135 ms).
+- **Slope x ≈ 1.22 (üç klipte tutarlı):** kıyaslama odak varsayımı ~%22 KÜÇÜK. 23.95 mm "35mm eşdeğeri" video modunda dijital kırpma nedeniyle gerçekte ~%22 uzun efektif odak kullanıyor olabilir (§8 soru 11'in ampirik kanıtı; cihaz EIS de araya girebilir). Odak piksel karşılığı bilinmediği sürece gyro öteleme kanalı ≤%22 sistematik hata taşır — S10 kalibre dönüş için ÖNEMLİ giriş.
+- **Y korelasyonu pan'de 0.58:** y-pred (tilt) küçük işaretli farklar + sahne içeriğinin y-ölçümü yüksek SNR değil; yürüyüşte 0.74. Kısmi öteleme doğrulaması olarak raporlanır ("rotasyon kanalı doğrulandı, öteleme x'te yüksek korelasyonla izlendi ama mutlak eşiği aşmadı").
+
+#### 6) lumacheck — ham-CFA luma vs developThumbnail (büyük hareket: yurumek)
+
+| Klip | çift (ölçülen) | fark ort | medyan | maks | yorum |
+|---|---|---|---|---|---|
+| elde_sabit (hareketsiz) | 20 | 0.084 | 0.078 | 0.187 | medyan < 0.1 px eşiği; en küçük hareket, en düşük fark — yol tutarlı |
+| yavas_pan (pan ~6–9 px/çift) | 20 | 0.207 | 0.127 | 0.937 | fark hareketle büyüyor; mutlak eşiği medyan aşar |
+| yurumek (en büyük hareket) | 21 (24'den; lost atıldı) | 0.400 | 0.245 | 1.500 | maks 1.5 px; kayıp/Zayıf çiftlerde durum uyuşmazlıkları da var (örn. raw Weak/dev Lost) |
+
+Yavaş pan + yürüyüşte fark **mutlak px eşiğini (0.1) aşması** iki luma yolunun izleme tutarlılığını bozmaz: fark, hareketin büyüklüğüyle orantılı (yürüyüşte maks ~%2,3'lük göreli fark @47 px kayma). Doğru kabul ölçütünün **mutlak değil göreli** olması gerektiği önerilir: örn. `diff ≤ max(0.1 px, %2 × şift)` (öneri, sahip onayı bekliyor). Ham-CFA luma yolu (analiz için kullanılan) yine de tercih edilir: tek kare başına 2.6 ms + grade-bağımsız.
+
+#### 7) Güven puanı bileşenleri (§3.10 formülü, ilk kez gerçek klipte)
+
+| Klip | okFraction | medianInlierRatio | meanCoverage | meanResid px (norm) | **C** | sınıf (0.8/0.55/0.3) |
+|---|---|---|---|---|---|---|
+| yavas_pan | 1.000 | 0.988 | 0.885 | 0.463 (0.31) | **0.928** | İyi |
+| elde_sabit | 1.000 | 1.000 | 1.000 | 0.097 (0.07) | **0.990** | İyi |
+| yurumek | 0.793 | 0.778 | 0.628 | 0.579 (0.39) | **0.730** | Orta |
+
+Formül §3.10 önerisiyle aynen: `0.4·okFrac + 0.25·medInlier + 0.2·coverage + 0.15·(1−resNorm)`, resNorm = mean(residualRms)/1.5 px kırpılmış [0,1]. Eşikler (0.8/0.55/0.3) gerçek veriyle uyumlu: durgun-el klip İyi (0.99), yürüyüş Orta (0.73) — UI beklentisiyle tutarlı (yürüyüş "Orta takip, biraz azalt" der). **Eşik önerisi değişmez, bu üç klip ile sınandı** (öneri, sahip onayı bekliyor).
+
+#### 8) Smooth hız eşiği (panSpeed) kalibrasyon verisi
+
+| Klip | ham çift hızı (h/s): p50 / p90 / p99 / maks | 0.25 s ön-yumuşatma sonrası ( planner girişi): p50 / p90 / p99 / maks |
+|---|---|---|
+| elde_sabit | 0.012 / 0.043 / 0.13 / 0.17 | 0.012 / 0.052 / 0.08 / 0.085 |
+| yavas_pan | 0.331 / 0.742 / 1.28 / 1.53 | 0.342 / **0.678** / 0.97 / 1.01 |
+| yurumek* | (ölçek-birikim uyarısı: 215 / 6414 / …) | geçersiz* |
+
+(* yol bozuk; çift hızı ham ölçümlerle tekrar hesaplanmalı — bu gece plan-yol düzeyinde rapor edildi.) **Okuma:** planın hipotezi `panSpeed=0.5 h/s`: elde sabit p99 0.13 ≪ 0.5 (tamamen sallantı, doğru); yavaş pan p50 0.34 / p90 0.68 → **0.5 eşiği pan'in ortasında kesiyor** — yani 0.5 h/s "kasıtlı hareket" sayma eşiği yavaş pan'da yarım-yarım bölüyor. Pan'ın tamamına niyet atmak istenirse eşik ~0.25–0.30 h/s'e inmelidir; elde sallantısını (p90 ≤ 0.68'i pan'de niyetmiş gibi) yanlış saymamak için 0.75–1.0 üstte tutulmalı. **Veri temelli öneri: 0.5 h/s hipotez ivedi değişiklik gerektirmiyor ama kalibrasyon tamamlanmadı** (ikisi arasında); öneri: 0.5 kalır, kalibrasyon S11'e (drift düzeltmesi sonrası ölçüm) kalır (öneri, sahip onayı bekliyor).
+
+#### Bu gece kapatılan açık maddeler ve kalanlar
+
+§4.1 "Yapılmayanlar" listesinden:
+- ✅ **gyro çapraz kontrolü YAZILDI ve üç gerçek klipte koştu** (kısmi: rotasyon kanalı doğrulandı; öteleme elde-sabit'te tam PASS, pan/yürüyüşte yüksek korelasyonlu ama eşik üstü — yukarıdaki 5. madde). Kalan: odak varsayımı (%22 slope sapması) çözülmeden öteleme mutlak eşiği tam kapatılamaz.
+- ✅ **lumacheck büyük hareketli klipte tekrarlandı** (yurumek, en büyük hareket): mutlak 0.1 px eşiği büyükte anlamsızlaşıyor → göreli eşik önerisi.
+- ⚠️ **panSpeed kalibrasyonu KISMEN tamamlandı**: yavaş pan verisi geldi; hipotez 0.5 h/s orta kesimde. yürüyüş ölçümü ölçek-birikimi nedeniyle plan-yol düzeyinde geçersiz; S11 drift maddesi kapatılınca tekrar.
+- Kalan (değişmedi): iki iş parçacıklı analiz; MP4 fikstürü (S6); cihaz süresi/termal (S12).
+
+**Bu gece ölçümleriyle sağlanan, SAHİP ONAYINA sunulacak eklekler (her sayı öneri; §6 madde 11):**
+1. **ivme oranı hedefi:** durgun-el ≤0.05, pan ≤0.20 @Güç 0.50–1.00 (yavas_pan 0.18/elde 0.02) → hedef "ivaş oranı ≤ 0.35" gerçek kliplerde **rahat tutuyor**; pan klipleri için ayrı hedef "≤ 0.25" düşünülebilir.
+2. **jerk oranı hedefi:** ≤0.05 durgun-el (0.002–0.048), pan ≤0.05 → hedef "≤ 0.10" önerisi (sentetik 4x'in 0.10'i ile uyumlu).
+3. **ort. zoom:** gerçek el klipleri 1.03–1.04, pan 1.036, (yürüyüş 1.108 ama yol bozuk) → hedef ≤1.15 **çok rahat**; 1.10 tavsiyesi düşünülebilir (yalnız ölçek-birikim kapanınca yürüyüş için netleşir).
+4. **zoomRate:** gerçek kliplerde 0.05 bile neredeyse hiç bağlamıyor (ölçülen hız ≤0.058) → **varsayılan 0.10 1/s teyit**; A/B gerçek klipte de üç değeri ayırt edemedi.
+5. **analiz süresi:** masaüstü 0.36–0.37x → kabul 1.5x (**cihaz dışı**) teyit; cihaz S12.
+6. **güven eşikleri** 0.8/0.55/0.3 + formül ağırlıkları: üç gerçek kliple uyumlu (0.99/0.93/0.73) → teyit.
+7. **gyro çapraz kabul:** rotasyon kanalı θ RMS < 1 px @640 çalışma çöz. (üç klipte 0.04–0.80 px PASS); öteleme için "C geçerli odak biliniyor + senkron δ |<25 ms|" şartıyla <1 px; bu gece odak varsayımıyla 0.61–5.0 px.
+8. **odak/slope bulgusu (yeni):** gyro-x slope 1.22 → konteyner 35mm-eşdeğeri video modunda ~%22 kısa efektif odak veriyor olabilir → S10 girişi; cihaz üzerinde bir kez ölçülmeli.
 
 ---
 
