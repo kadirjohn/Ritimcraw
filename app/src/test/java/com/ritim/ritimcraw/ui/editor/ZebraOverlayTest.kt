@@ -91,6 +91,100 @@ class ZebraOverlayTest {
         }
     }
 
+    // ---- the A3 GPU zebra's decision helper (owner request 2026-11-23,
+    // guide §A3): the shader-decision reference the WINDOW_FRAGMENT zebra
+    // block's constants flow through — pure, JVM-testable, and in exact
+    // agreement with the CPU paint path's own decisions.
+
+    @Test
+    fun zebraStriped_agrees_with_the_cpu_decisions_on_the_byte_cube_corners() {
+        // The byte-cube corners + the threshold-boundary triples the luma
+        // math makes interesting: for every (r, g, b) and every stripe-phase
+        // position on the grid, the helper's ONE combined decision is
+        // exactly (isOverThreshold && stripeAt) — the GPU block's constants
+        // can never drift from the CPU path's two pure decisions.
+        val corners = listOf(
+            Triple(0, 0, 0),
+            Triple(255, 255, 255),
+            Triple(255, 0, 0),
+            Triple(0, 255, 0),
+            Triple(0, 0, 255),
+            Triple(252, 255, 252),
+            Triple(0, 253, 0),
+            Triple(253, 0, 0),
+            Triple(0, 0, 253),
+        )
+        val phases = listOf(0, 6, 11, 12, 13, 24, 25)
+        for ((r, g, b) in corners) {
+            for (x in phases) {
+                for (y in phases) {
+                    assertEquals(
+                        "($r,$g,$b) at ($x,$y)",
+                        ZebraOverlay.isOverThreshold(r, g, b) && ZebraOverlay.stripeAt(x, y),
+                        ZebraOverlay.zebraStriped(r, g, b, x, y),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun zebraStriped_agrees_with_the_cpu_decisions_over_the_sample_grid() {
+        // The threshold_agrees_with_histogram_luma_clip shape: a
+        // deterministic pseudo-random sweep over (r, g, b) triples and
+        // (x, y) positions (>1000 samples), asserting the same agreement —
+        // the boundary region around luma 252/253 is exercised densely.
+        var v = -1071
+        var checked = 0
+        while (v < 1_000_000) {
+            val r = v and 0xFF
+            val g = (v * 7) and 0xFF
+            val b = (v * 13) and 0xFF
+            val x = (v * 31) and 0x7F
+            val y = (v * 17) and 0x7F
+            assertEquals(
+                "($r,$g,$b) at ($x,$y)",
+                ZebraOverlay.isOverThreshold(r, g, b) && ZebraOverlay.stripeAt(x, y),
+                ZebraOverlay.zebraStriped(r, g, b, x, y),
+            )
+            checked++
+            v += 89
+        }
+        assertTrue(checked > 1000)
+    }
+
+    @Test
+    fun zebraStriped_uses_the_single_sourced_constants_not_local_copies() {
+        // The helper's DEFAULTS are the single-sourced constants (a call
+        // without overrides runs the production decisions), and an override
+        // genuinely parameterizes both the threshold AND the stripe period
+        // — never a local copy of 253/12.
+        assertEquals(
+            ZebraOverlay.isOverThreshold(252, 255, 252) && ZebraOverlay.stripeAt(0, 0),
+            ZebraOverlay.zebraStriped(252, 255, 252, 0, 0),
+        )
+        // A custom period changes ONLY the stripe phase math: period 1
+        // alternates EVERY pixel (striped <=> (x + y) even), with the
+        // SAME luma threshold decisions on every position.
+        val over = 254
+        val under = 128
+        for (x in 0..3) {
+            for (y in 0..3) {
+                assertEquals(
+                    "period-1 at ($x,$y)",
+                    (x + y) and 1 == 0,
+                    ZebraOverlay.zebraStriped(over, over, over, x, y, period = 1),
+                )
+                assertFalse(ZebraOverlay.zebraStriped(under, under, under, x, y, period = 1))
+                // A threshold ABOVE every luma stripes nothing (luma caps
+                // at 255); a threshold of 0 stripes every stripe-phase
+                // position regardless of color.
+                assertFalse(ZebraOverlay.zebraStriped(255, 255, 255, 0, 0, threshold = 256))
+                assertTrue(ZebraOverlay.zebraStriped(0, 0, 0, 0, 0, threshold = 0))
+            }
+        }
+    }
+
     // ---- the painting pass ----
 
     @Test

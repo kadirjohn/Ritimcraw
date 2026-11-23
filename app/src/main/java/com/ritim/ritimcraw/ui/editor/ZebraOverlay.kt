@@ -79,6 +79,38 @@ object ZebraOverlay {
         (((x + y) / STRIPE_PERIOD) and 1) == 0
 
     /**
+     * THE A3 GPU ZEBRA'S DECISION REFERENCE (owner request 2026-11-23,
+     * guide §A3 — the GPU zebra port): ONE combined decision for the
+     * WINDOW_FRAGMENT zebra block — a pixel at rect-local window (x, y)
+     * is striped when its luma is at or above [threshold] AND its stripe
+     * phase alternates with [period]. The CPU paint path keeps its own
+     * [isOverThreshold] + [stripeAt] pair (byte-identical, untouched);
+     * this helper exists so the GPU arm's constants have a pure JVM
+     * reference the tests pin — the shader's four uniforms carry
+     * single-sourced values (FrameHistogram.WHITE_CLIP_VALUE /
+     * STRIPE_PERIOD / STRIPE_ALPHA), and this function is the exact
+     * decision those values produce on 8-bit display values.
+     *
+     * DELEGATES, never duplicates: the threshold arm runs
+     * [FrameHistogram.luma] against [FrameHistogram.WHITE_CLIP_VALUE]
+     * (parameterized here), the stripe arm runs the [stripeAt] arithmetic
+     * with the caller's period — a rename or edit of the single-sourced
+     * symbols breaks this helper's compile, never its agreement. The
+     * defaults ARE the production constants.
+     */
+    fun zebraStriped(
+        r8: Int,
+        g8: Int,
+        b8: Int,
+        x: Int,
+        y: Int,
+        threshold: Int = FrameHistogram.WHITE_CLIP_VALUE,
+        period: Int = STRIPE_PERIOD,
+    ): Boolean =
+        FrameHistogram.luma(r8, g8, b8) >= threshold &&
+            (((x + y) / period) and 1) == 0
+
+    /**
      * Paints zebra stripes over [argb] (packed 0xAARRGGBB, row-major,
      * [width] x [height]) and returns a NEW array (the input is never
      * modified — the scope compute keeps analyzing the CLEAN frame, only
