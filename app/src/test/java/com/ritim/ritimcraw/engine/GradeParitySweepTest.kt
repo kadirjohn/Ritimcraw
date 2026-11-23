@@ -10,8 +10,8 @@ class GradeParitySweepTest {
     @Test
     fun case_list_covers_every_control_at_the_requested_values() {
         val cases = GradeParitySweep.cases()
-        // 4 exposure + 11 percent controls x 4 + 1 combined.
-        assertEquals(4 + 11 * 4 + 1, cases.size)
+        // 4 exposure + 11 percent controls x 4 + 1 combined + 3 warp cases.
+        assertEquals(4 + 11 * 4 + 1 + 3, cases.size)
         val controls = cases.map { it.control }.toSet()
         for (c in listOf(
             "exposure", "highlights", "blackPoint", "whitePoint", "shadows", "midtones",
@@ -26,6 +26,24 @@ class GradeParitySweepTest {
         val temp = cases.first { it.control == "temp" && it.label == "+50" }.grade
         assertEquals(false, temp.asShot)
         assertEquals(7100f, temp.tempK, 0.001f)
+    }
+
+    @Test
+    fun warp_cases_carry_a_matrix_and_a_non_neutral_grade() {
+        val warp = GradeParitySweep.cases().filter { it.warpM != null }
+        assertEquals(3, warp.size)
+        val id = warp.single { it.isWarpIdentity }
+        assertEquals(listOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f), id.warpM!!.toList())
+        assertEquals(1f, id.grade.exposureEv, 0f)
+        val rot = warp.filter { it.isWarpReal }
+        assertEquals(2, rot.size)
+        for (c in rot) {
+            assertEquals(9, c.warpM!!.size)
+            assertTrue(c.warpM!![1] != 0f)  // a real rotation, not identity
+            assertTrue(c.grade.exposureEv != 0f)
+        }
+        // No non-warp case carries a matrix.
+        assertTrue(GradeParitySweep.cases().filter { it.warpM == null }.none { it.isWarpIdentity || it.isWarpReal })
     }
 
     @Test

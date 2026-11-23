@@ -114,6 +114,10 @@ echo "== building tests =="
 # it finds the STEPS/media/test fixtures (the cost-evidence case).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_warp.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_warp"
+# test_chain_slots: the GPU chain's pure slot planner (header-only, no GL;
+# 2026-11-23 warp-slot regression).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_chain_slots.cpp" \
+  -o "$BUILD/test_chain_slots"
 # test_optical_sync: GY-04 optical sync refinement; the synthetic
 # ground-truth suite always runs, the real-clip evidence case is
 # RAWEDIT_REALCLIP-gated (2 GB fixtures). Runs from the repo root so it
@@ -174,6 +178,8 @@ echo "== running test_stabilization =="
 (cd "$ROOT" && "$BUILD/test_stabilization")
 echo "== running test_warp =="
 (cd "$ROOT" && "$BUILD/test_warp")
+echo "== running test_chain_slots =="
+"$BUILD/test_chain_slots"
 echo "== running test_optical_sync =="
 (cd "$ROOT" && "$BUILD/test_optical_sync")
 echo "== running test_rawstats =="

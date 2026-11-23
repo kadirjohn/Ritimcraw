@@ -42,6 +42,7 @@
 // it runs is the math Measure already proved on device.
 
 #include "GpuDevelopPipeline.h"
+#include "ChainSlots.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1597,13 +1598,23 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // each V pass the slot after that, so no draw reads and writes the
     // same texture and each V pass's guide (its STAGE'S INPUT, bound on
     // unit 4) stays live through its own draw.
-    GLuint postSrc = chainTex;
-    GLuint postDst = (postSrc == texA) ? texB : texA;
+    // Every pass's slots come from the pure planner (ChainSlots.h, unit-
+    // tested on desktop); a pass's texture and FBO are looked up from the
+    // same planned slot.
+    const GLuint slotTex[] = {texA, texB, texC};
+    const GLuint slotFbo[] = {fboA, fboB, fboC};
+    const int nrLive = chainSlotAfterNr(runChroma, runLuma);  // == chainTex's slot
+    const bool runSharp = req.sharpness != 0.0f && w >= 2 && h >= 2;
+    const bool runDetail = req.detail != 0.0f && w >= 2 && h >= 2;
+    const ChainPlan plan = planChain(nrLive, runSharp, runDetail, req.warpActive);
+    const ChainPass& postPlan = plan.passes[0];
+    GLuint postSrc = slotTex[postPlan.in];
+    GLuint postDst = slotTex[postPlan.out];
     glUseProgram(postProgram);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, postSrc);
     glBindFramebuffer(GL_FRAMEBUFFER,
-                      postDst == texA ? fboA : (postDst == texB ? fboB : fboC));
+                      slotFbo[postPlan.out]);
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
     glUniform2i(postSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
     glUniform1f(exposureLoc, exposure);
@@ -1643,28 +1654,26 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // is the only skip. The chain skips the draws entirely for a raw
     // 0 or a too-small frame; the in-shader gate is the second lock — a
     // skipped draw and a gate-closed draw produce the same pass-through.
-    const bool runSharp = req.sharpness != 0.0f && w >= 2 && h >= 2;
-    const bool runDetail = req.detail != 0.0f && w >= 2 && h >= 2;
     // The slot rotation: A -> B -> C -> A (the ping-pong threading worked
     // out for every NR state — no draw reads and writes the same texture).
     // Each unsharp stage is an H pass (input -> the next slot) + a V pass
     // (the H output + the STAGE'S INPUT as the uGuide on unit 4 -> the
     // slot after that). Sharpness's guide is the pointwise output; the
     // tail of the chain hands detail the sharpness output as its guide.
-    const GLuint slotAfter[] = {texB, texC, texA};  // index: A=0, B=1, C=2
-    const GLuint fboOf[] = {fboA, fboB, fboC};
-    int slotIndex = (chainTex == texA) ? 0 : ((chainTex == texB) ? 1 : 2);
-    const GLuint sharpIn = chainTex;
+    // (the slot plan was computed above, from ChainSlots.h)
     if (runSharp) {
         // Stage 21, horizontal (radius 1.5): sharpIn -> the next slot. The
         // H pass blurs ONLY luma — its .x output is the horizontally
         // blurred luma (the gate-closed branch writes the original luma
         // so a gate-closed draw is an exact pass-through).
-        const GLuint sharpHOut = slotAfter[slotIndex];
+        const ChainPass& sH = plan.passes[plan.sharpH];
+        const ChainPass& sV = plan.passes[plan.sharpV];
+        const GLuint sharpIn = slotTex[sH.in];
+        const GLuint sharpHOut = slotTex[sH.out];
         glUseProgram(sharpnessHProgram);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, sharpIn);
-        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)]);
+        glBindFramebuffer(GL_FRAMEBUFFER, slotFbo[sH.out]);
         glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
         glUniform2i(sharpnessHSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
         glUniform1f(sharpnessHStrengthLoc, req.sharpness);  // raw; the shader gates
@@ -1677,13 +1686,13 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         // carries no RGB — the guide supplies the ORIGINAL luma and RGB
         // the CPU's second buffer keeps), then applies the high-pass
         // difference + the amount blend in the same draw.
-        const GLuint sharpOut = slotAfter[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)];
+        const GLuint sharpOut = slotTex[sV.out];
         glUseProgram(sharpnessVProgram);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, sharpHOut);
         glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_2D, sharpIn);
-        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 2 : (slotIndex == 1 ? 0 : 1)]);
+        glBindFramebuffer(GL_FRAMEBUFFER, slotFbo[sV.out]);
         glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
         glUniform2i(sharpnessVSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
         glUniform1f(sharpnessVStrengthLoc, req.sharpness);  // raw; the shader gates
@@ -1696,13 +1705,14 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         // Stage 22, horizontal (radius 0.75): chainTex (the sharpness
         // output, or the pointwise output when stage 21 is off) -> the
         // next slot.
-        slotIndex = (chainTex == texA) ? 0 : ((chainTex == texB) ? 1 : 2);
-        const GLuint detailIn = chainTex;
-        const GLuint detailHOut = slotAfter[slotIndex];
+        const ChainPass& dH = plan.passes[plan.detailH];
+        const ChainPass& dV = plan.passes[plan.detailV];
+        const GLuint detailIn = slotTex[dH.in];
+        const GLuint detailHOut = slotTex[dH.out];
         glUseProgram(detailHProgram);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, detailIn);
-        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)]);
+        glBindFramebuffer(GL_FRAMEBUFFER, slotFbo[dH.out]);
         glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
         glUniform2i(detailHSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
         glUniform1f(detailHStrengthLoc, req.detail);  // raw; the shader gates
@@ -1713,13 +1723,13 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         // Stage 22, vertical: detailHOut + the guide detailIn (unit 4) ->
         // the next slot — the CPU's second buffer keeping the stage's
         // own input luma.
-        const GLuint detailOut = slotAfter[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)];
+        const GLuint detailOut = slotTex[dV.out];
         glUseProgram(detailVProgram);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, detailHOut);
         glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_2D, detailIn);
-        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 2 : (slotIndex == 1 ? 0 : 1)]);
+        glBindFramebuffer(GL_FRAMEBUFFER, slotFbo[dV.out]);
         glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
         glUniform2i(detailVSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
         glUniform1f(detailVStrengthLoc, req.detail);  // raw; the shader gates
@@ -1739,15 +1749,17 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // ABSENCE is the identity (a resampling pass on an identity map would
     // blur). There is NO in-shader gate; req.warpActive is the only lock.
     if (req.warpActive) {
-        // The slot rotation, recomputed from the chain's live texture: the
-        // warp reads chainTex (unit 1) and writes the next slot — no draw
-        // reads and writes the same texture.
-        slotIndex = (chainTex == texA) ? 0 : ((chainTex == texB) ? 1 : 2);
-        const GLuint warpOut = slotAfter[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)];
+        // The warp reads its planned input (unit 1) and writes its planned
+        // output. 2026-11-23 owner report: the old code bound the NEXT slot's
+        // FBO but recorded the slot AFTER it as the output, so TAIL read the
+        // un-graded PRE image whenever stabilization was on. Texture and FBO
+        // now come from the same planned slot.
+        const ChainPass& wp = plan.passes[plan.warp];
+        const GLuint warpOut = slotTex[wp.out];
         glUseProgram(warpProgram);
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, chainTex);
-        glBindFramebuffer(GL_FRAMEBUFFER, fboOf[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)]);
+        glBindTexture(GL_TEXTURE_2D, slotTex[wp.in]);
+        glBindFramebuffer(GL_FRAMEBUFFER, slotFbo[wp.out]);
         glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
         glUniform2i(warpSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
         // Row-major CPU composite map, transpose=GL_TRUE — the uCam2rgb
@@ -1764,7 +1776,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // session's window/stats) read THAT texture.
     glUseProgram(tailProgram);
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, chainTex);
+    glBindTexture(GL_TEXTURE_2D, slotTex[plan.finalSlot]);
     glBindFramebuffer(GL_FRAMEBUFFER, developFbo);
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
     glUniform2i(tailSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
