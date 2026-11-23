@@ -66,6 +66,7 @@ add_library(rawedit STATIC
     src/ImageStab.cpp
     src/ImageStabSource.cpp
     src/ImageStabPlan.cpp
+    src/Resample.cpp
     src/Yuv.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
@@ -136,6 +137,11 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_opendrt tests/test_opendrt.cpp)
     target_include_directories(test_opendrt PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_opendrt PRIVATE rawedit)
+    # test_resample: E5-B streaming resampler + stereo/mono downmix core
+    # (unwired; filmcraft audio-dsp vectors) — synthetic only, no cwd needs.
+    add_executable(test_resample tests/test_resample.cpp)
+    target_include_directories(test_resample PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_resample PRIVATE rawedit)
     # bench_develop: M1 developCpu serial-vs-parallel measurement on the
     # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
     # asserts byte-exactness, reports (never asserts) the speedup.
@@ -159,5 +165,6 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME color COMMAND test_color)
     add_test(NAME color_model COMMAND test_color_model)
     add_test(NAME opendrt COMMAND test_opendrt WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    add_test(NAME resample COMMAND test_resample)
     add_test(NAME bench_develop COMMAND bench_develop)
 endif()

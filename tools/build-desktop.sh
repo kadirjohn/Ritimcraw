@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp Resample.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -186,6 +186,10 @@ echo "== building tests =="
 # reference vectors in core/tests/data (runs from the repo root).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_opendrt.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_opendrt"
+# test_resample: E5-B streaming resampler + stereo/mono downmix core
+# (unwired filmcraft audio-dsp port) — synthetic only, no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_resample.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_resample"
 # bench_develop: M1 developCpu serial-vs-parallel measurement on the real
 # clip. The measured case is RAWEDIT_REALCLIP-gated (2 GB fixture, decode
 # is slow); without the gate the doctest prints a SKIP line. Runs from the
@@ -248,6 +252,8 @@ echo "== running test_color_model =="
 "$BUILD/test_color_model"
 echo "== running test_opendrt =="
 (cd "$ROOT" && "$BUILD/test_opendrt")
+echo "== running test_resample =="
+"$BUILD/test_resample"
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
 (cd "$ROOT" && "$BUILD/bench_develop")
 
