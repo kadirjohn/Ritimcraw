@@ -2562,6 +2562,45 @@ void main() {
      * this crop block — it reads the FINAL sampled color and rect-local
      * coords; keep the sampling result in `c` and the rect-local uv
      * available at the bottom of main().
+     *
+     * THE ZEBRA BLOCK (A3 GPU zebra, owner request 2026-11-23, guide §A3):
+     * zebra on/off no longer forces the CPU preview path — the WINDOW
+     * draw paints the classic 45-degree stripes HERE, at window
+     * resolution (crisp, never the blocky 256-px pack), with the values
+     * SINGLE-SOURCED from Kotlin (ZebraOverlay.STRIPE_PERIOD /
+     * ZebraOverlay.STRIPE_ALPHA / FrameHistogram.WHITE_CLIP_VALUE the GPU
+     * arm threads through the seam — no literal in this file carries
+     * them). FOUR uniforms carry the block's knobs; the DECISION MATH
+     * mirrors ZebraOverlay.zebraStriped byte-exactly:
+     *  - toByte quantize: int(clamp(c, 0, 1) * 255 + 0.5) — GLSL int()
+     *    truncates, so the + 0.5 makes truncation the CPU toByte's exact
+     *    round-ties-up (jni_bridge.cpp's toByte, the stats pack's OWN
+     *    quantize; a *256 scale or a half-down round breaks agreement at
+     *    the 252/253 boundary, exactly where the threshold lives);
+     *  - luma8 = (54 * r8 + 183 * g8 + 19 * b8) >> 8 — FrameHistogram.luma
+     *    on the quantized bytes (integer byte space, highp int);
+     *  - rect-local window coords: gl_FragCoord.xy is the pixel CENTER
+     *    (x + 0.5, y + 0.5), so p = ivec2(gl_FragCoord.xy - uRect.xy -
+     *    0.5) strips the half — PINNED choice: it makes (p.x + p.y) the
+     *    CPU's integer (x + y), so the stripe PHASE matches the CPU
+     *    zebra the owner compares against (guide acceptance: "clipped
+     *    areas match the CPU zebra");
+     *  - striped when ((p.x + p.y) / uZebraPeriod) % 2 == 0 — GLSL
+     *    integer division truncates toward zero and p is non-negative
+     *    inside uRect, so / then % 2 matches Kotlin's (x + y) / period
+     *    and 1;
+     *  - the striped pixel blends toward black on the FLOAT rgb before
+     *    the write (c * (1 - uZebraAlpha)); the target's RGBA8 quantize
+     *    lands within +-1 LSB of the CPU's byte-domain (v * (255 -
+     *    200)) / 255 (the twin/window surface write quantizes the same
+     *    round-ties-up), and non-striped + letterbox pixels are
+     *    untouched (the letterbox early-return stays BEFORE any zebra
+     *    work — the bars stay pure black).
+     * WINDOW DRAW ONLY: draw 3 (the stats window pass) sets uZebraOn = 0
+     * — the scope compute keeps analyzing the CLEAN frame. The CPU
+     * backend keeps ZebraOverlay.paint. Manual quarter rotation via
+     * graphicsLayer rotates the stripes — acceptable (guide design
+     * point 5).
      */
     const val WINDOW_FRAGMENT: String = """#version 300 es
 
@@ -2588,6 +2627,16 @@ uniform vec2 uCropOut;         // cropped output dims (pixels)
 uniform float uCropZoom;       // the straighten auto-zoom (>= 1)
 uniform float uCropCos;        // cos(theta) from a double theta cast
 uniform float uCropSin;        // sin(theta), the same precision
+// The zebra block (A3, owner request 2026-11-23, guide A3): the four
+// knobs the window draw sets from the request -- the values arrive from
+// Kotlin (ZebraOverlay.STRIPE_PERIOD / ZebraOverlay.STRIPE_ALPHA /
+// FrameHistogram.WHITE_CLIP_VALUE the GPU arm threads through the seam;
+// single-sourced, never literals here). uZebraOn = 0 keeps today's path
+// byte-identical (the stats draw always pins it so: CLEAN scopes).
+uniform int uZebraOn;          // 1 = the zebra decisions run (the gate)
+uniform int uZebraThreshold;   // the clip value, luma8 >= this stripes
+uniform int uZebraPeriod;      // the stripe period in window pixels
+uniform float uZebraAlpha;     // [0,1]: the black blend fraction
 
 out vec4 oCol;
 
@@ -2673,10 +2722,42 @@ void main() {
         st = clamp(st, texelHalf, vec2(1.0) - texelHalf);
         c = texture(uSrc, st).rgb;
     }
-    // A3 PLACEMENT (pinned, guide A3): the zebra block composes AFTER
-    // this crop block, reading `c` (the final sampled color) and the
-    // rect-local `uv` -- never re-sampling and never re-mapping.
+    // THE ZEBRA BLOCK (A3, owner request 2026-11-23, guide A3): composes
+    // AFTER the crop sampling above -- it reads the FINAL sampled color
+    // `c` and the rect-local coords, never re-samples. The decision math
+    // is ZebraOverlay.zebraStriped's exact byte-for-byte mirror (the
+    // Kotlin doc above pins each token).
     oCol = vec4(c, 1.0);
+    if (uZebraOn == 1) {
+        // (a) toByte quantize per channel: clamp [0,1] then
+        // round-ties-up v*255 + 0.5 -- int() truncates, so the + 0.5 IS
+        // the round; jni_bridge.cpp toByte's exact shape (the stats
+        // pack's own quantize), not a *256 approximation.
+        int r8 = int(clamp(c.r, 0.0, 1.0) * 255.0 + 0.5);
+        int g8 = int(clamp(c.g, 0.0, 1.0) * 255.0 + 0.5);
+        int b8 = int(clamp(c.b, 0.0, 1.0) * 255.0 + 0.5);
+        // (b) Rec.709 luma on the quantized bytes -- FrameHistogram.luma.
+        int luma8 = (54 * r8 + 183 * g8 + 19 * b8) >> 8;
+        // (c) Rect-local WINDOW pixel coords: gl_FragCoord.xy is the
+        // pixel CENTER (x+0.5, y+0.5), so strip the half -- (p.x + p.y)
+        // is then the CPU zebra's integer (x + y) and the stripe PHASE
+        // matches the CPU pattern the owner compares against (pinned
+        // choice; a raw gl_FragCoord read would phase-shift every
+        // stripe by the half).
+        ivec2 p = ivec2(gl_FragCoord.xy - uRect.xy - vec2(0.5));
+        // (d) striped when ((x + y) / period) is even -- GLSL integer
+        // division truncates toward zero and p is non-negative inside
+        // uRect, so / then % 2 matches Kotlin's (x + y) / period and 1.
+        bool striped = ((p.x + p.y) / uZebraPeriod) % 2 == 0;
+        // (e) The blend toward black on the FLOAT rgb before the RGBA8
+        // write: the byte quantize lands within +-1 LSB of the CPU's
+        // byte-domain (v * (255 - 200)) / 255 -- the twin/window surface
+        // write quantizes with the same round-ties-up. Non-striped and
+        // letterbox pixels are untouched.
+        if (luma8 >= uZebraThreshold && striped) {
+            oCol.rgb *= (1.0 - uZebraAlpha);
+        }
+    }
 }
 """
 }

@@ -470,6 +470,12 @@ object GradeParitySweep {
                     null, 0f, -1, -1, -1, -1, -1,
                     false, identity, PreviewStatsMode.SYNC.native,
                     true, cropParams,
+                    // A3 zebra quad (2026-11-23, guide A3): the sweep's
+                    // crop leg compares CLEAN packs — zebra stays OFF
+                    // (the draw-3 stats pin native-side would keep the
+                    // pack clean anyway, but the honest explicit off
+                    // documents the sweep never paints stripes).
+                    false, 253, 12, 200f / 255f,
                 )
                 // CPU leg: the uncropped render at the same maxDim, cropped
                 // by the EXACT publish math (applyToArgb, spaceDeltaDeg = 0).

@@ -95,11 +95,20 @@ interface GpuPreviewDevelop {
      * (the tail's mode int).
      *
      * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair rides
-     * LAST, append-only after statsMode — cropActive (false = the
-     * shader's identity path) + cropParams (GpuCropMap.requestCrop's
-     * five-float parcel: the mapRect'ed rect fractions + the raw
-     * straighten angle). Pass through verbatim — the native side owns the
-     * dims-dependent folds (planCrop's zoom/dims/trig).
+     * after statsMode, append-only — cropActive (false = the shader's
+     * identity path) + cropParams (GpuCropMap.requestCrop's five-float
+     * parcel: the mapRect'ed rect fractions + the raw straighten angle).
+     * Pass through verbatim — the native side owns the dims-dependent
+     * folds (planCrop's zoom/dims/trig).
+     *
+     * A3 GPU zebra (2026-11-23, guide A3): the zebra quad rides LAST,
+     * append-only after the crop pair — zebraOn (false = the shader's
+     * gate folded, the byte-identical pre-A3 frame) + the three
+     * single-sourced knobs (threshold = FrameHistogram.WHITE_CLIP_VALUE,
+     * period = ZebraOverlay.STRIPE_PERIOD, alpha =
+     * ZebraOverlay.STRIPE_ALPHA / 255f — the caller supplies the values,
+     * the seam never defaults them). The WINDOW draw paints the stripes;
+     * the native side pins the stats draw's uZebraOn to 0 (CLEAN scopes).
      */
     suspend fun renderFrame(
         sessionHandle: Long,
@@ -119,6 +128,10 @@ interface GpuPreviewDevelop {
         statsMode: PreviewStatsMode,
         cropActive: Boolean,
         cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
     ): PreviewFrame?
 
     /**
@@ -263,7 +276,9 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
      * the enum converts to its native int EXACTLY ONCE, here at the JNI
      * boundary — everything above the seam speaks PreviewStatsMode.
      * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair passes
-     * through verbatim, LAST after statsMode.
+     * through verbatim, after statsMode. A3 GPU zebra (2026-11-23, guide
+     * A3): the zebra quad passes through verbatim, LAST after the crop
+     * pair.
      */
     override suspend fun renderFrame(
         sessionHandle: Long,
@@ -283,6 +298,10 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         statsMode: PreviewStatsMode,
         cropActive: Boolean,
         cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
     ): PreviewFrame? = suspendCoroutine { cont ->
         try {
             PreviewRenderer.previewEngine.execute {
@@ -296,6 +315,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                                 lutInTransfer, lutOutGamut, lutOutTransfer,
                                 warpActive, warpM, statsMode.native,
                                 cropActive, cropParams,
+                                zebraOn, zebraThreshold, zebraPeriod, zebraAlpha,
                             )
                         )
                     } catch (t: Throwable) {
@@ -493,7 +513,9 @@ class GpuPreviewSession(
      * (2026-11-23): statsMode rides after the warp pair — the
      * per-request readback mode (PreviewStatsMode), the demand x class x
      * toggle fold's verdict. A2 GPU crop/straighten (2026-11-23, guide
-     * A2): the crop pair rides LAST, append-only after statsMode.
+     * A2): the crop pair rides after statsMode, append-only. A3 GPU zebra
+     * (2026-11-23, guide A3): the zebra quad rides LAST, append-only
+     * after the crop pair.
      */
     suspend fun render(
         clipHandle: Long,
@@ -512,6 +534,10 @@ class GpuPreviewSession(
         statsMode: PreviewStatsMode,
         cropActive: Boolean,
         cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
     ): PreviewFrame? {
         val h = handle
         if (h == 0L || closed.get()) return null
@@ -523,6 +549,7 @@ class GpuPreviewSession(
                 lutInTransfer, lutOutGamut, lutOutTransfer,
                 warpActive, warpM, statsMode,
                 cropActive, cropParams,
+                zebraOn, zebraThreshold, zebraPeriod, zebraAlpha,
             )
         } catch (t: Throwable) {
             null

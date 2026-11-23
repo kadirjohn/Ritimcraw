@@ -1115,10 +1115,19 @@ class NativeSource private constructor(
          * never upgrade.
          *
          * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair
-         * rides LAST, APPEND-ONLY after statsMode — cropActive (false =
-         * the identity path) + cropParams (GpuCropMap.requestCrop's
+         * rides after statsMode, append-only — cropActive (false = the
+         * identity path) + cropParams (GpuCropMap.requestCrop's
          * five-float parcel: the mapRect'ed rect fractions + the raw
          * straighten angle; the dims-dependent folds live native-side).
+         *
+         * A3 GPU zebra (2026-11-23, guide A3): the zebra quad rides
+         * LAST, APPEND-ONLY after the crop pair — zebraOn (false = the
+         * gate folded, byte-identical pre-A3 frame) + the three
+         * single-sourced knobs (threshold from
+         * FrameHistogram.WHITE_CLIP_VALUE, period from
+         * ZebraOverlay.STRIPE_PERIOD, alpha = ZebraOverlay.STRIPE_ALPHA
+         * / 255f — the caller supplies them; no default hides the values
+         * from the signature lock).
          */
         @JvmStatic private external fun nativePreviewSessionRenderFrameParcel(
             sessionHandle: Long,
@@ -1138,6 +1147,10 @@ class NativeSource private constructor(
             statsMode: Int,
             cropActive: Boolean,
             cropParams: FloatArray,
+            zebraOn: Boolean,
+            zebraThreshold: Int,
+            zebraPeriod: Int,
+            zebraAlpha: Float,
         ): IntArray?
 
         @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
@@ -1835,8 +1848,11 @@ class NativeSource private constructor(
          * the warp pair — the per-request readback mode's native int
          * (PreviewStatsMode.native), folded with the master kill switch
          * on the native side. A2 GPU crop/straighten (2026-11-23, guide
-         * A2): the crop pair rides LAST, append-only after statsMode —
-         * GpuCropMap.requestCrop's parcel, verbatim.
+         * A2): the crop pair rides after statsMode, append-only —
+         * GpuCropMap.requestCrop's parcel, verbatim. A3 GPU zebra
+         * (2026-11-23, guide A3): the zebra quad rides LAST, append-only
+         * after the crop pair — the single-sourced knob values
+         * (ZebraOverlay/FrameHistogram), verbatim.
          */
         internal fun jniPreviewSessionRenderFrameParcel(
             sessionHandle: Long,
@@ -1856,6 +1872,10 @@ class NativeSource private constructor(
             statsMode: Int,
             cropActive: Boolean,
             cropParams: FloatArray,
+            zebraOn: Boolean,
+            zebraThreshold: Int,
+            zebraPeriod: Int,
+            zebraAlpha: Float,
         ): IntArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
@@ -1864,7 +1884,8 @@ class NativeSource private constructor(
                 sessionHandle, clipHandle, frameIndex, maxDim, gradeParcel,
                 lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
                 lutOutGamut, lutOutTransfer, warpActive, warpM, statsMode,
-                cropActive, cropParams)
+                cropActive, cropParams,
+                zebraOn, zebraThreshold, zebraPeriod, zebraAlpha)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {

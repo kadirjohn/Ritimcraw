@@ -2486,6 +2486,20 @@ fun ClipEditorScreen(
                                 // non-null array), the shader's identity path.
                                 cropActive = gpuCropParams != null,
                                 cropParams = gpuCropParams ?: GpuCropMap.NEUTRAL_CROP_PARAMS,
+                                // The A3 zebra quad (owner request
+                                // 2026-11-23, guide A3): the four single-
+                                // sourced knobs — the toggle flag the
+                                // pump mirrors, and the three constants
+                                // referenced ONLY via ZebraOverlay /
+                                // FrameHistogram (253/12/200 appear
+                                // nowhere else in the GPU path). The
+                                // window draw paints the stripes; the
+                                // stats draw pins uZebraOn=0 native-side
+                                // (CLEAN scopes).
+                                zebraOn = currentZebraOn,
+                                zebraThreshold = FrameHistogram.WHITE_CLIP_VALUE,
+                                zebraPeriod = ZebraOverlay.STRIPE_PERIOD,
+                                zebraAlpha = ZebraOverlay.STRIPE_ALPHA / 255f,
                             )
                             if (gpuFrame != null) {
                                 result = Result.success(gpuFrame)

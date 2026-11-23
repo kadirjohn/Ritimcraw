@@ -209,6 +209,25 @@ struct DevelopFrameRequest {
     // verbatim) and no call site sends true until A2's editor change.
     bool cropActive = false;
     float cropParams[5] = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f};
+    // The A3 zebra quad (owner request 2026-11-23, guide A3): the window
+    // draw's zebra knobs, APPEND-ONLY after the crop pair — the SAME
+    // single-source rule the crop pair rides, but with the VALUES owned
+    // Kotlin-side (ZebraOverlay.STRIPE_PERIOD /
+    // ZebraOverlay.STRIPE_ALPHA / FrameHistogram.WHITE_CLIP_VALUE thread
+    // through the JNI seam; no zebra literal lives in any C++ default
+    // except the honest inert ones here). The PREVIEW session reads the
+    // quad: the window draw sets WINDOW_FRAGMENT's four uZebra* uniforms
+    // from it, and the stats window pass sets the same three values with
+    // uZebraOn FORCED to 0 — the scope compute keeps analyzing the
+    // CLEAN frame (guide A3's binding rule). The develop/export session
+    // IGNORES it (zebra is session-side display work, never exported).
+    // The defaults keep every existing session byte-identical:
+    // zebraOn false renders exactly the pre-A3 frame (the shader's gate
+    // folds), and the develop session never sets the quad at all.
+    bool zebraOn = false;
+    int zebraThreshold = 253;  // FrameHistogram.WHITE_CLIP_VALUE's shape
+    int zebraPeriod = 12;      // ZebraOverlay.STRIPE_PERIOD's shape
+    float zebraAlpha = 200.0f / 255.0f;  // ZebraOverlay.STRIPE_ALPHA / 255
 };
 
 class GpuDevelopPipeline {
