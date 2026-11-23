@@ -50,6 +50,7 @@ add_library(rawedit STATIC
     src/Transfer.cpp
     src/Lut.cpp
     src/Color.cpp
+    src/ColorModel.cpp
     src/DngWriter.cpp
     src/Gyro.cpp
     src/Orientation.cpp
@@ -125,6 +126,10 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_color tests/test_color.cpp)
     target_include_directories(test_color PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_color PRIVATE rawedit)
+    # test_color_model: color model v2 (F1-1), synthetic only.
+    add_executable(test_color_model tests/test_color_model.cpp)
+    target_include_directories(test_color_model PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_color_model PRIVATE rawedit)
     # bench_develop: M1 developCpu serial-vs-parallel measurement on the
     # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
     # asserts byte-exactness, reports (never asserts) the speedup.
@@ -146,5 +151,6 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME image_stab COMMAND test_image_stab)
     add_test(NAME yuv COMMAND test_yuv)
     add_test(NAME color COMMAND test_color)
+    add_test(NAME color_model COMMAND test_color_model)
     add_test(NAME bench_develop COMMAND bench_develop)
 endif()
