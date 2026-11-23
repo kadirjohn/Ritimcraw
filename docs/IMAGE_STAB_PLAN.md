@@ -17,7 +17,7 @@ Soru -> bölüm haritası: S1 §3.1 · S2 §3.2 · S3 §3.3 · S4 §3.4 · S5 §
 3. **İş akışı:** ayrı arka plan işçisi, bağımsız `Source` (`reopenIndependentFd`), **bir kez analiz**; sonuç = kare başına 32 bayt'lık **ham çift hareket kaydı** dosyası, anahtar `sourceFingerprint + analysisVersion`. Grade/yumuşatma değişince analiz yeniden ÇALIŞMAZ.
 4. **Yumuşatma + kırpma:** render zamanında **saf fonksiyon** (`ImageStabPlan`): hız-uyarlamalı çift yönlü yumuşatma (Smooth), Lock; **dinamik zoom** = `Gauss(yuvarlanan-maks(z_i))` (kanıtlanabilir `zoom_i >= z_i`); zoom limiti yetmezse **düzeltme katsayısı a_i** azaltılır; son adımda kare-bazlı kesin köşe doğrulaması. Kenar asla görünmez.
 5. **Entegrasyon:** mevcut GPU warp pass'i, shader'ı (elle bilinear, `texelFetch`) ve `ChainSlots/planChain` **değişmez**. Değişen matris kaynağı: yeni JNI çözücü aynı `[active, M×9]` düzenini döndürür; preview ve export **aynı tek Kotlin fonksiyonu** (`WarpResolver`) ve aynı C++ planı çağırır. Encoded'da GPU yolu yok: mevcut CPU `warpFrame`, `developEncoded` çıktısına (rotasyondan ÖNCE) uygulanır.
-6. **Şema:** `GradeK`'a TEK yeni alan: `stabilizationEngine` (0 = gyro/eski kayıt, 1 = image). Mevcut `stabilizationMode/Strength/ZoomLimit` yeniden kullanılır. Eklemeli anahtar, varsayılan = eski davranış → `project.json` sürüm artışı GEREKMEZ (`ProjectMigrations` zinciri zaten yükleyiciye bağlı değil, bkz. §2).
+6. **Şema:** `GradeK`'a TEK yeni alan: `stabilizationEngine` (0 = gyro/eski kayıt, 1 = image). Mevcut `stabilizationMode/Strength/ZoomLimit` yeniden kullanılır. Eklemeli anahtar, varsayılan = eski davranış → `project.json` sürüm artışı GEREKMEZ (`ProjectMigrations` zinciri `GradeStore` yükleyicisine bağlıdır, bkz. §1/§2; ama bu paket zincire bağımlı OLMAZ).
 7. **Dürüstlük:** klip/çift başına **güven puanı** (inlier oranı, uzamsal kapsama, kayıp kare oranı, kalan hata). UI "İyi / Orta / Zayıf / Kullanılamaz" ve nedenini söyler; zayıf aralıkta düzeltme kısılır.
 8. **İlk kod paketi: S1** = tracker + RANSAC + sentetik testler (saf C++, masaüstü; cihaz/UI yok).
 
@@ -39,7 +39,7 @@ Soru -> bölüm haritası: S1 §3.1 · S2 §3.2 · S3 §3.3 · S4 §3.4 · S5 §
 | Encoded | `engine/EncodedSource.kt`: MediaExtractor+MediaCodec, `YuvPlanes{y,u,v}` (Y düzlemi stride'lı), native `developEncoded` -> `ImageF` (coded yönelim) -> Rec709 -> ARGB, **upright rotasyon en sonda**. `SourcePath{MCRAW, ENCODED}`. Preview yalnız CPU, "her render decode eder". **`export/` içinde encoded kaynağı export eden bir yol bulamadım** (grep: `EncodedSource`/`nativeEncodedDevelop` yalnız `engine/`, `ui/`, `data/`'da). |
 | Timeline | `TimelineMp4Exporter` her klip için `session.renderFrame(handle, f, grade, lutPath, null)` çağırıyor: **gyroPath = null** → timeline export bugün hiç stabilize etmiyor. Kare eşlemesi: `sourceFrame(j) = round((sourceRange.start + j) * sourceFps / projectFps)` (`TimelineExport.kt`). Grade **kaynak başına** (`gradeFor(sourceId)`). |
 | Şema | `GradeK`: `stabilization:Boolean=false`, `stabilizationMode:Int=0` (0 Smooth, 1 Lock First Frame, 2 Horizon Lock), `stabilizationStrength:Float=50` (0..100), `stabilizationZoomLimit:Float=1.25` (1.0..1.5), `stabilizationTrimMs`, `stabilizationFocalMm`. **Omit-when-off** yazım kuralı. `GradeK.SCHEMA_VERSION = 1`. `ExportStore.renderSnapshot` aynı kuralla job başına grade anlık görüntüsü yazar. |
-| Migration | `data/ProjectMigrations.kt`: `MIGRATIONS = emptyList()`, `CURRENT_VERSION = 1`, `migrate()`, `TooNew`. **Yükleyiciden çağrılmıyor** (grep: yalnız `ProjectMigrationsTest` referans veriyor). |
+| Migration | `data/ProjectMigrations.kt`: `MIGRATIONS = emptyList()`, `CURRENT_VERSION = 1`, `migrate()`, `TooNew`. **Yükleyiciye BAĞLI (düzeltildi, kodla doğrulandı):** `GradeStore.kt` ~516-528 `parseGradesMigrated` `ProjectMigrations.migrate(root, migrations)` çağırır, `TooNew` ise `onTooNew(fileVersion)` ile bildirip boş harita döner (reddeder), `Ok` ise `gradesOf(r.root)`; `GradeStore` ~272'de dosya okurken bunu kullanır. Zincir şu an boş olduğundan davranış değişmez. |
 | Parmak izi | `SourceRepository.fingerprintOf`: SHA-256(ilk 1 MiB); `source.fingerprint` mevcut. |
 | A7 | `engine/ExportAbSweep.kt`: 4 vaka (neutral, grade, stab, grade-stab), CPU kapısı vs GPU kapısı; `pausedSkip` stab vakalarını gyro kapalıyken ATLAR. Stab ekseni grade anlık görüntüsünün içinde (`GradeK(stabilization=true)`), gyroPath ayrı geçiyor. |
 | Ölçüm | `core/tests/stab_measure.cpp` (jerk, resid, corr, zoom). `tools/build-desktop.sh` ile derleniyor, CMake'te değil. Doctest testleri `core/CMakeLists.txt`'te (`test_warp`, `test_stabilization`, `test_optical_sync`...). |
@@ -54,7 +54,7 @@ Soru -> bölüm haritası: S1 §3.1 · S2 §3.2 · S3 §3.3 · S4 §3.4 · S5 §
 2. **Encoded için GPU pass yok** (plan §1.3.5 söylüyor). Plan §5b encoded'ı aynı yolmuş gibi anlatıyor; gerçekte encoded CPU `developEncoded` yolunda ve warp için ayrı bir CPU kancası lazım. Ayrıca encoded export'u koda bulamadım.
 3. **Plan §3.1 bayrak adı `STABILIZATION_ENABLED`;** kodda `GYRO_STABILIZATION_ENABLED` (gyro'ya özel). Görüntü modu için ayrı bayrak gerek (öneri: `IMAGE_STABILIZATION_ENABLED`).
 4. **Plan §3.1 "kontroller gizlenir"** — kod da öyle, ama `showStabilization(path) = MCRAW` yüzünden encoded'da sekme hiç yok; görüntü motoru için kalkmalı.
-5. **Plan §3.2 "migration zinciri kuruldu" — kurulu ama bağlı değil** (yalnız testte). Görüntü stabilizasyonu zincire bağımlı olmayacak şekilde tasarlandı (§3.3).
+5. **Plan §3.2 "migration zinciri kuruldu" — kurulu ve `GradeStore`'a bağlı** (`parseGradesMigrated`, `TooNew` reddedilir; ilk taslakta "bağlı değil" yazılmıştı, YANLIŞTI, düzeltildi). Yine de görüntü stabilizasyonu zincire bağımlı olmayacak: eklemeli alan sürüm artışı gerektirmez (§3.3). Not: zincir bağlı olduğundan bir gün şema 2'ye çıkılırsa, eski uygulama yeni dosyayı `TooNew` ile reddeder — bu yüzden sürüm artışından kaçınmak değerlidir.
 6. **Plan §5b.3.7 `TransformStage.stab = {...}` nesnesi:** kodda böyle bir aşama yok; GradeK düz alanlar. Nesne Renk Modeli v2 (şema 2) ile gelecek; S-fazı düz alanlarla çalışır, v2 migration'ı katlar (§3.3).
 7. **Zoom merkezi:** bileşim `(w/2, h/2)` etrafında (piksel-dikdörtgen merkezi `(w-1)/2` değil, 0.5 px fark). Köşe garantisi testi çalışma zamanındaki AYNI bileşimi kullanmalı (§3.5 `composeWarpM`).
 8. **Plan "ThumbnailDevelop":** sembol `developThumbnail`; seyreltmeli, alan ortalamalı değil, tam `developCpu` çalıştırır (§3.2).
@@ -89,7 +89,7 @@ Soru -> bölüm haritası: S1 §3.1 · S2 §3.2 · S3 §3.3 · S4 §3.4 · S5 §
 - (c) yetersiz: yalnız öteleme (OpticalSync kendi başlığında söylüyor); rotasyon/ölçek yok.
 
 **Algoritma (Klipp `track.rs`'ten PORT; kod kopyalanmaz):**
-- Her çift (i-1, i): önceki karede ızgara köşeleri (Shi-Tomasi; 12x8 hücre, hücre başı ≤3 nokta, ≤~150 nokta), GÖRECELİ eşik → log çekimde de çalışır.
+- Her çift (i-1, i): önceki karede ızgara köşeleri (Shi-Tomasi; 12x8 hücre, hücre başı ≤3 nokta, ≤~150 nokta), GÖRECELİ eşik → log çekimde de çalışır. Eşikler (köşe kalitesi, minimum gradyan enerjisi) görüntünün **kendi luma ölçeğine göre** (ör. görüntünün gradyan/özdeğer dağılımının yüzdeliği) ayarlanır, sabit 8-bit sayılara bağlanmaz.
 - 3 seviye piramit, 16x16 pencere, ≤15 iterasyon, ileri-geri hata ≤1 px, önceki hızdan tahmin (`pred`).
 - RANSAC: 2 nokta similarity, 150 iterasyon, inlier eşiği 1.5 px (çalışma çözünürlüğü), ardından ağırlıklı en küçük kareler. **Sabit tohum** → iki koşu aynı sonuç.
 - Çıktı: `[tx, ty, logS, θ]` + `inlierRatio, nInliers, residualRms, coverage (3x3 hücre doluluğu), status`.
@@ -105,7 +105,7 @@ Soru -> bölüm haritası: S1 §3.1 · S2 §3.2 · S3 §3.3 · S4 §3.4 · S5 §
 - Preview'ın tek iş parçacıklı motoruna (`PreviewRenderer.previewEngine`) DOKUNMAZ; kendi arka plan işçisi (düşük öncelik). `RefineJob` desenini izler (bağımsız fd, atomik `done/progress/cancel`).
 - İki aşama: decode iş parçacığı + izleme iş parçacığı (ikili tampon). Üçüncü iş parçacığı yok (termal/preview rekabeti; açık soru).
 
-**Süre hedefi (4K30, 15 Ultra) — TAHMİN:** decode baskın. Plan §1.3 4K CPU decode için ~18.7 ms (preview yolu için ölçülmüş) veriyor; + CFA->luma ~3-6 ms (16 MB okuma) + KLT/RANSAC ~2-4 ms (640x360). Kare başı ~25-30 ms → 30 sn'lik klip (900 kare) ≈ **20-27 sn**. Hedef: **≤ 1.0x klip süresi, kabul sınırı 1.5x**; ilerleme ve iptal zorunlu. Encoded 4K HEVC: donanım decode hızlı; Y kopyası/küçültme baskın (~8-12 ms/kare, tahmin). Cihaz ölçümü S12'de.
+**Süre hedefi (4K30, 15 Ultra) — TAHMİN:** decode baskın. Plan §1.3 4K CPU decode için ~18.7 ms (preview yolu için ölçülmüş) veriyor; + CFA->luma ~3-6 ms (16 MB okuma) + KLT/RANSAC kare başına **~5 ms bekleniyor (önceki "2-4 ms" düşüktü; tahmin)**. Süre TEK rakamla değil **aşama aşama** ölçülür: köşe tespiti, piramit (+gradyan), LK, RANSAC fit (`image_stab_measure` ve S1 benchmark'ı, bkz. §4). Kare başı ~25-30 ms → 30 sn'lik klip (900 kare) ≈ **20-27 sn**. Hedef: **≤ 1.0x klip süresi, kabul sınırı 1.5x**; ilerleme ve iptal zorunlu. Encoded 4K HEVC: donanım decode hızlı; Y kopyası/küçültme baskın (~8-12 ms/kare, tahmin). Cihaz ölçümü S12'de.
 
 ### 3.3 Kamera yolu ve yumuşatma modları
 
@@ -128,7 +128,7 @@ Soru -> bölüm haritası: S1 §3.1 · S2 §3.2 · S3 §3.3 · S4 §3.4 · S5 §
 - **Yeni:** `stabilizationEngine: Int` (0 = gyro/eski, 1 = image); yalnız 1 iken yazılır.
 - Gelecek, yalnız ilgili pakette: `stabilizationRsPercent` (S9), mod int 3 (S8).
 
-**Şema etkisi / Faz 0 migration zinciri:** eklemeli opsiyonel anahtar + varsayılan = eski davranış → **sürüm artışı ve migration adımı yok.** Zincir yükleyiciye bağlı olmadığından ona bağımlı olmak risk olurdu. Renk Modeli v2 geldiğinde (`MIGRATIONS[0]`: v1→v2) düz `stabilization*` alanlarını `TransformStage.stab` nesnesine katlayacak; **kural: `stabilizationEngine` yoksa = gyro** (eski kayıtlar). Bu kural S4'te `ProjectMigrationsTest`/`GradeStoreTest`'e girdi olarak yazılır ki v2 yazarı kaçırmasın.
+**Şema etkisi / Faz 0 migration zinciri:** eklemeli opsiyonel anahtar + varsayılan = eski davranış → **sürüm artışı ve migration adımı yok.** Zincir yükleyiciye bağlıdır (`GradeStore.parseGradesMigrated`); sürüm artırmak, eski sürümlerde `TooNew` reddine yol açacağından gereksiz risk olurdu. Renk Modeli v2 geldiğinde (`MIGRATIONS[0]`: v1→v2) düz `stabilization*` alanlarını `TransformStage.stab` nesnesine katlayacak; **kural: `stabilizationEngine` yoksa = gyro** (eski kayıtlar). Bu kural S4'te `ProjectMigrationsTest`/`GradeStoreTest`'e girdi olarak yazılır ki v2 yazarı kaçırmasın.
 
 ### 3.4 Kırpma penceresi ve zoom
 
@@ -140,8 +140,8 @@ Soru -> bölüm haritası: S1 §3.1 · S2 §3.2 · S3 §3.3 · S4 §3.4 · S5 §
 **Öneri: dinamik zoom + düzeltme katsayısı.**
 
 1. Her kare için tam düzeltmenin gerektirdiği minimum zoom `z_i`: çıkışın piksel-merkezi köşeleri `(0,0)…(w-1,h-1)`, çalışma zamanındaki AYNI bileşimle `p_src = H⁻¹(c + (p_out-c)/Z)`, `c=(w/2,h/2)`, kaynağın `[0,w-1]x[0,h-1]` kutusunun içine düşmeli (+ε = 0.05 px, float daralması payı). Similarity afin olduğundan KÖŞE KONTROLÜ KESİNDİR.
-2. `zoom_i = Gauss_σ( rollingMax_W(z_i) )`, pencere ±h, Gauss desteği ±h. **Kanıt:** destek içindeki her j'de `rollingMax_j ≥ z_i` (i, j'nin penceresinde) → ağırlıklı ortalama ≥ `z_i`. Yani `zoom_i ≥ z_i` HER ZAMAN ve zoom pürüzsüz. (Gyroflow `zoom_dynamic` fikri: yuvarlanan min FOV + Gauss; burada eşdeğeri maks zoom.)
-3. Bütçe: `z_i > zoomLimit` olan karelerde `a_i ∈ [0,1]` ikili aramayla (≤12 adım): `hedef' = ham + a(hedef − ham)`. `a'_i = Gauss(rollingMin_W(a_i)) ≤ a_i` (aynı argüman). Varsayım: `z_i(a)` a'da monoton (a=0'da z=1).
+2. `zoom_i = Gauss_σ( rollingMax_W(z_i) )`, pencere ±h, Gauss desteği ±h. **Kanıt:** destek içindeki her j'de `rollingMax_j ≥ z_i` (i, j'nin penceresinde) → ağırlıklı ortalama ≥ `z_i`. Yani `zoom_i ≥ z_i` HER ZAMAN ve zoom pürüzsüz. (Gyroflow `zoom_dynamic` fikri: yuvarlanan min FOV + Gauss; burada eşdeğeri maks zoom. **Karşılaştırma referansı:** Gyroflow Envelope Follower, pencere/zaman sabiti 4 s / 0.2 s; S3 ölçümü bizim `Gauss(rollingMax)` zoom'unu bu referansla kıyaslar. **Zoom hızı** (|d ln Z/dt|, s⁻¹) için A/B değerleri 0.05 / 0.10 / 0.20 s⁻¹ denenir ve ortalama zoom bedeliyle raporlanır.)
+3. Bütçe: `z_i > zoomLimit` olan karelerde `a_i ∈ [0,1]` ikili aramayla (≤12 adım): `hedef' = ham + a(hedef − ham)`. `a'_i = Gauss(rollingMin_W(a_i)) ≤ a_i` (aynı argüman). `z_i(a)`'nın a'da monoton olduğu VARSAYILMAZ (a=0'da z=1 kesin; arası genelde artan ama kanıtsız): ikili arama yalnız "güvenli" bir `a` bulmaya çalışır, her aday kesin köşe testiyle doğrulanır ve garanti son adımdan (4) gelir.
 4. **Garanti son adımı:** her karede kesin köşe kontrolü; ihlal varsa o karenin `a`'sı küçültülüp yeniden yumuşatılır (≤5 tur), son çare kare başına projeksiyon (küçük süreksizlik kabul; `invalidSampleFrames` sayacı, beklenen 0).
 5. Klipp'in "yumuşat↔projekte et ×25" döngüsünden fark: kapalı biçimli üst sınır + son kesin doğrulama; sonuç kare sırasından bağımsız ve deterministik.
 
@@ -259,13 +259,13 @@ Dürüstlük kuralı: puan düşükse (a) UI söyler, (b) `Kullanılamaz` ise Im
 
 ## 4. Ölçüm ve kabul (Soru 11)
 
-**Metrikler** (`stab_measure` tanımları): jerk = çıkış yolunun ikinci türevi RMS'i (piksel @1080 yükseklik/kare²) → **jerk oranı** `out/raw` (1.0 = düzeltme yok; düşük iyi); residual = 1 sn merkezli hareketli ortalamadan sapma; zoom ort/maks; `invalidSampleFrames`; **sıçrama ölçütü** (yeni) = ardışık matrislerin köşe noktası ayrışması `max_corner |M_i − M_{i-1}|` ham hareketin yumuşak türevini aşıyor mu.
+**Metrikler** (`stab_measure` tanımları, terminoloji düzeltildi): yol ölçülürken **sabit kare aralığı varsayılmaz**; türevler gerçek **PTS** farklarıyla ölçeklenir (düzensiz aralıklı örnekler için). Adlandırma: ham yol `p(t)`; **hız** = birinci fark/dt; **ivme** = ikinci fark (`(v_i - v_{i-1})/dt̄`, piksel @1080 yükseklik/s²); **jerk** = üçüncü fark (ivmenin farkı/dt, piksel/s³). İvme ve jerk **ayrı sütunlarda** RMS olarak raporlanır; her biri için **oran** `out/raw` (1.0 = düzeltme yok; düşük iyi). (Eski plandaki "jerk = ikinci türev" ve "jerk oranı" adlandırması yanlıştı: ikinci fark ivmedir.) Ayrıca residual = 1 sn merkezli hareketli ortalamadan sapma; zoom ort/maks; zoom hızı; `invalidSampleFrames`; **sıçrama ölçütü** = ardışık matrislerin köşe noktası ayrışması `max_corner |M_i − M_{i-1}|` ham hareketin yumuşak türevini aşıyor mu.
 
 **Yeni araç:** `core/tests/image_stab_measure.cpp` (`tools/build-desktop.sh`'a eklenir): `.mcraw` (+ isteğe bağlı `.gcsv`) alır; analiz + plan çalıştırır; metrikleri basar. **Gyro çapraz kontrolü (fikstürlerin avantajı):** `.gcsv` var; mevcut kod (salt-okunur kullanım) yönelim + senkronu verir; her çift için gyro'nun öngördüğü merkez ötelemesi `H(c)−c` ile görüntü tahminini kıyasla (offset ±150 ms taramasıyla). Hipotez kabul: kalan RMS < ~1 px @çalışma çözünürlüğü. Bu, tahminciyi gyro'ya karşı DOĞRULAR; gyro kodunu değiştirmez.
 
 **Sentetik testler** (`core/tests/test_image_stab.cpp`, doctest, `add_test`): dokulu prosedürel görüntü + `warpFrame` ile BİLİNEN similarity; hata < 0.1 px, rotasyon < 0.02°, ölçek < %0.1; **%40 outlier** (farklı hareketle kayan yamalar); gürültü/bulanıklık; sabit sahne → yol düz (±0.05 px); iki koşu bit-aynı, 1 vs N iş parçacığı aynı; kayıp/düşük doku → `Lost`, güven düşük; hızlı pan → `Lost` + toparlanma; serileştirme gidiş-dönüş + CRC bozulma; zoom/kenar özellik testi (§3.4); preview↔export normalize eşitliği; aralık bağımsızlığı (Smooth: aralık içi/dışı aynı matris; Lock: aralığa bağlı, belgelenen davranış).
 
-**Fikstür klipleri:** 2 MCRAW + MP4. Çıktı tabloları (jerk oranı, residual, ort/maks zoom, güven, süre) S2/S3 sonunda bu belgeye eklenir. **İlk hedefler (kalibre edilecek, sabit değil):** jerk oranı ≤ 0.35 @ Güç 50, `invalidSampleFrames == 0`, ort. zoom ≤ 1.15, analiz ≤ 1.5x klip süresi (masaüstü referans; cihaz ayrı).
+**Fikstür klipleri:** 2 MCRAW + MP4. Çıktı tabloları (jerk oranı, residual, ort/maks zoom, güven, süre) S2/S3 sonunda bu belgeye eklenir. **İlk hedefler (kalibre edilecek, sabit değil; kullanıcı onayına getirilir, bkz. §6 madde 11):** ivme oranı ve jerk oranı için ayrı hedefler (eski "jerk oranı ≤ 0.35" bu terminolojiye göre ayrıştırılacak: ilk hipotez ivme oranı ≤ 0.35 @ Güç 50; jerk oranı için ayrı sayı ölçümden sonra), `invalidSampleFrames == 0`, ort. zoom ≤ 1.15, analiz ≤ 1.5x klip süresi (masaüstü referans; cihaz ayrı).
 
 **A7 (`ExportAbSweep`):** yeni vakalar `stab-image` (`GradeK(stabilization=true, engine=1)`) ve `grade-stab-image`; CPU kapısı (`applyImageStab`) vs GPU kapısı (draw 10), AYNI matris. `pausedSkip` yalnız gyro motorunu atlar; analiz yoksa harness analizi önce çalıştırır (süre notuyla) ya da "SKIPPED: analiz yok" (EXPORT_MISMATCH sayılmaz). Kare sayısı kısa tutulur.
 
@@ -294,19 +294,23 @@ Sıra: S1 → (S2 ∥ S3) → S4 → S5 → (S6, S7) → S8/S9/S10/S11 → S12. 
 
 ---
 
-## 6. Sahibin vermesi gereken kararlar
+## 6. Kararlar (sahip, 2026-11-23)
 
-1. **Analiz tetikleyicisi:** düğme + "Görüntü" seçilince otomatik başlat (öneri) mı, içe aktarmada otomatik mi, yalnız elle mi? Pil/termal etkisi var.
-2. **`zoomLimit` varsayılanı:** image motorunda 1.25 (gyro'daki, ölçümlü ortalama 1.135) mi kalsın, daha muhafazakâr 1.15 mi?
-3. **Encoded:** v1'de yalnız önizleme (export yolu yok) kabul mü, yoksa encoded export (Faz 3) beklenip S6 sonrası mı kapanır?
-4. **Timeline stabilizasyonu** (S7) bu faza dahil mi? Bugün timeline hiç stabilize etmiyor.
-5. **Lock semantiği:** "aralık medyanı" (öneri), "ilk kare" değil. Horizon Lock'ın image motorunda sunulmaması kabul mü ("Roll yumuşat" ileride)?
-6. **Model önceliği:** S10 (kalibre dönme/perspektif) mi, S9 (rolling shutter-lite) mi önce? Geniş açıda kenar hatası görülürse S10.
-7. **Yeni alan zamanı:** `stabilizationEngine` şimdi (S4, eklemeli) mi, yoksa Renk v2 şemasını mı bekleyelim? Öneri: şimdi.
-8. **Analiz depolama:** `filesDir/cache/imagestab/` + Depolama sayfasında temizle — onay.
-9. **İş parçacığı bütçesi:** analiz en çok kaç çekirdek (1 decode + 1 izleme)? Preview/export çalışırken duraklasın mı? Termal ağırlaşınca dursun mu?
-10. **Bayrak adı** `IMAGE_STABILIZATION_ENABLED` ve ne zaman `true` yapılacağı (S5 sonrası).
-11. **Kabul eşikleri** (jerk oranı, ort. zoom): §4'teki öneriler fikstür ölçümüyle kalibre edildikten sonra sabitlensin mi?
+Önceki "Sahibin vermesi gereken kararlar" listesi sahip tarafından şöyle karara bağlandı:
+
+1. **Analiz tetikleyicisi:** düğme + "Görüntü" seçilince otomatik başlat. İçe aktarmada otomatik analiz YOK.
+2. **`zoomLimit`:** image motorunda varsayılan **1.15**, kaydırıcı **1.0–1.5**. S3 ölçümünden sonra tekrar bakılacak.
+3. **Encoded:** v1'de encoded klipler YOK; Stabilize sekmesi encoded kliplerde GİZLİ. Encoded destek S6'da, encoded export (E0) sonrası.
+4. **Timeline (S7):** bu fazda, S5'ten sonra. Timeline preview her klibin grade + stabilizasyonunu export gibi gösterir.
+5. **Lock:** aralık medyanı. Horizon Lock image motorunda sunulmaz.
+6. **S9 (rolling shutter-lite) vs S10 (kalibre dönme):** S2/S3 ölçümlerinden sonra karar; varsayılan S9.
+7. **`stabilizationEngine`:** S4'te eklenir. "Alan yoksa gyro" kuralı testlere yazılır (`GradeStoreTest`/`ProjectMigrationsTest`).
+8. **Analiz cache'i:** `filesDir/cache/imagestab/`; klip silinince analiz dosyası da silinir (`ClipDeletion`, S4).
+9. **Analiz iş parçacığı bütçesi:** 2 iş parçacığı; export ve oynatma sırasında DURAKLAR; termal headroom yüksekse durur; checkpoint'ten devam eder. Editör içi analiz için korutin yeterli, foreground service gerekmez.
+10. **Bayrak:** `IMAGE_STABILIZATION_ENABLED`; S5 + S12 cihaz kabulünden sonra `true`.
+11. **Kabul eşikleri:** fikstür ölçümünden sonra sabitlenir; sayılar kullanıcı onayına getirilir.
+
+Bu kararların plana etkisi: §3.8'deki "sekme encoded'da da görünür" ve §3.5/§5 S6 satırlarındaki encoded kapsamı v1 dışıdır (S6 E0 sonrası); `showStabilization` MCRAW şartı v1'de KALIR. §3.4'teki `zoomLimit` varsayılanı 1.15'tir (GradeK'taki gyro varsayılanı 1.25 gyro için aynen kalır).
 
 ---
 
