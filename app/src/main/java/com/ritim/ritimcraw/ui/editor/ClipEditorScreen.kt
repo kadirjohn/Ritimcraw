@@ -1583,7 +1583,10 @@ fun ClipEditorScreen(
         // left it; the setter rides the guarded engine seam and the probe
         // effect re-runs on the flip (the cache invalidation re-builds
         // the plan under the new flag).
-        var syncRefine by rememberSaveable(sourceId) { mutableStateOf(false) }
+        // Round 3 (2026-11-23): ON by default — the anchored offset alone was
+        // measured 83-135 ms off on the owner's device, which makes the
+        // warp amplify shake; the optical refine fixed it on every clip.
+        var syncRefine by rememberSaveable(sourceId) { mutableStateOf(true) }
         LaunchedEffect(syncRefine) {
             // The seam throws only without the .so; the editor already
             // gates every native call on nativeAvailable, and the stab

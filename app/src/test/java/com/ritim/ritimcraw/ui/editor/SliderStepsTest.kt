@@ -322,7 +322,7 @@ class SliderStepsTest {
         assertEquals(2, strength.stabilizationMode)
 
         val zoom = SliderSteps.resetToDefault(SliderSteps.Axis.STABILIZATION_ZOOM_LIMIT, current)
-        assertEquals(1.1f, zoom.stabilizationZoomLimit, 0f)
+        assertEquals(1.25f, zoom.stabilizationZoomLimit, 0f)
         assertEquals(40f, zoom.stabilizationStrength, 0f)
         assertEquals(80f, zoom.stabilizationTrimMs, 0f)
 

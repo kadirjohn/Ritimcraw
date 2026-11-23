@@ -120,7 +120,23 @@ std::atomic<bool> gStabDebugLog{false};
 // cost on the host and must never run per rendered frame. The toggle rides
 // the StabRequest (stabRequestOf reads it here) so all three render paths
 // and the export pick it up without widening the six flat JNI params.
-std::atomic<bool> gSyncRefine{false};
+// Stabilization round 3 (2026-11-23): ON by default. The anchored offset
+// alone was measured 83-135 ms off on the owner's device (see
+// kReceiveLagPriorMs), and a sync error that size turns the warp into a
+// shake amplifier; the optical refine measured the true offset on every
+// handheld clip tried, with 1-13 ms bounds.
+std::atomic<bool> gSyncRefine{true};
+
+// The measured frame-delivery lag prior for the anchored estimate
+// (Sync.h estimateOffsetFromAnchors receiveLagMs): MotionCam Pro 5.0.9 on
+// the Xiaomi 25010PN30G, optical sync vs anchor on six clips: 83, 119,
+// 125, 129, 135 ms (+ a 64 ms fixture) late — mean ~112 ms. The prior
+// recenters the anchor; the bound covers the observed spread. Device/app
+// specific — the optical refine (default on) replaces it whenever it
+// succeeds, and its search window is widened to cover a prior miss.
+constexpr double kReceiveLagPriorMs = 110.0;
+constexpr double kReceiveLagBoundMs = 50.0;
+constexpr double kOpticalSearchRangeMs = 300.0;
 
 // Preview stats-readback toggle (trace-dims fix 2026-11-14): the A/B
 // instrument for the GPU preview's synchronous glMapBufferRange cost.
@@ -326,6 +342,14 @@ struct GyroArtifacts {
     std::vector<rawedit::ImuSample> gyro;   // canonical camera frame
     std::vector<rawedit::ImuSample> accel;  // canonical camera frame
     rawedit::VqfOrientation orientation;     // VQF series + camera gravity
+    // Round 3: the bias-corrected PURE gyro integration (VQF's final bias
+    // estimate subtracted, no accelerometer tilt corrections). Smooth and
+    // LockFirstFrame only need relative rotation, and the VQF series
+    // carries accel-driven tilt corrections that are not camera motion —
+    // measured: a 5-23 deg start-up convergence swing on most real clips
+    // (required crop up to 128x) and an accel-correction wobble during
+    // walking. Horizon lock keeps the VQF series (it needs gravity).
+    rawedit::OrientationSeries gyroOnly;
 };
 
 thread_local std::string gGyroPath;
@@ -400,6 +424,15 @@ bool resolveGyro(JNIEnv* env, jstring gyroPath, const GyroArtifacts** out) {
     }
     artifacts->orientation = rawedit::estimateOrientationVqf(
         artifacts->gyro, artifacts->accel);
+    {
+        std::vector<rawedit::ImuSample> unbiased = artifacts->gyro;
+        for (rawedit::ImuSample& s : unbiased) {
+            s.x -= static_cast<float>(artifacts->orientation.gyroBias[0]);
+            s.y -= static_cast<float>(artifacts->orientation.gyroBias[1]);
+            s.z -= static_cast<float>(artifacts->orientation.gyroBias[2]);
+        }
+        artifacts->gyroOnly = rawedit::integrateGyro(unbiased);
+    }
     gGyro = std::move(artifacts);
     gGyroPath = path;
     *out = gGyro.get();
@@ -542,6 +575,16 @@ int strideFor(const rawedit::FrameInfo& info, int maxDim);
 // stamps, non-positive focal) come back not-refined through
 // applyOpticalRefinement, which also keeps the anchor. The refine cost is
 // the reason it runs ONCE per plan-cache key, never per frame.
+// A frame's representative time (round 3): the content is centered at
+// capture + 0.5*exposure (+ 0.5*readout — not in the container; a constant
+// the optical sync absorbs). Frames without an exposure key fall back to
+// the documented half-interval. The optical refine and the plan MUST use
+// this same formation (OpticalSync.h's mapping contract).
+int64_t repTimeNs(const rawedit::FrameInfo& info, int64_t frameIntervalNs) {
+    const int64_t capture = info.ptsUs * 1000;
+    return capture + (info.exposureNs > 0 ? info.exposureNs / 2 : frameIntervalNs / 2);
+}
+
 rawedit::SyncEstimate refineSyncEstimate(rawedit::Source& src,
                                          const rawedit::OrientationSeries& series,
                                          const rawedit::SyncEstimate& anchor,
@@ -577,7 +620,7 @@ rawedit::SyncEstimate refineSyncEstimate(rawedit::Source& src,
         // carries no exposure/readout keys): capture + half the uniform
         // interval — the SAME formation the plan's mapping-contract
         // composition below uses, as OpticalSync.h requires.
-        f.repTimeNs = f.captureNs + frameIntervalNs / 2;
+        f.repTimeNs = repTimeNs(info, frameIntervalNs);
         f.image = std::move(img);
         syncFrames.push_back(std::move(f));
     }
@@ -585,8 +628,12 @@ rawedit::SyncEstimate refineSyncEstimate(rawedit::Source& src,
     rawedit::OpticalSyncIntrinsics intrinsics;
     intrinsics.focalLengthPx = rawedit::focalLengthPxFromEquivalent(
         focalMm, static_cast<int>(syncFrames[0].image.w));
+    rawedit::OpticalSyncOpts opts;
+    opts.searchRangeMs = kOpticalSearchRangeMs;
+    opts.repTimeSource = "capture+0.5*exposure (frame exposureTime; "
+                         "capture+0.5*interval when absent)";
     const rawedit::OpticalSyncResult result = rawedit::refineOffsetOptically(
-        anchor, syncFrames, series, intrinsics);
+        anchor, syncFrames, series, intrinsics, opts);
     return rawedit::applyOpticalRefinement(anchor, result);
 }
 
@@ -749,7 +796,8 @@ void stabilizationFrameFor(const StabRequest& req,
         // Sync: frame-0 anchors from the Source itself.
         const rawedit::FrameInfo first = src.frameInfo(0);
         rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
-            first.recvdMs, gyro->imu.logStartWallMs, first.ptsUs * 1000);
+            first.recvdMs, gyro->imu.logStartWallMs, first.ptsUs * 1000,
+            kReceiveLagPriorMs, kReceiveLagBoundMs);
 
         // Optical refinement (M5 commit b, GY-04): when the toggle is on
         // and the anchor estimate exists, refine the offset against the
@@ -760,7 +808,7 @@ void stabilizationFrameFor(const StabRequest& req,
         // (weak texture, no curvature improvement, disagreement) returns
         // not-refined and the anchor estimate stays exactly as it was.
         int64_t frameIntervalNs = 0;
-        if (req.syncRefine && est.isAnchored()) {
+        {
             const size_t frames = src.frameCount();
             // The frame interval from the pts span (uniform-interval
             // fallback the repTime formation documents; a 1-frame clip has
@@ -775,8 +823,12 @@ void stabilizationFrameFor(const StabRequest& req,
                         static_cast<int64_t>(frames - 1);
                 }
             }
-            if (frameIntervalNs > 0) {
-                est = refineSyncEstimate(src, gyro->orientation.series,
+            if (req.syncRefine && est.isAnchored() && frameIntervalNs > 0) {
+                // The refine measures against the bias-corrected gyro-only
+                // series (round 3): the VQF series' accel corrections are
+                // not image motion, and with them the refine was rejected
+                // on two of four real handheld clips that gyro-only synced.
+                est = refineSyncEstimate(src, gyro->gyroOnly,
                                          est, frameIntervalNs, focalMm);
             }
         }
@@ -785,21 +837,16 @@ void stabilizationFrameFor(const StabRequest& req,
         bool offsetKnown = false;
         if (est.confidence == rawedit::SyncConfidence::Refined) {
             // MAPPING CONTRACT (OpticalSync.h, binding): refinedOffsetNs
-            // maps t_imu = repTimeNs + refinedOffsetNs with
-            // repTimeNs = captureNs + 0.5*frameIntervalNs, while the plan
-            // maps t_imu = captureNs + model.offsetNs. Keeping frameTs as
-            // the capture stamps, the model that reproduces the refined
-            // mapping is exactly the half-interval shift:
-            //     model.offsetNs = refinedOffsetNs + 0.5*frameIntervalNs
-            // (the same fallback repTime the refinement measured under —
-            // the two formations must agree, or the half-interval lag
-            // enters as sync error). The trim composes MANUALLY over it:
-            // trimOffsetMs composes over model.offsetNs, which a refined
-            // estimate never touched (applyOpticalRefinement keeps the
-            // anchor's model), so the core trim helper would trim the
-            // WRONG (anchor) offset.
+            // maps t_imu = repTimeNs + refinedOffsetNs. Since round 3 the
+            // plan's frameTs ARE those representative times (repTimeNs()
+            // above, shared with the refine), so no half-interval shift
+            // is composed in. The trim composes MANUALLY over it (the core
+            // trim helper would trim the anchor's model, which a refined
+            // estimate never touched).
+            // Round 3: frameTs below ARE the representative times the
+            // refine measured against, so the refined offset applies as is.
             offsetKnown = true;
-            model.offsetNs = est.refinedOffsetNs + frameIntervalNs / 2 +
+            model.offsetNs = est.refinedOffsetNs +
                              static_cast<int64_t>(
                                  req.trimMs * 1000000.0);
         } else if (est.isAnchored()) {
@@ -840,13 +887,23 @@ void stabilizationFrameFor(const StabRequest& req,
         // is exactly why the plan is cached now (once per key change,
         // not once per displayed frame).
         const size_t frames = src.frameCount();
+        // Representative times (capture + 0.5*exposure — round 3): the
+        // instant each frame's content was seen, the same formation the
+        // optical refine used.
         std::vector<int64_t> frameTs(frames);
         for (size_t i = 0; i < frames; ++i) {
-            frameTs[i] = src.frameInfo(i).ptsUs * 1000;
+            frameTs[i] = repTimeNs(src.frameInfo(i), frameIntervalNs);
         }
 
+        // Smooth / LockFirstFrame ride the gyro-only series; HorizonLock
+        // needs the VQF series (its gravityCamera pairs with VQF's last
+        // quaternion).
+        const rawedit::OrientationSeries& stabSeries =
+            req.mode == rawedit::StabilizationMode::HorizonLock || gyro->gyroOnly.empty()
+                ? gyro->orientation.series
+                : gyro->gyroOnly;
         rawedit::StabilizationResult computed = rawedit::computeStabilization(
-            gyro->orientation.series, model, frameTs,
+            stabSeries, model, frameTs,
             gyro->orientation.gravityCamera, offsetKnown,
             /*assumedFocal=*/true, params);
         for (double a : computed.relativeAngleDeg)
@@ -2490,7 +2547,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGyroSyncProbe(
     // 3. Anchored estimate (ManualRequired — never fabricated — when either
     //    anchor is absent; the UI shows the manual path then).
     const rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
-        frame0WallMs, gyroStartWallMs, frame0CaptureNs);
+        frame0WallMs, gyroStartWallMs, frame0CaptureNs,
+        kReceiveLagPriorMs, kReceiveLagBoundMs);
     const double out[5] = {
         est.isAnchored() ? 1.0 : 0.0,
         est.model.offsetMs(),

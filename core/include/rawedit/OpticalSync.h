@@ -53,7 +53,11 @@
 // REPRESENTATIVE TIME (the audit's exposure/readout order): a frame's
 // content is the scene over its exposure, centered at
 //   capture + 0.5*exposure + 0.5*readout   (telemetry-parser's rule)
-// The MCRAW container carries NO exposure/readout keys (grep of
+// CORRECTION (round 3, 2026-11-23): the MotionCam frame JSON DOES carry
+// "exposureTime" (ns) — FrameInfo::exposureNs; the production caller now
+// forms capture + 0.5*exposure (readout is still absent: a constant the
+// refinement absorbs). The original note follows. The MCRAW container
+// carries NO exposure/readout keys (grep of
 // Source.cpp/jni_bridge.cpp, 2026-11-14) — the audit forbids silently
 // assuming missing data is zero, so the caller forms the DOCUMENTED
 // fallback

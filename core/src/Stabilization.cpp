@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 
 namespace rawedit {
@@ -219,6 +220,65 @@ double warpFootprintViolation(const double hInv[9], double zoom,
     return worst;
 }
 
+
+// ---- Adaptive smoothing helpers (stabilization round 3, 2026-11-23) ----
+
+// Angle (rad) of the rotation taking a to b (shortest arc).
+double quatAngleRad(const double a[4], const double b[4]) {
+    double d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    d = std::fabs(d);
+    if (d > 1.0) d = 1.0;
+    return 2.0 * std::acos(d);
+}
+
+// alpha of a one-pole low-pass with time constant tau over an interval dt.
+double alphaFor(double dtSec, double tauSec) {
+    if (!(dtSec > 0.0)) return 0.0;  // a hold: equal stamps never move
+    if (!(tauSec > 0.0)) return 1.0;
+    return 1.0 - std::exp(-dtSec / tauSec);
+}
+
+double dtSec(const std::vector<int64_t>& ts, size_t i) {
+    return i == 0 ? 0.0 : static_cast<double>(ts[i] - ts[i - 1]) * 1e-9;
+}
+
+// Forward + reverse SLERP pass with per-sample alphas (alpha[i] is the
+// step INTO sample i on the forward pass and OUT of sample i on the
+// reverse pass — the same interval either way, so the pair has zero
+// group delay).
+std::vector<double> slerpPassPair(const std::vector<double>& q,
+                                  const std::vector<double>& alpha) {
+    const size_t n = alpha.size();
+    std::vector<double> fwd(4 * n), out(4 * n);
+    for (int k = 0; k < 4; ++k) fwd[k] = q[k];
+    for (size_t i = 1; i < n; ++i)
+        slerpToward(&fwd[4 * (i - 1)], &q[4 * i], alpha[i], &fwd[4 * i]);
+    for (int k = 0; k < 4; ++k) out[4 * (n - 1) + k] = fwd[4 * (n - 1) + k];
+    for (size_t ii = n - 1; ii > 0; --ii)
+        slerpToward(&out[4 * ii], &fwd[4 * (ii - 1)], alpha[ii], &out[4 * (ii - 1)]);
+    for (size_t i = 0; i < n; ++i) normalizeQuat(&out[4 * i]);
+    return out;
+}
+
+// Forward + reverse one-pole on a scalar series (zero lag).
+void smoothScalarPair(std::vector<double>& v, const std::vector<int64_t>& ts,
+                      double tauSec) {
+    const size_t n = v.size();
+    for (size_t i = 1; i < n; ++i)
+        v[i] = v[i - 1] + alphaFor(dtSec(ts, i), tauSec) * (v[i] - v[i - 1]);
+    for (size_t ii = n - 1; ii > 0; --ii)
+        v[ii - 1] = v[ii] + alphaFor(dtSec(ts, ii), tauSec) * (v[ii - 1] - v[ii]);
+}
+
+// Fixed-tau zero-lag smoothing of a quaternion series.
+std::vector<double> smoothFixedTau(const std::vector<double>& q,
+                                   const std::vector<int64_t>& ts, double tauSec) {
+    const size_t n = ts.size();
+    std::vector<double> alpha(n, 1.0);
+    for (size_t i = 1; i < n; ++i) alpha[i] = alphaFor(dtSec(ts, i), tauSec);
+    return slerpPassPair(q, alpha);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -315,6 +375,107 @@ OrientationSeries smoothOrientationSeries(const OrientationSeries& series,
     for (size_t i = 0; i < n; ++i)
         normalizeQuat(&out.quats[4 * i]);
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Velocity-adaptive smoothing (stabilization round 3, 2026-11-23)
+// ---------------------------------------------------------------------------
+OrientationSeries smoothOrientationSeriesAdaptive(const OrientationSeries& series,
+                                                  double strength,
+                                                  double fovDiagDeg) {
+    OrientationSeries out;
+    const size_t n = series.size();
+    if (n == 0) return out;
+    out.timestampsNs = series.timestampsNs;
+    std::vector<double> q(4 * n);
+    for (size_t i = 0; i < n; ++i) {
+        double t[4] = {series.quats[4 * i], series.quats[4 * i + 1],
+                       series.quats[4 * i + 2], series.quats[4 * i + 3]};
+        normalizeQuat(t);
+        for (int k = 0; k < 4; ++k) q[4 * i + k] = t[k];
+    }
+    strength = std::fmax(0.0, std::fmin(1.0, strength));
+    if (n == 1 || strength <= 0.0) {
+        out.quats = q;  // exact pass-through (the strength-0 contract)
+        return out;
+    }
+    const std::vector<int64_t>& ts = series.timestampsNs;
+
+    // Time constants: tauLow holds a still camera (the strength's main
+    // dial, 2^(2s-1): s=0.5 -> 1 s, s=1 -> 2 s), tauHigh follows fast
+    // motion (0.1 s). The blend between them is driven by the angular
+    // velocity normalized by a FOV-scaled limit, so a wide lens tolerates
+    // faster motion before tracking it.
+    const double tauLow = std::pow(2.0, 2.0 * strength - 1.0);
+    const double tauHigh = 0.1;
+    const double fovRatio = std::fmax(0.1, std::fmin(2.0, fovDiagDeg / 120.0));
+    // 500 deg/s at full strength and a 120 deg lens, halved because the
+    // second pass below re-weights the normalized velocity by up to 2x.
+    const double maxV = std::fmax(1.0, 500.0 * strength * fovRatio * 0.5);
+
+    // Angular velocity (deg/s), smoothed zero-lag at tauHigh so a single
+    // noisy sample cannot flip the regime.
+    // Measured on a PRE-SMOOTHED path (tau = velocityTau): the regime
+    // switch must see intentional motion (pans, tilts, turns), not hand
+    // tremor — at a long focal the FOV-scaled limit is low (99 mm equiv:
+    // ~24 deg diagonal -> ~25 deg/s at s = 0.5) and the raw tremor's
+    // instantaneous velocity alone would cross it, making the smoother
+    // TRACK the shake it exists to remove (measured on the owner's 99 mm
+    // clips: residual jerk 0.3-0.4 at full correction with raw velocity).
+    const double velocityTau = 0.25;
+    const std::vector<double> qv = smoothFixedTau(q, ts, velocityTau);
+    std::vector<double> vel(n, 0.0);
+    for (size_t i = 1; i < n; ++i) {
+        const double dt = dtSec(ts, i);
+        vel[i] = dt > 0.0 ? quatAngleRad(&qv[4 * (i - 1)], &qv[4 * i]) * 180.0 / M_PI / dt : 0.0;
+    }
+    smoothScalarPair(vel, ts, tauHigh);
+
+    auto blendAlpha = [&](size_t i, double r) {
+        const double dt = dtSec(ts, i);
+        const double a = alphaFor(dt, tauLow) * (1.0 - r) + alphaFor(dt, tauHigh) * r;
+        return std::fmax(0.0, std::fmin(1.0, a));
+    };
+
+    // Pass 1: velocity-blended alphas.
+    std::vector<double> alpha(n, 1.0);
+    for (size_t i = 1; i < n; ++i) alpha[i] = blendAlpha(i, vel[i] / maxV);
+    std::vector<double> first = slerpPassPair(q, alpha);
+
+    // Pass 2: where pass 1 drifted far from the real path (the frames
+    // that would demand the most crop), react faster. Distance to the
+    // raw path, normalized, a dead zone below half the maximum,
+    // smoothed zero-lag, remapped to [0.5, 1] and multiplied into the
+    // normalized velocity; the pass re-smooths the RAW series.
+    std::vector<double> dist(n, 0.0);
+    double maxD = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        dist[i] = quatAngleRad(&first[4 * i], &q[4 * i]);
+        maxD = std::fmax(maxD, dist[i]);
+    }
+    if (!(maxD > 1e-12)) {
+        out.quats = first;  // nothing drifted: pass 1 already is the answer
+        return out;
+    }
+    for (double& d : dist) {
+        d /= maxD;
+        if (d < 0.5) d = 0.0;
+    }
+    smoothScalarPair(dist, ts, tauHigh);
+    double maxD2 = 0.0;
+    for (double d : dist) maxD2 = std::fmax(maxD2, d);
+    for (double& d : dist) d = ((maxD2 > 1e-12 ? d / maxD2 : 0.0) + 1.0) * 0.5;
+    for (size_t i = 1; i < n; ++i) alpha[i] = blendAlpha(i, vel[i] / maxV * dist[i]);
+    out.quats = slerpPassPair(q, alpha);
+    return out;
+}
+
+// Diagonal field of view (deg) of a pinhole with focal f (px) over w x h.
+double diagonalFovDeg(double focalLengthPx, int width, int height) {
+    if (!(focalLengthPx > 0.0) || width <= 0 || height <= 0) return 120.0;
+    const double diag = std::sqrt(static_cast<double>(width) * width +
+                                  static_cast<double>(height) * height);
+    return 2.0 * std::atan(diag / (2.0 * focalLengthPx)) * 180.0 / M_PI;
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +699,12 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
     actualOnFrames.quats = qActual;
 
     std::vector<double> qTarget(4 * n);
+    // The crop fallback path (round 3): a lightly smoothed target (tau
+    // 0.1 s) the correction degrades TOWARD when the zoom budget is short,
+    // instead of degrading toward the raw camera — high-frequency shake
+    // stays filtered even where the full correction does not fit.
+    std::vector<double> qTargetFast =
+        smoothFixedTau(qActual, frameTimestampsNs, 0.1);
     double gWorld[3] = {0.0, 0.0, 0.0};
     bool haveGravity = gravityCamera != nullptr
         && std::isfinite(gravityCamera[0]) && std::isfinite(gravityCamera[1])
@@ -558,8 +725,11 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
                 qTarget[4 * i + k] = qActual[4 * anchor + k];
     } else {
         // Smooth / HorizonLock: smoothed target from the actual series.
-        const OrientationSeries smoothed =
-            smoothOrientationSeries(actualOnFrames, params.strength);
+        const OrientationSeries smoothed = params.adaptiveSmoothing
+            ? smoothOrientationSeriesAdaptive(
+                  actualOnFrames, params.strength,
+                  diagonalFovDeg(params.focalLengthPx, params.width, params.height))
+            : smoothOrientationSeries(actualOnFrames, params.strength);
         qTarget = smoothed.quats;
 
         if (params.mode == StabilizationMode::HorizonLock) {
@@ -593,6 +763,19 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
                             qTarget[4 * i + k] = qLocked[k];
                         anyLockApplied = true;
                     }
+                    // The fallback path is leveled by its OWN gravity
+                    // reading so blending between the two never un-levels.
+                    double qF[4] = {qTargetFast[4 * i], qTargetFast[4 * i + 1],
+                                    qTargetFast[4 * i + 2], qTargetFast[4 * i + 3]};
+                    double qFc[4], gFast[3], lockF[4];
+                    quatConj(qF, qFc);
+                    quatRotate(qFc, gWorld, gFast);
+                    if (horizonLockRotation(gFast, lockF)) {
+                        double qLockedF[4];
+                        quatMultiply(qF, lockF, qLockedF);
+                        for (int k = 0; k < 4; ++k)
+                            qTargetFast[4 * i + k] = qLockedF[k];
+                    }
                 }
             }
             if (!anyLockApplied)
@@ -601,11 +784,26 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
     }
 
     // --- Step 6: q_rel per frame (with the lock folded in) ---
-    std::vector<double> qRel(4 * n);
+    std::vector<double> qRel(4 * n), qRelFast(4 * n);
     for (size_t i = 0; i < n; ++i) {
         relativeRotation(&qTarget[4 * i], &qActual[4 * i], &qRel[4 * i]);
+        relativeRotation(&qTargetFast[4 * i], &qActual[4 * i], &qRelFast[4 * i]);
         result.relativeAngleDeg[i] = relativeRotationAngleDeg(&qRel[4 * i]);
     }
+    // The correction path a in [0, 2] (round 3): a in [1, 2] slides from
+    // the fast-smoothed correction to the full one; a in [0, 1] from no
+    // correction (identity) to the fast one. a = 2 is the full plan,
+    // a = 0 the identity (always fits). The scale fields report a / 2.
+    const double qIdentity[4] = {1.0, 0.0, 0.0, 0.0};
+    auto correctionAt = [&](size_t i, double a, double outQ[4]) {
+        if (a >= 2.0) {
+            for (int k = 0; k < 4; ++k) outQ[k] = qRel[4 * i + k];
+        } else if (a >= 1.0) {
+            slerpToward(&qRelFast[4 * i], &qRel[4 * i], a - 1.0, outQ);
+        } else {
+            slerpToward(qIdentity, &qRelFast[4 * i], a < 0.0 ? 0.0 : a, outQ);
+        }
+    };
 
     // --- Step 7: the static crop, clamped by the user limit ---
     result.requiredZoom = staticCropZoom(qRel, params.focalLengthPx, cx, cy,
@@ -623,6 +821,7 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
     // scaling of components/Euler/matrix entries) — smoothly over
     // time. When requiredZoom <= appliedZoom the budget suffices and
     // every scale below stays 1.0: bit-identical to the pre-fix plan.
+    std::vector<double> pathParam(n, 2.0);  // a per frame, [0, 2]
     if (result.appliedZoom >= result.requiredZoom) {
         // Sufficient budget: full correction, nothing to scale.
     } else {
@@ -650,8 +849,7 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
             if (!(a >= 0.0) || !std::isfinite(a))
                 return false;
             double qScaled[4];
-            const double qIdentity[4] = {1.0, 0.0, 0.0, 0.0};
-            slerpToward(qIdentity, &qRel[4 * i], a, qScaled);
+            correctionAt(i, a, qScaled);
             double hS[9], hInvS[9];
             frameTransform(qScaled, params.focalLengthPx, cx, cy, hS);
             if (!matInv(hS, hInvS))
@@ -669,12 +867,12 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
         // refine it per frame and in time.
         double aClip = 0.0;
         {
-            double lo = 0.0, hi = 1.0;
+            double lo = 0.0, hi = 2.0;
             bool hiFits = true;
             for (size_t i = 0; i < n && hiFits; ++i)
                 hiFits = fits(i, hi);
             if (hiFits) {
-                aClip = 1.0;
+                aClip = 2.0;
             } else {
                 for (int iter = 0; iter < 40; ++iter) {
                     const double mid = 0.5 * (lo + hi);
@@ -697,9 +895,9 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
         // frame). Revalidated before use (no monotonicity assumed).
         std::vector<double> bCap(n, 0.0);
         for (size_t i = 0; i < n; ++i) {
-            double lo = 0.0, hi = 1.0;
+            double lo = 0.0, hi = 2.0;
             if (fits(i, hi)) {
-                bCap[i] = 1.0;
+                bCap[i] = 2.0;
                 continue;
             }
             for (int iter = 0; iter < 40; ++iter) {
@@ -735,10 +933,10 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
         // reduction then breathes on the same timescale as the
         // correction, not faster.
         const double windowSec = 0.5;
-        std::vector<double> env(n, 1.0);
+        std::vector<double> env(n, 2.0);
         for (size_t i = 0; i < n; ++i) {
             const double ti = static_cast<double>(frameTimestampsNs[i]) * 1e-9;
-            double e = 1.0;
+            double e = 2.0;
             for (size_t j = 0; j < n; ++j) {
                 const double tj =
                     static_cast<double>(frameTimestampsNs[j]) * 1e-9;
@@ -747,7 +945,7 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
             }
             env[i] = e;
         }
-        std::vector<double> aSmooth(n, 1.0);
+        std::vector<double> aSmooth(n, 2.0);
         for (size_t i = 0; i < n; ++i) {
             const double ti = static_cast<double>(frameTimestampsNs[i]) * 1e-9;
             double num = 0.0, den = 0.0;
@@ -776,7 +974,7 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
         // pins. invalidSampleFrames counts the frames that STILL fail
         // after all fallbacks (expected 0; if the identity itself does
         // not fit something is broken upstream and the count says so).
-        result.clipCorrectionScale = aClip;
+        result.clipCorrectionScale = aClip / 2.0;
         for (size_t i = 0; i < n; ++i) {
             double a = aSmooth[i];
             if (a > bCap[i])
@@ -797,7 +995,8 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
                     }
                 }
             }
-            result.correctionScale[i] = a;
+            pathParam[i] = a;
+            result.correctionScale[i] = a / 2.0;
         }
         double aMin = 1.0, aSum = 0.0;
         for (size_t i = 0; i < n; ++i) {
@@ -814,14 +1013,69 @@ StabilizationResult computeStabilization(const OrientationSeries& orientationSer
     // warp that ships. relativeAngleDeg above stays the REQUESTED
     // full-correction angle (the honest "what was asked for" number;
     // correctionScale says what was applied).
+    std::vector<double> frameZoom(n, result.appliedZoom);
+    std::vector<double> qFinal(4 * n);
+    for (size_t i = 0; i < n; ++i)
+        correctionAt(i, pathParam[i], &qFinal[4 * i]);
+    if (params.dynamicZoom && n > 1) {
+        // DYNAMIC ZOOM (round 3): each frame's own minimal crop for the
+        // warp it ships, then the same feasibility-preserving smoothing
+        // as the correction scale but MAX-based: a sliding max over the
+        // actual PTS (window W) and a triangular kernel of radius W/2,
+        // so z_i >= every neighbor's need (no frame ever under-cropped)
+        // and the crop breathes slowly instead of holding the clip's
+        // single worst frame for its whole length. Clamped to the
+        // budget; revalidated below with the exact footprint check.
+        const double windowSec = 2.0;
+        std::vector<double> need(n, 1.0);
+        for (size_t i = 0; i < n; ++i) {
+            const std::vector<double> one(qFinal.begin() + 4 * i,
+                                          qFinal.begin() + 4 * i + 4);
+            need[i] = std::fmin(result.appliedZoom,
+                                staticCropZoom(one, params.focalLengthPx, cx, cy,
+                                               params.width, params.height));
+        }
+        std::vector<double> envZ(n, 1.0);
+        size_t lo = 0, hi = 0;
+        for (size_t i = 0; i < n; ++i) {
+            const int64_t ti = frameTimestampsNs[i];
+            const int64_t halfW = static_cast<int64_t>(windowSec / 2.0 * 1e9);
+            while (lo < n && frameTimestampsNs[lo] < ti - halfW) ++lo;
+            if (hi < lo) hi = lo;
+            while (hi + 1 < n && frameTimestampsNs[hi + 1] <= ti + halfW) ++hi;
+            double e = 1.0;
+            for (size_t j = lo; j <= hi; ++j) e = std::fmax(e, need[j]);
+            envZ[i] = e;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            const double ti = static_cast<double>(frameTimestampsNs[i]) * 1e-9;
+            double num = 0.0, den = 0.0;
+            for (size_t k = 0; k < n; ++k) {
+                const double dt = std::fabs(ti - static_cast<double>(frameTimestampsNs[k]) * 1e-9);
+                if (dt > windowSec / 2.0) continue;
+                const double w = 1.0 - dt / (windowSec / 2.0);
+                num += w * envZ[k];
+                den += w;
+            }
+            double z = den > 0.0 ? num / den : envZ[i];
+            z = std::fmax(z, need[i]);
+            frameZoom[i] = std::fmin(result.appliedZoom, std::fmax(1.0, z));
+        }
+        // Exact revalidation (a frame failing at its dynamic zoom falls
+        // back to the static budget, which the correction already fits).
+        for (size_t i = 0; i < n; ++i) {
+            double hD[9], hInvD[9];
+            frameTransform(&qFinal[4 * i], params.focalLengthPx, cx, cy, hD);
+            if (!matInv(hD, hInvD) ||
+                warpFootprintViolation(hInvD, frameZoom[i], cx, cy,
+                                       params.width, params.height) > 0.0)
+                frameZoom[i] = result.appliedZoom;
+        }
+    }
     for (size_t i = 0; i < n; ++i) {
         StabilizationFrame& f = result.frames[i];
-        const double qIdentity[4] = {1.0, 0.0, 0.0, 0.0};
-        double qScaled[4];
-        slerpToward(qIdentity, &qRel[4 * i], result.correctionScale[i],
-                    qScaled);
-        frameTransform(qScaled, params.focalLengthPx, cx, cy, f.h);
-        f.zoom = result.appliedZoom;
+        frameTransform(&qFinal[4 * i], params.focalLengthPx, cx, cy, f.h);
+        f.zoom = frameZoom[i];
         f.status = inside[i] ? StabilizationStatus::Ok
                              : StabilizationStatus::LowOverlap;
         if (assumedFocal)

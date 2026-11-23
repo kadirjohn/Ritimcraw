@@ -426,7 +426,7 @@ class ExportStoreTest {
         assertEquals(false, snapshot.stabilization)
         assertEquals(0, snapshot.stabilizationMode)
         assertEquals(50f, snapshot.stabilizationStrength, 0f)
-        assertEquals(1.1f, snapshot.stabilizationZoomLimit, 0f)
+        assertEquals(1.25f, snapshot.stabilizationZoomLimit, 0f)
         assertEquals(0f, snapshot.stabilizationTrimMs, 0f)
         assertEquals(0f, snapshot.stabilizationFocalMm, 0f)
     }

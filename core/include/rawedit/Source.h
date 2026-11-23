@@ -62,6 +62,11 @@ struct FrameInfo {
     // sync degrades to ManualRequired, never fabricated). Frame 0's
     // value is the anchor; later frames keep theirs for diagnostics.
     int64_t recvdMs = -1;
+    // Per-frame exposure time in ns (the frame JSON's "exposureTime";
+    // stabilization round 3). The frame's content is centered at
+    // capture + 0.5*exposure (+ 0.5*readout, which the container does not
+    // carry — a constant the optical sync absorbs). -1 = absent.
+    int64_t exposureNs = -1;
 };
 
 struct AudioInfo {

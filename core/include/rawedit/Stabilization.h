@@ -229,6 +229,33 @@ const char* stabilizationStatusName(StabilizationStatus s);
 OrientationSeries smoothOrientationSeries(const OrientationSeries& series,
                                           double strength);
 
+// Velocity-adaptive smoothing (stabilization round 3, 2026-11-23; the
+// default target of Smooth / HorizonLock). Same family as gyroflow's
+// default algorithm — semantics reference only, nothing copied
+// (docs + the published parameter set: 1 s still-camera / 0.1 s
+// fast-motion time constants, a 500 deg/s FOV-scaled velocity limit and a
+// distance-weighted second pass):
+//   tauLow  = 2^(2s-1) s   (s = strength: 0.5 -> 1 s, 1.0 -> 2 s)
+//   tauHigh = 0.1 s
+//   v_i     = angular velocity (deg/s), zero-lag smoothed at tauHigh
+//   maxV    = 500 * s * (fovDiag/120) * 0.5
+//   alpha_i = alpha(tauLow)*(1-r) + alpha(tauHigh)*r,  r = v_i/maxV
+//   pass 1: forward + reverse SLERP passes with alpha_i
+//   pass 2: d_i = |pass1_i - raw_i| normalized, dead zone < 0.5,
+//           smoothed, remapped to [0.5, 1]; r -> r * d_i; re-smooth RAW.
+// The fixed-tau smoother above leaves a fast pan's target far behind the
+// camera (the measured 4-10x required crop on the fixtures at s=0.5),
+// which a realistic crop budget can only answer by cutting the whole
+// correction; tracking fast motion while holding slow drift fixes that
+// at the source. strength 0 is an exact pass-through.
+OrientationSeries smoothOrientationSeriesAdaptive(const OrientationSeries& series,
+                                                  double strength,
+                                                  double fovDiagDeg);
+
+// Diagonal FOV (deg) of a pinhole of focal f px over w x h (120 when the
+// inputs are not usable — the reference FOV, i.e. a neutral ratio).
+double diagonalFovDeg(double focalLengthPx, int width, int height);
+
 // Relative rotation q_rel = conj(q_target) * q_actual (the direction
 // contract above). Inputs need not be normalized; output is.
 void relativeRotation(const double qTarget[4], const double qActual[4],
@@ -366,11 +393,17 @@ struct StabilizationParams {
     double principalPoint[2] = {0.0, 0.0}; // <= 0 sentinel -> center
     int width = 0;           // source pixel dims; required > 0
     int height = 0;
+    // Round 3 (2026-11-23): the velocity-adaptive target (false = the
+    // legacy fixed-tau smoother, kept for the pinned tests) and the
+    // per-frame dynamic crop (false = one clip-wide static zoom).
+    bool adaptiveSmoothing = true;
+    bool dynamicZoom = true;
 };
 
 struct StabilizationFrame {
     double h[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; // K·D·R·D·K⁻¹ row-major
-    double zoom = 1.0;                         // clip-wide static crop
+    double zoom = 1.0;                         // this frame's crop (dynamic
+                                               // zoom; == appliedZoom when off)
     StabilizationStatus status = StabilizationStatus::Ok;
 };
 

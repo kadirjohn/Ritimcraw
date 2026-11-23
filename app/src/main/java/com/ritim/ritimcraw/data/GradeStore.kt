@@ -70,7 +70,10 @@ import java.nio.charset.StandardCharsets
  * map put 0.5 at ≈ 31.6 µs, near-raw: no visible effect); the UI maps
  * the percent onto 0..1. Old saved grades keep their stored value —
  * the default only seeds grades that never set one.
- * stabilizationZoomLimit caps the auto crop, 1.0..1.5, default 1.1.
+ * stabilizationZoomLimit caps the auto crop, 1.0..1.5, default 1.25 (round 3,
+ * 2026-11-23: measured on the owner's 25 gyro logs, 1.1 left the correction
+ * budget-starved on most handheld clips; the crop is now DYNAMIC, so the
+ * mean crop sits well under the cap — 1.135 at a 1.25 cap on those logs).
  * stabilizationTrimMs is the manual sync trim ±500 ms (trimOffsetMs over the
  * anchored estimate; 0 = no trim). stabilizationFocalMm is the
  * 35mm-equivalent focal override in mm; 0 = use the container's value (the
@@ -131,7 +134,7 @@ data class GradeK(
     /** Smoothing percent 0..100 (maps onto the core's tau dial 0..1); default 50 (audit fix 2026-11-12). */
     val stabilizationStrength: Float = 50f,
     /** Max auto-crop zoom 1.0..1.5; the core clamps appliedZoom to min(required, this). */
-    val stabilizationZoomLimit: Float = 1.1f,
+    val stabilizationZoomLimit: Float = 1.25f,
     /** Manual sync trim in ms, ±500 (trimOffsetMs over the anchored estimate). */
     val stabilizationTrimMs: Float = 0f,
     /** 35mm-equivalent focal override in mm; 0 = use the container's value. */
@@ -564,7 +567,7 @@ class GradeStore(private val file: File) {
                     stabilization = m["stabilization"] as? Boolean ?: false,
                     stabilizationMode = (m["stabilizationMode"] as? Double)?.toInt() ?: 0,
                     stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 50f,
-                    stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.1f,
+                    stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.25f,
                     stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                     stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
                     // Crop + straighten fields (RAW-09) postdate older

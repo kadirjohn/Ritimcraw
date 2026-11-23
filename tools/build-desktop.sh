@@ -102,6 +102,14 @@ echo "== building tests =="
 # from the repo root so it finds the STEPS/media/test fixtures.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_stabilization.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_stabilization"
+# Stabilization measurement tools (round 3, not tests — run by hand):
+#   stab_measure <log.gcsv> [strength] [zoomLimit]  — shake/crop numbers
+#     (env: STAB_LEGACY, STAB_GYRO_ONLY, STAB_OFFSET_MS, STAB_DUMP)
+#   sync_measure <clip.mcraw> <log.gcsv> [focalMm]  — anchor vs optical sync
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/stab_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/stab_measure"
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/sync_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/sync_measure"
 # test_warp: Phase 5 CPU warp (warpFrame); runs from the repo root so
 # it finds the STEPS/media/test fixtures (the cost-evidence case).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_warp.cpp" \
