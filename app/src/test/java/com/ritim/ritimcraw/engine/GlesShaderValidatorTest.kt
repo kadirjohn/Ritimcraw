@@ -2186,17 +2186,18 @@ class GlesShaderValidatorTest {
     @Test
     fun stage9_host_parity_the_glsl_block_matches_the_cpu_loop() {
         // CPU: lift remap pinned at white; GLSL: identical gate + math.
+        // k = 0.12 (A6 black point range shrink, owner request 2026-11-23).
         assertStageParity(
             "blackPoint", listOf(5f, -5f, 100f, -100f, 0f),
             cpu = { r, g, b, v ->
                 if (v != 0.0f) {
-                    val lift = -0.25f * (v / 100.0f)
+                    val lift = -0.12f * (v / 100.0f)
                     Triple(lift + (1.0f - lift) * r, lift + (1.0f - lift) * g, lift + (1.0f - lift) * b)
                 } else Triple(r, g, b)
             },
             glsl = { r, g, b, v ->
                 if (v != 0.0f) {
-                    val lift = -0.25f * (v / 100.0f)
+                    val lift = -0.12f * (v / 100.0f)
                     Triple(lift + (1.0f - lift) * r, lift + (1.0f - lift) * g, lift + (1.0f - lift) * b)
                 } else Triple(r, g, b)
             },

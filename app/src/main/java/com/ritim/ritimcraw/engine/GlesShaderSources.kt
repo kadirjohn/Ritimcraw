@@ -218,8 +218,9 @@ void main() {
      *      value (0.0 = the CPU's own `if (grade.blackPoint != 0.0f)`
      *      skip, so the unset uniform's 0.0 default is exactly the fast
      *      path), and the shader runs the CPU stage-9 endpoint remap
-     *      verbatim: lift = -0.25 * bp/100, x' = lift + (1 - lift) * x
-     *      (toe remap pinned at white);
+     *      verbatim: lift = -0.12 * bp/100, x' = lift + (1 - lift) * x
+     *      (toe remap pinned at white; k = 0.12 per A6, owner request
+     *      2026-11-23);
      *  10  white point — uWhitePoint carries the RAW grade.whitePoint
      *      value and the shader runs the CPU stage-10 uniform scale
      *      verbatim: x' = x / (1 - 0.25*wp/100) for wp > 0, x' = x *
@@ -1014,9 +1015,10 @@ vec3 lutManagedPixel(vec3 px) {
     // (core/src/Develop.cpp). uBlackPoint carries the RAW grade.blackPoint
     // value; 0.0 skips the whole stage exactly like the CPU's `if
     // (grade.blackPoint != 0.0f)`. lift is uniform-derived so it must NOT
-    // be const (GLSL ES 3.00).
+    // be const (GLSL ES 3.00). k = 0.12 (A6 black point range shrink,
+    // owner request 2026-11-23; was 0.25).
     if (uBlackPoint != 0.0) {
-        float lift = -0.25 * (uBlackPoint / 100.0);
+        float lift = -0.12 * (uBlackPoint / 100.0);
         c = lift + (1.0 - lift) * c;
     }
     // Stage 10: white point - the CPU stage-10 uniform scale, verbatim.
