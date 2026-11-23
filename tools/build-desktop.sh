@@ -121,8 +121,10 @@ echo "== building tests =="
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/bp_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/bp_measure"
 # image_stab_measure: image-stab numbers (S1..S3): stage timings, analysis of
-# a real clip, acceleration/jerk + zoom-rate A/B plan sweep, raw-vs-developed
-# luma check. Run by hand: `image_stab_measure bench|analyze|plan|lumacheck`.
+# a real clip, acceleration/jerk + zoom-rate A/B plan sweep (with pan-speed
+# percentiles and the section 3.10 confidence components), raw-vs-developed
+# luma check, and the gyro cross-check (gyrocheck, hand-held clips 2026-11-24).
+# Run by hand: `image_stab_measure bench|analyze|plan|lumacheck|gyrocheck`.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/image_stab_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/image_stab_measure"
 # test_warp: Phase 5 CPU warp (warpFrame); runs from the repo root so

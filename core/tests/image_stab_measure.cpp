@@ -21,6 +21,17 @@
 //   image_stab_measure lumacheck <clip.mcraw> [pairs=20]
 //       Raw-CFA luma path vs developThumbnail luma path: difference of the
 //       pair motions in working-resolution pixels (S2 acceptance < 0.1 px).
+//   image_stab_measure gyrocheck <clip.mcraw> <clip.gcsv> [offsetScanMs=150]
+//       Gyro cross-check (S2): parse the sidecar GCSV, integrate the
+//       angular rate (VQF + gyro-only bias-corrected reference), anchor
+//       the frame<->IMU clock via Sync.h's wall anchors, then scan the
+//       sync offset +-offsetScanMs around the anchor and compare, per
+//       usable pair, the gyro-predicted center displacement (rotation
+//       homography, focal from the container's 35mm-equiv value) with the
+//       image measurement. Acceptance hypothesis (plan S4): residual
+//       shift RMS < ~1 px at the working resolution. Prints the rotation-
+//       channel comparison (roll) too; partial honesty if the sync
+//       threshold is not met.
 //
 // Metric definitions (docs/IMAGE_STAB_PLAN.md section 4): the path is in
 // pixels at 1080 px height; derivatives use the REAL PTS spacing, never an
@@ -31,8 +42,13 @@
 // reported as RMS over frames and over both axes, raw and stabilized,
 // plus out/raw ratios in separate columns.
 #include <rawedit/Develop.h>
+#include <rawedit/Gyro.h>
 #include <rawedit/ImageStab.h>
+#include <rawedit/Orientation.h>
+#include <rawedit/OrientationEstimate.h>
 #include <rawedit/Source.h>
+#include <rawedit/Stabilization.h>
+#include <rawedit/Sync.h>
 #include <rawedit/Thumbnail.h>
 
 #include <algorithm>
@@ -43,6 +59,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+#include "image_stab_gyro.hpp"
 
 using namespace rawedit;
 
@@ -291,12 +309,96 @@ int cmdPlan(const std::string& file, size_t maxFrames, const std::string& tag,
     {
         const ImageStabPlan raw = ImageStabPlan::build(path.recs, ImageStabParams(), 0, n - 1, aspect);
         double mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9, mxr = 0;
+        double mnS = 1e9, mxS = -1e9;
         for (const Sim2& q : raw.rawPath()) {
             mnx = std::min(mnx, q.tx * K); mxx = std::max(mxx, q.tx * K);
             mny = std::min(mny, q.ty * K); mxy = std::max(mxy, q.ty * K);
             mxr = std::max(mxr, std::fabs(q.theta) * 180.0 / 3.141592653589793);
+            mnS = std::min(mnS, q.s); mxS = std::max(mxS, q.s);
         }
-        std::printf("raw path excursion (px @1080): x %.1f..%.1f  y %.1f..%.1f  |roll| max %.3f deg\n", mnx, mxx, mny, mxy, mxr);
+        std::printf("raw path excursion (px @1080): x %.1f..%.1f  y %.1f..%.1f  |roll| max %.3f deg  scale %.4f..%.4f\n",
+                    mnx, mxx, mny, mxy, mxr, mnS, mxS);
+    }
+
+    // Pan-speed calibration data (plan section 3.3 Smooth's panSpeed
+    // hypothesis 0.5 heights/s; measured here per clip): the RAW path's
+    // per-pair translational speed in heights/s (px @1080 / 1080 / dt),
+    // plus the same after the 0.25 s pre-smooth the plan uses for the
+    // intentional-motion detector. Reported as percentiles.
+    {
+        std::vector<double> vRaw, vSm;
+        const ImageStabPlan raw = ImageStabPlan::build(path.recs, ImageStabParams(), 0, n - 1, aspect);
+        const std::vector<Sim2>& rp = raw.rawPath();
+        for (size_t i = 1; i < n && i < rp.size(); ++i) {
+            const double dt = t[i] - t[i - 1];
+            if (!(dt > 0)) continue;
+            const double dx = (rp[i].tx - rp[i - 1].tx) * K / dt;
+            const double dy = (rp[i].ty - rp[i - 1].ty) * K / dt;
+            vRaw.push_back(std::hypot(dx, dy) / K);  // heights/s
+        }
+        if (vRaw.size() > 4) {
+            std::vector<double> vSm(vRaw.size());
+            // 0.25 s one-pole pre-smooth, matching the plan's detector input.
+            double avg = vRaw[0];
+            for (size_t i = 0; i < vRaw.size(); ++i) {
+                const double dt = t[i + 1] - t[i];
+                const double a = 1.0 - std::exp(-dt / 0.25);
+                avg += a * (vRaw[i] - avg);
+                vSm[i] = avg;
+            }
+            auto pct = [](std::vector<double> v, double p) {
+                if (v.empty()) return 0.0;
+                std::sort(v.begin(), v.end());
+                return v[std::min(v.size() - 1, static_cast<size_t>(p * (v.size() - 1)))];
+            };
+            std::printf("pan speed (heights/s, raw pair speeds): p50 %.3f | p90 %.3f | p99 %.3f | max %.3f\n",
+                        pct(vRaw, 0.5), pct(vRaw, 0.9), pct(vRaw, 0.99), pct(vRaw, 1.0));
+            std::printf("pan speed after 0.25s pre-smooth (the plan's detector input): p50 %.3f | p90 %.3f | p99 %.3f | max %.3f\n",
+                        pct(vSm, 0.5), pct(vSm, 0.9), pct(vSm, 0.99), pct(vSm, 1.0));
+        }
+    }
+
+    // Confidence score components (plan section 3.10's proposal, additive):
+    //   C = 0.4*okFraction + 0.25*medianInlierRatio + 0.2*meanCoverage
+    //       + 0.15*(1 - normalize(residualRms))
+    // residualRms here is the inlier residual at working res, px; normalized
+    // by the inlier threshold (1.5 px) and clamped to [0,1].
+    {
+        size_t ok = 0, all = 0;
+        std::vector<double> inl, cov, resid;
+        for (size_t i = 1; i < path.recs.size(); ++i) {
+            const PairMotion m = toMotion(path.recs[i]);
+            ++all;
+            if (m.status == PairStatus::Ok) ++ok;
+            inl.push_back(m.inlierRatio);
+            cov.push_back(m.coverage);
+            resid.push_back(m.residualRms);
+        }
+        auto med = [](std::vector<double> v) {
+            if (v.empty()) return 0.0;
+            std::sort(v.begin(), v.end());
+            return v.size() % 2 ? v[v.size() / 2] : 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
+        };
+        auto meanRes = [&]() {
+            double s = 0;
+            for (double r : resid) s += r;
+            return resid.empty() ? 0.0 : s / resid.size();
+        };
+        const double okFrac = all ? double(ok) / double(all) : 0;
+        const double medInl = med(inl);
+        double covSum = 0;
+        for (double c : cov) covSum += c;
+        const double meanCov = cov.empty() ? 0 : covSum / cov.size();
+        const double resNorm = std::min(1.0, meanRes() / 1.5);
+        const double score = 0.4 * okFrac + 0.25 * medInl + 0.2 * meanCov
+                             + 0.15 * (1.0 - resNorm);
+        const char* grade = score >= 0.8 ? "Good" : score >= 0.55 ? "Fair"
+                            : score >= 0.3 ? "Weak" : "Unusable";
+        std::printf("confidence: okFraction %.3f | medianInlierRatio %.3f | meanCoverage %.3f"
+                    " | meanResid %.3f px (norm %.3f)\n",
+                    okFrac, medInl, meanCov, meanRes(), resNorm);
+        std::printf("confidence score C = %.3f -> %s (thresholds 0.8/0.55/0.3; proposal, owner approval pending)\n",
+                    score, grade);
     }
 
     std::printf("\nstrength sweep (Smooth, zoomLimit 1.15, zoomRate 0.10, window 1.0 s)\n");
@@ -424,11 +526,159 @@ int cmdLumaCheck(const std::string& clip, int pairs) {
     return 0;
 }
 
+// ---- gyro cross-check (gyrocheck) ---------------------------------------------------
+
+int cmdGyroCheck(const std::string& clip, const std::string& gcsv, double scanMs) {
+    // 1) The clip's pair measurements (analysis, no checkpoint file).
+    auto src = Source::open(clip);
+    if (!src.isOk()) { std::fprintf(stderr, "open failed: %s\n", clip.c_str()); return 1; }
+    Source& s = **src;
+    std::printf("gyrocheck: analyzing %s for the image side ...\n", clip.c_str());
+    ImagePath path;
+    AnalyzeStats st;
+    AnalyzeControl ctl;
+    const auto t0 = Clock::now();
+    if (analyzeSource(s, ImageStabOptions(), ctl, path, &st) != AnalyzeResult::Done) {
+        std::fprintf(stderr, "analysis failed\n");
+        return 1;
+    }
+    const double analyzeWall = msSince(t0) / 1e3;
+    std::vector<PairMotion> meas(path.recs.size());
+    for (size_t i = 0; i < path.recs.size(); ++i) meas[i] = toMotion(path.recs[i]);
+    std::vector<int64_t> pts(path.recs.size());
+    for (size_t i = 0; i < path.recs.size(); ++i) pts[i] = path.recs[i].ptsUs;
+    const FrameInfo fi0 = s.frameInfo(0);
+
+    // 2) Gyro side: parse, remap to the canonical camera frame, integrate.
+    auto parsed = parseGcsv(gcsv);
+    if (!parsed.isOk()) { std::fprintf(stderr, "gcsv: %s\n", parsed.detail.c_str()); return 1; }
+    ImuData imu = std::move(*parsed.value);
+    if (imu.logStartWallMs <= 0) {
+        std::fprintf(stderr, "gcsv carries no wall-clock `timestamp` header: sync would be manual\n");
+        return 1;
+    }
+    const AxisRemap remap = axisRemapForImu(imu);
+    if (!remap.known) { std::fprintf(stderr, "axis remap unknown (orientation metadata unusable)\n"); return 1; }
+    std::vector<ImuSample> gyro, accel;
+    gyro.reserve(imu.gyro.size());
+    for (ImuSample sm : imu.gyro) { remap.apply(sm.x, sm.y, sm.z); gyro.push_back(sm); }
+    accel.reserve(imu.accel.size());
+    for (ImuSample sm : imu.accel) { remap.apply(sm.x, sm.y, sm.z); accel.push_back(sm); }
+    const VqfOrientation vqf = estimateOrientationVqf(gyro, accel);
+    OrientationSeries gyroRefSeries;
+    {
+        std::vector<ImuSample> g2 = gyro;
+        for (auto& sm : g2) {
+            sm.x -= float(vqf.gyroBias[0]);
+            sm.y -= float(vqf.gyroBias[1]);
+            sm.z -= float(vqf.gyroBias[2]);
+        }
+        // Bias-corrected gyro-only reference (drifts over ~a clip, no accel).
+        gyroRefSeries = integrateGyro(g2);
+    }
+    std::printf("gyro: %zu samples, %.1f Hz, span %.3f s; video %zu frames, span %.3f s\n",
+                imu.gyro.size(), double(imu.gyro.size() - 1) / (imu.spanNs() * 1e-9),
+                imu.spanNs() * 1e-9, path.recs.size(),
+                (pts.back() - pts.front()) * 1e-6);
+
+    // 3) Focal: the container's 35mm-equivalent, converted at the working
+    //    height (the same resolution the image tx/ty are scaled to).
+    const RawMeta& meta = s.rawMeta();
+    const double f35 = meta.focalLengthMm > 0 ? meta.focalLengthMm : 23.9;
+    const double workWAspect = double(path.workW) / double(path.workH ? path.workH : 1);
+    const double workH = path.workH ? path.workH : 360;
+    const double workW = workH * workWAspect;
+    const double fpx = focalLengthPxFromEquivalent(f35, int(workW));
+    std::printf("focal: container %.3f mm 35mm-eq -> %.1f px (assumed: width spans 36mm) at %dx%d working\n",
+                f35, fpx, int(workW), int(workH));
+
+    // 4) The sync anchor (Sync.h wall anchors; receive lag unobservable, so
+    //    the anchor offset gets SCANNED +-scanMs).
+    const SyncEstimate anchor = estimateOffsetFromAnchors(fi0.recvdMs, imu.logStartWallMs,
+                                                          fi0.ptsUs * 1000);
+    if (anchor.confidence != SyncConfidence::Anchored) {
+        std::fprintf(stderr, "anchor estimate unavailable (recvdMs %lld / logStart %lld)\n",
+                     static_cast<long long>(fi0.recvdMs), static_cast<long long>(imu.logStartWallMs));
+        return 1;
+    }
+    std::printf("anchor offset %.1f ms (stated bound +-%.0f ms); scanning +-%.0f ms in 5 ms steps\n",
+                anchor.model.offsetNs * 1e-6, anchor.errorBoundMs, scanMs);
+
+    // 5) The scan. For each candidate offset compare both orientation
+    //    estimators; keep each one's best.
+    struct ScanPoint {
+        double offsMs = 0;
+        double shiftRms = 0;
+        double thetaRmsDeg = 0;
+        size_t nUsed = 0;
+    };
+    std::vector<ScanPoint> scanVqf, scanInt;
+    int64_t bestVqf = anchor.model.offsetNs, bestInt = anchor.model.offsetNs;
+    double bestVqfRms = 1e18, bestIntRms = 1e18;
+    GyroCompare cmpVqf, cmpInt;
+    for (int step = -int(scanMs / 5); step <= int(scanMs / 5); ++step) {
+        const int64_t offs = anchor.model.offsetNs + int64_t(step) * 5 * 1000000;
+        for (int which = 0; which < 2; ++which) {
+            const OrientationSeries& series = which == 0 ? vqf.series : gyroRefSeries;
+            std::vector<uint8_t> inside;
+            const std::vector<GyroPairImage> pred = predictPairsFromSeries(series, pts, offs, fpx, &inside);
+            const GyroCompare c = compareGyroImage(pred, meas, double(workH), inside);
+            auto& pts_ = which == 0 ? scanVqf : scanInt;
+            pts_.push_back({offs * 1e-6, c.shiftRms, c.thetaRmsDeg, c.n});
+            if (c.n > meas.size() / 4 && c.shiftRms < (which == 0 ? bestVqfRms : bestIntRms)) {
+                if (which == 0) { bestVqfRms = c.shiftRms; bestVqf = offs; cmpVqf = c; }
+                else { bestIntRms = c.shiftRms; bestInt = offs; cmpInt = c; }
+            }
+        }
+    }
+    const double anchorMs = anchor.model.offsetNs * 1e-6;
+
+    std::printf("\nsync scan (offset ms -> shift residual RMS px @%d): VQF | gyro-only\n", int(workH));
+    for (size_t i = 0; i < scanVqf.size(); ++i)
+        std::printf("  %+7.0f | %8.2f | %8.2f\n", scanVqf[i].offsMs, scanVqf[i].shiftRms,
+                    i < scanInt.size() ? scanInt[i].shiftRms : 0.0);
+
+    auto reportBest = [&](const char* name, int64_t offs, const GyroCompare& c) {
+        std::printf("\n[%s] best offset %+lld ms (anchor %+lld -> scan delta %+lld ms)\n",
+                    name, static_cast<long long>(offs * 1e-6),
+                    static_cast<long long>(anchorMs),
+                    static_cast<long long>(offs / 1000000 - int64_t(anchorMs)));
+        std::printf("  pairs used %zu (lost %zu, outside gyro span %zu)\n", c.n, c.nLost, c.nOutside);
+        std::printf("  shift residual: x RMS %.3f px | y RMS %.3f px | 2D RMS %.3f px | p90 %.3f px\n",
+                    c.txRms, c.tyRms, c.shiftRms, c.p90);
+        std::printf("  corr(pred,meas): x %.3f | y %.3f | slope through origin: x %.3f | y %.3f\n",
+                    c.txCorr, c.tyCorr, c.txSlope, c.tySlope);
+        std::printf("  rotation channel: theta residual RMS %.4f deg (%.3f px at half-height), corr %.3f\n",
+                    c.thetaRmsDeg, c.thetaRmsPx, c.thetaCorr);
+    };
+    reportBest("vqf", bestVqf, cmpVqf);
+    reportBest("gyro-only", bestInt, cmpInt);
+
+    const double accept = 1.0;  // px @ working res
+    const double bestRms = std::min(bestVqfRms, cmpInt.n ? bestIntRms : 1e18);
+    std::printf("\nverdict (hypothesis: shift RMS < %.1f px @ working res): ", accept);
+    if (bestRms < accept) {
+        std::printf("PASS (%.2f px)\n", bestRms);
+    } else {
+        // Partial honesty: report the rotation channel verdict separately.
+        const double thetaBest = std::min(cmpVqf.n ? cmpVqf.thetaRmsPx : 1e18,
+                                          cmpInt.n ? cmpInt.thetaRmsPx : 1e18);
+        std::printf("shift FAIL (best %.2f px)", bestRms);
+        if (thetaBest < 1.0)
+            std::printf(" — PARTIAL: rotation channel validated (%.3f px at half-height), translation above sync threshold\n",
+                        thetaBest);
+        else
+            std::printf(" — full FAIL (rotation residual %.3f px too)\n", thetaBest);
+    }
+    std::printf("analysis wall %.1f s\n", analyzeWall);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: image_stab_measure bench|analyze|plan|lumacheck ... (see header)\n");
+        std::fprintf(stderr, "usage: image_stab_measure bench|analyze|plan|lumacheck|gyrocheck ... (see header)\n");
         return 2;
     }
     const std::string cmd = argv[1];
@@ -442,6 +692,8 @@ int main(int argc, char** argv) {
     if (cmd == "plan" && argc > 2)
         return cmdPlan(argv[2], argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 0, argc > 4 ? argv[4] : "");
     if (cmd == "lumacheck" && argc > 2) return cmdLumaCheck(argv[2], argc > 3 ? std::atoi(argv[3]) : 20);
+    if (cmd == "gyrocheck" && argc > 3)
+        return cmdGyroCheck(argv[2], argv[3], argc > 4 ? std::atof(argv[4]) : 150.0);
     std::fprintf(stderr, "bad arguments\n");
     return 2;
 }
