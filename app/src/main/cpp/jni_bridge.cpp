@@ -3821,7 +3821,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //   nativePreviewSessionRenderFrameParcel(handle, clipHandle, frameIndex,
 //       maxDim, gradeParcel, lutPath, lutStrength, lutRole, lutInGamut,
 //       lutInTransfer, lutOutGamut, lutOutTransfer, warpActive, warpM,
-//       statsMode, cropActive, cropParams)
+//       statsMode, cropActive, cropParams, zebraOn, zebraThreshold,
+//       zebraPeriod, zebraAlpha)
 //       -> [w, h, pixels...] int array (the small published stats pack)
 //   nativePreviewSessionClose(handle)
 //
@@ -4119,6 +4120,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetSurface(
 // signature-lock test is the guard): jboolean cropActive + jfloatArray
 // cropParams, the GpuCropMap.requestCrop parcel ([rectX, rectY, rectW,
 // rectH, straightenDeg], the rect ALREADY mapRect'ed container-upright).
+// A3 GPU zebra (2026-11-23, guide A3) APPENDED the zebra quad AFTER the
+// crop pair — the same append-only rule: jboolean zebraOn + jint
+// zebraThreshold + jint zebraPeriod + jfloat zebraAlpha, the
+// single-sourced KOTLIN values (ZebraOverlay.STRIPE_PERIOD /
+// ZebraOverlay.STRIPE_ALPHA / FrameHistogram.WHITE_CLIP_VALUE — 253/12/
+// 200 live nowhere in this bridge). The session's window draw paints the
+// stripes; the stats draw pins uZebraOn=0 (CLEAN scopes).
 // NO new tail fields — the 13-int measurement tail is unchanged.
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParcel(
@@ -4128,7 +4136,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         jint lutRole, jint lutInGamut, jint lutInTransfer,
         jint lutOutGamut, jint lutOutTransfer,
         jboolean warpActive, jfloatArray warpM, jint statsMode,
-        jboolean cropActive, jfloatArray cropParams) {
+        jboolean cropActive, jfloatArray cropParams,
+        jboolean zebraOn, jint zebraThreshold, jint zebraPeriod,
+        jfloat zebraAlpha) {
     gles::DevelopGrade grade;
     std::string parcelError;
     if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
@@ -4273,6 +4283,16 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         if (cropParams != nullptr) {
             env->GetFloatArrayRegion(cropParams, 0, 5, req.cropParams);
         }
+        // The A3 zebra quad (2026-11-23, guide A3): copied onto the
+        // request beside the crop pair — the values are Kotlin's own
+        // single-sourced constants (ZebraOverlay/FrameHistogram), so
+        // this bridge never edits or clamps them; the session's window
+        // draw consumes the quad, the stats draw's uZebraOn=0 pin is
+        // session-side. zebraOn false renders exactly the pre-A3 frame.
+        req.zebraOn = zebraOn == JNI_TRUE;
+        req.zebraThreshold = zebraThreshold;
+        req.zebraPeriod = zebraPeriod;
+        req.zebraAlpha = zebraAlpha;
         const gles::PreviewFrameResult res = session->renderFrame(req, grade);
         // The editor suppresses its CPU Image on success. A stats pack
         // (or the stats-off black 1x1 marker) cannot substitute for a

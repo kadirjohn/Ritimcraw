@@ -135,6 +135,21 @@ class GpuPreviewSessionTest {
         val cropParams: List<Float>,
     )
 
+    /**
+     * The A3 zebra quad per render (owner request 2026-11-23, guide A3):
+     * the gate flag + the three single-sourced knobs, recorded so the GPU
+     * arm's threading is assertable — the constants must arrive as
+     * ZebraOverlay.STRIPE_PERIOD / ZebraOverlay.STRIPE_ALPHA / 255f /
+     * FrameHistogram.WHITE_CLIP_VALUE (the single-source rule), never
+     * literals the seam could drift from.
+     */
+    private data class ZebraCall(
+        val zebraOn: Boolean,
+        val zebraThreshold: Int,
+        val zebraPeriod: Int,
+        val zebraAlpha: Float,
+    )
+
     /** Records every seam call; scripted verdicts per method. */
     private class FakeDevelop(
         var openResult: Long = 1L,
@@ -157,6 +172,7 @@ class GpuPreviewSessionTest {
         val renderedStatsMode = mutableListOf<PreviewStatsMode>() // the A1 readback mode per render
         val renderedWarp = mutableListOf<WarpCall>() // the warp pair per render
         val renderedCrop = mutableListOf<CropCall>() // the A2 crop pair per render
+        val renderedZebra = mutableListOf<ZebraCall>() // the A3 zebra quad per render
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
         var probeResult: DoubleArray? = null
@@ -210,6 +226,10 @@ class GpuPreviewSessionTest {
             statsMode: PreviewStatsMode,
             cropActive: Boolean,
             cropParams: FloatArray,
+            zebraOn: Boolean,
+            zebraThreshold: Int,
+            zebraPeriod: Int,
+            zebraAlpha: Float,
         ): PreviewFrame? {
             val g = GradeParcel.decode(gradeParcel)
             rendered += sessionHandle
@@ -231,6 +251,7 @@ class GpuPreviewSessionTest {
             renderedStatsMode += statsMode
             renderedWarp += WarpCall(warpActive, warpM.toList())
             renderedCrop += CropCall(cropActive, cropParams.toList())
+            renderedZebra += ZebraCall(zebraOn, zebraThreshold, zebraPeriod, zebraAlpha)
             if (renderThrows) throw IllegalStateException("seam blew up")
             return renderResult
         }
@@ -345,13 +366,23 @@ class GpuPreviewSessionTest {
                 -0.5f, 1.5f, 0.9f,
             ),
             statsMode = PreviewStatsMode.ASYNC,
-            // A2 (2026-11-23): the crop pair rides LAST, after statsMode
+            // A2 (2026-11-23): the crop pair rides after statsMode
             // — an ACTIVE mapped crop with distinctive fraction values,
             // locking the pass-through verbatim (the plan's own anchor
             // shape: a quarter-turned, straightened crop).
             cropActive = true, cropParams = floatArrayOf(
                 0.25f, 0.25f, 0.5f, 0.5f, 7f,
             ),
+            // A3 (2026-11-23, guide A3): the zebra quad rides LAST,
+            // append-only after the crop pair — an ACTIVE zebra with the
+            // single-sourced production constants
+            // (ZebraOverlay.STRIPE_PERIOD / ZebraOverlay.STRIPE_ALPHA /
+            // FrameHistogram.WHITE_CLIP_VALUE), locking the threading
+            // the GPU arm owes.
+            zebraOn = true,
+            zebraThreshold = 253,
+            zebraPeriod = 12,
+            zebraAlpha = 200f / 255f,
         )
         // The SAME instance flows through — the pump publishes it exactly
         // as the CPU dispatch publishes its own frame.
@@ -453,6 +484,25 @@ class GpuPreviewSessionTest {
             ),
             develop.renderedCrop,
         )
+        // The A3 zebra quad rides the seam verbatim too (owner request
+        // 2026-11-23, guide A3): the gate flag and the three knobs cross
+        // UNCHANGED — the single-source rule means the values ARE
+        // ZebraOverlay.STRIPE_PERIOD / ZebraOverlay.STRIPE_ALPHA / 255f /
+        // FrameHistogram.WHITE_CLIP_VALUE, and the native side owns only
+        // the draw-2/draw-3 split, never a re-decision. The recorded
+        // quad below pins the EXACT constants the GPU arm threads
+        // (253/12/200 arrive only from the single-source objects).
+        assertEquals(
+            listOf(
+                ZebraCall(
+                    zebraOn = true,
+                    zebraThreshold = 253,
+                    zebraPeriod = 12,
+                    zebraAlpha = 200f / 255f,
+                )
+            ),
+            develop.renderedZebra,
+        )
     }
 
     @Test
@@ -473,6 +523,10 @@ class GpuPreviewSessionTest {
                 statsMode = PreviewStatsMode.SYNC,
                 cropActive = false,
                 cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
+                zebraOn = false,
+                zebraThreshold = 253,
+                zebraPeriod = 12,
+                zebraAlpha = 200f / 255f,
             )
         )
         assertTrue(develop.rendered.isEmpty())
@@ -496,6 +550,10 @@ class GpuPreviewSessionTest {
                 statsMode = PreviewStatsMode.SYNC,
                 cropActive = false,
                 cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
+                zebraOn = false,
+                zebraThreshold = 253,
+                zebraPeriod = 12,
+                zebraAlpha = 200f / 255f,
             )
         )
     }
@@ -541,6 +599,10 @@ class GpuPreviewSessionTest {
                 statsMode = PreviewStatsMode.SYNC,
                 cropActive = false,
                 cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
+                zebraOn = false,
+                zebraThreshold = 253,
+                zebraPeriod = 12,
+                zebraAlpha = 200f / 255f,
             )
         )
         assertEquals(0, develop.rendered.size)
@@ -580,6 +642,10 @@ class GpuPreviewSessionTest {
                 statsMode: PreviewStatsMode,
                 cropActive: Boolean,
                 cropParams: FloatArray,
+                zebraOn: Boolean,
+                zebraThreshold: Int,
+                zebraPeriod: Int,
+                zebraAlpha: Float,
             ): PreviewFrame? = null
             override fun closeSession(sessionHandle: Long) {}
             override suspend fun lastDetail(): String? = throw IllegalStateException("seam blew up")

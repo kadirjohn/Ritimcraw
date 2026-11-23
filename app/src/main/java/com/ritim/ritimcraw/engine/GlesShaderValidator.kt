@@ -2524,6 +2524,40 @@ object GlesShaderValidator {
                 "CropState.sampleArgbBilinear; texture() on the NEAREST-" +
                 "pinned develop texture would give blocky crop edges)"
         }
+        // The A3 zebra pins (owner request 2026-11-23, guide A3): the four
+        // uniforms exist because GlesPreviewSession's window program looks
+        // each up (an optimized-out zebra uniform fails the all-uniforms
+        // lookup), and the uZebraOn == 1 gate token keeps the decision
+        // math from being quietly dropped while the uniforms still link.
+        if (!s.contains("uniform int uZebraOn;")) {
+            out += "missing `uniform int uZebraOn;` (the session's " +
+                "windowZebraOnLoc lookup — the zebra gate; without it " +
+                "a zebra-on request renders clean and the clip warning " +
+                "silently vanishes)"
+        }
+        if (!s.contains("uniform int uZebraThreshold;")) {
+            out += "missing `uniform int uZebraThreshold;` (the session's " +
+                "windowZebraThresholdLoc lookup — the display-referred " +
+                "clip value FrameHistogram.WHITE_CLIP_VALUE rides; a " +
+                "hardcoded threshold would break the single-source rule)"
+        }
+        if (!s.contains("uniform int uZebraPeriod;")) {
+            out += "missing `uniform int uZebraPeriod;` (the session's " +
+                "windowZebraPeriodLoc lookup — ZebraOverlay.STRIPE_PERIOD " +
+                "rides; a hardcoded period would break the single-source " +
+                "rule)"
+        }
+        if (!s.contains("uniform float uZebraAlpha;")) {
+            out += "missing `uniform float uZebraAlpha;` (the session's " +
+                "windowZebraAlphaLoc lookup — ZebraOverlay.STRIPE_ALPHA/255 " +
+                "rides; a hardcoded alpha would break the single-source " +
+                "rule)"
+        }
+        if (!s.contains("uZebraOn == 1")) {
+            out += "missing the zebra gate (`uZebraOn == 1` — without " +
+                "the gate the zebra uniforms are dead text and the stats " +
+                "draw's clean-scope pin has nothing to pin)"
+        }
     }
 
     /**

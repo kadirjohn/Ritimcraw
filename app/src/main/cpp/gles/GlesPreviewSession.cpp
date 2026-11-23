@@ -280,6 +280,13 @@ struct PreviewSession::Impl {
     // plan.
     GLint windowCropOnLoc = -1, windowCropRectLoc = -1, windowCropOutLoc = -1,
           windowCropZoomLoc = -1, windowCropCosLoc = -1, windowCropSinLoc = -1;
+    // The A3 zebra uniform group (owner request 2026-11-23, guide A3):
+    // WINDOW_FRAGMENT's four zebra uniforms, looked up beside the crop
+    // group (the same all-uniforms-present guard) and set by the window
+    // draw from the request — the stats draw pins uZebraOn to 0 so the
+    // scopes stay CLEAN.
+    GLint windowZebraOnLoc = -1, windowZebraThresholdLoc = -1,
+          windowZebraPeriodLoc = -1, windowZebraAlphaLoc = -1;
 
     // The stats pack's resources (the ONLY readback on this path):
     // statsTex is the window pass's stats target; statsScratchTex is the
@@ -830,10 +837,20 @@ bool PreviewSession::Impl::initOnGlThread(
     windowCropZoomLoc = glGetUniformLocation(windowProgram, "uCropZoom");
     windowCropCosLoc = glGetUniformLocation(windowProgram, "uCropCos");
     windowCropSinLoc = glGetUniformLocation(windowProgram, "uCropSin");
+    // The A3 zebra uniforms (2026-11-23, guide A3): looked up beside the
+    // crop group, inside the SAME all-uniforms-present guard — an
+    // optimized-out zebra uniform (a dead zebra branch) must fail loudly,
+    // exactly like the crop uniforms above it.
+    windowZebraOnLoc = glGetUniformLocation(windowProgram, "uZebraOn");
+    windowZebraThresholdLoc = glGetUniformLocation(windowProgram, "uZebraThreshold");
+    windowZebraPeriodLoc = glGetUniformLocation(windowProgram, "uZebraPeriod");
+    windowZebraAlphaLoc = glGetUniformLocation(windowProgram, "uZebraAlpha");
     if (windowSrcLoc < 0 || windowSrcSizeLoc < 0 || windowRectLoc < 0 ||
         windowOrientationLoc < 0 ||
         windowCropOnLoc < 0 || windowCropRectLoc < 0 || windowCropOutLoc < 0 ||
-        windowCropZoomLoc < 0 || windowCropCosLoc < 0 || windowCropSinLoc < 0) {
+        windowCropZoomLoc < 0 || windowCropCosLoc < 0 || windowCropSinLoc < 0 ||
+        windowZebraOnLoc < 0 || windowZebraThresholdLoc < 0 ||
+        windowZebraPeriodLoc < 0 || windowZebraAlphaLoc < 0) {
         *detail = "shader-contract: missing a window uniform";
         return false;
     }
@@ -1302,6 +1319,17 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                 glUniform1f(windowCropZoomLoc, crop.zoom);
                 glUniform1f(windowCropCosLoc, crop.cos);
                 glUniform1f(windowCropSinLoc, crop.sin);
+                // THE A3 ZEBRA UNIFORMS (2026-11-23, guide A3): the four
+                // knobs from the request, set on the WINDOW draw only —
+                // the stripes live in the displayed pixels here, and the
+                // request's values are single-sourced Kotlin-side
+                // (ZebraOverlay/FrameHistogram threads them through the
+                // JNI seam). zebraOn false keeps the frame byte-identical
+                // to the pre-A3 pass (the shader's gate folds).
+                glUniform1i(windowZebraOnLoc, req.zebraOn ? 1 : 0);
+                glUniform1i(windowZebraThresholdLoc, req.zebraThreshold);
+                glUniform1i(windowZebraPeriodLoc, req.zebraPeriod);
+                glUniform1f(windowZebraAlphaLoc, req.zebraAlpha);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
                 // The draw's own error check runs FIRST — the probe below
                 // drains GL errors (its own), and a drain before this
@@ -1789,6 +1817,16 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     glUniform1f(windowCropZoomLoc, crop.zoom);
     glUniform1f(windowCropCosLoc, crop.cos);
     glUniform1f(windowCropSinLoc, crop.sin);
+    // THE A3 ZEBRA UNIFORMS ON THE STATS DRAW (2026-11-23, guide A3):
+    // the CLEAN-SCOPE binding — uZebraOn is FORCED to 0 (the other three
+    // values ride so the shader never reads an optimized-out default);
+    // a striped stats pack would corrupt the scopes AND the parity
+    // sweep's byte-compare machinery. The stats-off early-return above
+    // needs no change: zebra is window-side display work.
+    glUniform1i(windowZebraOnLoc, 0);
+    glUniform1i(windowZebraThresholdLoc, req.zebraThreshold);
+    glUniform1i(windowZebraPeriodLoc, req.zebraPeriod);
+    glUniform1f(windowZebraAlphaLoc, req.zebraAlpha);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(stats window)", &out.detail) != GL_NO_ERROR) return;
 

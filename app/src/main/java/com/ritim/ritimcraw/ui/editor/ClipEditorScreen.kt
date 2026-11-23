@@ -596,12 +596,15 @@ object EditorPreviewLogic {
      * aligned with the uncropped window (the guide's crop-overlay rule,
      * unchanged by A2).
      *
-     * [zebraOn] forces CPU for its renders: zebraFrame derives from the
-     * PUBLISHED frame (ZebraOverlay.paint), and the GPU pack's 256
-     * long edge would paint blocky stripes — with the Compose Image
-     * suppressed while the GPU window serves, they would be invisible
-     * anyway. Zebra is a display feature, so its display rule rides the
-     * request, not the grade.
+     * Zebra contributes NO rule since the A3 port (owner request
+     * 2026-11-23, guide §A3): the GPU window pass paints the stripes
+     * itself (WINDOW_FRAGMENT's uZebra* uniforms — the values
+     * single-sourced from ZebraOverlay/FrameHistogram across the seam),
+     * the stats pack stays clean (the session's draw-3 uZebraOn=0 pin),
+     * and the CPU backend keeps ZebraOverlay.paint for its own path. The
+     * pre-A3 rule (zebra forced the CPU path because zebraFrame derived
+     * from the blocky 256-px pack) is gone — a zebra-on request rides
+     * the GPU like any covered grade, at window resolution.
      *
      * [lutTexturePathOk] (commit b) is the probe-derived runtime fact for
      * stage 24's runtime leg — the RGBA16F 3D-texture path is GLES 3.0
@@ -617,12 +620,12 @@ object EditorPreviewLogic {
      */
     fun gpuPreviewEligible(
         grade: GradeK,
-        zebraOn: Boolean,
         lutTexturePathOk: Boolean = false,
     ): Boolean {
-        if (zebraOn) return false
         // A2 (2026-11-23, guide A2): the crop no longer forces CPU — the
-        // window pass maps it (the KDoc block above).
+        // window pass maps it (the KDoc block above). A3 (2026-11-23,
+        // guide A3): the zebra no longer forces CPU either — the window
+        // pass paints the stripes (the KDoc block above).
         if (BackendRules.fragmentUncoveredStages(grade, lutTexturePathOk).isNotEmpty()) return false
         if (BackendRules.fragmentUncoveredPreStages(grade).isNotEmpty()) return false
         return true
@@ -996,8 +999,9 @@ fun ClipEditorScreen(
     // routes eligible render requests through the GPU preview session
     // (the SurfaceView window draw + the published stats pack); CPU stays
     // the default and every ineligible request — an uncovered grade, an
-    // active crop, gyro warp, zebra, an encoded clip, a failed session —
-    // takes the existing CPU path byte-identical. AUTO is a commit-c
+    // encoded clip, a failed session — takes the existing CPU path
+    // byte-identical (since A2 an active crop and since A3 zebra-on are
+    // eligible; the window pass maps/paints them). AUTO is a commit-c
     // concern (the capability gate); until then it reads as CPU here.
     renderBackend: RenderBackend = RenderBackend.CPU,
     // A1 async stats (owner request 2026-11-23, guide A1): the debug
@@ -1404,12 +1408,14 @@ fun ClipEditorScreen(
         var gpuActive by remember(sourceId) { mutableStateOf(false) }
         // FULL preview quality is GPU-only (PreviewQuality.effectiveFor): it
         // renders at the recorded resolution only while the GPU preview is
-        // the renderer; CPU/AUTO, a session not up yet, or zebra (which
-        // forces the CPU path) fall back to HIGH.
+        // the renderer; CPU/AUTO or a session not up yet fall back to HIGH.
+        // Since A3 (owner request 2026-11-23, guide A3) zebra is no
+        // exception: the GPU window paints the stripes, so FULL quality is
+        // allowed whenever the GPU window serves, zebra included.
         val previewQualityEffective = PreviewQuality.effectiveFor(
             previewQuality,
             fullResAllowed = gpuActive &&
-                renderBackend == RenderBackend.GPU_EXPERIMENTAL && !zebraOn,
+                renderBackend == RenderBackend.GPU_EXPERIMENTAL,
         )
         var gpuWindowLive by remember(sourceId) { mutableStateOf(false) }
         // The acknowledged EGL attachment, set after the SurfaceHolder
@@ -2293,10 +2299,13 @@ fun ClipEditorScreen(
                         // The M3 export per-frame dispatch pattern, mirrored
                         // for the preview: when the GPU path is active (the
                         // setting asks, a live GPU session exists, and THIS
-                        // request is eligible — every active stage covered,
-                        // zebra off; since A2 (2026-11-23, guide A2) an
-                        // active crop/straighten is eligible too (the window
-                        // pass maps it); the gyro warp stopped blocking
+                        // request is eligible — every active stage covered;
+                        // since A2 (2026-11-23, guide A2) an active crop/
+                        // straighten is eligible too (the window pass maps
+                        // it); since A3 (2026-11-23, guide A3) zebra-on is
+                        // eligible too (the window pass PAINTS the stripes —
+                        // the render call threads the four single-sourced
+                        // knobs); the gyro warp stopped blocking
                         // eligibility with
                         // its GPU port — the pass is unconditionally fragment-
                         // covered), try the GPU session first. A
@@ -2343,7 +2352,6 @@ fun ClipEditorScreen(
                             currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
                             EditorPreviewLogic.gpuPreviewEligible(
                                 grade = req.grade,
-                                zebraOn = currentZebraOn,
                                 lutTexturePathOk = gpuLutTexturePathOk,
                             )
                         ) {
@@ -2415,8 +2423,11 @@ fun ClipEditorScreen(
                             // != OFF covers the strip AND the mini — the
                             // only consumers of the published pixels (the
                             // scope compute reads `frame`, both shapes draw
-                            // from it); zebra forces the CPU path until A3,
-                            // so it is not a GPU-arm input. No scope visible
+                            // from it); since A3 (guide A3) the zebra rides
+                            // the GPU too — the stats pack stays CLEAN
+                            // (the session's draw-3 uZebraOn=0 pin), so
+                            // zebras never contaminate the mode's consumers.
+                            // No scope visible
                             // = OFF = the stats stage is skipped entirely
                             // (the honest 1x1 placeholder path); PLAYBACK
                             // with a scope = ASYNC (the fence ring);
@@ -2486,6 +2497,20 @@ fun ClipEditorScreen(
                                 // non-null array), the shader's identity path.
                                 cropActive = gpuCropParams != null,
                                 cropParams = gpuCropParams ?: GpuCropMap.NEUTRAL_CROP_PARAMS,
+                                // The A3 zebra quad (owner request
+                                // 2026-11-23, guide A3): the four single-
+                                // sourced knobs — the toggle flag the
+                                // pump mirrors, and the three constants
+                                // referenced ONLY via ZebraOverlay /
+                                // FrameHistogram (253/12/200 appear
+                                // nowhere else in the GPU path). The
+                                // window draw paints the stripes; the
+                                // stats draw pins uZebraOn=0 native-side
+                                // (CLEAN scopes).
+                                zebraOn = currentZebraOn,
+                                zebraThreshold = FrameHistogram.WHITE_CLIP_VALUE,
+                                zebraPeriod = ZebraOverlay.STRIPE_PERIOD,
+                                zebraAlpha = ZebraOverlay.STRIPE_ALPHA / 255f,
                             )
                             if (gpuFrame != null) {
                                 result = Result.success(gpuFrame)
@@ -2882,6 +2907,9 @@ fun ClipEditorScreen(
         // restarts; the decay ticker below drains the readout when
         // computes stop). The device pass confirms the pacing and the
         // per-compute cost from either.
+        // A3 (2026-11-23, guide §A3): with zebra ON the published pack is
+        // STILL the clean frame — the session's draw-3 uZebraOn=0 pin keeps
+        // the stripes out of the stats pixels — so NO code change here.
         LaunchedEffect(
             scopePresentation, scopeContent, histogramModeOrdinal,
             waveformModeOrdinal, scopeSamplingOrdinal, sourceId,
@@ -3005,13 +3033,28 @@ fun ClipEditorScreen(
         // The paint reads the CLEAN published frame and never touches it
         // (ZebraOverlay.paint copies), so the scope compute — which
         // observes the same snapshotFlow — is unaffected either way.
+        //
+        // A3 (owner request 2026-11-23, guide §A3): while the GPU window
+        // serves, the stripes are ALREADY in the displayed pixels — the
+        // window pass paints them (WINDOW_FRAGMENT's uZebra* block, crisp
+        // at window resolution). The derive is SKIPPED (zebraFrame kept
+        // null) for as long as gpuWindowLive holds: the SurfaceView shows
+        // the stripes and the Compose Image is suppressed anyway, so a
+        // striped 256-px pack copy would be wasted per-frame CPU paint
+        // work AND blocky if it ever reached the Image. gpuWindowLive is
+        // read INSIDE the snapshotFlow pair (the publish fold writes
+        // frame + gpuWindowLive in the SAME snapshot batch), so every
+        // transition re-emits atomically: a GPU-live publish derives
+        // null, a surface death or CPU fallback repaints the CURRENT
+        // frame immediately, and the pure CPU path (window never live)
+        // runs today's derive verbatim on every frame.
         LaunchedEffect(zebraOn, sourceId) {
             if (!zebraOn) {
                 zebraFrame = null
                 return@LaunchedEffect
             }
-            snapshotFlow { frame }.collectLatest { f ->
-                zebraFrame = if (f == null) {
+            snapshotFlow { frame to gpuWindowLive }.collectLatest { (f, gpuLive) ->
+                zebraFrame = if (f == null || gpuLive) {
                     null
                 } else {
                     withContext(Dispatchers.Default) {
@@ -3194,8 +3237,13 @@ fun ClipEditorScreen(
                 // PLAY-11 zebra: the display swaps to the striped copy
                 // while the toggle is on (the paint effect derives it
                 // from this same `frame`); the scope compute keeps the
-                // clean frame. One swap line — the whole feature lives in
-                // ZebraOverlay + the paint effect + the corner toggle.
+                // clean frame. Since A3 (guide §A3) zebraFrame stays NULL
+                // while the GPU window serves (the window pass paints the
+                // stripes), so this swap line falls through to the clean
+                // frame — nothing blocky ever reaches the Image. One swap
+                // line — the whole feature lives in ZebraOverlay + the
+                // paint effect + the corner toggle (+ the window pass's
+                // zebra block on the GPU path).
                 PreviewSurface(
                     frame = if (zebraOn) zebraFrame ?: frame else frame,
                     state = previewState,
