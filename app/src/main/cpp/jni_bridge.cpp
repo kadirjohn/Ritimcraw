@@ -1934,6 +1934,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetPreviewWindowProbe(
     gles::setWindowProbeEnabled(enabled == JNI_TRUE);
 }
 
+// The system monitor's GPU reading: the app's cumulative preview GPU time
+// (ns) from the preview session's TIME_ELAPSED queries, or -1 when no
+// timer-capable preview session is live. Any thread.
+JNIEXPORT jlong JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewGpuNanos(JNIEnv*, jclass) {
+    return static_cast<jlong>(gles::previewGpuNanosTotal());
+}
+
 // The six sub-stage slots of the frame nativeExportFrameParcel just
 // produced, in the fixed order the Kotlin side renders:
 //   [decode, temporal, develop, warp, oetf_pack, jni_copy] (milliseconds).

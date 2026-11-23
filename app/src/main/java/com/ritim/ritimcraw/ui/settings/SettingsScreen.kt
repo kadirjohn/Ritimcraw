@@ -42,6 +42,7 @@ import com.ritim.ritimcraw.engine.CodecReport
 import com.ritim.ritimcraw.engine.PreviewQuality
 import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.ui.components.Activity
+import com.ritim.ritimcraw.ui.components.readableWidth
 import com.ritim.ritimcraw.ui.components.AppSegmentedControl
 import com.ritim.ritimcraw.ui.components.Contrast
 import com.ritim.ritimcraw.ui.components.Cpu
@@ -166,6 +167,11 @@ fun SettingsScreen(
     // preview working.
     themeMode: ThemeMode = ThemeMode.DEFAULT,
     onThemeModeChange: (ThemeMode) -> Unit = {},
+    // ---- System monitor strip (owner request 2026-11-23) ----
+    // The top GPU/CPU/RAM/storage strip's visibility; AppNav persists it
+    // (SystemMonitorStore) and shows/hides the strip above every screen.
+    systemMonitorVisible: Boolean = true,
+    onSystemMonitorVisibleChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // The Device report row's navigation: AppNav owns the route flag
@@ -179,6 +185,9 @@ fun SettingsScreen(
             // default), so this column paints the surface itself.
             .background(MaterialTheme.colorScheme.surface)
             .verticalScroll(scrollState)
+            // Large screens: the groups stop at a readable width, centered
+            // (the background above still fills the whole window).
+            .readableWidth()
     ) {
         // The shared header (owner request 2026-11-17: "settings'i de
         // diğerleriyle uyumlu hale getir. hepsini library projects
@@ -398,7 +407,7 @@ fun SettingsScreen(
             var displaySlot by remember(themeMode) {
                 mutableIntStateOf(themeSlots.indexOf(themeMode).coerceAtLeast(0))
             }
-            SettingsGroupItem(index = 0, count = 1) {
+            SettingsGroupItem(index = 0, count = 2) {
                 SettingRowBase(
                     icon = Contrast,
                     title = stringResource(R.string.settings_theme),
@@ -435,6 +444,19 @@ fun SettingsScreen(
                     },
                 )
             }
+            SettingRowSwitch(
+                icon = Gauge,
+                title = stringResource(R.string.settings_system_monitor),
+                hint = if (systemMonitorVisible) {
+                    stringResource(R.string.settings_system_monitor_hint_on)
+                } else {
+                    stringResource(R.string.settings_system_monitor_hint_off)
+                },
+                checked = systemMonitorVisible,
+                onCheckedChange = onSystemMonitorVisibleChange,
+                index = 1,
+                count = 2,
+            )
         }
         // ---- Version footer (spec footer) ----
         // Centered, 12sp, onSurfaceVariant, top 28dp / bottom 24dp; the

@@ -30,7 +30,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -99,6 +98,7 @@ import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.ui.components.Add
+import com.ritim.ritimcraw.ui.components.AdaptiveMinGridCells
 import com.ritim.ritimcraw.ui.components.Check
 import com.ritim.ritimcraw.ui.components.ExpandMore
 import com.ritim.ritimcraw.ui.components.FileListRow
@@ -121,12 +121,10 @@ enum class LibraryFilter(val labelRes: Int) {
     PHOTOS(R.string.library_filter_photos),
 }
 
-/**
- * The grid rendering's fixed column count (library toolbar redesign,
- * 2026-11-16): the spec's own GridCells.Fixed(3). A named constant so the
- * scroll-sync comment and the grid's columns stay one truth.
+/*
+ * Grid columns: the spec's 3 on phones, more on large screens
+ * (AdaptiveMinGridCells — owner request 2026-11-23, tablet adaptation).
  */
-private const val GRID_COLUMNS = 3
 
 /**
  * Library of imported clips (DESIGN.md Library): a title-only header, a
@@ -573,7 +571,7 @@ fun LibraryScreen(
                     } else if (viewMode == LibraryViewMode.GRID) {
                         LazyVerticalGrid(
                             state = gridState,
-                            columns = GridCells.Fixed(GRID_COLUMNS),
+                            columns = AdaptiveMinGridCells(),
                             modifier = Modifier.weight(1f).fillMaxWidth(),
                             // The spec's grid geometry: 16dp screen
                             // gutters, 4dp to the toolbar above, 8dp

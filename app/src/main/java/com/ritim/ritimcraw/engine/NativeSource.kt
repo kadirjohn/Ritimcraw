@@ -269,6 +269,16 @@ class NativeSource private constructor(
          * BuildConfig.DEBUG, so release builds never read a pixel.
          */
         @JvmStatic private external fun nativeSetPreviewWindowProbe(enabled: Boolean)
+        @JvmStatic private external fun nativePreviewGpuNanos(): Long
+
+        /**
+         * The app's cumulative preview GPU time in ns (GL timer queries), or
+         * -1 when unavailable (no live GPU preview session, no
+         * EXT_disjoint_timer_query, or the native library is absent). The
+         * system monitor strip samples it once a second.
+         */
+        internal fun previewGpuNanos(): Long =
+            if (!nativeAvailable) -1L else runCatching { nativePreviewGpuNanos() }.getOrDefault(-1L)
 
         /**
          * The six sub-stage slots of the frame nativeExportFrameParcel just

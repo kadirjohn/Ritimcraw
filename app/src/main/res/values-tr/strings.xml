@@ -456,4 +456,7 @@
     <plurals name="library_delete_message">
         <item quantity="other">%1$d klip kitaplıktan kaldırılacak. Özgün dosyalar cihazınızda kalır.</item>
     </plurals>
+    <string name="settings_system_monitor">Sistem monitörü</string>
+    <string name="settings_system_monitor_hint_on">GPU, CPU, RAM ve depolama üstte gösteriliyor</string>
+    <string name="settings_system_monitor_hint_off">Gizli</string>
 </resources>

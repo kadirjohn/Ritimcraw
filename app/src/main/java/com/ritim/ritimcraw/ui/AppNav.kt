@@ -13,8 +13,16 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -60,6 +68,8 @@ import com.ritim.ritimcraw.data.GyroTree
 import com.ritim.ritimcraw.data.ImportFolderStore
 import com.ritim.ritimcraw.data.PreviewQualityStore
 import com.ritim.ritimcraw.data.PreviewStatsStore
+import com.ritim.ritimcraw.data.SystemMonitorStore
+import com.ritim.ritimcraw.ui.components.SystemMonitorBar
 import com.ritim.ritimcraw.data.PreviewStatsToggle
 import com.ritim.ritimcraw.data.RenderBackendStore
 import com.ritim.ritimcraw.data.LutStore
@@ -170,6 +180,12 @@ fun AppNav(
     onThemeModeChange: (ThemeMode) -> Unit = {},
 ) {
     val context = LocalContext.current
+    // The system-monitor strip's visibility (Settings > Appearance),
+    // persisted in the shared project.json like the theme.
+    val systemMonitorStore = remember {
+        SystemMonitorStore(File(context.filesDir, "project.json"))
+    }
+    var systemMonitorVisible by remember { mutableStateOf(systemMonitorStore.get()) }
     val stores = remember {
         val project = File(context.filesDir, "project.json")
         Stores(
@@ -985,6 +1001,11 @@ fun AppNav(
         }
     }
 
+    // Editors — the timeline — and the Device report — are full screen
+    // without nav; the browse destinations show it (bottom bar on phones,
+    // rail on wide windows).
+    val showNav = editorRoute == null && !timelineOpen && !deviceReportOpen
+    val wideNav = LocalConfiguration.current.screenWidthDp >= WIDE_NAV_MIN_WIDTH_DP
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         // The editor has no snackbar host of its own (its chrome is another
@@ -997,7 +1018,7 @@ fun AppNav(
             // Editors — the timeline — and the Device report — are full
             // screen without nav (DESIGN.md Layout; spec
             // device_report_screen: the bottom bar hides on the report).
-            if (editorRoute == null && !timelineOpen && !deviceReportOpen) {
+            if (showNav && !wideNav) {
                 NavigationBar {
                     Destination.entries.forEach { d ->
                         val selected = destination == d
@@ -1021,10 +1042,50 @@ fun AppNav(
             }
         },
     ) { innerPadding ->
-        Box(
+        // The system-monitor strip (owner request 2026-11-23): one thin
+        // GPU/CPU/RAM/storage row above every screen, hideable from
+        // Settings > Appearance. It sits INSIDE the scaffold padding, so
+        // it lands right under the status bar on every route (editor too).
+        Column(
             Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+        ) {
+        if (systemMonitorVisible) SystemMonitorBar()
+        // Wide windows (tablets, unfolded foldables, >= 600dp): the
+        // destinations move from the bottom bar to a NavigationRail on the
+        // start edge (Material adaptive guidance) so the content keeps its
+        // height and the nav stays in thumb reach on a large screen.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+        if (wideNav && showNav) {
+            NavigationRail {
+                Spacer(Modifier.weight(1f))
+                Destination.entries.forEach { d ->
+                    val selected = destination == d
+                    NavigationRailItem(
+                        selected = selected,
+                        onClick = { destination = d },
+                        icon = {
+                            Icon(
+                                if (selected) d.filled else d.outlined,
+                                contentDescription = stringResource(d.labelRes),
+                            )
+                        },
+                        label = { Text(stringResource(d.labelRes)) },
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxHeight()
+                .weight(1f)
         ) {
             val route = editorRoute
             // The Device report (owner spec 2026-11-14): the most-pushed
@@ -2101,6 +2162,11 @@ fun AppNav(
                             // updates that state, and the recomposition
                             // re-tints the whole app.
                             themeMode = themeMode,
+                            systemMonitorVisible = systemMonitorVisible,
+                            onSystemMonitorVisibleChange = { visible ->
+                                systemMonitorStore.put(visible)
+                                systemMonitorVisible = visible
+                            },
                             onThemeModeChange = onThemeModeChange,
                         )
                     }
@@ -2152,9 +2218,14 @@ fun AppNav(
                     },
                 )
             }
+            }
+        }
         }
     }
 }
+
+/** Window width from which the browse nav becomes a start-edge rail. */
+private const val WIDE_NAV_MIN_WIDTH_DP = 600
 
 private class Stores(
     val sources: SourceRepository,

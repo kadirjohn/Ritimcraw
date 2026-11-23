@@ -459,4 +459,11 @@ private:
 void setWindowProbeEnabled(bool enabled);
 bool windowProbeEnabled();
 
+// The app's cumulative preview GPU time in nanoseconds (sum of every
+// preview frame's GL_TIME_ELAPSED query), or -1 when no live preview
+// session has GL_EXT_disjoint_timer_query. Any thread; relaxed atomics.
+// The system monitor strip samples it once a second (delta / wall time =
+// the app's GPU share).
+int64_t previewGpuNanosTotal();
+
 } // namespace gles
