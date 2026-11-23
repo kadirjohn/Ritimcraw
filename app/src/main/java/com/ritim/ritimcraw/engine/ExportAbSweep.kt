@@ -120,6 +120,22 @@ object ExportAbSweep {
         s.mismatchPct > 0.5 || s.maxDiffLsb > 2
 
     /**
+     * Gyro paused (owner decision 2026-11-23, FeatureFlags): a case that
+     * turns stabilization on is not a meaningful A/B while the gate forces
+     * every real export unstabilized, so it is SKIPPED, never run and
+     * never counted as EXPORT_MISMATCH. Non-stab cases are unaffected.
+     * [gyroAllowed] defaults to the flag; tests pass both states.
+     */
+    fun pausedSkip(
+        c: AbCase,
+        gyroAllowed: Boolean = StabilizationGate.gyroWorkAllowed(),
+    ): Boolean = c.stabilization && !gyroAllowed
+
+    /** The log line of a paused skip: SKIPPED (gyro paused), no stats, no flag. */
+    fun pausedLine(c: AbCase, frame: Int): String =
+        "export-ab ${c.id} frame=$frame SKIPPED (gyro paused)"
+
+    /**
      * One comparison's log line (GradeParitySweep.line's format
      * style, Locale.US pinned): export-ab {id} frame={n}: maxDiffLsb
      * mismatch% over1% meanSigned samples, plus " EXPORT_MISMATCH"
@@ -231,6 +247,12 @@ object ExportAbSweep {
             val indices = frameIndices(frameCount)
             for (c in cases()) {
                 for (i in indices) {
+                    // Gyro paused: stab cases are not an A/B (see pausedSkip).
+                    if (pausedSkip(c)) {
+                        skipped++
+                        android.util.Log.i(TAG, pausedLine(c, i))
+                        continue
+                    }
                     // CPU side — the reference door, full resolution. The
                     // stab request values follow the Mp4Exporter frame-loop
                     // convention: gyro path + strength cross ONLY for stab

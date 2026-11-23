@@ -147,4 +147,32 @@ class ExportAbSweepTest {
         assertTrue(swapped.contains("worstMaxDiffLsb=5 (grade)"))
         assertTrue(swapped.contains("flagged=1"))
     }
+
+    // ---- gyro paused (2026-11-23) ----
+
+    @Test
+    fun paused_skips_exactly_the_stabilization_cases() {
+        val skipped = ExportAbSweep.cases().filter { ExportAbSweep.pausedSkip(it, gyroAllowed = false) }
+        assertEquals(listOf("stab", "grade-stab"), skipped.map { it.id })
+    }
+
+    @Test
+    fun gyro_allowed_skips_nothing_so_the_old_four_cases_run_again() {
+        assertTrue(ExportAbSweep.cases().none { ExportAbSweep.pausedSkip(it, gyroAllowed = true) })
+    }
+
+    @Test
+    fun shipped_flag_off_means_stab_cases_are_paused_by_default() {
+        val stab = ExportAbSweep.cases().first { it.id == "stab" }
+        assertTrue(ExportAbSweep.pausedSkip(stab))
+        assertFalse(ExportAbSweep.pausedSkip(ExportAbSweep.cases().first { it.id == "grade" }))
+    }
+
+    @Test
+    fun paused_line_says_skipped_and_never_carries_the_mismatch_flag() {
+        val c = ExportAbSweep.cases().first { it.id == "grade-stab" }
+        val line = ExportAbSweep.pausedLine(c, 7)
+        assertEquals("export-ab grade-stab frame=7 SKIPPED (gyro paused)", line)
+        assertFalse(line.contains("EXPORT_MISMATCH"))
+    }
 }
