@@ -62,8 +62,9 @@ class PreviewQualityTest {
     fun every_level_scrub_not_above_playback() {
         // Scrub stays at or below playback: the finger must never be
         // answered SLOWER than the wall clock.
+        // (0 = no cap: FULL's playback is unbounded, above any scrub tier.)
         for (q in PreviewQuality.entries) {
-            assertTrue(q.scrubMaxDim <= q.playbackMaxDim)
+            assertTrue(q.playbackMaxDim == 0 || q.scrubMaxDim <= q.playbackMaxDim)
         }
     }
 
@@ -82,6 +83,20 @@ class PreviewQualityTest {
         assertEquals(1280, PreviewTiers.PAUSED_MAX_DIM)
         assertEquals(0, PreviewTiers.SOURCE_MAX_DIM)
         assertEquals(1280, SliderTiers.SETTLE_MAX_DIM)
+    }
+
+    // ---- FULL: GPU-only, falls back to HIGH ----
+
+    @Test
+    fun full_renders_source_on_gpu_and_high_otherwise() {
+        assertEquals(PreviewTiers.SOURCE_MAX_DIM, PreviewQuality.FULL.playbackMaxDim)
+        assertEquals(SliderTiers.SETTLE_MAX_DIM, PreviewQuality.FULL.scrubMaxDim)
+        assertEquals(PreviewQuality.FULL, PreviewQuality.effectiveFor(PreviewQuality.FULL, true))
+        assertEquals(PreviewQuality.HIGH, PreviewQuality.effectiveFor(PreviewQuality.FULL, false))
+        for (q in PreviewQuality.entries.filter { it != PreviewQuality.FULL }) {
+            assertEquals(q, PreviewQuality.effectiveFor(q, false))
+            assertEquals(q, PreviewQuality.effectiveFor(q, true))
+        }
     }
 
     // ---- wire parsing: unknown/missing -> default ----

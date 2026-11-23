@@ -210,11 +210,15 @@ fun SettingsScreen(
                 title = stringResource(R.string.settings_preview_quality),
                 // The dims of the selected level (spec hint: the
                 // current value, not the old caption under the row).
-                hint = stringResource(
-                    R.string.settings_preview_quality_hint,
-                    previewQuality.playbackMaxDim,
-                    previewQuality.scrubMaxDim,
-                ),
+                hint = if (previewQuality == PreviewQuality.FULL) {
+                    stringResource(R.string.settings_preview_quality_hint_full)
+                } else {
+                    stringResource(
+                        R.string.settings_preview_quality_hint,
+                        previewQuality.playbackMaxDim,
+                        previewQuality.scrubMaxDim,
+                    )
+                },
                 infoContentDescription = stringResource(R.string.settings_preview_quality_about),
                 infoNote = stringResource(R.string.settings_preview_quality_info),
                 expandedText = stringResource(R.string.settings_expanded),
@@ -227,6 +231,7 @@ fun SettingsScreen(
                         stringResource(R.string.settings_preview_quality_low),
                         stringResource(R.string.settings_preview_quality_balanced),
                         stringResource(R.string.settings_preview_quality_high),
+                        stringResource(R.string.settings_preview_quality_full),
                     ),
                     // Options keep the enum's own order (LOW,
                     // BALANCED, HIGH) — the index maps straight back.
