@@ -709,3 +709,129 @@ TEST_CASE("plan: lost stretches fade the correction instead of inventing motion"
     CHECK(pl.frame(20).a > 0.9);    // well-tracked part: full correction
     CHECK(pl.stats().invalidSampleFrames == 0);
 }
+
+// ---- gyrocheck helpers (S2 cross-check derivation; image_stab_gyro.hpp) ------------
+
+#include "image_stab_gyro.hpp"
+
+#include <rawedit/Gyro.h>
+#include <rawedit/OrientationEstimate.h>
+
+namespace {
+
+// A quaternion for a small right-handed rotation of `deg` about axis.
+void quatFromAxisAngleDeg(double ax, double ay, double az, double deg, double out[4]) {
+    const double rad = deg * 3.14159265358979323846 / 180.0;
+    const double half = rad * 0.5;
+    const double n = std::sqrt(ax * ax + ay * ay + az * az);
+    out[0] = std::cos(half);
+    out[1] = ax / n * std::sin(half);
+    out[2] = ay / n * std::sin(half);
+    out[3] = az / n * std::sin(half);
+}
+
+}  // namespace
+
+TEST_CASE("gyrocheck helper: identity orientation gives zero motion") {
+    const double id[4] = {1, 0, 0, 0};
+    const GyroPairImage m = gyroPairImageMotion(id, id, 1000.0);
+    CHECK(m.tx == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(m.ty == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(m.theta == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(m.s == doctest::Approx(1.0).epsilon(1e-12));
+}
+
+TEST_CASE("gyrocheck helper: a pure pan predicts a pure horizontal shift") {
+    // Camera pans by 0.30 deg about its Y axis (X right, Y up, Z to viewer).
+    // The pinhole geometry gives |t| = f * |tan(phi)| with the sign pinned
+    // by this test. The perspective also rescales the off-center ray by
+    // 1/cos(phi) (a similarity approximation error of ~1e-4 at this angle).
+    const double id[4] = {1, 0, 0, 0};
+    double pan[4];
+    quatFromAxisAngleDeg(0, 1, 0, 0.30, pan);
+    const double f = 1000.0;
+    const GyroPairImage m = gyroPairImageMotion(id, pan, f);
+    const double expect = f * std::tan(0.30 * 3.14159265358979323846 / 180.0);
+    CHECK(std::fabs(m.tx) == doctest::Approx(expect).epsilon(1e-9));
+    CHECK(m.ty == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(m.theta == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(m.s == doctest::Approx(1.0).epsilon(1e-4));
+    // Sign: a +Y rotation (left in the camera's world frame) must move the
+    // scene to +u (right in the image); pin it explicitly.
+    CHECK(m.tx > 0);
+}
+
+TEST_CASE("gyrocheck helper: a pure tilt predicts a pure vertical shift") {
+    const double id[4] = {1, 0, 0, 0};
+    double tilt[4];
+    quatFromAxisAngleDeg(1, 0, 0, 0.20, tilt);  // +X rotation: up-tilt
+    const double f = 800.0;
+    const GyroPairImage m = gyroPairImageMotion(id, tilt, f);
+    const double expect = f * std::tan(0.20 * 3.14159265358979323846 / 180.0);
+    CHECK(std::fabs(m.ty) == doctest::Approx(expect).epsilon(1e-9));
+    CHECK(m.tx == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(m.theta == doctest::Approx(0.0).epsilon(1e-9));
+}
+
+TEST_CASE("gyrocheck helper: a pure roll predicts theta = +rho and no shift") {
+    // A +rho roll about camera +Z (towards the viewer, right-handed) leaves
+    // the center ray fixed; the image content rotates by the SAME signed
+    // angle in the y-down image frame's CCW convention (pinned here; the
+    // scene-vs-camera intuition is easy to get wrong — the test is the
+    // contract the gyrocheck scan relies on).
+    const double id[4] = {1, 0, 0, 0};
+    const double rho = 0.15;  // rad, small
+    double roll[4];
+    quatFromAxisAngleDeg(0, 0, 1, rho * 180.0 / 3.14159265358979323846, roll);
+    const GyroPairImage m = gyroPairImageMotion(id, roll, 900.0);
+    CHECK(m.theta == doctest::Approx(rho).epsilon(1e-9));
+    CHECK(m.tx == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(m.ty == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(m.s == doctest::Approx(1.0).epsilon(1e-9));
+}
+
+TEST_CASE("gyrocheck helper: integrateGyro of a known rate reproduces the roll channel") {
+    // A constant 3 deg/s roll integrates to a 0.1 deg step per (1/30) s;
+    // the helper recovers the step in theta with the pin-verified sign.
+    std::vector<ImuSample> g;
+    const double w = 3.0 * 3.14159265358979323846 / 180.0;  // rad/s about +Z
+    const int64_t dt = 1000000000LL / 30;                     // 30 fps in ns
+    for (int i = 0; i <= 30; ++i)
+        g.push_back({i * dt, 0.0f, 0.0f, float(w)});
+    const OrientationSeries s = integrateGyro(g);
+    double qPrev[4], qCur[4];
+    s.orientationAt(10 * dt, qPrev);
+    s.orientationAt(11 * dt, qCur);
+    const GyroPairImage m = gyroPairImageMotion(qPrev, qCur, 1000.0);
+    CHECK(m.theta == doctest::Approx(w * dt * 1e-9).epsilon(1e-6));
+    CHECK(m.tx == doctest::Approx(0.0).epsilon(1e-6));
+    CHECK(m.ty == doctest::Approx(0.0).epsilon(1e-6));
+}
+
+TEST_CASE("gyrocheck helper: compareGyroImage counts, skips and correlates") {
+    // 5 pairs, one Lost and one outside the gyro span; the measured x
+    // carries a 4 px bias on top of a large true signal so the
+    // through-origin slope stays near 1.
+    const double f = 1000.0;
+    const double id[4] = {1, 0, 0, 0};
+    std::vector<GyroPairImage> pred(6);
+    std::vector<PairMotion> meas(6, PairMotion{});
+    std::vector<uint8_t> inside(6, 1);
+    for (size_t i = 1; i < 6; ++i) {
+        double pan[4];
+        quatFromAxisAngleDeg(0, 1, 0, 0.6 * double(i), pan);  // ~10.5 px/deg * i
+        pred[i] = gyroPairImageMotion(id, pan, f);
+        meas[i].status = PairStatus::Ok;
+        meas[i].tx = float((pred[i].tx - 4.0) / 360.0);  // 4 px bias, workH 360
+        meas[i].ty = 0;
+    }
+    meas[3].status = PairStatus::Lost;
+    inside[4] = 0;  // pair 4 outside the gyro span
+    const GyroCompare c = compareGyroImage(pred, meas, 360.0, inside);
+    CHECK(c.n == 3);  // 5 usable minus 1 Lost minus 1 outside
+    CHECK(c.nLost == 1);
+    CHECK(c.nOutside == 1);
+    CHECK(c.txRms == doctest::Approx(4.0).epsilon(1e-6));    // the bias is the residual
+    CHECK(c.txSlope == doctest::Approx(0.85).epsilon(0.05)); // bias pulls, signal dominates
+    CHECK(c.txCorr > 0.99);
+}
