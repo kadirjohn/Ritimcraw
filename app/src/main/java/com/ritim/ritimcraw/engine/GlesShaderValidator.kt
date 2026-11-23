@@ -463,10 +463,10 @@ object GlesShaderValidator {
                 "the whole stage, exactly like the CPU's own " +
                 "`if (grade.blackPoint != 0.0f)`)"
         }
-        if (!s.contains("float lift = -0.25 * (uBlackPoint / 100.0);")) {
+        if (!s.contains("float lift = -0.12 * (uBlackPoint / 100.0);")) {
             out += "missing the stage-9 lift " +
-                "(`float lift = -0.25 * (uBlackPoint / 100.0);` — the CPU's " +
-                "-0.25 * blackPoint/100 endpoint remap)"
+                "(`float lift = -0.12 * (uBlackPoint / 100.0);` — the CPU's " +
+                "-0.12 * blackPoint/100 endpoint remap, A6 owner request 2026-11-23)"
         }
         if (!s.contains("c = lift + (1.0 - lift) * c;")) {
             out += "missing the stage-9 remap " +

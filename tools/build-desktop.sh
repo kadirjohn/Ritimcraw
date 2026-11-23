@@ -110,6 +110,11 @@ echo "== building tests =="
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/stab_measure"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/sync_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/sync_measure"
+#   bp_measure <clip.mcraw> [...] — A6 black-point k sweep (owner request
+#     2026-11-23, guide A6): % fully black + mean luma for candidate k on
+#     real fixtures; run by hand from the repo root, not a test.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/bp_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/bp_measure"
 # test_warp: Phase 5 CPU warp (warpFrame); runs from the repo root so
 # it finds the STEPS/media/test fixtures (the cost-evidence case).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_warp.cpp" \
