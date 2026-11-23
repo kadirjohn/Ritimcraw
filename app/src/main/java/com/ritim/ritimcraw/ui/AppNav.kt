@@ -13,6 +13,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import com.ritim.ritimcraw.ui.theme.SystemBars
+import com.ritim.ritimcraw.ui.theme.SystemBarIconsEffect
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material3.NavigationRailItem
@@ -1006,6 +1009,15 @@ fun AppNav(
     // rail on wide windows).
     val showNav = editorRoute == null && !timelineOpen && !deviceReportOpen
     val wideNav = LocalConfiguration.current.screenWidthDp >= WIDE_NAV_MIN_WIDTH_DP
+    // Status/navigation bar icon colors follow the APP's resolved theme, not
+    // the system's (owner report 2026-11-23); the editor and timeline are
+    // dark in both modes, so they keep light icons.
+    SystemBarIconsEffect(
+        lightIcons = SystemBars.lightIcons(
+            darkTheme = themeMode.isDark(isSystemInDarkTheme()),
+            darkChrome = editorRoute != null || timelineOpen,
+        ),
+    )
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         // The editor has no snackbar host of its own (its chrome is another
