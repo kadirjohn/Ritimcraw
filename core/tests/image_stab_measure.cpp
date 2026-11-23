@@ -21,6 +21,20 @@
 //   image_stab_measure lumacheck <clip.mcraw> [pairs=20]
 //       Raw-CFA luma path vs developThumbnail luma path: difference of the
 //       pair motions in working-resolution pixels (S2 acceptance < 0.1 px).
+//   image_stab_measure focus-fit <clip.mcraw> <clip.gcsv>
+//       Effective-focal calibration (the S10 input; motivation: the gyro
+//       cross-check's persistent x-slope 1.216-1.222 on all three real
+//       hand-held clips — the container's 35mm-equivalent 23.95 mm reads
+//       ~22% short in video mode). Runs the analysis, integrates the GCSV
+//       orientation (VQF + bias-corrected gyro-only), scans the sync
+//       offset +-150 ms in 5 ms steps, and at every candidate solves the
+//       focal scale k in CLOSED FORM (translation is linear in the focal:
+//       one prediction pass at the container focal, then k* = (pred.meas)/
+//       (pred.pred), image_stab_focus_fit.hpp). Reports per clip: best
+//       (offset, k) by 2D RMS, the honest k confidence window (RMS within
+//       +2%), the implied effective focal (container mm * k), the
+//       rotation-channel residuals (k-independent), and the measured
+//       through-origin slopes for x/y (the raw cross-check numbers).
 //
 // Metric definitions (docs/IMAGE_STAB_PLAN.md section 4): the path is in
 // pixels at 1080 px height; derivatives use the REAL PTS spacing, never an
@@ -31,8 +45,13 @@
 // reported as RMS over frames and over both axes, raw and stabilized,
 // plus out/raw ratios in separate columns.
 #include <rawedit/Develop.h>
+#include <rawedit/Gyro.h>
 #include <rawedit/ImageStab.h>
+#include <rawedit/Orientation.h>
+#include <rawedit/OrientationEstimate.h>
 #include <rawedit/Source.h>
+#include <rawedit/Stabilization.h>
+#include <rawedit/Sync.h>
 #include <rawedit/Thumbnail.h>
 
 #include <algorithm>
@@ -43,6 +62,9 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+#include "image_stab_focus_fit.hpp"
+#include "image_stab_gyro.hpp"
 
 using namespace rawedit;
 
@@ -424,11 +446,133 @@ int cmdLumaCheck(const std::string& clip, int pairs) {
     return 0;
 }
 
+// ---- effective-focal calibration (focus-fit; the S10 input) ----------------------
+
+int cmdFocusFit(const std::string& clip, const std::string& gcsv, double scanMs) {
+    // 1) Image side: the pair measurements (same analysis path as gyrocheck).
+    auto src = Source::open(clip);
+    if (!src.isOk()) { std::fprintf(stderr, "open failed: %s\n", clip.c_str()); return 1; }
+    Source& s = **src;
+    std::printf("focus-fit: analyzing %s ...\n", clip.c_str());
+    ImagePath path;
+    AnalyzeStats st;
+    AnalyzeControl ctl;
+    if (analyzeSource(s, ImageStabOptions(), ctl, path, &st) != AnalyzeResult::Done) {
+        std::fprintf(stderr, "analysis failed\n");
+        return 1;
+    }
+    std::vector<PairMotion> meas(path.recs.size());
+    for (size_t i = 0; i < path.recs.size(); ++i) meas[i] = toMotion(path.recs[i]);
+    std::vector<int64_t> pts(path.recs.size());
+    for (size_t i = 0; i < path.recs.size(); ++i) pts[i] = path.recs[i].ptsUs;
+    const FrameInfo fi0 = s.frameInfo(0);
+
+    // 2) Gyro side: parse, remap, integrate (read-only production helpers).
+    auto parsed = parseGcsv(gcsv);
+    if (!parsed.isOk()) { std::fprintf(stderr, "gcsv: %s\n", parsed.detail.c_str()); return 1; }
+    ImuData imu = std::move(*parsed.value);
+    if (imu.logStartWallMs <= 0) {
+        std::fprintf(stderr, "gcsv carries no wall-clock `timestamp` header\n");
+        return 1;
+    }
+    const AxisRemap remap = axisRemapForImu(imu);
+    if (!remap.known) { std::fprintf(stderr, "axis remap unknown\n"); return 1; }
+    std::vector<ImuSample> gyro, accel;
+    for (ImuSample sm : imu.gyro) { remap.apply(sm.x, sm.y, sm.z); gyro.push_back(sm); }
+    for (ImuSample sm : imu.accel) { remap.apply(sm.x, sm.y, sm.z); accel.push_back(sm); }
+    const VqfOrientation vqf = estimateOrientationVqf(gyro, accel);
+
+    // 3) The container focal at the working height: the baseline predictions
+    //    are generated at THIS focal; k scales them linearly.
+    const RawMeta& meta = s.rawMeta();
+    const double f35 = meta.focalLengthMm > 0 ? meta.focalLengthMm : 23.95;
+    const double workW = double(path.workW);
+    const double workH = double(path.workH ? path.workH : 360);
+    const double fpx = focalLengthPxFromEquivalent(f35, int(workW));
+    std::printf("container focal %.3f mm (35mm-eq assumed width-spans-36mm) -> %.1f px at %.0fx%.0f working\n",
+                f35, fpx, workW, workH);
+
+    // 4) The (offset, k) joint scan: k is CLOSED FORM at each offset (the
+    //    translation is linear in the focal, so one predict pass per offset
+    //    and a per-k multiply). Scan +-scanMs at 5 ms.
+    const SyncEstimate anchor = estimateOffsetFromAnchors(fi0.recvdMs, imu.logStartWallMs,
+                                                          fi0.ptsUs * 1000);
+    if (anchor.confidence != SyncConfidence::Anchored) {
+        std::fprintf(stderr, "anchor unavailable\n");
+        return 1;
+    }
+    struct Scan { double offsMs; double k; double rms; double rmsAtContainerK; size_t n; };
+    std::vector<Scan> scan, scanGyroOnly;
+    int64_t bestOffs = anchor.model.offsetNs;
+    double bestRms = 1e18, bestK = 1.0;
+    FocusFitQuad bestQuad;
+    for (int step = -int(scanMs / 5); step <= int(scanMs / 5); ++step) {
+        const int64_t offs = anchor.model.offsetNs + int64_t(step) * 5 * 1000000;
+        std::vector<uint8_t> inside;
+        const std::vector<GyroPairImage> pred1 =
+            predictPairsFromSeries(vqf.series, pts, offs, fpx, &inside);
+        const FocusFitQuad q = focusQuad(pred1, meas, workH, inside);
+        const double k = q.kBest();
+        const double rms = q.rmsAtK(k);
+        scan.push_back({offs * 1e-6, k, rms, q.rmsAtK(1.0), q.n});
+        if (q.n > meas.size() / 4 && rms < bestRms) {
+            bestRms = rms;
+            bestOffs = offs;
+            bestK = k;
+            bestQuad = q;
+        }
+    }
+    double kLo = bestK, kHi = bestK;
+    focusConfidence(bestQuad, 0.02, kLo, kHi);
+
+    std::printf("\nsync offset scan (anchor %+.0f ms): offset ms | best k | RMS(k) px | RMS(k=1) px | pairs\n",
+                anchor.model.offsetNs * 1e-6);
+    for (const Scan& r : scan)
+        std::printf("  %+8.0f | %6.4f | %8.3f | %8.3f | %zu\n", r.offsMs, r.k, r.rms, r.rmsAtContainerK, r.n);
+
+    // 5) Report the winner with the full cross-check statistics at k best.
+    std::vector<uint8_t> insideBest;
+    const std::vector<GyroPairImage> predBest =
+        predictPairsFromSeries(vqf.series, pts, bestOffs, fpx, &insideBest);
+    const std::vector<GyroPairImage> predScaled = scalePredictions(predBest, bestK);
+    const GyroCompare cmp = compareGyroImage(predScaled, meas, workH, insideBest);
+    std::printf("\n== focus-fit result ==\n");
+    std::printf("best sync offset %+lld ms (scan delta %+lld ms vs anchor)\n",
+                static_cast<long long>(bestOffs / 1000000),
+                static_cast<long long>(bestOffs / 1000000 - anchor.model.offsetNs / 1000000));
+    std::printf("BEST k (2D isotropic fit) = %.4f  (window at RMS +2%%: [%.4f, %.4f], half-width %.4f)\n",
+                bestK, kLo, kHi, 0.5 * (kHi - kLo));
+    std::printf("per-channel k:  x %.4f | y %.4f   (anisotropy is itself a diagnostic: EIS/digital-crop)\n",
+                bestQuad.kBestX(), bestQuad.kBestY());
+    std::printf("container focal %.3f mm x k -> EFFECTIVE FOCAL (x-channel): %.2f mm; (2D): %.2f mm (35mm-eq basis)\n",
+                f35, f35 * bestQuad.kBestX(), f35 * bestK);
+    std::printf("x-channel RMS at kX %.3f px vs at container k=1 %.3f px (gain x%.2f)\n",
+                bestQuad.rmsAtKX(bestQuad.kBestX()), bestQuad.rmsAtKX(1.0),
+                bestQuad.rmsAtKX(1.0) / std::max(1e-9, bestQuad.rmsAtKX(bestQuad.kBestX())));
+    std::printf("corr(pred,meas): x %.3f | y %.3f | theta %.3f (theta is k-independent: rotation channel)\n",
+                cmp.txCorr, cmp.tyCorr, cmp.thetaCorr);
+    {
+        // Signal-sufficiency verdict: focus calibration is only meaningful
+        // when the predicted translation has amplitude to fit against.
+        const double predAmp = std::sqrt(bestQuad.A / std::max<size_t>(1, bestQuad.n));
+        const bool usable = cmp.txCorr > 0.8 && predAmp > 1.0;
+        std::printf("signal check: pred RMS amp %.2f px, x-corr %.3f -> %s\n",
+                    predAmp, cmp.txCorr,
+                    usable ? "USABLE for focal calibration"
+                           : "SIGNAL INSUFFICIENT (near-static clip; k is noise, do not read it)");
+    }
+    std::printf("measured slopes through origin (container-focal basis): x %.3f | y %.3f\n",
+                cmp.txSlope, cmp.tySlope);
+    std::printf("pairs used %zu (lost %zu, outside span %zu); theta residual RMS %.4f deg (%.3f px @half-height)\n",
+                cmp.n, cmp.nLost, cmp.nOutside, cmp.thetaRmsDeg, cmp.thetaRmsPx);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: image_stab_measure bench|analyze|plan|lumacheck ... (see header)\n");
+        std::fprintf(stderr, "usage: image_stab_measure bench|analyze|plan|lumacheck|focus-fit ... (see header)\n");
         return 2;
     }
     const std::string cmd = argv[1];
@@ -442,6 +586,8 @@ int main(int argc, char** argv) {
     if (cmd == "plan" && argc > 2)
         return cmdPlan(argv[2], argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 0, argc > 4 ? argv[4] : "");
     if (cmd == "lumacheck" && argc > 2) return cmdLumaCheck(argv[2], argc > 3 ? std::atoi(argv[3]) : 20);
+    if (cmd == "focus-fit" && argc > 3)
+        return cmdFocusFit(argv[2], argv[3], argc > 4 ? std::atof(argv[4]) : 150.0);
     std::fprintf(stderr, "bad arguments\n");
     return 2;
 }

@@ -114,6 +114,12 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_image_stab tests/test_image_stab.cpp)
     target_include_directories(test_image_stab PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_image_stab PRIVATE rawedit)
+    # test_focus_fit: the effective-focal calibration layer's recovery proofs
+    # (closed-form k, 1.0 pass-through, honest confidence windows). Synthetic
+    # gyro walks only.
+    add_executable(test_focus_fit tests/test_focus_fit.cpp)
+    target_include_directories(test_focus_fit PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_focus_fit PRIVATE rawedit)
     # test_yuv: byte-exact RGB888->I420 contract with export/YuvConverter.kt
     # (on arm64 hosts the NEON path runs, so NEON-vs-scalar is proven too).
     # -ffp-contract=off matches the Yuv.cpp build: the reference formulas in
@@ -155,6 +161,7 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME warp COMMAND test_warp)
     add_test(NAME optical_sync COMMAND test_optical_sync)
     add_test(NAME image_stab COMMAND test_image_stab)
+    add_test(NAME focus_fit COMMAND test_focus_fit)
     add_test(NAME yuv COMMAND test_yuv)
     add_test(NAME color COMMAND test_color)
     add_test(NAME color_model COMMAND test_color_model)

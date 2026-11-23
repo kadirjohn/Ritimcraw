@@ -123,8 +123,18 @@ echo "== building tests =="
 # image_stab_measure: image-stab numbers (S1..S3): stage timings, analysis of
 # a real clip, acceleration/jerk + zoom-rate A/B plan sweep, raw-vs-developed
 # luma check. Run by hand: `image_stab_measure bench|analyze|plan|lumacheck`.
+# focus-fit (effective-focal calibration, S10 input): gyro-predicted pair
+# translations vs the image measurements with the sync offset scanned and
+# the focal scale k solved in closed form (linear-in-f translation); the
+# boxed 1.216-1.22 slope finding of the gyro cross-check becomes a measured
+# number.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/image_stab_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/image_stab_measure"
+# test_focus_fit: the focal-fit layer's recovery proofs (closed form recovers
+# a known k, 1.0 passes through, noise widens the honest window, prediction
+# scaling is exactly linear, Lost/outside pairs are gated out).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_focus_fit.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_focus_fit"
 # test_warp: Phase 5 CPU warp (warpFrame); runs from the repo root so
 # it finds the STEPS/media/test fixtures (the cost-evidence case).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_warp.cpp" \
@@ -238,6 +248,8 @@ echo "== running test_optical_sync =="
 (cd "$ROOT" && "$BUILD/test_optical_sync")
 echo "== running test_image_stab =="
 "$BUILD/test_image_stab"
+echo "== running test_focus_fit =="
+"$BUILD/test_focus_fit"
 echo "== running test_rawstats =="
 "$BUILD/test_rawstats"
 echo "== running test_yuv =="
