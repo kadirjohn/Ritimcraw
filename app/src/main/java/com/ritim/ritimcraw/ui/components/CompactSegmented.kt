@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -13,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,11 +52,74 @@ fun CompactSegmented(
     modifier: Modifier = Modifier,
     height: Dp = 44.dp,
 ) {
+    CompactSegmentedRow(modifier, height) {
+        options.forEachIndexed { index, label ->
+            Segment(selected = index == selectedIndex, onClick = { onSelect(index) }, label = label)
+        }
+    }
+}
+
+/** Labels longer than this render one type step smaller. */
+private const val LONG_LABEL_CHARS = 12
+
+/** The scope [CompactSegmentedRow] gives its content: one [Segment] per option. */
+interface CompactSegmentedScope : RowScope {
+    @Composable
+    fun Segment(selected: Boolean, onClick: () -> Unit, label: String)
+}
+
+private class CompactSegmentedScopeImpl(row: RowScope) : CompactSegmentedScope, RowScope by row {
+    @Composable
+    override fun Segment(selected: Boolean, onClick: () -> Unit, label: String) {
+        val cs = MaterialTheme.colorScheme
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .selectable(
+                    selected = selected,
+                    role = Role.RadioButton,
+                    onClick = onClick,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selected) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(vertical = 7.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(cs.secondaryContainer),
+                )
+            }
+            Text(
+                text = label,
+                // Long labels ("Lock First Frame") step down one size
+                // instead of wrapping into a two-line segment.
+                style = if (label.length > LONG_LABEL_CHARS) MaterialTheme.typography.labelMedium
+                else MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = if (selected) cs.onSurface else cs.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 6.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The slot form of [CompactSegmented] — a drop-in for the stock
+ * SingleChoiceSegmentedButtonRow + SegmentedButton pattern, so call sites
+ * keep their own selected/onClick logic and only swap the visuals.
+ */
+@Composable
+fun CompactSegmentedRow(
+    modifier: Modifier = Modifier,
+    height: Dp = 44.dp,
+    content: @Composable CompactSegmentedScope.() -> Unit,
+) {
     val track = MaterialTheme.colorScheme.surfaceContainerHigh
-    val pill = MaterialTheme.colorScheme.secondaryContainer
-    val selectedText = MaterialTheme.colorScheme.onSurface
-    val idleText = MaterialTheme.colorScheme.onSurfaceVariant
-    val pillShape = RoundedCornerShape(8.dp)
     Row(
         modifier
             .height(height)
@@ -71,38 +136,7 @@ fun CompactSegmented(
             .selectableGroup(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        options.forEachIndexed { index, label ->
-            val selected = index == selectedIndex
-            Box(
-                Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .selectable(
-                        selected = selected,
-                        role = Role.RadioButton,
-                        onClick = { onSelect(index) },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (selected) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .padding(vertical = 7.dp)
-                            .clip(pillShape)
-                            .background(pill),
-                    )
-                }
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (selected) selectedText else idleText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 6.dp),
-                )
-            }
-        }
+        val scope = remember(this) { CompactSegmentedScopeImpl(this) }
+        scope.content()
     }
 }
