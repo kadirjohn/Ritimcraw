@@ -77,6 +77,15 @@ set_source_files_properties(src/Yuv.cpp PROPERTIES
 # on every target (preview == export == timeline); same opt-out.
 set_source_files_properties(src/ImageStabPlan.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
+# Resample.cpp (E5-B, unwired): the interpolator's lerp
+# (a + (b - a) * frac) is what filmcraft's f32 op sequence rounds; the
+# default fp-contract collapses it into one FMA (measured: clang arm64
+# emits two fmadd with the default, zero with the opt-out), one rounding
+# where the crate has three. The crate-vector tests pin "the numbers
+# filmcraft runs", and the one-source-sample-lag contract must round the
+# same on desktop, phone and any later JNI wiring; same opt-out.
+set_source_files_properties(src/Resample.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
 set_property(TARGET rawedit PROPERTY POSITION_INDEPENDENT_CODE ON)

@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp Resample.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -52,6 +52,15 @@ done
 # also opts out of FMA contraction (Yuv.cpp precedent).
 "$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/ImageStabPlan.cpp" -o "$BUILD/core_ImageStabPlan.o"
 CORE_OBJS+=("$BUILD/core_ImageStabPlan.o")
+# Resample.cpp (E5-B, unwired): the interpolator's lerp
+# (a + (b - a) * frac) is what filmcraft's f32 op sequence rounds; the
+# default fp-contract collapses it into one FMA (measured: clang arm64
+# emits two fmadd with the default, zero with the opt-out), one rounding
+# where the crate has three. The crate-vector tests pin "the numbers
+# filmcraft runs", and the one-sample lag must round the same on
+# desktop, phone and any later JNI wiring (ImageStabPlan precedent).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Resample.cpp" -o "$BUILD/core_Resample.o"
+CORE_OBJS+=("$BUILD/core_Resample.o")
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
