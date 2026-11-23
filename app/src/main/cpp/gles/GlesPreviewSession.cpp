@@ -867,6 +867,16 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // the upload/develop span measurement — runs in the shared pipeline
     // (gles/GpuDevelopPipeline.cpp), synchronously on THIS GL thread with
     // this session's context current.
+    // WW8 per-pass probe: armed on exactly the frames the window probe
+    // below will log (same latch condition, keyed on the request's dims —
+    // the develop dims draw() will report), so each "window probe: shot="
+    // line is preceded by that frame's "pass probe:" lines. DEBUG-only via
+    // the same windowProbeEnabled() gate; release builds never arm it.
+    if (windowProbeEnabled() && windowSurface != EGL_NO_SURFACE &&
+        (!probeGeometryLogged || probeW != req.info.width ||
+         probeH != req.info.height || probeSecondShot)) {
+        pipeline.armPassProbe();
+    }
     const GpuDevelopPipeline::DrawResult r = pipeline.draw(req);
     out.uploadUs = r.uploadUs;  // set right after the pipeline's CFA upload —
                                // survives a mid-chain draw failure, 0 only
