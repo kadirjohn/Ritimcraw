@@ -2,10 +2,14 @@ package com.ritim.ritimcraw.ui.editor
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,33 +17,36 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.AssistChip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.engine.RawHistogram
-import com.ritim.ritimcraw.ui.theme.Tnum
+import com.ritim.ritimcraw.ui.components.CompactSegmented
 
 /**
  * THE SCOPE STRIP (owner spec PLAY-10, 2026-11-12 §2 + the manager's
@@ -67,12 +74,16 @@ import com.ritim.ritimcraw.ui.theme.Tnum
  * SDR scale (spec §5).
  *
  * HEIGHT STABILITY: both contents lay out the same rows — mode
- * selector, [ScopeGraphHeight] graph, [ScopeLabelBandHeight] label
- * band — so the strip's height never changes on a content switch or a
- * clipping-state change, and the panel anchors below never churn
- * mid-session. The label band is FIXED: the waveform's signal label and
- * the histogram's "Clipped" badge appear inside the reserved band
- * instead of adding height.
+ * selector and a [ScopeGraphHeight] graph panel — so the strip's height
+ * never changes on a content switch or a clipping-state change, and the
+ * panel anchors below never churn mid-session. Every readout (the
+ * waveform's signal label + Hz, the histogram's clip pills, the RAW
+ * notice) lives INSIDE the graph panel's corners instead of adding height.
+ *
+ * LOOK (2026-11-23 modernization): compact label-only segmented controls
+ * ([CompactSegmented]), small icon buttons, and a dark rounded graph
+ * panel with a soft graticule ([ScopeLook]) — one instrument language
+ * across histogram, waveform and the mini overlay.
  *
  * STATE: the open flag, the content choice, the waveform mode AND the
  * histogram mode live in the SCREEN (saveable there because the strip
@@ -108,8 +119,12 @@ enum class ScopeContent(val labelRes: Int) {
 /** The scope graph's height in both contents (see HEIGHT STABILITY). */
 internal val ScopeGraphHeight = 148.dp
 
-/** The fixed label band under the graph (see HEIGHT STABILITY). */
-internal val ScopeLabelBandHeight = 26.dp
+/**
+ * The graph height in the landscape two-column workspace: the strip sits
+ * inside the preview column there, and the full 148dp graph plus two
+ * control rows used to push the preview itself off screen.
+ */
+internal val ScopeGraphHeightCompact = 72.dp
 
 /**
  * The strip itself: header (content selector + close) + the selected
@@ -118,19 +133,16 @@ internal val ScopeLabelBandHeight = 26.dp
  * thread from the CURRENT published frame by the screen's scope compute
  * effect (spec §7: closed strip = the compute stops entirely), null/empty
  * until the first frame publishes. [rawHistogram] is the RAW mode's
- * PRE-DEVELOP sensor-domain stats (feature N6) — fetched by the same
- * compute effect through the session seam when the histogram mode is
- * RAW; null when unavailable (an encoded clip has no sensor data, or
- * the fetch failed), which the histogram content shows as an honest
- * notice, never a fabricated curve. The histogram mode params
- * ([histogramModeOrdinal]/[onHistogramModeChange]) carry the mode the
- * same way the waveform's do — screen state, keyed where the compute
- * is keyed. The sampling params carry the waveform pass's quality
- * choice (spec §6) and [hz] its measured compute rate (spec §7 pacing
- * validation). [midGrayAvailable]/[midGrayShown]/[onMidGrayChange]
- * carry the spec §8 reference: the toggle shows only while the
- * derivation is honest (the screen's gate), and the line draws only
- * when the user has it on.
+ * PRE-DEVELOP sensor-domain stats (feature N6) — null when unavailable,
+ * which the histogram content shows as an honest notice, never a
+ * fabricated curve. The sampling params carry the waveform pass's quality
+ * choice (spec §6) and [hz] its measured compute rate (spec §7). The
+ * mid-gray params carry the spec §8 reference (toggle only while the
+ * derivation is honest).
+ *
+ * [compact] (landscape two-column): ONE control row — content selector,
+ * mode selector, chip and the icon buttons side by side — over a
+ * [ScopeGraphHeightCompact] graph, so the preview keeps most of its column.
  */
 @Composable
 fun ScopeStrip(
@@ -143,8 +155,7 @@ fun ScopeStrip(
     onHistogramModeChange: (Int) -> Unit,
     // The RAW mode's presentation (owner answer #6): COMBINED or
     // PARADE — screen saveable state exactly like the mode ordinal,
-    // display-only (both shapes draw the SAME fetched stats; the
-    // compute effect does not key on it).
+    // display-only (both shapes draw the SAME fetched stats).
     rawPresentationOrdinal: Int,
     onRawPresentationChange: (Int) -> Unit,
     waveform: WaveformDisplay.Rendered?,
@@ -157,114 +168,103 @@ fun ScopeStrip(
     midGrayShown: Boolean,
     onMidGrayChange: (Boolean) -> Unit,
     // Tapping the graph itself shrinks the strip to the mini overlay
-    // (owner request 2026-11-12 §2): threaded to whichever content view
-    // is showing, where it rides the graph's own node — the header,
-    // mode rows and label bands never fire it.
+    // (owner request 2026-11-12 §2) — only the graph node fires it.
     onGraphTap: () -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
+    val contentLabels = ScopeContent.entries.map { stringResource(it.labelRes) }
+    val contentSelector: @Composable RowScope.(Float) -> Unit = { weight ->
+        CompactSegmented(
+            options = contentLabels,
+            selectedIndex = content.ordinal,
+            onSelect = { onContentChange(ScopeContent.entries[it]) },
+            modifier = Modifier.weight(weight),
+        )
+    }
+    // The header's icon buttons: the mid-gray reference toggle (spec §8,
+    // present only while the derivation is honest) and close. Visual 20dp
+    // glyphs, 40dp targets inside the 44dp control row.
+    val headerActions: @Composable RowScope.() -> Unit = {
+        if (midGrayAvailable) {
+            ScopeIconButton(
+                iconRes = R.drawable.ic_scope_midgray,
+                description = stringResource(
+                    if (midGrayShown) R.string.editor_scope_midgray_hide
+                    else R.string.editor_scope_midgray_show
+                ),
+                active = midGrayShown,
+                onClick = { onMidGrayChange(!midGrayShown) },
+            )
+        }
+        ScopeIconButton(
+            iconRes = R.drawable.ic_scope_close,
+            description = stringResource(R.string.editor_scope_hide),
+            onClick = onClose,
+        )
+    }
+    val graphHeight = if (compact) ScopeGraphHeightCompact else ScopeGraphHeight
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 4.dp)) {
-            // Header: the ONE content selector (Histogram | Waveform) +
-            // the close button. The close button and the corner toggle
-            // perform the same action (close the strip) and share the
-            // same description string.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
-                    ScopeContent.entries.forEachIndexed { index, entry ->
-                        SegmentedButton(
-                            selected = content == entry,
-                            onClick = { onContentChange(entry) },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = ScopeContent.entries.size,
-                            ),
-                        ) {
-                            Text(stringResource(entry.labelRes), maxLines = 1)
-                        }
-                    }
-                }
-                Spacer(Modifier.width(8.dp))
-                // The mid-gray reference toggle (spec §8): present only
-                // while the derivation is honest (the screen's gate —
-                // a tonemap or LUT rewrites the transform and the line
-                // would lie). The icon is a value axis with a dashed
-                // level line; the description names show/hide. Same
-                // IconButton pattern as the close button.
-                if (midGrayAvailable) {
-                    IconButton(onClick = { onMidGrayChange(!midGrayShown) }) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_scope_midgray),
-                            contentDescription = stringResource(
-                                if (midGrayShown) R.string.editor_scope_midgray_hide
-                                else R.string.editor_scope_midgray_show
-                            ),
-                        )
-                    }
-                }
-                IconButton(onClick = onClose) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_scope_close),
-                        contentDescription = stringResource(R.string.editor_scope_hide),
-                    )
+        Column(Modifier.padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 8.dp)) {
+            if (!compact) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    contentSelector(1f)
+                    Spacer(Modifier.width(4.dp))
+                    headerActions()
                 }
             }
-            if (content == ScopeContent.WAVEFORM) {
-                WaveformScopeView(
-                    rendered = waveform,
-                    modeOrdinal = waveformModeOrdinal,
-                    onModeChange = onWaveformModeChange,
-                    samplingOrdinal = samplingOrdinal,
-                    onSamplingChange = onSamplingChange,
-                    hz = hz,
-                    midGrayLine = if (midGrayAvailable && midGrayShown) {
-                        WaveformScope.midGraySignal()
-                    } else {
-                        null
-                    },
-                    onGraphTap = onGraphTap,
-                )
-            } else {
-                HistogramScopeView(
-                    result = histogram,
-                    modeOrdinal = histogramModeOrdinal,
-                    onModeChange = onHistogramModeChange,
-                    raw = rawHistogram,
-                    rawPresentationOrdinal = rawPresentationOrdinal,
-                    onRawPresentationChange = onRawPresentationChange,
-                    onGraphTap = onGraphTap,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            val leading: (@Composable RowScope.() -> Unit)? =
+                if (compact) ({ contentSelector(0.8f); Spacer(Modifier.width(6.dp)) }) else null
+            val trailing: (@Composable RowScope.() -> Unit)? = if (compact) headerActions else null
+            Column(Modifier.padding(end = 6.dp)) {
+                if (content == ScopeContent.WAVEFORM) {
+                    WaveformScopeView(
+                        rendered = waveform,
+                        modeOrdinal = waveformModeOrdinal,
+                        onModeChange = onWaveformModeChange,
+                        samplingOrdinal = samplingOrdinal,
+                        onSamplingChange = onSamplingChange,
+                        hz = hz,
+                        midGrayLine = if (midGrayAvailable && midGrayShown) {
+                            WaveformScope.midGraySignal()
+                        } else {
+                            null
+                        },
+                        onGraphTap = onGraphTap,
+                        graphHeight = graphHeight,
+                        leading = leading,
+                        trailing = trailing,
+                    )
+                } else {
+                    HistogramScopeView(
+                        result = histogram,
+                        modeOrdinal = histogramModeOrdinal,
+                        onModeChange = onHistogramModeChange,
+                        raw = rawHistogram,
+                        rawPresentationOrdinal = rawPresentationOrdinal,
+                        onRawPresentationChange = onRawPresentationChange,
+                        onGraphTap = onGraphTap,
+                        modifier = Modifier.fillMaxWidth(),
+                        graphHeight = graphHeight,
+                        leading = leading,
+                        trailing = trailing,
+                    )
+                }
             }
         }
     }
 }
 
 /**
- * THE WAVEFORM VIEW (spec §3): the real density trace. The graph is the
- * [WaveformDisplay.Rendered] bitmap — pre-rendered off the UI thread by
- * the screen (density grids -> premultiplied ARGB) — scaled to the
- * canvas with ONE drawImage call: no per-cell canvas work, no
- * computation on the UI thread. The bitmap's transparent cells let the
- * 0/50/100% signal-scale reference lines (spec §5) show through under
- * the trace; the Y axis rises upward inside the bitmap already
- * (WaveformDisplay's contract), so the canvas maps it 1:1 — the top
- * line is 100%, the middle 50%, the bottom 0%.
- *
- * The mode selector (Luma / Overlay / Parade, spec §1) is the screen's
- * saveable state passed down — the screen's compute effect needs the
- * mode to know which grids to sample, so the choice must live where the
- * compute is keyed. The same holds for the sampling quality chip (spec
- * §6: [ScopeSamplingChip]) and the Hz readout (spec §7's measurement
- * tooling, in the fixed label band in Tnum so the ticking digits do not
- * jog). [midGrayLine] is the spec §8 reference's DERIVED signal level
- * (or null = not drawn): a dashed guide line under the trace, valid
- * only when the analyzed signal's luma path is the bare Rec.709 OETF
- * (the strip's gate — see the ScopeStrip KDoc).
+ * The waveform content (spec §1-§7): the mode selector + sampling chip on
+ * ONE row, then the [WaveformGraph] panel. The signal label ("Preview ·
+ * BT.709", spec §4) and the measured compute rate (spec §7) ride inside
+ * the panel's top-end corner, so no extra band adds height.
+ * [leading]/[trailing] let the compact strip fold its header into this row.
  */
 @Composable
 fun WaveformScopeView(
@@ -275,101 +275,62 @@ fun WaveformScopeView(
     onSamplingChange: (Int) -> Unit,
     hz: Int,
     midGrayLine: Float?,
-    // Tapping the graph itself shrinks the strip to the mini overlay
-    // (owner request 2026-11-12 §2): only the GRAPH area answers — the
-    // mode row above stays mode-switching, the label band stays
-    // informational. Nullable so the mini (whose whole container is the
-    // tap target) draws the graph with no tap node of its own.
+    // Only the GRAPH answers the tap-to-shrink; null in the mini.
     onGraphTap: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    graphHeight: Dp = ScopeGraphHeight,
+    leading: (@Composable RowScope.() -> Unit)? = null,
+    trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
     // Coerced: the ordinal crosses process-death save/restore; a stale
     // value must select the nearest real mode, never crash the strip.
     val mode = WaveformMode.entries[modeOrdinal.coerceIn(0, WaveformMode.entries.lastIndex)]
-    val signalLabel = stringResource(R.string.editor_scope_signal)
+    val caption = stringResource(R.string.editor_scope_signal) + "  ·  " +
+        stringResource(R.string.editor_scope_hz, hz)
     Column(modifier) {
-        // The mode selector and the sampling chip share ONE row (spec §1
-        // + §6): the chip is a peer of the mode buttons, not an extra
-        // row — the strip's height never changes when it appears (see
-        // HEIGHT STABILITY).
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
-                WaveformMode.entries.forEachIndexed { index, m ->
-                    SegmentedButton(
-                        selected = m == mode,
-                        onClick = { onModeChange(m.ordinal) },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = WaveformMode.entries.size,
-                        ),
-                    ) {
-                        // Literal untranslated mode codes in every locale
-                        // (the owner spec's product vocabulary, like the
-                        // histogram's RGB/Luma/Parade and ACES/AgX).
-                        Text(m.label, maxLines = 1)
-                    }
-                }
-            }
-            Spacer(Modifier.width(8.dp))
+            leading?.invoke(this)
+            // Literal untranslated mode codes in every locale (the owner
+            // spec's product vocabulary).
+            CompactSegmented(
+                options = WaveformMode.entries.map { it.label },
+                selectedIndex = mode.ordinal,
+                onSelect = { onModeChange(WaveformMode.entries[it].ordinal) },
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(6.dp))
             ScopeSamplingChip(
                 samplingOrdinal = samplingOrdinal,
                 onSamplingChange = onSamplingChange,
             )
+            trailing?.invoke(this)
         }
-        Spacer(Modifier.height(6.dp))
-        // The graph itself is [WaveformGraph] — the ONE draw path,
-        // shared with the mini overlay (see its KDoc).
+        Spacer(Modifier.height(4.dp))
         WaveformGraph(
             rendered = rendered,
             midGrayLine = midGrayLine,
             onGraphTap = onGraphTap,
+            caption = caption,
+            parade = mode == WaveformMode.PARADE,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(ScopeGraphHeight)
+                .height(graphHeight)
                 .semantics { contentDescription = mode.label },
         )
-        // The fixed label band (see HEIGHT STABILITY): the honest
-        // signal label (spec §4: "Analiz alanını 'Preview · BT.709'
-        // gibi doğru adlandır" — the analyzed pixels are the processed
-        // preview frame, post-grade, post-Rec.709-OETF, pre-UI) at the
-        // start, the measured compute rate (spec §7's pacing
-        // validation) at the end — Tnum so the ticking digits do not
-        // jog. Both fit the reserved 26dp band; no height ever changes.
-        Row(
-            Modifier.fillMaxWidth().height(ScopeLabelBandHeight),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                signalLabel,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                stringResource(R.string.editor_scope_hz, hz),
-                style = MaterialTheme.typography.labelSmall.merge(Tnum),
-            )
-        }
     }
 }
 
 /**
- * THE WAVEFORM GRAPH ITSELF — the one draw path, extracted (owner
- * request 2026-11-12 §2) so the strip's view and the strip's MINI
- * overlay draw the exact same picture from the exact same
- * [WaveformDisplay.Rendered] pixels: the reference lines, the optional
- * mid-gray guide, and ONE scaled drawImage. The mini is display-only
- * BY CONSTRUCTION: it composes this, it does not re-derive anything.
+ * THE WAVEFORM GRAPH — the one draw path, shared by the strip and the
+ * mini overlay. A dark rounded [ScopePanel]; a soft 0/25/50/75/100%
+ * graticule with sparse labels (strip only); the mid-gray reference as a
+ * dashed amber guide at the DERIVED level (spec §8, 18% scene linear
+ * through the Rec.709 OETF ≈ 41% coded signal); then the density bitmap
+ * stretched over the panel (X = image position, Y = the 256 levels).
  *
- * [onGraphTap]: the strip's graph-tap shrink gesture (tap the graph ->
- * the strip collapses to the mini). The mini passes NULL — its whole
- * container is the tap target (tap anywhere -> the strip expands), and
- * a second tap node inside it would compete with the container's own
- * clickable.
- *
- * The graph fills the modifier's size — [ScopeGraphHeight] at full
- * width in the strip; a smaller box in the mini. All drawing is
- * resolution-relative, so the same code draws both sizes.
+ * The bitmap pixels are PREMULTIPLIED ARGB (WaveformDisplay's contract) —
+ * exactly what Bitmap.createBitmap's colors array expects. [caption]
+ * (strip only) draws in the top-end corner.
  */
 @Composable
 internal fun WaveformGraph(
@@ -377,17 +338,13 @@ internal fun WaveformGraph(
     midGrayLine: Float?,
     onGraphTap: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    caption: String? = null,
+    mini: Boolean = false,
+    parade: Boolean = false,
 ) {
-    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)
-    // The mid-gray guide reads as a REFERENCE, not grid furniture: the
-    // theme's primary, distinct from the neutral grid lines and from
-    // the white trace.
-    val referenceColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-    // The density bitmap, wrapped once per published frame. The pixels
-    // are PREMULTIPLIED ARGB (WaveformDisplay's contract) — exactly
-    // what Bitmap.createBitmap's colors array is interpreted as, and
-    // what android bitmaps store internally; writing straight-alpha
-    // ints here would render with color bleeding.
+    val colors = rememberScopeColors(mini)
+    val labels = if (mini) null else rememberGraticuleLabels()
+    val dash = remember { PathEffect.dashPathEffect(floatArrayOf(10f, 7f)) }
     val bitmap = remember(rendered) {
         rendered?.let {
             Bitmap.createBitmap(it.pixels, it.width, it.height, Bitmap.Config.ARGB_8888)
@@ -395,67 +352,60 @@ internal fun WaveformGraph(
         }
     }
     val tapModifier = if (onGraphTap != null) {
-        // The graph-tap shrink (owner request 2026-11-12 §2): tap
-        // detection rides the graph's own node — the mode row and the
-        // label band never fire it.
-        Modifier.pointerInput(Unit) {
-            detectTapGestures { onGraphTap() }
-        }
+        Modifier.pointerInput(Unit) { detectTapGestures { onGraphTap() } }
     } else {
         Modifier
     }
-    Canvas(modifier.then(tapModifier)) {
-        val w = size.width
-        val h = size.height
-        if (w > 0f && h > 0f) {
-            // The 0-100% signal scale's reference lines (spec §5):
-            // 100% at the top edge, 50% at the middle, 0% at the
-            // bottom — drawn at half-pixel offsets so 1px lines
-            // land crisp, under the trace's transparent cells.
-            drawLine(gridColor, Offset(0f, 0.5f), Offset(w, 0.5f), strokeWidth = 1f)
-            drawLine(gridColor, Offset(0f, h / 2f), Offset(w, h / 2f), strokeWidth = 1f)
-            drawLine(gridColor, Offset(0f, h - 0.5f), Offset(w, h - 0.5f), strokeWidth = 1f)
-            // The mid-gray reference (spec §8): a DASHED guide at
-            // the DERIVED level (18% scene linear through the
-            // Rec.709 OETF ≈ 41% coded signal — never 18% screen
-            // level), drawn under the trace so the density reads
-            // through it. Y maps like the trace: signal rises
-            // upward, level 0 at the bottom.
+    ScopePanel(colors = colors, mini = mini, modifier = modifier.then(tapModifier)) {
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                // Offscreen: the additive trace composites inside the
+                // graph's own layer, never into the footage behind the mini.
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen),
+        ) {
+            val w = size.width
+            val h = size.height
+            if (w <= 0f || h <= 0f) return@Canvas
+            drawLevelGraticule(colors)
+            if (parade) {
+                // Cell separators: the three channel cells read as three graphs.
+                for (k in 1..2) {
+                    val x = w * k / 3f
+                    drawLine(colors.gridStrong, Offset(x, 0f), Offset(x, h), strokeWidth = 1f)
+                }
+            }
             midGrayLine?.let { level ->
                 val y = h * (1f - level)
-                val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 6f))
                 drawLine(
-                    color = referenceColor,
+                    color = colors.reference,
                     start = Offset(0f, y),
                     end = Offset(w, y),
-                    strokeWidth = 1f,
+                    strokeWidth = 1.dp.toPx(),
                     pathEffect = dash,
                 )
             }
             val b = bitmap
             if (b != null) {
-                // One scaled draw of the full bitmap: X stretches
-                // across the strip (horizontal image position, spec
-                // §3), Y maps the 256 levels onto the full height.
                 drawImage(
                     image = b,
                     srcSize = IntSize(b.width, b.height),
                     dstSize = IntSize(w.toInt(), h.toInt()),
+                    blendMode = BlendMode.Plus,
                 )
             }
+            // Labels last so the trace never hides the scale.
+            if (labels != null) drawLevelGraticuleLabels(colors, labels)
+        }
+        if (caption != null) {
+            ScopeCaption(caption, colors, Modifier.align(Alignment.TopEnd))
         }
     }
 }
 
 /**
- * The sampling quality chip (spec §6): cycles Low / Medium / High on
- * tap — the scope's OWN read resolution, never the source/preview/
- * export bit depth. The label shows the CURRENT tier; the description
- * names the setting for accessibility. The ordinal is the screen's
- * saveable state keyed into the compute effect, so a change while
- * paused re-renders the current frame at the new quality immediately.
- * Inside the strip the default chip container is fine — no corner
- * scrim needed, the strip is its own surface, not the image.
+ * The sampling chip (spec §6): a peer of the mode selector that cycles
+ * Low -> Medium -> High; the description names the current value.
  */
 @Composable
 private fun ScopeSamplingChip(
@@ -471,15 +421,66 @@ private fun ScopeSamplingChip(
             WaveformScope.Sampling.HIGH -> R.string.editor_scope_sampling_high
         }
     )
-    // Resolved OUTSIDE the semantics block: the lambda is not composable.
-    val description = stringResource(R.string.editor_scope_sampling_value, label)
-    AssistChip(
-        onClick = {
-            onSamplingChange(entries[(sampling.ordinal + 1) % entries.size].ordinal)
-        },
-        label = { Text(label, maxLines = 1) },
-        modifier = Modifier.semantics { contentDescription = description },
+    ScopeToggleChip(
+        label = label,
+        selected = false,
+        onClick = { onSamplingChange(entries[(sampling.ordinal + 1) % entries.size].ordinal) },
+        description = stringResource(R.string.editor_scope_sampling_value, label),
     )
+}
+
+/**
+ * A compact outlined chip for the scope's mode-row peers (sampling, RAW
+ * parade): 30dp visual pill inside a 44dp touch row, filled when
+ * [selected].
+ */
+@Composable
+internal fun ScopeToggleChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    description: String,
+) {
+    val cs = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        Modifier
+            .height(44.dp)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) cs.onSurface else cs.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier
+                .clip(shape)
+                .background(if (selected) cs.secondaryContainer else Color.Transparent)
+                .border(1.dp, cs.outlineVariant, shape)
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+        )
+    }
+}
+
+/** A 40dp icon button with a 20dp glyph, tinted brighter when [active]. */
+@Composable
+private fun ScopeIconButton(
+    iconRes: Int,
+    description: String,
+    onClick: () -> Unit,
+    active: Boolean = false,
+) {
+    IconButton(onClick = onClick, modifier = Modifier.size(40.dp)) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = description,
+            tint = if (active) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+    }
 }
 
 /**
@@ -552,14 +553,13 @@ fun ScopeToggleButton(
  * (pinch-zoom, pan, the hold-to-compare) flow around it, and its tap
  * is the only gesture it answers.
  *
- * CHROME: the same translucent scrim as every preview corner control
- * (surfaceContainerLowest at 60%, roles never hex — the neutral
- * editor theme) at the theme's small shape, so the graph reads over
- * any footage. The description reuses the strip's own "Show scope"
+ * CHROME: the shared scope panel in its mini variant (translucent black
+ * with a hairline light border, 10dp corners — [ScopeLook.MiniShape]),
+ * so the graph reads over any footage. The description reuses the strip's own "Show scope"
  * string: the mini's tap EXPANDS the scope (the same intent the
  * corner button's icon announces from OFF).
  *
- * SIZE: ~120x70dp — wide enough for the trace's shape to read (the
+ * SIZE: 136x80dp — wide enough for the trace's shape to read (the
  * waveform keeps its horizontal structure, the histogram its
  * curves), small enough to leave the image unobstructed. All drawing
  * inside is resolution-relative (the shared graphs), so the same code
@@ -598,12 +598,10 @@ fun ScopeMiniOverlay(
     } else {
         null
     }
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f),
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        shape = MaterialTheme.shapes.small,
-        modifier = modifier
-            .size(width = 120.dp, height = 70.dp)
+    Box(
+        modifier
+            .size(width = 136.dp, height = 80.dp)
+            .clip(ScopeLook.MiniShape)
             .clickable(role = Role.Image, onClick = onMiniTap)
             .semantics { contentDescription = description },
     ) {
@@ -612,7 +610,9 @@ fun ScopeMiniOverlay(
                 rendered = waveform,
                 midGrayLine = midGrayLine,
                 onGraphTap = null,
-                modifier = Modifier.fillMaxSize().padding(2.dp),
+                modifier = Modifier.fillMaxSize(),
+                mini = true,
+                parade = waveformModeOrdinal == WaveformMode.PARADE.ordinal,
             )
         } else {
             HistogramGraph(
@@ -623,7 +623,8 @@ fun ScopeMiniOverlay(
                 ],
                 rawPresentation = RawHistogramModeRules.fromOrdinal(rawPresentationOrdinal),
                 onGraphTap = null,
-                modifier = Modifier.fillMaxSize().padding(2.dp),
+                modifier = Modifier.fillMaxSize(),
+                mini = true,
             )
         }
     }

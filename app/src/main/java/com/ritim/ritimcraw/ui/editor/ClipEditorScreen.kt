@@ -3732,6 +3732,9 @@ fun ClipEditorScreen(
                             ScopePresentationRules.onGraphTap(scopePresentation)
                     },
                     modifier = Modifier.onSizeChanged { scopeStripHeight = it.height },
+                    // Landscape two-column: one control row + a shorter
+                    // graph, so the strip never pushes the preview away.
+                    compact = landscapeTwoColumn,
                 )
             }
         }

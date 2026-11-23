@@ -308,14 +308,28 @@ object WaveformDisplay {
 
     /**
      * The display intensity 0..255 for one cell's count against the
-     * frame's [peak] count: sqrt-scaled (see the KDoc), monotone, 0 for
-     * empty cells and any degenerate peak.
+     * frame's [peak] count: [INTENSITY_FLOOR] plus a sqrt ramp over the
+     * rest of the range, monotone, 0 for empty cells and any degenerate
+     * peak.
+     *
+     * THE FLOOR (2026-11-23): with the bare sqrt ramp a single sample in a
+     * column whose peak cell holds ~100 samples drew at alpha ~25 — the
+     * sparse highlights of a night frame (street lights, signs) vanished
+     * into the black panel while a dense shadow cell dominated. Every
+     * OCCUPIED cell now draws at least at the floor, so the trace's full
+     * extent is always visible (pro scopes do the same with a minimum
+     * trace gain); density still grades smoothly above it. An empty cell
+     * stays exactly 0 — nothing is drawn where the frame has no samples.
      */
     fun intensity(count: Int, peak: Int): Int {
         if (count <= 0 || peak <= 0) return 0
         val d = count.toFloat() / peak
-        return (255f * sqrt(d.coerceAtMost(1f))).toInt().coerceIn(0, 255)
+        val ramp = (255 - INTENSITY_FLOOR) * sqrt(d.coerceAtMost(1f))
+        return (INTENSITY_FLOOR + ramp).toInt().coerceIn(0, 255)
     }
+
+    /** The minimum intensity of any occupied cell (see [intensity]). */
+    const val INTENSITY_FLOOR = 56
 
     /**
      * Renders [result] for [mode] into premultiplied ARGB pixels

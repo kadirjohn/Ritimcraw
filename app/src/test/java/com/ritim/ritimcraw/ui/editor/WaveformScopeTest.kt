@@ -267,12 +267,16 @@ class WaveformScopeTest {
     }
 
     @Test
-    fun intensity_is_sqrt_scaled_and_monotone() {
+    fun intensity_is_floored_sqrt_scaled_and_monotone() {
         assertEquals(0, WaveformDisplay.intensity(0, 100))
         assertEquals(0, WaveformDisplay.intensity(5, 0))
         assertEquals(255, WaveformDisplay.intensity(100, 100))
-        // sqrt: a quarter of peak density reads at half intensity.
-        assertEquals(127, WaveformDisplay.intensity(25, 100))
+        // sqrt above the floor: a quarter of peak density reads halfway
+        // between the floor and full intensity.
+        val floor = WaveformDisplay.INTENSITY_FLOOR
+        assertEquals(floor + (255 - floor) / 2, WaveformDisplay.intensity(25, 100))
+        // A lone sample against a dense peak stays visible (the floor).
+        assertTrue(WaveformDisplay.intensity(1, 30_000) >= floor)
         // Monotone in the count.
         assertTrue(
             WaveformDisplay.intensity(10, 100) < WaveformDisplay.intensity(20, 100),
