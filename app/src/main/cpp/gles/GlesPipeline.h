@@ -30,6 +30,11 @@
 
 #include <rawedit/Source.h>
 
+// The A5 parity-diagnosis accumulators (owner request 2026-11-23): pure,
+// GL-free, desktop-doctested, so ParityReport can carry it without
+// pulling NDK-only headers into the desktop-visible struct shape.
+#include "ParityDiag.h"
+
 namespace gles {
 
 // Grafika EglCore topology confined to one struct: open() builds
@@ -146,6 +151,15 @@ struct ParityReport {
     long long mismatchCount = 0;  // samples where the 16-bit outputs differ
     long long samples = 0;        // the measured slice's w * h * 3 (see the fixed-slice note)
     std::string detail;           // failure step, or the GL version on success
+    // A5 step 1 (owner request 2026-11-23, guide A5): the mismatch
+    // population's structure — magnitude, channel, tonal value bucket and
+    // rounding-boundary distance — so the owner can tell toByte-style
+    // rounding noise from a real stage difference from an on-device run.
+    // Zero-initialized, so every ran=false early return is byte-identical
+    // to before this member existed. Reached only through the separate
+    // string door (nativeGlesFragmentParityDiag); the 4-double contract
+    // stays exactly [ran, maxDiffLsb, mismatchCount, samples].
+    ParityDiag diag;
 };
 
 ParityReport demosaicParity(const std::string& computeSource,
