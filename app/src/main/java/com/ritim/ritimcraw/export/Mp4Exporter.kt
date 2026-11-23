@@ -2223,6 +2223,15 @@ class Mp4Exporter(
      * [onProgress] hears (videoFramesDone, totalVideoFrames) per frame; the
      * queue owns the throttled persistence (see ExportQueue.ProgressWriter).
      */
+    /**
+     * The audio link state this [job] exports with (QA-15 / EX-11): the
+     * enqueue-time snapshot [ExportJob.audioLink] when present, else the
+     * live [audioLinkFor] lookup (rows queued before the snapshot field —
+     * their legacy behavior, unchanged).
+     */
+    internal fun effectiveAudioLink(job: ExportJob): AudioLinkState =
+        job.audioLink ?: audioLinkFor(job.sourceId)
+
     suspend fun export(
         job: ExportJob,
         sourceFd: Int,
@@ -2233,7 +2242,10 @@ class Mp4Exporter(
         val gyroPath = gyroPathFor(job.sourceId)
         // AUD-02 gate, resolved ONCE before the engine runs (the same
         // rule as lut/gyro): only ATTACHED carries the audio track.
-        val audioAttached = audioLinkFor(job.sourceId) == AudioLinkState.ATTACHED
+        // QA-15/EX-11: the job's ENQUEUE-time snapshot wins (a retry
+        // starts with the same audio choice the user queued); only a
+        // legacy/un-snapshotted row (null) falls back to the live lookup.
+        val audioAttached = effectiveAudioLink(job) == AudioLinkState.ATTACHED
         val partial = ExportStaging.partial(out)
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {

@@ -134,7 +134,67 @@ object AudioTrackOps {
             gainDb = gainDb,
             fadeInMs = fadeInMs,
             fadeOutMs = fadeOutMs,
+            // pan/mute are not this call's business (the gain/fade
+            // sheet): an existing row KEEPS them — a gain tweak must
+            // never silently re-center or unmute the clip.
+            pan = existing?.pan ?: 0f,
+            muted = existing?.muted ?: false,
         )
+        val clips = if (existing == null) {
+            project.clips + row
+        } else {
+            project.clips.map { if (it.id == clipId) row else it }
+        }
+        return project.copy(clips = clips)
+    }
+
+    /**
+     * Sets the stereo pan of one clip (AUD-07). The row must already
+     * exist OR [sampleRateHz] must be the source's real rate (the same
+     * AUD-06 rule as [setSettings]: a new row with an unknown rate fails
+     * loud). [pan] is clamped into -1..1 (a slider overshoot is intent,
+     * not an error); NaN is rejected. Every other field is kept.
+     */
+    fun setPan(
+        project: AudioProject,
+        clipId: String,
+        sourceId: String,
+        sampleRateHz: Int,
+        pan: Float,
+    ): AudioProject {
+        require(!pan.isNaN()) { "pan must be a number" }
+        return upsert(project, clipId, sourceId, sampleRateHz) {
+            it.copy(pan = pan.coerceIn(-1.0f, 1.0f))
+        }
+    }
+
+    /** Mutes or unmutes one clip (AUD-07); same row rules as [setPan]. */
+    fun setMuted(
+        project: AudioProject,
+        clipId: String,
+        sourceId: String,
+        sampleRateHz: Int,
+        muted: Boolean,
+    ): AudioProject =
+        upsert(project, clipId, sourceId, sampleRateHz) { it.copy(muted = muted) }
+
+    /** Sets the master gain/mute (AUD-07 master dBFS); NaN is rejected. */
+    fun setMaster(project: AudioProject, gainDb: Float, muted: Boolean): AudioProject {
+        require(!gainDb.isNaN()) { "master gain must be a number" }
+        return project.copy(masterGainDb = gainDb, masterMuted = muted)
+    }
+
+    private inline fun upsert(
+        project: AudioProject,
+        clipId: String,
+        sourceId: String,
+        sampleRateHz: Int,
+        edit: (AudioClip) -> AudioClip,
+    ): AudioProject {
+        val existing = project.clip(clipId)
+        val base = existing
+            ?: AudioClip(id = clipId, sourceId = sourceId, sampleRateHz = sampleRateHz)
+        val row = edit(base)
         val clips = if (existing == null) {
             project.clips + row
         } else {

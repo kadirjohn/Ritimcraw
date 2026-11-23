@@ -87,6 +87,30 @@ class PresetStore(private val file: File) {
         }
     }
 
+    /**
+     * Imports portable presets (COL-18, [PresetFile.parse]'s Ok.presets) in
+     * ONE write: each gets a freshly minted id (never one from the file —
+     * ids are per-project keys), names are kept verbatim (the user's own
+     * text), order is kept. Returns the stored presets. An empty list is a
+     * no-op that writes nothing.
+     */
+    fun importAll(portable: List<PresetFile.Portable>): List<GradePreset> {
+        if (portable.isEmpty()) return emptyList()
+        synchronized(lock) {
+            val presets = load().toMutableList()
+            val added = ArrayList<GradePreset>(portable.size)
+            for (p in portable) {
+                var id = newId()
+                while (presets.any { it.id == id }) id = newId()
+                val preset = GradePreset(id = id, name = p.name, grade = p.grade)
+                presets.add(preset)
+                added.add(preset)
+            }
+            write(presets)
+            return added
+        }
+    }
+
     /** Removes a preset by id; a missing id is a no-op. */
     fun remove(id: String) {
         synchronized(lock) {

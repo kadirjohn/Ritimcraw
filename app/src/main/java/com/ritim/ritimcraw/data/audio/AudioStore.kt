@@ -123,6 +123,14 @@ class AudioStore(private val file: File) {
             sb.append("{\"version\":").append(SCHEMA_VERSION)
             sb.append(",\"links\":").append(renderLinks(p.links))
             sb.append(",\"clips\":").append(renderClips(p.clips))
+            // Master state (AUD-07): omit-when-default — a project that
+            // never touched the master writes no key, so files written
+            // before the field stay byte-identical and load as unity.
+            if (p.masterGainDb != 0f || p.masterMuted) {
+                sb.append(",\"master\":{\"gainDb\":").append(p.masterGainDb)
+                if (p.masterMuted) sb.append(",\"muted\":true")
+                sb.append('}')
+            }
             sb.append('}')
             return sb.toString()
         }
@@ -161,6 +169,10 @@ class AudioStore(private val file: File) {
                 if (c.gainDb != 0f) sb.append(",\"gainDb\":").append(c.gainDb)
                 if (c.fadeInMs != 0) sb.append(",\"fadeInMs\":").append(c.fadeInMs)
                 if (c.fadeOutMs != 0) sb.append(",\"fadeOutMs\":").append(c.fadeOutMs)
+                // pan/muted (AUD-07, landed 2026-11-23): same rule — a
+                // centered, unmuted clip writes neither key.
+                if (c.pan != 0f) sb.append(",\"pan\":").append(c.pan)
+                if (c.muted) sb.append(",\"muted\":true")
                 sb.append('}')
             }
             sb.append(']')
@@ -220,13 +232,29 @@ class AudioStore(private val file: File) {
                         gainDb = (m["gainDb"] as? Double)?.toFloat() ?: 0f,
                         fadeInMs = (m["fadeInMs"] as? Double)?.toInt() ?: 0,
                         fadeOutMs = (m["fadeOutMs"] as? Double)?.toInt() ?: 0,
+                        // pan/muted: absent in pre-field rows -> center /
+                        // unmuted. An out-of-range pan (hand-edited file)
+                        // clamps rather than dropping the row's gain and
+                        // fades with it (per-row tolerance); NaN -> center.
+                        pan = ((m["pan"] as? Double)?.toFloat() ?: 0f)
+                            .let { if (it.isNaN()) 0f else it.coerceIn(-1.0f, 1.0f) },
+                        muted = m["muted"] as? Boolean ?: false,
                     )
                 } catch (e: IllegalArgumentException) {
                     continue // non-positive rate etc.: skip the row
                 }
                 clips.add(clip)
             }
-            return AudioProject(links = links, clips = clips)
+            val master = section["master"] as? Map<*, *>
+            val masterGain = (master?.get("gainDb") as? Double)?.toFloat()
+                ?.takeIf { !it.isNaN() } ?: 0f
+            val masterMuted = master?.get("muted") as? Boolean ?: false
+            return AudioProject(
+                links = links,
+                clips = clips,
+                masterGainDb = masterGain,
+                masterMuted = masterMuted,
+            )
         }
     }
 }

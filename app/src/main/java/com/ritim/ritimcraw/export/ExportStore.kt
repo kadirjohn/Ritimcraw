@@ -4,6 +4,7 @@ import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.JsonParser
 import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.ProjectJson
+import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.RenderBackend
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -182,6 +183,14 @@ class ExportStore(private val file: File) {
                     sb.append(",\"resolutionW\":").append(j.resolutionW)
                     sb.append(",\"resolutionH\":").append(j.resolutionH)
                 }
+                // audioLink (QA-15 / EX-11 audio-choice snapshot):
+                // omit-when-null — rows queued before the snapshot, and
+                // every non-MP4 job, keep the field absent so files written
+                // before it stay byte-identical; old rows parse as null
+                // (the exporter's live-lookup fallback, their old behavior).
+                if (j.audioLink != null) {
+                    sb.append(",\"audioLink\":\"").append(j.audioLink.name).append('"')
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -313,6 +322,14 @@ class ExportStore(private val file: File) {
                     // guess); such rows fail their own gate at export.
                     resolutionW = (m["resolutionW"] as? Double)?.toInt(),
                     resolutionH = (m["resolutionH"] as? Double)?.toInt(),
+                    // audioLink (QA-15 audio-choice snapshot): absent in
+                    // rows queued before the snapshot — null keeps the old
+                    // live-lookup behavior. An unknown future value also
+                    // parses as null (never a guessed state: the live
+                    // lookup is the honest fallback).
+                    audioLink = (m["audioLink"] as? String)?.let { w ->
+                        AudioLinkState.entries.firstOrNull { it.name == w }
+                    },
                 )
             }
         }

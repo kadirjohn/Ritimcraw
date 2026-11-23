@@ -552,9 +552,77 @@ class AudioPlanTest {
     }
 
     @Test
+    fun `clipAudioState of maps pan and mute from the persisted row`() {
+        // pan/muted landed on AudioClip (2026-11-23): they ride the row.
+        val row = com.ritim.ritimcraw.data.audio.AudioClip(
+            id = "a1",
+            sourceId = "src-a",
+            sampleRateHz = 48000,
+            pan = -0.5f,
+            muted = true,
+        )
+        val state = ClipAudioState.of(row)
+        assertEquals(-0.5f, state.pan)
+        assertTrue(state.muted)
+    }
+
+    @Test
+    fun `detached and removed sources skip LINK_NOT_ATTACHED - never resurrect`() {
+        // AUD-02 / QA-13: the link gate. DETACHED, REMOVED and
+        // LINKED_EDITED never place the ORIGINAL audio; the span renders
+        // silent and the movie still runs to its resolved length.
+        val det = audioClip("d1", "src-d", 0.0, 30.0)
+        val rem = audioClip("r1", "src-r", 30.0, 60.0)
+        val edi = audioClip("e1", "src-e", 60.0, 90.0)
+        val att = audioClip("a1", "src-a", 90.0, 120.0)
+        val links = mapOf(
+            "src-d" to com.ritim.ritimcraw.data.audio.AudioLinkState.DETACHED,
+            "src-r" to com.ritim.ritimcraw.data.audio.AudioLinkState.REMOVED,
+            "src-e" to com.ritim.ritimcraw.data.audio.AudioLinkState.LINKED_EDITED,
+        )
+        val plan = AudioPlan.mixPlan(
+            project(listOf(det, rem, edi, att)),
+            states = { ClipAudioState.UNITY },
+            sourceRateHz = { 48000 },
+            linkState = { links[it] ?: com.ritim.ritimcraw.data.audio.AudioLinkState.ATTACHED },
+        )
+        assertEquals(listOf("a1"), plan.placed.map { it.clipId })
+        assertEquals(listOf("d1", "r1", "e1"), plan.skips.map { it.clipId })
+        assertTrue(plan.skips.all { it.reason == AudioSkip.Reason.LINK_NOT_ATTACHED })
+        assertEquals(120L * 1600L, plan.totalMixSamples)
+    }
+
+    @Test
+    fun `the wired mixPlan joins states and link gate from the AudioProject`() {
+        val a = audioClip("a1", "src-a", 0.0, 30.0)
+        val b = audioClip("b1", "src-b", 30.0, 60.0)
+        val audio = com.ritim.ritimcraw.data.audio.AudioProject(
+            links = mapOf(
+                "src-b" to com.ritim.ritimcraw.data.audio.AudioLinkRecord(
+                    state = com.ritim.ritimcraw.data.audio.AudioLinkState.REMOVED,
+                ),
+            ),
+            clips = listOf(
+                com.ritim.ritimcraw.data.audio.AudioClip(
+                    id = "a1", sourceId = "src-a", sampleRateHz = 48000,
+                    gainDb = -6f, pan = 1f,
+                ),
+            ),
+            masterGainDb = -3f,
+            masterMuted = true,
+        )
+        val plan = AudioPlan.mixPlan(project(listOf(a, b)), audio, sourceRateHz = { 48000 })
+        assertEquals(1, plan.placed.size)
+        assertEquals(-6f, plan.placed[0].state.gainDb)
+        assertEquals(1f, plan.placed[0].state.pan)
+        assertEquals(AudioSkip.Reason.LINK_NOT_ATTACHED, plan.skips.single().reason)
+        assertEquals(MasterAudioState(-3f, true), MasterAudioState.of(audio))
+    }
+
+    @Test
     fun `clipAudioState of maps the persisted row and absent means unity`() {
-        // The honest join until pan/mute land in AudioClip: gain and
-        // fades ride the row; pan/muted default center/unmuted.
+        // gain and fades ride the row; a row that never set pan/muted
+        // reads center/unmuted.
         val row = com.ritim.ritimcraw.data.audio.AudioClip(
             id = "a1",
             sourceId = "src-a",

@@ -567,10 +567,18 @@ gone, undo returns the previous state.
    with a long music bed; the writer's 64KB input buffer bounds the
    block size (`MediaCodecMp4Writer.kt:683`). PLANNED.
 3. The link-state gate in the mix plan (§4.2) — a DETACHED source's
-   audio clip must skip silently in preview AND export. PLANNED.
+   audio clip must skip silently in preview AND export. HOST-TESTED
+   (2026-11-23): `AudioPlan.mixPlan(..., linkState)` skips DETACHED /
+   REMOVED / LINKED_EDITED as `LINK_NOT_ATTACHED`; the wired overload
+   `mixPlan(project, audio: AudioProject, ...)` joins states + gate from
+   the persisted project. The consumers (preview mixer, export mix pass)
+   are still the later wave.
 4. Pan/mute persistence migration (§3.1) — AudioClip's new fields with
-   omit-when-default, old files loading as center/unmuted. PLANNED
-   (AudioStore's forward-tolerance precedent).
+   omit-when-default, old files loading as center/unmuted. HOST-TESTED
+   (2026-11-23): `AudioClip.pan/muted`, `AudioProject.masterGainDb/
+   masterMuted`, AudioStore omit-when-default + clamp-on-load,
+   `AudioTrackOps.setPan/setMuted/setMaster` (setSettings keeps pan/mute).
+   No UI control yet (the sheet still edits gain/fades only).
 
 ---
 
@@ -582,6 +590,15 @@ gone, undo returns the previous state.
   commit).
 - This plan document: **planned / review-pending** — the owner reads
   it; the integrator owns every §3.4/§4.3/§5.3 decision.
+- 2026-11-23: the pure MIX PASS reference landed —
+  `data/timeline/AudioMixer.kt` (+10 host tests) walks an AudioMixPlan
+  block by block into interleaved stereo 16-bit PCM: equal-rate
+  passthrough bit-exact, cross-rate by timestamp with an explicit
+  LINEAR / NEAREST kernel (the §6.3 item 1 listening decision is still
+  the owner's), window/decoded-length clamps to silence, saturation +
+  clipping count + peak/RMS meters (AUD-07), missing sources reported.
+  It is the arithmetic both §5.3 homes (export pass, playback mixer)
+  should call; the codec-side wiring is still the integrator's.
 - Nothing in the app imports the model yet; no runtime behavior
   changed. Timeline playback still plays one clip at the source rate;
   timeline export still starts the writer video-only — wiring those

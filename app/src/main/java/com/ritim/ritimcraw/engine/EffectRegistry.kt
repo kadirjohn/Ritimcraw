@@ -11,14 +11,24 @@ package com.ritim.ritimcraw.engine
  * (pointwise / neighborhood / temporal), its CPU implementation site
  * (file + function), its GPU implementation site (shader kind + pass),
  * the hardware capabilities its GPU leg needs, and its coverage token
- * (or none). Each row cites the live file:line it was written from.
+ * (or none). Each row cites the live site it was written from.
+ *
+ * CITATION RULE (2026-11-23 refresh, after the acceptance audit found the
+ * GPU/JNI cites drifted — docs/ACCEPTANCE_GAPS_2026-11-16.md "Adjacent
+ * finding"): sites in files that churn nightly (the shared GPU pipeline
+ * and jni_bridge.cpp) are cited by SYMBOL — the gate's variable name or
+ * the pipeline's "draw N" section comment — which a grep finds no matter
+ * how the lines move. Stable sites (Develop.cpp stage blocks, the shader
+ * constants in GlesShaderSources.kt) keep file:line.
  *
  * WHAT THIS IS NOT: this object does NOT replace the live gates. The
  * truth lives in the live tables — BackendRules.FRAGMENT_COVERED_STAGES
  * (RenderBackend.kt:251-252), BackendRules.fragmentUncoveredStages'
  * runtime leg (RenderBackend.kt:373-382), the CPU stage guards
- * (core/src/Develop.cpp), and the session's own draw gating
- * (app/src/main/cpp/gles/GlesDevelopSession.cpp). The registry is the
+ * (core/src/Develop.cpp), and the shared pipeline's draw gating
+ * (app/src/main/cpp/gles/GpuDevelopPipeline.cpp Impl::draw — both
+ * develop sessions delegate their whole chain to it since the
+ * shared-pipeline refactor 73e33fb). The registry is the
  * CHECKLIST; the gates are the TRUTH. No dispatch site reads this
  * object at runtime — it exists so a new effect lands with its row and
  * the cross-check test (EffectRegistryTest) keeps the row honest against
@@ -56,7 +66,8 @@ package com.ritim.ritimcraw.engine
  * THE GYRO WARP is deliberately NOT a row: it is not a develop stage at
  * all (the CPU runs it after developCpu on the linear output; the
  * session runs the WARP pass between the unsharp passes and the tail,
- * gated per frame by req.warpActive — GlesDevelopSession.cpp:1849-1859,
+ * gated per frame by req.warpActive — GpuDevelopPipeline.cpp "draw 10: the gyro
+ * warp pass" (`if (req.warpActive)`),
  * "NOT a develop stage" per GlesShaderValidator.Kind.WARP's own doc).
  * Stabilization/crop/straighten are also outside developCpu (they are
  * geometry, applied around the develop, not color stages on the pixel
@@ -151,7 +162,7 @@ object EffectRegistry {
             outputDomain = "CFA",
             effectClass = EffectClass.POINTWISE,
             cpuSite = "core/src/Develop.cpp:724-753 (developCpu stage 1)",
-            gpuSite = "GlesShaderSources DEVELOP_FRAGMENT_PRE (GlesShaderSources.kt:1342) — stages 1-6 draw, session draw 1 (GlesDevelopSession.cpp:1614)",
+            gpuSite = "GlesShaderSources DEVELOP_FRAGMENT_PRE (GlesShaderSources.kt:1342) — stages 1-6 draw, pipeline 'draw 1: the PRE pass' (GpuDevelopPipeline.cpp Impl::draw)",
             hardware = "FLOAT_FBO",
             coverageToken = "none",
         ),
@@ -226,7 +237,7 @@ object EffectRegistry {
             outputDomain = "LINEAR_RGB",
             effectClass = EffectClass.NEIGHBORHOOD,
             cpuSite = "core/src/Develop.cpp:907-908 (developCpu stage 7; denoiseChromaImpl at 215, blurPlane at 248)",
-            gpuSite = "NR_CHROMA_H (GlesShaderSources.kt:1428) + NR_CHROMA_V (1575) — session draws 2-3 of 4, gated runChroma = strength > 0 && w >= 2 && h >= 2 (GlesDevelopSession.cpp:1658)",
+            gpuSite = "NR_CHROMA_H (GlesShaderSources.kt:1428) + NR_CHROMA_V (1575) — pipeline draws 2-3 of 4, gated `runChroma = chromaStrength > 0.0f && w >= 2 && h >= 2` (GpuDevelopPipeline.cpp Impl::draw)",
             hardware = "FLOAT_FBO",
             coverageToken = "none",
         ),
@@ -238,7 +249,7 @@ object EffectRegistry {
             outputDomain = "LINEAR_RGB",
             effectClass = EffectClass.NEIGHBORHOOD,
             cpuSite = "core/src/Develop.cpp:909-910 (developCpu stage 8; denoiseLumaImpl at 331, the 3x3 bilateral)",
-            gpuSite = "NR_LUMA (GlesShaderSources.kt:1726) — session draw 4 of 4, gated runLuma = strength > 0 && w >= 3 && h >= 3 (GlesDevelopSession.cpp:1659)",
+            gpuSite = "NR_LUMA (GlesShaderSources.kt:1726) — pipeline draw 4 of 4, gated `runLuma = lumaStrength > 0.0f && w >= 3 && h >= 3` (GpuDevelopPipeline.cpp Impl::draw)",
             hardware = "FLOAT_FBO",
             coverageToken = "none",
         ),
@@ -253,7 +264,7 @@ object EffectRegistry {
             outputDomain = "LINEAR_RGB",
             effectClass = EffectClass.POINTWISE,
             cpuSite = "core/src/Develop.cpp:930-938 (developCpu stage 9; lift = -0.25*bp/100, x' = lift + (1-lift)*x)",
-            gpuSite = "DEVELOP_FRAGMENT_POST (GlesShaderSources.kt:1366) behind uBlackPoint — session draw 5 (GlesDevelopSession.cpp:1713), stages 9-20 draw",
+            gpuSite = "DEVELOP_FRAGMENT_POST (GlesShaderSources.kt:1366) behind uBlackPoint — pipeline 'draw 5: the POST pass' (GpuDevelopPipeline.cpp Impl::draw), stages 9-20 draw",
             hardware = "FLOAT_FBO",
             coverageToken = "none",
         ),
@@ -415,7 +426,7 @@ object EffectRegistry {
             outputDomain = "LINEAR_RGB",
             effectClass = EffectClass.NEIGHBORHOOD,
             cpuSite = "core/src/Develop.cpp:1225-1244 (developCpu stage 21; unsharpLuma radius 1.5, unsharpLumaImpl at 133, amount clamp [-0.5,0.5] — negatives = softening)",
-            gpuSite = "SHARPNESS_H (GlesShaderSources.kt:1894) + SHARPNESS_V (1980) — session draws 6-7, gated runSharp = raw != 0 && w >= 2 && h >= 2 (GlesDevelopSession.cpp:1768)",
+            gpuSite = "SHARPNESS_H (GlesShaderSources.kt:1894) + SHARPNESS_V (1980) — pipeline draws 6-7, gated `runSharp = req.sharpness != 0.0f && w >= 2 && h >= 2` (GpuDevelopPipeline.cpp Impl::draw)",
             hardware = "FLOAT_FBO",
             coverageToken = "none",
         ),
@@ -427,7 +438,7 @@ object EffectRegistry {
             outputDomain = "LINEAR_RGB",
             effectClass = EffectClass.NEIGHBORHOOD,
             cpuSite = "core/src/Develop.cpp:1225-1244 (developCpu stage 22; unsharpLuma radius 0.75, negatives = softening)",
-            gpuSite = "DETAIL_H (GlesShaderSources.kt:2065) + DETAIL_V (2147) — session draws 8-9, gated runDetail = raw != 0 && w >= 2 && h >= 2 (GlesDevelopSession.cpp:1769)",
+            gpuSite = "DETAIL_H (GlesShaderSources.kt:2065) + DETAIL_V (2147) — pipeline draws 8-9, gated `runDetail = req.detail != 0.0f && w >= 2 && h >= 2` (GpuDevelopPipeline.cpp Impl::draw)",
             hardware = "FLOAT_FBO",
             coverageToken = "none",
         ),
@@ -442,7 +453,7 @@ object EffectRegistry {
             outputDomain = "LINEAR_RGB",
             effectClass = EffectClass.POINTWISE,
             cpuSite = "core/src/Develop.cpp:1246-1261 (developCpu stage 23; applyManagedLutStage, Color.cpp:751; tonemapFrameImpl at Develop.cpp:428, acesFit at 392)",
-            gpuSite = "DEVELOP_FRAGMENT_TAIL (GlesShaderSources.kt:1393) behind uTonemap — session draw 11 (GlesDevelopSession.cpp:1878), stages 23+24+OETF draw",
+            gpuSite = "DEVELOP_FRAGMENT_TAIL (GlesShaderSources.kt:1393) behind uTonemap — pipeline 'draw 11: the TAIL pass' (GpuDevelopPipeline.cpp Impl::draw), stages 23+24+OETF draw",
             hardware = "FLOAT_FBO",
             coverageToken = "none",
         ),
@@ -468,8 +479,8 @@ object EffectRegistry {
             inputDomain = "CFA (neighbor CFAs merged into the center)",
             outputDomain = "CFA (the merged CFA feeds stage 1 of BOTH paths)",
             effectClass = EffectClass.TEMPORAL,
-            cpuSite = "app/src/main/cpp/jni_bridge.cpp:1634-1696 (temporalMergedCfa; the merge math is core/src/Temporal.cpp:558 temporalMergeCfa, frozen)",
-            gpuSite = "none — ROUTING, not porting: the merged CFA feeds the sessions as THE CFA (jni_bridge.cpp:3324 develop session, 4012 preview session; the pair dies at the bridge, session KDoc jni_bridge.cpp:2984-3057)",
+            cpuSite = "core/src/Temporal.cpp:558 temporalMergeCfa (the frozen merge math), driven by jni_bridge.cpp `CfaBuffer temporalMergedCfa(` (window assembly + ring cache, kTemporalRingCapacity)",
+            gpuSite = "none — ROUTING, not porting: the merged CFA feeds the sessions as THE CFA (jni_bridge.cpp: every `temporalMergedCfa(` call site — develop session, encoder, preview session, export frame; the pair rides the parcel and dies there)",
             hardware = "NONE",
             coverageToken = "none",
         ),

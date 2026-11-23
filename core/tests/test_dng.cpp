@@ -504,3 +504,221 @@ TEST_CASE("linear_dng_rejects_bad_input") {
     std::ifstream in("/tmp/should-not-exist-linear.dng");
     CHECK(!in.good());
 }
+
+// ---- 2026-11-23: optional provenance tags (DngExtraMeta), LINEAR_DNG_GAPS
+// G1/G2/G3/G7 writer half, G6 rotated orientation pin. ----
+
+namespace {
+
+FrameInfo extraFrame(int orientationDeg = 0) {
+    FrameInfo frame;
+    frame.ptsUs = 123456789;
+    frame.width = 64;
+    frame.height = 48;
+    frame.bitDepth = 16;
+    frame.cfa = CfaPattern::RGGB;
+    frame.activeArea = Rect{0, 0, 64, 48};
+    frame.orientationDeg = orientationDeg;
+    return frame;
+}
+
+RawMeta extraRawMeta() {
+    RawMeta meta;
+    for (int i = 0; i < 4; ++i) meta.black[i] = 64;
+    meta.white = 1023;
+    return meta;
+}
+
+DngExtraMeta fullExtra() {
+    DngExtraMeta x;
+    x.make = "Xiaomi";
+    x.model = "25010PN30G";
+    x.uniqueCameraModel = "Xiaomi 15 Ultra";
+    x.captureTimeUtc = dngDateTimeUtc(1763862896000LL);
+    x.fNumber = 1.63;
+    x.focalLength35mm = 23.4; // rounds to 23
+    x.lensModel = "main 23mm";
+    x.hasForwardMatrix1 = true;
+    const float fm[9] = {0.6f, 0.2f, 0.15f, 0.25f, 0.7f, 0.05f, 0.0f, -0.1f, 0.9f};
+    for (int i = 0; i < 9; ++i) x.forwardMatrix1[i] = fm[i];
+    return x;
+}
+
+std::string tagAscii(const std::map<uint16_t, Tag>& tags, uint16_t tag) {
+    const Tag t = get(tags, tag);
+    REQUIRE(t.type == 2);
+    REQUIRE(!t.value.empty());
+    CHECK(t.value.back() == 0); // NUL-terminated
+    return std::string(t.value.begin(), t.value.end() - 1);
+}
+
+double tagRational(const std::map<uint16_t, Tag>& tags, uint16_t tag, size_t i = 0) {
+    const Tag t = get(tags, tag);
+    REQUIRE((t.type == 5 || t.type == 10));
+    const uint32_t num = rd32(t.value, i * 8);
+    const uint32_t den = rd32(t.value, i * 8 + 4);
+    REQUIRE(den != 0);
+    if (t.type == 10)
+        return static_cast<double>(static_cast<int32_t>(num)) / static_cast<int32_t>(den);
+    return static_cast<double>(num) / den;
+}
+
+// Every external value offset in the IFD must be even (TIFF word rule)
+// and the tags strictly ascending.
+void checkIfdShape(const std::vector<uint8_t>& b) {
+    static const size_t kSizes[] = {0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8};
+    const uint32_t ifdOff = rd32(b, 4);
+    const uint16_t n = rd16(b, ifdOff);
+    int prev = -1;
+    for (uint16_t i = 0; i < n; ++i) {
+        const size_t e = ifdOff + 2 + static_cast<size_t>(i) * 12;
+        const uint16_t tag = rd16(b, e);
+        CHECK(static_cast<int>(tag) > prev);
+        prev = tag;
+        const uint16_t type = rd16(b, e + 2);
+        const size_t len = rd32(b, e + 4) * kSizes[type < 11 ? type : 0];
+        // The pre-existing linear payload (BlackLevel after the odd-length
+        // description) is grandfathered; the NEW tags must be even.
+        const bool newTag = tag == 271 || tag == 272 || tag == 306 ||
+            tag == 33437 || tag == 36867 || tag == 36881 || tag == 37386 ||
+            tag == 42036 || tag == 50708 || tag == 50964;
+        if (len > 4 && newTag) CHECK((rd32(b, e + 8) & 1u) == 0u);
+    }
+}
+
+} // namespace
+
+TEST_CASE("dng_datetime_utc_format") {
+    CHECK(dngDateTimeUtc(0) == "1970:01:01 00:00:00");
+    CHECK(dngDateTimeUtc(1763862896000LL) == "2025:11:23 01:54:56");
+    CHECK(dngDateTimeUtc(1763862896999LL) == "2025:11:23 01:54:56"); // ms truncate
+    CHECK(dngDateTimeUtc(-1).empty()); // FrameInfo.recvdMs "absent"
+}
+
+TEST_CASE("dng_extra_meta_default_is_byte_identical") {
+    // The honesty rule: a default DngExtraMeta writes NO new tag, so both
+    // arms stay byte-identical to the pre-extra writer (21 entries).
+    const FrameInfo frame = extraFrame();
+    const RawMeta meta = extraRawMeta();
+    std::vector<uint16_t> cfa(64 * 48, 500);
+    std::vector<uint16_t> rgb(64 * 48 * 3, 700);
+
+    REQUIRE(writeCfaDng("/tmp/rawedit-x-a.dng", cfa.data(), frame, meta).isOk());
+    REQUIRE(writeCfaDng("/tmp/rawedit-x-b.dng", cfa.data(), frame, meta, DngExtraMeta{}).isOk());
+    CHECK(readFile("/tmp/rawedit-x-a.dng") == readFile("/tmp/rawedit-x-b.dng"));
+    CHECK(parseIfd(readFile("/tmp/rawedit-x-b.dng")).size() == 21);
+
+    REQUIRE(writeLinearDng("/tmp/rawedit-x-c.dng", rgb.data(), frame, meta).isOk());
+    REQUIRE(writeLinearDng("/tmp/rawedit-x-d.dng", rgb.data(), frame, meta, DngExtraMeta{}).isOk());
+    CHECK(readFile("/tmp/rawedit-x-c.dng") == readFile("/tmp/rawedit-x-d.dng"));
+    const auto lin = parseIfd(readFile("/tmp/rawedit-x-d.dng"));
+    CHECK(lin.size() == 21);
+    CHECK(lin.count(271) == 0);
+    CHECK(lin.count(36867) == 0);
+    CHECK(lin.count(41989) == 0);
+
+    for (const char* p : {"/tmp/rawedit-x-a.dng", "/tmp/rawedit-x-b.dng",
+                          "/tmp/rawedit-x-c.dng", "/tmp/rawedit-x-d.dng"})
+        std::remove(p);
+}
+
+namespace {
+
+void checkFullExtraTags(const std::map<uint16_t, Tag>& tags) {
+    CHECK(tagAscii(tags, 271) == "Xiaomi");
+    CHECK(tagAscii(tags, 272) == "25010PN30G");
+    CHECK(tagAscii(tags, 50708) == "Xiaomi 15 Ultra");
+    CHECK(tagAscii(tags, 306) == "2025:11:23 01:54:56");
+    CHECK(tagAscii(tags, 36867) == "2025:11:23 01:54:56");
+    CHECK(tagAscii(tags, 36881) == "+00:00"); // the string is UTC
+    CHECK(tagRational(tags, 33437) == doctest::Approx(1.63));
+    CHECK(tagShort(tags, 41989) == 23);       // 35mm-equivalent, rounded
+    CHECK(tags.count(37386) == 0);            // no PHYSICAL focal invented
+    CHECK(tagAscii(tags, 42036) == "main 23mm");
+    const Tag fm = get(tags, 50964);
+    CHECK(fm.type == 10);
+    CHECK(fm.count == 9);
+    CHECK(tagRational(tags, 50964, 0) == doctest::Approx(0.6));
+    CHECK(tagRational(tags, 50964, 7) == doctest::Approx(-0.1));
+    CHECK(tagRational(tags, 50964, 8) == doctest::Approx(0.9));
+}
+
+} // namespace
+
+TEST_CASE("cfa_dng_writes_extra_provenance_tags") {
+    const char* path = "/tmp/rawedit-x-cfa-full.dng";
+    const FrameInfo frame = extraFrame();
+    const RawMeta meta = extraRawMeta();
+    std::vector<uint16_t> cfa(64 * 48);
+    for (size_t i = 0; i < cfa.size(); ++i) cfa[i] = static_cast<uint16_t>(64 + i % 900);
+
+    REQUIRE(writeCfaDng(path, cfa.data(), frame, meta, fullExtra()).isOk());
+    const std::vector<uint8_t> b = readFile(path);
+    const auto tags = parseIfd(b);
+    CHECK(tags.size() == 21 + 10);
+    checkFullExtraTags(tags);
+    checkIfdShape(b);
+    // The base contract is untouched: CFA photometric, pattern, pixels.
+    CHECK(tagShort(tags, 262) == 32803);
+    const uint32_t stripOff = tagLong(tags, 273);
+    CHECK(tagLong(tags, 279) == 64u * 48u * 2u);
+    REQUIRE(stripOff + 64u * 48u * 2u == b.size());
+    CHECK(std::memcmp(b.data() + stripOff, cfa.data(), cfa.size() * 2) == 0);
+    std::remove(path);
+}
+
+TEST_CASE("linear_dng_writes_extra_provenance_tags") {
+    const char* path = "/tmp/rawedit-x-lin-full.dng";
+    const FrameInfo frame = extraFrame();
+    const RawMeta meta = extraRawMeta();
+    std::vector<uint16_t> rgb(64 * 48 * 3);
+    for (size_t i = 0; i < rgb.size(); ++i) rgb[i] = static_cast<uint16_t>(2000 + i % 5000);
+
+    REQUIRE(writeLinearDng(path, rgb.data(), frame, meta, fullExtra()).isOk());
+    const std::vector<uint8_t> b = readFile(path);
+    const auto tags = parseIfd(b);
+    CHECK(tags.size() == 21 + 10);
+    checkFullExtraTags(tags);
+    checkIfdShape(b);
+    CHECK(tagShort(tags, 262) == 34892);
+    // The linear contract survives the extras (identity neutral, 0/65535).
+    CHECK(tagRational(tags, 50728, 0) == doctest::Approx(1.0));
+    CHECK(tagLong(tags, 50717) == 65535u);
+    const uint32_t stripOff = tagLong(tags, 273);
+    REQUIRE(stripOff + rgb.size() * 2 == b.size());
+    CHECK(std::memcmp(b.data() + stripOff, rgb.data(), rgb.size() * 2) == 0);
+    std::remove(path);
+}
+
+TEST_CASE("dng_extra_physical_focal_only_when_supplied") {
+    const char* path = "/tmp/rawedit-x-focal.dng";
+    std::vector<uint16_t> cfa(64 * 48, 300);
+    DngExtraMeta x;
+    x.focalLengthMm = 6.9; // a real physical focal from some future source
+    REQUIRE(writeCfaDng(path, cfa.data(), extraFrame(), extraRawMeta(), x).isOk());
+    const auto tags = parseIfd(readFile(path));
+    CHECK(tags.size() == 22);
+    CHECK(tagRational(tags, 37386) == doctest::Approx(6.9));
+    CHECK(tags.count(41989) == 0);
+    CHECK(tags.count(306) == 0); // no capture time supplied -> none written
+    std::remove(path);
+}
+
+TEST_CASE("dng_rotated_orientation_values_both_arms") {
+    // LINEAR_DNG_GAPS G6: the rotated Orientation values in the ACTUAL
+    // files (not only the JVM mirror): 90 -> 6, 180 -> 3, 270 -> 8,
+    // and -90 normalizes to 270 -> 8.
+    std::vector<uint16_t> cfa(64 * 48, 300);
+    std::vector<uint16_t> rgb(64 * 48 * 3, 300);
+    const int degs[] = {0, 90, 180, 270, -90, 450};
+    const uint16_t want[] = {1, 6, 3, 8, 8, 6};
+    for (int i = 0; i < 6; ++i) {
+        const FrameInfo f = extraFrame(degs[i]);
+        REQUIRE(writeCfaDng("/tmp/rawedit-x-o1.dng", cfa.data(), f, extraRawMeta()).isOk());
+        REQUIRE(writeLinearDng("/tmp/rawedit-x-o2.dng", rgb.data(), f, extraRawMeta()).isOk());
+        CHECK(tagShort(parseIfd(readFile("/tmp/rawedit-x-o1.dng")), 274) == want[i]);
+        CHECK(tagShort(parseIfd(readFile("/tmp/rawedit-x-o2.dng")), 274) == want[i]);
+    }
+    std::remove("/tmp/rawedit-x-o1.dng");
+    std::remove("/tmp/rawedit-x-o2.dng");
+}

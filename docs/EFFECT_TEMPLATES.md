@@ -17,13 +17,19 @@ afterthought.
 
 Two shape notes, honestly stated:
 
-- The **grade-parcel** refactor (one packed parcel crossing JNI instead
-  of per-field parameters) and the **shared-GpuDevelopPipeline**
-  refactor (one draw chain shared by the sessions) are AHEAD of this
-  document in the mission queue and are NOT merged. Every recipe below
-  is written against the CURRENT shape: the grade crosses as explicit
-  JNI parameters, and each session owns its own draw chain. Where the
-  post-refactor shape changes a step, the recipe says so.
+- **Refreshed 2026-11-23** (the acceptance audit
+  docs/ACCEPTANCE_GAPS_2026-11-16.md listed 10 stale entries). Both
+  refactors this document originally called "ahead in the queue" are
+  MERGED: the **grade parcel** (`engine/GradeParcel.kt` — one packed
+  parcel crosses JNI instead of per-field parameters; merge c88521f)
+  and the **shared GpuDevelopPipeline**
+  (`app/src/main/cpp/gles/GpuDevelopPipeline.{h,cpp}` — both develop
+  sessions delegate their whole chain to `pipeline.draw()`; merge
+  73ebfd3). The recipes keep their historical validation commits (those
+  commits really did cross the old seams), and each step below now says
+  where the seam lives TODAY. Sites in churning files (the pipeline,
+  jni_bridge.cpp) are cited by SYMBOL — grep the name — because line
+  numbers there move nightly.
 - The registry (`app/src/main/java/com/ritim/ritimcraw/engine/EffectRegistry.kt`,
   commit 7a2887e) is the checklist for these recipes: **step zero of
   every template is "add the row"**, and the cross-check test
@@ -47,20 +53,25 @@ The highlights port crossed exactly these seams, in this order:
 1. **GradeK field** — `app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt`
    (fields at 96-195). A new knob is a new field with a **neutral
    default** and **omit-when-neutral parcel rendering**, so an untouched
-   grade stays byte-identical. (Post-refactor note: after the
-   grade-parcel mission lands, this is also one parcel-encoder line.)
+   grade stays byte-identical. TODAY this is also one slot in
+   `engine/GradeParcel.kt` (the `SLOT_*` constants + the pack/unpack
+   pair) — the parcel is how the value crosses.
 2. **CPU stage** — `core/src/Develop.cpp`, `developCpu` (710), the
    24-stage contract. Stage 15 lives at 1038-1074: knee 0.75, the
    monotone shoulder `shoulder = knee + span*(t/(1+t))` with
    `s = -highlights/100`, uniform gain `newMx/mx`. The CPU stage is
    the reference implementation the GPU must match.
-3. **Request struct** — `app/src/main/cpp/gles/GlesDevelopSession.h`:
-   `DevelopFrameRequest` gains the field. The session binds it per
-   frame.
-4. **JNI** — `app/src/main/cpp/jni_bridge.cpp`: a `jfloat` parameter
-   threaded into the request. **No default parameter values in the JNI
-   layer** — Kotlin synthesizes `$default` overloads that break the
-   reflection locks (proven in the seam-widening commit 4d2a328).
+3. **Request struct** — TODAY `app/src/main/cpp/gles/GpuDevelopPipeline.h`:
+   `struct DevelopFrameRequest` ("THE shared request shape, promoted
+   here from GlesDevelopSession.h") gains the field; the pipeline binds
+   it per frame. (At 0efcc75 the struct lived in GlesDevelopSession.h.)
+4. **JNI** — `app/src/main/cpp/jni_bridge.cpp`: TODAY the value is
+   unpacked from the grade parcel (grep the parcel unpack next to
+   `temporalMergedCfa`'s "rides the parcel" comment) into the request —
+   no JNI signature widens. Historically (0efcc75/4d2a328) it was a
+   `jfloat` parameter; the rule that survived: **no default parameter
+   values in the JNI layer** — Kotlin synthesizes `$default` overloads
+   that break the reflection locks.
 5. **Kotlin declarations** — `app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt`:
    external declarations + wrappers for every entry point that renders
    (develop session, preview session, exporter).
@@ -163,14 +174,18 @@ so it rides its own H/V pass pair with ping-pong slots.
 
 ### 2.1 The pass structure (H then V, ping-pong)
 
-The session's draw chain (GlesDevelopSession.cpp) runs a FIXED pass
-structure; only the individual draws are gated. The slots ping-pong
+The shared pipeline's draw chain (GpuDevelopPipeline.cpp `Impl::draw`, the
+"draw 1".."draw 11" section comments; at 4d2a328 it was the session's
+own chain in GlesDevelopSession.cpp) runs a FIXED pass structure; only
+the individual draws are gated. The slots ping-pong
 via `slotAfter[] = {texB, texC, texA}` and `fboOf`, and the pass
 intermediates are allocated **once per resolution** — never per frame.
 The NR port split the chain at stages 6/9 (PRE covers 1-6, POST
 covers 9-20); the sharpness port then split POST three ways at 20/23
 (POST = 9-20, TAIL = 23/24 + OETF + the 11-strong LUT uniform set),
-and `open()` grew the source count NINE → FOURTEEN.
+and the shader source count grew NINE → FOURTEEN (TODAY those fourteen
+sources are the shared pipeline's `init()` parameters, not a session
+`open()` count).
 
 The pass kinds (GlesShaderSources.kt): `NR_CHROMA_H` (1428),
 `NR_CHROMA_V` (1575), `NR_LUMA` (1726), `SHARPNESS_H` (1894),
@@ -203,11 +218,12 @@ twice "more GLSL-idiomatically" is how parity dies; transcribe it.
 Each neighborhood draw is gated on BOTH the knob and the resolution,
 because a 1-pixel-wide plane cannot feed a 3-tap filter:
 
-- chroma NR: `strength > 0 && w >= 2 && h >= 2` (runChroma,
-  GlesDevelopSession.cpp:1658)
-- luma NR: `strength > 0 && w >= 3 && h >= 3` (runLuma, :1659)
-- sharpness: `raw != 0.0f && w >= 2 && h >= 2` (runSharp, :1768)
-- detail: same shape (runDetail, :1769)
+- chroma NR: `runChroma = chromaStrength > 0.0f && w >= 2 && h >= 2`
+- luma NR: `runLuma = lumaStrength > 0.0f && w >= 3 && h >= 3`
+- sharpness: `runSharp = req.sharpness != 0.0f && w >= 2 && h >= 2`
+- detail: `runDetail = req.detail != 0.0f && w >= 2 && h >= 2`
+
+(all four in GpuDevelopPipeline.cpp `Impl::draw` — grep the variable names)
 
 Note `raw != 0.0f`, not `raw > 0f` — negatives are real work.
 
@@ -222,8 +238,10 @@ byte, the frozen harness catches it.
 
 ### 2.6 The seams this template crosses beyond template 1
 
-The seam commit 4d2a328 widened every JNI surface: renderFrame 35→37,
-encoder 37→39, preview 36→38. The rules it recorded:
+HISTORICAL: the seam commit 4d2a328 widened every JNI surface
+(renderFrame 35→37, encoder 37→39, preview 36→38). TODAY a new knob
+widens NO JNI surface — it rides the grade parcel (`GradeParcel.kt`).
+The rules it recorded still hold:
 
 - **No default parameter values** in the JNI layer (the `$default`
   synthetic breaks the reflection locks).
@@ -271,10 +289,10 @@ locks it).
 
 ### 3.1 The CPU pre-stage merge with per-Entry caches
 
-`temporalMergedCfa` (jni_bridge.cpp:1634-1696) wraps the frozen merge
-with per-Entry caches: the ring LRU (`kTemporalRingCapacity = 4`,
-jni_bridge.cpp:1143), a frame+strength-keyed merged-CFA cache, and a
-MAFD pair cache. The caches are the performance contract — without
+`temporalMergedCfa` (jni_bridge.cpp — grep `CfaBuffer temporalMergedCfa(`)
+wraps the frozen merge with per-Entry caches: the ring LRU
+(`kTemporalRingCapacity = 4`), a frame+strength-keyed merged-CFA cache,
+and a MAFD pair cache. The caches are the performance contract — without
 them the merge re-runs per frame at full res (~85-107ms).
 
 Two honesty rules the routing commit recorded:
@@ -293,12 +311,14 @@ Two honesty rules the routing commit recorded:
 The merged CFA replaces the request's CFA at every entry point —
 the session request structs need NOTHING new:
 
-- develop session: `temporalMergedCfa` at jni_bridge.cpp:3324, then
+- develop session: a `temporalMergedCfa(` call, then
   `req.cfa = cfa.get()`
-- preview session: :4012, and the merge runs BEFORE `strideFor` so
-  the reduced mosaic samples the MERGED CFA, not the raw one
-- encoder: :3547; export frame: :2882; nativePreviewRender step 2:
-  :2051; the sixth site at :2166
+- preview session: the merge runs BEFORE `strideFor` so the reduced
+  mosaic samples the MERGED CFA, not the raw one
+- encoder, export frame, nativePreviewRender step 2, and the cached
+  preview render: the same call (grep `temporalMergedCfa(` in
+  jni_bridge.cpp — every hit is one routing site; line numbers are
+  deliberately not cited)
 
 The JNI signatures gained the pair (`temporalNr jboolean`,
 `temporalStrength jfloat`) after the NR pair on all three GPU

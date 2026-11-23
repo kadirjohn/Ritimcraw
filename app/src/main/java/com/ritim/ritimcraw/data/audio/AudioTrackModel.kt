@@ -158,8 +158,25 @@ data class AudioClip(
     val fadeInMs: Int = 0,
     /** Fade-out duration in ms. 0 = no fade. Same stored-intent rule as [fadeInMs]. */
     val fadeOutMs: Int = 0,
+    /**
+     * Stereo pan, -1 (full left) .. 0 (center) .. +1 (full right) —
+     * AUD-07 "stereo pan" (şartname §6 Ses). Rendered by the
+     * constant-power law in AudioPlan.panGains (TIMELINE_AUDIO_PLAN
+     * §3.2). Default 0 = center, persisted OMIT-WHEN-DEFAULT so files
+     * written before the field stay byte-identical and old rows load as
+     * center (the plan's §6.3 item 4 migration, landed 2026-11-23).
+     */
+    val pan: Float = 0f,
+    /**
+     * Clip mute (AUD-07 "track mute" at clip granularity — the timeline
+     * core's track rows carry no audio state). A muted clip contributes
+     * silence in preview AND export (the mix reads ClipAudioState.of).
+     * Default false, omit-when-default like [pan].
+     */
+    val muted: Boolean = false,
 ) {
     init {
+        require(pan in -1.0f..1.0f) { "pan $pan outside -1..1" }
         require(sampleRateHz > 0) {
             "sampleRateHz must be > 0 (AUD-06: the rate is required data, never assumed)"
         }
@@ -183,6 +200,18 @@ data class AudioProject(
     val links: Map<String, AudioLinkRecord> = emptyMap(),
     /** Audio settings rows; an absent row = unity gain, no fades (the default). */
     val clips: List<AudioClip> = emptyList(),
+    /**
+     * Master gain in dBFS (AUD-07 "master dBFS"), applied AFTER the clip
+     * sum and BEFORE saturation (TIMELINE_AUDIO_PLAN §3.3). 0 = unity;
+     * persisted omit-when-default (a pre-field file loads as unity).
+     */
+    val masterGainDb: Float = 0f,
+    /**
+     * Master mute: the whole mix renders silence (AUD-07). "Dışa aktarmada
+     * mute ve track seçimi proje snapshot'ından alınır" — the flag lives in
+     * the project file, so an export reads the same value the preview did.
+     */
+    val masterMuted: Boolean = false,
 ) {
     /** The source's link record, or the ATTACHED default when absent. */
     fun link(sourceId: String): AudioLinkRecord =

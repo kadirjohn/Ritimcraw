@@ -9,6 +9,7 @@ import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.LutRole
 import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.RenderBackend
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -869,6 +870,44 @@ class ExportStoreTest {
         val retried = ExportStore(file).all().single { it.id == "fhd" }
         assertEquals(1920, retried.resolutionW)
         assertEquals(1080, retried.resolutionH)
+    }
+
+    @Test
+    fun audio_link_snapshot_round_trips_omits_when_null_and_survives_retry() {
+        // QA-15 / EX-11: the audio choice snapshotted at enqueue persists
+        // with the job (a kill between queue and drain keeps it) and Retry
+        // keeps it; omit-when-null keeps pre-snapshot rows byte-identical.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(
+            job(id = "det", target = Target.MP4).copy(audioLink = AudioLinkState.DETACHED)
+        )
+        store.add(job(id = "plain", target = Target.MP4))
+
+        val jobs = ExportStore(file).all()
+        assertEquals(AudioLinkState.DETACHED, jobs.single { it.id == "det" }.audioLink)
+        assertNull(jobs.single { it.id == "plain" }.audioLink)
+
+        val text = file.readText()
+        assertTrue(text.contains("\"audioLink\":\"DETACHED\""))
+        assertTrue(!text.substringAfter("\"id\":\"plain\"").contains("audioLink"))
+
+        store.retry("det")
+        assertEquals(
+            AudioLinkState.DETACHED,
+            ExportStore(file).all().single { it.id == "det" }.audioLink,
+        )
+    }
+
+    @Test
+    fun unknown_audio_link_value_parses_null_not_a_guess() {
+        // A future link state this build does not know parses as null —
+        // the exporter then uses the live lookup (never a guessed state).
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "x", target = Target.MP4).copy(audioLink = AudioLinkState.REMOVED))
+        file.writeText(file.readText().replace("\"REMOVED\"", "\"SOME_FUTURE_STATE\""))
+        assertNull(ExportStore(file).all().single().audioLink)
     }
 
     @Test

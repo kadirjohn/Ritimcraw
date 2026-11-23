@@ -455,3 +455,25 @@ verdict above cites lines read in this audit; device-dependent clauses
 are HOST-UNTESTABLE and never counted as passed. The spec quotes are
 verbatim from `STEPS/ritim-mcraw_ritiMCRAW_Android_Teknik_Sartname.md`
 (lines 138, 457, 470, 475, 478).*
+
+---
+
+## Status update — 2026-11-23 (branch spec-remaining-2026-11-23)
+
+- **QA-15 retry-audio clause — CLOSED at code level.** `ExportJob.audioLink`
+  snapshots the source's audio link state at enqueue (MP4 jobs only,
+  `AppNav` onExport); `Mp4Exporter.effectiveAudioLink` prefers the
+  snapshot over the live AudioStore lookup, `requeued()` keeps it, and
+  `ExportStore` persists it omit-when-null (legacy rows keep the live
+  lookup). Host-tested (Mp4ExporterTest, ExportStoreTest). The literal
+  kill/retry run stays device-test-pending.
+- **EFFECT_TEMPLATES.md staleness — FIXED.** All 10 entries refreshed;
+  the doc and the EffectRegistry rows now cite the shared pipeline, and
+  churning files (GpuDevelopPipeline.cpp, jni_bridge.cpp) are cited by
+  symbol instead of line number.
+- **QA-17 lens metadata / capture time** (from docs/LINEAR_DNG_GAPS.md) —
+  the writer side landed (`DngExtraMeta`); the JNI fill-in is pending
+  with the bridge owner, so the exported files do not change yet.
+- **Unchanged:** PLAY-10 contrast pivot (scope UI + product decision),
+  QA-02 active area (Source.cpp + padded fixture), QA-20 measurements
+  (device).
