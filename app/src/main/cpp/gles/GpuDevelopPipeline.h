@@ -76,6 +76,18 @@ namespace gles {
 // CPU-side gates hoisted C++-computed: asShot feeds uWbManual (stages
 // 16/17) and the split hues feed uSplitActive (stage 19), exactly like
 // keepVignetting feeds the shading gate.
+struct DevelopFrameRequest;
+
+// DEBUG probe helpers (2026-11-23, owner report: the GPU preview shows no
+// change when a develop slider moves). gradeProbeSummary renders the develop
+// controls of a request as one compact "ev=.. hi=.. ..." string for the
+// ritim-trace probe lines (so moving ONE slider yields a before/after pair
+// in logcat); gradeProbeHash hashes the same values (the re-arm key: the
+// probes fire again whenever the grade the GPU actually decoded changes).
+// Both are pure and only ever called behind windowProbeEnabled().
+std::string gradeProbeSummary(const DevelopFrameRequest& req);
+uint64_t gradeProbeHash(const DevelopFrameRequest& req);
+
 struct DevelopFrameRequest {
     const std::vector<uint16_t>* cfa = nullptr;  // w*h row-major
     rawedit::FrameInfo info{};

@@ -2225,6 +2225,9 @@ fun ClipEditorScreen(
             // legitimately outpace renders there, and each completed frame
             // must show while the newer one is already pending.)
             var lastPublished = 0L
+            // DEBUG (2026-11-23): last grade summary logged by the GPU arm,
+            // so ritim-trace gets one "gpu grade" line per grade CHANGE.
+            var lastGpuGradeLogged: GradeK? = null
             for (kick in pumpKick) {
                 while (true) {
                     val req = gate.poll() ?: break
@@ -2356,6 +2359,16 @@ fun ClipEditorScreen(
                             // the EFFECTIVE value. The bridge decodes it once
                             // per call; the 29 field arguments died with the
                             // flat door.
+                            // DEBUG trace (2026-11-23, owner report: GPU preview
+                            // shows no change on slider moves): the grade this
+                            // arm hands to the GPU, once per change. No-op in
+                            // release (RenderTrace.enabled = BuildConfig.DEBUG).
+                            if (RenderTrace.enabled && req.grade != lastGpuGradeLogged) {
+                                lastGpuGradeLogged = req.grade
+                                RenderTrace.logGpuGrade(
+                                    req.grade, req.frameIndex, req.maxDim, req.sequence,
+                                )
+                            }
                             val gpuFrame = gpu.render(
                                 clipHandle = s.nativeClipHandle,
                                 frameIndex = req.frameIndex,

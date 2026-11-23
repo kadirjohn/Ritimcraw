@@ -316,4 +316,16 @@ class RenderTraceTest {
         // reads it live, so this pins the wiring, not the value.
         assertEquals(com.ritim.ritimcraw.BuildConfig.DEBUG, RenderTrace.enabled)
     }
+
+    @Test
+    fun gpu_grade_summary_carries_the_moved_slider_values() {
+        // 2026-11-23 (GPU preview shows no change): the Kotlin-side half of
+        // the before/after pair the native probe lines complete.
+        val a = RenderTrace.gpuGradeSummary(GradeK(), 3, 1280, 7L)
+        val b = RenderTrace.gpuGradeSummary(GradeK(highlights = -40f, exposureEv = 1.5f), 3, 1280, 8L)
+        assertTrue(a.contains("grade[ev=0.000 hi=0.0 "))
+        assertTrue(b.contains("grade[ev=1.500 hi=-40.0 "))
+        assertTrue(b.startsWith("gpu grade seq=8 frame=3 maxDim=1280 "))
+        assertTrue(a != b)
+    }
 }
