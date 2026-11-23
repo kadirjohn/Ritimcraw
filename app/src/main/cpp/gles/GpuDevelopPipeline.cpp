@@ -1743,7 +1743,11 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         // warp reads chainTex (unit 1) and writes the next slot — no draw
         // reads and writes the same texture.
         slotIndex = (chainTex == texA) ? 0 : ((chainTex == texB) ? 1 : 2);
-        const GLuint warpOut = slotAfter[slotIndex == 0 ? 1 : (slotIndex == 1 ? 2 : 0)];
+        // 2026-11-23 owner report: slotAfter[] is already "next", so indexing
+        // it by the next index named the slot AFTER the FBO target and TAIL
+        // read the un-graded PRE image. Output = the texture the bound FBO
+        // renders into.
+        const GLuint warpOut = slotAfter[slotIndex];
         glUseProgram(warpProgram);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, chainTex);
