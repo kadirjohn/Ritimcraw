@@ -227,6 +227,38 @@ class AudioTrackModelTest {
     }
 
     @Test
+    fun gain_edit_keeps_pan_and_mute() {
+        // setSettings (the gain/fade sheet) must never re-center or
+        // unmute a clip whose pan/mute were set separately (AUD-07).
+        var p = AudioTrackOps.setPan(AudioProject(), "a-1", "src-a", 48000, pan = 0.4f)
+        p = AudioTrackOps.setMuted(p, "a-1", "src-a", 0, muted = true)
+        p = AudioTrackOps.setSettings(p, "a-1", "src-a", 0, gainDb = -3f, fadeInMs = 10, fadeOutMs = 0)
+        val row = p.clip("a-1")!!
+        assertEquals(0.4f, row.pan, 0f)
+        assertTrue(row.muted)
+        assertEquals(-3f, row.gainDb, 0f)
+        assertEquals(48000, row.sampleRateHz)
+        assertEquals(1, p.clips.size)
+    }
+
+    @Test
+    fun pan_clamps_and_master_sets() {
+        val p = AudioTrackOps.setPan(AudioProject(), "a-1", "src-a", 44100, pan = -3f)
+        assertEquals(-1f, p.clip("a-1")!!.pan, 0f)
+        val m = AudioTrackOps.setMaster(p, gainDb = -6f, muted = true)
+        assertEquals(-6f, m.masterGainDb, 0f)
+        assertTrue(m.masterMuted)
+        assertEquals(p.clips, m.clips)
+        var threw = false
+        try {
+            AudioTrackOps.setPan(AudioProject(), "a-1", "src-a", 44100, pan = Float.NaN)
+        } catch (e: IllegalArgumentException) {
+            threw = true
+        }
+        assertTrue(threw)
+    }
+
+    @Test
     fun creating_a_row_without_a_rate_fails_loud() {
         // AUD-06: the rate is required data; the model must not guess.
         var threw = false

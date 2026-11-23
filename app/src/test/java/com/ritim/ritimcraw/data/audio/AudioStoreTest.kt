@@ -57,6 +57,56 @@ class AudioStoreTest {
     )
 
     @Test
+    fun pan_mute_and_master_round_trip_and_omit_when_default() {
+        // AUD-07 (TIMELINE_AUDIO_PLAN §6.3 item 4): pan/mute on the row
+        // and the master state persist; defaults write no key so older
+        // files stay byte-identical.
+        val file = projectFile()
+        val store = AudioStore(file)
+        val p = AudioProject(
+            clips = listOf(
+                AudioClip(id = "a-1", sourceId = "s", sampleRateHz = 48000, pan = -0.25f, muted = true),
+                AudioClip(id = "a-2", sourceId = "s", sampleRateHz = 48000),
+            ),
+            masterGainDb = -4.5f,
+            masterMuted = true,
+        )
+        store.save(p)
+        val back = AudioStore(file).load()
+        assertEquals(p, back)
+        val text = file.readText()
+        assertTrue(text.contains("\"pan\":-0.25"))
+        assertTrue(text.contains("\"muted\":true"))
+        assertTrue(text.contains("\"master\":{\"gainDb\":-4.5,\"muted\":true}"))
+        val a2 = text.substringAfter("\"id\":\"a-2\"").substringBefore('}')
+        assertTrue(!a2.contains("pan") && !a2.contains("muted"))
+
+        // Back to defaults -> no master key at all, no pan/muted keys.
+        store.save(AudioProject(clips = listOf(AudioClip("a-1", "s", 48000))))
+        val plain = file.readText()
+        assertTrue(!plain.contains("master") && !plain.contains("pan") && !plain.contains("muted"))
+    }
+
+    @Test
+    fun old_audio_rows_load_center_unmuted_and_bad_pan_clamps() {
+        // A pre-field row (no pan/muted) loads as center/unmuted; a
+        // hand-edited out-of-range pan clamps instead of dropping the row.
+        val file = projectFile()
+        file.writeText(
+            "{\"version\":1,\"audio\":{\"version\":1,\"links\":[],\"clips\":[" +
+                "{\"id\":\"old\",\"sourceId\":\"s\",\"sampleRateHz\":44100,\"gainDb\":-2.0}," +
+                "{\"id\":\"wild\",\"sourceId\":\"s\",\"sampleRateHz\":44100,\"pan\":7.0}]}}"
+        )
+        val p = AudioStore(file).load()
+        assertEquals(0f, p.clip("old")!!.pan, 0f)
+        assertEquals(false, p.clip("old")!!.muted)
+        assertEquals(-2f, p.clip("old")!!.gainDb, 0f)
+        assertEquals(1f, p.clip("wild")!!.pan, 0f)
+        assertEquals(0f, p.masterGainDb, 0f)
+        assertEquals(false, p.masterMuted)
+    }
+
+    @Test
     fun round_trip_model_json_model_equality() {
         val file = projectFile()
         val original = sampleAudio()

@@ -1,6 +1,8 @@
 package com.ritim.ritimcraw.data.timeline
 
 import com.ritim.ritimcraw.data.audio.AudioClip
+import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.data.audio.AudioProject
 import com.ritim.ritimcraw.data.audio.AudioTrackOps
 import kotlin.math.PI
 import kotlin.math.ceil
@@ -270,12 +272,22 @@ object AudioPlan {
      * @param sourceRateHz the honest rate lookup: the source's REAL
      *   rate or null when unknown — a null skips the clip, never a
      *   guess (the fpsMeasured twin).
+     * @param linkState the AUD-02 link-state gate (TIMELINE_AUDIO_PLAN
+     *   §4.2 / §6.3 item 3, landed 2026-11-23): the source's ORIGINAL
+     *   audio link state by sourceId. Only ATTACHED places; DETACHED and
+     *   REMOVED skip LINK_NOT_ATTACHED (silent in preview AND export —
+     *   "kaldırılmış ses tekrar oluşmaz", QA-13), and LINKED_EDITED
+     *   skips too: the edited recording replaces the original, and this
+     *   plan has no edited-recording source to place (never the original
+     *   as a stand-in). Default = every source ATTACHED (the pre-gate
+     *   behavior, byte-identical plans for unmanaged projects).
      */
     fun mixPlan(
         project: TimelineProject,
         states: (String) -> ClipAudioState,
         sourceRateHz: (String) -> Int?,
         mixRateHz: Int = DEFAULT_MIX_RATE_HZ,
+        linkState: (String) -> AudioLinkState = { AudioLinkState.ATTACHED },
     ): AudioMixPlan {
         require(mixRateHz > 0) { "mix rate $mixRateHz must be > 0" }
         val fps = project.output.fps
@@ -295,6 +307,10 @@ object AudioPlan {
             val sid = clip.sourceId
             if (sid == null) {
                 skips.add(AudioSkip(clip.id, null, AudioSkip.Reason.SOURCE_MISSING))
+                continue
+            }
+            if (linkState(sid) != AudioLinkState.ATTACHED) {
+                skips.add(AudioSkip(clip.id, sid, AudioSkip.Reason.LINK_NOT_ATTACHED))
                 continue
             }
             val rate = sourceRateHz(sid)
@@ -318,6 +334,26 @@ object AudioPlan {
         }
         return AudioMixPlan(mixRateHz, totalMixSamples, placed, skips)
     }
+
+    /**
+     * The WIRED form of [mixPlan]: the per-clip states and the link gate
+     * both read the persisted [audio] project (ClipAudioState.of on its
+     * rows, AudioProject.link for the gate) — the one join a preview
+     * mixer and the export mix pass must share so what you preview is
+     * what you export. The master state is [MasterAudioState.of].
+     */
+    fun mixPlan(
+        project: TimelineProject,
+        audio: AudioProject,
+        sourceRateHz: (String) -> Int?,
+        mixRateHz: Int = DEFAULT_MIX_RATE_HZ,
+    ): AudioMixPlan = mixPlan(
+        project = project,
+        states = { id -> ClipAudioState.of(audio.clip(id)) },
+        sourceRateHz = sourceRateHz,
+        mixRateHz = mixRateHz,
+        linkState = { sid -> audio.link(sid).state },
+    )
 }
 
 /**
@@ -331,10 +367,9 @@ data class StereoSample(val left: Float, val right: Float)
 /**
  * The per-clip audio state the mix renders (the reference shape of
  * AUD-07's "klip gain, stereo pan, track mute"): gain dBFS, pan -1..1,
- * mute, and the stored-intent fades. gain/fades mirror
- * [com.ritim.ritimcraw.data.audio.AudioClip]'s persisted fields;
- * pan/mute are the PROPOSED additions — [ClipAudioState.of] maps the
- * row until the integrator adds them there (the plan doc §3.1).
+ * mute, and the stored-intent fades. All five mirror
+ * [com.ritim.ritimcraw.data.audio.AudioClip]'s persisted fields (pan/mute
+ * landed on the row 2026-11-23 — the plan doc §3.1 / §6.3 item 4).
  */
 data class ClipAudioState(
     /** Gain in dBFS. 0 = unity; positive boosts, negative attenuates. */
@@ -367,16 +402,14 @@ data class ClipAudioState(
 
         /**
          * The persisted [row] -> the reference state. An ABSENT row is
-         * UNITY (AudioProject's absent-row rule). pan/muted default to
-         * center/unmuted: they are the PROPOSED fields, not in
-         * AudioClip yet — this is the honest join until the integrator
-         * adds them (the plan doc §3.1's migration).
+         * UNITY (AudioProject's absent-row rule); pan/muted ride the row
+         * (pre-field rows load as center/unmuted in AudioStore).
          */
         fun of(row: AudioClip?): ClipAudioState =
             if (row == null) UNITY else ClipAudioState(
                 gainDb = row.gainDb,
-                pan = 0f,
-                muted = false,
+                pan = row.pan,
+                muted = row.muted,
                 fadeInMs = row.fadeInMs,
                 fadeOutMs = row.fadeOutMs,
             )
@@ -394,7 +427,13 @@ data class MasterAudioState(
     val gainDb: Float = 0f,
     /** Master mute: the whole mix renders silence. */
     val muted: Boolean = false,
-)
+) {
+    companion object {
+        /** The persisted master fields of [project] (AudioProject, 2026-11-23). */
+        fun of(project: AudioProject): MasterAudioState =
+            MasterAudioState(gainDb = project.masterGainDb, muted = project.masterMuted)
+    }
+}
 
 /**
  * A placed clip's audio mapped onto the two grids: the SOURCE-domain
@@ -456,6 +495,13 @@ data class AudioSkip(
          * SILENT (the audio twin of a black skip span).
          */
         RATE_UNKNOWN,
+
+        /**
+         * The source's original audio is not ATTACHED (DETACHED, REMOVED
+         * or LINKED_EDITED — AUD-02): the clip renders SILENT; a removed
+         * audio never resurrects in the mix (QA-13).
+         */
+        LINK_NOT_ATTACHED,
     }
 }
 

@@ -567,10 +567,18 @@ gone, undo returns the previous state.
    with a long music bed; the writer's 64KB input buffer bounds the
    block size (`MediaCodecMp4Writer.kt:683`). PLANNED.
 3. The link-state gate in the mix plan (§4.2) — a DETACHED source's
-   audio clip must skip silently in preview AND export. PLANNED.
+   audio clip must skip silently in preview AND export. HOST-TESTED
+   (2026-11-23): `AudioPlan.mixPlan(..., linkState)` skips DETACHED /
+   REMOVED / LINKED_EDITED as `LINK_NOT_ATTACHED`; the wired overload
+   `mixPlan(project, audio: AudioProject, ...)` joins states + gate from
+   the persisted project. The consumers (preview mixer, export mix pass)
+   are still the later wave.
 4. Pan/mute persistence migration (§3.1) — AudioClip's new fields with
-   omit-when-default, old files loading as center/unmuted. PLANNED
-   (AudioStore's forward-tolerance precedent).
+   omit-when-default, old files loading as center/unmuted. HOST-TESTED
+   (2026-11-23): `AudioClip.pan/muted`, `AudioProject.masterGainDb/
+   masterMuted`, AudioStore omit-when-default + clamp-on-load,
+   `AudioTrackOps.setPan/setMuted/setMaster` (setSettings keeps pan/mute).
+   No UI control yet (the sheet still edits gain/fades only).
 
 ---
 
