@@ -113,6 +113,7 @@ int cmdAnalyze(const std::string& clip, size_t maxFrames, const std::string& out
     ImagePath path;
     AnalyzeStats st;
     AnalyzeControl ctl;
+    if (const char* th = std::getenv("STAB_THREADS")) ctl.threads = std::atoi(th);  // 2 = decode || track
     size_t limit = maxFrames;
     if (limit) {
         // Analyze only the first `limit` frames: cancel from the progress hook.
