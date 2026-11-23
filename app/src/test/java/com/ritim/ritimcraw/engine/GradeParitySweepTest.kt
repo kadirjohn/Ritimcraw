@@ -65,4 +65,75 @@ class GradeParitySweepTest {
         assertTrue(GradeParitySweep.line(c, s, 35.0, 0.0).endsWith("INERT_ON_GPU"))
         assertTrue(!GradeParitySweep.line(c, s, 35.0, 30.0).contains("INERT_ON_GPU"))
     }
+
+    // ---- the A2 crop sweep (owner request 2026-11-23, guide A2) ----
+
+    @Test
+    fun `crop case list covers the rects and the angle extremes`() {
+        // Rects (a centered 16:9, an off-center, the 5 percent floor) x
+        // angles {0, +0.5, -0.5, +7, -7, +15, -15} — the plan's device
+        // grid, incl. the ±15 extremes and the 5% floor.
+        val cases = GradeParitySweep.cropCases()
+        assertEquals(3 * 7, cases.size)
+        val angles = cases.map { it.deg }.toSet()
+        for (a in listOf(0f, 0.5f, -0.5f, 7f, -7f, 15f, -15f)) {
+            assertTrue("deg $a", a in angles)
+        }
+        // The centered 16:9 case: the standard rect.
+        val center = cases.filter { it.x == 0.125f && it.y == 0.25f }
+        assertEquals(7, center.size)
+        // The floor case: the 5 percent rect.
+        val floor = cases.filter { it.w == 0.05f && it.h == 0.05f }
+        assertTrue(floor.isNotEmpty())
+        // The off-center case: no edge alignment.
+        val off = cases.filter { it.x == 0.4f && it.y == 0.35f }
+        assertTrue(off.isNotEmpty())
+        // Every case's manual delta is 0 (the clip's real container
+        // orientation exercises uOrientation natively).
+        assertTrue(cases.all { it.manualDeltaDeg == 0 })
+    }
+
+    @Test
+    fun `argbBytes converts an ARGB int pack to RGB bytes`() {
+        // The GPU leg parses ARGB ints ([w, h, 0xFFRRGGBB...]); the CPU
+        // legs parse the same shape. The compare runs over RGB bytes
+        // (three channels per pixel, the grade sweep's own convention).
+        val argb = intArrayOf(
+            (0xFF shl 24) or (18 shl 16) or (52 shl 8) or 240,  // r g b
+            (0xFF shl 24) or (255 shl 16) or (0 shl 8) or 128,
+        )
+        val bytes = GradeParitySweep.argbBytes(argb)
+        assertEquals(6, bytes.size)
+        assertEquals(18, bytes[0].toInt() and 0xFF)
+        assertEquals(52, bytes[1].toInt() and 0xFF)
+        assertEquals(240, bytes[2].toInt() and 0xFF)
+        assertEquals(255, bytes[3].toInt() and 0xFF)
+        assertEquals(0, bytes[4].toInt() and 0xFF)
+        assertEquals(128, bytes[5].toInt() and 0xFF)
+    }
+
+    @Test
+    fun `crop line carries rect deg and the lsb numbers`() {
+        val line = GradeParitySweep.cropLine(
+            x = 0.125f, y = 0.25f, w = 0.75f, h = 0.5f, deg = 7f,
+            s = GradeParitySweep.Stats(samples = 552960L, maxDiffLsb = 2, mismatch = 1234L, over1 = 0L, meanSigned = 0.25),
+        )
+        assertTrue(line, line.startsWith("crop-sweep rect=0.125,0.250,0.750,0.500 deg=7.0:"))
+        assertTrue(line, line.contains("maxDiffLsb=2"))
+        assertTrue(line, line.contains("samples=552960"))
+    }
+
+    @Test
+    fun `crop summary line names the worst case`() {
+        val summary = GradeParitySweep.cropSummaryLine(
+            lines = listOf(
+                Pair(GradeParitySweep.CropCase(0.125f, 0.25f, 0.75f, 0.5f, 7f), GradeParitySweep.Stats(100, 2, 1, 0, 0.0)),
+                Pair(GradeParitySweep.CropCase(0.4f, 0.35f, 0.45f, 0.4f, -15f), GradeParitySweep.Stats(100, 4, 2, 1, 0.0)),
+            ),
+            skipped = 1,
+        )
+        assertTrue(summary, summary.startsWith("crop-sweep summary:"))
+        assertTrue(summary, summary.contains("worstMaxDiffLsb=4"))
+        assertTrue(summary, summary.contains("skipped=1"))
+    }
 }

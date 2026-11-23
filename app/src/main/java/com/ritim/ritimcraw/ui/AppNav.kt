@@ -1008,8 +1008,10 @@ fun AppNav(
         }
     }
 
-    // GPU-vs-CPU per-control sweep (debug, 2026-11-23): frame 0 of the
-    // first imported clip, one line per control under "ritim-parity".
+    // GPU-vs-CPU per-control sweep + the A2 crop sweep (debug,
+    // 2026-11-23): frame 0 of the first imported clip, one line per
+    // control under "ritim-parity". The crop leg takes a SECOND fresh fd
+    // (each run takes ownership of its descriptor).
     LaunchedEffect(sweepKick) {
         if (sweepKick == 0) return@LaunchedEffect
         val first = sources.firstOrNull { it.access == Access.OK }
@@ -1022,6 +1024,13 @@ fun AppNav(
                 .openFileDescriptor(Uri.parse(first.uri), "r")
                 ?.detachFd() ?: -1
             if (fd >= 0) GradeParitySweep.run(fd)
+            // The A2 crop sweep (guide A2): the window pass's crop leg —
+            // same DEBUG-only, failure-soft shape as the grade sweep,
+            // its own fd (the grade sweep closed its descriptor).
+            val cropFd = context.contentResolver
+                .openFileDescriptor(Uri.parse(first.uri), "r")
+                ?.detachFd() ?: -1
+            if (cropFd >= 0) GradeParitySweep.runCrop(cropFd)
         } catch (e: Exception) {
             // The sweep logs its own failures; a lost grant is "no run".
         } finally {
