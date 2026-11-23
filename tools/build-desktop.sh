@@ -124,6 +124,13 @@ echo "== building tests =="
 # reason the chain planner's test needs none).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_stats_ring.cpp" \
   -o "$BUILD/test_stats_ring"
+# test_gpu_crop_map: the GPU window pass's crop/straighten frame plan
+# (header-only, no GL; 2026-11-23 owner request, guide A2 — the cropped
+# output dims, the auto-zoom and the cos/sin pair are pure, so their
+# invariants run on desktop, no CORE_OBJS for the same reason the ring
+# planner's test needs none).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gpu_crop_map.cpp" \
+  -o "$BUILD/test_gpu_crop_map"
 # test_optical_sync: GY-04 optical sync refinement; the synthetic
 # ground-truth suite always runs, the real-clip evidence case is
 # RAWEDIT_REALCLIP-gated (2 GB fixtures). Runs from the repo root so it
@@ -188,6 +195,8 @@ echo "== running test_chain_slots =="
 "$BUILD/test_chain_slots"
 echo "== running test_stats_ring =="
 "$BUILD/test_stats_ring"
+echo "== running test_gpu_crop_map =="
+"$BUILD/test_gpu_crop_map"
 echo "== running test_optical_sync =="
 (cd "$ROOT" && "$BUILD/test_optical_sync")
 echo "== running test_rawstats =="
