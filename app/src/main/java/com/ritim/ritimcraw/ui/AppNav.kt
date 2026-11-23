@@ -107,6 +107,8 @@ import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.ExportOpen
 import com.ritim.ritimcraw.export.ExportQueue
+import com.ritim.ritimcraw.export.ExportSettingsPrefs
+import com.ritim.ritimcraw.export.ExportSheetModel
 import com.ritim.ritimcraw.export.ExportStageTiming
 import com.ritim.ritimcraw.export.ExportStore
 import com.ritim.ritimcraw.export.MediaPublish
@@ -1278,6 +1280,12 @@ fun AppNav(
                                 state = State.QUEUED,
                                 outputName = ExportQueue.displayOutputName(title, Target.MP4),
                                 timeline = TimelineRef.capture(title, project),
+                                // (E1) the timeline has no export sheet yet: it
+                                // exports with the MP4 settings the user last
+                                // chose in the clip export sheet (the default
+                                // preset when none), snapshotted now like the
+                                // grade. The DONE row reports what was made.
+                                settings = ExportSettingsPrefs.load(context),
                             )
                         )
                         exportJobs = stores.exports.all()
@@ -1472,7 +1480,10 @@ fun AppNav(
                         onBack = { editorSourceId = null },
                         initialGrade = stores.grades.get(r.sourceId),
                         onGradeChange = { g -> stores.grades.put(r.sourceId, g) },
-                        onExport = { target, resolutionW, resolutionH ->
+                        // (E1c) the export sheet's time estimate: this device's
+                        // last measured MP4 export speed (null until one ran).
+                        exportRate = ExportSheetModel.latestRate(exportJobs),
+                        onExport = { target, resolutionW, resolutionH, exportSettings ->
                             // Snapshot the CURRENT grade at queue time (the
                             // spec: a later edit must not change an in-flight
                             // export) and enqueue; the runner picks it up.
@@ -1531,6 +1542,12 @@ fun AppNav(
                                     } else {
                                         null
                                     },
+                                    // (E1) the MP4 choices the sheet showed,
+                                    // snapshotted at queue time like the grade:
+                                    // a later sheet change must not alter an
+                                    // in-flight export, and Retry keeps them.
+                                    // Only MP4 jobs carry settings.
+                                    settings = if (target == Target.MP4) exportSettings else null,
                                 )
                             )
                             exportJobs = stores.exports.all()

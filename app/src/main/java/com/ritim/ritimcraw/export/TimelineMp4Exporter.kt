@@ -140,6 +140,7 @@ class TimelineMp4Exporter(
             )
         val partial = ExportStaging.partial(out)
         val run = job.settings?.let { ExportPlanRun(it, encoderFacts, ExportContext(), planLog) }
+        val startedNs = System.nanoTime()
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
                 engine.execute {
@@ -193,12 +194,13 @@ class TimelineMp4Exporter(
                 )
             }
         }
+        val wallMs = (System.nanoTime() - startedNs) / 1_000_000L
         return outcome.fold(
             onSuccess = {
                 job.copy(
                     state = State.DONE,
                     detail = out.name,
-                    report = run?.plan?.let { ExportReport.from(it, run, out.length().takeIf { n -> n > 0 }) },
+                    report = run?.plan?.let { ExportReport.from(it, run, out.length().takeIf { n -> n > 0 }, wallMs) },
                 )
             },
             onFailure = { e -> job.copy(state = State.FAILED, detail = e.message) },

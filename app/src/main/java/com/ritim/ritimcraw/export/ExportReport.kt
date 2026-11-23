@@ -34,6 +34,8 @@ data class ExportReport(
     val steps: List<String>,
     /** "KIND:arg,arg" per plan issue (localized by the UI). */
     val issues: List<String>,
+    /** Wall-clock milliseconds the export took (feeds the next sheet's time estimate); null = unknown. */
+    val wallMs: Long? = null,
 ) {
     /** The whole file's real bit rate (video + audio + container), or null without size/duration. */
     val actualTotalBps: Long?
@@ -48,7 +50,7 @@ data class ExportReport(
         get() = actualTotalBps?.let { (it - audioKbps * 1000L).coerceAtLeast(0L) }
 
     companion object {
-        fun from(plan: ExportPlan, run: ExportPlanRun, fileBytes: Long?): ExportReport = ExportReport(
+        fun from(plan: ExportPlan, run: ExportPlanRun, fileBytes: Long?, wallMs: Long? = null): ExportReport = ExportReport(
             encoder = run.encoder?.name ?: plan.encoderName,
             hardware = run.encoder?.hardwareAccelerated ?: plan.encoderHardware,
             mime = plan.mime,
@@ -65,6 +67,7 @@ data class ExportReport(
             durationSec = run.durationSec.takeIf { it > 0.0 },
             steps = run.steps.takeLast(MAX_STEPS),
             issues = plan.issues.map { it.kind.name + ":" + it.args.joinToString(",") },
+            wallMs = wallMs,
         )
 
         const val MAX_STEPS = 12
@@ -87,6 +90,7 @@ object ExportReportWire {
             .append(",\"audioKbps\":").append(r.audioKbps)
         if (r.fileBytes != null) sb.append(",\"fileBytes\":").append(r.fileBytes)
         if (r.durationSec != null) sb.append(",\"durationSec\":").append(r.durationSec)
+        if (r.wallMs != null) sb.append(",\"wallMs\":").append(r.wallMs)
         sb.append(",\"steps\":").append(strings(r.steps)).append(",\"issues\":").append(strings(r.issues)).append('}')
         return sb.toString()
     }
@@ -116,6 +120,7 @@ object ExportReportWire {
             durationSec = d("durationSec"),
             steps = strs("steps"),
             issues = strs("issues"),
+            wallMs = d("wallMs")?.toLong(),
         )
     }
 }
