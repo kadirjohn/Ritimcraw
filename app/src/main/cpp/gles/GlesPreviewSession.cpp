@@ -32,7 +32,7 @@
 // (the session's own small RGBA8 scratch pair + FBOs + SSBO readback +
 // toByte quantize + row-flip pack; glReadPixels is used NOWHERE except
 // the DEBUG probe's two 1x1 reads — the recorded baseline invariant),
-// and the statsEnabled toggle (false skips the stats draws + readback
+// and the statsMode readback mode (Off skips the stats draws + readback
 // and publishes the honest 1x1 empty fallback).
 //
 // THREADING (the contract in one paragraph): open() spawns the GL thread;
@@ -64,6 +64,11 @@
 // harness already proved on device (developFragmentParity PASS).
 
 #include "GlesPreviewSession.h"
+
+// Pure planner (A1 async stats, 2026-11-23): the stats readback mode's
+// vocabulary + the 2-slot fence-ring state machine draw 3 consumes —
+// header-only, no GL follows suit with the sibling includes below.
+#include "StatsRing.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1499,12 +1504,16 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
 
     // --- draw 3: the stats pack — ALWAYS (the published frame the Compose
     // --- overlays consume). ~256 long edge, upright via the same fold. ------
-    // --- THE MEASUREMENT TOGGLE (trace-dims fix 2026-11-14): statsEnabled
-    // --- false skips draw 3 + the readback ENTIRELY — the honest 1x1 empty
-    // --- fallback publishes instead (the zebra/scopes consumers degrade for
-    // --- the run; the trace line reads stats=off), and the stats span stays
-    // --- 0. The dims stay valid so the publish fold's crop math survives.
-    if (!req.statsEnabled) {
+    // --- THE READBACK MODE (A1 async stats, 2026-11-23): statsMode is the
+    // --- StatsRing.h StatsReadbackMode vocabulary. Off (0) skips draw 3 +
+    // --- the readback ENTIRELY — the honest 1x1 empty fallback publishes
+    // --- instead (the zebra/scopes consumers degrade for the run; the
+    // --- trace line reads stats=off), and the stats span stays 0. Sync (1,
+    // --- the default — the trace-dims fix's 2026-11-14 behavior) AND
+    // --- Async (2) BOTH take today's synchronous path in THIS commit: a
+    // --- staged intermediate, not the final A1(b) behavior — the ring
+    // --- lands in its own commit.
+    if (req.statsMode == gles::StatsReadbackMode::Off) {
         out.argb8888.assign(1, 0xFF000000u);
         out.width = 1;
         out.height = 1;

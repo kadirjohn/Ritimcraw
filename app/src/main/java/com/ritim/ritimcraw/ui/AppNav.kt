@@ -1759,6 +1759,13 @@ fun AppNav(
                         // other value keeps the CPU preview path
                         // byte-identical.
                         renderBackend = renderBackend,
+                        // A1 async stats (owner request 2026-11-23): the
+                        // debug Settings row's persisted state, read fresh
+                        // at editor composition (the row lives on a
+                        // different screen). The native atomic remains the
+                        // authoritative kill-switch fold; this keeps the
+                        // Kotlin-side per-request mode decision honest.
+                        previewStatsEnabled = stores.previewStats.current(),
                     )
                 }
             } else {

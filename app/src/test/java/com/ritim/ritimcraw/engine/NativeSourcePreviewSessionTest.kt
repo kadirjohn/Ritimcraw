@@ -113,6 +113,7 @@ class NativeSourcePreviewSessionTest {
                 lutOutTransfer = -1,
                 warpActive = false,
                 warpM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+                statsMode = PreviewStatsMode.SYNC.native,
             )
             throw AssertionError("expected IllegalStateException")
         } catch (expected: IllegalStateException) {
@@ -164,7 +165,7 @@ class NativeSourcePreviewSessionTest {
     @Test
     fun render_parcel_carries_exactly_the_parcel_shape() {
         // GRADE PARCEL (commit a + b): the preview render door's signature
-        // lock — 14 parameters: sessionHandle, clipHandle, frameIndex,
+        // lock — 15 parameters: sessionHandle, clipHandle, frameIndex,
         // maxDim (the four plumbing values) + gradeParcel (the ONE flat
         // FloatArray carrying all 29 scalar grade fields — the layout is
         // GENERATED from tools/gen-grade-parcel.py's schema, both sides of
@@ -172,11 +173,14 @@ class NativeSourcePreviewSessionTest {
         // constexpr slots against the Kotlin offsets) + the seven LUT
         // controls (lutPath, lutStrength, the five ordinals — per-job,
         // documented OUT of the parcel) + warpActive, warpM (the
-        // caller-resolved per-frame verdict). Commit (b): the flat
+        // caller-resolved per-frame verdict) + statsMode (A1 async stats,
+        // 2026-11-23: the per-request readback mode's native int, the LAST
+        // parameter — PreviewStatsMode.native, the StatsRing.h
+        // StatsReadbackMode vocabulary). Commit (b): the flat
         // 42-parameter door died with its wrapper — the parcel is the ONLY
         // render door, so this lock is re-counted DOWN from the flat 42.
         val render = method("jniPreviewSessionRenderFrameParcel")
-        assertEquals(14, render.parameterCount)
+        assertEquals(15, render.parameterCount)
     }
 
     @Test

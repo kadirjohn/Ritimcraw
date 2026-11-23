@@ -51,6 +51,9 @@
 #include "gles/GradeParcel.h"
 #include "gles/GlesPipeline.h"
 #include "gles/GlesPreviewSession.h"
+// Pure planner (A1 async stats, 2026-11-23): the statsMode clamp the
+// render door's kill-switch fold uses — header-only, no GL.
+#include "gles/StatsRing.h"
 
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
@@ -3817,7 +3820,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //   nativePreviewSessionSetSurface(handle, surface|null) -> boolean
 //   nativePreviewSessionRenderFrameParcel(handle, clipHandle, frameIndex,
 //       maxDim, gradeParcel, lutPath, lutStrength, lutRole, lutInGamut,
-//       lutInTransfer, lutOutGamut, lutOutTransfer, warpActive, warpM)
+//       lutInTransfer, lutOutGamut, lutOutTransfer, warpActive, warpM,
+//       statsMode)
 //       -> [w, h, pixels...] int array (the small published stats pack)
 //   nativePreviewSessionClose(handle)
 //
@@ -4099,14 +4103,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetSurface(
     return JNI_TRUE;
 }
 
-// The preview session's render door (GRADE PARCEL, commit a + b): 14
+// The preview session's render door (GRADE PARCEL, commit a + b): 15
 // parameters — the 29-field grade block collapsed into gradeParcel
 // (maxDim stays: job mechanics, not a grade scalar). The parcel is
 // decoded ONCE at the top (a refusal fails the render honestly with
 // setError + null, never a silent misread); the grade rides the
 // struct-taking session overload (the GENERATED fold). Commit (b): the
 // flat nativePreviewSessionRenderFrame died with its Kotlin decl — this
-// is the ONLY preview render door.
+// is the ONLY preview render door. A1 async stats (2026-11-23) added the
+// LAST parameter, jint statsMode: the Kotlin-computed per-request readback
+// mode (0=off 1=sync 2=async, the StatsRing.h StatsReadbackMode
+// vocabulary), folded below with the master kill switch.
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParcel(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
@@ -4114,7 +4121,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
         jint lutOutGamut, jint lutOutTransfer,
-        jboolean warpActive, jfloatArray warpM) {
+        jboolean warpActive, jfloatArray warpM, jint statsMode) {
     gles::DevelopGrade grade;
     std::string parcelError;
     if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
@@ -4239,9 +4246,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         if (warpM != nullptr) {
             env->GetFloatArrayRegion(warpM, 0, 9, req.warpM);
         }
-        // The stats-readback toggle rides the request: the bridge-level
-        // atomic, copied per render.
-        req.statsEnabled = gPreviewStatsEnabled.load(std::memory_order_relaxed);
+        // The stats-readback MODE (A1 async stats, 2026-11-23): the
+        // MASTER KILL SWITCH folds here, natively — the toggle can only
+        // ever force OFF, never upgrade. The Kotlin side computes the
+        // mode per request from scope demand + render class
+        // (statsModeFor); clampStatsMode folds any out-of-range jint
+        // (negative, >2) to Sync — the safe default and today's behavior.
+        req.statsMode = gPreviewStatsEnabled.load(std::memory_order_relaxed)
+            ? gles::clampStatsMode(statsMode)
+            : gles::StatsReadbackMode::Off;
         const gles::PreviewFrameResult res = session->renderFrame(req, grade);
         // The editor suppresses its CPU Image on success. A stats pack
         // (or the stats-off black 1x1 marker) cannot substitute for a
@@ -4277,7 +4290,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
             static_cast<jint>(info.width), static_cast<jint>(info.height),
             static_cast<jint>(res.developW), static_cast<jint>(res.developH),
             static_cast<jint>(res.surfaceW), static_cast<jint>(res.surfaceH),
-            req.statsEnabled ? 1 : 0,
+            req.statsMode,
             spanToJint(decodeUs), spanToJint(cfaUs),
             spanToJint(res.uploadUs), spanToJint(res.developUs),
             spanToJint(res.presentUs), spanToJint(res.statsUs),

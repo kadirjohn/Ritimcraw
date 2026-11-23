@@ -50,8 +50,9 @@ import com.ritim.ritimcraw.data.GradeK
  *   byte-identical to the pre-fix shape) append the measurement block
  *   after grade= (trace-dims fix 2026-11-14): source=<sensor WxH>
  *   develop=<actual developed WxH> surface=<window presented WxH>
- *   stats=<pack WxH|off> then dec/cfa/up/dev/present/stats=<ms, one
- *   decimal>. out= on those frames is the published STATS pack's dims
+ *   stats=<pack WxH|off> statsMode=<off|sync|async> (A1 async stats,
+ *   2026-11-23) then dec/cfa/up/dev/present/stats=<ms, one decimal>.
+ *   out= on those frames is the published STATS pack's dims
  *   (~256 long edge), NOT the render resolution — the block is where the
  *   real dims and per-stage timings live, the numbers the choppy-12MP
  *   diagnosis needs.
@@ -111,8 +112,15 @@ object RenderTrace {
         /** The window surface's presented dims (0x0 = no surface/query failed). */
         val surfaceW: Int = 0,
         val surfaceH: Int = 0,
-        /** The stats-readback toggle's state for THIS render (default on). */
-        val statsEnabled: Boolean = true,
+        /**
+         * The stats-readback mode that ACTUALLY served THIS render (A1
+         * async stats, 2026-11-23): OFF = the stats stage skipped (the
+         * honest 1x1 placeholder), SYNC = the blocking readback (settle/
+         * drag), ASYNC = the fence ring (playback — the N-1 pack, or no
+         * pack on a miss). Default SYNC keeps the CPU line's neutral
+         * construction sites compiling unchanged.
+         */
+        val statsMode: PreviewStatsMode = PreviewStatsMode.SYNC,
         /** The six per-stage spans, milliseconds. */
         val decMs: Double = 0.0,
         val cfaMs: Double = 0.0,
@@ -174,7 +182,18 @@ object RenderTrace {
             append("x")
             append(record.surfaceH)
             append(" stats=")
-            append(if (record.statsEnabled) "${record.outW}x${record.outH}" else "off")
+            append(if (record.statsMode == PreviewStatsMode.OFF) "off" else "${record.outW}x${record.outH}")
+            // A1 async stats (2026-11-23): the mode field rides immediately
+            // after stats=, before dec= — the owner's grep key for which
+            // readback path served the frame (off | sync | async).
+            append(" statsMode=")
+            append(
+                when (record.statsMode) {
+                    PreviewStatsMode.OFF -> "off"
+                    PreviewStatsMode.SYNC -> "sync"
+                    PreviewStatsMode.ASYNC -> "async"
+                }
+            )
             append(" dec=")
             append(ms(record.decMs))
             append("ms cfa=")

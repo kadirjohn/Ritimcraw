@@ -22,19 +22,24 @@ import kotlin.coroutines.suspendCoroutine
  * compiling unchanged. The custom equals/hashCode deliberately IGNORE
  * them (dims+pixels identity, the publish-fold contract — two frames with
  * equal pixels but different timings are the SAME published frame).
+ *
+ * A1 async stats (2026-11-23): statsEnabled became statsMode — the
+ * readback mode that ACTUALLY served this frame (PreviewStatsMode). The
+ * SYNC default preserves every CPU-path construction site; the trace's
+ * GPU block prints it as statsMode=off|sync|async.
  */
 data class PreviewFrame(
     val width: Int,
     val height: Int,
     val argb: IntArray,
-    // The measurement tail (GPU path only; 0/true/0.0 defaults elsewhere).
+    // The measurement tail (GPU path only; 0/SYNC/0.0 defaults elsewhere).
     val sourceW: Int = 0,
     val sourceH: Int = 0,
     val developW: Int = 0,
     val developH: Int = 0,
     val surfaceW: Int = 0,
     val surfaceH: Int = 0,
-    val statsEnabled: Boolean = true,
+    val statsMode: PreviewStatsMode = PreviewStatsMode.SYNC,
     val decMs: Double = 0.0,
     val cfaMs: Double = 0.0,
     val upMs: Double = 0.0,
