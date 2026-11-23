@@ -45,6 +45,14 @@ class SystemStatsMathTest {
     }
 
     @Test
+    fun storage_reads_in_decimal_gb() {
+        assertEquals("345G", SystemStatsMath.formatGb(345_000_000_000L))
+        assertEquals("45G", SystemStatsMath.formatGb(44_600_000_000L))
+        assertEquals("7.8G", SystemStatsMath.formatGb(7_800_000_000L))
+        assertEquals("345/512G", SystemStatsMath.formatCapacity(345_000_000_000L, 512_000_000_000L))
+    }
+
+    @Test
     fun formatting() {
         assertEquals("15.6G", SystemStatsMath.formatBytes((15.6 * 1024 * 1024 * 1024).toLong()))
         assertEquals("212G", SystemStatsMath.formatBytes(212L * 1024 * 1024 * 1024))

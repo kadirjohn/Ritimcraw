@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.components
 
+import android.content.res.Configuration
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -27,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -88,6 +90,8 @@ fun SystemMonitorBarContent(stats: SystemStats, modifier: Modifier = Modifier) {
             .background(MaterialTheme.colorScheme.surfaceContainerHigh),
     ) {
         val wide = maxWidth.value >= WIDE_MIN_WIDTH_DP
+        val landscape = LocalConfiguration.current.orientation ==
+            Configuration.ORIENTATION_LANDSCAPE
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -125,25 +129,37 @@ fun SystemMonitorBarContent(stats: SystemStats, modifier: Modifier = Modifier) {
                 },
                 wide = wide,
             )
+            // DISK reads in GB, not a percentage (owner request 2026-11-23):
+            // used GB in portrait, used/total capacity in landscape or on a
+            // wide window. The meter still shows the fraction.
             MonitorCell(
                 label = "DISK",
                 percent = stats.storagePercent,
-                detail = if (stats.storageTotalBytes > 0L) {
-                    SystemStatsMath.formatBytes(stats.storageFreeBytes) + " free"
-                } else {
-                    null
-                },
+                detail = null,
                 wide = wide,
+                valueOverride = when {
+                    stats.storageTotalBytes <= 0L -> null
+                    wide || landscape -> SystemStatsMath.formatCapacity(
+                        stats.storageUsedBytes, stats.storageTotalBytes,
+                    )
+                    else -> SystemStatsMath.formatGb(stats.storageUsedBytes)
+                },
             )
         }
     }
 }
 
 @Composable
-private fun MonitorCell(label: String, percent: Float?, detail: String?, wide: Boolean) {
+private fun MonitorCell(
+    label: String,
+    percent: Float?,
+    detail: String?,
+    wide: Boolean,
+    valueOverride: String? = null,
+) {
     val scheme = MaterialTheme.colorScheme
     val fontSize = if (wide) 11.sp else 10.sp
-    val valueText = SystemStatsMath.formatPercent(percent)
+    val valueText = valueOverride ?: SystemStatsMath.formatPercent(percent)
     val spoken = if (detail != null) "$label $valueText, $detail" else "$label $valueText"
     Row(
         verticalAlignment = Alignment.CenterVertically,
