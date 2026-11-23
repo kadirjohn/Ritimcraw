@@ -915,6 +915,37 @@ class NativeSource private constructor(
         ): DoubleArray?
 
         /**
+         * The A5 parity-diagnosis door (owner request 2026-11-23, guide
+         * A5 step 1): the SAME shared body as nativeGlesFragmentParity
+         * (its own one-shot EGL context — a second full-frame parity
+         * pass, which is why the diagnosis is a separate door and NOT a
+         * widened 4-value array; GlesParityResult.fromArray's
+         * require(size == 4) is a deliberately loud contract that stays
+         * untouched), formatted as TEXT: the header line (the plain
+         * door's four numbers) plus, when the run produced real numbers,
+         * the mismatch-population histograms from gles/ParityDiag.h —
+         * tonal value bucket (of the uint16 CPU reference), distance to
+         * the x.5 rounding boundary (of the GPU pre-quantize float),
+         * magnitude (1 vs 2+) and channel (R/G/B). Guide A5's question:
+         * are the 4:3 clip's 1-LSB mismatches toByte-style rounding
+         * noise or a real stage difference — the owner reads the
+         * histograms and decides (step 2 is the owner's; NO verdict or
+         * rule lives on this path). A ran=0 result carries the header
+         * line only (the failing step is already in previewLastError);
+         * null only on a clip-level/JNI failure, same error states and
+         * strings as the plain door. No handle, no render-cache touch,
+         * safe on any thread. Device-test-pending.
+         */
+        @JvmStatic private external fun nativeGlesFragmentParityDiag(
+            fd: Int,
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+            caseIndex: Int,
+        ): String?
+
+        /**
          * M3 commit (a): the production GPU develop session's three entry
          * points (the persistent counterpart of the one-shot parity
          * harness). Open compiles the caller-provided shader texts and
@@ -1649,6 +1680,32 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeGlesFragmentParity(
+                fd, vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+                caseIndex,
+            )
+        }
+
+        /**
+         * JNI bridge: see nativeGlesFragmentParityDiag (the A5 diagnosis
+         * door: the same shared body as jniGlesFragmentParity behind a
+         * string return — the mismatch histograms of the SAME run shape,
+         * header line + three histogram lines, or the header line only
+         * when the GPU stage failed). Throws IllegalStateException when
+         * the .so is absent; null otherwise means a clip-level failure
+         * (previewLastError) — never a fabricated verdict.
+         */
+        internal fun jniGlesFragmentParityDiag(
+            fd: Int,
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+            caseIndex: Int,
+        ): String? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeGlesFragmentParityDiag(
                 fd, vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
                 caseIndex,
             )

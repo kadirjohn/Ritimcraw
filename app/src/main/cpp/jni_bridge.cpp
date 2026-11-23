@@ -21,6 +21,7 @@
 #include <mutex>
 #include <new>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -2919,10 +2920,26 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesParity(
 // VERDICT is Kotlin's (GpuParityRules) — raw numbers only, never a
 // claim. The fragment path needs NO compute (contextOk + floatFboOk
 // gates it, not computeOk). Device-test-pending: no phone has run it.
+//
+// A5 step 1 (owner request 2026-11-23, guide A5): the TWO doors below
+// share one body (fragmentParityBody — the exportFrameBody precedent).
+// The 4-double plain door is byte-identical to its pre-extraction shape;
+// the NEW string door nativeGlesFragmentParityDiag returns the same run's
+// diagnosis (the ParityDiag histograms gles/ParityDiag.h shapes) as text.
+// The 4-value array contract does NOT grow a field: GlesParityResult's
+// require(size == 4) is a deliberately loud contract and the diagnosis
+// rides its own door instead (guide A5: instrumentation only, no verdict
+// or gate change on this path).
 
-JNIEXPORT jdoubleArray JNICALL
-Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
-        JNIEnv* env, jclass, jint fd, jstring vertexSource, jstring vertex310Source,
+// The shared fragment-parity body: the four shader-string reads, the
+// clip open, frame 0's info+decode, the developFragmentParity call and
+// the !rep.ran setError path. Returns nothing (error state set) on any
+// clip-level/JNI failure — same error stages, same message strings, same
+// doubles for the plain door as before the extraction (T-qt-02: the
+// extraction is mechanical only; any error-text drift is contract drift
+// and fails the GpuParityTest-pinned seam).
+static std::optional<gles::ParityReport> fragmentParityBody(
+        JNIEnv* env, jint fd, jstring vertexSource, jstring vertex310Source,
         jstring fragmentSource, jstring storeFragmentSource, jint caseIndex) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageOpen;
@@ -2934,7 +2951,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
                  "gles fragment parity: out of memory reading the vertex source "
                  "(recovery: free memory and retry)");
-        return nullptr;
+        return std::nullopt;
     }
     const std::string v300(v300Chars);
     env->ReleaseStringUTFChars(vertexSource, v300Chars);
@@ -2944,7 +2961,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
                  "gles fragment parity: out of memory reading the 310 vertex source "
                  "(recovery: free memory and retry)");
-        return nullptr;
+        return std::nullopt;
     }
     const std::string v310(v310Chars);
     env->ReleaseStringUTFChars(vertex310Source, v310Chars);
@@ -2954,7 +2971,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
                  "gles fragment parity: out of memory reading the develop source "
                  "(recovery: free memory and retry)");
-        return nullptr;
+        return std::nullopt;
     }
     const std::string frag(fragChars);
     env->ReleaseStringUTFChars(fragmentSource, fragChars);
@@ -2964,7 +2981,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
                  "gles fragment parity: out of memory reading the store source "
                  "(recovery: free memory and retry)");
-        return nullptr;
+        return std::nullopt;
     }
     const std::string store(storeChars);
     env->ReleaseStringUTFChars(storeFragmentSource, storeChars);
@@ -2975,7 +2992,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
                  std::string("gles fragment parity: ") + rawedit::errorName(opened.code) +
                      " — " + opened.detail +
                      " (recovery: reopen the clip and retry)");
-        return nullptr;
+        return std::nullopt;
     }
     std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
     const rawedit::FrameInfo info = src->frameInfo(0);
@@ -2985,7 +3002,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
                  std::string("gles fragment parity: frame 0 decode — ") +
                      rawedit::errorName(frame.code) + " — " + frame.detail +
                      " (recovery: reopen the clip and retry)");
-        return nullptr;
+        return std::nullopt;
     }
     const gles::ParityReport rep =
         gles::developFragmentParity(v300, v310, frag, store, caseIndex,
@@ -2995,16 +3012,59 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
                  "gles fragment parity: " + rep.detail +
                      " (recovery: the CPU render path stays the default)");
     }
+    return rep;
+}
+
+// The plain door (deliverable D): a thin formatter over the shared body —
+// the returned doubles and every error stage/string are byte-identical
+// to the pre-extraction shape (see the shared-body comment above).
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParity(
+        JNIEnv* env, jclass, jint fd, jstring vertexSource, jstring vertex310Source,
+        jstring fragmentSource, jstring storeFragmentSource, jint caseIndex) {
+    const std::optional<gles::ParityReport> rep =
+        fragmentParityBody(env, fd, vertexSource, vertex310Source,
+                           fragmentSource, storeFragmentSource, caseIndex);
+    if (!rep.has_value()) return nullptr;
     const double out[4] = {
-        rep.ran ? 1.0 : 0.0,
-        static_cast<double>(rep.maxDiffLsb),
-        static_cast<double>(rep.mismatchCount),
-        static_cast<double>(rep.samples),
+        rep->ran ? 1.0 : 0.0,
+        static_cast<double>(rep->maxDiffLsb),
+        static_cast<double>(rep->mismatchCount),
+        static_cast<double>(rep->samples),
     };
     jdoubleArray result = env->NewDoubleArray(4);
     if (result == nullptr) return nullptr;
     env->SetDoubleArrayRegion(result, 0, 4, out);
     return result;
+}
+
+// The diagnosis door (A5 step 1, owner request 2026-11-23, guide A5):
+// the SAME shared body as the plain door (its own one-shot EGL context —
+// a second full-frame parity pass, exactly what makes it a separate door
+// rather than a widened array), formatted as TEXT for the debug Measure
+// block: the diagHeaderLine (the plain door's four numbers as one line)
+// plus, when the run produced real numbers, the ParityDiag histograms
+// (value / boundary / mag+ch). A !ran result returns the header line
+// only — the setError detail already named the failing step through
+// nativeLastError, the Kotlin leg logs it beside the block. nullptr on
+// the body's clip-level/JNI failures (error state set, same as the plain
+// door). No new logging, no verdict: the owner reads the histograms and
+// decides (guide A5 step 2). Device-test-pending: no phone has run it.
+JNIEXPORT jstring JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParityDiag(
+        JNIEnv* env, jclass, jint fd, jstring vertexSource, jstring vertex310Source,
+        jstring fragmentSource, jstring storeFragmentSource, jint caseIndex) {
+    const std::optional<gles::ParityReport> rep =
+        fragmentParityBody(env, fd, vertexSource, vertex310Source,
+                           fragmentSource, storeFragmentSource, caseIndex);
+    if (!rep.has_value()) return nullptr;
+    std::string text = gles::diagHeaderLine(
+        rep->ran, rep->maxDiffLsb, rep->mismatchCount, rep->samples);
+    if (rep->ran) {
+        text += "\n";
+        text += gles::formatParityDiag(rep->diag);
+    }
+    return env->NewStringUTF(text.c_str());  // null on the JNI OOM path (the existing convention)
 }
 
 // MP4 export pipeline ----------------------------------------------------------

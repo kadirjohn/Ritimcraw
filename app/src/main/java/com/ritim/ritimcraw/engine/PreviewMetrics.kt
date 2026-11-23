@@ -237,6 +237,13 @@ object PreviewMetrics {
      * copy closes here, always. Returns the logged block (also logged
      * under [TAG]), or null when the leg is skipped (disabled).
      *
+     * A5 step 1 (owner request 2026-11-23, guide A5): the fragment leg
+     * (4c) gains ONE append-only follow-up (4d) through the separate
+     * diagnosis string door — the mismatch-population histograms the
+     * owner reads to decide whether the 4:3 clip's 1-LSB mismatches
+     * are rounding noise or a real stage difference. Every existing
+     * line of the block stays byte-identical.
+     *
      * Device-test-pending: no phone has run this leg; the first real run
      * IS the owner's device test.
      */
@@ -328,6 +335,41 @@ object PreviewMetrics {
                     lines += GpuParityRules.verdictLine(
                         GpuParityRules.verdict(frag, NativeSource.previewLastError()),
                     )
+                }
+
+                // Leg 4d (A5 step 1, owner request 2026-11-23, guide A5):
+                // the DIFF-STRUCTURE diagnosis of the same fragment
+                // parity, appended AFTER leg 4c's lines — append-only,
+                // the block's existing lines stay byte-identical (the
+                // gateDetailLine convention). The diag re-runs the
+                // harness as a SECOND one-shot EGL context through the
+                // separate string door (jniGlesFragmentParityDiag) —
+                // the 4-value array contract is deliberately loud
+                // (GlesParityResult.fromArray's require(size == 4)) and
+                // must NOT grow a field, so the histograms ride their
+                // own door. Same shader texts as leg 4c, and case 0 —
+                // the developLinear shape: the exact case the per-open
+                // gate and the 4:3 failure data ride (the gate calls the
+                // same case 0 through GpuPreviewDevelop.fragmentParity).
+                // The fd is still open (the finally below owns the
+                // close on every path); IllegalStateException from a
+                // missing .so is caught by measureGles's outer catch.
+                // Debug-only like every leg here (PreviewMetrics.enabled
+                // is BuildConfig.DEBUG) — no new Settings UI, no new
+                // tag; the on-device run is the owner's step.
+                val diag = NativeSource.jniGlesFragmentParityDiag(
+                    fd,
+                    GlesShaderSources.FULLSCREEN_VERTEX,
+                    GlesShaderSources.FULLSCREEN_VERTEX_310,
+                    GlesShaderSources.DEVELOP_FRAGMENT,
+                    GlesShaderSources.STORE_FRAGMENT,
+                    0,
+                )
+                if (diag != null) {
+                    lines += diag.split('\n')
+                } else {
+                    lines += "fragment parity diag: jni failure " +
+                        "(${NativeSource.previewLastError() ?: "no detail"})"
                 }
             }
         } catch (e: IllegalStateException) {
