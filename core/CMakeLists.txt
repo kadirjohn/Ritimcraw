@@ -51,6 +51,7 @@ add_library(rawedit STATIC
     src/Lut.cpp
     src/Color.cpp
     src/ColorModel.cpp
+    src/OpenDrt.cpp
     src/DngWriter.cpp
     src/Gyro.cpp
     src/Orientation.cpp
@@ -130,6 +131,11 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_color_model tests/test_color_model.cpp)
     target_include_directories(test_color_model PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_color_model PRIVATE rawedit)
+    # test_opendrt: OpenDRT C++ reference (F1-4); reads core/tests/data, so
+    # the ctest entry runs from the repo root.
+    add_executable(test_opendrt tests/test_opendrt.cpp)
+    target_include_directories(test_opendrt PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_opendrt PRIVATE rawedit)
     # bench_develop: M1 developCpu serial-vs-parallel measurement on the
     # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
     # asserts byte-exactness, reports (never asserts) the speedup.
@@ -152,5 +158,6 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME yuv COMMAND test_yuv)
     add_test(NAME color COMMAND test_color)
     add_test(NAME color_model COMMAND test_color_model)
+    add_test(NAME opendrt COMMAND test_opendrt WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
     add_test(NAME bench_develop COMMAND bench_develop)
 endif()
