@@ -42,11 +42,16 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
 done
+# ImageStabPlan.cpp: the plan is a pure double-precision function that must
+# round identically everywhere (preview == export == timeline), so this TU
+# also opts out of FMA contraction (Yuv.cpp precedent).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/ImageStabPlan.cpp" -o "$BUILD/core_ImageStabPlan.o"
+CORE_OBJS+=("$BUILD/core_ImageStabPlan.o")
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
@@ -115,6 +120,11 @@ echo "== building tests =="
 #     real fixtures; run by hand from the repo root, not a test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/bp_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/bp_measure"
+# image_stab_measure: image-stab numbers (S1..S3): stage timings, analysis of
+# a real clip, acceleration/jerk + zoom-rate A/B plan sweep, raw-vs-developed
+# luma check. Run by hand: `image_stab_measure bench|analyze|plan|lumacheck`.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/image_stab_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/image_stab_measure"
 # test_warp: Phase 5 CPU warp (warpFrame); runs from the repo root so
 # it finds the STEPS/media/test fixtures (the cost-evidence case).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_warp.cpp" \
@@ -149,6 +159,10 @@ echo "== building tests =="
 # finds the STEPS/media/test fixtures.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_optical_sync.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_optical_sync"
+# test_image_stab: image-based stabilization core (S1 pairwise motion;
+# synthetic ground truth only, no fixtures, no cwd needs).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_image_stab.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_image_stab"
 # test_rawstats: RAW histogram stats (feature N6) on synthetic CFA
 # fixtures — no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_rawstats.cpp" \
@@ -213,6 +227,8 @@ echo "== running test_gpu_crop_map =="
 "$BUILD/test_gpu_crop_map"
 echo "== running test_optical_sync =="
 (cd "$ROOT" && "$BUILD/test_optical_sync")
+echo "== running test_image_stab =="
+"$BUILD/test_image_stab"
 echo "== running test_rawstats =="
 "$BUILD/test_rawstats"
 echo "== running test_yuv =="
