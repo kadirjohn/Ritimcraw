@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -177,6 +177,15 @@ echo "== building tests =="
 # bindings, evaluateManagedLut) on synthetic fixtures — no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_color.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_color"
+# test_color_model: color model v2 (F1-1) — DI/DWG glue, the K1 gate
+# (709->DWG->709 round trip, develop keeps negative values) and the CPU node
+# reference. Synthetic only, no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_color_model.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_color_model"
+# test_opendrt: OpenDRT v1.1.0 C++ reference (F1-4) against the Klipp
+# reference vectors in core/tests/data (runs from the repo root).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_opendrt.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_opendrt"
 # bench_develop: M1 developCpu serial-vs-parallel measurement on the real
 # clip. The measured case is RAWEDIT_REALCLIP-gated (2 GB fixture, decode
 # is slow); without the gate the doctest prints a SKIP line. Runs from the
@@ -235,6 +244,10 @@ echo "== running test_yuv =="
 "$BUILD/test_yuv"
 echo "== running test_color =="
 "$BUILD/test_color"
+echo "== running test_color_model =="
+"$BUILD/test_color_model"
+echo "== running test_opendrt =="
+(cd "$ROOT" && "$BUILD/test_opendrt")
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
 (cd "$ROOT" && "$BUILD/bench_develop")
 
