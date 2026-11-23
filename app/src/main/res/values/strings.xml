@@ -348,6 +348,14 @@
     <string name="exports_job_finalizing">Finishing file…</string>
     <string name="exports_job_eta">~%1$s left</string>
     <string name="exports_job_done_named">Done — %1$s</string>
+    <string name="exports_report_format">%1$s × %2$s · %3$s fps · %4$s · %5$d-bit</string>
+    <string name="exports_report_encoder_hw">Encoder: %1$s (hardware)</string>
+    <string name="exports_report_encoder_sw">Encoder: %1$s (software)</string>
+    <string name="exports_report_encoder_unknown">Encoder: not reported</string>
+    <string name="exports_report_bitrate">Video bitrate: asked %1$s Mbps · real %2$s Mbps · file %3$s</string>
+    <string name="exports_report_bitrate_asked">Video bitrate: asked %1$s Mbps</string>
+    <string name="exports_report_fixed">The encoder refused the first setup. The export retried once with adjusted settings.</string>
+    <string name="exports_report_cpu">The GPU path was unavailable; this export used the CPU path.</string>
     <string name="exports_job_open">Open</string>
     <string name="exports_open_missing_title">Export not available</string>
     <string name="exports_open_missing_body">The finished file could not be found or opened. Recovery: export the clip again.</string>

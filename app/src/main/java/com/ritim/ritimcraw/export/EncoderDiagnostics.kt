@@ -48,5 +48,17 @@ data class EncoderDiagnostics(
                 ", hardware=" + record.hardwareAccelerated +
                 ", softwareOnly=" + record.softwareOnly +
                 ", requested=" + requestedMime
+
+        /** One plan-trail line: what the plan resolved to (the log and the export report share it). */
+        fun planLine(tag: String, p: ExportPlan): String = (
+            tag + ": encoder=" + (p.encoderName ?: "by-mime") + " mime=" + p.mime + " " + p.width + "x" + p.height +
+                " fps=" + p.fps + " bitrate=" + p.bitrateBps + " mode=" + p.effective.rateMode.name +
+                " profile=" + (p.profile?.toString() ?: "auto") + " depth=" + p.bitDepth +
+                " keyint=" + p.keyframeIntervalSec + " audio=" + p.audioKbps
+            )
+
+        /** One issue line of the plan trail. */
+        fun issueLine(i: ExportIssue): String =
+            "issue: " + i.kind.name + " " + i.severity.name + (if (i.args.isEmpty()) "" else " " + i.args.joinToString(","))
     }
 }

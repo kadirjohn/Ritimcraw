@@ -198,6 +198,11 @@ class ExportStore(private val file: File) {
                 if (j.settings != null) {
                     sb.append(",\"settings\":").append(ExportSettingsWire.render(j.settings))
                 }
+                // report (E1b): omit-when-null, like settings - written only
+                // for a DONE job that carried settings.
+                if (j.report != null) {
+                    sb.append(",\"report\":").append(ExportReportWire.render(j.report))
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -352,6 +357,7 @@ class ExportStore(private val file: File) {
                         AudioLinkState.entries.firstOrNull { it.name == w }
                     },
                     settings = (settingsParsed as? ExportSettingsWire.Parsed.Ok)?.settings,
+                    report = ExportReportWire.parse(m["report"]),
                 )
             }
         }

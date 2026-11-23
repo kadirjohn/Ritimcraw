@@ -345,6 +345,14 @@
     <string name="exports_job_finalizing">Dosya tamamlanıyor…</string>
     <string name="exports_job_eta">~%1$s kaldı</string>
     <string name="exports_job_done_named">Tamamlandı — %1$s</string>
+    <string name="exports_report_format">%1$s × %2$s · %3$s kare/sn · %4$s · %5$d-bit</string>
+    <string name="exports_report_encoder_hw">Kodlayıcı: %1$s (donanım)</string>
+    <string name="exports_report_encoder_sw">Kodlayıcı: %1$s (yazılım)</string>
+    <string name="exports_report_encoder_unknown">Kodlayıcı: bildirilmedi</string>
+    <string name="exports_report_bitrate">Video bit hızı: istenen %1$s Mbps · gerçek %2$s Mbps · dosya %3$s</string>
+    <string name="exports_report_bitrate_asked">Video bit hızı: istenen %1$s Mbps</string>
+    <string name="exports_report_fixed">Kodlayıcı ilk ayarı reddetti. Dışa aktarma bir kez ayarlanmış değerlerle yeniden denendi.</string>
+    <string name="exports_report_cpu">GPU yolu kullanılamadı; bu dışa aktarma CPU yolunu kullandı.</string>
     <string name="exports_job_open">Aç</string>
     <string name="exports_open_missing_title">Dışa aktarım kullanılamıyor</string>
     <string name="exports_open_missing_body">Tamamlanan dosya bulunamadı veya açılamadı. Çözüm: klibi tekrar dışa aktarın.</string>

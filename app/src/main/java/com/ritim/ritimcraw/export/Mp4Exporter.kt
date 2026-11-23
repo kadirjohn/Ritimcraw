@@ -611,6 +611,28 @@ internal object NativeGpuDevelop : GpuDevelop {
  */
 interface Mp4MediaWriter {
     /**
+     * (E1b) The resolved export plan the video encoder is configured from:
+     * encoder by name, MIME, profile, bitrate, rate mode, real fps,
+     * I-frame interval, AAC kbps. Call BEFORE [start]. The default no-op
+     * keeps every JVM fake compiling; a writer that never gets a plan
+     * (a pre-E1 job) configures exactly what it always did
+     * ([ExportPlan.legacy]).
+     */
+    fun configureVideo(plan: ExportPlan) {}
+
+    /**
+     * (E1b) Declares that this export carries [ExportSettings]: [start]
+     * must then be preceded by [configureVideo]. Calling start without it
+     * is a wiring bug - an exception in debug builds (so tests and the
+     * owner's debug installs catch it), a log line in release (the export
+     * then runs on the legacy configuration rather than dying).
+     */
+    fun expectVideoConfig() {}
+
+    /** What MediaCodec really created for the video track (after start), or null. */
+    fun encoderIdentity(): EncoderDiagnostics? = null
+
+    /**
      * Configures both encoders and the muxer for [outPath]. [sampleRate]/
      * [channels] 0 = clip has no audio (video track only). Throws
      * IllegalStateException naming the stage ("configure") and the codec
@@ -1226,6 +1248,14 @@ class ExportPipeline(
     private val resolutionW: Int? = null,
     /** [resolutionW]'s pair; both null or both set, never half a pair. */
     private val resolutionH: Int? = null,
+    /**
+     * (E1b) The job's plan run, non-null only for a job that carries
+     * [ExportSettings]: the pipeline resolves the plan from it once the
+     * encode size and the source fps are known and configures the writer
+     * from it before start. Null (the default, every pre-E1 job) = the
+     * writer's legacy configuration, byte-identical to before.
+     */
+    private val planRun: ExportPlanRun? = null,
 ) {
 
     /**
@@ -1527,7 +1557,20 @@ class ExportPipeline(
             }
         }
         try {
+            val run = planRun
+            if (run != null) {
+                // E1b: the plan for THIS encode size and the clip's own fps
+                // (never a setting). An unresolvable plan fails here, before
+                // any encoder exists, with the planner's reason.
+                val fps = ExportFps.fromPts(rawPts)
+                val plan = run.planFor(encodeDims.width, encodeDims.height, fps)
+                run.durationSec = (videoPts.last() / 1_000_000.0) + 1.0 / fps
+                if (!plan.ok) throw IllegalStateException(plan.errorMessage())
+                writer.expectVideoConfig()
+                writer.configureVideo(plan)
+            }
             writer.start(outPath, encodeDims.width, encodeDims.height, 0, sampleRate, channels)
+            run?.encoder = writer.encoderIdentity()
         } catch (e: Throwable) {
             writer.release()
             throw e
@@ -2202,6 +2245,10 @@ class Mp4Exporter(
      * untouched.
      */
     private val gpuDevelop: GpuDevelop = NativeGpuDevelop,
+    /** (E1b) The live encoder facts the plan resolves against (the device layer; JVM tests inject). */
+    private val encoderFacts: () -> List<EncoderFacts> = { DeviceEncoderFacts.all() },
+    /** (E1b) Where the plan trail goes: the "ritim-export" log. A failing sink never fails an export. */
+    private val planLog: (String) -> Unit = { line -> runCatching { android.util.Log.i("ritim-export", line) } },
 ) {
 
     /**
@@ -2248,47 +2295,60 @@ class Mp4Exporter(
         // legacy/un-snapshotted row (null) falls back to the live lookup.
         val audioAttached = effectiveAudioLink(job) == AudioLinkState.ATTACHED
         val partial = ExportStaging.partial(out)
+        val run = job.settings?.let { ExportPlanRun(it, encoderFacts, ExportContext(), planLog) }
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val res = try {
-                        try {
-                            exportOnce(
-                                job.renderBackend, sourceFd, job.snapshot,
-                                partial.absolutePath, lutPath, gyroPath,
-                                job.manualRotationDeg, audioAttached, onProgress,
-                                job.resolutionW, job.resolutionH,
-                            )
-                        } catch (e: SurfaceInputUnavailable) {
-                            // §10: the writer could not bring its
-                            // encoder-Surface mode up (no EGL display, no
-                            // recordable config, no GLES 3 context, the
-                            // codec refused COLOR_FormatSurface...). The
-                            // whole export restarts on the CPU path from
-                            // frame 0 with a FRESH writer — no frame is
-                            // encoded twice, no partial file continues
-                            // mid-stream in an incompatible format. The
-                            // discard + fresh writerFactory() below is
-                            // that clean restart; the fallback is logged,
-                            // never silent. The reason names the failing
-                            // BRING-UP STEP (owner bug report 2026-11-13):
-                            // reason=surface-input-unavailable:<step>, one
-                            // line — and exactly the legacy reason string
-                            // when the step is unknown, so the owner's
-                            // existing greps and the tests stay
-                            // byte-identical.
-                            ExportStaging.discard(partial)
-                            stageLog?.invoke(
-                                "render backend fallback: " +
-                                    "requested=${job.renderBackend.name} " +
-                                    "effective=CPU reason=" + SurfaceInputUnavailable.reason(e.step)
-                            )
-                            exportOnce(
-                                RenderBackend.CPU, sourceFd, job.snapshot,
-                                partial.absolutePath, lutPath, gyroPath,
-                                job.manualRotationDeg, audioAttached, onProgress,
-                                job.resolutionW, job.resolutionH,
-                            )
+                        var backend = job.renderBackend
+                        while (true) {
+                            try {
+                                exportOnce(
+                                    backend, sourceFd, job.snapshot,
+                                    partial.absolutePath, lutPath, gyroPath,
+                                    job.manualRotationDeg, audioAttached, onProgress,
+                                    job.resolutionW, job.resolutionH, run,
+                                )
+                                break
+                            } catch (e: SurfaceInputUnavailable) {
+                                if (backend == RenderBackend.CPU) throw e
+                                // §10: the writer could not bring its
+                                // encoder-Surface mode up (no EGL display, no
+                                // recordable config, no GLES 3 context, the
+                                // codec refused COLOR_FormatSurface...). The
+                                // whole export restarts on the CPU path from
+                                // frame 0 with a FRESH writer — no frame is
+                                // encoded twice, no partial file continues
+                                // mid-stream in an incompatible format. The
+                                // discard + fresh writerFactory() in the next
+                                // loop turn is that clean restart; the
+                                // fallback is logged, never silent. The reason
+                                // names the failing BRING-UP STEP (owner bug
+                                // report 2026-11-13):
+                                // reason=surface-input-unavailable:<step>, one
+                                // line — and exactly the legacy reason string
+                                // when the step is unknown, so the owner's
+                                // existing greps and the tests stay
+                                // byte-identical.
+                                ExportStaging.discard(partial)
+                                val reason = SurfaceInputUnavailable.reason(e.step)
+                                stageLog?.invoke(
+                                    "render backend fallback: " +
+                                        "requested=${job.renderBackend.name} " +
+                                        "effective=CPU reason=" + reason
+                                )
+                                run?.note("surface->cpu: $reason")
+                                backend = RenderBackend.CPU
+                            } catch (e: VideoConfigRejected) {
+                                // E1b: the encoder refused the plan's format
+                                // before any frame (start() failed). AT MOST ONE
+                                // plan-fix retry, after the Surface->CPU step
+                                // above; anything else fails with the encoder's
+                                // own reason. Never a silent different output:
+                                // the fixed plan and its issues are in the report.
+                                if (run == null || !run.fixAfterRejection(e.message ?: "rejected")) throw e
+                                ExportStaging.discard(partial)
+                            }
                         }
                         if (ExportStaging.finalize(partial, out)) {
                             Result.success(Unit)
@@ -2325,7 +2385,13 @@ class Mp4Exporter(
             }
         }
         return outcome.fold(
-            onSuccess = { job.copy(state = State.DONE, detail = out.name) },
+            onSuccess = {
+                job.copy(
+                    state = State.DONE,
+                    detail = out.name,
+                    report = run?.plan?.let { ExportReport.from(it, run, out.length().takeIf { n -> n > 0 }) },
+                )
+            },
             onFailure = { e -> job.copy(state = State.FAILED, detail = e.message) },
         )
     }
@@ -2352,6 +2418,7 @@ class Mp4Exporter(
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
         resolutionW: Int? = null,
         resolutionH: Int? = null,
+        planRun: ExportPlanRun? = null,
     ) {
         ExportPipeline(
             session,
@@ -2362,6 +2429,7 @@ class Mp4Exporter(
             audioAttached = audioAttached,
             resolutionW = resolutionW,
             resolutionH = resolutionH,
+            planRun = planRun,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )

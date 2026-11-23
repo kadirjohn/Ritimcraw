@@ -105,11 +105,31 @@ data class ExportPlan(
     val height: Int,
     val audioKbps: Int,
     val issues: List<ExportIssue>,
+    /**
+     * True for [legacy]: a job queued before E1. The format builder then
+     * emits exactly the keys the writer always set (no KEY_BITRATE_MODE).
+     */
+    val isLegacy: Boolean = false,
 ) {
     val ok: Boolean get() = issues.none { it.severity == ExportIssue.Severity.ERROR }
 
     /** True when the plan changed something the user asked for. */
     val differsFromRequest: Boolean get() = requested != effective
+
+    /** The ERROR issue as one plain sentence for the failure detail (the UI localizes the same kinds). */
+    fun errorMessage(): String {
+        val i = issues.firstOrNull { it.severity == ExportIssue.Severity.ERROR }
+        val cause = when (i?.kind) {
+            ExportIssue.Kind.SIZE_UNSUPPORTED ->
+                "no ${i.args.getOrNull(0)} encoder on this device makes ${i.args.getOrNull(1)}" +
+                    (i.fixResolution?.let { " (up to ${it.first}x${it.second} fits)" } ?: "")
+            ExportIssue.Kind.NO_ENCODER -> "no ${i.args.getOrNull(0)} video encoder fits these settings on this device"
+            else -> "the export settings cannot be encoded on this device"
+        }
+        return Mp4ExportErrors.kotlinMessage(
+            Mp4ExportErrors.STAGE_CONFIGURE, cause, "pick another codec or a smaller resolution in the export options",
+        )
+    }
 
     /** Rough output size: (video + audio) bits per second over [durationSec]. */
     fun estimatedBytes(durationSec: Double): Long =
@@ -137,6 +157,7 @@ data class ExportPlan(
             height = height,
             audioKbps = 128,
             issues = emptyList(),
+            isLegacy = true,
         )
 
         const val AVC_PROFILE_HIGH = 8
@@ -203,6 +224,30 @@ object ExportPlanner {
         input: ExportInput,
         encoders: List<EncoderFacts>,
         context: ExportContext = ExportContext(),
+        /** Encoder names the plan must not pick (a retry after one refused the format). */
+        exclude: Set<String> = emptySet(),
+    ): ExportPlan {
+        return resolveAgainst(settings, input, encoders.filter { it.name !in exclude }, context)
+    }
+
+    /**
+     * For a device that gave NO encoder facts (the probe failed): resolves
+     * against one nameless stand-in per codec and leaves encoderName null =
+     * "MediaCodec chooses by MIME" (the legacy behavior). Nothing is claimed
+     * about the device; the real encoder is recorded when it is created.
+     * (An EMPTY list passed to [resolve] stays NO_ENCODER: that is a device
+     * that really has none.)
+     */
+    fun resolveWithoutFacts(settings: ExportSettings, input: ExportInput, context: ExportContext = ExportContext()): ExportPlan =
+        resolveAgainst(
+            settings, input, ExportCodec.entries.map { EncoderFacts("", it.mime, hardware = true) }, context,
+        ).let { it.copy(encoderName = null, encoderHardware = null) }
+
+    private fun resolveAgainst(
+        settings: ExportSettings,
+        input: ExportInput,
+        encoders: List<EncoderFacts>,
+        context: ExportContext,
     ): ExportPlan {
         val issues = ArrayList<ExportIssue>()
         var eff = settings

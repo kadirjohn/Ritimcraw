@@ -170,6 +170,14 @@ data class ExportJob(
      * Persisted as one nested object (ExportSettingsWire), by enum NAME.
      */
     val settings: ExportSettings? = null,
+    /**
+     * (E1b) what the MP4 export really produced: the encoder that ran, the
+     * final effective settings, the real bitrate (file size / duration)
+     * beside the requested one, and the plan steps. Set on DONE jobs that
+     * carry [settings]; null otherwise (pre-E1 jobs stay byte-identical).
+     * Cleared by [requeued]: a retried job reports its own run.
+     */
+    val report: ExportReport? = null,
 ) {
 
     /**
@@ -196,5 +204,6 @@ data class ExportJob(
             framesDone = null,
             framesTotal = null,
             publishedUri = null,
+            report = null,
         )
 }

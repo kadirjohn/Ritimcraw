@@ -112,6 +112,10 @@ class TimelineMp4Exporter(
      * identical either way — that is the seam's whole contract.
      */
     private val rotateScale: RgbRotateScale = NativeRgbRotateScale,
+    /** (E1b) The live encoder facts the plan resolves against (the device layer; JVM tests inject). */
+    private val encoderFacts: () -> List<EncoderFacts> = { DeviceEncoderFacts.all() },
+    /** (E1b) Where the plan trail goes: the "ritim-export" log. A failing sink never fails an export. */
+    private val planLog: (String) -> Unit = { line -> runCatching { android.util.Log.i("ritim-export", line) } },
 ) {
 
     /**
@@ -135,11 +139,26 @@ class TimelineMp4Exporter(
                 "re-queue the export from the timeline",
             )
         val partial = ExportStaging.partial(out)
+        val run = job.settings?.let { ExportPlanRun(it, encoderFacts, ExportContext(), planLog) }
         val outcome: Result<Unit> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val res = try {
-                        exportOnce(ref, partial, onProgress)
+                        while (true) {
+                            try {
+                                exportOnce(ref, partial, onProgress, run)
+                                break
+                            } catch (e: VideoConfigRejected) {
+                                // E1b: the encoder refused the plan's format in
+                                // start(), before any frame. AT MOST ONE plan-fix
+                                // retry with a fresh writer; otherwise the job
+                                // fails with the encoder's own reason. (The
+                                // timeline has no Surface path, so no Surface->CPU
+                                // step precedes it.)
+                                if (run == null || !run.fixAfterRejection(e.message ?: "rejected")) throw e
+                                ExportStaging.discard(partial)
+                            }
+                        }
                         if (ExportStaging.finalize(partial, out)) {
                             Result.success(Unit)
                         } else {
@@ -175,7 +194,13 @@ class TimelineMp4Exporter(
             }
         }
         return outcome.fold(
-            onSuccess = { job.copy(state = State.DONE, detail = out.name) },
+            onSuccess = {
+                job.copy(
+                    state = State.DONE,
+                    detail = out.name,
+                    report = run?.plan?.let { ExportReport.from(it, run, out.length().takeIf { n -> n > 0 }) },
+                )
+            },
             onFailure = { e -> job.copy(state = State.FAILED, detail = e.message) },
         )
     }
@@ -185,6 +210,7 @@ class TimelineMp4Exporter(
         ref: TimelineRef,
         partial: File,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
+        planRun: ExportPlanRun? = null,
     ) {
         // The snapshot back to a project (row-tolerant parse upstream; a
         // null here is a degraded row — fail honestly, never guess).
@@ -232,11 +258,21 @@ class TimelineMp4Exporter(
         val black = blackI420(plan.width, plan.height)
         val writer = writerFactory()
         try {
+            if (planRun != null) {
+                // E1b: the project fps and the timeline's output size are the
+                // plan's inputs (never settings).
+                val ep = planRun.planFor(plan.width, plan.height, plan.fps.toDouble())
+                planRun.durationSec = plan.totalFrames / plan.fps.toDouble()
+                if (!ep.ok) throw IllegalStateException(ep.errorMessage())
+                writer.expectVideoConfig()
+                writer.configureVideo(ep)
+            }
             // Video-only: 0/0 sample rate/channels (the writer contract).
             writer.start(
                 partial.absolutePath, plan.width, plan.height,
                 0, 0, 0,
             )
+            planRun?.encoder = writer.encoderIdentity()
             // Open-once cache: a source placed N times opens ONCE. The
             // handles map also REMEMBERS failures (-1 sentinel), the
             // geometry map holds each opened source's session info.

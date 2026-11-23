@@ -60,6 +60,18 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     private var width = 0
     private var height = 0
+
+    /** E1b: the resolved plan ([configureVideo]); null = a pre-E1 job (the legacy configuration). */
+    private var plan: ExportPlan? = null
+
+    /** E1b: [expectVideoConfig] was called, so start() needs [plan]. */
+    private var planExpected = false
+
+    private val videoMime: String get() = plan?.mime ?: MIME_AVC
+
+    /** The real created video encoder's identity (set by [logEncoderIdentity]). */
+    private var identity: EncoderDiagnostics? = null
+
     private var sampleRate = 0
     private var channels = 0
 
@@ -140,6 +152,21 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         this.height = height
         this.sampleRate = sampleRate
         this.channels = channels
+        if (planExpected && plan == null) {
+            // A settings export reached start() without configureVideo: a
+            // wiring bug. Debug builds fail loudly; release logs and runs
+            // the legacy configuration instead of dying on the user.
+            val msg = "export carries settings but configureVideo was not called before start"
+            if (com.ritim.ritimcraw.BuildConfig.DEBUG) throw IllegalStateException(msg)
+            Log.e(TAG, msg + "; using the legacy configuration")
+        }
+        val p = plan ?: ExportPlan.legacy(width, height)
+        if (p.width != width || p.height != height) {
+            throw IllegalStateException(
+                "the export plan is for ${p.width}x${p.height} but start got ${width}x$height"
+            )
+        }
+        plan = p
 
         // Encoder-Surface mode (§10 order): the EGL display/config/context
         // come up FIRST — before the muxer and before any codec is created.
@@ -182,12 +209,34 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         } else if (sessionSurfaceMode) {
             configureSessionSurfaceCodec(width, height)
         } else {
-            configure("video/avc", videoFormat(width, height, surface = false))
+            configure(p.mime, videoMediaFormat(p, surface = false), p)
         }
         if (sampleRate > 0 && channels > 0) {
-            audioCodec = configure("audio/mp4a-latm", audioFormat(sampleRate, channels))
+            audioCodec = configure(MIME_AAC, audioFormat(sampleRate, channels, p.audioKbps))
         }
     }
+
+    override fun configureVideo(plan: ExportPlan) {
+        if (videoCodec != null || muxer != null) {
+            throw encodeFailure("configureVideo must be called before start")
+        }
+        this.plan = plan
+    }
+
+    override fun expectVideoConfig() {
+        planExpected = true
+    }
+
+    override fun encoderIdentity(): EncoderDiagnostics? = identity
+
+    /** The codec the plan names (by name), or the MIME's default when the plan has no encoder facts. */
+    private fun createVideoEncoder(p: ExportPlan): MediaCodec {
+        val name = p.encoderName
+        return if (name != null) MediaCodec.createByCodecName(name) else MediaCodec.createEncoderByType(p.mime)
+    }
+
+    private fun videoMediaFormat(p: ExportPlan, surface: Boolean): MediaFormat =
+        toMediaFormat(ExportFormats.video(p, surface))
 
     /**
      * The explicit encoder-Surface input request (GPU deliverable F,
@@ -304,30 +353,31 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
      * double-encodes a frame or continues a partial file.
      */
     private fun configureSurfaceVideoCodec(w: Int, h: Int): MediaCodec {
+        val p = plan ?: ExportPlan.legacy(w, h)
         val codec = try {
-            MediaCodec.createEncoderByType(MIME_AVC)
+            createVideoEncoder(p)
         } catch (e: Exception) {
-            throw surfaceInputUnavailable("no $MIME_AVC encoder is available on this device", SurfaceInputStep.CODEC_CREATE)
+            throw surfaceInputUnavailable("no ${p.mime} encoder is available on this device", SurfaceInputStep.CODEC_CREATE)
         }
         videoCodec = codec
-        logEncoderIdentity(codec, MIME_AVC)
+        logEncoderIdentity(codec, p.mime, video = true)
         try {
             codec.configure(
-                videoFormat(w, h, surface = true),
+                videoMediaFormat(p, surface = true),
                 null,
                 null,
                 MediaCodec.CONFIGURE_FLAG_ENCODE,
             )
         } catch (e: Exception) {
             throw surfaceInputUnavailable(
-                "$MIME_AVC rejected the ${w}x$h COLOR_FormatSurface format",
+                "${p.mime} rejected the ${w}x$h COLOR_FormatSurface format",
                 SurfaceInputStep.CODEC_CONFIG,
             )
         }
         val surface = try {
             codec.createInputSurface()
         } catch (e: Exception) {
-            throw surfaceInputUnavailable("$MIME_AVC gave no input Surface", SurfaceInputStep.CREATE_INPUT_SURFACE)
+            throw surfaceInputUnavailable("${p.mime} gave no input Surface", SurfaceInputStep.CREATE_INPUT_SURFACE)
         }
         inputSurface = surface
 
@@ -365,7 +415,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         try {
             codec.start()
         } catch (e: Exception) {
-            throw surfaceInputUnavailable("$MIME_AVC failed to start in Surface-input mode", SurfaceInputStep.CODEC_START)
+            throw surfaceInputUnavailable("${p.mime} failed to start in Surface-input mode", SurfaceInputStep.CODEC_START)
         }
         surfaceInputActive = true
         return codec
@@ -386,36 +436,37 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
      * exporter's CPU restart never double-encodes a frame.
      */
     private fun configureSessionSurfaceCodec(w: Int, h: Int): MediaCodec {
+        val p = plan ?: ExportPlan.legacy(w, h)
         val codec = try {
-            MediaCodec.createEncoderByType(MIME_AVC)
+            createVideoEncoder(p)
         } catch (e: Exception) {
-            throw surfaceInputUnavailable("no $MIME_AVC encoder is available on this device", SurfaceInputStep.CODEC_CREATE)
+            throw surfaceInputUnavailable("no ${p.mime} encoder is available on this device", SurfaceInputStep.CODEC_CREATE)
         }
         videoCodec = codec
-        logEncoderIdentity(codec, MIME_AVC)
+        logEncoderIdentity(codec, p.mime, video = true)
         try {
             codec.configure(
-                videoFormat(w, h, surface = true),
+                videoMediaFormat(p, surface = true),
                 null,
                 null,
                 MediaCodec.CONFIGURE_FLAG_ENCODE,
             )
         } catch (e: Exception) {
             throw surfaceInputUnavailable(
-                "$MIME_AVC rejected the ${w}x$h COLOR_FormatSurface format",
+                "${p.mime} rejected the ${w}x$h COLOR_FormatSurface format",
                 SurfaceInputStep.CODEC_CONFIG,
             )
         }
         val surface = try {
             codec.createInputSurface()
         } catch (e: Exception) {
-            throw surfaceInputUnavailable("$MIME_AVC gave no input Surface", SurfaceInputStep.CREATE_INPUT_SURFACE)
+            throw surfaceInputUnavailable("${p.mime} gave no input Surface", SurfaceInputStep.CREATE_INPUT_SURFACE)
         }
         inputSurface = surface
         try {
             codec.start()
         } catch (e: Exception) {
-            throw surfaceInputUnavailable("$MIME_AVC failed to start in Surface-input mode", SurfaceInputStep.CODEC_START)
+            throw surfaceInputUnavailable("${p.mime} failed to start in Surface-input mode", SurfaceInputStep.CODEC_START)
         }
         return codec
     }
@@ -590,26 +641,32 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
      * [EncoderDiagnostics]). The video encoder's line is what the owner
      * greps to answer "which encoder really ran".
      */
-    private fun configure(type: String, format: MediaFormat): MediaCodec {
+    private fun configure(type: String, format: MediaFormat, videoPlan: ExportPlan? = null): MediaCodec {
         val codec = try {
-            MediaCodec.createEncoderByType(type)
+            if (videoPlan != null) createVideoEncoder(videoPlan) else MediaCodec.createEncoderByType(type)
         } catch (e: Exception) {
-            throw IllegalStateException(
+            throw rejected(
+                videoPlan != null,
                 Mp4ExportErrors.kotlinMessage(
                     Mp4ExportErrors.STAGE_CONFIGURE,
-                    "no $type encoder is available on this device",
+                    if (videoPlan?.encoderName != null) {
+                        "the $type encoder ${videoPlan.encoderName} could not be created"
+                    } else {
+                        "no $type encoder is available on this device"
+                    },
                     "retry the export on a device with a $type encoder",
                     e.message,
                 )
             )
         }
-        logEncoderIdentity(codec, type)
+        logEncoderIdentity(codec, type, video = videoPlan != null)
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
         } catch (e: Exception) {
             codec.release()
-            throw IllegalStateException(
+            throw rejected(
+                videoPlan != null,
                 Mp4ExportErrors.kotlinMessage(
                     Mp4ExportErrors.STAGE_CONFIGURE,
                     "$type rejected the ${format.getInteger(MediaFormat.KEY_WIDTH)}x" +
@@ -622,6 +679,10 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         return codec
     }
 
+    /** A video-encoder refusal is the typed trigger of the one plan-fix retry; audio stays a plain failure. */
+    private fun rejected(video: Boolean, message: String): IllegalStateException =
+        if (video) VideoConfigRejected(message) else IllegalStateException(message)
+
     /**
      * Records and logs the created encoder's real identity (owner request
      * 2026-11-12 §4): the vendor's codecInfo name, the canonical name, the
@@ -631,7 +692,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
      * diagnostics). minSdk 34 makes the API-29 fields readable everywhere
      * this app runs.
      */
-    private fun logEncoderIdentity(codec: MediaCodec, requestedMime: String) {
+    private fun logEncoderIdentity(codec: MediaCodec, requestedMime: String, video: Boolean = false) {
         try {
             val info = codec.codecInfo
             val record = EncoderDiagnostics(
@@ -640,6 +701,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
                 hardwareAccelerated = info.isHardwareAccelerated,
                 softwareOnly = info.isSoftwareOnly,
             )
+            if (video) identity = record
             Log.i(TAG, EncoderDiagnostics.logLine(record, requestedMime))
         } catch (e: Exception) {
             // Identity is diagnostics, not the contract: log the miss and
@@ -649,39 +711,29 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         }
     }
 
-    private fun videoFormat(w: Int, h: Int, surface: Boolean): MediaFormat =
-        MediaFormat.createVideoFormat(MIME_AVC, w, h).apply {
-            setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                if (surface) {
-                    // §10: Surface input wants the Surface color format; the
-                    // frames arrive through the EGL window surface, not
-                    // through input buffers.
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
-                } else {
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
-                },
+    /** Copies a [FormatSpec] (the pure format decision) into a real MediaFormat. */
+    private fun toMediaFormat(spec: FormatSpec): MediaFormat {
+        val f = if (spec.width > 0) {
+            MediaFormat.createVideoFormat(spec.mime, spec.width, spec.height)
+        } else {
+            MediaFormat.createAudioFormat(
+                spec.mime,
+                spec.values.getValue(MediaFormat.KEY_SAMPLE_RATE).toInt(),
+                spec.values.getValue(MediaFormat.KEY_CHANNEL_COUNT).toInt(),
             )
-            // ~20 Mbps at 4K (3840*2160*2.4 = 19.9 Mbps), clamped.
-            setInteger(
-                MediaFormat.KEY_BIT_RATE,
-                (w.toLong() * h * 24 / 10).toInt().coerceIn(2_000_000, 25_000_000),
-            )
-            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
-            // SDR Rec.709 limited range (the YuvConverter's matrix).
-            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
-            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
         }
+        for ((k, v) in spec.values) {
+            when (v) {
+                is Int -> f.setInteger(k, v)
+                is Float -> f.setFloat(k, v)
+                else -> throw IllegalStateException("format key $k has an unsupported value type")
+            }
+        }
+        return f
+    }
 
-    private fun audioFormat(rate: Int, ch: Int): MediaFormat =
-        MediaFormat.createAudioFormat(MIME_AAC, rate, ch).apply {
-            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
-        }
+    private fun audioFormat(rate: Int, ch: Int, kbps: Int): MediaFormat =
+        toMediaFormat(ExportFormats.audio(rate, ch, kbps))
 
     override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
         val codec = videoCodec ?: throw notStarted()
@@ -694,12 +746,12 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         val tWait0 = System.nanoTime()
         val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
         if (index < 0) {
-            throw encodeFailure("$MIME_AVC returned no input buffer")
+            throw encodeFailure("$videoMime returned no input buffer")
         }
         val tCopy0 = System.nanoTime()
         try {
             val image = codec.getInputImage(index)
-                ?: throw encodeFailure("$MIME_AVC gave no input Image for this frame")
+                ?: throw encodeFailure("$videoMime gave no input Image for this frame")
             copyI420ToImage(i420, image, width, height)
             // The size must carry the frame's filled byte count computed from
             // the same plane strides the copy just used — the codec does NOT
@@ -834,10 +886,10 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
         val tWait0 = System.nanoTime()
         val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
         if (index < 0) {
-            throw encodeFailure("$MIME_AVC returned no input buffer")
+            throw encodeFailure("$videoMime returned no input buffer")
         }
         val image = codec.getInputImage(index)
-            ?: throw encodeFailure("$MIME_AVC gave no input Image for this frame")
+            ?: throw encodeFailure("$videoMime gave no input Image for this frame")
         heldInputIndex = index
         heldImage = image
         heldAcquireWaitNanos = System.nanoTime() - tWait0
@@ -1073,7 +1125,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
             if (drain(codec, isVideo, timeoutUs = 1_000_000)) return
         }
         throw encodeFailure(
-            (if (isVideo) MIME_AVC else MIME_AAC) + " did not finish within the deadline"
+            (if (isVideo) videoMime else MIME_AAC) + " did not finish within the deadline"
         )
     }
 
@@ -1214,7 +1266,7 @@ internal class MediaCodecMp4Writer : Mp4MediaWriter {
 
     private companion object {
         const val MIME_AVC = "video/avc"
-        const val MIME_AAC = "audio/mp4a-latm"
+        const val MIME_AAC = ExportFormats.MIME_AAC
         const val INPUT_TIMEOUT_US = 10_000_000L // 10 s: decode is slow, not stuck
         const val EOS_DEADLINE_NS = 10_000_000_000L // 10 s to drain after EOS
         // Owner request 2026-11-12 §4: the export diagnostics tag. Same
