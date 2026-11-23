@@ -152,6 +152,15 @@ public:
 
     ~Source();
 
+    // A NEW descriptor on the same file with its OWN open-file description
+    // (independent offset), for a second Source used on another thread —
+    // the decoder reads through a FILE* whose offset a dup() would share.
+    // Re-opens /proc/self/fd/N (Linux/Android) or the F_GETPATH path
+    // (macOS). The caller owns (and closes) it; -1 when not possible (a
+    // pipe/socket descriptor, e.g.) — callers then fall back to a blocking
+    // path on this Source. Round 3 (async optical sync).
+    int reopenIndependentFd() const;
+
     Source(const Source&) = delete;
     Source& operator=(const Source&) = delete;
 

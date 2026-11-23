@@ -9,6 +9,9 @@
 #include <memory>
 #include <utility>
 #include <unistd.h>
+#include <fcntl.h>
+#include <climits>
+#include <string>
 
 namespace rawedit {
 
@@ -20,6 +23,7 @@ struct SourceImpl {
     ContainerIdentity identity;
     CfaPattern cfa = CfaPattern::RGGB;
     int sensorOrientation = 0;
+    int fd = -1;  // the dup'd descriptor the decoder's FILE* wraps
 };
 
 namespace {
@@ -250,6 +254,7 @@ Result<std::unique_ptr<Source>> Source::open(int fd) {
         impl = std::make_unique<SourceImpl>();
         // Decoder(FILE*) takes ownership of `file` on success AND on failure
         // (its catch block closes the FILE* before rethrowing).
+        impl->fd = dupFd;
         impl->decoder = std::make_unique<motioncam::Decoder>(file);
         if (!initMeta(*impl)) {
             return Result<std::unique_ptr<Source>>::fail(ErrorCode::Unsupported,
@@ -288,6 +293,20 @@ Result<std::unique_ptr<Source>> Source::open(const std::string& path) {
 
 Source::~Source() {
     delete mImpl;
+}
+
+int Source::reopenIndependentFd() const {
+    if (mImpl == nullptr || mImpl->fd < 0)
+        return -1;
+#if defined(__APPLE__)
+    char path[PATH_MAX];
+    if (::fcntl(mImpl->fd, F_GETPATH, path) == -1)
+        return -1;
+    return ::open(path, O_RDONLY | O_CLOEXEC);
+#else
+    const std::string path = "/proc/self/fd/" + std::to_string(mImpl->fd);
+    return ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+#endif
 }
 
 size_t Source::frameCount() const {

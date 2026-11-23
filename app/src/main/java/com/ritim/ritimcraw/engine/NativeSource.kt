@@ -838,6 +838,7 @@ class NativeSource private constructor(
             stabTrimMs: Float,
             frameIndex: Int,
             maxDim: Int,
+            asyncRefine: Boolean,
         ): FloatArray?
 
         /**
@@ -1529,14 +1530,17 @@ class NativeSource private constructor(
             stabTrimMs: Float,
             frameIndex: Int,
             maxDim: Int,
+            // Round 3: preview passes true (the optical sync runs in the
+            // background, the anchor carries the first frames); export
+            // passes false and waits so every frame rides one offset.
+            asyncRefine: Boolean = false,
         ): FloatArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             return nativeStabWarpResolve(
                 handle, gyroPath, stabMode, stabStrength,
-                stabZoomLimit, stabFocalMm, stabTrimMs, frameIndex, maxDim,
-            )
+                stabZoomLimit, stabFocalMm, stabTrimMs, frameIndex, maxDim, asyncRefine)
         }
 
         /**
