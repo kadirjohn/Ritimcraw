@@ -1429,6 +1429,60 @@ class Mp4ExporterTest {
     }
 
     @Test
+    fun export_audio_snapshot_wins_over_live_link() {
+        // QA-15 / EX-11: the job's ENQUEUE-time audio choice wins over the
+        // live link. Queued ATTACHED, the user detached afterwards (the
+        // live seam now says DETACHED) -> the export still carries audio.
+        val session = FakeSession(frames = 2, audio = true)
+        val writer = FakeWriter()
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = { writer },
+            engine = freshEngine(),
+            audioLinkFor = { AudioLinkState.DETACHED },
+        )
+        val out = File(tmp.root, "clip.mp4")
+        val queued = job().copy(audioLink = AudioLinkState.ATTACHED)
+        val result = runBlocking { exporter.export(queued, 7, out) }
+        assertEquals(State.DONE, result.state)
+        assertTrue(writer.audioBlocks > 0)
+        assertEquals(48000, writer.startArgs!![4])
+    }
+
+    @Test
+    fun export_audio_snapshot_detached_stays_video_only_after_reattach() {
+        // The mirror case: queued DETACHED, re-attached before the retry
+        // ran -> the retry honors the queued choice (video-only).
+        val session = FakeSession(frames = 2, audio = true)
+        val writer = FakeWriter()
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = { writer },
+            engine = freshEngine(),
+            audioLinkFor = { AudioLinkState.ATTACHED },
+        )
+        val out = File(tmp.root, "clip.mp4")
+        val retried = job().copy(audioLink = AudioLinkState.DETACHED).requeued()
+        assertEquals(AudioLinkState.DETACHED, retried.audioLink)
+        val result = runBlocking { exporter.export(retried, 7, out) }
+        assertEquals(State.DONE, result.state)
+        assertEquals(0, writer.audioBlocks)
+        assertEquals(0, writer.startArgs!![4])
+    }
+
+    @Test
+    fun effective_audio_link_falls_back_to_live_for_legacy_rows() {
+        // A row queued before the snapshot field (audioLink == null)
+        // keeps the legacy live lookup exactly.
+        val exporter = Mp4Exporter(audioLinkFor = { AudioLinkState.REMOVED })
+        assertEquals(AudioLinkState.REMOVED, exporter.effectiveAudioLink(job()))
+        assertEquals(
+            AudioLinkState.ATTACHED,
+            exporter.effectiveAudioLink(job().copy(audioLink = AudioLinkState.ATTACHED)),
+        )
+    }
+
+    @Test
     fun export_mux_failure_cleans_up_and_fails() {
         val session = FakeSession(frames = 2)
         val writer = FakeWriter(finishOk = false)

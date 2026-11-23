@@ -1419,6 +1419,16 @@ fun AppNav(
                                     // no resolution seam).
                                     resolutionW = resolutionW,
                                     resolutionH = resolutionH,
+                                    // Audio choice snapshot at queue time
+                                    // (QA-15 / EX-11): a retry after a kill
+                                    // starts with the SAME audio choice even
+                                    // if the user detached/reattached since.
+                                    // Only MP4 carries audio; null elsewhere.
+                                    audioLink = if (target == Target.MP4) {
+                                        stores.audio.load().link(r.sourceId).state
+                                    } else {
+                                        null
+                                    },
                                 )
                             )
                             exportJobs = stores.exports.all()

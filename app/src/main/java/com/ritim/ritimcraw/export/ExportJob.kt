@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.RenderBackend
 
 /**
@@ -134,6 +135,28 @@ data class ExportJob(
     val resolutionW: Int? = null,
     /** [resolutionW]'s pair; both null or both set, never half a pair. */
     val resolutionH: Int? = null,
+    /**
+     * The source's audio link state snapshotted at ENQUEUE time (şartname
+     * QA-15: "Retry aynı proje snapshot'ı ve ses seçimiyle başlar"; EX-11:
+     * "job kimliği, proje snapshot'ı ve ses track seçimi korunur").
+     *
+     * Before this field the MP4 exporter resolved the audio choice LIVE at
+     * run (`Mp4Exporter.audioLinkFor`, the AudioStore's CURRENT record), so
+     * a job queued with audio attached, killed, and retried after the user
+     * detached the audio exported video-only — the one PARTIAL clause the
+     * 2026-11-16 acceptance audit routed (docs/ACCEPTANCE_GAPS_2026-11-16.md
+     * QA-15). The snapshot rule is the grade's: user intent at the moment
+     * the export was queued; [requeued] keeps it, so Retry starts with the
+     * SAME audio choice.
+     *
+     * NULL = "not snapshotted": every row queued before this field, every
+     * non-MP4 job (DNG/LINEAR/PHOTO carry no audio) and the timeline job
+     * (its audio leg is the later mix pass). A null keeps the legacy
+     * behavior exactly — the exporter falls back to the live lookup — and
+     * is omitted from project.json so pre-field rows stay byte-identical
+     * (the frameIndex/manualRotationDeg shape).
+     */
+    val audioLink: AudioLinkState? = null,
 ) {
 
     /**
@@ -150,6 +173,8 @@ data class ExportJob(
      * Retry source: the same job re-queued with the same snapshot. The id and
      * queued state stay; the old failure detail, the progress and the old
      * publish are cleared — the retried job publishes afresh when it lands.
+     * The audio choice ([audioLink]) is part of the snapshot and is KEPT
+     * (QA-15: retry starts with the same project snapshot AND audio choice).
      */
     fun requeued(): ExportJob =
         copy(
