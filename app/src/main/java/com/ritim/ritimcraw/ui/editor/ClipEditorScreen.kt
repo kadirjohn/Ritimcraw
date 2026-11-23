@@ -580,15 +580,21 @@ object EditorPreviewLogic {
      * playback and drag renders skip the merge and the settle render
      * lands it.
      *
-     * [cropActive] is the request's DISPLAY-grade crop state (the grade
-     * the pump actually renders — crop-overlay mode swaps in the
-     * crop-neutral display grade, so overlay mode stays GPU-eligible):
-     * PublishCrop resamples an ACTIVE crop, and the GPU path's published
-     * stats pack is 256-long-edge — resampling that pack would go blocky,
-     * and the GPU window draw is aspect-fit UNCROPPED, a display mismatch
-     * vs the CPU path's cropped preview. An active crop/straighten
-     * therefore forces CPU (the same inline test PublishCrop.plan runs:
-     * straightenDeg == 0 && CropState.isFull).
+     * Since A2 (owner request 2026-11-23, guide A2) an ACTIVE crop/
+     * straighten is GPU-ELIGIBLE: the window pass maps the crop +
+     * straighten itself (WINDOW_FRAGMENT's uCrop* uniforms — the
+     * mapping single-sourced in CropState/GpuCropMap.requestCrop, the
+     * manual delta mapRect'ed before the seam), the aspect-fit rect and
+     * the stats dims use the CROPPED output dims (the scopes analyse the
+     * cropped region, the CPU path's own shape), and the publish fold
+     * serves the published pack AS-IS (PublishCrop must not crop it
+     * again — guide A2). The pre-A2 rule (any active crop forces the
+     * whole preview to the CPU, because the GPU window drew uncropped)
+     * is gone. Crop-overlay mode stays exactly as it was already:
+     * [displayGradeForCropOverlay] swaps in the crop-neutral display
+     * grade, so overlay frames render uncropped and the handles stay
+     * aligned with the uncropped window (the guide's crop-overlay rule,
+     * unchanged by A2).
      *
      * [zebraOn] forces CPU for its renders: zebraFrame derives from the
      * PUBLISHED frame (ZebraOverlay.paint), and the GPU pack's 256
@@ -611,12 +617,12 @@ object EditorPreviewLogic {
      */
     fun gpuPreviewEligible(
         grade: GradeK,
-        cropActive: Boolean,
         zebraOn: Boolean,
         lutTexturePathOk: Boolean = false,
     ): Boolean {
         if (zebraOn) return false
-        if (cropActive) return false
+        // A2 (2026-11-23, guide A2): the crop no longer forces CPU — the
+        // window pass maps it (the KDoc block above).
         if (BackendRules.fragmentUncoveredStages(grade, lutTexturePathOk).isNotEmpty()) return false
         if (BackendRules.fragmentUncoveredPreStages(grade).isNotEmpty()) return false
         return true
@@ -2287,9 +2293,11 @@ fun ClipEditorScreen(
                         // The M3 export per-frame dispatch pattern, mirrored
                         // for the preview: when the GPU path is active (the
                         // setting asks, a live GPU session exists, and THIS
-                        // request is eligible — every active stage covered, no
-                        // active crop in the request's display grade, zebra
-                        // off; the gyro warp stopped blocking eligibility with
+                        // request is eligible — every active stage covered,
+                        // zebra off; since A2 (2026-11-23, guide A2) an
+                        // active crop/straighten is eligible too (the window
+                        // pass maps it); the gyro warp stopped blocking
+                        // eligibility with
                         // its GPU port — the pass is unconditionally fragment-
                         // covered), try the GPU session first. A
                         // null verdict (render failure OR malformed pack)
@@ -2304,6 +2312,17 @@ fun ClipEditorScreen(
                         var gpuServed = false
                         var result: Result<PreviewFrame>? = null
                         val gpu = gpuSession
+                        // The A2 crop verdict for this request (2026-11-23,
+                        // guide A2): computed inside the GPU arm (the
+                        // eligibility gate passed), read by the publish fold
+                        // BELOW — a GPU-served frame with an active crop
+                        // skips PublishCrop (the pack is already cropped)
+                        // and must not shrink effectiveDims (the uncropped
+                        // pair governs). False when the GPU arm never ran
+                        // (servedByGpuWindow is false too, so the fold reads
+                        // the CPU path verbatim).
+                        var gpuCropParams: FloatArray? = null
+                        var gpuCropActive = false
                         // gpuSurfaceLive is read at request time exactly like
                         // session/gpuSession above (snapshot state reads inside
                         // the coroutine see the current value): the surface
@@ -2324,13 +2343,6 @@ fun ClipEditorScreen(
                             currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
                             EditorPreviewLogic.gpuPreviewEligible(
                                 grade = req.grade,
-                                cropActive = req.grade.straightenDeg != 0f ||
-                                    !CropState.isFull(
-                                        CropState.RectF(
-                                            req.grade.cropX, req.grade.cropY,
-                                            req.grade.cropW, req.grade.cropH,
-                                        )
-                                    ),
                                 zebraOn = currentZebraOn,
                                 lutTexturePathOk = gpuLutTexturePathOk,
                             )
@@ -2365,6 +2377,21 @@ fun ClipEditorScreen(
                             } else {
                                 floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
                             }
+                            // The A2 crop verdict (owner request 2026-11-23,
+                            // guide A2): the mapRect'ed parcel for THIS
+                            // request's DISPLAY grade through the manual
+                            // rotation delta (currentManualRotationDeg —
+                            // the rememberUpdatedState read the fold below
+                            // also uses). Null = the neutral crop group; a
+                            // non-null parcel rides the seam LAST and the
+                            // native planCrop owns the dims-dependent
+                            // folds. The hoisted pair feeds the publish fold
+                            // below (the declarations live at the dispatch
+                            // prelude — the fold is outside this block).
+                            gpuCropParams = GpuCropMap.requestCrop(
+                                req.grade, currentManualRotationDeg,
+                            )
+                            gpuCropActive = gpuCropParams != null
                             // GRADE PARCEL (commit b): the grade crosses as ONE
                             // flat FloatArray, encoded HERE once per request —
                             // AFTER the temporalNr tier fold (the DN-08 gate the
@@ -2444,14 +2471,21 @@ fun ClipEditorScreen(
                                 // A1: the per-request stats readback mode
                                 // (the demand x class x toggle fold above).
                                 statsMode = statsMode,
-                                // A2 (2026-11-23, guide A2): the seam's crop pair
-                                // — Task 2 widens the door; the editor threads the
-                                // real GpuCropMap.requestCrop verdict in the next
-                                // commit, so this call site sends the identity
-                                // placeholder for now (crop-inactive frames stay
-                                // byte-identical to the pre-A2 pass).
-                                cropActive = false,
-                                cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
+                                // The A2 crop pair (owner request 2026-11-23,
+                                // guide A2): the request builder's verdict for
+                                // THIS frame. req.grade here is the DISPLAY
+                                // grade — while the crop overlay is open it is
+                                // already crop-neutral via
+                                // displayGradeForCropOverlay, so overlay frames
+                                // render uncropped and the handles stay aligned
+                                // with the uncropped window (the guide's
+                                // crop-overlay rule, unchanged). Null = the
+                                // neutral crop group (the same inline test
+                                // PublishCrop.plan runs): cropOn false + the
+                                // all-neutral parcel (the JNI seam takes a
+                                // non-null array), the shader's identity path.
+                                cropActive = gpuCropParams != null,
+                                cropParams = gpuCropParams ?: GpuCropMap.NEUTRAL_CROP_PARAMS,
                             )
                             if (gpuFrame != null) {
                                 result = Result.success(gpuFrame)
@@ -2565,10 +2599,27 @@ fun ClipEditorScreen(
                                     // slider ranges never math against 1x1
                                     // (a 16:9 preset on a 4:3 clip would
                                     // otherwise compute h=0.5625, not 0.75).
-                                    if (PreviewSurfaceRatio.carriesShape(f.width, f.height)) {
-                                        effectiveDims = RotationState.rotatedDims(
-                                            f.width, f.height, currentManualRotationDeg,
-                                        )
+                                    // A2 (2026-11-23, guide A2): a GPU-served
+                                    // frame with an ACTIVE crop must not
+                                    // shrink the pair either — its stats
+                                    // pack is already CROPPED (the window
+                                    // pass maps the crop), so f's dims are
+                                    // the CROPPED dims, and the aspect
+                                    // presets + the crop overlay keep
+                                    // mathing against the UNCROPPED dims.
+                                    // The last uncropped pair governs:
+                                    // overlay frames (the crop-neutral
+                                    // display grade updates as today), prior
+                                    // frames, or the documented 0x0
+                                    // pre-first-publish degradation. The CPU
+                                    // path still captures f pre-crop below,
+                                    // as it always did.
+                                    if (!servedByGpuWindow || !gpuCropActive) {
+                                        if (PreviewSurfaceRatio.carriesShape(f.width, f.height)) {
+                                            effectiveDims = RotationState.rotatedDims(
+                                                f.width, f.height, currentManualRotationDeg,
+                                            )
+                                        }
                                     }
                                     // A1 async stats (owner request 2026-11-23,
                                     // guide A1(b).3): an ASYNC frame that
@@ -2587,6 +2638,22 @@ fun ClipEditorScreen(
                                     val keepLastStats = servedByGpuWindow &&
                                         keepsLastPublishedFrame(f.statsMode, f.width, f.height)
                                     if (!keepLastStats) {
+                                    // A2 (owner request 2026-11-23, guide A2):
+                                    // when the GPU WINDOW served this frame,
+                                    // the published pack is ALREADY cropped
+                                    // by the window pass — both shapes are
+                                    // publish-ready: a cropped/straightened
+                                    // request's pack IS the cropped region
+                                    // (the stats dims are the cropped dims),
+                                    // and a crop-neutral request's pack is
+                                    // today's uncropped shape. PublishCrop
+                                    // must not crop it again (guide A2's
+                                    // own words: resampling the 256-pack
+                                    // would be blocky AND duplicated) —
+                                    // serve the pack DIRECTLY.
+                                    if (servedByGpuWindow) {
+                                        frame = f
+                                    } else {
                                     // Crop + straighten (RAW-09), OFF the
                                     // main thread (audit fix 2026-11-13): the
                                     // published preview is the GRADED frame
@@ -2606,7 +2673,9 @@ fun ClipEditorScreen(
                                     // under the same generation guard. The
                                     // pump AWAITS the resample, so it stays
                                     // serial: one render, one crop, one
-                                    // publish, in sequence order.
+                                    // publish, in sequence order. The CPU
+                                    // path keeps this block VERBATIM —
+                                    // its own tests stay green untouched.
                                     when (val plan = PublishCrop.plan(
                                         frame = f,
                                         grade = req.grade,
@@ -2624,6 +2693,7 @@ fun ClipEditorScreen(
                                                 frame = cropped
                                             }
                                         }
+                                    }
                                     }
                                     // The rendered frame's index, published
                                     // beside the frame (feature N6): the

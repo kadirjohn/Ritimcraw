@@ -758,7 +758,6 @@ class EditorPreviewLogicTest {
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(),
-                cropActive = false,
                 zebraOn = false,
             )
         )
@@ -817,7 +816,6 @@ class EditorPreviewLogicTest {
                     splitHighlightHue = 210f,
                     splitBalance = -25f,
                 ),
-                cropActive = false,
                 zebraOn = false,
             )
         )
@@ -832,21 +830,24 @@ class EditorPreviewLogicTest {
         assertFalse(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(),
-                cropActive = false,
                 zebraOn = true,
             )
         )
     }
 
     @Test
-    fun an_active_crop_forces_the_cpu_path() {
-        // PublishCrop resamples an active crop and the GPU window draw is
-        // aspect-fit UNCROPPED — a display mismatch. The same inline test
-        // PublishCrop.plan runs (straighten or non-full rect).
-        assertFalse(
+    fun an_active_crop_is_eligible_since_the_gpu_crop() {
+        // A2 GPU crop/straighten (owner request 2026-11-23, guide A2): the
+        // window pass maps the crop + straighten itself (WINDOW_FRAGMENT's
+        // uCrop* uniforms, the mapping single-sourced in
+        // CropState/GpuCropMap), the stats pack is cropped, and the
+        // publish fold serves it as-is (PublishCrop SKIPS GPU-served
+        // frames) — a cropped + straightened grade stays on the GPU. The
+        // pre-A2 rule (any active crop forces the whole preview to CPU)
+        // is gone; the zebra rule stays until A3.
+        assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
-                grade = GradeK(cropW = 0.5f, cropH = 1f),
-                cropActive = true,
+                grade = GradeK(cropW = 0.5f, cropH = 1f, straightenDeg = 7f),
                 zebraOn = false,
             )
         )
@@ -863,7 +864,6 @@ class EditorPreviewLogicTest {
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(stabilization = true),
-                cropActive = false,
                 zebraOn = false,
             )
         )
@@ -888,8 +888,7 @@ class EditorPreviewLogicTest {
                 "grade must be eligible: $grade",
                 EditorPreviewLogic.gpuPreviewEligible(
                     grade = grade,
-                    cropActive = false,
-                    zebraOn = false,
+                        zebraOn = false,
                 ),
             )
         }
@@ -908,7 +907,6 @@ class EditorPreviewLogicTest {
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(temporalNr = true, temporalStrength = 30f),
-                cropActive = false,
                 zebraOn = false,
             )
         )
@@ -924,7 +922,6 @@ class EditorPreviewLogicTest {
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(stabilization = true),
-                cropActive = false,
                 zebraOn = false,
             )
         )
@@ -944,7 +941,6 @@ class EditorPreviewLogicTest {
         assertFalse(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(lutId = "milog", lutStrength = 85f),
-                cropActive = false,
                 zebraOn = false,
                 lutTexturePathOk = false,
             )
@@ -952,7 +948,6 @@ class EditorPreviewLogicTest {
         assertTrue(
             EditorPreviewLogic.gpuPreviewEligible(
                 grade = GradeK(lutId = "milog", lutStrength = 85f),
-                cropActive = false,
                 zebraOn = false,
                 lutTexturePathOk = true,
             )
