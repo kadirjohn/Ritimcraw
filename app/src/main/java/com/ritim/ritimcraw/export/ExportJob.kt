@@ -157,6 +157,19 @@ data class ExportJob(
      * (the frameIndex/manualRotationDeg shape).
      */
     val audioLink: AudioLinkState? = null,
+    /**
+     * (E1, plan 7.3) the MP4 export choices snapshotted at ENQUEUE time,
+     * exactly like the grade: a later change in the export sheet must not
+     * alter an in-flight export, and Retry re-queues with the same
+     * settings. NULL = the job was queued before E1 (or is not an MP4
+     * job): it exports with today's fixed behavior (AVC 8-bit High, the
+     * old bitrate formula, KEY_FRAME_RATE 30, AAC 128 - see
+     * [ExportPlan.legacy]) and stays byte-identical in project.json. A
+     * row whose settings a newer app wrote and this one cannot read is
+     * NOT run with the legacy behavior: [ExportStore] fails it honestly.
+     * Persisted as one nested object (ExportSettingsWire), by enum NAME.
+     */
+    val settings: ExportSettings? = null,
 ) {
 
     /**

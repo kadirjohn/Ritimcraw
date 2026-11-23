@@ -191,6 +191,13 @@ class ExportStore(private val file: File) {
                 if (j.audioLink != null) {
                     sb.append(",\"audioLink\":\"").append(j.audioLink.name).append('"')
                 }
+                // settings (E1 export choices): omit-when-null - every job
+                // queued before E1 keeps the field absent, so files written
+                // before it stay byte-identical and old rows parse as null
+                // (today's fixed AVC behavior, exactly what they always ran).
+                if (j.settings != null) {
+                    sb.append(",\"settings\":").append(ExportSettingsWire.render(j.settings))
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -274,13 +281,27 @@ class ExportStore(private val file: File) {
             val arr = root["exports"] as? List<*> ?: return emptyList()
             return arr.mapIndexedNotNull { idx, item ->
                 val m = item as? Map<*, *> ?: return@mapIndexedNotNull null
+                // settings (E1): absent = a pre-E1 row, null = the legacy
+                // behavior. A PRESENT value this build cannot read (a newer
+                // version, an unknown enum) must never fall back to the
+                // legacy export silently: the row is kept but a job that
+                // would still run is FAILED with the reason, so the user
+                // re-queues it instead of getting a different file.
+                val settingsParsed = if (m.containsKey("settings")) ExportSettingsWire.parse(m["settings"]) else null
+                val unreadable = settingsParsed as? ExportSettingsWire.Parsed.Unsupported
+                val parsedState = enumOrNullOr(idx, m["state"], State.QUEUED)
+                val runnable = parsedState == State.QUEUED || parsedState == State.RUNNING
                 ExportJob(
                     id = m["id"] as? String ?: return@mapIndexedNotNull null,
                     sourceId = m["sourceId"] as? String ?: return@mapIndexedNotNull null,
                     snapshot = parseSnapshot(m["snapshot"]),
                     target = enumOrNullOr(idx, m["target"], Target.DNG),
-                    state = enumOrNullOr(idx, m["state"], State.QUEUED),
-                    detail = m["detail"] as? String,
+                    state = if (unreadable != null && runnable) State.FAILED else parsedState,
+                    detail = if (unreadable != null && runnable) {
+                        "Export settings could not be read (${unreadable.reason}) - recovery: queue the export again"
+                    } else {
+                        m["detail"] as? String
+                    },
                     framesDone = (m["framesDone"] as? Double)?.toInt(),
                     framesTotal = (m["framesTotal"] as? Double)?.toInt(),
                     publishedUri = m["publishedUri"] as? String,
@@ -330,6 +351,7 @@ class ExportStore(private val file: File) {
                     audioLink = (m["audioLink"] as? String)?.let { w ->
                         AudioLinkState.entries.firstOrNull { it.name == w }
                     },
+                    settings = (settingsParsed as? ExportSettingsWire.Parsed.Ok)?.settings,
                 )
             }
         }
