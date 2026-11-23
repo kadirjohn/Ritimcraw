@@ -61,6 +61,7 @@ add_library(rawedit STATIC
     src/Warp.cpp
     src/RawStats.cpp
     src/Parallel.cpp
+    src/ImageStab.cpp
     src/Yuv.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
@@ -101,6 +102,10 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_optical_sync tests/test_optical_sync.cpp)
     target_include_directories(test_optical_sync PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_optical_sync PRIVATE rawedit)
+    # test_image_stab: image-based stabilization core (synthetic only).
+    add_executable(test_image_stab tests/test_image_stab.cpp)
+    target_include_directories(test_image_stab PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_image_stab PRIVATE rawedit)
     # test_yuv: byte-exact RGB888->I420 contract with export/YuvConverter.kt
     # (on arm64 hosts the NEON path runs, so NEON-vs-scalar is proven too).
     # -ffp-contract=off matches the Yuv.cpp build: the reference formulas in
@@ -132,6 +137,7 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME stabilization COMMAND test_stabilization)
     add_test(NAME warp COMMAND test_warp)
     add_test(NAME optical_sync COMMAND test_optical_sync)
+    add_test(NAME image_stab COMMAND test_image_stab)
     add_test(NAME yuv COMMAND test_yuv)
     add_test(NAME color COMMAND test_color)
     add_test(NAME bench_develop COMMAND bench_develop)

@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -149,6 +149,10 @@ echo "== building tests =="
 # finds the STEPS/media/test fixtures.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_optical_sync.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_optical_sync"
+# test_image_stab: image-based stabilization core (S1 pairwise motion;
+# synthetic ground truth only, no fixtures, no cwd needs).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_image_stab.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_image_stab"
 # test_rawstats: RAW histogram stats (feature N6) on synthetic CFA
 # fixtures — no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_rawstats.cpp" \
@@ -213,6 +217,8 @@ echo "== running test_gpu_crop_map =="
 "$BUILD/test_gpu_crop_map"
 echo "== running test_optical_sync =="
 (cd "$ROOT" && "$BUILD/test_optical_sync")
+echo "== running test_image_stab =="
+"$BUILD/test_image_stab"
 echo "== running test_rawstats =="
 "$BUILD/test_rawstats"
 echo "== running test_yuv =="
