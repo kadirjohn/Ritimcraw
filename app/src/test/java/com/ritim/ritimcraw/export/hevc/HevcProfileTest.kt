@@ -127,11 +127,26 @@ class HevcProfileTest {
         assertTrue(gate != null)
         assertEquals("hlg-editing", gate!!.featureName)   // FEATURE_HlgEditing
         assertEquals("FEATURE_HlgEditing", gate.docName)
-        // The API gate as DATA: the constant does not exist at minSdk
-        // 34 (first present, @FlaggedApi, in the API 36 SDK) — an
-        // API-35+ feature must not be called unguarded on minSdk 34.
-        assertEquals(36, gate.requiredApiLevel)
+        // The API gate as DATA: FEATURE_HlgEditing arrived with API 35
+        // (plan 13.2) — queried by the string above, never the constant,
+        // and never below API 35 (an API-35+ feature must not be called
+        // unguarded on minSdk 34).
+        assertEquals(35, gate.requiredApiLevel)
         assertTrue(gate.requiredApiLevel > 34)
+    }
+
+    @Test
+    fun hlg_gate_names_the_api34_fallback_feature() {
+        // Below API 35 the HLG gate asks FEATURE_HdrEditing (API 33).
+        val fallback = HevcProfile.HLG.feature!!.belowApiFallback
+        assertTrue(fallback != null)
+        assertEquals("hdr-editing", fallback!!.featureName)
+        assertEquals("FEATURE_HdrEditing", fallback.docName)
+        assertEquals(33, fallback.requiredApiLevel)
+        assertTrue(fallback.requiredApiLevel <= 34) // reachable at minSdk
+        assertTrue(fallback.belowApiFallback == null) // one hop only
+        // The other gate is untouched by the fallback concept.
+        assertTrue(HevcProfile.HDR10.feature!!.belowApiFallback == null)
     }
 
     // ---- HDR10: Main10HDR10, PQ, static metadata, the hdr-editing gate ----

@@ -6,6 +6,7 @@ import com.ritim.ritimcraw.export.hevc.HevcPreflight.HevcRefusalStage
 import com.ritim.ritimcraw.export.hevc.HevcPreflight.HevcVerdict
 import com.ritim.ritimcraw.export.hevc.HevcPreflight.decide
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -163,17 +164,67 @@ class HevcPreflightTest {
     // ---- REFUSED: the API-gated feature (the model's guard data) ----
 
     @Test
-    fun hlg_at_api34_refuses_on_the_api_gate_before_any_feature_query() {
-        // FEATURE_HlgEditing does not exist at minSdk 34: the device leg
-        // must NOT query it, and the model refuses on the API gate.
-        val verdict = decide(HevcProfile.HLG, syntheticApi34())
+    fun hlg_at_api34_goes_through_the_hdr_editing_fallback_and_needs_a_trial_encode() {
+        // FEATURE_HlgEditing cannot exist at API 34 and is never queried
+        // there; HLG proceeds on FEATURE_HdrEditing (API 33) and the
+        // verdict says a trial encode (package E2) is still required.
+        val verdict = decide(HevcProfile.HLG, syntheticApi34(hdrEditing = true))
+        assertTrue(verdict is HevcVerdict.Supported)
+        val supported = verdict as HevcVerdict.Supported
+        assertTrue(supported.trialEncodeRequired)
+        assertEquals("c2.qti.hevc.encoder", supported.codecName)
+    }
+
+    @Test
+    fun hlg_at_api34_without_hdr_editing_refuses_naming_the_fallback_feature() {
+        val verdict = decide(HevcProfile.HLG, syntheticApi34(hdrEditing = false))
         assertTrue(verdict is HevcVerdict.Refused)
         val refused = verdict as HevcVerdict.Refused
-        assertEquals(HevcRefusalStage.FEATURE_API, refused.stage)
-        assertTrue(refused.reason.contains("API 36"))
-        assertTrue(refused.reason.contains("API 34"))
-        assertEquals("c2.qti.hevc.encoder", refused.codecName)
+        assertEquals(HevcRefusalStage.FEATURE_QUERY, refused.stage)
+        assertTrue(refused.reason.contains("FEATURE_HdrEditing"))
+        assertTrue(refused.reason.contains("API 34 path for"))
         assertTrue(refused.degradedOffer != null)
+    }
+
+    @Test
+    fun hlg_at_api34_never_consults_the_hlg_flag() {
+        // Even a (bogus) true hlg flag must not satisfy the API-34 path:
+        // the primary feature is not queried below its API.
+        val probe = syntheticApi34(hdrEditing = false).copy(hlgEditingSupported = true)
+        val verdict = decide(HevcProfile.HLG, probe)
+        assertEquals(HevcRefusalStage.FEATURE_QUERY, (verdict as HevcVerdict.Refused).stage)
+    }
+
+    @Test
+    fun hlg_at_api35_queries_the_hlg_flag_and_needs_no_trial_encode() {
+        val ok = decide(HevcProfile.HLG, syntheticAllSupported(api = 35))
+        assertTrue(ok is HevcVerdict.Supported)
+        assertFalse((ok as HevcVerdict.Supported).trialEncodeRequired)
+
+        // At API 35 the HLG flag is authoritative: hdr-editing does not stand in.
+        val noHlg = syntheticAllSupported(api = 35).copy(hlgEditingSupported = false)
+        val refused = decide(HevcProfile.HLG, noHlg) as HevcVerdict.Refused
+        assertEquals(HevcRefusalStage.FEATURE_QUERY, refused.stage)
+        assertTrue(refused.reason.contains("hlg-editing"))
+    }
+
+    @Test
+    fun hlg_below_the_fallbacks_own_api_still_refuses_on_the_api_gate() {
+        // Not reachable at minSdk 34, but the model must stay honest: a
+        // device below FEATURE_HdrEditing's API (33) has no path at all.
+        val probe = syntheticApi34(hdrEditing = true).copy(deviceApiLevel = 30)
+        val refused = decide(HevcProfile.HLG, probe) as HevcVerdict.Refused
+        assertEquals(HevcRefusalStage.FEATURE_API, refused.stage)
+        assertTrue(refused.reason.contains("API 35"))
+        assertTrue(refused.reason.contains("API 30"))
+    }
+
+    @Test
+    fun feature_lookup_is_by_string_name() {
+        val probe = syntheticApi34(hdrEditing = true)
+        assertTrue(probe.supportsFeature("hdr-editing"))
+        assertFalse(probe.supportsFeature("hlg-editing"))
+        assertFalse(probe.supportsFeature("no-such-feature"))
     }
 
     @Test
@@ -299,15 +350,15 @@ class HevcPreflightTest {
     }
 
     @Test
-    fun the_api_gate_precedes_the_feature_query_and_the_size_rate() {
-        // HLG at API 34 with everything else failing too: the API gate
-        // is the named stage — the model refuses BEFORE any feature
-        // query (the unguarded-call guard).
+    fun the_feature_stage_precedes_the_size_rate_for_hlg_at_api34() {
+        // The feature stage precedes size/rate: HLG at API 34 with
+        // hdr-editing absent AND the size refused names the feature
+        // stage, not the size.
         val verdict = decide(
             HevcProfile.HLG,
             syntheticApi34(sizeRate = false, hdrEditing = false),
         )
-        assertEquals(HevcRefusalStage.FEATURE_API, (verdict as HevcVerdict.Refused).stage)
+        assertEquals(HevcRefusalStage.FEATURE_QUERY, (verdict as HevcVerdict.Refused).stage)
     }
 
     @Test

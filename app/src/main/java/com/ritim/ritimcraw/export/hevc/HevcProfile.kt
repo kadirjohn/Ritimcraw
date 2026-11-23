@@ -162,15 +162,23 @@ enum class HevcProfile(
      * display-referred-in-signal, and the docs' HLG-editing feature is
      * explicit that HLG "does not require the generation of HDR metadata
      * and does not use an explicit HDR profile"). Gates on the codec's
-     * HLG editing capability — WHICH IS API-GATED: the
-     * FEATURE_HlgEditing constant ("hlg-editing") does not exist at
-     * minSdk 34 (first present, @FlaggedApi, in API 36's SDK; the
-     * research says "an API 35 feature must not be called unguarded on
-     * minSdk 34"), so the gate carries the required API level as data
-     * and the probe reports the device's API level; at API 34 the
-     * device leg must NOT query the feature by name and the decision
-     * refuses the HLG profile with the API-gate reason (see
-     * HevcPreflight).
+     * HLG editing capability — WHICH IS API-GATED: FEATURE_HlgEditing
+     * ("hlg-editing") arrived with Android 15 / API 35 (research
+     * 2026-11-23, plan 13.2; the local SDK jars are android-34 and
+     * android-36, so 35 could not be read off a jar). The feature is
+     * queried by its STRING name, never by the compile-time constant,
+     * so the code does not depend on the SDK that happens to be
+     * installed; an unknown feature name just answers false. The gate
+     * carries the required API level as data and the probe reports the
+     * device's API level.
+     *
+     * At API 34 the HLG feature cannot exist, but HLG is still
+     * reachable: Main10 + BT.2020 + HLG + limited range encodes
+     * directly through MediaCodec. The gate therefore names a
+     * [HevcFeatureGate.belowApiFallback] (FEATURE_HdrEditing, API 33);
+     * HevcPreflight lets an API-34 device through on that flag and
+     * marks the verdict `trialEncodeRequired` (the trial encode itself
+     * is package E2).
      */
     HLG(
         mime = "video/hevc",
@@ -184,9 +192,14 @@ enum class HevcProfile(
         colorStandardName = "BT2020",
         requiresHdrStaticInfo = false,
         feature = HevcFeatureGate(
-            featureName = "hlg-editing",   // FEATURE_HlgEditing (API 36 SDK)
-            requiredApiLevel = 36,
+            featureName = "hlg-editing",   // FEATURE_HlgEditing, queried by string
+            requiredApiLevel = 35,         // Android 15
             docName = "FEATURE_HlgEditing",
+            belowApiFallback = HevcFeatureGate(
+                featureName = "hdr-editing",   // FEATURE_HdrEditing
+                requiredApiLevel = 33,         // Android 13
+                docName = "FEATURE_HdrEditing",
+            ),
         ),
     ),
 
@@ -291,4 +304,13 @@ data class HevcFeatureGate(
     val requiredApiLevel: Int,
     /** The docs' constant name, for KDoc/log lines. */
     val docName: String,
+    /**
+     * The gate to ask INSTEAD when the device is below [requiredApiLevel]
+     * (null = no such path: refuse on the API gate). HLG uses it for the
+     * API 34 path (plan 13.2): FEATURE_HdrEditing (API 33) stands in for
+     * the missing FEATURE_HlgEditing; the verdict then carries
+     * `trialEncodeRequired`, because that flag is not HLG-specific and
+     * only a real trial encode (package E2) proves HLG output.
+     */
+    val belowApiFallback: HevcFeatureGate? = null,
 )
