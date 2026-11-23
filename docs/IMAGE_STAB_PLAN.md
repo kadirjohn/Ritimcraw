@@ -269,6 +269,70 @@ Dürüstlük kuralı: puan düşükse (a) UI söyler, (b) `Kullanılamaz` ise Im
 
 **A7 (`ExportAbSweep`):** yeni vakalar `stab-image` (`GradeK(stabilization=true, engine=1)`) ve `grade-stab-image`; CPU kapısı (`applyImageStab`) vs GPU kapısı (draw 10), AYNI matris. `pausedSkip` yalnız gyro motorunu atlar; analiz yoksa harness analizi önce çalıştırır (süre notuyla) ya da "SKIPPED: analiz yok" (EXPORT_MISMATCH sayılmaz). Kare sayısı kısa tutulur.
 
+### 4.1 S1–S3 uygulama ve ölçüm sonuçları (2026-11-23, masaüstü, Apple silicon, `-O2`)
+
+Her sayı `build/desktop/image_stab_measure` ile yeniden üretilir (`bench`, `analyze`, `plan`, `plan synth`, `lumacheck`; başlık yorumunda kullanım). Cihaz ölçülmedi (S12). Fikstür MCRAW'lar 3840x2160 CFA, 310 kare, ~30 fps (10.3 s).
+
+**Uygulananlar (plandan sapmalar işaretli):**
+- `ImageStab.h/.cpp` (S1+S2), `ImageStabSource.cpp` (Source döngüsü), `ImageStabPlan.cpp` (S3, `-ffp-contract=off`), `test_image_stab.cpp` (24 doctest vakası), `image_stab_measure.cpp`.
+- Hareket birimi: yükseklik-normalize (`u=(x-w/2)/h`), `Sim2{s,theta,tx,ty}`. Çift hareketi önceki→geçerli kare yönünde (sahne içeriğinin görüntüdeki hareketi).
+- Dosya (`.ristab`): başlık 56 bayt (plan 32 bayt kare kaydı; başlık planda "sürümlü başlık" idi, boyutu burada sabitlendi), kare başı 32 bayt, CRC32; kayıtlar yazılırken nicemlenir (f32, u8 oran/kapsama, mili-piksel artık) → kesintisiz koşu, checkpoint'ten devam ve dosyadan yükleme **bit-aynı** (test). `kImageStabAnalysisVersion = 1`.
+- **Sapma:** `floorGradRel` 0.02 → **0.005** (gradyan tabanı, luma aralığı p1..p99'un kesri/piksel). Düzgün 1/f dokulu sentetik karede 0.02 hiçbir köşe bırakmadı; gerçek kareler için kalibrasyon S2 fikstürlerinde yapıldı (iki klipte de 309/309 çift Ok).
+- **Sapma:** kenar marjı `edgeMargin = 0.003` yükseklik (720p'de 2 px) — çözünürlükten bağımsız plan için (önizleme ve export AYNI planı alır). Marj, düzeltmenin büyüklüğüyle 0.002'ye kadar rampalanır: kimlik düzeltme tam zoom 1 ister (aksi halde `zoomLimit=1.0` imkânsız olurdu; ilk denemede 68 karelik başarısızlık bu yüzden çıktı ve düzeltildi).
+- **Sapma:** güven sınırı `cap` (Ok 1, Weak 0.5, Lost 0; 0.2 s pencere) bütçenin uzun penceresine katılmaz, ayrı `min()` olarak uygulanır; aksi halde bir kayıp aralık çevresindeki ±2 s'de düzeltmeyi siler (testle yakalandı).
+- Zoom hattı: `ln z_i → rollingMax(±1 s) → Gauss(±1 s) → hız sınırı (ln Z eğimi ≤ r)`; her adım `Z_i ≥ z_i`'yi korur. `z_i(a)` monotonluğu VARSAYILMAZ: ikili arama yalnız aday üretir, her kare kesin köşe testinden geçer (≤6 tur küçült-yeniden yumuşat, sonra kare başına `a=0` son çaresi; sayaçlar `hardFallbackFrames`, `invalidSampleFrames`).
+
+**Doğruluk (sentetik, analitik doku, `test_image_stab`):** bilinen similarity için hata < 0.1 px, < 0.02°, < %0.1 ölçek (5 hareket, en büyüğü 22 px + 1.15° + %1 ölçek); %40 outlier blok ile aynı eşikler (3 tohum); sabit sahne (σ=1.5 gürültü) çift başına < 0.05 px, 20 kare birikim < 0.1 px; aynı kare çifti tam sıfır; iki koşu bit-aynı; düz/ilgisiz kare `Lost`/not-Ok; 1/3 kontrast klip izlenir; (70, −40) px'lik pan yalnız `prior` ile.
+
+**Kenar garantisi (S3):** 5000 rastgele yürüyüş (3 en-boy, Smooth/Lock/Horizon→Smooth, zoomLimit 1.0–1.5, ani sıçrama %3, kayıp çift %4, 30/60 fps): 200 bin+ kare, iki çözünürlük katmanında `coverageSlackPx ≥ -0.05`, `1 ≤ zoom ≤ limit`, `invalidSampleFrames == 0`; 500+ plan bütçeyi gerçekten kullandı. `composeWarpM` ile `warpFrame` aynı haritayı örnekler (doğrusal rampa, hata < 1e-3); 1280x720 ve 3840x2160 normalize geometri farkı < 1e-9.
+
+**Aşama süreleri (ms/çift, 640x360, sentetik `bench`, 60 çift; tahmin ~5 ms idi):**
+
+| Aşama | ms/çift |
+|---|---|
+| piramit + gradyan (2 kare) | 0.68 |
+| köşe tespiti (Shi-Tomasi + ızgara) | 3.25 |
+| LK (ileri + geri) | 2.34 |
+| RANSAC + LSQ | 0.03 |
+| **toplam** | **6.30** |
+
+Gerçek klip (`analyze`, tüm 310 kare, iki dosyada aynı): decode `readFrame` 3.9–4.1, `cfaToLuma` 2.6–2.8, piramit 0.30, köşe 3.0, LK 2.1, fit 0.02 ms/kare; toplam duvar saati 3.8–3.9 s = klip süresinin **0.37–0.38 katı** (hedef ≤1.0x). Köşe tespiti en pahalı aşama (ardından decode); iyileştirme adayı (yalnız eşik üstü piksellerde yerel-maks). Android Oryon sayıları ölçülmedi (S12). 2 iş parçacıklı boru hattı (decode ∥ izleme) S4'e bırakıldı; bu ölçümler tek iş parçacıklı.
+
+**Fikstürlerin kendisi neredeyse sabit** (ham yol: x −4..26 px, y −1..23 px @1080, |roll| ≤ 0.29°; ham 1 s-ortalama artığı 0.5–0.6 px): sallantı yok denecek kadar az. Bu yüzden fikstür satırlarındaki oranlar (aşağıda) kararlı yol sonuçlarını değil, ölçüm gürültüsü tabanını gösterir ve eşik kalibrasyonu için KULLANILAMAZ. El sallantılı gerçek klip gerekli (açık madde).
+
+**İvme (2. fark) ve jerk (3. fark), ayrı sütunlar, PTS ölçekli, px @1080 (Smooth, zoomLimit 1.15, zoomRate 0.10):**
+
+Fikstür 261110_004150 (gerçek, 310 kare):
+
+| Güç | ivme ham | ivme çıkış | ivme oranı | jerk ham | jerk çıkış | jerk oranı | artık px | zoom ort/maks |
+|---|---|---|---|---|---|---|---|---|
+| 0.25 | 524.9 | 2.3 | 0.004 | 25736 | 28 | 0.001 | 0.11 (ham 0.61) | 1.007 / 1.014 |
+| 0.50 | 524.9 | 1.7 | 0.003 | 25736 | 15 | 0.001 | 0.09 | 1.009 / 1.015 |
+| 1.00 | 524.9 | 1.1 | 0.002 | 25736 | 5 | 0.000 | 0.06 | 1.012 / 1.016 |
+
+Fikstür 261110_004208: aynı örüntü (ivme ham 574.6 → 1.8, jerk ham 30062 → 14 @0.5; zoom ort/maks 1.012 / 1.033). Oranların ~0.003 çıkması KALİTE kanıtı değil: ham yol tracker gürültü tabanında.
+
+Sentetik el sallantısı (`plan synth 24 30 1`, 720 kare, ham yol x −75..433 px, roll ≤1.4°; gerçek veri DEĞİL): ivme oranı 0.024–0.029, jerk oranı 0.005–0.007 (güç 1.0–0.25), artık 4.5–5.2 px (ham 15.1), zoom ort 1.056–1.069, maks 1.068–1.076, `invalidSampleFrames=0`. Genlik 4x (`... 4`): zoom tavanı (1.15) devreye girer, ivme oranı 0.10–0.14, jerk oranı 0.08–0.13, `limit%` %88–100.
+
+**Zoom hızı A/B (|d ln Z/dt| üst sınırı, 1/s) — sentetik `plan synth 24 30 4`, güç 0.5:**
+
+| zoomLimit | değişken | zoom ort | zoom maks | ölçülen maks hız | sınırlanan kare % |
+|---|---|---|---|---|---|
+| 1.15 | 0.05 / 0.10 / 0.20 / sınırsız | 1.148 | 1.150 | 0.008 (hepsi) | 100 |
+| 1.25 | 0.05 | 1.163 | 1.227 | 0.050 | 0 |
+| 1.25 | 0.10 | 1.163 | 1.227 | 0.055 | 0 |
+| 1.25 | 0.20 | 1.163 | 1.227 | 0.055 | 0 |
+| 1.25 | sınırsız | 1.163 | 1.227 | 0.055 | 0 |
+| 1.25 | envelope-ref 4 s/0.2 s* | 1.136 | 1.227 | — | (izleyici tek başına z'nin altında: %5.3 kare) |
+
+Okuma: Gauss(rollingMax ±1 s) zoom'u zaten ≤0.055 1/s hızda; 0.05 sınırı yalnız birkaç karede bağlıyor, ortalama zoom bedeli üç ondalıkta 0. 0.10 ve 0.20 hiç bağlamıyor. Yani bu sentetik girdide üç değer ayırt edilemiyor; gerçek sallantılı klipte tekrar ölçülmeli. (* Envelope Follower referansı bizim yaklaşık uygulamamız, Gyroflow kaynağıyla DOĞRULANMADI; izleyici tek başına örtmediği karelerde `max(izleyici, z)` alındı, bu da hızı büyütür.)
+
+**Ham-CFA luma vs. `developThumbnail` luma (S2 kabulü, `lumacheck`, klip 261110_004150, 12 çift):** çift hareketi farkı ort 0.041, medyan 0.040, **maks 0.089 px** (360 yüksekliğinde) < 0.1 px eşiği; ancak hareketler çok küçük (|t| < 0.25 px), test zayıf; büyük hareketli klipte tekrar edilmeli.
+
+**Yapılmayanlar / doğrulanamayanlar:** `.gcsv` gyro çapraz kontrolü yazılmadı (S2 kapsamındaydı; fikstürler zaten nearly-static, bilgi vermezdi → gerçek sallantılı kliple birlikte); iki iş parçacıklı analiz; MP4 fikstürü (encoded v1 dışı, §6 madde 3); cihaz süresi/termal; Smooth hız eşiği `panSpeed=0.5 h/s` hipotez olarak duruyor, kalibre EDİLMEDİ (fikstürlerde pan yok); güven formülü ve İyi/Orta/Zayıf eşikleri (§3.10) hesaplanmadı (S4/S5).
+
+**Kullanıcı onayına getirilecek sayılar (§6 madde 11; fikstürler nearly-static olduğundan henüz SABİTLENEMEZ, öneri):** ivme oranı ≤ 0.35 ve jerk oranı için ayrı hedef (sentetik genlik 1x'te 0.03/0.006, 4x'te 0.12/0.10; gerçek kliple doğrulanacak); ortalama zoom ≤ 1.15 (tavan 1.15; sentetik 4x'te 1.148 ort, 1x'te 1.06); `zoomRate` varsayılanı 0.10 1/s (A/B ayırt etmedi); `zoomWindowSec` 1.0 s; analiz ≤ 1.5x klip süresi (masaüstü 0.38x).
+
 ---
 
 ## 5. İş kırılımı S1..S12 (Soru 12)
