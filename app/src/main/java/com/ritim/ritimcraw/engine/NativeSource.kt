@@ -1108,11 +1108,17 @@ class NativeSource private constructor(
          * render honestly (setError + null; the Kotlin gate falls the
          * preview back to CPU as always).
          *
-         * A1 async stats (2026-11-23): statsMode is the LAST parameter —
-         * the per-request readback mode's native int
-         * (PreviewStatsMode.native: 0=off 1=sync 2=async). The bridge
-         * folds the master kill switch (gPreviewStatsEnabled) natively;
-         * the toggle can only force OFF, never upgrade.
+         * A1 async stats (2026-11-23): statsMode is the per-request
+         * readback mode's native int (PreviewStatsMode.native: 0=off
+         * 1=sync 2=async). The bridge folds the master kill switch
+         * (gPreviewStatsEnabled) natively; the toggle can only force OFF,
+         * never upgrade.
+         *
+         * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair
+         * rides LAST, APPEND-ONLY after statsMode — cropActive (false =
+         * the identity path) + cropParams (GpuCropMap.requestCrop's
+         * five-float parcel: the mapRect'ed rect fractions + the raw
+         * straighten angle; the dims-dependent folds live native-side).
          */
         @JvmStatic private external fun nativePreviewSessionRenderFrameParcel(
             sessionHandle: Long,
@@ -1130,6 +1136,8 @@ class NativeSource private constructor(
             warpActive: Boolean,
             warpM: FloatArray,
             statsMode: Int,
+            cropActive: Boolean,
+            cropParams: FloatArray,
         ): IntArray?
 
         @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
@@ -1823,9 +1831,12 @@ class NativeSource private constructor(
          * PARCEL (commit b): the preview session's ONLY render door — the
          * flat per-field wrapper died with the flat external decl. Same
          * no-default rule (the signature-lock test reflects over declared
-         * methods). A1 async stats (2026-11-23): statsMode rides LAST —
-         * the per-request readback mode's native int (PreviewStatsMode.
-         * native), folded with the master kill switch on the native side.
+         * methods). A1 async stats (2026-11-23): statsMode rides after
+         * the warp pair — the per-request readback mode's native int
+         * (PreviewStatsMode.native), folded with the master kill switch
+         * on the native side. A2 GPU crop/straighten (2026-11-23, guide
+         * A2): the crop pair rides LAST, append-only after statsMode —
+         * GpuCropMap.requestCrop's parcel, verbatim.
          */
         internal fun jniPreviewSessionRenderFrameParcel(
             sessionHandle: Long,
@@ -1843,6 +1854,8 @@ class NativeSource private constructor(
             warpActive: Boolean,
             warpM: FloatArray,
             statsMode: Int,
+            cropActive: Boolean,
+            cropParams: FloatArray,
         ): IntArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
@@ -1850,7 +1863,8 @@ class NativeSource private constructor(
             return nativePreviewSessionRenderFrameParcel(
                 sessionHandle, clipHandle, frameIndex, maxDim, gradeParcel,
                 lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
-                lutOutGamut, lutOutTransfer, warpActive, warpM, statsMode)
+                lutOutGamut, lutOutTransfer, warpActive, warpM, statsMode,
+                cropActive, cropParams)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {

@@ -69,6 +69,11 @@
 // vocabulary + the 2-slot fence-ring state machine draw 3 consumes —
 // header-only, no GL follows suit with the sibling includes below.
 #include "StatsRing.h"
+// Pure planner (A2 GPU crop/straighten, 2026-11-23, guide A2): the
+// window pass's crop frame plan — the cropped output dims, the auto-zoom
+// and the cos/sin pair the window + stats draws upload as the crop
+// uniforms. Header-only, no GL, the StatsRing.h precedent.
+#include "GpuCropMap.h"
 
 #include <algorithm>
 #include <atomic>
@@ -269,6 +274,12 @@ struct PreviewSession::Impl {
     GLuint windowProgram = 0;
     GLint windowSrcLoc = -1, windowSrcSizeLoc = -1, windowRectLoc = -1,
           windowOrientationLoc = -1;
+    // The A2 crop uniform group (owner request 2026-11-23, guide A2):
+    // WINDOW_FRAGMENT's six crop uniforms, looked up beside the four
+    // above and set (window + stats draws) from gles::planCrop's frame
+    // plan.
+    GLint windowCropOnLoc = -1, windowCropRectLoc = -1, windowCropOutLoc = -1,
+          windowCropZoomLoc = -1, windowCropCosLoc = -1, windowCropSinLoc = -1;
 
     // The stats pack's resources (the ONLY readback on this path):
     // statsTex is the window pass's stats target; statsScratchTex is the
@@ -809,8 +820,20 @@ bool PreviewSession::Impl::initOnGlThread(
     windowSrcSizeLoc = glGetUniformLocation(windowProgram, "uSrcSize");
     windowRectLoc = glGetUniformLocation(windowProgram, "uRect");
     windowOrientationLoc = glGetUniformLocation(windowProgram, "uOrientation");
+    // The A2 crop uniform group (2026-11-23, guide A2): looked up beside
+    // the four above, inside the SAME all-uniforms-present guard — an
+    // optimized-out crop uniform (a dead crop branch) must fail loudly,
+    // exactly like the half-texel clamp's uSrcSize comment says.
+    windowCropOnLoc = glGetUniformLocation(windowProgram, "uCropOn");
+    windowCropRectLoc = glGetUniformLocation(windowProgram, "uCropRect");
+    windowCropOutLoc = glGetUniformLocation(windowProgram, "uCropOut");
+    windowCropZoomLoc = glGetUniformLocation(windowProgram, "uCropZoom");
+    windowCropCosLoc = glGetUniformLocation(windowProgram, "uCropCos");
+    windowCropSinLoc = glGetUniformLocation(windowProgram, "uCropSin");
     if (windowSrcLoc < 0 || windowSrcSizeLoc < 0 || windowRectLoc < 0 ||
-        windowOrientationLoc < 0) {
+        windowOrientationLoc < 0 ||
+        windowCropOnLoc < 0 || windowCropRectLoc < 0 || windowCropOutLoc < 0 ||
+        windowCropZoomLoc < 0 || windowCropCosLoc < 0 || windowCropSinLoc < 0) {
         *detail = "shader-contract: missing a window uniform";
         return false;
     }
@@ -1051,6 +1074,20 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // The orientation fold's input, normalized exactly like
     // developToArgb's.
     const int orient = ((req.info.orientationDeg % 360) + 360) % 360;
+    // THE A2 CROP FRAME PLAN (owner request 2026-11-23, guide A2): the
+    // pure planner's verdict for THIS frame — the cropped output dims,
+    // the auto-zoom and the cos/sin pair every crop uniform below reads.
+    // Computed ONCE, right after the develop dims are known, because
+    // BOTH the window draw (aspect rect over the CROPPED dims) and the
+    // stats draw (stats dims from the same cropped dims) consume the
+    // plan; the params are already mapRect'ed (GpuCropMap.requestCrop
+    // Kotlin-side — CropState's mapping, single-sourced JVM-side) and
+    // the identity request plans the full upright dims with uCropOn 0 (a
+    // crop-inactive frame stays byte-identical to the pre-A2 pass).
+    const uint32_t uprightW0 = (orient == 90 || orient == 270) ? h : w;
+    const uint32_t uprightH0 = (orient == 90 || orient == 270) ? w : h;
+    const gles::CropFramePlan crop = gles::planCrop(
+        uprightW0, uprightH0, req.cropActive, req.cropParams);
     // The timing spans' clock (the original's function-scope alias,
     // kept at the same scope the kept tail uses it in).
     using SteadyClock = std::chrono::steady_clock;
@@ -1071,13 +1108,23 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             out.surfaceW = static_cast<uint32_t>(winW);
             out.surfaceH = static_cast<uint32_t>(winH);
             // Upright dims (90/270 swap), aspect-fit letterbox rect.
+            // SINCE A2 (2026-11-23, guide A2): when the crop plan is
+            // ACTIVE the rect fits the CROPPED output dims — the draw
+            // covers exactly the selected region, aspect-fit, and the
+            // crop uniforms below carry the map; the uOrientation fold
+            // still runs (the source is still sensor-space). Crop-off
+            // keeps today's upright math verbatim (planCrop's identity
+            // arm fills the same upright dims, so reading the plan
+            // unconditionally changes nothing there).
             const uint32_t uprightW = (orient == 90 || orient == 270) ? h : w;
             const uint32_t uprightH = (orient == 90 || orient == 270) ? w : h;
+            const float fitW = static_cast<float>(crop.active ? crop.outW : uprightW);
+            const float fitH = static_cast<float>(crop.active ? crop.outH : uprightH);
             const float scale = std::fmin(
-                static_cast<float>(winW) / static_cast<float>(uprightW),
-                static_cast<float>(winH) / static_cast<float>(uprightH));
-            const float rectW = static_cast<float>(uprightW) * scale;
-            const float rectH = static_cast<float>(uprightH) * scale;
+                static_cast<float>(winW) / fitW,
+                static_cast<float>(winH) / fitH);
+            const float rectW = fitW * scale;
+            const float rectH = fitH * scale;
             const float rectX = (static_cast<float>(winW) - rectW) * 0.5f;
             const float rectY = (static_cast<float>(winH) - rectH) * 0.5f;
             // THE ENTRY-STATE CAPTURE (white-window round 3, DEBUG-only,
@@ -1240,6 +1287,21 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                             static_cast<GLint>(w), static_cast<GLint>(h));
                 glUniform4f(windowRectLoc, rectX, rectY, rectW, rectH);
                 glUniform1i(windowOrientationLoc, orient);
+                // THE A2 CROP UNIFORMS (2026-11-23, guide A2): the frame
+                // plan's values, set beside the existing three on the
+                // window draw. The identity plan carries the full rect +
+                // zoom 1 — values uCropOn = 0 never reads, so a
+                // crop-inactive frame stays byte-identical to the
+                // pre-A2 pass.
+                glUniform1i(windowCropOnLoc, crop.active ? 1 : 0);
+                glUniform4f(windowCropRectLoc,
+                            crop.rectX, crop.rectY, crop.rectW, crop.rectH);
+                glUniform2f(windowCropOutLoc,
+                            static_cast<GLfloat>(crop.outW),
+                            static_cast<GLfloat>(crop.outH));
+                glUniform1f(windowCropZoomLoc, crop.zoom);
+                glUniform1f(windowCropCosLoc, crop.cos);
+                glUniform1f(windowCropSinLoc, crop.sin);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
                 // The draw's own error check runs FIRST — the probe below
                 // drains GL errors (its own), and a drain before this
@@ -1562,19 +1624,32 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
         out.ok = true;
         return;
     }
+    // THE A2 CROPPED STATS BASE (owner request 2026-11-23, guide A2):
+    // when the crop plan is ACTIVE the stats dims derive from the
+    // CROPPED output dims — the scopes see the cropped region, exactly
+    // the region the CPU path's PublishCrop-then-scopes chain analyses.
+    // The cap shape is unchanged (the 256 long-edge tier); a crop change
+    // is a dims change, so the existing realloc branch below fires and
+    // DRAINS the A1 ring (the StatsRing.h invariant holds untouched — a
+    // crop drag can never leak a fence). Crop-off keeps today's upright
+    // derivation verbatim (planCrop's identity arm fills the full dims).
     const uint32_t uprightW = (orient == 90 || orient == 270) ? h : w;
     const uint32_t uprightH = (orient == 90 || orient == 270) ? w : h;
-    const uint32_t longEdge = uprightW > uprightH ? uprightW : uprightH;
-    uint32_t statsW = uprightW;
-    uint32_t statsH = uprightH;
+    const uint32_t baseW = crop.active
+        ? static_cast<uint32_t>(crop.outW) : uprightW;
+    const uint32_t baseH = crop.active
+        ? static_cast<uint32_t>(crop.outH) : uprightH;
+    const uint32_t longEdge = baseW > baseH ? baseW : baseH;
+    uint32_t statsW = baseW;
+    uint32_t statsH = baseH;
     if (longEdge > kStatsLongEdge) {
         const float scale =
             static_cast<float>(kStatsLongEdge) / static_cast<float>(longEdge);
-        statsW = uprightW > 0
-            ? std::max<uint32_t>(1, static_cast<uint32_t>(uprightW * scale + 0.5f))
+        statsW = baseW > 0
+            ? std::max<uint32_t>(1, static_cast<uint32_t>(baseW * scale + 0.5f))
             : 1;
-        statsH = uprightH > 0
-            ? std::max<uint32_t>(1, static_cast<uint32_t>(uprightH * scale + 0.5f))
+        statsH = baseH > 0
+            ? std::max<uint32_t>(1, static_cast<uint32_t>(baseH * scale + 0.5f))
             : 1;
     }
 
@@ -1700,6 +1775,20 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     glUniform4f(windowRectLoc, 0.0f, 0.0f,
                 static_cast<GLfloat>(statsW), static_cast<GLfloat>(statsH));
     glUniform1i(windowOrientationLoc, orient);
+    // THE A2 CROP UNIFORMS ON THE STATS DRAW (2026-11-23, guide A2): the
+    // SAME six uniforms the window draw sets, from the SAME frame plan —
+    // the scopes analyse the cropped region (uRect stays the
+    // whole-target rect: no letterbox bars at the stats dims, the crop
+    // map does the selection).
+    glUniform1i(windowCropOnLoc, crop.active ? 1 : 0);
+    glUniform4f(windowCropRectLoc,
+                crop.rectX, crop.rectY, crop.rectW, crop.rectH);
+    glUniform2f(windowCropOutLoc,
+                static_cast<GLfloat>(crop.outW),
+                static_cast<GLfloat>(crop.outH));
+    glUniform1f(windowCropZoomLoc, crop.zoom);
+    glUniform1f(windowCropCosLoc, crop.cos);
+    glUniform1f(windowCropSinLoc, crop.sin);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(stats window)", &out.detail) != GL_NO_ERROR) return;
 

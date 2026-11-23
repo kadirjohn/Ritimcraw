@@ -3821,7 +3821,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionClose(
 //   nativePreviewSessionRenderFrameParcel(handle, clipHandle, frameIndex,
 //       maxDim, gradeParcel, lutPath, lutStrength, lutRole, lutInGamut,
 //       lutInTransfer, lutOutGamut, lutOutTransfer, warpActive, warpM,
-//       statsMode)
+//       statsMode, cropActive, cropParams)
 //       -> [w, h, pixels...] int array (the small published stats pack)
 //   nativePreviewSessionClose(handle)
 //
@@ -4103,17 +4103,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetSurface(
     return JNI_TRUE;
 }
 
-// The preview session's render door (GRADE PARCEL, commit a + b): 15
+// The preview session's render door (GRADE PARCEL, commit a + b): 17
 // parameters — the 29-field grade block collapsed into gradeParcel
 // (maxDim stays: job mechanics, not a grade scalar). The parcel is
 // decoded ONCE at the top (a refusal fails the render honestly with
 // setError + null, never a silent misread); the grade rides the
 // struct-taking session overload (the GENERATED fold). Commit (b): the
 // flat nativePreviewSessionRenderFrame died with its Kotlin decl — this
-// is the ONLY preview render door. A1 async stats (2026-11-23) added the
-// LAST parameter, jint statsMode: the Kotlin-computed per-request readback
-// mode (0=off 1=sync 2=async, the StatsRing.h StatsReadbackMode
-// vocabulary), folded below with the master kill switch.
+// is the ONLY preview render door. A1 async stats (2026-11-23) added
+// jint statsMode: the Kotlin-computed per-request readback mode (0=off
+// 1=sync 2=async, the StatsRing.h StatsReadbackMode vocabulary), folded
+// below with the master kill switch. A2 GPU crop/straighten (2026-11-23,
+// guide A2) APPENDED the crop pair AFTER statsMode — append-only, never
+// interleaved (a mismatched order is an immediate crash; the
+// signature-lock test is the guard): jboolean cropActive + jfloatArray
+// cropParams, the GpuCropMap.requestCrop parcel ([rectX, rectY, rectW,
+// rectH, straightenDeg], the rect ALREADY mapRect'ed container-upright).
+// NO new tail fields — the 13-int measurement tail is unchanged.
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParcel(
         JNIEnv* env, jclass, jlong sessionHandle, jlong clipHandle,
@@ -4121,7 +4127,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
         jint lutOutGamut, jint lutOutTransfer,
-        jboolean warpActive, jfloatArray warpM, jint statsMode) {
+        jboolean warpActive, jfloatArray warpM, jint statsMode,
+        jboolean cropActive, jfloatArray cropParams) {
     gles::DevelopGrade grade;
     std::string parcelError;
     if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
@@ -4255,6 +4262,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         req.statsMode = gPreviewStatsEnabled.load(std::memory_order_relaxed)
             ? gles::clampStatsMode(statsMode)
             : gles::StatsReadbackMode::Off;
+        // The A2 crop pair (2026-11-23, guide A2): the mapRect'ed parcel
+        // copies onto the request beside the statsMode fold — the
+        // session's planCrop reads it per render (the dims-dependent
+        // geometry is native-only). A null array wears the request's
+        // neutral defaults (cropActive false — the identity path), never
+        // a misread: the Kotlin seam's non-null rule means null is a
+        // caller contract break, and the honest answer is uncropped.
+        req.cropActive = cropActive == JNI_TRUE;
+        if (cropParams != nullptr) {
+            env->GetFloatArrayRegion(cropParams, 0, 5, req.cropParams);
+        }
         const gles::PreviewFrameResult res = session->renderFrame(req, grade);
         // The editor suppresses its CPU Image on success. A stats pack
         // (or the stats-off black 1x1 marker) cannot substitute for a

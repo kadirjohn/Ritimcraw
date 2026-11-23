@@ -97,6 +97,7 @@ import com.ritim.ritimcraw.engine.GlesParityResult
 import com.ritim.ritimcraw.engine.GlesProbeResult
 import com.ritim.ritimcraw.engine.GradeMapping
 import com.ritim.ritimcraw.engine.GradeParcel
+import com.ritim.ritimcraw.engine.GpuCropMap
 import com.ritim.ritimcraw.engine.GpuParityRules
 import com.ritim.ritimcraw.engine.GpuPreviewSession
 import com.ritim.ritimcraw.engine.NativeGpuPreviewDevelop
@@ -2443,6 +2444,14 @@ fun ClipEditorScreen(
                                 // A1: the per-request stats readback mode
                                 // (the demand x class x toggle fold above).
                                 statsMode = statsMode,
+                                // A2 (2026-11-23, guide A2): the seam's crop pair
+                                // — Task 2 widens the door; the editor threads the
+                                // real GpuCropMap.requestCrop verdict in the next
+                                // commit, so this call site sends the identity
+                                // placeholder for now (crop-inactive frames stay
+                                // byte-identical to the pre-A2 pass).
+                                cropActive = false,
+                                cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
                             )
                             if (gpuFrame != null) {
                                 result = Result.success(gpuFrame)

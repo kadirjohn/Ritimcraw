@@ -260,7 +260,7 @@ public:
     // (gles/GradeParcel.h — the schema's single source of truth; a schema
     // field with no matching PreviewFrameRequest member fails the compile
     // here, the honest catch). [req] carries only the non-grade fields
-    // (cfa/info/meta, the LUT binding group, the warp pair, statsMode);
+    // (cfa/info/meta, the LUT binding group, the warp pair, statsMode, the A2 crop pair: cropActive/cropParams, 2026-11-23, guide A2);
     // the temporal pair never reaches the request — the bridge consumed it
     // at temporalMergedCfa before this call. The flat pre-folded overload
     // died with commit (b): every door into the session threads the grade
