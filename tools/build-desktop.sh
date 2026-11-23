@@ -123,8 +123,16 @@ echo "== building tests =="
 # image_stab_measure: image-stab numbers (S1..S3): stage timings, analysis of
 # a real clip, acceleration/jerk + zoom-rate A/B plan sweep, raw-vs-developed
 # luma check. Run by hand: `image_stab_measure bench|analyze|plan|lumacheck`.
+# scale-test (S11a counterfactual, 2026-11-24): scale-policy plan sweep on a
+# stored .ristab — free/lock/clamp records rewrite + both modes; the numbers
+# behind docs/S11_ROBUSTNESS_NOTES.md, now reproducible.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/image_stab_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/image_stab_measure"
+# test_scale_tool: the scale-policy layer's honesty proofs (sandwich free ==
+# original plan, lock surgically rewrites only logS, clamp band edges,
+# record round trip lossless, lock frees the budget on drift-shaped records).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_scale_tool.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_scale_tool"
 # test_warp: Phase 5 CPU warp (warpFrame); runs from the repo root so
 # it finds the STEPS/media/test fixtures (the cost-evidence case).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_warp.cpp" \
@@ -238,6 +246,8 @@ echo "== running test_optical_sync =="
 (cd "$ROOT" && "$BUILD/test_optical_sync")
 echo "== running test_image_stab =="
 "$BUILD/test_image_stab"
+echo "== running test_scale_tool =="
+"$BUILD/test_scale_tool"
 echo "== running test_rawstats =="
 "$BUILD/test_rawstats"
 echo "== running test_yuv =="

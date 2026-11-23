@@ -21,6 +21,16 @@
 //   image_stab_measure lumacheck <clip.mcraw> [pairs=20]
 //       Raw-CFA luma path vs developThumbnail luma path: difference of the
 //       pair motions in working-resolution pixels (S2 acceptance < 0.1 px).
+//   image_stab_measure scale-test <file.ristab>
+//       S11a scale-lock counterfactual (docs/S11_ROBUSTNESS_NOTES.md):
+//       rewrites the stored records' logS channel under four policies
+//       (free / lock / clamp-0.002 / clamp-0.005) and rebuilds the plan
+//       for each, in both modes (Smooth, Lock). Rows: meanA, limited%,
+//       zoom mean/max, invalidSampleFrames, the accumulated raw-path
+//       scale exp(sum logS), and the acceleration/jerk ratios (the same
+//       PTS-scaled metrics as `plan`). The free rows must equal a plain
+//       `plan` run — the sandwich proof that the read+rewrite path adds
+//       nothing (test_scale_tool.cpp pins that on synthetic records).
 //
 // Metric definitions (docs/IMAGE_STAB_PLAN.md section 4): the path is in
 // pixels at 1080 px height; derivatives use the REAL PTS spacing, never an
@@ -43,6 +53,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+#include "image_stab_scale_policy.hpp"
 
 using namespace rawedit;
 
@@ -424,11 +436,97 @@ int cmdLumaCheck(const std::string& clip, int pairs) {
     return 0;
 }
 
+// ---- scale-lock counterfactual (scale-test; S11a) -------------------------------
+
+int cmdScaleTest(const std::string& file) {
+    ImagePath path;
+    if (readImagePathFile(file, path) != PathParse::Ok) {
+        std::fprintf(stderr, "bad analysis file: %s\n", file.c_str());
+        return 1;
+    }
+    const size_t n = path.recs.size();
+    if (n < 3) { std::fprintf(stderr, "too few records\n"); return 1; }
+    std::vector<double> t(n);
+    for (size_t i = 0; i < n; ++i) t[i] = (path.recs[i].ptsUs - path.recs[0].ptsUs) * 1e-6;
+    const double aspect = path.workH ? static_cast<double>(path.workW) / path.workH : 16.0 / 9.0;
+    const double K = 1080.0;
+    std::printf("\n== scale-test: %s (%zu frames, work %ux%u; strength 0.5, zoomLimit 1.15, zoomRate 0.10) ==\n",
+                file.c_str(), n, path.workW, path.workH);
+    std::printf("policies: free = stored records verbatim | lock = logS->0 on measured pairs"
+                " | clamp-S = |logS|<=S on measured pairs (S11 notes' counterfactual)\n");
+
+    struct Row { const char* policy; int mode; double meanA, limitPct, zoomAv, zoomMx, accAcc, accOut, accRatio,
+                         jerkRatio, accum, dThetaDeg, dtxPx, dtyPx; int inval; };
+    std::vector<Row> rows;
+    struct Cfg { const char* name; ScalePolicy pol; double band; };
+    const Cfg cfgs[] = {
+        {"free", ScalePolicy::Free, 0.0},
+        {"lock", ScalePolicy::Lock, 0.0},
+        {"clamp-0.002", ScalePolicy::Clamp, 0.002},
+        {"clamp-0.005", ScalePolicy::Clamp, 0.005},
+    };
+    for (const Cfg& cfg : cfgs) {
+        const std::vector<PairRecord> recs = applyScalePolicy(path.recs, cfg.pol, cfg.band);
+        for (int mode = 0; mode < 2; ++mode) {
+            ImageStabParams p;
+            p.mode = mode;
+            p.strength = 0.5;   // the notes' counterfactual configuration
+            p.zoomLimit = 1.15;
+            p.zoomRate = 0.10;
+            const ImageStabPlan pl = ImageStabPlan::build(recs, p, 0, n - 1, aspect);
+            std::vector<double> rx(n), ry(n), ox(n), oy(n);
+            for (size_t i = 0; i < n; ++i) {
+                const Sim2 out = simCompose(pl.frame(i).corr, pl.rawPath()[i]);
+                rx[i] = pl.rawPath()[i].tx * K; ry[i] = pl.rawPath()[i].ty * K;
+                ox[i] = out.tx * K; oy[i] = out.ty * K;
+            }
+            double ar, jr, ao, jo;
+            derivRms(rx, ry, t, ar, jr);
+            derivRms(ox, oy, t, ao, jo);
+            // Channel-preservation columns (S11 notes): how much does the
+            // policy move each TARGET-path channel vs the plan built on the
+            // ORIGINAL records? Record-level surgicality (theta untouched,
+            // logS only) is pinned by test_scale_tool; at the PATH level
+            // x/y legitimately shift under lock (the accumulated-scale
+            // coupling in simCompose is exactly what the policy removes).
+            ImageStabParams p0 = p;
+            const ImageStabPlan ref = ImageStabPlan::build(path.recs, p0, 0, n - 1, aspect);
+            double dTheta = 0, dtx = 0, dty = 0;
+            for (size_t i = 0; i < n; ++i) {
+                dTheta = std::max(dTheta, std::fabs(pl.targetPath()[i].theta - ref.targetPath()[i].theta));
+                dtx = std::max(dtx, std::fabs(pl.targetPath()[i].tx - ref.targetPath()[i].tx));
+                dty = std::max(dty, std::fabs(pl.targetPath()[i].ty - ref.targetPath()[i].ty));
+            }
+            rows.push_back({cfg.name, mode, pl.stats().meanA, pl.stats().limitedFraction * 100.0,
+                            pl.stats().meanZoom, pl.stats().maxZoom, ar, ao, ar > 0 ? ao / ar : 0,
+                            jr > 0 ? jo / jr : 0, accumulatedScale(recs),
+                            dTheta * 180.0 / 3.141592653589793, dtx * K, dty * K,
+                            pl.stats().invalidSampleFrames});
+        }
+    }
+    std::printf("\n%-12s %-7s | %6s %6s %7s %7s %5s | %9s | %7s %7s %7s %6s | %7s %10s\n",
+                "policy", "mode", "meanA", "limit%", "zoomAv", "zoomMx", "inval",
+                "rawScale", "accRaw", "accOut", "accR", "jerkR", "dTheta", "dTx/dTy(px)");
+    for (const Row& r : rows) {
+        std::printf("%-12s %-7s | %6.3f %6.1f %7.3f %7.3f %5d | %8.2fx | %7.1f %7.1f %6.3f %6.3f | %7.4f %5.1f/%-5.1f\n",
+                    r.policy, r.mode ? "Lock" : "Smooth", r.meanA, r.limitPct, r.zoomAv, r.zoomMx,
+                    r.inval, r.accum, r.accAcc, r.accOut, r.accRatio, r.jerkRatio, r.dThetaDeg,
+                    r.dtxPx, r.dtyPx);
+    }
+    std::printf("(acc/jerk ratios: out/raw, px @1080, PTS-scaled. rawScale = exp(sum stored logS) of the"
+                " policy's record chain — the drift number from the S11 notes. dTheta/dTx/dTy: max target-path"
+                " channel change vs the ORIGINAL records' plan. theta is expected 0 for lock/clamp on"
+                " lock-only-record rewrites (record-level bit-exactness is pinned by test_scale_tool);"
+                " tx/ty DO move on the PATH under lock because the accumulated-scale coupling in"
+                " simCompose is exactly what the policy removes — that is the counterfactual working.)\n");
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: image_stab_measure bench|analyze|plan|lumacheck ... (see header)\n");
+        std::fprintf(stderr, "usage: image_stab_measure bench|analyze|plan|lumacheck|scale-test ... (see header)\n");
         return 2;
     }
     const std::string cmd = argv[1];
@@ -442,6 +540,7 @@ int main(int argc, char** argv) {
     if (cmd == "plan" && argc > 2)
         return cmdPlan(argv[2], argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 0, argc > 4 ? argv[4] : "");
     if (cmd == "lumacheck" && argc > 2) return cmdLumaCheck(argv[2], argc > 3 ? std::atoi(argv[3]) : 20);
+    if (cmd == "scale-test" && argc > 2) return cmdScaleTest(argv[2]);
     std::fprintf(stderr, "bad arguments\n");
     return 2;
 }
