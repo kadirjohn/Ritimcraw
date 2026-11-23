@@ -52,6 +52,15 @@ done
 # also opts out of FMA contraction (Yuv.cpp precedent).
 "$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/ImageStabPlan.cpp" -o "$BUILD/core_ImageStabPlan.o"
 CORE_OBJS+=("$BUILD/core_ImageStabPlan.o")
+# Loudness.cpp (E5-A first half): the BS.1770-4 meter is a numeric port of
+# the filmcraft audio-dsp crate whose test vectors (carried into
+# test_loudness) assert exact-agreement tolerances (1e-8 on coefficient
+# matrices, bit-equality on the Rust reference for the block-feeding
+# case). Keeping the derivation and filter state free of FMA contraction
+# makes the desktop numbers reproducible on any target (Yuv.cpp precedent:
+# the NDK build flags may differ from this script's).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Loudness.cpp" -o "$BUILD/core_Loudness.o"
+CORE_OBJS+=("$BUILD/core_Loudness.o")
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
@@ -192,6 +201,12 @@ echo "== building tests =="
 # repo root so the default RAWEDIT_CLIP path resolves.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/bench_develop.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/bench_develop"
+# test_loudness: BS.1770-4 / EBU R128 meter + true-peak port (E5-A first
+# half, filmcraft audio-dsp vectors). Synthetic signals only, no cwd
+# needs. -ffp-contract=off matches the Loudness.cpp build so the test's
+# expected values round the same way the port does (Yuv.cpp precedent).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_loudness.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_loudness"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -248,6 +263,8 @@ echo "== running test_color_model =="
 "$BUILD/test_color_model"
 echo "== running test_opendrt =="
 (cd "$ROOT" && "$BUILD/test_opendrt")
+echo "== running test_loudness =="
+"$BUILD/test_loudness"
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
 (cd "$ROOT" && "$BUILD/bench_develop")
 

@@ -39,10 +39,31 @@ This product includes software developed by third parties:
    (decision K6, docs/COLOR_MODEL_V2_PLAN.md sections 4.5 and 12); this
    entry only records the provenance and is not legal advice.
 
+6. FilmCraft audio-dsp crate (MIT OR Apache-2.0), the filmcraft-android
+   project (~/projects/filmcraft-android, workspace main c41b58467e read
+   2026-11-24; license per its Cargo.toml)
+   Used in: core/src/Loudness.cpp, core/include/rawedit/Loudness.h — a
+   line-by-line C++ port (E5-A first half, owner decision D1: "the needed
+   audio-dsp modules are ported to pure C++; the test vectors move into
+   doctest") of crates/audio-dsp/src/loudness.rs, biquad.rs and
+   oversample.rs: the BS.1770-4/EBU R128 loudness meter, K-weighting
+   derivation, the fixed-memory gating histogram, the polyphase
+   true-peak interpolator and the RBJ biquad core. The crate states it
+   is clean-room ("written from the public standards"); this port
+   carries that status over unchanged. The crate's unit-test vectors
+   (loudness.rs 14, biquad.rs 6, oversample.rs 1) are ported to
+   core/tests/test_loudness.cpp with the crate's own tolerances. Nothing
+   from the crate is vendored: no files are copied verbatim, only the
+   algorithm is carried over, so third_party/MANIFEST.md has no entry
+   (the OpenDRT precedent: NOTICE + a provenance header in the port).
+   Unwired in this package: no production code path calls the meter yet.
+
 The Xiaomi Mi-Log materials' redistribution terms are those stated in the
 developer pack itself. The full per-component provenance table — versions,
 commit pins, sha256 checksums, and source URLs for every vendored
-component — lives in third_party/MANIFEST.md.
+component — lives in third_party/MANIFEST.md. Ported-but-not-vendored
+components (OpenDRT, FilmCraft audio-dsp) are recorded above and in the
+port files' provenance headers.
 
 This project is licensed under the Apache License 2.0; see the LICENSE file
 at the repository root.
