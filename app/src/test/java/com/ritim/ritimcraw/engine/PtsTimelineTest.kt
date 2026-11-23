@@ -65,6 +65,15 @@ class PtsTimelineTest {
         assertEquals(fps24.first(), PtsTimeline.elapsedAt(fps24, -5, 0L))
     }
 
+    @Test
+    fun measuredFps_counts_intervals_not_frames() {
+        // 130 frames at the real 30.058 fps (33_269us apart): N-1 intervals.
+        val pts = LongArray(130) { it * 33_269L }
+        assertEquals(30.058f, PtsTimeline.measuredFps(pts), 0.001f)
+        assertEquals(0f, PtsTimeline.measuredFps(longArrayOf(5L)), 0f)
+        assertEquals(0f, PtsTimeline.measuredFps(longArrayOf()), 0f)
+    }
+
     // ---- totalDurationUs / positionUs: transport readout ----
 
     @Test
