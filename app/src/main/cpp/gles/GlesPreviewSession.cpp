@@ -1772,59 +1772,82 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
         return;
     }
 
-    // MODE ASYNC, frame N (A1(b), owner request 2026-11-23). First the
-    // stale fence: when the plan flags dropStaleFence, the DRAW slot
-    // still holds the never-published frame N-2 pack — its fence must be
-    // deleted BEFORE the new one exists (a leaked fence is a crash
-    // later, the guide's pitfall).
-    if (plan.dropStaleFence && statsFence[plan.drawSlot] != nullptr) {
-        glDeleteSync(statsFence[plan.drawSlot]);
-        statsFence[plan.drawSlot] = nullptr;
-    }
-    // The fence covers the two draws above. glFlush is REQUIRED for the
-    // fence to ever signal: draw 2's swap already flushed the earlier
+    // MODE ASYNC, frame N (A1(b), owner request 2026-11-23, spinning-GPU
+    // guard added same day: a strictly non-blocking ring can starve the
+    // scopes forever on a busy GPU, so the plan's mustPublish slot waits
+    // with a bounded timeout while the normal N-1 publish stays try-only).
+    //
+    // The publish order comes from the planner (gles/StatsRing.h): rule 1
+    // — the DRAW slot still holds a pending frame-N-2 pack that MUST be
+    // consumed now, before the store draw overwrites its SSBO; the caller
+    // waits for that fence with a BOUNDED timeout and publishes it. Rule
+    // 2 — the frame-N-1 pack, try-only (skip on any not-ready verdict).
+    // dropStaleFence is retired: no fence is ever deleted over an
+    // unpublished pack, so no fence leaks and no pack is silently lost.
+    const auto tryPublishSlot = [&](int slot, uint64_t timeoutNs) -> bool {
+        // Returns true when the slot's pack was published into `out`.
+        // timeoutNs == 0 is the try-only probe; a nonzero value is the
+        // bounded wait for the mustPublish slot (the frame-N-2 pack).
+        if (slot < 0 || statsFence[slot] == nullptr) return false;
+        const GLenum wait = glClientWaitSync(statsFence[slot], 0, timeoutNs);
+        if (wait != GL_ALREADY_SIGNALED && wait != GL_CONDITION_SATISFIED) {
+            return false;  // not ready (or the wait failed): leave it pending
+        }
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf[slot]);
+        void* mapped = glMapBufferRange(
+            GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(statsBytes),
+            GL_MAP_READ_BIT);
+        if (mapped == nullptr) {
+            // Unmap never happened; the fence stays with the slot so the
+            // drain path deletes it. Abort the whole stats leg loudly.
+            glErrorAfter("glMapBufferRange(async)", &out.detail);
+            if (out.detail.empty()) out.detail = "glMapBufferRange returned null";
+            return false;
+        }
+        packFromMapped(static_cast<const float*>(mapped));
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        glDeleteSync(statsFence[slot]);
+        statsFence[slot] = nullptr;
+        clearSlot(statsRing, slot);
+        return true;
+    };
+
+    // The fence covers the two stats draws above. glFlush is REQUIRED for
+    // the fence to ever signal: draw 2's swap already flushed the earlier
     // commands, but these draws were enqueued after it, and an unsignaled
     // fence means every later async frame publishes nothing.
+    bool published = false;
+    if (plan.mustPublish) {
+        // Rule 1: bounded wait (~3 frames at 60fps) for the frame-N-2
+        // pack. If even this fails (GPU wedged far beyond a frame), fall
+        // through to the miss marker below rather than blocking forever.
+        published = tryPublishSlot(plan.publishSlot, 50'000'000ull);
+    }
     statsFence[plan.drawSlot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     glFlush();
     commitAsyncDraw(statsRing, plan);
+    if (!published) {
+        // Rule 2: the frame-N-1 pack, only when its fence is ALREADY
+        // signaled — glClientWaitSync with timeout 0 NEVER blocks. A
+        // GL_TIMEOUT_EXPIRED / GL_WAIT_FAILED verdict means publish NO
+        // pack this frame (the miss shape below; the Kotlin side keeps
+        // the last scopes, guide A1(b).3).
+        published = tryPublishSlot(plan.publishSlot, 0);
+    }
 
-    // The publish: frame N-1's pack, only when its fence is ALREADY
-    // signaled. glClientWaitSync with timeout 0 NEVER blocks — a
-    // GL_TIMEOUT_EXPIRED / GL_WAIT_FAILED verdict means publish NO pack
-    // this frame (the async-miss shape below; the Kotlin side keeps the
-    // last scopes, guide A1(b).3).
-    if (plan.publishSlot >= 0 && statsFence[plan.publishSlot] != nullptr) {
-        const GLenum wait = glClientWaitSync(statsFence[plan.publishSlot], 0, 0);
-        if (wait == GL_ALREADY_SIGNALED || wait == GL_CONDITION_SATISFIED) {
-            glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf[plan.publishSlot]);
-            void* mapped = glMapBufferRange(
-                GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(statsBytes),
-                GL_MAP_READ_BIT);
-            if (mapped == nullptr) {
-                glErrorAfter("glMapBufferRange(async)", &out.detail);
-                if (out.detail.empty()) out.detail = "glMapBufferRange returned null";
-                return;
-            }
-            // The published async pack belongs to frame N-1 (the ring
-            // state's slot[plan.publishSlot].frame) — the one-frame lag
-            // is BY DESIGN and invisible on scopes at playback rate. The
-            // pack's frame index is available there if a consumer ever
-            // needs it; the JNI tail is deliberately NOT extended for it
-            // now.
-            packFromMapped(static_cast<const float*>(mapped));
-            glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-            glDeleteSync(statsFence[plan.publishSlot]);
-            statsFence[plan.publishSlot] = nullptr;
-            clearSlot(statsRing, plan.publishSlot);
-            const SteadyClock::time_point tStats1 = SteadyClock::now();
-            out.statsUs = elapsedUs(tStats0, tStats1);
-            out.width = statsW;
-            out.height = statsH;
-            out.ok = true;
-            return;
-        }
+    if (published) {
+        // The published async pack is the slot's own frame (the ring
+        // state's slot[publishSlot].frame) — the one-frame lag is BY
+        // DESIGN and invisible on scopes at playback rate. The pack's
+        // frame index is available there if a consumer ever needs it; the
+        // JNI tail is deliberately NOT extended for it now.
+        const SteadyClock::time_point tStats1 = SteadyClock::now();
+        out.statsUs = elapsedUs(tStats0, tStats1);
+        out.width = statsW;
+        out.height = statsH;
+        out.ok = true;
+        return;
     }
     // The async miss: no pack this frame. The 1x1 shape is the SAME
     // placeholder the off path publishes — the JNI tail's statsMode=2 is

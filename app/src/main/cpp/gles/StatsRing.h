@@ -12,11 +12,13 @@
 // are planned and tested here on desktop, and GlesPreviewSession.cpp only
 // executes them.
 //
-// INVARIANT (the rule every caller must keep): a pending pack may survive
-// ONLY across CONSECUTIVE async frames — every sync, off, or realloc frame
-// DRAINS the ring first (the fences are deleted, the pending flags
-// cleared), and a pack gets exactly ONE publish chance (at the next async
-// frame) before its slot is reused by the frame after that.
+// INVARIANT (the rule every caller must keep): every sync, off, or realloc
+// frame DRAINS the ring first (the fences are deleted, the pending flags
+// cleared), so no fence survives a non-async frame. Inside a run of
+// async frames NO pack is ever dropped: a pack that misses its first
+// publish chance (its fence not signaled yet) stays pending and is
+// published at the NEXT async frame, with a bounded wait, before its slot
+// is reused (the "two misses" rule below).
 #pragma once
 
 #include <cstdint>
@@ -54,33 +56,46 @@ struct StatsRingState {
 
 // The plan for the NEXT async frame (what runJob's async leg executes):
 // frame = state.nextAsyncFrame; drawSlot = frame & 1 (the SSBO this frame
-// draws into); publishSlot = the (frame-1)&1 slot ONLY when frame > 0 and
-// that slot holds a pending pack (the frame-N-1 pack this frame may
-// publish if its fence already signaled), else -1 (nothing to publish);
-// dropStaleFence = the DRAW slot is still pending — the never-published
-// frame-N-2 pack whose fence must be deleted BEFORE the new one exists.
+// draws into); publishSlot = the pending slot this frame publishes, in
+// priority order:
+//   1. the DRAW slot, when it still holds a pending pack (the frame-N-2
+//      pack that missed both earlier chances). It MUST publish now: the
+//      draw below overwrites its SSBO. This is `mustPublish` — the caller
+//      waits for that fence with a BOUND, finite timeout.
+//   2. else the (frame-1)&1 slot, when it holds a pending pack (the normal
+//      N-1 publish). This is a try-only publish — the caller never blocks.
+//   3. else -1 (nothing to publish).
+// dropStaleFence is retired: with rule 1, a pending pack's fence is always
+// consumed by its own publish, never deleted over an unread SSBO.
 struct AsyncFramePlan {
     uint64_t frame = 0;
     int drawSlot = 0;
     int publishSlot = -1;
-    bool dropStaleFence = false;
+    bool mustPublish = false;  // publishSlot is the draw slot: bounded wait
+    bool dropStaleFence = false;  // always false now (kept so callers and
+                                  // tests written against it still compile)
 };
 
 inline AsyncFramePlan planAsyncFrame(const StatsRingState& s) {
     AsyncFramePlan p;
     p.frame = s.nextAsyncFrame;
     p.drawSlot = static_cast<int>(p.frame & 1);
-    if (p.frame > 0) {
+    if (s.slot[p.drawSlot].pending) {
+        // Rule 1: the draw slot is about to be overwritten — its pack
+        // (frame N-2) publishes THIS frame or is lost.
+        p.publishSlot = p.drawSlot;
+        p.mustPublish = true;
+    } else if (p.frame > 0) {
         const int prev = static_cast<int>((p.frame - 1) & 1);
         if (s.slot[prev].pending) p.publishSlot = prev;
     }
-    p.dropStaleFence = s.slot[p.drawSlot].pending;
     return p;
 }
 
-// Marks the drawn slot pending with the plan's frame (overwriting any
-// stale entry — the frame-N-2 pack's one publish chance is gone) and
-// advances nextAsyncFrame exactly once.
+// Marks the drawn slot pending with the plan's frame and advances
+// nextAsyncFrame exactly once. PRECONDITION: the caller published (rule 1)
+// or found nothing pending in the draw slot, so commitAsyncDraw never
+// overwrites an unread pack.
 inline void commitAsyncDraw(StatsRingState& s, const AsyncFramePlan& p) {
     s.slot[p.drawSlot].pending = true;
     s.slot[p.drawSlot].frame = p.frame;

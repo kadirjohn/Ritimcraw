@@ -40,69 +40,156 @@ TEST_CASE("cold ring: the first async frame has nothing to publish") {
     const AsyncFramePlan p = planAsyncFrame(s);
     CHECK(p.frame == 0);
     CHECK(p.publishSlot == -1);
-    CHECK_FALSE(p.dropStaleFence);
+    CHECK_FALSE(p.mustPublish);
 }
 
-TEST_CASE("after frame N commits, frame N+1 publishes exactly slot N&1") {
+TEST_CASE("healthy ladder: frame N+1 publishes exactly slot N&1") {
     StatsRingState s;
+    // The steady state: every publish succeeds, so each frame holds the
+    // only pending pack and the next frame offers it try-only (rule 2).
+    commitAsyncDraw(s, planAsyncFrame(s));            // frame 0 -> slot 0
+    const AsyncFramePlan p1 = planAsyncFrame(s);      // frame 1
+    CHECK(p1.publishSlot == 0);                       // frame 0's pack
+    CHECK(p1.drawSlot == 1);
+    CHECK_FALSE(p1.mustPublish);
+    clearSlot(s, p1.publishSlot);                    // publish succeeded
+    commitAsyncDraw(s, p1);                           // frame 1 -> slot 1
+    const AsyncFramePlan p2 = planAsyncFrame(s);      // frame 2
+    CHECK(p2.publishSlot == 1);                       // frame 1's pack
+    CHECK(p2.drawSlot == 0);
+    CHECK_FALSE(p2.mustPublish);
+    clearSlot(s, p2.publishSlot);
+    commitAsyncDraw(s, p2);                           // frame 2 -> slot 0
+    const AsyncFramePlan p3 = planAsyncFrame(s);      // frame 3
+    CHECK(p3.publishSlot == 0);                       // frame 2's pack
+    CHECK(p3.drawSlot == 1);
+    CHECK_FALSE(p3.mustPublish);
+    // The pending pack in the publish slot belongs to frame 2.
+    CHECK(s.slot[p3.publishSlot].pending);
+    CHECK(s.slot[p3.publishSlot].frame == 2);
+}
+
+TEST_CASE("starved ladder: misses promote the oldest at-risk pack (rule 1)") {
+    StatsRingState s;
+    // No publish ever succeeds: frames 0,1,2 commit with both slots left
+    // pending. Frame 3 draws into slot 1, which still holds frame 1's
+    // unpublished pack — rule 1 promotes THAT pack (the store pass would
+    // overwrite it), while frame 2's pack in slot 0 keeps its wait in
+    // line for the frame after.
     runAsyncFrames(s, 3);
-    // Frames 0,1,2 committed. Frame 3's plan must offer frame 2's pack
-    // (slot 2&1 = 0) — exactly the 1-frame-old slot, NEVER the slot frame
-    // 3 is about to draw into (also 0? no: 3&1 = 1; the publish slot is
-    // the OTHER one by construction).
     const AsyncFramePlan p = planAsyncFrame(s);
     CHECK(p.frame == 3);
-    CHECK(p.publishSlot == (2 & 1));
-    CHECK(p.drawSlot == (3 & 1));
-    CHECK(p.publishSlot != p.drawSlot);
-    // The pending pack in the publish slot belongs to frame 2.
-    CHECK(s.slot[p.publishSlot].pending);
-    CHECK(s.slot[p.publishSlot].frame == 2);
+    CHECK(p.drawSlot == 1);
+    CHECK(p.publishSlot == 1);
+    CHECK(p.mustPublish);
+    CHECK(s.slot[p.publishSlot].frame == 1);
+    // The bounded publish succeeded; slot 1 clears before the commit.
+    clearSlot(s, p.publishSlot);
+    commitAsyncDraw(s, p);
+    // Frame 4: draw slot 0 — frame 2's never-published pack, now two
+    // retries old, gets its bounded turn.
+    const AsyncFramePlan p4 = planAsyncFrame(s);
+    CHECK(p4.drawSlot == 0);
+    CHECK(p4.publishSlot == 0);
+    CHECK(p4.mustPublish);
+    CHECK(s.slot[0].frame == 2);
 }
 
-TEST_CASE("dropStaleFence: an unpublished frame N-2 pack flags its fence for deletion") {
+TEST_CASE("mustPublish: an unpublished frame N-2 pack takes priority over N-1") {
     StatsRingState s;
-    // Frames 0 and 1 commit, neither publishes (the caller never called
-    // clearSlot — the fences never signaled).
+    // Frames 0 and 1 commit, neither publishes (the fences never signaled).
     runAsyncFrames(s, 2);
     // Frame 2's plan: it draws into slot 0, which still holds frame 0's
-    // never-published pack — the plan must flag it so the caller deletes
-    // that fence BEFORE creating the new one.
+    // never-published pack. Rule 1: publishSlot is the DRAW slot itself
+    // with mustPublish set — the pack must be consumed with a bounded
+    // wait BEFORE the store pass overwrites its SSBO. Nothing is dropped.
     const AsyncFramePlan p = planAsyncFrame(s);
     CHECK(p.drawSlot == 0);
-    CHECK(p.dropStaleFence);
+    CHECK(p.publishSlot == 0);
+    CHECK(p.mustPublish);
+    CHECK_FALSE(p.dropStaleFence);
     CHECK(s.slot[0].frame == 0);
-    // After the overwriting commit, the old pending state is GONE: slot 0
-    // now belongs to frame 2.
+    clearSlot(s, p.publishSlot);  // the bounded publish succeeded
+    // After the commit, slot 0 holds frame 2's pack.
     commitAsyncDraw(s, p);
     CHECK(s.slot[0].pending);
     CHECK(s.slot[0].frame == 2);
-    // And frame 3's plan no longer flags a stale fence on either slot's
-    // reuse path for slot 1 (frame 1's pack is 2 frames old too — slot 1
-    // is what frame 3 draws into, so IT is the stale one now).
+    // Frame 3 normally publishes frame 2's pack (slot 0) as a try-only
+    // N-1 publish — but its DRAW slot is 1, slot 1 still holds frame 1's
+    // never-published pack, so rule 1 fires there instead.
     const AsyncFramePlan p3 = planAsyncFrame(s);
     CHECK(p3.drawSlot == 1);
-    CHECK(p3.dropStaleFence);
+    CHECK(p3.publishSlot == 1);
+    CHECK(p3.mustPublish);
+}
+
+TEST_CASE("mustPublish ring never drops a pack: the N-1 miss becomes the next frame's priority") {
+    StatsRingState s;
+    // Frame 0 commits; frame 1's try-only publish of frame 0 misses.
+    const AsyncFramePlan p0 = planAsyncFrame(s);
+    commitAsyncDraw(s, p0);
+    const AsyncFramePlan p1 = planAsyncFrame(s);   // frame 1: try-only publish of slot 0
+    REQUIRE(p1.publishSlot == 0);
+    REQUIRE_FALSE(p1.mustPublish);
+    commitAsyncDraw(s, p1);                         // the fence was not signaled: no clearSlot
+    // Frame 2: BOTH slots pending. Rule 1 must pick the draw slot (slot 0,
+    // frame 0's pack) — the only pack the store pass would destroy.
+    const AsyncFramePlan p2 = planAsyncFrame(s);
+    REQUIRE(p2.drawSlot == 0);
+    REQUIRE(p2.publishSlot == 0);
+    REQUIRE(p2.mustPublish);
+    clearSlot(s, p2.publishSlot);
+    commitAsyncDraw(s, p2);
+    // Frame 3: slot 1 still holds frame 1's pack (2 frames old), frame 2's
+    // pack sits in slot 0. Rule 1 protects slot 1 first.
+    const AsyncFramePlan p3 = planAsyncFrame(s);
+    REQUIRE(p3.drawSlot == 1);
+    REQUIRE(p3.publishSlot == 1);
+    REQUIRE(p3.mustPublish);
 }
 
 TEST_CASE("clearSlot after a publish empties the slot for the planner") {
     StatsRingState s;
     runAsyncFrames(s, 2);                          // frames 0 (slot 0), 1 (slot 1) pending
-    const AsyncFramePlan p = planAsyncFrame(s);    // frame 2, publishes slot 1
-    REQUIRE(p.publishSlot == 1);
-    clearSlot(s, p.publishSlot);                   // the publish succeeded
-    // The cleared slot is gone from the planner: re-planning the SAME
-    // frame (before the commit) finds nothing left to publish — the
-    // publishSlot read for that slot is now -1.
-    CHECK(planAsyncFrame(s).publishSlot == -1);
-    // And after the commit, the frame that REUSES the cleared slot as its
-    // draw slot flags no stale fence — the pack was consumed by its one
-    // publish chance, not silently lost.
-    commitAsyncDraw(s, p);
-    const AsyncFramePlan next = planAsyncFrame(s); // frame 3
-    CHECK(next.drawSlot == 1);
-    CHECK_FALSE(next.dropStaleFence);
-    CHECK(next.publishSlot == 0);                  // frame 2's fresh pack
+    const AsyncFramePlan p = planAsyncFrame(s);    // frame 2: rule 1 owns slot 0
+    REQUIRE(p.publishSlot == 0);
+    REQUIRE(p.mustPublish);
+    clearSlot(s, p.publishSlot);                   // the bounded publish succeeded
+    REQUIRE_FALSE(planAsyncFrame(s).mustPublish);  // slot 1: try-only N-1
+    commitAsyncDraw(s, p);                          // frame 2 draws slot 0 (now clean)
+    // Frame 3: slot 1 still holds frame 1's pack, and frame 3's DRAW slot
+    // is 1 — the pack at risk of overwriting. Slot 0 holds frame 2's
+    // fresh pack. Rule 1 promotes slot 1 (bounded), not slot 0.
+    const AsyncFramePlan p3 = planAsyncFrame(s);
+    CHECK(p3.drawSlot == 1);
+    CHECK(p3.publishSlot == 1);
+    CHECK(p3.mustPublish);
+    clearSlot(s, p3.publishSlot);                  // the bounded publish succeeded
+    commitAsyncDraw(s, p3);                        // frame 3 draws slot 1 (clean again)
+    // Frame 4: slot 0 still holds frame 2's pack — it was never at risk
+    // during frames 2-3 (its slot was only ever the PUBLISH slot), but
+    // frame 4 draws INTO slot 0, so now rule 1 promotes it (bounded)
+    // before the store pass overwrites it. Frame 3's fresh pack in slot 1
+    // waits its turn — the ring never drops a pack.
+    const AsyncFramePlan next = planAsyncFrame(s); // frame 4
+    CHECK(next.drawSlot == 0);
+    CHECK(next.publishSlot == 0);
+    CHECK(next.mustPublish);
+    CHECK(s.slot[0].frame == 2);
+    // Only after BOTH packs have had their bounded turn does the healthy
+    // try-only ladder resume — no pack is ever silently lost.
+    clearSlot(s, next.publishSlot);
+    commitAsyncDraw(s, next);                      // frame 4 draws slot 0 (clean)
+    // Frame 5: slot 1 still holds frame 3's unpublished pack (frames 3-4
+    // only ever consumed slot 0's packs), and frame 5 draws INTO slot 1 —
+    // rule 1 again. In a starved ring every other frame carries a
+    // mustPublish; the invariant that matters is NEVER-DROP: each frame
+    // consumes exactly the pack its own slot endangers, in FIFO order.
+    const AsyncFramePlan p5 = planAsyncFrame(s);    // frame 5
+    CHECK(p5.drawSlot == 1);
+    CHECK(p5.publishSlot == 1);
+    CHECK(p5.mustPublish);
+    CHECK(s.slot[1].frame == 3);
 }
 
 TEST_CASE("drain clears both slots' pending flags and the frame ladder") {
@@ -115,7 +202,7 @@ TEST_CASE("drain clears both slots' pending flags and the frame ladder") {
     const AsyncFramePlan p = planAsyncFrame(s);
     CHECK(p.frame == 0);
     CHECK(p.publishSlot == -1);
-    CHECK_FALSE(p.dropStaleFence);
+    CHECK_FALSE(p.mustPublish);
 }
 
 TEST_CASE("frame bookkeeping: commit records the frame the pack belongs to") {
