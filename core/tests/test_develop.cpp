@@ -1734,3 +1734,78 @@ TEST_CASE("parallel_pool_dispatch_covers_all_rows") {
     }
     setParallelForcedSerial(prev);
 }
+
+// ---- 2026-11-23: developLinear pixel math (docs/LINEAR_DNG_GAPS.md §7:
+// "developLinear's pixel math — NOT pinned by any core test"). ----
+
+TEST_CASE("develop_linear_flat_field_levels_wb_and_scaling") {
+    // A flat CFA at black + half range demosaics to a uniform 0.5 in every
+    // channel; stage 5 multiplies by 1/asShotNeutral, the tail scales by
+    // 65535 with rounding and clamping. Nothing else may touch the pixels
+    // (no shading even though a map is present, no matrix).
+    const uint32_t w = 8, h = 6;
+    FrameInfo info;
+    info.width = w;
+    info.height = h;
+    info.bitDepth = 16;
+    info.cfa = CfaPattern::RGGB;
+    RawMeta meta;
+    for (int i = 0; i < 4; ++i) meta.black[i] = 64;
+    meta.white = 1088;                 // range 1024
+    meta.asShotNeutral[0] = 1.0f;
+    meta.asShotNeutral[1] = 1.0f;
+    meta.asShotNeutral[2] = 2.0f;      // blue halves
+    meta.colorMatrix[0] = 3.0f;        // must NOT be applied
+    meta.shadingW = 2;                 // must NOT be applied
+    meta.shadingH = 2;
+    meta.lensShading.assign(2 * 2 * 4, 4.0f);
+    std::vector<uint16_t> cfa(w * h, 64 + 512);
+
+    const std::vector<uint16_t> out = developLinear(cfa.data(), info, meta);
+    REQUIRE(out.size() == static_cast<size_t>(w) * h * 3);
+    for (size_t p = 0; p < static_cast<size_t>(w) * h; ++p) {
+        CHECK(out[p * 3 + 0] == 32768); // lround(0.5 * 65535)
+        CHECK(out[p * 3 + 1] == 32768);
+        CHECK(out[p * 3 + 2] == 16384); // lround(0.25 * 65535)
+    }
+}
+
+TEST_CASE("develop_linear_frame_levels_win_and_clamp") {
+    // Frame-preferred levels: dynamicBlack/dynamicWhite override the
+    // container's; values above white clamp to 65535, below black to 0.
+    const uint32_t w = 4, h = 4;
+    FrameInfo info;
+    info.width = w;
+    info.height = h;
+    info.bitDepth = 16;
+    info.cfa = CfaPattern::GRBG;
+    for (int i = 0; i < 4; ++i) info.dynamicBlack[i] = 100;
+    info.dynamicWhite = 200;
+    RawMeta meta;
+    for (int i = 0; i < 4; ++i) meta.black[i] = 0;
+    meta.white = 60000; // would give ~0 for these values if used
+
+    std::vector<uint16_t> hi(w * h, 250); // above the frame white
+    const std::vector<uint16_t> a = developLinear(hi.data(), info, meta);
+    REQUIRE(a.size() == w * h * 3);
+    for (uint16_t v : a) CHECK(v == 65535);
+
+    std::vector<uint16_t> lo(w * h, 50);  // below the frame black
+    const std::vector<uint16_t> b = developLinear(lo.data(), info, meta);
+    for (uint16_t v : b) CHECK(v == 0);
+
+    std::vector<uint16_t> mid(w * h, 150); // exactly half the frame range
+    const std::vector<uint16_t> c = developLinear(mid.data(), info, meta);
+    for (uint16_t v : c) CHECK(v == 32768);
+}
+
+TEST_CASE("develop_linear_rejects_empty_input") {
+    FrameInfo info;
+    info.width = 4;
+    info.height = 4;
+    RawMeta meta;
+    CHECK(developLinear(nullptr, info, meta).empty());
+    std::vector<uint16_t> cfa(16, 0);
+    info.width = 0;
+    CHECK(developLinear(cfa.data(), info, meta).empty());
+}

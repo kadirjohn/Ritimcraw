@@ -8,9 +8,12 @@
 
 #include <rawedit/DngWriter.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <vector>
 
@@ -49,6 +52,18 @@ constexpr uint16_t kTagAsShotNeutral = 50728;
 constexpr uint16_t kTagActiveArea = 50829;
 constexpr uint16_t kTagImageDescription = 270;
 constexpr uint16_t kTagCFAPlaneColor = 50710;
+// Optional provenance tags (DngExtraMeta; written only when present).
+constexpr uint16_t kTagMake = 271;
+constexpr uint16_t kTagModel = 272;
+constexpr uint16_t kTagDateTime = 306;
+constexpr uint16_t kTagFNumber = 33437;
+constexpr uint16_t kTagDateTimeOriginal = 36867;
+constexpr uint16_t kTagOffsetTimeOriginal = 36881;
+constexpr uint16_t kTagFocalLength = 37386;
+constexpr uint16_t kTagFocalLengthIn35mm = 41989;
+constexpr uint16_t kTagLensModel = 42036;
+constexpr uint16_t kTagUniqueCameraModel = 50708;
+constexpr uint16_t kTagForwardMatrix1 = 50964;
 // PhotometricInterpretation VALUES (the tag itself is 262).
 constexpr uint16_t kPhotometricCfa = 32803;
 constexpr uint16_t kPhotometricLinearRaw = 34892;
@@ -135,10 +150,141 @@ void putRational(std::vector<uint8_t>& payload, double v, bool signedNum) {
     put32(payload, 1000000u);
 }
 
+// One optional tag with its fully-encoded value bytes (DngExtraMeta).
+struct ExtraTag {
+    uint16_t tag = 0;
+    uint16_t type = 0;
+    uint32_t count = 0;
+    std::vector<uint8_t> bytes;
+};
+
+void addAscii(std::vector<ExtraTag>& out, uint16_t tag, const std::string& s) {
+    if (s.empty()) return;
+    ExtraTag t;
+    t.tag = tag;
+    t.type = kTypeAscii;
+    t.bytes.assign(s.begin(), s.end());
+    t.bytes.push_back(0); // NUL-terminated
+    t.count = static_cast<uint32_t>(t.bytes.size());
+    out.push_back(std::move(t));
+}
+
+void addRational(std::vector<ExtraTag>& out, uint16_t tag, double v) {
+    if (!(v > 0.0) || !std::isfinite(v)) return;
+    ExtraTag t;
+    t.tag = tag;
+    t.type = kTypeRational;
+    t.count = 1;
+    putRational(t.bytes, v, /*signedNum=*/false);
+    out.push_back(std::move(t));
+}
+
+// The extras in ascending tag order (the caller merges them into the IFD
+// with a stable sort; ties cannot occur — no extra repeats a base tag).
+std::vector<ExtraTag> buildExtras(const DngExtraMeta& x) {
+    std::vector<ExtraTag> out;
+    addAscii(out, kTagMake, x.make);
+    addAscii(out, kTagModel, x.model);
+    addAscii(out, kTagDateTime, x.captureTimeUtc);
+    addRational(out, kTagFNumber, x.fNumber);
+    addAscii(out, kTagDateTimeOriginal, x.captureTimeUtc);
+    if (!x.captureTimeUtc.empty())
+        addAscii(out, kTagOffsetTimeOriginal, "+00:00");
+    addRational(out, kTagFocalLength, x.focalLengthMm);
+    if (x.focalLength35mm > 0.0 && std::isfinite(x.focalLength35mm)) {
+        const long mm = std::lround(x.focalLength35mm);
+        if (mm > 0 && mm <= 0xffff) {
+            ExtraTag t;
+            t.tag = kTagFocalLengthIn35mm;
+            t.type = kTypeShort;
+            t.count = 1;
+            put16(t.bytes, static_cast<uint16_t>(mm));
+            out.push_back(std::move(t));
+        }
+    }
+    addAscii(out, kTagLensModel, x.lensModel);
+    addAscii(out, kTagUniqueCameraModel, x.uniqueCameraModel);
+    if (x.hasForwardMatrix1) {
+        ExtraTag t;
+        t.tag = kTagForwardMatrix1;
+        t.type = kTypeSRational;
+        t.count = 9;
+        for (int i = 0; i < 9; ++i)
+            putRational(t.bytes, x.forwardMatrix1[i], /*signedNum=*/true);
+        out.push_back(std::move(t));
+    }
+    return out;
+}
+
+// Bytes the extras add to the external payload (word-aligned: TIFF value
+// offsets must be even, so each external value is padded to even length).
+uint32_t extrasPayloadBytes(const std::vector<ExtraTag>& extras) {
+    uint32_t n = 0;
+    for (const ExtraTag& t : extras) {
+        const uint32_t len = static_cast<uint32_t>(t.bytes.size());
+        if (len > 4) n += len + (len & 1u);
+    }
+    return n;
+}
+
+// Turns the extras into IFD entries: inline when the value fits 4 bytes,
+// else appended to payload at cursor (padded to even), advancing cursor.
+void appendExtras(const std::vector<ExtraTag>& extras,
+                  std::vector<Entry>& entries,
+                  std::vector<uint8_t>& payload, uint32_t& cursor) {
+    for (const ExtraTag& t : extras) {
+        Entry e;
+        e.tag = t.tag;
+        e.type = t.type;
+        e.count = t.count;
+        if (t.bytes.size() <= 4) {
+            std::copy(t.bytes.begin(), t.bytes.end(), e.value);
+        } else {
+            setInlineLong(e, cursor);
+            payload.insert(payload.end(), t.bytes.begin(), t.bytes.end());
+            uint32_t len = static_cast<uint32_t>(t.bytes.size());
+            if (len & 1u) {
+                payload.push_back(0);
+                ++len;
+            }
+            cursor += len;
+        }
+        entries.push_back(e);
+    }
+}
+
 } // namespace
+
+std::string dngDateTimeUtc(int64_t epochMs) {
+    if (epochMs < 0) return std::string();
+    const std::time_t secs = static_cast<std::time_t>(epochMs / 1000);
+    std::tm tm{};
+#if defined(_WIN32)
+    if (gmtime_s(&tm, &secs) != 0) return std::string();
+#else
+    if (gmtime_r(&secs, &tm) == nullptr) return std::string();
+#endif
+    char buf[32];
+    const int n = std::snprintf(buf, sizeof(buf), "%04d:%02d:%02d %02d:%02d:%02d",
+                                tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                                tm.tm_hour, tm.tm_min, tm.tm_sec);
+    if (n != 19) return std::string();
+    return std::string(buf, 19);
+}
 
 Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
                          const FrameInfo& frame, const RawMeta& meta) {
+    return writeCfaDng(path, cfa, frame, meta, DngExtraMeta{});
+}
+
+Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
+                            const FrameInfo& frame, const RawMeta& meta) {
+    return writeLinearDng(path, rgb, frame, meta, DngExtraMeta{});
+}
+
+Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
+                         const FrameInfo& frame, const RawMeta& meta,
+                         const DngExtraMeta& extra) {
     if (cfa == nullptr)
         return Result<void>::fail(ErrorCode::Unsupported, "cfa buffer is null");
     if (frame.width == 0 || frame.height == 0)
@@ -184,8 +330,9 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
     activeArea.type = kTypeLong;
     activeArea.count = 4;
 
+    const std::vector<ExtraTag> extras = buildExtras(extra);
     const uint32_t ifdOffset = 8;
-    const size_t entryCount = 21;
+    const size_t entryCount = 21 + extras.size();
     const uint32_t payloadOffset =
         ifdOffset + static_cast<uint32_t>(2 + 12 * entryCount + 4);
 
@@ -231,6 +378,15 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
     put32(payload, left);
     put32(payload, bottom);
     put32(payload, right);
+
+    // Optional provenance tags' external values follow the base payload
+    // (120 bytes, even — the guard keeps every extra offset even anyway).
+    std::vector<Entry> extraEntries;
+    if (!extras.empty() && extrasPayloadBytes(extras) > 0 && (cursor & 1u)) {
+        payload.push_back(0);
+        ++cursor;
+    }
+    appendExtras(extras, extraEntries, payload, cursor);
 
     const uint32_t stripOffset = cursor;
 
@@ -320,6 +476,14 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
     entries.push_back(asShotNeutral);
     entries.push_back(activeArea);
 
+    // Merge the optional tags; TIFF requires ascending tag order. The base
+    // set is already ascending, so with no extras this is a no-op.
+    entries.insert(entries.end(), extraEntries.begin(), extraEntries.end());
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const Entry& l, const Entry& r) { return l.tag < r.tag; });
+    if (entries.size() != entryCount)
+        return Result<void>::fail(ErrorCode::IoError, "internal entry count error");
+
     // Serialize.
     std::vector<uint8_t> file;
     file.reserve(static_cast<size_t>(stripOffset) + stripBytes);
@@ -378,7 +542,8 @@ const char* const kLinearDngStages =
     "developed by developLinear.";
 
 Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
-                            const FrameInfo& frame, const RawMeta& meta) {
+                            const FrameInfo& frame, const RawMeta& meta,
+                            const DngExtraMeta& extra) {
     if (rgb == nullptr)
         return Result<void>::fail(ErrorCode::Unsupported, "rgb buffer is null");
     if (frame.width == 0 || frame.height == 0)
@@ -436,8 +601,9 @@ Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
     activeArea.type = kTypeLong;
     activeArea.count = 4;
 
+    const std::vector<ExtraTag> extras = buildExtras(extra);
     const uint32_t ifdOffset = 8;
-    const size_t entryCount = 21;
+    const size_t entryCount = 21 + extras.size();
     const uint32_t payloadOffset =
         ifdOffset + static_cast<uint32_t>(2 + 12 * entryCount + 4);
 
@@ -484,6 +650,16 @@ Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
     put32(payload, left);
     put32(payload, bottom);
     put32(payload, right);
+
+    // Optional provenance tags' external values follow the base payload.
+    // The base payload may end on an odd byte (the NUL-terminated
+    // description); pad once so every extra value offset is even.
+    std::vector<Entry> extraEntries;
+    if (!extras.empty() && extrasPayloadBytes(extras) > 0 && (cursor & 1u)) {
+        payload.push_back(0);
+        ++cursor;
+    }
+    appendExtras(extras, extraEntries, payload, cursor);
 
     const uint32_t stripOffset = cursor;
 
@@ -563,6 +739,13 @@ Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
     entries.push_back(colorMatrix);
     entries.push_back(asShotNeutral);
     entries.push_back(activeArea);
+
+    // Merge the optional tags (ascending order; a no-op without extras).
+    entries.insert(entries.end(), extraEntries.begin(), extraEntries.end());
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const Entry& l, const Entry& r) { return l.tag < r.tag; });
+    if (entries.size() != entryCount)
+        return Result<void>::fail(ErrorCode::IoError, "internal entry count error");
 
     // Serialize.
     std::vector<uint8_t> file;

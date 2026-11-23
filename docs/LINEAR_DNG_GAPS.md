@@ -328,6 +328,43 @@ shared-file locks); this audit changed nothing.
 | G6 | Rotated Orientation values (6/3/8) in the actual written file are not pinned by a core test (only 1 is; the mapping is pinned via the JVM mirror `RotationState.dngOrientationTag`) | Low (test coverage) | core/tests/test_dng.cpp when a core test slot opens (build-file edits are locked tonight) |
 | G7 | ForwardMatrix1 exists on Source (`RawMeta.forwardMatrix`) and is not written; ColorMatrix1-only is valid DNG but less precise | Low | Same signature/flow change as G1 if the owner elects to write it |
 
+### 6.1 Status update — 2026-11-23 (writer half landed, JNI wiring pending)
+
+- **G1 / G2 / G3 / G7 — writer side DONE, JNI wiring PENDING.**
+  `core/include/rawedit/DngWriter.h` gains `DngExtraMeta` and the
+  overloads `writeCfaDng(..., extra)` / `writeLinearDng(..., extra)`:
+  Make (271), Model (272), UniqueCameraModel (50708), DateTime (306) +
+  DateTimeOriginal (36867) + OffsetTimeOriginal (36881, "+00:00" — the
+  string is UTC), FNumber (33437), FocalLengthIn35mmFilm (41989 — the
+  container's `focalLengthMm` is 35mm-EQUIVALENT, so it is never written
+  as the physical FocalLength 37386), optional physical FocalLength,
+  LensModel (42036) and ForwardMatrix1 (50964). Every field is
+  absent-by-default and an absent field writes no tag, so a default
+  `DngExtraMeta` is byte-identical to the old writer (pinned by
+  `dng_extra_meta_default_is_byte_identical`). `dngDateTimeUtc(epochMs)`
+  formats `FrameInfo.recvdMs` (-1 -> "" -> no tag).
+  **Still to do (main agent — jni_bridge.cpp is locked for this
+  worker):** in `nativeDngExport` / `nativeLinearDngExport`, fill a
+  `DngExtraMeta` from `src.containerIdentity()` (manufacturer ->
+  make, buildModel or deviceModel -> model, uniqueCameraModel,
+  aperture -> fNumber), `meta.focalLengthMm` -> focalLength35mm,
+  `dngDateTimeUtc(info.recvdMs)` -> captureTimeUtc,
+  `meta.forwardMatrix` -> forwardMatrix1 (hasForwardMatrix1 only when the
+  container really carried one — the RawMeta default is identity), and
+  pass it as the new last argument. Until then exported files are
+  unchanged.
+- **G4 — DONE (documented omission).** The DngWriter.h contract now
+  states why neither arm writes NoiseProfile: a per-CFA-slot,
+  normalized-domain profile is wrong for demosaiced WB-scaled RGB, and
+  no tag is the only statement that is never false.
+- **G6 — DONE.** `dng_rotated_orientation_values_both_arms` pins
+  90->6, 180->3, 270->8, -90->8, 450->6 in the ACTUAL written files of
+  both arms.
+- **§7 developLinear pixel math — DONE.** test_develop pins the flat
+  field (levels, WB divide, 65535 rounding), frame-preferred levels and
+  clamping, the not-applied shading/matrix, and empty-input rejection.
+- **G5 — unchanged**, owner product decision.
+
 Device/desktop-pending legs (not gaps in code, but unpinned behavior):
 the external-reader pass (QA-17's Lightroom/RawTherapee clause) over both
 exported files, including the crop+rotation composition; real-device
