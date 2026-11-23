@@ -191,6 +191,24 @@ struct DevelopFrameRequest {
     // render's contract, not a measurement); the pipeline itself never
     // touches it — the stats stage is session-side.
     int statsMode = 1;
+    // The A2 crop/straighten pair (owner request 2026-11-23, guide A2):
+    // APPEND-ONLY after statsMode, never interleaved. cropParams is the
+    // five-float parcel GpuCropMap.requestCrop built Kotlin-side —
+    // [rectX, rectY, rectW, rectH, straightenDeg] with the rect
+    // ALREADY mapRect'ed through CropState (container-upright
+    // fractions; the manual quarter turn rides PreviewSurface's
+    // graphicsLayer OUTSIDE the GL draw) and the RAW angle (the ±15
+    // clamp + the dims-dependent geometry live in GpuCropMap.h
+    // planCrop — Kotlin cannot know the develop dims). The PREVIEW
+    // session reads the pair (the window + stats draws set the
+    // WINDOW_FRAGMENT crop uniforms from the planned frame); the
+    // develop/export session IGNORES it (the export crops in a Kotlin
+    // stage after develop, Mp4Exporter STAGE_CROP — guide A2's out of
+    // scope). The defaults keep every existing session byte-identical:
+    // cropActive false plans the identity (uCropOn = 0 — today's path
+    // verbatim) and no call site sends true until A2's editor change.
+    bool cropActive = false;
+    float cropParams[5] = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f};
 };
 
 class GpuDevelopPipeline {

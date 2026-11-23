@@ -2470,10 +2470,59 @@ object GlesShaderValidator {
         // The Y flip — the source texture is top-row-first while
         // gl_FragCoord counts rows bottom-up (the same trap the blit's
         // flip guards against, folded into the default arm).
-        if (!s.contains("1.0 - uv.y")) {
-            out += "missing the Y flip (`1.0 - uv.y` — the developed " +
+        if (!s.contains("1.0 - uvFull.y")) {
+            out += "missing the Y flip (`1.0 - uvFull.y` — the developed " +
                 "texture is top-row-first; without the fold the window " +
-                "and stats draws are upside down)"
+                "and stats draws are upside down; since A2 the fold reads " +
+                "uvFull, the crop-mapped uv)"
+        }
+        // The A2 crop pins (owner request 2026-11-23, guide A2): the six
+        // uniforms exist because GlesPreviewSession's window program
+        // looks each up (an optimized-out uniform fails the all-uniforms
+        // lookup), and the gate + manual bilinear are the crop math's
+        // own tokens — without them the crop block could be quietly
+        // dropped while the uniforms still link.
+        if (!s.contains("uniform int uCropOn;")) {
+            out += "missing `uniform int uCropOn;` (the session's " +
+                "windowCropOnLoc lookup — the crop gate; without it " +
+                "an active crop renders uncropped)"
+        }
+        if (!s.contains("uniform vec4 uCropRect;")) {
+            out += "missing `uniform vec4 uCropRect;` (the session's " +
+                "windowCropRectLoc lookup — the mapRect'ed crop " +
+                "rect, container-upright fractions)"
+        }
+        if (!s.contains("uniform vec2 uCropOut;")) {
+            out += "missing `uniform vec2 uCropOut;` (the session's " +
+                "windowCropOutLoc lookup — the cropped output dims " +
+                "the rect-local uv walks back from)"
+        }
+        if (!s.contains("uniform float uCropZoom;")) {
+            out += "missing `uniform float uCropZoom;` (the session's " +
+                "windowCropZoomLoc lookup — the straighten " +
+                "auto-zoom; without it a straightened crop shows empty " +
+                "triangles)"
+        }
+        if (!s.contains("uniform float uCropCos;")) {
+            out += "missing `uniform float uCropCos;` (the session's " +
+                "windowCropCosLoc lookup — the double-theta cos the " +
+                "CPU reference uses; GLSL's own cos would drift)"
+        }
+        if (!s.contains("uniform float uCropSin;")) {
+            out += "missing `uniform float uCropSin;` (the session's " +
+                "windowCropSinLoc lookup — the double-theta sin " +
+                "pair's other half)"
+        }
+        if (!s.contains("uCropOn == 1")) {
+            out += "missing the crop gate (`uCropOn == 1` — without " +
+                "the gate the crop uniforms are dead text and a cropped " +
+                "request renders uncropped)"
+        }
+        if (!s.contains("texelFetch(uSrc")) {
+            out += "missing the manual bilinear (`texelFetch(uSrc` — " +
+                "the crop branch's 4-tap sampling, mirroring " +
+                "CropState.sampleArgbBilinear; texture() on the NEAREST-" +
+                "pinned develop texture would give blocky crop edges)"
         }
     }
 

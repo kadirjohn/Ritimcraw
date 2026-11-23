@@ -282,4 +282,246 @@ object GradeParitySweep {
             NativeSource.jniCloseSource(clip)
         }
     }
+
+    // ---- the A2 crop sweep (owner request 2026-11-23, guide A2) -----------
+    //
+    // The grade sweep rides the DEVELOP session; the crop sweep must ride
+    // the PREVIEW session — the crop lives in WINDOW_FRAGMENT (the window
+    // pass the stats draw reuses), so the GPU leg renders through the
+    // SAME door the editor's GPU arm rides:
+    // nativePreviewSessionRenderFrameParcel with cropActive=true. The
+    // published stats pack IS the cropped region at the fixed small size
+    // (maxDim = 256 keeps the cropped output under kStatsLongEdge, so
+    // the pack lands at EXACTLY the crop output dims — no 256 rescale
+    // between the two legs). The CPU reference is the EXACT publish
+    // path's math: the uncropped CPU render at the same maxDim,
+    // CropState.applyToArgb with spaceDeltaDeg = 0 (the same effective-
+    // upright rect, manualDelta = 0 in every case). ACCEPTANCE:
+    // maxDiffLsb <= 2 (the guide's twin-readback-vs-CPU bound).
+
+    /** One crop case: the effective-upright rect fractions + the angle. */
+    data class CropCase(
+        val x: Float,
+        val y: Float,
+        val w: Float,
+        val h: Float,
+        val deg: Float,
+        /** 0 in every case: the clip's real container orientation still
+         *  exercises the shader's uOrientation fold natively. */
+        val manualDeltaDeg: Int = 0,
+    )
+
+    /** The device crop grid (pure; JVM-pinned). */
+    fun cropCases(): List<CropCase> {
+        val out = ArrayList<CropCase>()
+        val rects = listOf(
+            // A centered 16:9.
+            CropCase(0.125f, 0.25f, 0.75f, 0.5f, 0f),
+            // Off-center, no edge alignment.
+            CropCase(0.4f, 0.35f, 0.45f, 0.4f, 0f),
+            // The clampRect floor: 5 percent per axis.
+            CropCase(0.5f, 0.5f, 0.05f, 0.05f, 0f),
+        )
+        // The deg grid replaces the placeholder 0 of each rect shape.
+        for (r in rects) {
+            for (deg in floatArrayOf(0f, 0.5f, -0.5f, 7f, -7f, 15f, -15f)) {
+                out += CropCase(r.x, r.y, r.w, r.h, deg, r.manualDeltaDeg)
+            }
+        }
+        return out
+    }
+
+    /** ARGB int pack (0xFFRRGGBB) -> RGB bytes (the compare's format). */
+    fun argbBytes(argb: IntArray): ByteArray {
+        val out = ByteArray(argb.size * 3)
+        for (i in argb.indices) {
+            out[i * 3] = ((argb[i] shr 16) and 0xFF).toByte()
+            out[i * 3 + 1] = ((argb[i] shr 8) and 0xFF).toByte()
+            out[i * 3 + 2] = (argb[i] and 0xFF).toByte()
+        }
+        return out
+    }
+
+    fun cropLine(x: Float, y: Float, w: Float, h: Float, deg: Float, s: Stats): String =
+        String.format(
+            java.util.Locale.US,
+            "crop-sweep rect=%.3f,%.3f,%.3f,%.3f deg=%.1f: " +
+                "maxDiffLsb=%d mismatch=%.3f%% over1=%.3f%% samples=%d",
+            x, y, w, h, deg, s.maxDiffLsb, s.mismatchPct, s.over1Pct, s.samples,
+        )
+
+    fun cropSummaryLine(
+        lines: List<Pair<CropCase, Stats>>,
+        skipped: Int,
+    ): String {
+        val worst = lines.maxByOrNull { it.second.maxDiffLsb }
+        return "crop-sweep summary: cases=${lines.size} skipped=$skipped " +
+            "worstMaxDiffLsb=${worst?.second?.maxDiffLsb ?: 0}" +
+            (if (worst != null) {
+                " (rect=${worst.first.x},${worst.first.y},${worst.first.w},${worst.first.h} " +
+                    "deg=${worst.first.deg})"
+            } else "")
+    }
+
+    /**
+     * Runs the crop sweep over the clip at [fd] (TAKES OWNERSHIP of the
+     * fd: closed here, always). Frame 0, maxDim = 256 (the cropped output
+     * stays under the stats long edge, so the pack lands at exactly the
+     * crop output dims), no LUT, warp off, statsMode = SYNC (the paused
+     * exact frame). Everything touching the clip handle runs on the
+     * shared preview engine thread; logs one crop-sweep line per case
+     * plus a summary under [TAG]; returns the summary line, or null when
+     * disabled / unopenable.
+     */
+    suspend fun runCrop(fd: Int): String? {
+        if (!enabled) {
+            PreviewRenderer.closeFdQuietly(fd)
+            return null
+        }
+        val engine = PreviewRenderer.previewEngine
+        return try {
+            val future = engine.submit<String?> { runCropBlocking(fd) }
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { future.get() }
+            } catch (e: ExecutionException) {
+                Log.w(TAG, "crop-sweep aborted: ${e.cause?.message}")
+                null
+            }
+        } finally {
+            PreviewRenderer.closeFdQuietly(fd)
+        }
+    }
+
+    private fun runCropBlocking(fd: Int): String? {
+        if (!NativeSource.nativeAvailable) {
+            Log.w(TAG, "crop-sweep aborted: ${NativeSource.nativeUnavailableMessage}")
+            return null
+        }
+        val info = NativeSource.jniPreviewOpen(fd)
+        if (info == null || info.size < 7 || info[0] == 0) {
+            Log.w(TAG, "crop-sweep aborted: clip open failed (${NativeSource.previewLastError()})")
+            return null
+        }
+        val clip = info[0].toLong()
+        // The PREVIEW session (the window pass's own door — the crop rides
+        // WINDOW_FRAGMENT): the same fifteen validated single-source-of-truth
+        // sources the editor's NativeGpuPreviewDevelop passes.
+        val session = NativeSource.jniPreviewSessionOpen(
+            GlesShaderSources.FULLSCREEN_VERTEX,
+            GlesShaderSources.FULLSCREEN_VERTEX_310,
+            GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+            GlesShaderSources.DEVELOP_FRAGMENT_POST,
+            GlesShaderSources.DEVELOP_FRAGMENT_TAIL,
+            GlesShaderSources.SHARPNESS_H,
+            GlesShaderSources.SHARPNESS_V,
+            GlesShaderSources.DETAIL_H,
+            GlesShaderSources.DETAIL_V,
+            GlesShaderSources.WARP,
+            GlesShaderSources.NR_CHROMA_H,
+            GlesShaderSources.NR_CHROMA_V,
+            GlesShaderSources.NR_LUMA,
+            GlesShaderSources.STORE_FRAGMENT,
+            GlesShaderSources.WINDOW_FRAGMENT,
+        )
+        if (session == 0L) {
+            Log.w(TAG, "crop-sweep aborted: gpu preview session open failed " +
+                "(${NativeSource.previewLastError()})")
+            NativeSource.jniCloseSource(clip)
+            return null
+        }
+        val neutral = GradeK()
+        val parcel = GradeParcel.encode(neutral)
+        val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        val maxDim = 256 // stays under kStatsLongEdge: no rescale between the legs
+        try {
+            // The CPU reference ONCE (neutral grade, same frame + maxDim):
+            // the uncropped render cropCases crop through CropState below.
+            val args = GradeMapping.toNative(neutral)
+            fun cpuUncropped(): IntArray? = NativeSource.jniPreviewRender(
+                clip, 0,
+                args.exposureEv, args.highlights, args.tempK, args.tint,
+                args.saturation, args.blackPoint, args.whitePoint,
+                args.shadows, args.midtones, args.contrast,
+                args.asShot, args.highlightReconstruction, args.keepVignetting,
+                args.sharpness, args.detail, args.tonemap,
+                null, args.lutStrength,
+                args.noiseReduction, args.chromaDenoise,
+                false, args.temporalStrength,
+                args.wheelShadowX, args.wheelShadowY,
+                args.wheelMidX, args.wheelMidY,
+                args.wheelHighX, args.wheelHighY,
+                args.splitShadowHue, args.splitHighlightHue, args.splitBalance,
+                // Stab off: gyroPath null + the five zeroed stab scalars.
+                null, 0, 0f, 0f, 0f, 0f,
+                maxDim,
+                -1, -1, -1, -1, -1,
+            )
+            val rows = ArrayList<Pair<CropCase, Stats>>()
+            var skipped = 0
+            for (c in cropCases()) {
+                // GPU leg: the preview session's stats pack IS the cropped
+                // region (the window pass maps the crop; SYNC readback for
+                // the paused exact frame). The parcel is the mapRect'ed
+                // rect + raw deg — manualDelta 0 keeps it effective-space,
+                // the exact PublishCrop mapping with spaceDeltaDeg = 0.
+                val cropParams = floatArrayOf(c.x, c.y, c.w, c.h, c.deg)
+                val gpuPack = NativeSource.jniPreviewSessionRenderFrameParcel(
+                    session, clip, 0, maxDim, parcel,
+                    null, 0f, -1, -1, -1, -1, -1,
+                    false, identity, PreviewStatsMode.SYNC.native,
+                    true, cropParams,
+                )
+                // CPU leg: the uncropped render at the same maxDim, cropped
+                // by the EXACT publish math (applyToArgb, spaceDeltaDeg = 0).
+                val cpuUncrop = cpuUncropped()
+                if (gpuPack == null || cpuUncrop == null || cpuUncrop.size < 2) {
+                    skipped++
+                    Log.w(TAG, "crop-sweep rect=${c.x},${c.y},${c.w},${c.h} deg=${c.deg}: " +
+                        "render failed gpu=${gpuPack != null} cpu=${cpuUncrop != null} " +
+                        "(${NativeSource.previewLastError()})")
+                    continue
+                }
+                val gw = gpuPack[0]
+                val gh = gpuPack[1]
+                if (gw <= 0 || gh <= 0 || gpuPack.size < 2 + gw * gh) {
+                    skipped++
+                    Log.w(TAG, "crop-sweep rect=${c.x},${c.y},${c.w},${c.h} deg=${c.deg}: " +
+                        "malformed gpu pack ${gpuPack.size} at ${gw}x${gh}")
+                    continue
+                }
+                val gpuArgb = gpuPack.copyOfRange(2, 2 + gw * gh)
+                val cw = cpuUncrop[0]
+                val ch = cpuUncrop[1]
+                if (cw <= 0 || ch <= 0 || cpuUncrop.size < 2 + cw * ch) {
+                    skipped++
+                    continue
+                }
+                val cpuCropped = com.ritim.ritimcraw.data.CropState.applyToArgb(
+                    cpuUncrop.copyOfRange(2, 2 + cw * ch),
+                    cw, ch,
+                    com.ritim.ritimcraw.data.CropState.RectF(c.x, c.y, c.w, c.h),
+                    c.deg,
+                    spaceDeltaDeg = 0,
+                )
+                if (cpuCropped.width != gw || cpuCropped.height != gh) {
+                    // A dims mismatch is ITSELF a finding: the crop's output
+                    // dims disagreed (the worst kind of crop bug — different
+                    // regions). Report and skip the pixel compare.
+                    skipped++
+                    Log.w(TAG, "crop-sweep rect=${c.x},${c.y},${c.w},${c.h} deg=${c.deg}: " +
+                        "DIMS MISMATCH gpu=${gw}x${gh} cpu=${cpuCropped.width}x${cpuCropped.height}")
+                    continue
+                }
+                val stats = compare(argbBytes(gpuArgb), argbBytes(cpuCropped.argb))
+                rows += c to stats
+                Log.i(TAG, cropLine(c.x, c.y, c.w, c.h, c.deg, stats))
+            }
+            val summary = cropSummaryLine(rows, skipped)
+            Log.i(TAG, summary)
+            return summary
+        } finally {
+            NativeSource.jniPreviewSessionClose(session)
+            NativeSource.jniCloseSource(clip)
+        }
+    }
 }

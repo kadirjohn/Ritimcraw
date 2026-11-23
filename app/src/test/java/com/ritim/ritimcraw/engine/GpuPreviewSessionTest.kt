@@ -124,6 +124,17 @@ class GpuPreviewSessionTest {
         val warpM: List<Float>,
     )
 
+    /**
+     * The A2 crop pair per render (owner request 2026-11-23, guide A2):
+     * the active flag + the five mapped floats, recorded as a LIST so a
+     * reference-equality slip cannot fake the pass-through (the WarpCall
+     * precedent).
+     */
+    private data class CropCall(
+        val cropActive: Boolean,
+        val cropParams: List<Float>,
+    )
+
     /** Records every seam call; scripted verdicts per method. */
     private class FakeDevelop(
         var openResult: Long = 1L,
@@ -145,6 +156,7 @@ class GpuPreviewSessionTest {
         val renderedLut = mutableListOf<LutCall>() // the seven LUT controls per render
         val renderedStatsMode = mutableListOf<PreviewStatsMode>() // the A1 readback mode per render
         val renderedWarp = mutableListOf<WarpCall>() // the warp pair per render
+        val renderedCrop = mutableListOf<CropCall>() // the A2 crop pair per render
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
         var probeResult: DoubleArray? = null
@@ -196,6 +208,8 @@ class GpuPreviewSessionTest {
             warpActive: Boolean,
             warpM: FloatArray,
             statsMode: PreviewStatsMode,
+            cropActive: Boolean,
+            cropParams: FloatArray,
         ): PreviewFrame? {
             val g = GradeParcel.decode(gradeParcel)
             rendered += sessionHandle
@@ -216,6 +230,7 @@ class GpuPreviewSessionTest {
             )
             renderedStatsMode += statsMode
             renderedWarp += WarpCall(warpActive, warpM.toList())
+            renderedCrop += CropCall(cropActive, cropParams.toList())
             if (renderThrows) throw IllegalStateException("seam blew up")
             return renderResult
         }
@@ -330,6 +345,13 @@ class GpuPreviewSessionTest {
                 -0.5f, 1.5f, 0.9f,
             ),
             statsMode = PreviewStatsMode.ASYNC,
+            // A2 (2026-11-23): the crop pair rides LAST, after statsMode
+            // — an ACTIVE mapped crop with distinctive fraction values,
+            // locking the pass-through verbatim (the plan's own anchor
+            // shape: a quarter-turned, straightened crop).
+            cropActive = true, cropParams = floatArrayOf(
+                0.25f, 0.25f, 0.5f, 0.5f, 7f,
+            ),
         )
         // The SAME instance flows through — the pump publishes it exactly
         // as the CPU dispatch publishes its own frame.
@@ -417,6 +439,20 @@ class GpuPreviewSessionTest {
             ),
             develop.renderedWarp,
         )
+        // The A2 crop pair rides the seam verbatim too (owner request
+        // 2026-11-23, guide A2): the mapRect'ed rect fractions + the raw
+        // straighten angle cross UNCHANGED — the native side owns the
+        // dims-dependent folds (planCrop's zoom/dims/trig), never a
+        // re-decision about the mapping.
+        assertEquals(
+            listOf(
+                CropCall(
+                    cropActive = true,
+                    cropParams = listOf(0.25f, 0.25f, 0.5f, 0.5f, 7f),
+                )
+            ),
+            develop.renderedCrop,
+        )
     }
 
     @Test
@@ -435,6 +471,8 @@ class GpuPreviewSessionTest {
                     1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
                 ),
                 statsMode = PreviewStatsMode.SYNC,
+                cropActive = false,
+                cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
             )
         )
         assertTrue(develop.rendered.isEmpty())
@@ -456,6 +494,8 @@ class GpuPreviewSessionTest {
                     1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
                 ),
                 statsMode = PreviewStatsMode.SYNC,
+                cropActive = false,
+                cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
             )
         )
     }
@@ -499,6 +539,8 @@ class GpuPreviewSessionTest {
                     1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
                 ),
                 statsMode = PreviewStatsMode.SYNC,
+                cropActive = false,
+                cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
             )
         )
         assertEquals(0, develop.rendered.size)
@@ -536,6 +578,8 @@ class GpuPreviewSessionTest {
                 warpActive: Boolean,
                 warpM: FloatArray,
                 statsMode: PreviewStatsMode,
+                cropActive: Boolean,
+                cropParams: FloatArray,
             ): PreviewFrame? = null
             override fun closeSession(sessionHandle: Long) {}
             override suspend fun lastDetail(): String? = throw IllegalStateException("seam blew up")

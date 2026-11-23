@@ -603,6 +603,54 @@ object CropState {
     }
 
     /**
+     * The per-pixel INVERSE SAMPLING MAP of the straighten arm (A2 GPU
+     * crop/straighten preview, owner request 2026-11-23, guide A2),
+     * extracted VERBATIM from [applyToArgb]'s loop so the GPU mirror
+     * (engine.GpuCropMap — the WINDOW_FRAGMENT crop map) and its parity
+     * test hold against the SAME numbers the CPU resample has always
+     * computed. Returns [sx, sy] — the source position the output pixel
+     * ([ox], [oy]) of a [outW] x [outH] crop of rect [r] over a [srcW] x
+     * [srcH] frame samples at straighten angle [deg].
+     *
+     * The math (byte-identical with the loop it was extracted from): zoom
+     * = [straightenZoom] (the auto-zoom), the rect center in source
+     * pixels, output offsets from the output's own center, the inverse
+     * rotation R(-theta)/zoom computed with cos/sin from a DOUBLE theta
+     * cast to float — the exact precision the loop always used.
+     *
+     * Pure; recomputes zoom/cos/sin per call. applyToArgb's hot loop
+     * keeps its own hoisted copies (identical math, no behavior change),
+     * and the parity test calls this per output pixel.
+     */
+    fun cropSourcePosition(
+        ox: Int,
+        oy: Int,
+        outW: Int,
+        outH: Int,
+        r: RectF,
+        deg: Float,
+        srcW: Int,
+        srcH: Int,
+    ): FloatArray {
+        val zoom = straightenZoom(srcW, srcH, r, deg)
+        val cx = (r.x + r.w / 2f) * srcW
+        val cy = (r.y + r.h / 2f) * srcH
+        val theta = deg.toDouble() * PI / 180.0
+        // Float trig: half-degree steps over ±15° lose nothing, and the
+        // hot loops stay in float math (the loop's own comment, kept).
+        val c = cos(theta).toFloat()
+        val s = sin(theta).toFloat()
+        val dx = (ox + 0.5f) - outW / 2f
+        val dy = (oy + 0.5f) - outH / 2f
+        // Inverse map: source offset = R(-theta) * d / zoom — positive
+        // degrees rotate the CONTENT clockwise, the same sense as
+        // RotationState's CW-positive convention.
+        val sx = cx + (dx * c + dy * s) / zoom
+        val sy = cy + (-dx * s + dy * c) / zoom
+        return floatArrayOf(sx, sy)
+    }
+
+    /**
      * The RGB888 counterpart of [applyToArgb] for the MP4 export path
      * (the buffer is already rotated to effective space, so the
      * default [spaceDeltaDeg] = 0 applies) and any other row-major

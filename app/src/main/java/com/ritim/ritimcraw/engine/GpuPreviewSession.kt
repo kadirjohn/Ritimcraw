@@ -87,11 +87,19 @@ interface GpuPreviewDevelop {
      * built-once-per-grade-change rule; the preview builds once per
      * request because the request itself folds the tier).
      *
-     * A1 async stats (2026-11-23): statsMode rides LAST — the per-request
-     * readback mode (PreviewStatsMode), computed by the caller with
-     * statsModeFor (scope demand x render class x the settings toggle).
-     * The native side folds the master kill switch; the published frame's
-     * own statsMode field reports what ACTUALLY ran (the tail's mode int).
+     * A1 async stats (2026-11-23): statsMode rides near-last — the
+     * per-request readback mode (PreviewStatsMode), computed by the
+     * caller with statsModeFor (scope demand x render class x the
+     * settings toggle). The native side folds the master kill switch; the
+     * published frame's own statsMode field reports what ACTUALLY ran
+     * (the tail's mode int).
+     *
+     * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair rides
+     * LAST, append-only after statsMode — cropActive (false = the
+     * shader's identity path) + cropParams (GpuCropMap.requestCrop's
+     * five-float parcel: the mapRect'ed rect fractions + the raw
+     * straighten angle). Pass through verbatim — the native side owns the
+     * dims-dependent folds (planCrop's zoom/dims/trig).
      */
     suspend fun renderFrame(
         sessionHandle: Long,
@@ -109,6 +117,8 @@ interface GpuPreviewDevelop {
         warpActive: Boolean,
         warpM: FloatArray,
         statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
     ): PreviewFrame?
 
     /**
@@ -252,6 +262,8 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
      * engine thread like every render entry. A1 async stats (2026-11-23):
      * the enum converts to its native int EXACTLY ONCE, here at the JNI
      * boundary — everything above the seam speaks PreviewStatsMode.
+     * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair passes
+     * through verbatim, LAST after statsMode.
      */
     override suspend fun renderFrame(
         sessionHandle: Long,
@@ -269,6 +281,8 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         warpActive: Boolean,
         warpM: FloatArray,
         statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
     ): PreviewFrame? = suspendCoroutine { cont ->
         try {
             PreviewRenderer.previewEngine.execute {
@@ -281,6 +295,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                                 lutPath, lutStrength, lutRole, lutInGamut,
                                 lutInTransfer, lutOutGamut, lutOutTransfer,
                                 warpActive, warpM, statsMode.native,
+                                cropActive, cropParams,
                             )
                         )
                     } catch (t: Throwable) {
@@ -475,8 +490,10 @@ class GpuPreviewSession(
      * the grade crosses as the ONE flat FloatArray the caller encoded
      * (GradeParcel.encode, once per request after the temporalNr tier
      * fold) — the field list died with the flat door. A1 async stats
-     * (2026-11-23): statsMode rides LAST — the per-request readback mode
-     * (PreviewStatsMode), the demand x class x toggle fold's verdict.
+     * (2026-11-23): statsMode rides after the warp pair — the
+     * per-request readback mode (PreviewStatsMode), the demand x class x
+     * toggle fold's verdict. A2 GPU crop/straighten (2026-11-23, guide
+     * A2): the crop pair rides LAST, append-only after statsMode.
      */
     suspend fun render(
         clipHandle: Long,
@@ -493,6 +510,8 @@ class GpuPreviewSession(
         warpActive: Boolean,
         warpM: FloatArray,
         statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
     ): PreviewFrame? {
         val h = handle
         if (h == 0L || closed.get()) return null
@@ -503,6 +522,7 @@ class GpuPreviewSession(
                 lutPath, lutStrength, lutRole, lutInGamut,
                 lutInTransfer, lutOutGamut, lutOutTransfer,
                 warpActive, warpM, statsMode,
+                cropActive, cropParams,
             )
         } catch (t: Throwable) {
             null
