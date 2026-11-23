@@ -25,7 +25,12 @@ import java.io.File
  *   ([gpuIsAppShare] = true). Null when neither exists (CPU backend, no
  *   timer-query extension).
  * - RAM: system-wide used/total from ActivityManager.MemoryInfo.
- * - Storage: the app's data volume used/total from StatFs.
+ * - Storage: the internal data volume used/total from StatFs, shown in
+ *   DECIMAL GB (owner request 2026-11-23: GB, not a percentage). On the test
+ *   phone this reads 346/512 GB — the data partition is exactly the retail
+ *   512 GB. StorageStatsManager.getTotalBytes was tried and rejected: it
+ *   reported 527 GB (it adds ~15 GB of system partitions and counts them as
+ *   used), which matches neither the box nor Settings.
  */
 data class SystemStats(
     val cpuPercent: Float? = null,
@@ -110,6 +115,20 @@ object SystemStatsMath {
     }
 
     fun formatPercent(p: Float?): String = p?.let { "${it.toInt()}%" } ?: "—"
+
+    /**
+     * Storage in DECIMAL gigabytes, the unit Android Settings uses for
+     * storage ("345 GB used of 512 GB"): "345G", "45G", "7.8G".
+     */
+    fun formatGb(bytes: Long): String {
+        val gb = bytes / 1e9
+        return if (gb >= 10.0) "${Math.round(gb)}G"
+        else String.format(java.util.Locale.ROOT, "%.1fG", gb)
+    }
+
+    /** "345/512G" — used over total capacity, decimal GB. */
+    fun formatCapacity(usedBytes: Long, totalBytes: Long): String =
+        formatGb(usedBytes).removeSuffix("G") + "/" + formatGb(totalBytes)
 }
 
 /**
