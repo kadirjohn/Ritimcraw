@@ -508,4 +508,6 @@
     <string name="settings_system_monitor">System monitor</string>
     <string name="settings_system_monitor_hint_on">GPU, CPU, RAM and storage shown at the top</string>
     <string name="settings_system_monitor_hint_off">Hidden</string>
+    <string name="settings_preview_quality_full">Full</string>
+    <string name="settings_preview_quality_hint_full">Recorded resolution · GPU only (High otherwise)</string>
 </resources>

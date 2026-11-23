@@ -50,7 +50,22 @@ enum class PreviewQuality(
         playbackMaxDim = PreviewTiers.PLAYBACK_MAX_DIM,
         scrubMaxDim = SliderTiers.DRAG_MAX_DIM,
     ),
-    HIGH(playbackMaxDim = 1280, scrubMaxDim = 720);
+    HIGH(playbackMaxDim = 1280, scrubMaxDim = 720),
+
+    /**
+     * FULL (owner request 2026-11-23: "GPU artık açıldığına göre full res
+     * preview"): playback at the RECORDED resolution
+     * ([PreviewTiers.SOURCE_MAX_DIM] = 0, no cap) and scrub at the settle
+     * tier (1280). GPU-ONLY: the editor resolves it through [effectiveFor],
+     * which falls back to [HIGH] whenever the GPU preview is not the one
+     * rendering (CPU/AUTO backend, a GPU session not up yet, zebra on — the
+     * zebra frame forces the CPU path); a CPU develop at 4K cannot hold
+     * playback. The stored choice stays FULL across those fallbacks.
+     */
+    FULL(playbackMaxDim = PreviewTiers.SOURCE_MAX_DIM, scrubMaxDim = SliderTiers.SETTLE_MAX_DIM);
+
+    /** True when this level only makes sense on the GPU preview. */
+    val requiresGpu: Boolean get() = this == FULL
 
     companion object {
         /**
@@ -73,6 +88,14 @@ enum class PreviewQuality(
          * written by a future build this one does not know — the editor
          * still opens and renders at the default, never crashes on it).
          */
+        /**
+         * The level the editor actually renders at: [FULL] only while the
+         * GPU preview is the renderer ([fullResAllowed]), [HIGH] otherwise;
+         * every other level passes through unchanged.
+         */
+        fun effectiveFor(level: PreviewQuality, fullResAllowed: Boolean): PreviewQuality =
+            if (level.requiresGpu && !fullResAllowed) HIGH else level
+
         fun fromWire(value: String?): PreviewQuality =
             entries.firstOrNull { it.name == value } ?: DEFAULT
     }

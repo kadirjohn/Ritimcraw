@@ -1385,6 +1385,15 @@ fun ClipEditorScreen(
         // back to the Image exactly when the window stops serving.
         var gpuSession by remember(sourceId) { mutableStateOf<GpuPreviewSession?>(null) }
         var gpuActive by remember(sourceId) { mutableStateOf(false) }
+        // FULL preview quality is GPU-only (PreviewQuality.effectiveFor): it
+        // renders at the recorded resolution only while the GPU preview is
+        // the renderer; CPU/AUTO, a session not up yet, or zebra (which
+        // forces the CPU path) fall back to HIGH.
+        val previewQualityEffective = PreviewQuality.effectiveFor(
+            previewQuality,
+            fullResAllowed = gpuActive &&
+                renderBackend == RenderBackend.GPU_EXPERIMENTAL && !zebraOn,
+        )
         var gpuWindowLive by remember(sourceId) { mutableStateOf(false) }
         // The acknowledged EGL attachment, set after the SurfaceHolder
         // lifecycle handoff completes: gpuWindowLive is servedByGpuWindow
@@ -1725,7 +1734,7 @@ fun ClipEditorScreen(
          */
         fun applyTierEvent(event: SliderTiers.Event) {
             val t = SliderTiers.onEvent(
-                event, dragActive, previewQuality.scrubMaxDim,
+                event, dragActive, previewQualityEffective.scrubMaxDim,
                 zoomed = previewZoomed,
             )
             dragActive = t.dragActive
@@ -2068,7 +2077,7 @@ fun ClipEditorScreen(
             requestRender(
                 positionFrame, grade,
                 SliderTiers.tierFor(
-                    dragActive, previewQuality.scrubMaxDim,
+                    dragActive, previewQualityEffective.scrubMaxDim,
                     zoomed = previewZoomed,
                 ),
                 cached = dragActive,
@@ -2094,7 +2103,7 @@ fun ClipEditorScreen(
             requestRender(
                 positionFrame, grade,
                 SliderTiers.tierFor(
-                    dragActive, previewQuality.scrubMaxDim,
+                    dragActive, previewQualityEffective.scrubMaxDim,
                     zoomed = previewZoomed,
                 ),
                 cached = true,
@@ -2116,7 +2125,7 @@ fun ClipEditorScreen(
             requestRender(
                 positionFrame, grade,
                 SliderTiers.tierFor(
-                    dragActive, previewQuality.scrubMaxDim,
+                    dragActive, previewQualityEffective.scrubMaxDim,
                     zoomed = previewZoomed,
                 ),
                 cached = true,
@@ -2895,7 +2904,7 @@ fun ClipEditorScreen(
                     // every playback frame (~3.65 renders/sec measured);
                     // playback NEVER runs the merge now, the settle render
                     // on pause still does.
-                    requestRender(idx, grade, previewQuality.playbackMaxDim, renderClass = RenderClass.PLAYBACK)
+                    requestRender(idx, grade, previewQualityEffective.playbackMaxDim, renderClass = RenderClass.PLAYBACK)
                     lastRendered = idx
                 }
                 if (idx >= pts.size - 1) {
@@ -3123,7 +3132,7 @@ fun ClipEditorScreen(
                             if (canRender) {
                                 requestRender(
                                     positionFrame, grade,
-                                    if (isPlaying) previewQuality.playbackMaxDim
+                                    if (isPlaying) previewQualityEffective.playbackMaxDim
                                     else PreviewTiers.PAUSED_MAX_DIM,
                                 )
                             }
@@ -3539,7 +3548,7 @@ fun ClipEditorScreen(
                         requestRender(
                             idx, grade,
                             SliderTiers.tierFor(
-                                dragActive, previewQuality.scrubMaxDim,
+                                dragActive, previewQualityEffective.scrubMaxDim,
                                 zoomed = previewZoomed,
                             ),
                             cached = true,
