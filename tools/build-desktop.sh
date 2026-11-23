@@ -123,6 +123,13 @@ echo "== building tests =="
 # 2026-11-23 warp-slot regression).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_chain_slots.cpp" \
   -o "$BUILD/test_chain_slots"
+# test_parity_diag: the A5 parity-diagnosis histogram planner
+# (header-only, no GL; owner request 2026-11-23, guide A5 step 1 — the
+# fragment parity harness's mismatch-population buckets and logcat line
+# shapes run on desktop, no CORE_OBJS for the same reason the chain
+# planner's test needs none).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_parity_diag.cpp" \
+  -o "$BUILD/test_parity_diag"
 # test_stats_ring: the GPU preview stats readback 2-slot fence-ring planner
 # (header-only, no GL; 2026-11-23 owner request, guide A1 — the async
 # readback ring's decisions run on desktop, no CORE_OBJS for the same
@@ -198,6 +205,8 @@ echo "== running test_warp =="
 (cd "$ROOT" && "$BUILD/test_warp")
 echo "== running test_chain_slots =="
 "$BUILD/test_chain_slots"
+echo "== running test_parity_diag =="
+"$BUILD/test_parity_diag"
 echo "== running test_stats_ring =="
 "$BUILD/test_stats_ring"
 echo "== running test_gpu_crop_map =="
