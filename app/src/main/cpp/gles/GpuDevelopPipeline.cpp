@@ -50,6 +50,7 @@
 #include <utility>
 
 #include <GLES3/gl31.h>
+#include <android/log.h>
 
 // Stage 24 LUT (the LUT port, commit (a)): the pipeline parses the .cube
 // with core's frozen parser and compiles the managed binding with core's
@@ -551,6 +552,8 @@ struct GpuDevelopPipeline::Impl {
     GLuint texA = 0, texB = 0, texC = 0;
     GLuint developFbo = 0, scratchFbo = 0;
     GLuint fboA = 0, fboB = 0, fboC = 0;
+    // WW8 per-pass probe one-shot (see armPassProbe in the header).
+    bool passProbeArmed = false;
     GLuint outBuf = 0;
     // Immutable storage currently allocated (0 = none yet). Per-frame work
     // touches none of these fields — glTexSubImage2D uploads data into the
@@ -1026,6 +1029,82 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     const int splitActive =
         (req.splitShadowHue >= 0.0f || req.splitHighlightHue >= 0.0f) ? 1 : 0;
 
+    // --- WW8 per-pass probe (DEBUG one-shot, armPassProbe) ----------------
+    // Consumed here so a mid-chain failure cannot leave it armed. The
+    // uniform dump prints every CPU-side input the PRE/POST passes see;
+    // passProbe() reads the center texel of a chain FBO as raw GL_FLOAT
+    // (RGBA32F + EXT_color_buffer_float makes GL_RGBA/GL_FLOAT the
+    // guaranteed readback pair). It binds only GL_READ_FRAMEBUFFER; every
+    // following pass rebinds GL_FRAMEBUFFER (both targets), so the chain's
+    // state is untouched. Probe GL errors are swallowed, never reported.
+    const bool passProbe = passProbeArmed;
+    passProbeArmed = false;
+    if (passProbe) {
+        float shMin = 0.0f, shMax = 0.0f;
+        if (!req.meta->lensShading.empty()) {
+            const auto mm = std::minmax_element(req.meta->lensShading.begin(),
+                                                req.meta->lensShading.end());
+            shMin = *mm.first;
+            shMax = *mm.second;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "ritim-trace",
+            "pass probe: uniforms %ux%u cell=(%d,%d,%d,%d) "
+            "white=%.1f metaWhite=%d dynWhite=%d dynBlack0=%d "
+            "black=(%.1f,%.1f,%.1f,%.1f) range=(%.1f,%.1f,%.1f,%.1f) "
+            "applyShading=%d shading=%ux%u n=%zu min=%.4f max=%.4f "
+            "invNeutral=(%.4f,%.4f,%.4f) hr=%d hrGain=(%.4f,%.4f,%.4f) "
+            "hasProfile=%d cam2rgb=[%.4f %.4f %.4f; %.4f %.4f %.4f; %.4f %.4f %.4f] "
+            "exposure=%.4f ev=%.3f nr=(%.1f,%.1f) sharp=%.1f detail=%.1f "
+            "warp=%d tonemap=%d lut=%.2f",
+            static_cast<unsigned>(w), static_cast<unsigned>(h),
+            cell[0], cell[1], cell[2], cell[3],
+            static_cast<double>(white), static_cast<int>(req.meta->white),
+            static_cast<int>(req.info.dynamicWhite),
+            static_cast<int>(req.info.dynamicBlack[0]),
+            static_cast<double>(black[0]), static_cast<double>(black[1]),
+            static_cast<double>(black[2]), static_cast<double>(black[3]),
+            static_cast<double>(range[0]), static_cast<double>(range[1]),
+            static_cast<double>(range[2]), static_cast<double>(range[3]),
+            applyShading ? 1 : 0,
+            static_cast<unsigned>(req.meta->shadingW),
+            static_cast<unsigned>(req.meta->shadingH),
+            req.meta->lensShading.size(),
+            static_cast<double>(shMin), static_cast<double>(shMax),
+            static_cast<double>(invNeutral[0]), static_cast<double>(invNeutral[1]),
+            static_cast<double>(invNeutral[2]),
+            req.highlightReconstruction ? 1 : 0,
+            static_cast<double>(hrGain[0]), static_cast<double>(hrGain[1]),
+            static_cast<double>(hrGain[2]),
+            hasProfile ? 1 : 0,
+            static_cast<double>(cam2rgb[0]), static_cast<double>(cam2rgb[1]),
+            static_cast<double>(cam2rgb[2]), static_cast<double>(cam2rgb[3]),
+            static_cast<double>(cam2rgb[4]), static_cast<double>(cam2rgb[5]),
+            static_cast<double>(cam2rgb[6]), static_cast<double>(cam2rgb[7]),
+            static_cast<double>(cam2rgb[8]),
+            static_cast<double>(exposure), static_cast<double>(req.exposureEv),
+            static_cast<double>(req.chromaDenoise),
+            static_cast<double>(req.noiseReduction),
+            static_cast<double>(req.sharpness), static_cast<double>(req.detail),
+            req.warpActive ? 1 : 0, static_cast<int>(req.tonemap),
+            static_cast<double>(req.lutStrength));
+    }
+    auto probePassFbo = [&](const char* tag, GLuint fbo) {
+        if (!passProbe) return;
+        while (glGetError() != GL_NO_ERROR) {}
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        GLfloat px[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+        glReadPixels(static_cast<GLint>(w / 2), static_cast<GLint>(h / 2), 1, 1,
+                     GL_RGBA, GL_FLOAT, px);
+        const GLenum err = glGetError();
+        while (glGetError() != GL_NO_ERROR) {}
+        __android_log_print(ANDROID_LOG_INFO, "ritim-trace",
+            "pass probe: %-10s center=(%.5f,%.5f,%.5f,%.5f)%s err=0x%x",
+            tag, static_cast<double>(px[0]), static_cast<double>(px[1]),
+            static_cast<double>(px[2]), static_cast<double>(px[3]),
+            (px[0] >= 1.0f || px[1] >= 1.0f || px[2] >= 1.0f) ? " >=1.0" : "",
+            static_cast<unsigned>(err));
+    };
+
     // --- storage allocation ONCE per resolution/resource change ------------
     // Immutable glTexStorage2D + per-frame glTexSubImage2D uploads: the
     // audit's finding against glTexImage2D-per-frame. The shading map is
@@ -1430,6 +1509,10 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     glUniform1i(hasProfileLoc, hasProfile ? 1 : 0);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(pre)", &r.detail) != GL_NO_ERROR) return r;
+    auto probePass = [&](const char* tag, GLuint tex) {
+        probePassFbo(tag, tex == texA ? fboA : (tex == texB ? fboB : fboC));
+    };
+    probePass("pre", texA);
 
     // --- draws 2-4: the spatial NR passes (stages 7/8), gated per grade ----
     // The CPU call sites' own gate + clamp (Develop.cpp: gate != 0.0f,
@@ -1463,6 +1546,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         glUniform1f(nrChromaHStrengthLoc, req.chromaDenoise);  // raw; the shader gates + clamps
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(nr-chroma-h)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("nr-chroma-h", texB);
 
         // Stage 7, vertical: texB + the ORIGINAL guide texA (unit 4) ->
         // texC. uGuide is texA — PRE's untouched output, exactly the
@@ -1478,6 +1562,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         glUniform1f(nrChromaVStrengthLoc, req.chromaDenoise);  // raw; the shader gates + clamps
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(nr-chroma-v)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("nr-chroma-v", texC);
         chainTex = texC;
     }
     if (runLuma) {
@@ -1496,6 +1581,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         glUniform1f(nrLumaStrengthLoc, req.noiseReduction);  // raw; the shader gates + clamps
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(nr-luma)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("nr-luma", texB);
         chainTex = texB;
     }
 
@@ -1543,6 +1629,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     glUniform1f(saturationLoc, req.saturation);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(post)", &r.detail) != GL_NO_ERROR) return r;
+    probePass("post", postDst);
     chainTex = postDst;
 
     // --- draws 6-9: the unsharp passes (stages 21/22), gated per grade ------
@@ -1581,6 +1668,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         glUniform1f(sharpnessHStrengthLoc, req.sharpness);  // raw; the shader gates
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(sharpness-h)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("sharp-h", sharpHOut);
 
         // Stage 21, vertical: sharpHOut + the guide sharpIn (unit 4) ->
         // the next slot. The V pass finishes the blur (the H output's .x
@@ -1599,6 +1687,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         glUniform1f(sharpnessVStrengthLoc, req.sharpness);  // raw; the shader gates
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(sharpness-v)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("sharp-v", sharpOut);
         chainTex = sharpOut;
     }
     if (runDetail) {
@@ -1617,6 +1706,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         glUniform1f(detailHStrengthLoc, req.detail);  // raw; the shader gates
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(detail-h)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("detail-h", detailHOut);
 
         // Stage 22, vertical: detailHOut + the guide detailIn (unit 4) ->
         // the next slot — the CPU's second buffer keeping the stage's
@@ -1633,6 +1723,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         glUniform1f(detailVStrengthLoc, req.detail);  // raw; the shader gates
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(detail-v)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("detail-v", detailOut);
         chainTex = detailOut;
     }
     // --- draw 10: the gyro warp pass, gated per FRAME -----------------------
@@ -1662,6 +1753,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         glUniformMatrix3fv(warpMLoc, 1, GL_TRUE, req.warpM);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(warp)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("warp", warpOut);
         chainTex = warpOut;
     }
     // --- draw 11: the TAIL pass (stages 23+24+OETF) into developTex ---------
@@ -1688,7 +1780,23 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // ordinal the shader does not know falls back to role 0 (the legacy
     // plain-sampler pair), the same honest fallback the CPU's nullptr
     // binding takes, never a silent mis-render.
-    glUniform1f(lutStrengthLoc, req.lutStrength);
+    // THE STRENGTH PIN (WW8 fix, 2026-11-23): the shader's ONLY stage-24
+    // gate is uLutStrength != 0, so an inactive LUT (empty path, missing
+    // file, parse not cached) MUST upload 0 — otherwise the shader samples
+    // the all-1.0 dummy table at full strength and the frame goes white
+    // (device evidence: post center 0.022 -> tail center 1.0, lut=1.00 with
+    // no table). The CPU skips stage 24 without a table; this matches it.
+    const float lutStrengthPinned = lutActive ? req.lutStrength : 0.0f;
+    if (passProbe) {
+        __android_log_print(ANDROID_LOG_INFO, "ritim-trace",
+            "pass probe: lut active=%d pathEmpty=%d reqStrength=%.3f "
+            "uploaded=%.3f size=%d role=%d",
+            lutActive ? 1 : 0, req.lutPath.empty() ? 1 : 0,
+            static_cast<double>(req.lutStrength),
+            static_cast<double>(lutStrengthPinned),
+            lutActive ? lutParsed->n : 0, req.lutRole);
+    }
+    glUniform1f(lutStrengthLoc, lutStrengthPinned);
     glUniform1i(lutSizeLoc, lutActive ? lutParsed->n : 0);
     glUniform3fv(lutDomainMinLoc, 1, lutActive ? lutParsed->domainMin : kLutDomainMinDefault);
     glUniform3fv(lutDomainMaxLoc, 1, lutActive ? lutParsed->domainMax : kLutDomainMaxDefault);
@@ -1705,6 +1813,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
                        lutBindingOk && lutActive ? lutBinding.outputToWorking : kLutIdentity);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(tail)", &r.detail) != GL_NO_ERROR) return r;
+    probePassFbo("tail", developFbo);
     const SteadyClock::time_point tDevelop1 = SteadyClock::now();
     r.developUs = elapsedUs(tDevelop0, tDevelop1);
     // The developed frame now lives in developTex (RGBA32F, OETF applied).
@@ -1786,6 +1895,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::draw(
     return impl_->draw(req);
 }
 
+void GpuDevelopPipeline::armPassProbe() { impl_->passProbeArmed = true; }
 GLuint GpuDevelopPipeline::developTex() const { return impl_->developTex; }
 GLuint GpuDevelopPipeline::storeProgram() const { return impl_->storeProgram; }
 GLint GpuDevelopPipeline::storeSrcLoc() const { return impl_->storeSrcLoc; }

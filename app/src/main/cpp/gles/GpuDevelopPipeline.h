@@ -288,6 +288,15 @@ public:
     // a successful init() (the sessions fail fast at open).
     DrawResult draw(const DevelopFrameRequest& req);
 
+    // WW8 per-pass probe (DEBUG, one-shot): arms the NEXT draw() to log
+    // the frame's CPU-side uniforms and a GL_FLOAT center readback after
+    // every chain pass (PRE, each NR pass, POST, each unsharp pass, warp,
+    // TAIL) to ritim-trace as "pass probe:" lines. Raw floats, not
+    // toByte — the first pass whose value goes >= 1.0 names the stage
+    // that whitens the wide clips. The arm clears itself after one draw.
+    // The preview session arms it only on window-probe frames.
+    void armPassProbe();
+
     // --- accessors (GL-thread use; the handles belong to this
     // pipeline's one context) ---
 
