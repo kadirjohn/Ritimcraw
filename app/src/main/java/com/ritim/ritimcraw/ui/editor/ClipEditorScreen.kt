@@ -3118,6 +3118,13 @@ fun ClipEditorScreen(
                     // must never block on the engine.
                     gpuWindowActive = gpuActive,
                     gpuWindowServing = gpuWindowLive,
+                    // DEBUG path badge (2026-11-23): reuses the served
+                    // verdict the trace's backend= field reads.
+                    debugPathBadge = if (RenderTrace.enabled) {
+                        if (gpuWindowLive) "GPU" else "CPU"
+                    } else {
+                        null
+                    },
                     onGpuSurfaceChanged = { surface ->
                         // Holder liveness alone does not mean EGL accepted
                         // the window. Never hide the CPU image until the
