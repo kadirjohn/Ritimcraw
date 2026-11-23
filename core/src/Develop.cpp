@@ -920,15 +920,19 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
 
     // Stage 9: black point (grade.blackPoint in [-100, 100], 0 = neutral).
     // Endpoint remap of the toe, pinned at white: x' = lift + (1 - lift) * x
-    // with lift = -0.25 * bp/100. Positive bp (lift < 0) crushes: the toe
-    // crossing zero clamps to black at display, and everything below white
-    // darkens toward it. Negative bp (lift > 0) lifts the floor — at
-    // bp = -100 the input floor 0 maps to 0.25 (faded/filmic blacks). The
+    // with lift = -0.12 * bp/100 (A6 black point range shrink, owner
+    // request 2026-11-23: k was 0.25, which crushed 44.7% of night-frame
+    // pixels fully black at bp = +100; bp_measure on the night fixtures
+    // picked k = 0.12, which crushes 10.8% — inside the 10-15% target).
+    // Positive bp (lift < 0) crushes: the toe crossing zero clamps to
+    // black at display, and everything below white darkens toward it.
+    // Negative bp (lift > 0) lifts the floor — at bp = -100 the input
+    // floor 0 maps to 0.12 (faded/filmic blacks). The
     // map is monotone increasing in x, x = 1 stays 1, and the scalar remap
     // applies per channel, so neutrals stay neutral and hue order above the
     // clamp is preserved.
     if (grade.blackPoint != 0.0f) {
-        const float lift = -0.25f * (grade.blackPoint / 100.0f);
+        const float lift = -0.12f * (grade.blackPoint / 100.0f);
         // Parallel: per-output-row; each row writes only its own elements.
         parallelForRows(img.h, [&](size_t y0, size_t y1) {
             const size_t rowElems = static_cast<size_t>(img.w) * 3;

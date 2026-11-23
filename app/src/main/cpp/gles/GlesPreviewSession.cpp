@@ -32,7 +32,7 @@
 // (the session's own small RGBA8 scratch pair + FBOs + SSBO readback +
 // toByte quantize + row-flip pack; glReadPixels is used NOWHERE except
 // the DEBUG probe's two 1x1 reads — the recorded baseline invariant),
-// and the statsEnabled toggle (false skips the stats draws + readback
+// and the statsMode readback mode (Off skips the stats draws + readback
 // and publishes the honest 1x1 empty fallback).
 //
 // THREADING (the contract in one paragraph): open() spawns the GL thread;
@@ -64,6 +64,16 @@
 // harness already proved on device (developFragmentParity PASS).
 
 #include "GlesPreviewSession.h"
+
+// Pure planner (A1 async stats, 2026-11-23): the stats readback mode's
+// vocabulary + the 2-slot fence-ring state machine draw 3 consumes —
+// header-only, no GL follows suit with the sibling includes below.
+#include "StatsRing.h"
+// Pure planner (A2 GPU crop/straighten, 2026-11-23, guide A2): the
+// window pass's crop frame plan — the cropped output dims, the auto-zoom
+// and the cos/sin pair the window + stats draws upload as the crop
+// uniforms. Header-only, no GL, the StatsRing.h precedent.
+#include "GpuCropMap.h"
 
 #include <algorithm>
 #include <atomic>
@@ -264,14 +274,40 @@ struct PreviewSession::Impl {
     GLuint windowProgram = 0;
     GLint windowSrcLoc = -1, windowSrcSizeLoc = -1, windowRectLoc = -1,
           windowOrientationLoc = -1;
+    // The A2 crop uniform group (owner request 2026-11-23, guide A2):
+    // WINDOW_FRAGMENT's six crop uniforms, looked up beside the four
+    // above and set (window + stats draws) from gles::planCrop's frame
+    // plan.
+    GLint windowCropOnLoc = -1, windowCropRectLoc = -1, windowCropOutLoc = -1,
+          windowCropZoomLoc = -1, windowCropCosLoc = -1, windowCropSinLoc = -1;
+    // The A3 zebra uniform group (owner request 2026-11-23, guide A3):
+    // WINDOW_FRAGMENT's four zebra uniforms, looked up beside the crop
+    // group (the same all-uniforms-present guard) and set by the window
+    // draw from the request — the stats draw pins uZebraOn to 0 so the
+    // scopes stay CLEAN.
+    GLint windowZebraOnLoc = -1, windowZebraThresholdLoc = -1,
+          windowZebraPeriodLoc = -1, windowZebraAlphaLoc = -1;
 
     // The stats pack's resources (the ONLY readback on this path):
     // statsTex is the window pass's stats target; statsScratchTex is the
     // store pass's throwaway color target (NEVER statsFbo, whose texture
-    // is the source — a feedback loop); statsBuf is the small SSBO.
+    // is the source — a feedback loop); statsBuf is the small SSBO PAIR —
+    // A1 async stats (owner request 2026-11-23, guide A1(b)): frame N
+    // draws its pack into buf[N&1] and fences it; the NEXT async frame
+    // publishes the (N-1)&1 pack only when that fence already signaled
+    // (glClientWaitSync timeout 0 — NEVER blocks). The shared window/
+    // store targets (statsTex/statsScratchTex/fbos) are NOT double-buffered
+    // — only the SSBO pair is, per the guide: the window pass's draw and
+    // the store pass's SSBO write both complete before the fence, and the
+    // one-frame-older pack lives in the OTHER SSBO. statsFence mirrors the
+    // pair; the StatsRingState ring drives every decision (gles/StatsRing.h,
+    // the pure planner the desktop doctest locks). GL-thread-only state:
+    // created, fenced, drained and deleted on this thread.
     GLuint statsTex = 0, statsScratchTex = 0;
     GLuint statsFbo = 0, statsScratchFbo = 0;
-    GLuint statsBuf = 0;
+    GLuint statsBuf[2] = {0, 0};
+    GLsync statsFence[2] = {nullptr, nullptr};
+    StatsRingState statsRing{};
 
     uint32_t statsAllocW = 0, statsAllocH = 0;
     uint64_t statsBytes = 0;
@@ -345,6 +381,13 @@ struct PreviewSession::Impl {
     bool gpuQueryPending[kGpuQueryCount] = {};
     int gpuQueryNext = 0;
     void harvestGpuQueries();
+
+    // A1 async stats (owner request 2026-11-23, guide A1(b)): the stats
+    // ring's drain — deletes both fences and resets the pure state, so no
+    // fence survives a non-async frame (off, sync, realloc, teardown).
+    // GL-thread-only (like every stats resource); a leaked fence is a
+    // crash later, the guide's pitfall.
+    void drainStatsRing();
 
     // The first-frame fence's latch (white-window round 5, kept through
     // round 6, GL-thread state): the develop resolution whose first
@@ -784,8 +827,30 @@ bool PreviewSession::Impl::initOnGlThread(
     windowSrcSizeLoc = glGetUniformLocation(windowProgram, "uSrcSize");
     windowRectLoc = glGetUniformLocation(windowProgram, "uRect");
     windowOrientationLoc = glGetUniformLocation(windowProgram, "uOrientation");
+    // The A2 crop uniform group (2026-11-23, guide A2): looked up beside
+    // the four above, inside the SAME all-uniforms-present guard — an
+    // optimized-out crop uniform (a dead crop branch) must fail loudly,
+    // exactly like the half-texel clamp's uSrcSize comment says.
+    windowCropOnLoc = glGetUniformLocation(windowProgram, "uCropOn");
+    windowCropRectLoc = glGetUniformLocation(windowProgram, "uCropRect");
+    windowCropOutLoc = glGetUniformLocation(windowProgram, "uCropOut");
+    windowCropZoomLoc = glGetUniformLocation(windowProgram, "uCropZoom");
+    windowCropCosLoc = glGetUniformLocation(windowProgram, "uCropCos");
+    windowCropSinLoc = glGetUniformLocation(windowProgram, "uCropSin");
+    // The A3 zebra uniforms (2026-11-23, guide A3): looked up beside the
+    // crop group, inside the SAME all-uniforms-present guard — an
+    // optimized-out zebra uniform (a dead zebra branch) must fail loudly,
+    // exactly like the crop uniforms above it.
+    windowZebraOnLoc = glGetUniformLocation(windowProgram, "uZebraOn");
+    windowZebraThresholdLoc = glGetUniformLocation(windowProgram, "uZebraThreshold");
+    windowZebraPeriodLoc = glGetUniformLocation(windowProgram, "uZebraPeriod");
+    windowZebraAlphaLoc = glGetUniformLocation(windowProgram, "uZebraAlpha");
     if (windowSrcLoc < 0 || windowSrcSizeLoc < 0 || windowRectLoc < 0 ||
-        windowOrientationLoc < 0) {
+        windowOrientationLoc < 0 ||
+        windowCropOnLoc < 0 || windowCropRectLoc < 0 || windowCropOutLoc < 0 ||
+        windowCropZoomLoc < 0 || windowCropCosLoc < 0 || windowCropSinLoc < 0 ||
+        windowZebraOnLoc < 0 || windowZebraThresholdLoc < 0 ||
+        windowZebraPeriodLoc < 0 || windowZebraAlphaLoc < 0) {
         *detail = "shader-contract: missing a window uniform";
         return false;
     }
@@ -931,6 +996,21 @@ void PreviewSession::Impl::harvestGpuQueries() {
     while (glGetError() != GL_NO_ERROR) {}  // never leak into the frame's checks
 }
 
+void PreviewSession::Impl::drainStatsRing() {
+    // A1 async stats (owner request 2026-11-23): StatsRing.h's drain
+    // invariant, executed — every sync, off, and realloc frame calls this
+    // BEFORE its own work, and teardown calls it before the SSBOs die, so
+    // a fence never outlives the frame class that created it. Deleting a
+    // sync object is spec-clean regardless of its signaled state.
+    for (int i = 0; i < 2; ++i) {
+        if (statsFence[i] != nullptr) {
+            glDeleteSync(statsFence[i]);
+            statsFence[i] = nullptr;
+        }
+    }
+    statsRing = StatsRingState{};
+}
+
 void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                                    PreviewFrameResult& out) {
     // The frame's GPU-time scope (system monitor): harvests finished
@@ -1011,6 +1091,20 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // The orientation fold's input, normalized exactly like
     // developToArgb's.
     const int orient = ((req.info.orientationDeg % 360) + 360) % 360;
+    // THE A2 CROP FRAME PLAN (owner request 2026-11-23, guide A2): the
+    // pure planner's verdict for THIS frame — the cropped output dims,
+    // the auto-zoom and the cos/sin pair every crop uniform below reads.
+    // Computed ONCE, right after the develop dims are known, because
+    // BOTH the window draw (aspect rect over the CROPPED dims) and the
+    // stats draw (stats dims from the same cropped dims) consume the
+    // plan; the params are already mapRect'ed (GpuCropMap.requestCrop
+    // Kotlin-side — CropState's mapping, single-sourced JVM-side) and
+    // the identity request plans the full upright dims with uCropOn 0 (a
+    // crop-inactive frame stays byte-identical to the pre-A2 pass).
+    const uint32_t uprightW0 = (orient == 90 || orient == 270) ? h : w;
+    const uint32_t uprightH0 = (orient == 90 || orient == 270) ? w : h;
+    const gles::CropFramePlan crop = gles::planCrop(
+        uprightW0, uprightH0, req.cropActive, req.cropParams);
     // The timing spans' clock (the original's function-scope alias,
     // kept at the same scope the kept tail uses it in).
     using SteadyClock = std::chrono::steady_clock;
@@ -1031,13 +1125,23 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             out.surfaceW = static_cast<uint32_t>(winW);
             out.surfaceH = static_cast<uint32_t>(winH);
             // Upright dims (90/270 swap), aspect-fit letterbox rect.
+            // SINCE A2 (2026-11-23, guide A2): when the crop plan is
+            // ACTIVE the rect fits the CROPPED output dims — the draw
+            // covers exactly the selected region, aspect-fit, and the
+            // crop uniforms below carry the map; the uOrientation fold
+            // still runs (the source is still sensor-space). Crop-off
+            // keeps today's upright math verbatim (planCrop's identity
+            // arm fills the same upright dims, so reading the plan
+            // unconditionally changes nothing there).
             const uint32_t uprightW = (orient == 90 || orient == 270) ? h : w;
             const uint32_t uprightH = (orient == 90 || orient == 270) ? w : h;
+            const float fitW = static_cast<float>(crop.active ? crop.outW : uprightW);
+            const float fitH = static_cast<float>(crop.active ? crop.outH : uprightH);
             const float scale = std::fmin(
-                static_cast<float>(winW) / static_cast<float>(uprightW),
-                static_cast<float>(winH) / static_cast<float>(uprightH));
-            const float rectW = static_cast<float>(uprightW) * scale;
-            const float rectH = static_cast<float>(uprightH) * scale;
+                static_cast<float>(winW) / fitW,
+                static_cast<float>(winH) / fitH);
+            const float rectW = fitW * scale;
+            const float rectH = fitH * scale;
             const float rectX = (static_cast<float>(winW) - rectW) * 0.5f;
             const float rectY = (static_cast<float>(winH) - rectH) * 0.5f;
             // THE ENTRY-STATE CAPTURE (white-window round 3, DEBUG-only,
@@ -1200,6 +1304,32 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                             static_cast<GLint>(w), static_cast<GLint>(h));
                 glUniform4f(windowRectLoc, rectX, rectY, rectW, rectH);
                 glUniform1i(windowOrientationLoc, orient);
+                // THE A2 CROP UNIFORMS (2026-11-23, guide A2): the frame
+                // plan's values, set beside the existing three on the
+                // window draw. The identity plan carries the full rect +
+                // zoom 1 — values uCropOn = 0 never reads, so a
+                // crop-inactive frame stays byte-identical to the
+                // pre-A2 pass.
+                glUniform1i(windowCropOnLoc, crop.active ? 1 : 0);
+                glUniform4f(windowCropRectLoc,
+                            crop.rectX, crop.rectY, crop.rectW, crop.rectH);
+                glUniform2f(windowCropOutLoc,
+                            static_cast<GLfloat>(crop.outW),
+                            static_cast<GLfloat>(crop.outH));
+                glUniform1f(windowCropZoomLoc, crop.zoom);
+                glUniform1f(windowCropCosLoc, crop.cos);
+                glUniform1f(windowCropSinLoc, crop.sin);
+                // THE A3 ZEBRA UNIFORMS (2026-11-23, guide A3): the four
+                // knobs from the request, set on the WINDOW draw only —
+                // the stripes live in the displayed pixels here, and the
+                // request's values are single-sourced Kotlin-side
+                // (ZebraOverlay/FrameHistogram threads them through the
+                // JNI seam). zebraOn false keeps the frame byte-identical
+                // to the pre-A3 pass (the shader's gate folds).
+                glUniform1i(windowZebraOnLoc, req.zebraOn ? 1 : 0);
+                glUniform1i(windowZebraThresholdLoc, req.zebraThreshold);
+                glUniform1i(windowZebraPeriodLoc, req.zebraPeriod);
+                glUniform1f(windowZebraAlphaLoc, req.zebraAlpha);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
                 // The draw's own error check runs FIRST — the probe below
                 // drains GL errors (its own), and a drain before this
@@ -1499,31 +1629,55 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
 
     // --- draw 3: the stats pack — ALWAYS (the published frame the Compose
     // --- overlays consume). ~256 long edge, upright via the same fold. ------
-    // --- THE MEASUREMENT TOGGLE (trace-dims fix 2026-11-14): statsEnabled
-    // --- false skips draw 3 + the readback ENTIRELY — the honest 1x1 empty
-    // --- fallback publishes instead (the zebra/scopes consumers degrade for
-    // --- the run; the trace line reads stats=off), and the stats span stays
-    // --- 0. The dims stay valid so the publish fold's crop math survives.
-    if (!req.statsEnabled) {
+    // --- THE READBACK MODE (A1 async stats, owner request 2026-11-23,
+    // --- guide A1(b)): statsMode is the StatsRing.h StatsReadbackMode
+    // --- vocabulary. Off (0) skips draw 3 + the readback ENTIRELY — the
+    // --- honest 1x1 empty fallback publishes instead (the zebra/scopes
+    // --- consumers degrade for the run; the trace line reads stats=off),
+    // --- and the stats span stays 0. Sync (1, the default — the
+    // --- trace-dims fix's 2026-11-14 behavior) runs today's blocking
+    // --- mapped-SSBO readback with the ring drained. Async (2, playback)
+    // --- draws into statsBuf[N&1], fences + flushes, and publishes the
+    // --- (N-1)&1 pack ONLY when its fence already signaled —
+    // --- glClientWaitSync with timeout 0, NEVER a blocking wait.
+    if (req.statsMode == gles::StatsReadbackMode::Off) {
+        // No fence may survive a non-async frame (StatsRing.h's drain
+        // invariant): delete any live fences + clear the pending flags
+        // BEFORE the early-out, so the off frame after a playback never
+        // leaks the ring's fences.
+        drainStatsRing();
         out.argb8888.assign(1, 0xFF000000u);
         out.width = 1;
         out.height = 1;
         out.ok = true;
         return;
     }
+    // THE A2 CROPPED STATS BASE (owner request 2026-11-23, guide A2):
+    // when the crop plan is ACTIVE the stats dims derive from the
+    // CROPPED output dims — the scopes see the cropped region, exactly
+    // the region the CPU path's PublishCrop-then-scopes chain analyses.
+    // The cap shape is unchanged (the 256 long-edge tier); a crop change
+    // is a dims change, so the existing realloc branch below fires and
+    // DRAINS the A1 ring (the StatsRing.h invariant holds untouched — a
+    // crop drag can never leak a fence). Crop-off keeps today's upright
+    // derivation verbatim (planCrop's identity arm fills the full dims).
     const uint32_t uprightW = (orient == 90 || orient == 270) ? h : w;
     const uint32_t uprightH = (orient == 90 || orient == 270) ? w : h;
-    const uint32_t longEdge = uprightW > uprightH ? uprightW : uprightH;
-    uint32_t statsW = uprightW;
-    uint32_t statsH = uprightH;
+    const uint32_t baseW = crop.active
+        ? static_cast<uint32_t>(crop.outW) : uprightW;
+    const uint32_t baseH = crop.active
+        ? static_cast<uint32_t>(crop.outH) : uprightH;
+    const uint32_t longEdge = baseW > baseH ? baseW : baseH;
+    uint32_t statsW = baseW;
+    uint32_t statsH = baseH;
     if (longEdge > kStatsLongEdge) {
         const float scale =
             static_cast<float>(kStatsLongEdge) / static_cast<float>(longEdge);
-        statsW = uprightW > 0
-            ? std::max<uint32_t>(1, static_cast<uint32_t>(uprightW * scale + 0.5f))
+        statsW = baseW > 0
+            ? std::max<uint32_t>(1, static_cast<uint32_t>(baseW * scale + 0.5f))
             : 1;
-        statsH = uprightH > 0
-            ? std::max<uint32_t>(1, static_cast<uint32_t>(uprightH * scale + 0.5f))
+        statsH = baseH > 0
+            ? std::max<uint32_t>(1, static_cast<uint32_t>(baseH * scale + 0.5f))
             : 1;
     }
 
@@ -1533,11 +1687,18 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // store pass, and the mapped-SSBO readback wait.
     const SteadyClock::time_point tStats0 = SteadyClock::now();
     if (statsAllocW != statsW || statsAllocH != statsH) {
+        // REALLOC DRAINS FIRST (guide A1(b): a dims change drops pending
+        // packs — the SSBO pair is about to be deleted out from under
+        // them, and a fence whose buffer is gone must never be waited
+        // on). The fences die BEFORE the buffers do.
+        drainStatsRing();
         if (statsTex != 0) { glDeleteTextures(1, &statsTex); statsTex = 0; }
         if (statsScratchTex != 0) { glDeleteTextures(1, &statsScratchTex); statsScratchTex = 0; }
         if (statsFbo != 0) { glDeleteFramebuffers(1, &statsFbo); statsFbo = 0; }
         if (statsScratchFbo != 0) { glDeleteFramebuffers(1, &statsScratchFbo); statsScratchFbo = 0; }
-        if (statsBuf != 0) { glDeleteBuffers(1, &statsBuf); statsBuf = 0; }
+        for (int i = 0; i < 2; ++i) {
+            if (statsBuf[i] != 0) { glDeleteBuffers(1, &statsBuf[i]); statsBuf[i] = 0; }
+        }
         statsBytes = 0;
         statsAllocW = 0; statsAllocH = 0;
 
@@ -1583,20 +1744,39 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             return;
         }
 
-        // The small SSBO: statsW*statsH*3 floats (a few hundred KB at
-        // 256x144 — NEVER the frame-sized buffer; the audit's
-        // no-full-frame-readback rule).
+        // The small SSBO PAIR (A1 async stats, 2026-11-23): both created
+        // TOGETHER, in the same branch, with the same shape —
+        // statsW*statsH*3 floats each (a few hundred KB at 256x144 —
+        // NEVER the frame-sized buffer; the audit's
+        // no-full-frame-readback rule). The per-buffer error checks stay.
         const uint64_t bytes =
             static_cast<uint64_t>(statsW) * statsH * 3 * sizeof(float);
-        glGenBuffers(1, &statsBuf);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes),
-                     nullptr, GL_STREAM_READ);
-        if (glErrorAfter("glBufferData(stats)", &out.detail) != GL_NO_ERROR) return;
+        for (int i = 0; i < 2; ++i) {
+            glGenBuffers(1, &statsBuf[i]);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf[i]);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes),
+                         nullptr, GL_STREAM_READ);
+            if (glErrorAfter("glBufferData(stats)", &out.detail) != GL_NO_ERROR) return;
+        }
         statsBytes = bytes;
         statsAllocW = statsW;
         statsAllocH = statsH;
     }
+
+    // The ASYNC plan (the pure planner's verdict for THIS frame): which
+    // SSBO to draw into, which one-frame-old pack may publish, and
+    // whether the draw slot still holds a never-published fence. Sync
+    // frames drain instead — a pending pack may only survive across
+    // CONSECUTIVE async frames (StatsRing.h's invariant). The drained
+    // ring's plan pins the sync path's buffer index to slot 0.
+    const bool asyncMode = req.statsMode == gles::StatsReadbackMode::Async;
+    if (!asyncMode) {
+        drainStatsRing();
+    }
+    const gles::AsyncFramePlan plan = asyncMode
+        ? gles::planAsyncFrame(statsRing)
+        : gles::AsyncFramePlan{};  // frame 0, drawSlot 0, publishSlot -1
+    const int bufIndex = plan.drawSlot;
 
     // The window pass into the stats FBO: the SAME aspect-fit fold at the
     // stats dims (uRect covers the whole target — no letterbox bars; the
@@ -1623,11 +1803,36 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     glUniform4f(windowRectLoc, 0.0f, 0.0f,
                 static_cast<GLfloat>(statsW), static_cast<GLfloat>(statsH));
     glUniform1i(windowOrientationLoc, orient);
+    // THE A2 CROP UNIFORMS ON THE STATS DRAW (2026-11-23, guide A2): the
+    // SAME six uniforms the window draw sets, from the SAME frame plan —
+    // the scopes analyse the cropped region (uRect stays the
+    // whole-target rect: no letterbox bars at the stats dims, the crop
+    // map does the selection).
+    glUniform1i(windowCropOnLoc, crop.active ? 1 : 0);
+    glUniform4f(windowCropRectLoc,
+                crop.rectX, crop.rectY, crop.rectW, crop.rectH);
+    glUniform2f(windowCropOutLoc,
+                static_cast<GLfloat>(crop.outW),
+                static_cast<GLfloat>(crop.outH));
+    glUniform1f(windowCropZoomLoc, crop.zoom);
+    glUniform1f(windowCropCosLoc, crop.cos);
+    glUniform1f(windowCropSinLoc, crop.sin);
+    // THE A3 ZEBRA UNIFORMS ON THE STATS DRAW (2026-11-23, guide A3):
+    // the CLEAN-SCOPE binding — uZebraOn is FORCED to 0 (the other three
+    // values ride so the shader never reads an optimized-out default);
+    // a striped stats pack would corrupt the scopes AND the parity
+    // sweep's byte-compare machinery. The stats-off early-return above
+    // needs no change: zebra is window-side display work.
+    glUniform1i(windowZebraOnLoc, 0);
+    glUniform1i(windowZebraThresholdLoc, req.zebraThreshold);
+    glUniform1i(windowZebraPeriodLoc, req.zebraPeriod);
+    glUniform1f(windowZebraAlphaLoc, req.zebraAlpha);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(stats window)", &out.detail) != GL_NO_ERROR) return;
 
     // The store pass: statsTex -> SSBO (the same mapped-SSBO readback the
-    // export session uses, at the SMALL dims only).
+    // export session uses, at the SMALL dims only). The destination is
+    // the planned ring slot in async mode, slot 0 in sync mode.
     glUseProgram(pipeline.storeProgram());
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, statsTex);
@@ -1638,50 +1843,148 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // Re-bind the SSBO to indexed binding 0 before EVERY store draw (the
     // M3 rule: a persistent session must not rely on the allocation
     // branch's binding surviving unrelated state changes).
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, statsBuf);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf[bufIndex]);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, statsBuf[bufIndex]);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(stats store)", &out.detail) != GL_NO_ERROR) return;
 
-    // --- readback: a MAPPED buffer at the SMALL dims, NEVER glReadPixels ---
-    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf);
-    void* mapped = glMapBufferRange(
-        GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(statsBytes),
-        GL_MAP_READ_BIT);
-    if (mapped == nullptr) {
-        glErrorAfter("glMapBufferRange", &out.detail);
-        if (out.detail.empty()) out.detail = "glMapBufferRange returned null";
-        return;
-    }
-    const float* gpu = static_cast<const float*>(mapped);
-    // ROW-FLIP PACK. The stats FBO's texture holds the upright image with
-    // row 0 = upright BOTTOM (gl_FragCoord counts rows bottom-up); the
-    // store pass reads and writes DIRECT (no flip either side), so SSBO
-    // row 0 = upright bottom. The pack flips to the CPU convention the
-    // published frame's consumers expect (developToArgb's shape): out
-    // row 0 = upright TOP:
+    // ROW-FLIP PACK (shared by both readback legs). The stats FBO's
+    // texture holds the upright image with row 0 = upright BOTTOM
+    // (gl_FragCoord counts rows bottom-up); the store pass reads and
+    // writes DIRECT (no flip either side), so SSBO row 0 = upright
+    // bottom. The pack flips to the CPU convention the published frame's
+    // consumers expect (developToArgb's shape): out row 0 = upright TOP:
     //   out[y][x] = ssbo[(statsH-1-y)*statsW + x]
     // with the SAME 0xFF000000|(r<<16)|(g<<8)|b pixel pack and the same
     // toByte quantize (the shader already applied linearToRec709 —
     // uOetf=1 — so this is the ONLY CPU-side per-pixel work).
-    out.argb8888.assign(static_cast<size_t>(statsW) * statsH, 0xFF000000u);
-    for (uint32_t y = 0; y < statsH; ++y) {
-        const uint32_t srcY = statsH - 1 - y;
-        const float* row = gpu + static_cast<size_t>(srcY) * statsW * 3;
-        uint32_t* dst = out.argb8888.data() + static_cast<size_t>(y) * statsW;
-        for (uint32_t x = 0; x < statsW; ++x) {
-            const uint32_t r = toByte(row[x * 3 + 0]);
-            const uint32_t g = toByte(row[x * 3 + 1]);
-            const uint32_t b = toByte(row[x * 3 + 2]);
-            dst[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+    const auto packFromMapped = [&](const float* gpu) {
+        out.argb8888.assign(static_cast<size_t>(statsW) * statsH, 0xFF000000u);
+        for (uint32_t y = 0; y < statsH; ++y) {
+            const uint32_t srcY = statsH - 1 - y;
+            const float* row = gpu + static_cast<size_t>(srcY) * statsW * 3;
+            uint32_t* dst = out.argb8888.data() + static_cast<size_t>(y) * statsW;
+            for (uint32_t x = 0; x < statsW; ++x) {
+                const uint32_t r = toByte(row[x * 3 + 0]);
+                const uint32_t g = toByte(row[x * 3 + 1]);
+                const uint32_t b = toByte(row[x * 3 + 2]);
+                dst[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+            }
         }
+    };
+
+    if (!asyncMode) {
+        // MODE SYNC (settle/drag/first frame/after a mode or dims switch):
+        // today's blocking readback, semantics unchanged — the paused-edit
+        // exactness guarantee. The ring is already drained above.
+        // --- readback: a MAPPED buffer at the SMALL dims, NEVER
+        // --- glReadPixels.
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf[bufIndex]);
+        void* mapped = glMapBufferRange(
+            GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(statsBytes),
+            GL_MAP_READ_BIT);
+        if (mapped == nullptr) {
+            glErrorAfter("glMapBufferRange", &out.detail);
+            if (out.detail.empty()) out.detail = "glMapBufferRange returned null";
+            return;
+        }
+        packFromMapped(static_cast<const float*>(mapped));
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        const SteadyClock::time_point tStats1 = SteadyClock::now();
+        out.statsUs = elapsedUs(tStats0, tStats1);
+        out.width = statsW;
+        out.height = statsH;
+        out.ok = true;
+        return;
     }
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    const SteadyClock::time_point tStats1 = SteadyClock::now();
-    out.statsUs = elapsedUs(tStats0, tStats1);
-    out.width = statsW;
-    out.height = statsH;
+
+    // MODE ASYNC, frame N (A1(b), owner request 2026-11-23, spinning-GPU
+    // guard added same day: a strictly non-blocking ring can starve the
+    // scopes forever on a busy GPU, so the plan's mustPublish slot waits
+    // with a bounded timeout while the normal N-1 publish stays try-only).
+    //
+    // The publish order comes from the planner (gles/StatsRing.h): rule 1
+    // — the DRAW slot still holds a pending frame-N-2 pack that MUST be
+    // consumed now, before the store draw overwrites its SSBO; the caller
+    // waits for that fence with a BOUNDED timeout and publishes it. Rule
+    // 2 — the frame-N-1 pack, try-only (skip on any not-ready verdict).
+    // dropStaleFence is retired: no fence is ever deleted over an
+    // unpublished pack, so no fence leaks and no pack is silently lost.
+    const auto tryPublishSlot = [&](int slot, uint64_t timeoutNs) -> bool {
+        // Returns true when the slot's pack was published into `out`.
+        // timeoutNs == 0 is the try-only probe; a nonzero value is the
+        // bounded wait for the mustPublish slot (the frame-N-2 pack).
+        if (slot < 0 || statsFence[slot] == nullptr) return false;
+        const GLenum wait = glClientWaitSync(statsFence[slot], 0, timeoutNs);
+        if (wait != GL_ALREADY_SIGNALED && wait != GL_CONDITION_SATISFIED) {
+            return false;  // not ready (or the wait failed): leave it pending
+        }
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, statsBuf[slot]);
+        void* mapped = glMapBufferRange(
+            GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(statsBytes),
+            GL_MAP_READ_BIT);
+        if (mapped == nullptr) {
+            // Unmap never happened; the fence stays with the slot so the
+            // drain path deletes it. Abort the whole stats leg loudly.
+            glErrorAfter("glMapBufferRange(async)", &out.detail);
+            if (out.detail.empty()) out.detail = "glMapBufferRange returned null";
+            return false;
+        }
+        packFromMapped(static_cast<const float*>(mapped));
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        glDeleteSync(statsFence[slot]);
+        statsFence[slot] = nullptr;
+        clearSlot(statsRing, slot);
+        return true;
+    };
+
+    // The fence covers the two stats draws above. glFlush is REQUIRED for
+    // the fence to ever signal: draw 2's swap already flushed the earlier
+    // commands, but these draws were enqueued after it, and an unsignaled
+    // fence means every later async frame publishes nothing.
+    bool published = false;
+    if (plan.mustPublish) {
+        // Rule 1: bounded wait (~3 frames at 60fps) for the frame-N-2
+        // pack. If even this fails (GPU wedged far beyond a frame), fall
+        // through to the miss marker below rather than blocking forever.
+        published = tryPublishSlot(plan.publishSlot, 50'000'000ull);
+    }
+    statsFence[plan.drawSlot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glFlush();
+    commitAsyncDraw(statsRing, plan);
+    if (!published) {
+        // Rule 2: the frame-N-1 pack, only when its fence is ALREADY
+        // signaled — glClientWaitSync with timeout 0 NEVER blocks. A
+        // GL_TIMEOUT_EXPIRED / GL_WAIT_FAILED verdict means publish NO
+        // pack this frame (the miss shape below; the Kotlin side keeps
+        // the last scopes, guide A1(b).3).
+        published = tryPublishSlot(plan.publishSlot, 0);
+    }
+
+    if (published) {
+        // The published async pack is the slot's own frame (the ring
+        // state's slot[publishSlot].frame) — the one-frame lag is BY
+        // DESIGN and invisible on scopes at playback rate. The pack's
+        // frame index is available there if a consumer ever needs it; the
+        // JNI tail is deliberately NOT extended for it now.
+        const SteadyClock::time_point tStats1 = SteadyClock::now();
+        out.statsUs = elapsedUs(tStats0, tStats1);
+        out.width = statsW;
+        out.height = statsH;
+        out.ok = true;
+        return;
+    }
+    // The async miss: no pack this frame. The 1x1 shape is the SAME
+    // placeholder the off path publishes — the JNI tail's statsMode=2 is
+    // what distinguishes it Kotlin-side (keepsLastPublishedFrame), so
+    // the scopes keep the last published pack instead of degrading.
+    out.argb8888.assign(1, 0xFF000000u);
+    out.width = 1;
+    out.height = 1;
+    const SteadyClock::time_point tStats1Miss = SteadyClock::now();
+    out.statsUs = elapsedUs(tStats0, tStats1Miss);
     out.ok = true;
 }
 
@@ -1867,7 +2170,13 @@ void PreviewSession::Impl::teardownOnGlThread() {
     if (statsFbo != 0) { glDeleteFramebuffers(1, &statsFbo); statsFbo = 0; }
     if (statsScratchTex != 0) { glDeleteTextures(1, &statsScratchTex); statsScratchTex = 0; }
     if (statsTex != 0) { glDeleteTextures(1, &statsTex); statsTex = 0; }
-    if (statsBuf != 0) { glDeleteBuffers(1, &statsBuf); statsBuf = 0; }
+    // A1 async stats (2026-11-23): the ring's fences die BEFORE the SSBOs
+    // they cover (drainStatsRing deletes both + resets the pure state — a
+    // leaked fence is a crash later, the guide's pitfall), then the pair.
+    drainStatsRing();
+    for (int i = 0; i < 2; ++i) {
+        if (statsBuf[i] != 0) { glDeleteBuffers(1, &statsBuf[i]); statsBuf[i] = 0; }
+    }
     if (windowProgram != 0) { glDeleteProgram(windowProgram); windowProgram = 0; }
     releaseEglOnGlThread();
 }

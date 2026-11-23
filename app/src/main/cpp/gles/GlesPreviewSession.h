@@ -26,10 +26,10 @@
 //     shape developToArgb returns) that the Compose overlays (zebra,
 //     scopes) consume — through the SAME mapped-SSBO readback the
 //     export session uses, on a ~256x144x3-float buffer, NOT the frame.
-//     (The ONE exception: the debug-only stats-readback toggle — see
-//     PreviewFrameRequest::statsEnabled — skips draw 3 + the readback
-//     entirely for the measurement run, and the published frame becomes
-//     the honest 1x1 empty fallback.)
+//     (The ONE exception: the per-request stats-readback MODE — see
+//     PreviewFrameRequest::statsMode — whose OFF value skips draw 3 + the
+//     readback entirely for a no-scope frame, and the published frame
+//     becomes the honest 1x1 empty fallback.)
 //
 // THE NO-READBACK RULE (the audit's explicit demand): glReadPixels is
 // used NOWHERE on this path, and NO full-frame readback happens — the
@@ -150,7 +150,7 @@ namespace gles {
 // fragment-covered set's knobs — every one a RAW grade value the shader
 // maps itself (0.0f is the CPU's own neutral skip), with the two CPU-side
 // gates hoisted C++-computed exactly like the develop session's request.
-// statsEnabled is the PREVIEW-ONLY measurement toggle (the develop session
+// statsMode is the PREVIEW-ONLY readback mode (the develop session
 // ignores it — its readback is the render's contract, not a measurement;
 // see the field's own comment in GpuDevelopPipeline.h).
 using PreviewFrameRequest = DevelopFrameRequest;
@@ -260,7 +260,7 @@ public:
     // (gles/GradeParcel.h — the schema's single source of truth; a schema
     // field with no matching PreviewFrameRequest member fails the compile
     // here, the honest catch). [req] carries only the non-grade fields
-    // (cfa/info/meta, the LUT binding group, the warp pair, statsEnabled);
+    // (cfa/info/meta, the LUT binding group, the warp pair, statsMode, the A2 crop pair: cropActive/cropParams, 2026-11-23, guide A2);
     // the temporal pair never reaches the request — the bridge consumed it
     // at temporalMergedCfa before this call. The flat pre-folded overload
     // died with commit (b): every door into the session threads the grade

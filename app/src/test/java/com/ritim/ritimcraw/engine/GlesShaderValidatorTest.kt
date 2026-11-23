@@ -30,6 +30,241 @@ class GlesShaderValidatorTest {
         assertTrue(GlesShaderValidator.validate(GlesShaderSources.DEMOSAIC_COMPUTE))
     }
 
+    // ---- WINDOW_FRAGMENT's crop uniforms (A2 GPU crop/straighten
+    // preview, owner request 2026-11-23, guide A2). The crop block is
+    // text-pinned the way every other contract above is: each missing
+    // token names the break it guards against, and the window pass's
+    // problems() stays empty for the shipped source.
+
+    @Test
+    fun shipped_window_fragment_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.WINDOW_FRAGMENT,
+                GlesShaderValidator.Kind.WINDOW_FRAGMENT,
+            ),
+        )
+    }
+
+    @Test
+    fun window_fragment_declares_the_six_crop_uniforms() {
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+        assertTrue("uCropOn missing", src.contains("uniform int uCropOn;"))
+        assertTrue("uCropRect missing", src.contains("uniform vec4 uCropRect;"))
+        assertTrue("uCropOut missing", src.contains("uniform vec2 uCropOut;"))
+        assertTrue("uCropZoom missing", src.contains("uniform float uCropZoom;"))
+        assertTrue("uCropCos missing", src.contains("uniform float uCropCos;"))
+        assertTrue("uCropSin missing", src.contains("uniform float uCropSin;"))
+    }
+
+    @Test
+    fun window_fragment_carries_the_crop_gate_and_manual_bilinear() {
+        // The crop math cannot be quietly dropped: the uCropOn == 1 gate
+        // selects the crop map, and the manual bilinear (the NEAREST pin's
+        // answer — 4x texelFetch with per-axis index clamping, mirroring
+        // CropState.sampleArgbBilinear) must be present.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+        assertTrue("uCropOn gate missing", src.contains("uCropOn == 1"))
+        assertTrue("manual bilinear texelFetch missing", src.contains("texelFetch(uSrc"))
+    }
+
+    @Test
+    fun window_fragment_carries_the_inverse_rotation_map_over_the_zoom() {
+        // The crop map's decision math, in the applyToArgb form: the two
+        // inverse-rotation terms over uCropZoom (sx = cx + (dx*c + dy*s)/z,
+        // sy = cy + (-dx*s + dy*c)/z — the exact pair CropState's loop
+        // computes, with the uniforms in the c/s positions).
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+        assertTrue(
+            "the ox term missing",
+            src.contains("(dx * uCropCos + dy * uCropSin) / uCropZoom"),
+        )
+        assertTrue(
+            "the oy term missing",
+            src.contains("(-dx * uCropSin + dy * uCropCos) / uCropZoom"),
+        )
+    }
+
+    @Test
+    fun window_fragment_maps_the_crop_BEFORE_the_orientation_fold() {
+        // THE COMPOSE ORDER (the plan's whole-space pin): the crop runs
+        // on uv BEFORE the uOrientation fold composes it into sensor st.
+        // The fold's `uOrientation == 90` arm must therefore read the
+        // crop-mapped uvFull, not the raw uv — the token the fold reuse
+        // forces and the pin locks.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+        val cropIdx = src.indexOf("uCropOn == 1")
+        val foldIdx = src.indexOf("uOrientation == 90")
+        assertTrue("crop gate missing", cropIdx >= 0)
+        assertTrue("orientation fold missing", foldIdx >= 0)
+        assertTrue("the crop map must precede the orientation fold", cropIdx < foldIdx)
+        // The fold consumes the crop-mapped uv: the fold's input variable
+        // is uvFull (the identity arm carries it too).
+        val foldReadsMapped = src.contains("st = vec2(1.0 - uvFull.y, 1.0 - uvFull.x);")
+        assertTrue("the 90 fold arm must read the crop-mapped uvFull", foldReadsMapped)
+    }
+
+    @Test
+    fun a_window_fragment_missing_a_crop_uniform_is_reported() {
+        // Each pin individually catches the defect it exists for: strip
+        // one crop uniform declaration and problems() names it.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+            .replace("uniform int uCropOn;", "uniform int uCropOnX;")
+        val problems = GlesShaderValidator.problems(
+            src,
+            GlesShaderValidator.Kind.WINDOW_FRAGMENT,
+        )
+        assertTrue(
+            "expected a uCropOn problem, got: $problems",
+            problems.any { it.contains("uCropOn") },
+        )
+    }
+
+    @Test
+    fun a_window_fragment_with_the_crop_gate_dropped_is_reported() {
+        // The gate token dropped (a folded dead crop path) — the pin
+        // catches it.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+            .replace("uCropOn == 1", "uCropOnX == 1")
+        val problems = GlesShaderValidator.problems(
+            src,
+            GlesShaderValidator.Kind.WINDOW_FRAGMENT,
+        )
+        assertTrue(
+            "expected a uCropOn gate problem, got: $problems",
+            problems.any { it.contains("uCropOn") },
+        )
+    }
+
+    @Test
+    fun a_window_fragment_with_the_manual_bilinear_dropped_is_reported() {
+        // texelFetch renamed away (e.g. a plain texture() revert on the
+        // crop branch) -- the pin catches the sampling-contract break.
+        // Renaming the FUNCTION itself (not just uSrcX, whose prefix
+        // still contains "texelFetch(uSrc") so the pin's token is truly
+        // gone.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+            .replace("texelFetch(", "texelPetch(")
+        val problems = GlesShaderValidator.problems(
+            src,
+            GlesShaderValidator.Kind.WINDOW_FRAGMENT,
+        )
+        assertTrue(
+            "expected a texelFetch problem, got: $problems",
+            problems.any { it.contains("texelFetch") },
+        )
+    }
+
+    // ---- WINDOW_FRAGMENT's zebra uniforms (A3 GPU zebra, owner request
+    // 2026-11-23, guide §A3). The zebra block is text-pinned exactly like
+    // the crop block above: the four uniforms, the byte-exact decision
+    // math, and the validator's windowFragmentProblems pins so the block
+    // cannot be quietly dropped while the uniforms still link.
+
+    @Test
+    fun window_fragment_declares_the_four_zebra_uniforms() {
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+        assertTrue("uZebraOn missing", src.contains("uniform int uZebraOn;"))
+        assertTrue("uZebraThreshold missing", src.contains("uniform int uZebraThreshold;"))
+        assertTrue("uZebraPeriod missing", src.contains("uniform int uZebraPeriod;"))
+        assertTrue("uZebraAlpha missing", src.contains("uniform float uZebraAlpha;"))
+    }
+
+    @Test
+    fun window_fragment_carries_the_zebra_decision_math() {
+        // The A3 block's exact tokens: the toByte-equivalent quantize
+        // (v*255 + 0.5 after the clamp — jni_bridge.cpp toByte's exact
+        // round-ties-up shape), the Rec.709 luma byte form, the
+        // rect-local half-stripped window coords, the / uZebraPeriod
+        // even test, the . (1.0 - uZebraAlpha) blend, and the
+        // uZebraOn == 1 gate.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+        assertTrue(
+            "the toByte quantize missing",
+            src.contains("int r8 = int(clamp(c.r, 0.0, 1.0) * 255.0 + 0.5);"),
+        )
+        assertTrue(
+            "the luma8 form missing",
+            src.contains("(54 * r8 + 183 * g8 + 19 * b8) >> 8"),
+        )
+        assertTrue(
+            "the rect-local half-stripped coords missing",
+            src.contains("ivec2 p = ivec2(gl_FragCoord.xy - uRect.xy - vec2(0.5));"),
+        )
+        assertTrue(
+            "the stripe even test missing",
+            src.contains("((p.x + p.y) / uZebraPeriod) % 2 == 0"),
+        )
+        assertTrue(
+            "the blend toward black missing",
+            src.contains("oCol.rgb *= (1.0 - uZebraAlpha);"),
+        )
+    }
+
+    @Test
+    fun window_fragment_zebra_gates_on_uZebraOn_and_composes_after_the_crop() {
+        // The gate token (the decision math cannot be quietly dropped) and
+        // the A3 placement pin: the zebra block composes AFTER the A2 crop
+        // block's sampling fork (it reads the final sampled color the
+        // crop/texture branch produced into `c`), and the gated blend is
+        // the LAST write before the fragment ends.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+        assertTrue("the uZebraOn gate missing", src.contains("uZebraOn == 1"))
+        val sampleIdx = src.indexOf("vec3 c;")
+        val zebraIdx = src.indexOf("uZebraOn == 1")
+        val writeIdx = src.indexOf("oCol = vec4(c, 1.0);")
+        val blendIdx = src.indexOf("oCol.rgb *= (1.0 - uZebraAlpha);")
+        assertTrue("the sampling fork missing", sampleIdx >= 0)
+        assertTrue("the zebra block missing", zebraIdx >= 0)
+        assertTrue("the color write missing", writeIdx >= 0)
+        assertTrue("the gated blend missing", blendIdx >= 0)
+        assertTrue(
+            "the zebra block must compose after the sampling fork",
+            sampleIdx < zebraIdx,
+        )
+        assertTrue(
+            "the write must precede the gated blend (the blend multiplies oCol.rgb)",
+            writeIdx < blendIdx,
+        )
+        assertTrue(
+            "the gated blend must be inside the zebra block",
+            zebraIdx < blendIdx,
+        )
+    }
+
+    @Test
+    fun a_window_fragment_missing_a_zebra_uniform_is_reported() {
+        // Each pin individually catches the defect it exists for: strip
+        // one zebra uniform declaration and problems() names it.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+            .replace("uniform int uZebraOn;", "uniform int uZebraOnX;")
+        val problems = GlesShaderValidator.problems(
+            src,
+            GlesShaderValidator.Kind.WINDOW_FRAGMENT,
+        )
+        assertTrue(
+            "expected a uZebraOn problem, got: $problems",
+            problems.any { it.contains("uZebraOn") },
+        )
+    }
+
+    @Test
+    fun a_window_fragment_with_the_zebra_gate_dropped_is_reported() {
+        // The gate token dropped (a folded dead zebra path) — the pin
+        // catches it.
+        val src = GlesShaderSources.WINDOW_FRAGMENT
+            .replace("uZebraOn == 1", "uZebraOnX == 1")
+        val problems = GlesShaderValidator.problems(
+            src,
+            GlesShaderValidator.Kind.WINDOW_FRAGMENT,
+        )
+        assertTrue(
+            "expected a uZebraOn gate problem, got: $problems",
+            problems.any { it.contains("uZebraOn") },
+        )
+    }
+
     // ---- the shader text is locked to the CPU kernel it mirrors ----
     // Text-level checks (honest: the algorithm itself is verified on the
     // device by the parity harness; these catch a silent edit of either
@@ -2186,17 +2421,18 @@ class GlesShaderValidatorTest {
     @Test
     fun stage9_host_parity_the_glsl_block_matches_the_cpu_loop() {
         // CPU: lift remap pinned at white; GLSL: identical gate + math.
+        // k = 0.12 (A6 black point range shrink, owner request 2026-11-23).
         assertStageParity(
             "blackPoint", listOf(5f, -5f, 100f, -100f, 0f),
             cpu = { r, g, b, v ->
                 if (v != 0.0f) {
-                    val lift = -0.25f * (v / 100.0f)
+                    val lift = -0.12f * (v / 100.0f)
                     Triple(lift + (1.0f - lift) * r, lift + (1.0f - lift) * g, lift + (1.0f - lift) * b)
                 } else Triple(r, g, b)
             },
             glsl = { r, g, b, v ->
                 if (v != 0.0f) {
-                    val lift = -0.25f * (v / 100.0f)
+                    val lift = -0.12f * (v / 100.0f)
                     Triple(lift + (1.0f - lift) * r, lift + (1.0f - lift) * g, lift + (1.0f - lift) * b)
                 } else Triple(r, g, b)
             },

@@ -1077,12 +1077,29 @@ ParityReport developFragmentParityFullFrame(const std::string& vertexSource,
             // uint16.
             float g = gpu[i];
             g = std::min(std::max(g, 0.0f), 1.0f);
-            const int gi = static_cast<int>(std::lround(g * 65535.0f));
+            const float preQuant = g * 65535.0f;  // the exact value lround sees below
+            const int gi = static_cast<int>(std::lround(preQuant));
             const int diff = gi > static_cast<int>(ref[i])
                 ? gi - static_cast<int>(ref[i])
                 : static_cast<int>(ref[i]) - gi;
             if (diff > maxDiff) maxDiff = diff;
-            if (diff > 0) ++mismatches;
+            if (diff > 0) {
+                ++mismatches;
+                // A5 step 1 (owner request 2026-11-23, guide A5): shape
+                // every mismatching sample. Channel is i % 3 because
+                // STORE_FRAGMENT packs row-major r,g,b per pixel
+                // (rgb[base+0]=c.r, +1=c.g, +2=c.b), so readback index i
+                // alternates R/G/B with period 3 — never re-derive it from
+                // geometry. The tonal bucket reads the CPU uint16 reference
+                // and the boundary distance the GPU pre-quantize float
+                // ABOVE (preQuant — the same value lround quantized);
+                // swapping the two silently breaks the A5 interpretation.
+                // Case 2's five-mode sweep accumulates into the SAME diag
+                // (its mismatchCount already does); no reset between modes.
+                recordParityDiagSample(rep.diag, diff,
+                                       static_cast<int>(i % 3),
+                                       preQuant, ref[i]);
+            }
         }
         glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     }

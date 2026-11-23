@@ -263,7 +263,7 @@ object EffectRegistry {
             inputDomain = "LINEAR_RGB",
             outputDomain = "LINEAR_RGB",
             effectClass = EffectClass.POINTWISE,
-            cpuSite = "core/src/Develop.cpp:930-938 (developCpu stage 9; lift = -0.25*bp/100, x' = lift + (1-lift)*x)",
+            cpuSite = "core/src/Develop.cpp:930-938 (developCpu stage 9; lift = -0.12*bp/100, x' = lift + (1-lift)*x; k=0.12 per A6 owner request 2026-11-23)",
             gpuSite = "DEVELOP_FRAGMENT_POST (GlesShaderSources.kt:1366) behind uBlackPoint — pipeline 'draw 5: the POST pass' (GpuDevelopPipeline.cpp Impl::draw), stages 9-20 draw",
             hardware = "FLOAT_FBO",
             coverageToken = "none",

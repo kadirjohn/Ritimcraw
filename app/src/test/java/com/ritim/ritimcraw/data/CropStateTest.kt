@@ -398,6 +398,64 @@ class CropStateTest {
     }
 
     @Test
+    fun `cropSourcePosition is byte-identical with applyToArgb's loop math`() {
+        // A2 GPU crop/straighten (owner request 2026-11-23, guide A2): the
+        // per-pixel inverse map is EXTRACTED from applyToArgb's loop into a
+        // public pure function so GpuCropMap (the GPU mirror) and the parity
+        // test can hold it against the SAME numbers. This pin recomputes
+        // the OLD private math verbatim (the loop body before the
+        // extraction) for the plan's own anchor case — 1920x1080, rect
+        // (0.25, 0.25, 0.5, 0.5), deg 7 — and asserts the exposed function
+        // returns exactly those positions at every output pixel: the CPU
+        // pixels must not change by one bit.
+        val w = 1920
+        val h = 1080
+        val r = CropState.RectF(0.25f, 0.25f, 0.5f, 0.5f)
+        val deg = 7f
+        // The old private math, verbatim (the pre-extraction loop body).
+        val zoom = CropState.straightenZoom(w, h, r, deg)
+        val cx = (r.x + r.w / 2f) * w
+        val cy = (r.y + r.h / 2f) * h
+        val theta = deg.toDouble() * PI / 180.0
+        val c = cos(theta).toFloat()
+        val s = sin(theta).toFloat()
+        val out = CropState.outputDims(w, h, r)
+        for (oy in 0 until out.height step 13) {
+            val dy = (oy + 0.5f) - out.height / 2f
+            for (ox in 0 until out.width step 17) {
+                val dx = (ox + 0.5f) - out.width / 2f
+                val expectSx = cx + (dx * c + dy * s) / zoom
+                val expectSy = cy + (-dx * s + dy * c) / zoom
+                val p = CropState.cropSourcePosition(ox, oy, out.width, out.height, r, deg, w, h)
+                assertEquals(expectSx, p[0], 0.0f)
+                assertEquals(expectSy, p[1], 0.0f)
+            }
+        }
+    }
+
+    @Test
+    fun `cropSourcePosition at zero degrees degenerates to integer-center positions`() {
+        // deg=0 keeps zoom 1 and cos/sin 1/0: every output pixel's source
+        // position lands on a pixel CENTER (ox+0.5 offset by the rect's
+        // own start), so the bilinear weights are exactly 0 — the CPU's
+        // deg-0 arm is a pure row copy and the GPU's unified map
+        // degenerates to it (the plan's degeneration pin).
+        val w = 640
+        val h = 360
+        val r = CropState.RectF(0.25f, 0.25f, 0.5f, 0.5f)
+        val out = CropState.outputDims(w, h, r)
+        for (oy in 0 until out.height) {
+            for (ox in 0 until out.width) {
+                val p = CropState.cropSourcePosition(ox, oy, out.width, out.height, r, 0f, w, h)
+                // Integer centre: x.5 in both axes (the CPU samples that
+                // texel exactly; the fractional weight is 0).
+                assertEquals(0.5f, p[0] % 1f, 1e-4f)
+                assertEquals(0.5f, p[1] % 1f, 1e-4f)
+            }
+        }
+    }
+
+    @Test
     fun `mis-sized buffers are rejected`() {
         var threw = false
         try {

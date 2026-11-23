@@ -124,6 +124,32 @@ class GpuPreviewSessionTest {
         val warpM: List<Float>,
     )
 
+    /**
+     * The A2 crop pair per render (owner request 2026-11-23, guide A2):
+     * the active flag + the five mapped floats, recorded as a LIST so a
+     * reference-equality slip cannot fake the pass-through (the WarpCall
+     * precedent).
+     */
+    private data class CropCall(
+        val cropActive: Boolean,
+        val cropParams: List<Float>,
+    )
+
+    /**
+     * The A3 zebra quad per render (owner request 2026-11-23, guide A3):
+     * the gate flag + the three single-sourced knobs, recorded so the GPU
+     * arm's threading is assertable — the constants must arrive as
+     * ZebraOverlay.STRIPE_PERIOD / ZebraOverlay.STRIPE_ALPHA / 255f /
+     * FrameHistogram.WHITE_CLIP_VALUE (the single-source rule), never
+     * literals the seam could drift from.
+     */
+    private data class ZebraCall(
+        val zebraOn: Boolean,
+        val zebraThreshold: Int,
+        val zebraPeriod: Int,
+        val zebraAlpha: Float,
+    )
+
     /** Records every seam call; scripted verdicts per method. */
     private class FakeDevelop(
         var openResult: Long = 1L,
@@ -143,7 +169,10 @@ class GpuPreviewSessionTest {
         val renderedSharpnessDetail = mutableListOf<SharpnessDetailCall>() // the two unsharp stages per render
         val renderedPointwise = mutableListOf<PointwiseCall>() // the ten stages per render
         val renderedLut = mutableListOf<LutCall>() // the seven LUT controls per render
+        val renderedStatsMode = mutableListOf<PreviewStatsMode>() // the A1 readback mode per render
         val renderedWarp = mutableListOf<WarpCall>() // the warp pair per render
+        val renderedCrop = mutableListOf<CropCall>() // the A2 crop pair per render
+        val renderedZebra = mutableListOf<ZebraCall>() // the A3 zebra quad per render
         val closed = mutableListOf<Long>()
         var lastDetailValue: String? = null
         var probeResult: DoubleArray? = null
@@ -194,6 +223,13 @@ class GpuPreviewSessionTest {
             lutOutTransfer: Int,
             warpActive: Boolean,
             warpM: FloatArray,
+            statsMode: PreviewStatsMode,
+            cropActive: Boolean,
+            cropParams: FloatArray,
+            zebraOn: Boolean,
+            zebraThreshold: Int,
+            zebraPeriod: Int,
+            zebraAlpha: Float,
         ): PreviewFrame? {
             val g = GradeParcel.decode(gradeParcel)
             rendered += sessionHandle
@@ -212,7 +248,10 @@ class GpuPreviewSessionTest {
                 lutPath, lutStrength, lutRole,
                 lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             )
+            renderedStatsMode += statsMode
             renderedWarp += WarpCall(warpActive, warpM.toList())
+            renderedCrop += CropCall(cropActive, cropParams.toList())
+            renderedZebra += ZebraCall(zebraOn, zebraThreshold, zebraPeriod, zebraAlpha)
             if (renderThrows) throw IllegalStateException("seam blew up")
             return renderResult
         }
@@ -326,6 +365,24 @@ class GpuPreviewSessionTest {
                 2.5f, 0.75f, 3.25f,
                 -0.5f, 1.5f, 0.9f,
             ),
+            statsMode = PreviewStatsMode.ASYNC,
+            // A2 (2026-11-23): the crop pair rides after statsMode
+            // — an ACTIVE mapped crop with distinctive fraction values,
+            // locking the pass-through verbatim (the plan's own anchor
+            // shape: a quarter-turned, straightened crop).
+            cropActive = true, cropParams = floatArrayOf(
+                0.25f, 0.25f, 0.5f, 0.5f, 7f,
+            ),
+            // A3 (2026-11-23, guide A3): the zebra quad rides LAST,
+            // append-only after the crop pair — an ACTIVE zebra with the
+            // single-sourced production constants
+            // (ZebraOverlay.STRIPE_PERIOD / ZebraOverlay.STRIPE_ALPHA /
+            // FrameHistogram.WHITE_CLIP_VALUE), locking the threading
+            // the GPU arm owes.
+            zebraOn = true,
+            zebraThreshold = 253,
+            zebraPeriod = 12,
+            zebraAlpha = 200f / 255f,
         )
         // The SAME instance flows through — the pump publishes it exactly
         // as the CPU dispatch publishes its own frame.
@@ -395,6 +452,11 @@ class GpuPreviewSessionTest {
         // the draw, the nine floats lock the composite inverse-sampling
         // map; this render locks the ACTIVE pass-through — false would
         // skip draw 10 entirely, the identity no-draw rule).
+        // The A1 stats readback mode rides the seam verbatim too (owner
+        // request 2026-11-23): the mode the caller's statsModeFor fold
+        // produced crosses UNCHANGED — the native side owns only the
+        // kill-switch fold, never a re-decision.
+        assertEquals(listOf(PreviewStatsMode.ASYNC), develop.renderedStatsMode)
         assertEquals(
             listOf(
                 WarpCall(
@@ -407,6 +469,39 @@ class GpuPreviewSessionTest {
                 )
             ),
             develop.renderedWarp,
+        )
+        // The A2 crop pair rides the seam verbatim too (owner request
+        // 2026-11-23, guide A2): the mapRect'ed rect fractions + the raw
+        // straighten angle cross UNCHANGED — the native side owns the
+        // dims-dependent folds (planCrop's zoom/dims/trig), never a
+        // re-decision about the mapping.
+        assertEquals(
+            listOf(
+                CropCall(
+                    cropActive = true,
+                    cropParams = listOf(0.25f, 0.25f, 0.5f, 0.5f, 7f),
+                )
+            ),
+            develop.renderedCrop,
+        )
+        // The A3 zebra quad rides the seam verbatim too (owner request
+        // 2026-11-23, guide A3): the gate flag and the three knobs cross
+        // UNCHANGED — the single-source rule means the values ARE
+        // ZebraOverlay.STRIPE_PERIOD / ZebraOverlay.STRIPE_ALPHA / 255f /
+        // FrameHistogram.WHITE_CLIP_VALUE, and the native side owns only
+        // the draw-2/draw-3 split, never a re-decision. The recorded
+        // quad below pins the EXACT constants the GPU arm threads
+        // (253/12/200 arrive only from the single-source objects).
+        assertEquals(
+            listOf(
+                ZebraCall(
+                    zebraOn = true,
+                    zebraThreshold = 253,
+                    zebraPeriod = 12,
+                    zebraAlpha = 200f / 255f,
+                )
+            ),
+            develop.renderedZebra,
         )
     }
 
@@ -425,6 +520,13 @@ class GpuPreviewSessionTest {
                 warpActive = false, warpM = floatArrayOf(
                     1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
                 ),
+                statsMode = PreviewStatsMode.SYNC,
+                cropActive = false,
+                cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
+                zebraOn = false,
+                zebraThreshold = 253,
+                zebraPeriod = 12,
+                zebraAlpha = 200f / 255f,
             )
         )
         assertTrue(develop.rendered.isEmpty())
@@ -445,6 +547,13 @@ class GpuPreviewSessionTest {
                 warpActive = false, warpM = floatArrayOf(
                     1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
                 ),
+                statsMode = PreviewStatsMode.SYNC,
+                cropActive = false,
+                cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
+                zebraOn = false,
+                zebraThreshold = 253,
+                zebraPeriod = 12,
+                zebraAlpha = 200f / 255f,
             )
         )
     }
@@ -487,6 +596,13 @@ class GpuPreviewSessionTest {
                 warpActive = false, warpM = floatArrayOf(
                     1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f,
                 ),
+                statsMode = PreviewStatsMode.SYNC,
+                cropActive = false,
+                cropParams = GpuCropMap.NEUTRAL_CROP_PARAMS,
+                zebraOn = false,
+                zebraThreshold = 253,
+                zebraPeriod = 12,
+                zebraAlpha = 200f / 255f,
             )
         )
         assertEquals(0, develop.rendered.size)
@@ -523,6 +639,13 @@ class GpuPreviewSessionTest {
                 lutOutTransfer: Int,
                 warpActive: Boolean,
                 warpM: FloatArray,
+                statsMode: PreviewStatsMode,
+                cropActive: Boolean,
+                cropParams: FloatArray,
+                zebraOn: Boolean,
+                zebraThreshold: Int,
+                zebraPeriod: Int,
+                zebraAlpha: Float,
             ): PreviewFrame? = null
             override fun closeSession(sessionHandle: Long) {}
             override suspend fun lastDetail(): String? = throw IllegalStateException("seam blew up")
@@ -535,19 +658,21 @@ class GpuPreviewSessionTest {
     /**
      * The tail layout the JNI entry appends after the pixels (13 ints):
      * [sourceW, sourceH, developW, developH, surfaceW, surfaceH,
-     * statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs] — the
+     * statsMode, decUs, cfaUs, upUs, devUs, presentUs, statsUs] — the
      * spans in MICROSECONDS, parsed into the PreviewFrame's ms fields.
+     * A1 async stats (2026-11-23): slot 6 is the MODE int (0=off 1=sync
+     * 2=async — the PreviewStatsMode native vocabulary).
      */
     private fun tail(
         sourceW: Int = 4032, sourceH: Int = 3024,
         developW: Int = 1280, developH: Int = 960,
         surfaceW: Int = 1080, surfaceH: Int = 810,
-        statsEnabled: Int = 1,
+        statsMode: Int = 1,
         decUs: Int = 18400, cfaUs: Int = 2700, upUs: Int = 1200,
         devUs: Int = 3900, presentUs: Int = 1100, statsUs: Int = 800,
     ) = intArrayOf(
         sourceW, sourceH, developW, developH, surfaceW, surfaceH,
-        statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs,
+        statsMode, decUs, cfaUs, upUs, devUs, presentUs, statsUs,
     )
 
     @Test
@@ -563,7 +688,9 @@ class GpuPreviewSessionTest {
         assertEquals(0, out?.developH)
         assertEquals(0.0, out?.decMs)
         assertEquals(0.0, out?.statsMs)
-        assertTrue(out?.statsEnabled == true)
+        // A1 (2026-11-23): the neutral default is SYNC — the safe mode an
+        // old .so actually ran (the blocking readback).
+        assertEquals(PreviewStatsMode.SYNC, out?.statsMode)
     }
 
     @Test
@@ -581,7 +708,7 @@ class GpuPreviewSessionTest {
         assertEquals(960, out?.developH)
         assertEquals(1080, out?.surfaceW)
         assertEquals(810, out?.surfaceH)
-        assertEquals(true, out?.statsEnabled)
+        assertEquals(PreviewStatsMode.SYNC, out?.statsMode)
         val frame = out!!
         assertEquals(18.4, frame.decMs, 1e-9)
         assertEquals(2.7, frame.cfaMs, 1e-9)
@@ -592,15 +719,33 @@ class GpuPreviewSessionTest {
     }
 
     @Test
-    fun tailed_array_with_stats_off_parses_the_toggle() {
-        // The A/B leg: statsEnabled=0 in the tail (the toggle skipped
-        // draw 3 + the readback) reads false on the frame — the trace
-        // line then prints stats=off.
+    fun tailed_array_with_mode_off_parses_the_off_mode() {
+        // The A/B leg: statsMode=0 in the tail (no scope visible — the
+        // stats stage skipped entirely) reads OFF on the frame, and the
+        // stats span stays 0. The trace line then prints stats=off
+        // statsMode=off.
         val out = NativeGpuPreviewDevelop.renderArrayBlocking(
-            intArrayOf(1, 1, 0) + tail(statsEnabled = 0, statsUs = 0)
+            intArrayOf(1, 1, 0) + tail(statsMode = 0, statsUs = 0)
         )
-        assertEquals(false, out?.statsEnabled)
+        assertEquals(PreviewStatsMode.OFF, out?.statsMode)
         assertEquals(0.0, out?.statsMs)
+    }
+
+    @Test
+    fun tailed_array_with_mode_async_parses_the_async_mode() {
+        // A1 (2026-11-23): mode 2 in the tail reads ASYNC — the fence
+        // ring served the frame (the N-1 pack, or the 1x1 miss marker
+        // keepsLastPublishedFrame detects). An out-of-range jint (an old
+        // .so's stray value) folds to SYNC, never a crash.
+        val out = NativeGpuPreviewDevelop.renderArrayBlocking(
+            intArrayOf(2, 2, 0, 0, 0, 0) + tail(statsMode = 2, statsUs = 400)
+        )
+        assertEquals(PreviewStatsMode.ASYNC, out?.statsMode)
+        assertEquals(0.4, out?.statsMs!!, 1e-9)
+        val stray = NativeGpuPreviewDevelop.renderArrayBlocking(
+            intArrayOf(2, 2, 0, 0, 0, 0) + tail(statsMode = 7, statsUs = 400)
+        )
+        assertEquals(PreviewStatsMode.SYNC, stray?.statsMode)
     }
 
     @Test

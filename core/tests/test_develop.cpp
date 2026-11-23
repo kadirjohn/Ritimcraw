@@ -525,7 +525,14 @@ TEST_CASE("contrast_pivots_around_midgray_both_directions") {
 TEST_CASE("black_point_crushes_the_toe") {
     // Positive black point darkens the toe; white stays pinned at 1
     // (x' = lift + (1 - lift) * x maps 1 to 1). Negative lifts the floor:
-    // at -100 the input floor 0 maps to 0.25 (faded blacks).
+    // at -100 the input floor 0 maps to +0.12. The constant k = 0.12 is
+    // the A6 black point range shrink (owner request 2026-11-23; was
+    // 0.25, which crushed 44.7% of night-frame pixels at bp = +100;
+    // bp_measure picked 0.12 — 10.8% crush, inside the 10-15% target).
+    // Both slider ends are pinned exactly below: the fade pin proves the
+    // pre-stage-9 floor is exactly 0, and the crush pin proves a 0 input
+    // maps to -k (x' = -k + (1-k)*0), so the constant cannot drift on
+    // either side without failing here.
     Synthetic nearBlack = syntheticFlat(CfaPattern::RGGB, 0.04f, 0.04f, 0.04f);
     Synthetic white = syntheticFlat(CfaPattern::RGGB, 1.0f, 1.0f, 1.0f);
     Synthetic black = syntheticFlat(CfaPattern::RGGB, 0.0f, 0.0f, 0.0f);
@@ -536,9 +543,11 @@ TEST_CASE("black_point_crushes_the_toe") {
     auto w0 = developCpu(white.cfa.data(), white.info, white.meta, Grade{});
     auto w1 = developCpu(white.cfa.data(), white.info, white.meta, crush);
     auto bf = developCpu(black.cfa.data(), black.info, black.meta, fade);
+    auto bc = developCpu(black.cfa.data(), black.info, black.meta, crush);
     CHECK(centerMean(n1, 1) < centerMean(n0, 1) - 0.02f);          // toe darkened
     CHECK(std::abs(centerMean(w1, 1) - centerMean(w0, 1)) < 0.001f); // white pinned
-    CHECK(std::abs(centerMean(bf, 1) - 0.25f) < 0.01f);            // floor lifted
+    CHECK(std::abs(centerMean(bf, 1) - 0.12f) < 0.01f);            // floor lifted
+    CHECK(std::abs(centerMean(bc, 1) - (-0.12f)) < 0.01f);         // crush floor pinned at -k
 }
 
 TEST_CASE("white_point_remaps_the_shoulder") {

@@ -97,6 +97,7 @@ import com.ritim.ritimcraw.engine.GlesParityResult
 import com.ritim.ritimcraw.engine.GlesProbeResult
 import com.ritim.ritimcraw.engine.GradeMapping
 import com.ritim.ritimcraw.engine.GradeParcel
+import com.ritim.ritimcraw.engine.GpuCropMap
 import com.ritim.ritimcraw.engine.GpuParityRules
 import com.ritim.ritimcraw.engine.GpuPreviewSession
 import com.ritim.ritimcraw.engine.NativeGpuPreviewDevelop
@@ -106,6 +107,7 @@ import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
 import com.ritim.ritimcraw.engine.PreviewSessions
 import com.ritim.ritimcraw.engine.PreviewQuality
+import com.ritim.ritimcraw.engine.PreviewStatsMode
 import com.ritim.ritimcraw.engine.PreviewTiers
 import com.ritim.ritimcraw.engine.RawHistogram
 import com.ritim.ritimcraw.engine.SourcePath
@@ -118,6 +120,8 @@ import com.ritim.ritimcraw.engine.PreviewTiers.RenderClass
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.engine.RenderTrace
+import com.ritim.ritimcraw.engine.keepsLastPublishedFrame
+import com.ritim.ritimcraw.engine.statsModeFor
 import com.ritim.ritimcraw.ui.editor.PublishCrop
 import com.ritim.ritimcraw.ui.components.CompactSegmentedRow
 import com.ritim.ritimcraw.ui.theme.RitimTheme
@@ -576,22 +580,31 @@ object EditorPreviewLogic {
      * playback and drag renders skip the merge and the settle render
      * lands it.
      *
-     * [cropActive] is the request's DISPLAY-grade crop state (the grade
-     * the pump actually renders — crop-overlay mode swaps in the
-     * crop-neutral display grade, so overlay mode stays GPU-eligible):
-     * PublishCrop resamples an ACTIVE crop, and the GPU path's published
-     * stats pack is 256-long-edge — resampling that pack would go blocky,
-     * and the GPU window draw is aspect-fit UNCROPPED, a display mismatch
-     * vs the CPU path's cropped preview. An active crop/straighten
-     * therefore forces CPU (the same inline test PublishCrop.plan runs:
-     * straightenDeg == 0 && CropState.isFull).
+     * Since A2 (owner request 2026-11-23, guide A2) an ACTIVE crop/
+     * straighten is GPU-ELIGIBLE: the window pass maps the crop +
+     * straighten itself (WINDOW_FRAGMENT's uCrop* uniforms — the
+     * mapping single-sourced in CropState/GpuCropMap.requestCrop, the
+     * manual delta mapRect'ed before the seam), the aspect-fit rect and
+     * the stats dims use the CROPPED output dims (the scopes analyse the
+     * cropped region, the CPU path's own shape), and the publish fold
+     * serves the published pack AS-IS (PublishCrop must not crop it
+     * again — guide A2). The pre-A2 rule (any active crop forces the
+     * whole preview to the CPU, because the GPU window drew uncropped)
+     * is gone. Crop-overlay mode stays exactly as it was already:
+     * [displayGradeForCropOverlay] swaps in the crop-neutral display
+     * grade, so overlay frames render uncropped and the handles stay
+     * aligned with the uncropped window (the guide's crop-overlay rule,
+     * unchanged by A2).
      *
-     * [zebraOn] forces CPU for its renders: zebraFrame derives from the
-     * PUBLISHED frame (ZebraOverlay.paint), and the GPU pack's 256
-     * long edge would paint blocky stripes — with the Compose Image
-     * suppressed while the GPU window serves, they would be invisible
-     * anyway. Zebra is a display feature, so its display rule rides the
-     * request, not the grade.
+     * Zebra contributes NO rule since the A3 port (owner request
+     * 2026-11-23, guide §A3): the GPU window pass paints the stripes
+     * itself (WINDOW_FRAGMENT's uZebra* uniforms — the values
+     * single-sourced from ZebraOverlay/FrameHistogram across the seam),
+     * the stats pack stays clean (the session's draw-3 uZebraOn=0 pin),
+     * and the CPU backend keeps ZebraOverlay.paint for its own path. The
+     * pre-A3 rule (zebra forced the CPU path because zebraFrame derived
+     * from the blocky 256-px pack) is gone — a zebra-on request rides
+     * the GPU like any covered grade, at window resolution.
      *
      * [lutTexturePathOk] (commit b) is the probe-derived runtime fact for
      * stage 24's runtime leg — the RGBA16F 3D-texture path is GLES 3.0
@@ -607,12 +620,12 @@ object EditorPreviewLogic {
      */
     fun gpuPreviewEligible(
         grade: GradeK,
-        cropActive: Boolean,
-        zebraOn: Boolean,
         lutTexturePathOk: Boolean = false,
     ): Boolean {
-        if (zebraOn) return false
-        if (cropActive) return false
+        // A2 (2026-11-23, guide A2): the crop no longer forces CPU — the
+        // window pass maps it (the KDoc block above). A3 (2026-11-23,
+        // guide A3): the zebra no longer forces CPU either — the window
+        // pass paints the stripes (the KDoc block above).
         if (BackendRules.fragmentUncoveredStages(grade, lutTexturePathOk).isNotEmpty()) return false
         if (BackendRules.fragmentUncoveredPreStages(grade).isNotEmpty()) return false
         return true
@@ -986,10 +999,20 @@ fun ClipEditorScreen(
     // routes eligible render requests through the GPU preview session
     // (the SurfaceView window draw + the published stats pack); CPU stays
     // the default and every ineligible request — an uncovered grade, an
-    // active crop, gyro warp, zebra, an encoded clip, a failed session —
-    // takes the existing CPU path byte-identical. AUTO is a commit-c
+    // encoded clip, a failed session — takes the existing CPU path
+    // byte-identical (since A2 an active crop and since A3 zebra-on are
+    // eligible; the window pass maps/paints them). AUTO is a commit-c
     // concern (the capability gate); until then it reads as CPU here.
     renderBackend: RenderBackend = RenderBackend.CPU,
+    // A1 async stats (owner request 2026-11-23, guide A1): the debug
+    // Settings row's persisted stats-readback state (stores.previewStats),
+    // read fresh at editor composition — the Settings screen is a
+    // different screen, so the value is snapshotted here rather than
+    // observed. The NATIVE gPreviewStatsEnabled atomic remains the
+    // authoritative fold either way (the render door folds it); this
+    // parameter only keeps the Kotlin-side statsModeFor decision honest.
+    // Default true keeps every other caller byte-identical.
+    previewStatsEnabled: Boolean = true,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -1385,12 +1408,14 @@ fun ClipEditorScreen(
         var gpuActive by remember(sourceId) { mutableStateOf(false) }
         // FULL preview quality is GPU-only (PreviewQuality.effectiveFor): it
         // renders at the recorded resolution only while the GPU preview is
-        // the renderer; CPU/AUTO, a session not up yet, or zebra (which
-        // forces the CPU path) fall back to HIGH.
+        // the renderer; CPU/AUTO or a session not up yet fall back to HIGH.
+        // Since A3 (owner request 2026-11-23, guide A3) zebra is no
+        // exception: the GPU window paints the stripes, so FULL quality is
+        // allowed whenever the GPU window serves, zebra included.
         val previewQualityEffective = PreviewQuality.effectiveFor(
             previewQuality,
             fullResAllowed = gpuActive &&
-                renderBackend == RenderBackend.GPU_EXPERIMENTAL && !zebraOn,
+                renderBackend == RenderBackend.GPU_EXPERIMENTAL,
         )
         var gpuWindowLive by remember(sourceId) { mutableStateOf(false) }
         // The acknowledged EGL attachment, set after the SurfaceHolder
@@ -2274,9 +2299,14 @@ fun ClipEditorScreen(
                         // The M3 export per-frame dispatch pattern, mirrored
                         // for the preview: when the GPU path is active (the
                         // setting asks, a live GPU session exists, and THIS
-                        // request is eligible — every active stage covered, no
-                        // active crop in the request's display grade, zebra
-                        // off; the gyro warp stopped blocking eligibility with
+                        // request is eligible — every active stage covered;
+                        // since A2 (2026-11-23, guide A2) an active crop/
+                        // straighten is eligible too (the window pass maps
+                        // it); since A3 (2026-11-23, guide A3) zebra-on is
+                        // eligible too (the window pass PAINTS the stripes —
+                        // the render call threads the four single-sourced
+                        // knobs); the gyro warp stopped blocking
+                        // eligibility with
                         // its GPU port — the pass is unconditionally fragment-
                         // covered), try the GPU session first. A
                         // null verdict (render failure OR malformed pack)
@@ -2291,6 +2321,17 @@ fun ClipEditorScreen(
                         var gpuServed = false
                         var result: Result<PreviewFrame>? = null
                         val gpu = gpuSession
+                        // The A2 crop verdict for this request (2026-11-23,
+                        // guide A2): computed inside the GPU arm (the
+                        // eligibility gate passed), read by the publish fold
+                        // BELOW — a GPU-served frame with an active crop
+                        // skips PublishCrop (the pack is already cropped)
+                        // and must not shrink effectiveDims (the uncropped
+                        // pair governs). False when the GPU arm never ran
+                        // (servedByGpuWindow is false too, so the fold reads
+                        // the CPU path verbatim).
+                        var gpuCropParams: FloatArray? = null
+                        var gpuCropActive = false
                         // gpuSurfaceLive is read at request time exactly like
                         // session/gpuSession above (snapshot state reads inside
                         // the coroutine see the current value): the surface
@@ -2311,14 +2352,6 @@ fun ClipEditorScreen(
                             currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
                             EditorPreviewLogic.gpuPreviewEligible(
                                 grade = req.grade,
-                                cropActive = req.grade.straightenDeg != 0f ||
-                                    !CropState.isFull(
-                                        CropState.RectF(
-                                            req.grade.cropX, req.grade.cropY,
-                                            req.grade.cropW, req.grade.cropH,
-                                        )
-                                    ),
-                                zebraOn = currentZebraOn,
                                 lutTexturePathOk = gpuLutTexturePathOk,
                             )
                         ) {
@@ -2352,6 +2385,21 @@ fun ClipEditorScreen(
                             } else {
                                 floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
                             }
+                            // The A2 crop verdict (owner request 2026-11-23,
+                            // guide A2): the mapRect'ed parcel for THIS
+                            // request's DISPLAY grade through the manual
+                            // rotation delta (currentManualRotationDeg —
+                            // the rememberUpdatedState read the fold below
+                            // also uses). Null = the neutral crop group; a
+                            // non-null parcel rides the seam LAST and the
+                            // native planCrop owns the dims-dependent
+                            // folds. The hoisted pair feeds the publish fold
+                            // below (the declarations live at the dispatch
+                            // prelude — the fold is outside this block).
+                            gpuCropParams = GpuCropMap.requestCrop(
+                                req.grade, currentManualRotationDeg,
+                            )
+                            gpuCropActive = gpuCropParams != null
                             // GRADE PARCEL (commit b): the grade crosses as ONE
                             // flat FloatArray, encoded HERE once per request —
                             // AFTER the temporalNr tier fold (the DN-08 gate the
@@ -2369,6 +2417,27 @@ fun ClipEditorScreen(
                                     req.grade, req.frameIndex, req.maxDim, req.sequence,
                                 )
                             }
+                            // A1 async stats (owner request 2026-11-23, guide
+                            // A1(a)): the per-request stats readback mode,
+                            // from the Task-1 pure fold. scopePresentation
+                            // != OFF covers the strip AND the mini — the
+                            // only consumers of the published pixels (the
+                            // scope compute reads `frame`, both shapes draw
+                            // from it); since A3 (guide A3) the zebra rides
+                            // the GPU too — the stats pack stays CLEAN
+                            // (the session's draw-3 uZebraOn=0 pin), so
+                            // zebras never contaminate the mode's consumers.
+                            // No scope visible
+                            // = OFF = the stats stage is skipped entirely
+                            // (the honest 1x1 placeholder path); PLAYBACK
+                            // with a scope = ASYNC (the fence ring);
+                            // settle/drag with a scope = SYNC (the paused
+                            // edit's scopes stay exact).
+                            val statsMode = statsModeFor(
+                                scopeVisible = scopePresentation != ScopePresentation.OFF,
+                                renderClass = req.renderClass,
+                                toggle = previewStatsEnabled,
+                            )
                             val gpuFrame = gpu.render(
                                 clipHandle = s.nativeClipHandle,
                                 frameIndex = req.frameIndex,
@@ -2410,6 +2479,38 @@ fun ClipEditorScreen(
                                 // identity no-draw rule).
                                 warpActive = warpActive,
                                 warpM = warpM,
+                                // A1: the per-request stats readback mode
+                                // (the demand x class x toggle fold above).
+                                statsMode = statsMode,
+                                // The A2 crop pair (owner request 2026-11-23,
+                                // guide A2): the request builder's verdict for
+                                // THIS frame. req.grade here is the DISPLAY
+                                // grade — while the crop overlay is open it is
+                                // already crop-neutral via
+                                // displayGradeForCropOverlay, so overlay frames
+                                // render uncropped and the handles stay aligned
+                                // with the uncropped window (the guide's
+                                // crop-overlay rule, unchanged). Null = the
+                                // neutral crop group (the same inline test
+                                // PublishCrop.plan runs): cropOn false + the
+                                // all-neutral parcel (the JNI seam takes a
+                                // non-null array), the shader's identity path.
+                                cropActive = gpuCropParams != null,
+                                cropParams = gpuCropParams ?: GpuCropMap.NEUTRAL_CROP_PARAMS,
+                                // The A3 zebra quad (owner request
+                                // 2026-11-23, guide A3): the four single-
+                                // sourced knobs — the toggle flag the
+                                // pump mirrors, and the three constants
+                                // referenced ONLY via ZebraOverlay /
+                                // FrameHistogram (253/12/200 appear
+                                // nowhere else in the GPU path). The
+                                // window draw paints the stripes; the
+                                // stats draw pins uZebraOn=0 native-side
+                                // (CLEAN scopes).
+                                zebraOn = currentZebraOn,
+                                zebraThreshold = FrameHistogram.WHITE_CLIP_VALUE,
+                                zebraPeriod = ZebraOverlay.STRIPE_PERIOD,
+                                zebraAlpha = ZebraOverlay.STRIPE_ALPHA / 255f,
                             )
                             if (gpuFrame != null) {
                                 result = Result.success(gpuFrame)
@@ -2523,11 +2624,61 @@ fun ClipEditorScreen(
                                     // slider ranges never math against 1x1
                                     // (a 16:9 preset on a 4:3 clip would
                                     // otherwise compute h=0.5625, not 0.75).
-                                    if (PreviewSurfaceRatio.carriesShape(f.width, f.height)) {
-                                        effectiveDims = RotationState.rotatedDims(
-                                            f.width, f.height, currentManualRotationDeg,
-                                        )
+                                    // A2 (2026-11-23, guide A2): a GPU-served
+                                    // frame with an ACTIVE crop must not
+                                    // shrink the pair either — its stats
+                                    // pack is already CROPPED (the window
+                                    // pass maps the crop), so f's dims are
+                                    // the CROPPED dims, and the aspect
+                                    // presets + the crop overlay keep
+                                    // mathing against the UNCROPPED dims.
+                                    // The last uncropped pair governs:
+                                    // overlay frames (the crop-neutral
+                                    // display grade updates as today), prior
+                                    // frames, or the documented 0x0
+                                    // pre-first-publish degradation. The CPU
+                                    // path still captures f pre-crop below,
+                                    // as it always did.
+                                    if (!servedByGpuWindow || !gpuCropActive) {
+                                        if (PreviewSurfaceRatio.carriesShape(f.width, f.height)) {
+                                            effectiveDims = RotationState.rotatedDims(
+                                                f.width, f.height, currentManualRotationDeg,
+                                            )
+                                        }
                                     }
+                                    // A1 async stats (owner request 2026-11-23,
+                                    // guide A1(b).3): an ASYNC frame that
+                                    // published the 1x1 miss marker carries NO
+                                    // pack — the fence for frame N-1 had not
+                                    // signaled yet. KEEP the last published
+                                    // frame state (the Compose `frame`, and
+                                    // with it the scope compute and the RAW
+                                    // histogram index) so the scopes simply
+                                    // hold one frame longer — the guide's
+                                    // documented one-frame lag, "the Kotlin
+                                    // side keeps the last scopes". Everything
+                                    // else (the window verdict, the dims, the
+                                    // trace line) still publishes: the render
+                                    // DID complete.
+                                    val keepLastStats = servedByGpuWindow &&
+                                        keepsLastPublishedFrame(f.statsMode, f.width, f.height)
+                                    if (!keepLastStats) {
+                                    // A2 (owner request 2026-11-23, guide A2):
+                                    // when the GPU WINDOW served this frame,
+                                    // the published pack is ALREADY cropped
+                                    // by the window pass — both shapes are
+                                    // publish-ready: a cropped/straightened
+                                    // request's pack IS the cropped region
+                                    // (the stats dims are the cropped dims),
+                                    // and a crop-neutral request's pack is
+                                    // today's uncropped shape. PublishCrop
+                                    // must not crop it again (guide A2's
+                                    // own words: resampling the 256-pack
+                                    // would be blocky AND duplicated) —
+                                    // serve the pack DIRECTLY.
+                                    if (servedByGpuWindow) {
+                                        frame = f
+                                    } else {
                                     // Crop + straighten (RAW-09), OFF the
                                     // main thread (audit fix 2026-11-13): the
                                     // published preview is the GRADED frame
@@ -2547,7 +2698,9 @@ fun ClipEditorScreen(
                                     // under the same generation guard. The
                                     // pump AWAITS the resample, so it stays
                                     // serial: one render, one crop, one
-                                    // publish, in sequence order.
+                                    // publish, in sequence order. The CPU
+                                    // path keeps this block VERBATIM —
+                                    // its own tests stay green untouched.
                                     when (val plan = PublishCrop.plan(
                                         frame = f,
                                         grade = req.grade,
@@ -2566,12 +2719,18 @@ fun ClipEditorScreen(
                                             }
                                         }
                                     }
+                                    }
                                     // The rendered frame's index, published
                                     // beside the frame (feature N6): the
                                     // scope compute's RAW fetch asks for
                                     // stats of THIS frame, never guessing
-                                    // the index from transport state.
+                                    // the index from transport state. An
+                                    // async miss keeps the LAST index too
+                                    // (inside the same keep-last guard) —
+                                    // the RAW fetch stays keyed to the pack
+                                    // the scopes still show.
                                     renderedFrameIndex = req.frameIndex
+                                    }
                                     // The production render trace line (audit
                                     // M0): ONE line per COMPLETED render, at the
                                     // completion point. out= is the developed
@@ -2621,7 +2780,7 @@ fun ClipEditorScreen(
                                             developH = f.developH,
                                             surfaceW = f.surfaceW,
                                             surfaceH = f.surfaceH,
-                                            statsEnabled = f.statsEnabled,
+                                            statsMode = f.statsMode,
                                             decMs = f.decMs,
                                             cfaMs = f.cfaMs,
                                             upMs = f.upMs,
@@ -2748,6 +2907,9 @@ fun ClipEditorScreen(
         // restarts; the decay ticker below drains the readout when
         // computes stop). The device pass confirms the pacing and the
         // per-compute cost from either.
+        // A3 (2026-11-23, guide §A3): with zebra ON the published pack is
+        // STILL the clean frame — the session's draw-3 uZebraOn=0 pin keeps
+        // the stripes out of the stats pixels — so NO code change here.
         LaunchedEffect(
             scopePresentation, scopeContent, histogramModeOrdinal,
             waveformModeOrdinal, scopeSamplingOrdinal, sourceId,
@@ -2871,13 +3033,28 @@ fun ClipEditorScreen(
         // The paint reads the CLEAN published frame and never touches it
         // (ZebraOverlay.paint copies), so the scope compute — which
         // observes the same snapshotFlow — is unaffected either way.
+        //
+        // A3 (owner request 2026-11-23, guide §A3): while the GPU window
+        // serves, the stripes are ALREADY in the displayed pixels — the
+        // window pass paints them (WINDOW_FRAGMENT's uZebra* block, crisp
+        // at window resolution). The derive is SKIPPED (zebraFrame kept
+        // null) for as long as gpuWindowLive holds: the SurfaceView shows
+        // the stripes and the Compose Image is suppressed anyway, so a
+        // striped 256-px pack copy would be wasted per-frame CPU paint
+        // work AND blocky if it ever reached the Image. gpuWindowLive is
+        // read INSIDE the snapshotFlow pair (the publish fold writes
+        // frame + gpuWindowLive in the SAME snapshot batch), so every
+        // transition re-emits atomically: a GPU-live publish derives
+        // null, a surface death or CPU fallback repaints the CURRENT
+        // frame immediately, and the pure CPU path (window never live)
+        // runs today's derive verbatim on every frame.
         LaunchedEffect(zebraOn, sourceId) {
             if (!zebraOn) {
                 zebraFrame = null
                 return@LaunchedEffect
             }
-            snapshotFlow { frame }.collectLatest { f ->
-                zebraFrame = if (f == null) {
+            snapshotFlow { frame to gpuWindowLive }.collectLatest { (f, gpuLive) ->
+                zebraFrame = if (f == null || gpuLive) {
                     null
                 } else {
                     withContext(Dispatchers.Default) {
@@ -3060,8 +3237,13 @@ fun ClipEditorScreen(
                 // PLAY-11 zebra: the display swaps to the striped copy
                 // while the toggle is on (the paint effect derives it
                 // from this same `frame`); the scope compute keeps the
-                // clean frame. One swap line — the whole feature lives in
-                // ZebraOverlay + the paint effect + the corner toggle.
+                // clean frame. Since A3 (guide §A3) zebraFrame stays NULL
+                // while the GPU window serves (the window pass paints the
+                // stripes), so this swap line falls through to the clean
+                // frame — nothing blocky ever reaches the Image. One swap
+                // line — the whole feature lives in ZebraOverlay + the
+                // paint effect + the corner toggle (+ the window pass's
+                // zebra block on the GPU path).
                 PreviewSurface(
                     frame = if (zebraOn) zebraFrame ?: frame else frame,
                     state = previewState,

@@ -218,8 +218,9 @@ void main() {
      *      value (0.0 = the CPU's own `if (grade.blackPoint != 0.0f)`
      *      skip, so the unset uniform's 0.0 default is exactly the fast
      *      path), and the shader runs the CPU stage-9 endpoint remap
-     *      verbatim: lift = -0.25 * bp/100, x' = lift + (1 - lift) * x
-     *      (toe remap pinned at white);
+     *      verbatim: lift = -0.12 * bp/100, x' = lift + (1 - lift) * x
+     *      (toe remap pinned at white; k = 0.12 per A6, owner request
+     *      2026-11-23);
      *  10  white point — uWhitePoint carries the RAW grade.whitePoint
      *      value and the shader runs the CPU stage-10 uniform scale
      *      verbatim: x' = x / (1 - 0.25*wp/100) for wp > 0, x' = x *
@@ -1014,9 +1015,10 @@ vec3 lutManagedPixel(vec3 px) {
     // (core/src/Develop.cpp). uBlackPoint carries the RAW grade.blackPoint
     // value; 0.0 skips the whole stage exactly like the CPU's `if
     // (grade.blackPoint != 0.0f)`. lift is uniform-derived so it must NOT
-    // be const (GLSL ES 3.00).
+    // be const (GLSL ES 3.00). k = 0.12 (A6 black point range shrink,
+    // owner request 2026-11-23; was 0.25).
     if (uBlackPoint != 0.0) {
-        float lift = -0.25 * (uBlackPoint / 100.0);
+        float lift = -0.12 * (uBlackPoint / 100.0);
         c = lift + (1.0 - lift) * c;
     }
     // Stage 10: white point - the CPU stage-10 uniform scale, verbatim.
@@ -2523,6 +2525,84 @@ void main() {
      * family has no identity arm). Output: the window surface (RGBA8888)
      * or the stats FBO (RGBA8). No readback of any kind — this pass only
      * lands pixels.
+     *
+     * THE CROP BLOCK (A2 GPU crop/straighten preview, owner request
+     * 2026-11-23, guide A2): an active crop/straighten no longer forces
+     * the whole preview to the CPU — the window pass maps it here, in
+     * shader, with the CPU reference's exact math. SIX uniforms
+     * (uCropOn/uCropRect/uCropOut/uCropZoom/uCropCos/uCropSin) carry
+     * GpuCropMap.h planCrop's frame plan; the rect is CONTAINER-upright
+     * fractions (Kotlin already mapRect'ed it through CropState — the
+     * exact PublishCrop/applyToArgb space mapping; the manual quarter
+     * turn rides PreviewSurface's graphicsLayer OUTSIDE the draw).
+     *
+     * VERIFIED SPACE DERIVATION (the compose order, checked against all
+     * four fold arms): uv IS the upright-display normalized coordinate
+     * (x rightward, y bottom-up; the drawn rect covers upright content),
+     * and the uOrientation fold is exactly what turns upright uv into
+     * sensor st — so the crop map runs on uv BEFORE the fold and
+     * composes ORIENTATION-INDEPENDENTLY: an upright top-down position
+     * p = (px, py) maps to the fold's input as `uvFull = (px, 1.0 -
+     * py)` under EVERY one of 0/90/180/270 (each fold arm solved against
+     * p reduces to this — e.g. orient 90: fold st = (1-uv.y, 1-uv.x)
+     * with sensor = (py, 1-px) gives uv = (px, 1-py)). The crop's output
+     * px offsets use the CPU convention (applyToArgb's own dx/dy, both
+     * verified equal): dx = (uv.x - 0.5) * uCropOut.x, dy = (0.5 -
+     * uv.y) * uCropOut.y — then the inverse map R(-theta)/zoom about the
+     * rect centre, exactly as applyToArgb.
+     *
+     * CROP SAMPLING IS MANUAL BILINEAR — 4x texelFetch with per-axis
+     * index clamping, mirroring CropState.sampleArgbBilinear exactly —
+     * because the develop texture stays NEAREST (the pin above; the
+     * white window's verdict). The CPU clamps texel INDICES, never
+     * normalized coordinates: the half-texel st clamp must NOT run on
+     * the crop branch (it would break parity at the edges). uCropOn = 0
+     * keeps today's path BYTE-IDENTICAL: the same fold, the same
+     * half-texel clamp, the same texture(uSrc, st).
+     *
+     * A3 PLACEMENT (pinned): the zebra block (guide A3) composes AFTER
+     * this crop block — it reads the FINAL sampled color and rect-local
+     * coords; keep the sampling result in `c` and the rect-local uv
+     * available at the bottom of main().
+     *
+     * THE ZEBRA BLOCK (A3 GPU zebra, owner request 2026-11-23, guide §A3):
+     * zebra on/off no longer forces the CPU preview path — the WINDOW
+     * draw paints the classic 45-degree stripes HERE, at window
+     * resolution (crisp, never the blocky 256-px pack), with the values
+     * SINGLE-SOURCED from Kotlin (ZebraOverlay.STRIPE_PERIOD /
+     * ZebraOverlay.STRIPE_ALPHA / FrameHistogram.WHITE_CLIP_VALUE the GPU
+     * arm threads through the seam — no literal in this file carries
+     * them). FOUR uniforms carry the block's knobs; the DECISION MATH
+     * mirrors ZebraOverlay.zebraStriped byte-exactly:
+     *  - toByte quantize: int(clamp(c, 0, 1) * 255 + 0.5) — GLSL int()
+     *    truncates, so the + 0.5 makes truncation the CPU toByte's exact
+     *    round-ties-up (jni_bridge.cpp's toByte, the stats pack's OWN
+     *    quantize; a *256 scale or a half-down round breaks agreement at
+     *    the 252/253 boundary, exactly where the threshold lives);
+     *  - luma8 = (54 * r8 + 183 * g8 + 19 * b8) >> 8 — FrameHistogram.luma
+     *    on the quantized bytes (integer byte space, highp int);
+     *  - rect-local window coords: gl_FragCoord.xy is the pixel CENTER
+     *    (x + 0.5, y + 0.5), so p = ivec2(gl_FragCoord.xy - uRect.xy -
+     *    0.5) strips the half — PINNED choice: it makes (p.x + p.y) the
+     *    CPU's integer (x + y), so the stripe PHASE matches the CPU
+     *    zebra the owner compares against (guide acceptance: "clipped
+     *    areas match the CPU zebra");
+     *  - striped when ((p.x + p.y) / uZebraPeriod) % 2 == 0 — GLSL
+     *    integer division truncates toward zero and p is non-negative
+     *    inside uRect, so / then % 2 matches Kotlin's (x + y) / period
+     *    and 1;
+     *  - the striped pixel blends toward black on the FLOAT rgb before
+     *    the write (c * (1 - uZebraAlpha)); the target's RGBA8 quantize
+     *    lands within +-1 LSB of the CPU's byte-domain (v * (255 -
+     *    200)) / 255 (the twin/window surface write quantizes the same
+     *    round-ties-up), and non-striped + letterbox pixels are
+     *    untouched (the letterbox early-return stays BEFORE any zebra
+     *    work — the bars stay pure black).
+     * WINDOW DRAW ONLY: draw 3 (the stats window pass) sets uZebraOn = 0
+     * — the scope compute keeps analyzing the CLEAN frame. The CPU
+     * backend keeps ZebraOverlay.paint. Manual quarter rotation via
+     * graphicsLayer rotates the stripes — acceptable (guide design
+     * point 5).
      */
     const val WINDOW_FRAGMENT: String = """#version 300 es
 
@@ -2537,6 +2617,28 @@ uniform highp sampler2D uSrc;  // the developed frame, top-row-first
 uniform ivec2 uSrcSize;        // source width/height in pixels
 uniform vec4 uRect;            // destination rect: origin + size in pixels
 uniform int uOrientation;      // 0/90/180/270, degrees CW to upright
+// The crop block (A2, owner request 2026-11-23, guide A2): the frame
+// plan GlesPreviewSession uploads from gles::planCrop. uCropOut is the
+// CROPPED output dims (px); uCropRect is the mapRect'ed rect fractions
+// (container-upright); uCropZoom/uCropCos/uCropSin carry the auto-zoom
+// and the double-theta trig pair (CropState's precision -- GLSL never
+// runs its own sin/cos on the angle).
+uniform int uCropOn;           // 1 = the crop map runs (the identity gate)
+uniform vec4 uCropRect;        // crop rect: x/y origin + w/h, upright fractions
+uniform vec2 uCropOut;         // cropped output dims (pixels)
+uniform float uCropZoom;       // the straighten auto-zoom (>= 1)
+uniform float uCropCos;        // cos(theta) from a double theta cast
+uniform float uCropSin;        // sin(theta), the same precision
+// The zebra block (A3, owner request 2026-11-23, guide A3): the four
+// knobs the window draw sets from the request -- the values arrive from
+// Kotlin (ZebraOverlay.STRIPE_PERIOD / ZebraOverlay.STRIPE_ALPHA /
+// FrameHistogram.WHITE_CLIP_VALUE the GPU arm threads through the seam;
+// single-sourced, never literals here). uZebraOn = 0 keeps today's path
+// byte-identical (the stats draw always pins it so: CLEAN scopes).
+uniform int uZebraOn;          // 1 = the zebra decisions run (the gate)
+uniform int uZebraThreshold;   // the clip value, luma8 >= this stripes
+uniform int uZebraPeriod;      // the stripe period in window pixels
+uniform float uZebraAlpha;     // [0,1]: the black blend fraction
 
 out vec4 oCol;
 
@@ -2548,26 +2650,116 @@ void main() {
         oCol = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
+    // --- the crop map (A2, 2026-11-23): runs on uv BEFORE the orientation
+    // --- fold (the fold consumes uvFull, never the raw uv). The drawn
+    // --- rect now covers the CROPPED output, so uv is output-crop-local;
+    // --- the map walks it back to the full upright frame's display uv.
+    vec2 uvFull;
+    if (uCropOn == 1) {
+        // The upright dims (the fold's own swap): rect fractions and the
+        // output px offsets live in upright space.
+        vec2 up = (uOrientation == 90 || uOrientation == 270)
+            ? vec2(uSrcSize.yx) : vec2(uSrcSize);
+        // Output px offsets in the CPU convention (applyToArgb's dx/dy,
+        // verified equal on both axes): dy grows DOWN over the output,
+        // which is the (0.5 - uv.y) swap on the bottom-up uv axis.
+        float dx = (uv.x - 0.5) * uCropOut.x;
+        float dy = (0.5 - uv.y) * uCropOut.y;
+        // The inverse map R(-theta)/zoom about the rect centre -- EXACTLY
+        // applyToArgb's per-pixel math (cropSourcePosition).
+        float ox = (dx * uCropCos + dy * uCropSin) / uCropZoom;
+        float oy = (-dx * uCropSin + dy * uCropCos) / uCropZoom;
+        vec2 ctr = (uCropRect.xy + uCropRect.zw * 0.5) * up;
+        // Back to the fold's input: upright display uv, the
+        // orientation-independent form (top-down py flips to bottom-up:
+        // 1.0 - ... on the y axis -- the source-side flip the fold below
+        // carries is the OTHER flip; this one lands the sample in the
+        // upright frame, that one turns upright into sensor space).
+        uvFull = vec2((ctr.x + ox) / up.x, 1.0 - (ctr.y + oy) / up.y);
+    } else {
+        uvFull = uv;  // today's path verbatim
+    }
     // Orientation fold into source-normalized st (developToArgb's
     // per-case rotation fold, verified against its source index). The
     // source is top-row-first; the destination counts rows bottom-up, so
-    // the default arm carries the Y flip.
+    // the default arm carries the Y flip. Since A2 the fold reads
+    // uvFull (the crop-mapped uv when the crop is on, the raw uv
+    // otherwise) on EVERY arm.
     vec2 st;
     if (uOrientation == 90) {
-        st = vec2(1.0 - uv.y, 1.0 - uv.x);
+        st = vec2(1.0 - uvFull.y, 1.0 - uvFull.x);
     } else if (uOrientation == 180) {
-        st = vec2(1.0 - uv.x, uv.y);
+        st = vec2(1.0 - uvFull.x, uvFull.y);
     } else if (uOrientation == 270) {
-        st = vec2(uv.y, uv.x);
+        st = vec2(uvFull.y, uvFull.x);
     } else {
-        st = vec2(uv.x, 1.0 - uv.y);
+        st = vec2(uvFull.x, 1.0 - uvFull.y);
     }
-    // Half-texel clamp: normalized sampling never crosses the source's
-    // edge texel centers (bilinear would blend against the clamp border
-    // otherwise). This line is why uSrcSize exists.
-    vec2 texelHalf = vec2(0.5) / vec2(uSrcSize);
-    st = clamp(st, texelHalf, vec2(1.0) - texelHalf);
-    oCol = vec4(texture(uSrc, st).rgb, 1.0);
+    // THE SAMPLING FORK (A2): crop-on uses MANUAL bilinear -- 4x
+    // texelFetch, mirroring CropState.sampleArgbBilinear's tap geometry
+    // EXACTLY (floor(s - 0.5) indices clamped per axis, the +1 tap
+    // collapsed at the frame edge, weights coerced [0,1]) -- because the
+    // develop texture is pinned NEAREST (the white-window pin; the CPU
+    // twin clamps texel INDICES, so NO half-texel st clamp runs on this
+    // branch). Crop-off keeps today's half-texel clamp + texture() fetch,
+    // byte-identical to the pre-A2 pass.
+    vec3 c;
+    if (uCropOn == 1) {
+        vec2 sp = st * vec2(uSrcSize);        // SOURCE px (st is over the source dims)
+        ivec2 p0 = clamp(ivec2(floor(sp - 0.5)), ivec2(0), uSrcSize - ivec2(1));
+        ivec2 p1 = min(p0 + 1, uSrcSize - 1);  // the +1 tap, per axis
+        vec2 f = clamp(sp - 0.5 - vec2(p0), 0.0, 1.0);  // coerced weights
+        vec3 c00 = texelFetch(uSrc, p0, 0).rgb;
+        vec3 c10 = texelFetch(uSrc, ivec2(p1.x, p0.y), 0).rgb;
+        vec3 c01 = texelFetch(uSrc, ivec2(p0.x, p1.y), 0).rgb;
+        vec3 c11 = texelFetch(uSrc, p1, 0).rgb;
+        vec3 topo = c00 + (c10 - c00) * f.x;
+        vec3 bottom = c01 + (c11 - c01) * f.x;
+        c = topo + (bottom - topo) * f.y;
+    } else {
+        // Half-texel clamp: normalized sampling never crosses the source's
+        // edge texel centers (bilinear would blend against the clamp border
+        // otherwise). This line is why uSrcSize exists.
+        vec2 texelHalf = vec2(0.5) / vec2(uSrcSize);
+        st = clamp(st, texelHalf, vec2(1.0) - texelHalf);
+        c = texture(uSrc, st).rgb;
+    }
+    // THE ZEBRA BLOCK (A3, owner request 2026-11-23, guide A3): composes
+    // AFTER the crop sampling above -- it reads the FINAL sampled color
+    // `c` and the rect-local coords, never re-samples. The decision math
+    // is ZebraOverlay.zebraStriped's exact byte-for-byte mirror (the
+    // Kotlin doc above pins each token).
+    oCol = vec4(c, 1.0);
+    if (uZebraOn == 1) {
+        // (a) toByte quantize per channel: clamp [0,1] then
+        // round-ties-up v*255 + 0.5 -- int() truncates, so the + 0.5 IS
+        // the round; jni_bridge.cpp toByte's exact shape (the stats
+        // pack's own quantize), not a *256 approximation.
+        int r8 = int(clamp(c.r, 0.0, 1.0) * 255.0 + 0.5);
+        int g8 = int(clamp(c.g, 0.0, 1.0) * 255.0 + 0.5);
+        int b8 = int(clamp(c.b, 0.0, 1.0) * 255.0 + 0.5);
+        // (b) Rec.709 luma on the quantized bytes -- FrameHistogram.luma.
+        int luma8 = (54 * r8 + 183 * g8 + 19 * b8) >> 8;
+        // (c) Rect-local WINDOW pixel coords: gl_FragCoord.xy is the
+        // pixel CENTER (x+0.5, y+0.5), so strip the half -- (p.x + p.y)
+        // is then the CPU zebra's integer (x + y) and the stripe PHASE
+        // matches the CPU pattern the owner compares against (pinned
+        // choice; a raw gl_FragCoord read would phase-shift every
+        // stripe by the half).
+        ivec2 p = ivec2(gl_FragCoord.xy - uRect.xy - vec2(0.5));
+        // (d) striped when ((x + y) / period) is even -- GLSL integer
+        // division truncates toward zero and p is non-negative inside
+        // uRect, so / then % 2 matches Kotlin's (x + y) / period and 1.
+        bool striped = ((p.x + p.y) / uZebraPeriod) % 2 == 0;
+        // (e) The blend toward black on the FLOAT rgb before the RGBA8
+        // write: the byte quantize lands within +-1 LSB of the CPU's
+        // byte-domain (v * (255 - 200)) / 255 -- the twin/window surface
+        // write quantizes with the same round-ties-up. Non-striped and
+        // letterbox pixels are untouched.
+        if (luma8 >= uZebraThreshold && striped) {
+            oCol.rgb *= (1.0 - uZebraAlpha);
+        }
+    }
 }
 """
 }

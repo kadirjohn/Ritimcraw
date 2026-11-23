@@ -86,6 +86,29 @@ interface GpuPreviewDevelop {
      * temporalNr tier fold — the parcel carries the EFFECTIVE value (the
      * built-once-per-grade-change rule; the preview builds once per
      * request because the request itself folds the tier).
+     *
+     * A1 async stats (2026-11-23): statsMode rides near-last — the
+     * per-request readback mode (PreviewStatsMode), computed by the
+     * caller with statsModeFor (scope demand x render class x the
+     * settings toggle). The native side folds the master kill switch; the
+     * published frame's own statsMode field reports what ACTUALLY ran
+     * (the tail's mode int).
+     *
+     * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair rides
+     * after statsMode, append-only — cropActive (false = the shader's
+     * identity path) + cropParams (GpuCropMap.requestCrop's five-float
+     * parcel: the mapRect'ed rect fractions + the raw straighten angle).
+     * Pass through verbatim — the native side owns the dims-dependent
+     * folds (planCrop's zoom/dims/trig).
+     *
+     * A3 GPU zebra (2026-11-23, guide A3): the zebra quad rides LAST,
+     * append-only after the crop pair — zebraOn (false = the shader's
+     * gate folded, the byte-identical pre-A3 frame) + the three
+     * single-sourced knobs (threshold = FrameHistogram.WHITE_CLIP_VALUE,
+     * period = ZebraOverlay.STRIPE_PERIOD, alpha =
+     * ZebraOverlay.STRIPE_ALPHA / 255f — the caller supplies the values,
+     * the seam never defaults them). The WINDOW draw paints the stripes;
+     * the native side pins the stats draw's uZebraOn to 0 (CLEAN scopes).
      */
     suspend fun renderFrame(
         sessionHandle: Long,
@@ -102,6 +125,13 @@ interface GpuPreviewDevelop {
         lutOutTransfer: Int,
         warpActive: Boolean,
         warpM: FloatArray,
+        statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
     ): PreviewFrame?
 
     /**
@@ -242,7 +272,13 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
      * GRADE PARCEL (commit b): the REAL parcel door — the JNI seam takes
      * the parcel; the bridge decodes ONCE per call. The caller encodes per
      * request (after the temporalNr tier fold); this override runs on the
-     * engine thread like every render entry.
+     * engine thread like every render entry. A1 async stats (2026-11-23):
+     * the enum converts to its native int EXACTLY ONCE, here at the JNI
+     * boundary — everything above the seam speaks PreviewStatsMode.
+     * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair passes
+     * through verbatim, after statsMode. A3 GPU zebra (2026-11-23, guide
+     * A3): the zebra quad passes through verbatim, LAST after the crop
+     * pair.
      */
     override suspend fun renderFrame(
         sessionHandle: Long,
@@ -259,6 +295,13 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         lutOutTransfer: Int,
         warpActive: Boolean,
         warpM: FloatArray,
+        statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
     ): PreviewFrame? = suspendCoroutine { cont ->
         try {
             PreviewRenderer.previewEngine.execute {
@@ -270,7 +313,9 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                                 gradeParcel,
                                 lutPath, lutStrength, lutRole, lutInGamut,
                                 lutInTransfer, lutOutGamut, lutOutTransfer,
-                                warpActive, warpM,
+                                warpActive, warpM, statsMode.native,
+                                cropActive, cropParams,
+                                zebraOn, zebraThreshold, zebraPeriod, zebraAlpha,
                             )
                         )
                     } catch (t: Throwable) {
@@ -351,12 +396,15 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
      * the trace-dims fix's (2026-11-14) 13-int measurement tail the
      * nativePreviewSessionRenderFrameParcel appends after the pixels:
      * [sourceW, sourceH, developW, developH, surfaceW, surfaceH,
-     * statsEnabled, decUs, cfaUs, upUs, devUs, presentUs, statsUs] (the
+     * statsMode, decUs, cfaUs, upUs, devUs, presentUs, statsUs] (the
      * spans in MICROSECONDS; parsed into the PreviewFrame's ms fields).
      * BOTH lengths are valid — the old (2 + w*h) tail-less array parses
      * with the neutral defaults, the new (2 + w*h + 13) one parses the
      * tail — so an old .so against this Kotlin (or vice versa) degrades
-     * honestly instead of dropping every frame. Internal, not private:
+     * honestly instead of dropping every frame. A1 async stats
+     * (2026-11-23): tail slot 6 is the MODE int now — an old .so's 0/1
+     * boolean values degrade honestly through fromNative (0 stays OFF, 1
+     * reads as the SYNC readback it actually ran). Internal, not private:
      * the JVM suite locks this contract without the native lib.
      */
     internal fun renderArrayBlocking(out: IntArray?): PreviewFrame? {
@@ -372,7 +420,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
         }
         if (out.size != newLength) return null
         // The measurement tail (GPU window path only): dims the published
-        // pack hides, the stats toggle's state, and the six per-stage
+        // pack hides, the readback mode that ran, and the six per-stage
         // spans — microseconds to milliseconds.
         val t = out.size - 13
         return PreviewFrame(
@@ -385,7 +433,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
             developH = out[t + 3],
             surfaceW = out[t + 4],
             surfaceH = out[t + 5],
-            statsEnabled = out[t + 6] != 0,
+            statsMode = PreviewStatsMode.fromNative(out[t + 6]),
             decMs = out[t + 7] / 1000.0,
             cfaMs = out[t + 8] / 1000.0,
             upMs = out[t + 9] / 1000.0,
@@ -461,7 +509,13 @@ class GpuPreviewSession(
      * M3 per-frame dispatch rule). Never throws. GRADE PARCEL (commit b):
      * the grade crosses as the ONE flat FloatArray the caller encoded
      * (GradeParcel.encode, once per request after the temporalNr tier
-     * fold) — the field list died with the flat door.
+     * fold) — the field list died with the flat door. A1 async stats
+     * (2026-11-23): statsMode rides after the warp pair — the
+     * per-request readback mode (PreviewStatsMode), the demand x class x
+     * toggle fold's verdict. A2 GPU crop/straighten (2026-11-23, guide
+     * A2): the crop pair rides after statsMode, append-only. A3 GPU zebra
+     * (2026-11-23, guide A3): the zebra quad rides LAST, append-only
+     * after the crop pair.
      */
     suspend fun render(
         clipHandle: Long,
@@ -477,6 +531,13 @@ class GpuPreviewSession(
         lutOutTransfer: Int,
         warpActive: Boolean,
         warpM: FloatArray,
+        statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
     ): PreviewFrame? {
         val h = handle
         if (h == 0L || closed.get()) return null
@@ -486,7 +547,9 @@ class GpuPreviewSession(
                 gradeParcel,
                 lutPath, lutStrength, lutRole, lutInGamut,
                 lutInTransfer, lutOutGamut, lutOutTransfer,
-                warpActive, warpM,
+                warpActive, warpM, statsMode,
+                cropActive, cropParams,
+                zebraOn, zebraThreshold, zebraPeriod, zebraAlpha,
             )
         } catch (t: Throwable) {
             null

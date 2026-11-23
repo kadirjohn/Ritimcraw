@@ -915,6 +915,37 @@ class NativeSource private constructor(
         ): DoubleArray?
 
         /**
+         * The A5 parity-diagnosis door (owner request 2026-11-23, guide
+         * A5 step 1): the SAME shared body as nativeGlesFragmentParity
+         * (its own one-shot EGL context — a second full-frame parity
+         * pass, which is why the diagnosis is a separate door and NOT a
+         * widened 4-value array; GlesParityResult.fromArray's
+         * require(size == 4) is a deliberately loud contract that stays
+         * untouched), formatted as TEXT: the header line (the plain
+         * door's four numbers) plus, when the run produced real numbers,
+         * the mismatch-population histograms from gles/ParityDiag.h —
+         * tonal value bucket (of the uint16 CPU reference), distance to
+         * the x.5 rounding boundary (of the GPU pre-quantize float),
+         * magnitude (1 vs 2+) and channel (R/G/B). Guide A5's question:
+         * are the 4:3 clip's 1-LSB mismatches toByte-style rounding
+         * noise or a real stage difference — the owner reads the
+         * histograms and decides (step 2 is the owner's; NO verdict or
+         * rule lives on this path). A ran=0 result carries the header
+         * line only (the failing step is already in previewLastError);
+         * null only on a clip-level/JNI failure, same error states and
+         * strings as the plain door. No handle, no render-cache touch,
+         * safe on any thread. Device-test-pending.
+         */
+        @JvmStatic private external fun nativeGlesFragmentParityDiag(
+            fd: Int,
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+            caseIndex: Int,
+        ): String?
+
+        /**
          * M3 commit (a): the production GPU develop session's three entry
          * points (the persistent counterpart of the one-shot parity
          * harness). Open compiles the caller-provided shader texts and
@@ -1107,6 +1138,27 @@ class NativeSource private constructor(
          * carries the EFFECTIVE value. A malformed parcel refuses the
          * render honestly (setError + null; the Kotlin gate falls the
          * preview back to CPU as always).
+         *
+         * A1 async stats (2026-11-23): statsMode is the per-request
+         * readback mode's native int (PreviewStatsMode.native: 0=off
+         * 1=sync 2=async). The bridge folds the master kill switch
+         * (gPreviewStatsEnabled) natively; the toggle can only force OFF,
+         * never upgrade.
+         *
+         * A2 GPU crop/straighten (2026-11-23, guide A2): the crop pair
+         * rides after statsMode, append-only — cropActive (false = the
+         * identity path) + cropParams (GpuCropMap.requestCrop's
+         * five-float parcel: the mapRect'ed rect fractions + the raw
+         * straighten angle; the dims-dependent folds live native-side).
+         *
+         * A3 GPU zebra (2026-11-23, guide A3): the zebra quad rides
+         * LAST, APPEND-ONLY after the crop pair — zebraOn (false = the
+         * gate folded, byte-identical pre-A3 frame) + the three
+         * single-sourced knobs (threshold from
+         * FrameHistogram.WHITE_CLIP_VALUE, period from
+         * ZebraOverlay.STRIPE_PERIOD, alpha = ZebraOverlay.STRIPE_ALPHA
+         * / 255f — the caller supplies them; no default hides the values
+         * from the signature lock).
          */
         @JvmStatic private external fun nativePreviewSessionRenderFrameParcel(
             sessionHandle: Long,
@@ -1123,6 +1175,13 @@ class NativeSource private constructor(
             lutOutTransfer: Int,
             warpActive: Boolean,
             warpM: FloatArray,
+            statsMode: Int,
+            cropActive: Boolean,
+            cropParams: FloatArray,
+            zebraOn: Boolean,
+            zebraThreshold: Int,
+            zebraPeriod: Int,
+            zebraAlpha: Float,
         ): IntArray?
 
         @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
@@ -1626,6 +1685,32 @@ class NativeSource private constructor(
             )
         }
 
+        /**
+         * JNI bridge: see nativeGlesFragmentParityDiag (the A5 diagnosis
+         * door: the same shared body as jniGlesFragmentParity behind a
+         * string return — the mismatch histograms of the SAME run shape,
+         * header line + three histogram lines, or the header line only
+         * when the GPU stage failed). Throws IllegalStateException when
+         * the .so is absent; null otherwise means a clip-level failure
+         * (previewLastError) — never a fabricated verdict.
+         */
+        internal fun jniGlesFragmentParityDiag(
+            fd: Int,
+            vertexSource: String,
+            vertex310Source: String,
+            fragmentSource: String,
+            storeFragmentSource: String,
+            caseIndex: Int,
+        ): String? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeGlesFragmentParityDiag(
+                fd, vertexSource, vertex310Source, fragmentSource, storeFragmentSource,
+                caseIndex,
+            )
+        }
+
         /** JNI bridge: closeSource for export sessions. */
         internal fun jniCloseSource(handle: Long): Long = nativeCloseSource(handle)
 
@@ -1816,7 +1901,15 @@ class NativeSource private constructor(
          * PARCEL (commit b): the preview session's ONLY render door — the
          * flat per-field wrapper died with the flat external decl. Same
          * no-default rule (the signature-lock test reflects over declared
-         * methods).
+         * methods). A1 async stats (2026-11-23): statsMode rides after
+         * the warp pair — the per-request readback mode's native int
+         * (PreviewStatsMode.native), folded with the master kill switch
+         * on the native side. A2 GPU crop/straighten (2026-11-23, guide
+         * A2): the crop pair rides after statsMode, append-only —
+         * GpuCropMap.requestCrop's parcel, verbatim. A3 GPU zebra
+         * (2026-11-23, guide A3): the zebra quad rides LAST, append-only
+         * after the crop pair — the single-sourced knob values
+         * (ZebraOverlay/FrameHistogram), verbatim.
          */
         internal fun jniPreviewSessionRenderFrameParcel(
             sessionHandle: Long,
@@ -1833,6 +1926,13 @@ class NativeSource private constructor(
             lutOutTransfer: Int,
             warpActive: Boolean,
             warpM: FloatArray,
+            statsMode: Int,
+            cropActive: Boolean,
+            cropParams: FloatArray,
+            zebraOn: Boolean,
+            zebraThreshold: Int,
+            zebraPeriod: Int,
+            zebraAlpha: Float,
         ): IntArray? {
             if (!nativeAvailable) {
                 throw IllegalStateException(nativeUnavailableMessage)
@@ -1840,7 +1940,9 @@ class NativeSource private constructor(
             return nativePreviewSessionRenderFrameParcel(
                 sessionHandle, clipHandle, frameIndex, maxDim, gradeParcel,
                 lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer,
-                lutOutGamut, lutOutTransfer, warpActive, warpM)
+                lutOutGamut, lutOutTransfer, warpActive, warpM, statsMode,
+                cropActive, cropParams,
+                zebraOn, zebraThreshold, zebraPeriod, zebraAlpha)
         }
 
         internal fun jniPreviewSessionClose(sessionHandle: Long) {
