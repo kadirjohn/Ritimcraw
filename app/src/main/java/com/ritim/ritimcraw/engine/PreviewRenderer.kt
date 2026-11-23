@@ -169,8 +169,12 @@ object GradeMapping {
         grade: GradeK,
         maxDim: Int,
         gyroPath: String?,
+        enabled: Boolean = com.ritim.ritimcraw.util.FeatureFlags.GYRO_STABILIZATION_ENABLED,
     ): StabilizationArgs? {
-        if (!grade.stabilization) return null
+        // Owner decision 2026-11-23: gyro stabilization is paused behind
+        // FeatureFlags.GYRO_STABILIZATION_ENABLED. [enabled] defaults to the flag;
+        // the stored grade is never touched, so flag-on is the old behavior.
+        if (!StabilizationGate.active(grade.stabilization, gyroPath, enabled)) return null
         if (gyroPath == null) return null
         if (!PreviewTiers.stabilizationAppliesAt(maxDim)) return null
         return StabilizationArgs(

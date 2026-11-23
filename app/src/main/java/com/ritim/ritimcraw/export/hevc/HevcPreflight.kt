@@ -38,15 +38,17 @@ package com.ritim.ritimcraw.export.hevc
  *    choice through the refusal's DEGRADED_OFFER.
  *
  * 3. FEATURE GATE — for HDR10 (FEATURE_HdrEditing) and HLG
- *    (FEATURE_HlgEditing): (a) the API GUARD — the gate's
- *    [HevcFeatureGate.requiredApiLevel] against the device's API level
- *    in the probe; FEATURE_HlgEditing's constant does not exist at
- *    minSdk 34, so at API 34 the HLG verdict is REFUSED with
- *    [HevcRefusalStage.FEATURE_API] (the device leg must NOT query the
- *    feature by name there — the model refuses before any query); and
- *    (b) the PROBED feature — does the codec's capabilities list the
- *    gate's featureName (isFeatureSupported)? Absent -> REFUSED with
- *    [HevcRefusalStage.FEATURE_QUERY] and the codec name.
+ *    (FEATURE_HlgEditing, API 35+, queried by its "hlg-editing" string):
+ *    (a) the API GUARD — the gate's [HevcFeatureGate.requiredApiLevel]
+ *    against the device's API level in the probe. Below it the primary
+ *    feature is never queried: a gate with a
+ *    [HevcFeatureGate.belowApiFallback] asks the fallback instead (HLG
+ *    at API 34 -> FEATURE_HdrEditing; the Supported verdict then carries
+ *    trialEncodeRequired = true, the trial encode being package E2); a
+ *    gate without one is REFUSED with [HevcRefusalStage.FEATURE_API];
+ *    and (b) the PROBED feature — does the codec's capabilities list
+ *    the effective gate's featureName (isFeatureSupported)? Absent ->
+ *    REFUSED with [HevcRefusalStage.FEATURE_QUERY] and the codec name.
  *
  * 4. SIZE/RATE — does the codec's video capabilities accept the job's
  *    width x height at the frame rate (areSizeAndRateSupported — the
@@ -146,7 +148,7 @@ package com.ritim.ritimcraw.export.hevc
  *       val listedProfiles: List<Int>,            // profileLevels' profiles
  *       val acceptsP010: Boolean,                 // color formats probed
  *       val hdrEditingSupported: Boolean,         // FEATURE_HdrEditing
- *       val hlgEditingSupported: Boolean,         // FEATURE_HlgEditing (API 36+ only)
+ *       val hlgEditingSupported: Boolean,         // FEATURE_HlgEditing (API 35+ only)
  *       val sizeRateAccepted: Boolean,            // areSizeAndRateSupported at the job's dims
  *       val trial: HevcTrialResult?,             // null until the trial ran
  *   )
@@ -211,10 +213,11 @@ object HevcPreflight {
      * @property hdrEditingSupported PROBED: does the HEVC encoder's
      * capabilities list "hdr-editing" (FEATURE_HdrEditing)? Only
      * meaningful for HDR10.
-     * @property hlgEditingSupported PROBED at API 36+: does the HEVC
-     * encoder's capabilities list "hlg-editing" (FEATURE_HlgEditing)?
-     * At API 34/35 the constant does not exist — the device leg reports
-     * false and the model's API gate refuses HLG before any query.
+     * @property hlgEditingSupported PROBED at API 35+: does the HEVC
+     * encoder's capabilities list "hlg-editing" (FEATURE_HlgEditing),
+     * queried by that string? Below API 35 the device leg reports false
+     * without querying; HLG then goes through the profile's
+     * FEATURE_HdrEditing fallback (see [HevcFeatureGate.belowApiFallback]).
      * @property avcEncoderName the AVC encoder's MediaCodec NAME (null =
      * no video/avc encoder) — the degradation offer's fact and the
      * AVC_SDR baseline's codec.
@@ -231,6 +234,19 @@ object HevcPreflight {
     ) {
         /** The degradation offer's fact, derived: an AVC encoder exists. */
         val avcAvailable: Boolean get() = avcEncoderName != null
+
+        /**
+         * The probed answer for a capability looked up by its STRING name
+         * (the docs' FEATURE_* value). Name-keyed on purpose: the device
+         * leg calls isFeatureSupported(name) with the same strings, so no
+         * compile-time constant (and no installed-SDK dependency) is
+         * involved. An unknown name is false.
+         */
+        fun supportsFeature(featureName: String): Boolean = when (featureName) {
+            "hdr-editing" -> hdrEditingSupported
+            "hlg-editing" -> hlgEditingSupported
+            else -> false
+        }
     }
 
     /** The stage that failed — the honesty rule's first half. */
@@ -282,6 +298,13 @@ object HevcPreflight {
             val profile: HevcProfile,
             val codecName: String,
             val paths: List<HevcInputPath>,
+            /**
+             * True when the feature gate passed only through the profile's
+             * below-API fallback (HLG at API 34, via FEATURE_HdrEditing):
+             * the flag is not HLG-specific, so the caller must run the
+             * trial encode (package E2) before trusting the profile.
+             */
+            val trialEncodeRequired: Boolean = false,
         ) : HevcVerdict()
 
         /**
@@ -363,30 +386,42 @@ object HevcPreflight {
         // feature must not be queried unguarded on minSdk 34), then the
         // probed feature. AVC_SDR and HEVC10_SDR gate on nothing.
         val gate = requested.feature
+        var trialEncodeRequired = false
         if (gate != null) {
-            if (probe.deviceApiLevel < gate.requiredApiLevel) {
-                return refused(
-                    requested, probe,
-                    HevcRefusalStage.FEATURE_API,
-                    codecName,
-                    "${requested.label} requires ${gate.docName} " +
-                        "(API ${gate.requiredApiLevel}+); device is API " +
-                        "${probe.deviceApiLevel} — the feature is not " +
-                        "queried on this device",
-                )
+            // Below the gate's API: either the profile's fallback gate
+            // (HLG at API 34 -> FEATURE_HdrEditing, plan 13.2) or an
+            // API refusal. The primary feature is never queried below
+            // its API (the unguarded-call guard).
+            val effective = if (probe.deviceApiLevel >= gate.requiredApiLevel) {
+                gate
+            } else {
+                val fallback = gate.belowApiFallback
+                if (fallback == null || probe.deviceApiLevel < fallback.requiredApiLevel) {
+                    return refused(
+                        requested, probe,
+                        HevcRefusalStage.FEATURE_API,
+                        codecName,
+                        "${requested.label} requires ${gate.docName} " +
+                            "(API ${gate.requiredApiLevel}+); device is API " +
+                            "${probe.deviceApiLevel} — the feature is not " +
+                            "queried on this device",
+                    )
+                }
+                trialEncodeRequired = true
+                fallback
             }
-            val supported = when (gate.docName) {
-                "FEATURE_HdrEditing" -> probe.hdrEditingSupported
-                "FEATURE_HlgEditing" -> probe.hlgEditingSupported
-                else -> false
-            }
-            if (!supported) {
+            if (!probe.supportsFeature(effective.featureName)) {
                 return refused(
                     requested, probe,
                     HevcRefusalStage.FEATURE_QUERY,
                     codecName,
-                    "$codecName does not support ${gate.docName} " +
-                        "(\"${gate.featureName}\") at API ${probe.deviceApiLevel}",
+                    "$codecName does not support ${effective.docName} " +
+                        "(\"${effective.featureName}\") at API ${probe.deviceApiLevel}" +
+                        if (effective !== gate) {
+                            " (the API ${probe.deviceApiLevel} path for ${requested.label})"
+                        } else {
+                            ""
+                        },
                 )
             }
         }
@@ -416,6 +451,7 @@ object HevcPreflight {
             profile = requested,
             codecName = codecName,
             paths = paths,
+            trialEncodeRequired = trialEncodeRequired,
         )
     }
 

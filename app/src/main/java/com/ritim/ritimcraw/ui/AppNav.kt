@@ -87,6 +87,7 @@ import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailStore
+import com.ritim.ritimcraw.engine.StabilizationGate
 import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.FolderThumbnails
@@ -804,6 +805,10 @@ fun AppNav(
      * and the hint never fires for it, but the data IS on the clip.
      */
     fun autoMatchGyro(source: MediaSource): Boolean {
+        // Gyro stabilization is paused (owner decision 2026-11-23,
+        // FeatureFlags.GYRO_STABILIZATION_ENABLED): no folder hint, no
+        // GyroTree query, no GyroMatcher, no jniGyroSyncProbe at import.
+        if (!StabilizationGate.gyroWorkAllowed()) return false
         if (source.gyroId.isNotBlank()) return true
         val folder = gyroFolder
         if (folder == null) {
@@ -1395,7 +1400,9 @@ fun AppNav(
                     // directly (they probe synchronously), so this effect
                     // only needs to cover the clip-open re-probe.
                     LaunchedEffect(r.sourceId, gyroId) {
-                        if (gyroId.isBlank()) {
+                        // Paused (2026-11-23): never probe, which also
+                        // keeps the native sync/optical work from running.
+                        if (gyroId.isBlank() || !StabilizationGate.gyroWorkAllowed()) {
                             gyroSync = null
                         } else {
                             val path = stores.gyros.pathFor(gyroId)

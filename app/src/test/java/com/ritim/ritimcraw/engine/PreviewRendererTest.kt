@@ -258,6 +258,7 @@ class PreviewRendererTest {
                 GradeK(stabilization = false),
                 maxDim = PreviewTiers.PAUSED_MAX_DIM,
                 gyroPath = "/data/gyros/log.gcsv",
+                enabled = true,
             )
         )
     }
@@ -286,10 +287,10 @@ class PreviewRendererTest {
         // tiers, measured in test_warp's tier harness), so every tier can
         // afford it — unlike temporal NR, which keeps its tier gate.
         val on = GradeK(stabilization = true)
-        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.PLAYBACK_MAX_DIM, "/g.gcsv"))
-        assertNotNull(GradeMapping.stabilizationArgs(on, SliderTiers.DRAG_MAX_DIM, "/g.gcsv"))
-        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.SOURCE_MAX_DIM, "/g.gcsv"))
-        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.PAUSED_MAX_DIM, "/g.gcsv"))
+        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.PLAYBACK_MAX_DIM, "/g.gcsv", enabled = true))
+        assertNotNull(GradeMapping.stabilizationArgs(on, SliderTiers.DRAG_MAX_DIM, "/g.gcsv", enabled = true))
+        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.SOURCE_MAX_DIM, "/g.gcsv", enabled = true))
+        assertNotNull(GradeMapping.stabilizationArgs(on, PreviewTiers.PAUSED_MAX_DIM, "/g.gcsv", enabled = true))
     }
 
     @Test
@@ -309,6 +310,7 @@ class PreviewRendererTest {
             ),
             maxDim = PreviewTiers.PAUSED_MAX_DIM,
             gyroPath = "/data/gyros/log.gcsv",
+                enabled = true,
         )
         assertNotNull(args)
         assertEquals("/data/gyros/log.gcsv", args!!.gyroPath)
@@ -334,6 +336,7 @@ class PreviewRendererTest {
             GradeK(stabilization = true, stabilizationStrength = percent),
             maxDim = PreviewTiers.PAUSED_MAX_DIM,
             gyroPath = "/g.gcsv",
+            enabled = true,
         )!!.strength
 
     // ---- debounce window ----

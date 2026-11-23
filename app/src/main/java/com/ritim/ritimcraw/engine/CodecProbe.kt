@@ -19,7 +19,22 @@ data class CodecReport(
     val maxSize: String,
     val main10Ok: Boolean?,
     val detail: String? = null,
+    // ---- F0 extension (plan 13.1, 2026-11-23). All defaulted so older
+    // call sites and fakes keep compiling; null/empty = "not reported". ----
+    /** MediaCodecInfo.isEncoder; null when unknown (stub reports). */
+    val isEncoder: Boolean? = null,
+    /** Every (profile, level) pair the codec declares for [mime], in declared order. */
+    val profileLevels: List<ProfileLevel> = emptyList(),
+    /** The codec's COLOR_Format* ints for [mime] (surface, flexible YUV, P010, 1010102...). */
+    val colorFormats: List<Int> = emptyList(),
+    /** Encoders only: the BITRATE_MODE_* ints the encoder says it supports. */
+    val bitrateModes: List<Int> = emptyList(),
+    /** videoCapabilities.bitrateRange.upper in bits per second; null when not reported. */
+    val bitrateUpper: Int? = null,
 )
+
+/** One declared (profile, level) pair, raw platform ints (names via [CodecNames]). */
+data class ProfileLevel(val profile: Int, val level: Int)
 
 /**
  * Device codec probe (sprint plan Task 6). [probe] walks MediaCodecList and
@@ -33,15 +48,35 @@ data class CodecReport(
  */
 object CodecProbe {
 
-    /** Mimes the report cares about (sprint: H.264 MP4 export, Mi-Log HEVC). */
-    val REPORT_MIMES = listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC)
+    /**
+     * Mimes the report cares about: H.264 MP4 export, Mi-Log HEVC, and
+     * (plan 13.1, F0) Dolby Vision, AV1 and APV, so the device report
+     * shows whether the phone offers those encoders before any export
+     * work targets them. The literals are the platform values
+     * (MIMETYPE_VIDEO_DOLBY_VISION / _AV1 / _APV); APV's constant only
+     * exists from API 36, the string is harmless on API 34.
+     */
+    val REPORT_MIMES = listOf(
+        MediaFormat.MIMETYPE_VIDEO_AVC,
+        MediaFormat.MIMETYPE_VIDEO_HEVC,
+        "video/dolby-vision",
+        "video/av01",
+        "video/apv",
+    )
 
-    /** Runs on a device only; empty when no matching codec is present. */
+    /**
+     * Runs on a device only; empty when no matching codec is present.
+     * One report per (codec, reported mime): a codec that declares two
+     * report mimes appears once for each, so capabilities are never
+     * mixed across mimes.
+     */
     fun probe(): List<CodecReport> {
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        return list.codecInfos
-            .filter { info -> info.supportedTypes.any { it in REPORT_MIMES } }
-            .map { info -> fromCodecInfo(info) }
+        return list.codecInfos.flatMap { info ->
+            info.supportedTypes
+                .filter { it in REPORT_MIMES }
+                .map { type -> mapAndroidInfo(info, type) }
+        }
     }
 
     // ---- pure mapping (JVM-testable) ----
@@ -69,7 +104,11 @@ object CodecProbe {
         }
         // Device path: reflection-free cast; compiled only against the real
         // class on Android (see probe()).
-        return mapAndroidInfo(info as android.media.MediaCodecInfo)
+        val real = info as android.media.MediaCodecInfo
+        val type = real.supportedTypes.firstOrNull { it in REPORT_MIMES }
+            ?: real.supportedTypes.firstOrNull()
+            ?: ""
+        return mapAndroidInfo(real, type)
     }
 
     private fun fromStub(
@@ -91,10 +130,7 @@ object CodecProbe {
         detail = detail,
     )
 
-    private fun mapAndroidInfo(info: android.media.MediaCodecInfo): CodecReport {
-        val type = info.supportedTypes.firstOrNull { it in REPORT_MIMES }
-            ?: info.supportedTypes.firstOrNull()
-            ?: ""
+    private fun mapAndroidInfo(info: android.media.MediaCodecInfo, type: String): CodecReport {
         val caps = runCatching { info.getCapabilitiesForType(type) }.getOrNull()
         val profiles = caps?.profileLevels?.map { pl -> pl.profile.toString() }?.distinct() ?: emptyList()
         val width = caps?.videoCapabilities?.supportedWidths?.upper ?: 0
@@ -118,6 +154,21 @@ object CodecProbe {
                 null
             },
             detail = if (info.isSoftwareOnly) "software-only" else null,
+            isEncoder = info.isEncoder,
+            profileLevels = caps?.profileLevels
+                ?.map { pl -> ProfileLevel(pl.profile, pl.level) } ?: emptyList(),
+            colorFormats = caps?.colorFormats?.toList() ?: emptyList(),
+            // Encoders only: which rate-control modes the encoder claims.
+            bitrateModes = if (info.isEncoder) {
+                val enc = caps?.encoderCapabilities
+                CodecNames.BITRATE_MODES.filter { enc?.isBitrateModeSupported(it) == true }
+            } else {
+                emptyList()
+            },
+            // The CODEC's declared ceiling, per encoder (never the first
+            // encoder's: plan 13.1). Some encoders accept more than they
+            // list; the measurement mode (separate package) finds that.
+            bitrateUpper = caps?.videoCapabilities?.bitrateRange?.upper,
         )
     }
 
@@ -132,6 +183,9 @@ object CodecProbe {
         val kind = when {
             report.mime.endsWith("avc") -> "H.264"
             report.mime.endsWith("hevc") -> "HEVC"
+            report.mime == "video/dolby-vision" -> "Dolby Vision"
+            report.mime == "video/av01" -> "AV1"
+            report.mime == "video/apv" -> "APV"
             else -> report.mime
         }
         val hw = if (report.hardware) "hardware" else "software"
@@ -155,7 +209,9 @@ object CodecProbe {
     /**
      * Whole-report JSON for the device report file (device pass artifact):
      * {"codecs":[{"name":...,"mime":...,"hardware":...,"profiles":[...],
-     *  "maxSize":...,"main10Ok":...,"detail":...}, ...]}
+     *  "maxSize":...,"main10Ok":...,"detail":...,"isEncoder":...,
+     *  "profileLevels":[{"profile":N,"level":N}],"colorFormats":[N],
+     *  "bitrateModes":[N],"bitrateUpper":N}, ...]}
      */
     fun toDeviceReportJson(reports: List<CodecReport>): String {
         val sb = StringBuilder()
@@ -182,7 +238,17 @@ object CodecProbe {
                 )
                 .append(",\"detail\":")
                 .append(if (r.detail == null) "null" else "\"${escape(r.detail)}\"")
-                .append('}')
+                .append(",\"isEncoder\":").append(r.isEncoder?.toString() ?: "null")
+                .append(",\"profileLevels\":[")
+            r.profileLevels.forEachIndexed { j, pl ->
+                if (j > 0) sb.append(',')
+                sb.append("{\"profile\":").append(pl.profile)
+                    .append(",\"level\":").append(pl.level).append('}')
+            }
+            sb.append("],\"colorFormats\":[").append(r.colorFormats.joinToString(","))
+                .append("],\"bitrateModes\":[").append(r.bitrateModes.joinToString(","))
+                .append("],\"bitrateUpper\":").append(r.bitrateUpper?.toString() ?: "null")
+            sb.append('}')
         }
         sb.append("]}")
         return sb.toString()

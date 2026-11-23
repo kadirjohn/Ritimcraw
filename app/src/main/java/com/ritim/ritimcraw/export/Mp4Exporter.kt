@@ -4,6 +4,7 @@ import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.engine.StabilizationGate
 import com.ritim.ritimcraw.engine.BackendGates
 import com.ritim.ritimcraw.engine.BackendRules
 import com.ritim.ritimcraw.engine.EffectiveRenderBackend
@@ -220,7 +221,7 @@ internal object NativeMp4Session : Mp4Session {
         // of 2026-11-12 made that gate pass at every tier). Strength maps
         // 0..100 -> 0..1 exactly like lutStrength; mode/zoomLimit/focalMm/
         // trimMs pass through raw (the C++ side owns their composition).
-        val stab = if (grade.stabilization && gyroPath != null) {
+        val stab = if (StabilizationGate.active(grade.stabilization, gyroPath)) {
             grade.stabilizationStrength / 100f
         } else {
             0f
@@ -240,7 +241,7 @@ internal object NativeMp4Session : Mp4Session {
             // Gyro Phase 5: null gyroPath (or stabilization off) = the
             // bridge's no-warp default (null path -> resolveStabilization
             // returns the default StabInput -> applyStabilization no-ops).
-            if (grade.stabilization && gyroPath != null) gyroPath else null,
+            if (StabilizationGate.active(grade.stabilization, gyroPath)) gyroPath else null,
             grade.stabilizationMode,
             stab,
             grade.stabilizationZoomLimit,
@@ -1682,9 +1683,9 @@ class ExportPipeline(
                             try {
                                 gpuDevelop.resolveWarp(
                                     info.handle,
-                                    if (grade.stabilization && gyroPath != null) gyroPath else null,
+                                    if (StabilizationGate.active(grade.stabilization, gyroPath)) gyroPath else null,
                                     grade.stabilizationMode,
-                                    if (grade.stabilization && gyroPath != null) {
+                                    if (StabilizationGate.active(grade.stabilization, gyroPath)) {
                                         grade.stabilizationStrength / 100f
                                     } else {
                                         0f
@@ -2003,7 +2004,7 @@ class ExportPipeline(
                 encodedW = encodeDims.width,
                 encodedH = encodeDims.height,
                 grade = grade,
-                gyroActive = grade.stabilization && gyroPath != null,
+                gyroActive = StabilizationGate.active(grade.stabilization, gyroPath),
                 encodeNanos = System.nanoTime() - tEncode0,
             )
         } finally {
