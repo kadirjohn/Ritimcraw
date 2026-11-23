@@ -41,9 +41,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -122,6 +119,7 @@ import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.engine.RenderTrace
 import com.ritim.ritimcraw.ui.editor.PublishCrop
+import com.ritim.ritimcraw.ui.components.CompactSegmentedRow
 import com.ritim.ritimcraw.ui.theme.RitimTheme
 import com.ritim.ritimcraw.ui.theme.Tnum
 import com.ritim.ritimcraw.util.Format
@@ -3412,6 +3410,9 @@ fun ClipEditorScreen(
                                 waveformModeOrdinal = waveformModeOrdinal,
                                 midGrayAvailable = grade.tonemap == 0 && grade.lutId == null,
                                 midGrayShown = scopeMidGrayShown,
+                                statsLive = frame?.let {
+                                    PreviewSurfaceRatio.carriesShape(it.width, it.height)
+                                } ?: true,
                                 onMiniTap = {
                                     scopePresentation =
                                         ScopePresentationRules.onMiniTap(scopePresentation)
@@ -3709,6 +3710,11 @@ fun ClipEditorScreen(
             // Derived ONCE for both scope shapes (the strip below and
             // the mini inside the preview both read it).
             val midGrayAvailable = grade.tonemap == 0 && grade.lutId == null
+            // The GPU path's stats-off placeholder (1x1) carries no pixels
+            // for the scopes; null (no frame yet) is not that case.
+            val scopeStatsLive = frame?.let {
+                PreviewSurfaceRatio.carriesShape(it.width, it.height)
+            } ?: true
             // THE STRIP: only in STRIP and never in fullscreen (the
             // immersive preview owns the screen; the strip returns with
             // the workspace — the state survives, so exiting fullscreen
@@ -3741,6 +3747,10 @@ fun ClipEditorScreen(
                             ScopePresentationRules.onGraphTap(scopePresentation)
                     },
                     modifier = Modifier.onSizeChanged { scopeStripHeight = it.height },
+                    // Landscape two-column: one control row + a shorter
+                    // graph, so the strip never pushes the preview away.
+                    compact = landscapeTwoColumn,
+                    statsLive = scopeStatsLive,
                 )
             }
         }
@@ -4585,22 +4595,17 @@ private fun LutInterpSheet(
         // lesson — a SegmentedButton centers all its content at the same
         // spot, so a button carries ONLY its label). The display order is
         // the pipeline's own order: Source | Transform.
-        SingleChoiceSegmentedButtonRow(
+        CompactSegmentedRow(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             LutInterpLayout.WINDOW_ORDER.forEachIndexed { index, w ->
-                SegmentedButton(
+                Segment(
                     selected = window == w,
                     onClick = { window = w },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = LutInterpLayout.WINDOW_ORDER.size,
-                    ),
-                ) {
-                    Text(stringResource(lutWindowLabel(w)))
-                }
+                    label = stringResource(lutWindowLabel(w)),
+                )
             }
         }
         // ---- SOURCE window: the preset suggestion + the input encoding
@@ -5205,14 +5210,14 @@ private fun ColorLookBody(
             stringResource(R.string.editor_tonemapping),
             style = MaterialTheme.typography.labelLarge,
         )
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        CompactSegmentedRow(Modifier.fillMaxWidth()) {
             val options = listOf(
                 TonemapOption(R.string.editor_tonemap_off, 0),
                 TonemapOption(R.string.editor_tonemap_aces, 1),
                 TonemapOption(R.string.editor_tonemap_agx, 2),
             )
             options.forEachIndexed { index, option ->
-                SegmentedButton(
+                Segment(
                     // The AgX tab (2) is selected for ANY AgX look (2-5);
                     // re-tapping it keeps the chosen variant instead of
                     // snapping back to Punchy.
@@ -5224,13 +5229,8 @@ private fun ColorLookBody(
                         if (value != grade.tonemap)
                             onTonemapChange(grade.copy(tonemap = value))
                     },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = options.size,
-                    ),
-                ) {
-                    Text(stringResource(option.labelRes))
-                }
+                    label = stringResource(option.labelRes),
+                )
             }
         }
         // AgX look (COL-16 follow-up): a second row ONLY while AgX is
@@ -5244,7 +5244,7 @@ private fun ColorLookBody(
                 stringResource(R.string.editor_tonemap_agx_look),
                 style = MaterialTheme.typography.labelLarge,
             )
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            CompactSegmentedRow(Modifier.fillMaxWidth()) {
                 val looks = listOf(
                     TonemapOption(R.string.editor_tonemap_agx_punchy, 2),
                     TonemapOption(R.string.editor_tonemap_agx_golden, 3),
@@ -5252,18 +5252,13 @@ private fun ColorLookBody(
                     TonemapOption(R.string.editor_tonemap_agx_base, 5),
                 )
                 looks.forEachIndexed { index, option ->
-                    SegmentedButton(
+                    Segment(
                         selected = grade.tonemap == option.value,
                         onClick = {
                             onTonemapChange(grade.copy(tonemap = option.value))
                         },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = looks.size,
-                        ),
-                    ) {
-                        Text(stringResource(option.labelRes))
-                    }
+                        label = stringResource(option.labelRes),
+                    )
                 }
             }
         }
@@ -5463,23 +5458,18 @@ private fun ColorWheelSection(
         stringResource(R.string.editor_color_wheel),
         style = MaterialTheme.typography.labelLarge,
     )
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+    CompactSegmentedRow(Modifier.fillMaxWidth()) {
         val bands = listOf(
             WheelBandOption(R.string.editor_wheel_band_shadows, WheelBand.SHADOWS),
             WheelBandOption(R.string.editor_wheel_band_midtones, WheelBand.MIDTONES),
             WheelBandOption(R.string.editor_wheel_band_highlights, WheelBand.HIGHLIGHTS),
         )
         bands.forEachIndexed { index, option ->
-            SegmentedButton(
+            Segment(
                 selected = band == option.value,
                 onClick = { band = option.value },
-                shape = SegmentedButtonDefaults.itemShape(
-                    index = index,
-                    count = bands.size,
-                ),
-            ) {
-                Text(stringResource(option.labelRes))
-            }
+                label = stringResource(option.labelRes),
+            )
         }
     }
     ColorWheelPad(
@@ -6012,7 +6002,7 @@ private fun FrameCropBody(
             stringResource(R.string.editor_crop_aspect),
             style = MaterialTheme.typography.labelLarge,
         )
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        CompactSegmentedRow(Modifier.fillMaxWidth()) {
             val aspects = listOf(
                 CropAspectOption(R.string.editor_crop_aspect_free, CropState.ASPECT_FREE),
                 CropAspectOption(R.string.editor_crop_aspect_16_9, CropState.ASPECT_16_9),
@@ -6021,7 +6011,7 @@ private fun FrameCropBody(
                 CropAspectOption(R.string.editor_crop_aspect_1_1, CropState.ASPECT_1_1),
             )
             aspects.forEachIndexed { index, option ->
-                SegmentedButton(
+                Segment(
                     selected = grade.cropAspect == option.value,
                     onClick = {
                         if (option.value == CropState.ASPECT_FREE) {
@@ -6043,13 +6033,8 @@ private fun FrameCropBody(
                             )
                         }
                     },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = aspects.size,
-                    ),
-                ) {
-                    Text(stringResource(option.labelRes))
-                }
+                    label = stringResource(option.labelRes),
+                )
             }
         }
         // Straighten ±15° (half-degree ticks): the small-angle horizon
@@ -6315,25 +6300,20 @@ private fun FrameStabilizeBody(
                 stringResource(R.string.editor_stabilization_mode),
                 style = MaterialTheme.typography.labelLarge,
             )
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            CompactSegmentedRow(Modifier.fillMaxWidth()) {
                 val modes = listOf(
                     StabModeOption(R.string.editor_stabilization_mode_smooth, 0),
                     StabModeOption(R.string.editor_stabilization_mode_lock_first_frame, 1),
                     StabModeOption(R.string.editor_stabilization_mode_horizon_lock, 2),
                 )
                 modes.forEachIndexed { index, option ->
-                    SegmentedButton(
+                    Segment(
                         selected = grade.stabilizationMode == option.value,
                         onClick = {
                             onToggleChange(grade.copy(stabilizationMode = option.value))
                         },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = modes.size,
-                        ),
-                    ) {
-                        Text(stringResource(option.labelRes))
-                    }
+                        label = stringResource(option.labelRes),
+                    )
                 }
             }
             // Strength 0..100 (default 50, audit fix 2026-11-12): the smoothing amount.
