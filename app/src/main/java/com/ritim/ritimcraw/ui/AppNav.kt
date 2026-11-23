@@ -91,6 +91,7 @@ import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.FolderThumbnails
 import com.ritim.ritimcraw.engine.NativeSource
+import com.ritim.ritimcraw.engine.GradeParitySweep
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.engine.SourcePathDecision
@@ -518,6 +519,9 @@ fun AppNav(
     // time, kicked from Settings' Measure action.
     var measuring by remember { mutableStateOf(false) }
     var measureKick by remember { mutableStateOf(0) }
+    // Debug-only GPU-vs-CPU per-control sweep (GradeParitySweep), same
+    // one-at-a-time rule: it shares the `measuring` flag with Measure.
+    var sweepKick by remember { mutableStateOf(0) }
     // Collection refresh (spec IN-12): the rotating cursor for the bounded
     // per-open pass — every Library open probes ALL degraded rows plus
     // CollectionRefresh.OK_BATCH healthy ones starting at this position,
@@ -999,6 +1003,27 @@ fun AppNav(
         } catch (e: Exception) {
             // The harness logs its own failures; a lost grant degrades to
             // "no run", never a crash.
+        } finally {
+            measuring = false
+        }
+    }
+
+    // GPU-vs-CPU per-control sweep (debug, 2026-11-23): frame 0 of the
+    // first imported clip, one line per control under "ritim-parity".
+    LaunchedEffect(sweepKick) {
+        if (sweepKick == 0) return@LaunchedEffect
+        val first = sources.firstOrNull { it.access == Access.OK }
+        if (first == null) {
+            measuring = false
+            return@LaunchedEffect
+        }
+        try {
+            val fd = context.contentResolver
+                .openFileDescriptor(Uri.parse(first.uri), "r")
+                ?.detachFd() ?: -1
+            if (fd >= 0) GradeParitySweep.run(fd)
+        } catch (e: Exception) {
+            // The sweep logs its own failures; a lost grant is "no run".
         } finally {
             measuring = false
         }
@@ -2133,6 +2158,16 @@ fun AppNav(
                                     if (!measuring) {
                                         measuring = true
                                         measureKick += 1
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                            onGradeSweep = if (BuildConfig.DEBUG) {
+                                {
+                                    if (!measuring) {
+                                        measuring = true
+                                        sweepKick += 1
                                     }
                                 }
                             } else {

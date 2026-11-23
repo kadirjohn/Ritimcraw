@@ -427,6 +427,7 @@
     <string name="settings_report_close">Close</string>
     <string name="settings_measure">Measure preview performance</string>
     <string name="settings_measuring">Measuring…</string>
+    <string name="settings_grade_sweep">GPU vs CPU control sweep (debug)</string>
     <string name="settings_preview_stats">Preview stats readback</string>
     <string name="settings_preview_stats_body">Debug: read the GPU preview\'s stats pack back each frame. Off skips the readback — compare the trace\'s stats span and total to see what it costs.</string>
     <string name="settings_version">Version %1$s</string>
