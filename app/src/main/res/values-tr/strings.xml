@@ -425,6 +425,11 @@
     <string name="settings_measure">Önizleme performansını ölç</string>
     <string name="settings_measuring">Ölçülüyor…</string>
     <string name="settings_grade_sweep">GPU/CPU kontrol taraması (hata ayıklama)</string>
+    <!-- Dışa aktarım A/B gerileme donanımı (rehber §A7, 2026-11-23):
+         stabilize açıkken tüm hat CPU kapısı - GPU oturumu karşılaştırması;
+         taramanın yanında yalnızca hata ayıklama düğmesi. -->
+    <string name="settings_export_ab">Dışa aktarım A/B (hata ayıklama)</string>
+    <string name="settings_export_ab_no_gyro">İçe aktarılan klibin bağlı bir gyro kaydı yok</string>
     <string name="settings_preview_stats">Önizleme istatistik geri okuması</string>
     <string name="settings_preview_stats_body">Hata ayıklama: GPU önizlemesinin istatistik paketini her karede geri okur. Kapalıyken geri okuma atlanır — maliyetini görmek için izdeki istatistik süresini ve toplamı karşılaştırın.</string>
     <string name="settings_version">Sürüm %1$s</string>

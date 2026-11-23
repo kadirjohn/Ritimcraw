@@ -91,6 +91,7 @@ import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.FolderThumbnails
 import com.ritim.ritimcraw.engine.NativeSource
+import com.ritim.ritimcraw.engine.ExportAbSweep
 import com.ritim.ritimcraw.engine.GradeParitySweep
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.RenderBackend
@@ -522,6 +523,10 @@ fun AppNav(
     // Debug-only GPU-vs-CPU per-control sweep (GradeParitySweep), same
     // one-at-a-time rule: it shares the `measuring` flag with Measure.
     var sweepKick by remember { mutableStateOf(0) }
+    // Debug-only export A/B harness (ExportAbSweep, guide §A7, owner
+    // request 2026-11-23): the same one-at-a-time rule and the same
+    // `measuring` flag — the two harnesses never run concurrently.
+    var exportAbKick by remember { mutableStateOf(0) }
     // Collection refresh (spec IN-12): the rotating cursor for the bounded
     // per-open pass — every Library open probes ALL degraded rows plus
     // CollectionRefresh.OK_BATCH healthy ones starting at this position,
@@ -1033,6 +1038,50 @@ fun AppNav(
             if (cropFd >= 0) GradeParitySweep.runCrop(cropFd)
         } catch (e: Exception) {
             // The sweep logs its own failures; a lost grant is "no run".
+        } finally {
+            measuring = false
+        }
+    }
+
+    // Export A/B regression harness (debug, guide §A7, owner request
+    // 2026-11-23): the FIRST imported clip that HAS a gyro log attached
+    // (stabilization needs one — a gyro-less run would silently test the
+    // no-warp path), whole-pipeline CPU export door vs the GPU develop
+    // session over the 4 composite cases x 3 frames, one line per
+    // comparison plus a summary under "ritim-parity". No qualifying clip:
+    // a toast + one log line, never a silent no-op.
+    LaunchedEffect(exportAbKick) {
+        if (exportAbKick == 0) return@LaunchedEffect
+        // Resolve the (source, gyro path) pair ONCE: the first healthy clip
+        // whose attached log's copied file still exists. The pair lookup
+        // (not a clip lookup then a re-resolve) keeps the non-null path
+        // provable and the selection identical to the run's input.
+        val pick = sources
+            .filter { it.access == Access.OK }
+            .asSequence()
+            .map { src -> src to stores.gyros.pathFor(stores.sources.get(src.id)?.gyroId) }
+            .firstOrNull { it.second != null }
+        if (pick == null) {
+            Log.i(
+                GradeParitySweep.TAG,
+                "export-ab skipped: no imported clip has a gyro log attached",
+            )
+            Toast.makeText(
+                context,
+                context.getString(R.string.settings_export_ab_no_gyro),
+                Toast.LENGTH_SHORT,
+            ).show()
+            measuring = false
+            return@LaunchedEffect
+        }
+        try {
+            val fd = context.contentResolver
+                .openFileDescriptor(Uri.parse(pick.first.uri), "r")
+                ?.detachFd() ?: -1
+            val gyroPath = pick.second
+            if (fd >= 0 && gyroPath != null) ExportAbSweep.run(fd, gyroPath)
+        } catch (e: Exception) {
+            // The harness logs its own failures; a lost grant is "no run".
         } finally {
             measuring = false
         }
@@ -2184,6 +2233,20 @@ fun AppNav(
                                     if (!measuring) {
                                         measuring = true
                                         sweepKick += 1
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                            // Export A/B (guide §A7, 2026-11-23): the same
+                            // debug gate + one-at-a-time flag as the sweep
+                            // callback above — release passes null, the
+                            // button never composes there.
+                            onExportAb = if (BuildConfig.DEBUG) {
+                                {
+                                    if (!measuring) {
+                                        measuring = true
+                                        exportAbKick += 1
                                     }
                                 }
                             } else {
