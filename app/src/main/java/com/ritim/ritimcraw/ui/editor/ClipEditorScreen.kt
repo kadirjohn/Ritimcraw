@@ -89,6 +89,7 @@ import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.engine.StabilizationGate
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
 import com.ritim.ritimcraw.engine.BackendGates
@@ -2366,9 +2367,9 @@ fun ClipEditorScreen(
                             // entirely: the pass's absence IS the identity.
                             val warp = gpu.resolveWarp(
                                 clipHandle = s.nativeClipHandle,
-                                gyroPath = if (req.grade.stabilization && gyroPath != null) gyroPath else null,
+                                gyroPath = if (StabilizationGate.active(req.grade.stabilization, gyroPath)) gyroPath else null,
                                 stabMode = req.grade.stabilizationMode,
-                                stabStrength = if (req.grade.stabilization && gyroPath != null) {
+                                stabStrength = if (StabilizationGate.active(req.grade.stabilization, gyroPath)) {
                                     req.grade.stabilizationStrength / 100f
                                 } else {
                                     0f
@@ -2761,8 +2762,7 @@ fun ClipEditorScreen(
                                                 PreviewTiers.temporalNrAppliesAt(
                                                     req.maxDim, req.renderClass,
                                                 ),
-                                            stabilizationApplied = req.grade.stabilization &&
-                                                gyroPath != null,
+                                            stabilizationApplied = StabilizationGate.active(req.grade.stabilization, gyroPath),
                                             servedByGpu = servedByGpuWindow,
                                             // The GPU-path measurement fields
                                             // (trace-dims fix 2026-11-14): out=
@@ -6431,6 +6431,32 @@ private fun FrameStabilizeBody(
     onToggleChange: (GradeK) -> Unit = {},
     onReset: (GradeK) -> Unit = {},
 ) {
+    // Gyro mode is paused (owner decision 2026-11-23,
+    // FeatureFlags.GYRO_STABILIZATION_ENABLED): the tab stays, the toggle
+    // is shown disabled and OFF (the stored grade is untouched; the
+    // render gate forces stabilization off), controls are hidden, and the
+    // reason is stated. The image-based mode (plan 5b) will live here.
+    if (!StabilizationGate.gyroWorkAllowed()) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            RawToggleRow(
+                label = stringResource(R.string.editor_stabilization),
+                checked = false,
+                onCheckedChange = {},
+                enabled = false,
+            )
+            Text(
+                stringResource(R.string.editor_stabilization_gyro_paused),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -6845,6 +6871,7 @@ private fun RawToggleRow(
     label: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         Modifier
@@ -6852,6 +6879,7 @@ private fun RawToggleRow(
             .heightIn(min = 48.dp)
             .toggleable(
                 value = checked,
+                enabled = enabled,
                 role = Role.Switch,
                 onValueChange = onCheckedChange,
             ),
@@ -6863,7 +6891,7 @@ private fun RawToggleRow(
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.padding(end = 16.dp),
         )
-        Switch(checked = checked, onCheckedChange = null)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }
 

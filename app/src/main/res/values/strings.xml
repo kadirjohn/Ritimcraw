@@ -191,6 +191,7 @@
     <string name="editor_temporal_nr">Temporal NR</string>
     <string name="editor_slider_temporal_strength">Strength</string>
     <string name="editor_stabilization">Stabilization</string>
+    <string name="editor_stabilization_gyro_paused">Gyro mode will come with the MotionCam update</string>
     <string name="editor_stabilization_mode">Mode</string>
     <string name="editor_stabilization_mode_smooth">Smooth</string>
     <string name="editor_stabilization_mode_lock_first_frame">Lock First Frame</string>

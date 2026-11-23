@@ -191,6 +191,7 @@
     <string name="editor_temporal_nr">Temporal NR</string>
     <string name="editor_slider_temporal_strength">Güç</string>
     <string name="editor_stabilization">Stabilizasyon</string>
+    <string name="editor_stabilization_gyro_paused">Gyro modu MotionCam güncellemesiyle gelecek</string>
     <string name="editor_stabilization_mode">Mod</string>
     <string name="editor_stabilization_mode_smooth">Pürüzsüz</string>
     <string name="editor_stabilization_mode_lock_first_frame">İlk Kareye Kilitle</string>
