@@ -134,6 +134,7 @@ fun HistogramScopeView(
     onGraphTap: () -> Unit = {},
     modifier: Modifier = Modifier,
     graphHeight: Dp = ScopeGraphHeight,
+    dataLive: Boolean = true,
     leading: (@Composable RowScope.() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
@@ -184,6 +185,7 @@ fun HistogramScopeView(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(graphHeight),
+            dataLive = dataLive,
         )
     }
 }
@@ -216,6 +218,7 @@ internal fun HistogramGraph(
     onGraphTap: (() -> Unit)?,
     modifier: Modifier = Modifier,
     mini: Boolean = false,
+    dataLive: Boolean = true,
 ) {
     val colors = rememberScopeColors(mini)
     val display = remember(result, mode) {
@@ -252,6 +255,13 @@ internal fun HistogramGraph(
             val h = size.height
             if (w <= 0f || h <= 0f) return@Canvas
             val stroke = Stroke(width = 1.25.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            if (!dataLive) {
+                // No real frame behind the scope (see ScopeStrip's
+                // statsLive): the graticule only — never a curve drawn
+                // from the 1x1 placeholder pixel.
+                drawTonalGraticule(colors)
+                return@Canvas
+            }
             val parade = mode == HistogramMode.PARADE ||
                 (mode == HistogramMode.RAW && rawPresentation == RawHistogramPresentation.PARADE)
             if (parade) {
@@ -303,6 +313,10 @@ internal fun HistogramGraph(
                 if (readout.shadowPercent != null) drawClipEdge(clipTint, atStart = true, barWidth = clipBar.toPx())
                 if (readout.highlightPercent != null) drawClipEdge(clipTint, atStart = false, barWidth = clipBar.toPx())
             }
+        }
+        if (!dataLive) {
+            if (!mini) NoStatsHint(colors, Modifier.align(Alignment.Center))
+            return@ScopePanel
         }
         if (mode == HistogramMode.RAW && raw == null && !mini) {
             ScopeCaption(

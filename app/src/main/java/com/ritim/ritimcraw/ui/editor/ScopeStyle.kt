@@ -357,3 +357,19 @@ internal fun ScopeCaption(text: String, colors: ScopeColors, modifier: Modifier 
         modifier = modifier.padding(horizontal = 6.dp, vertical = 3.dp),
     )
 }
+
+/**
+ * The honest empty state: the preview publishes no real pixels for the
+ * scopes (the GPU path's stats readback is off in Settings), so the
+ * panel says how to get data instead of drawing a fabricated trace.
+ */
+@Composable
+internal fun NoStatsHint(colors: ScopeColors, modifier: Modifier = Modifier) {
+    Text(
+        androidx.compose.ui.res.stringResource(com.ritim.ritimcraw.R.string.editor_scope_no_stats),
+        style = MaterialTheme.typography.labelMedium,
+        color = colors.label.copy(alpha = 0.8f),
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        modifier = modifier.padding(horizontal = 24.dp),
+    )
+}

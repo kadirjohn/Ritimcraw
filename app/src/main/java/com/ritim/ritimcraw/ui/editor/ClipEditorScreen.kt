@@ -3401,6 +3401,9 @@ fun ClipEditorScreen(
                                 waveformModeOrdinal = waveformModeOrdinal,
                                 midGrayAvailable = grade.tonemap == 0 && grade.lutId == null,
                                 midGrayShown = scopeMidGrayShown,
+                                statsLive = frame?.let {
+                                    PreviewSurfaceRatio.carriesShape(it.width, it.height)
+                                } ?: true,
                                 onMiniTap = {
                                     scopePresentation =
                                         ScopePresentationRules.onMiniTap(scopePresentation)
@@ -3698,6 +3701,11 @@ fun ClipEditorScreen(
             // Derived ONCE for both scope shapes (the strip below and
             // the mini inside the preview both read it).
             val midGrayAvailable = grade.tonemap == 0 && grade.lutId == null
+            // The GPU path's stats-off placeholder (1x1) carries no pixels
+            // for the scopes; null (no frame yet) is not that case.
+            val scopeStatsLive = frame?.let {
+                PreviewSurfaceRatio.carriesShape(it.width, it.height)
+            } ?: true
             // THE STRIP: only in STRIP and never in fullscreen (the
             // immersive preview owns the screen; the strip returns with
             // the workspace — the state survives, so exiting fullscreen
@@ -3733,6 +3741,7 @@ fun ClipEditorScreen(
                     // Landscape two-column: one control row + a shorter
                     // graph, so the strip never pushes the preview away.
                     compact = landscapeTwoColumn,
+                    statsLive = scopeStatsLive,
                 )
             }
         }

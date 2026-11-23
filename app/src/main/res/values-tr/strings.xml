@@ -321,6 +321,7 @@
     <string name="editor_scope_midgray_show">Orta gri referansını göster</string>
     <string name="editor_scope_midgray_hide">Orta gri referansını gizle</string>
     <string name="editor_scope_hz">%1$d Hz</string>
+    <string name="editor_scope_no_stats">Skop verisi yok. Ayarlar › Önizleme istatistik geri okumasını açın.</string>
     <string name="editor_zebra_show">Kırpılmayı göster</string>
     <string name="editor_zebra_hide">Kırpılmayı gizle</string>
     <string name="export_queued_snackbar">Dışa aktarım sıraya alındı — Dışa aktarımlar sekmesine bakın</string>

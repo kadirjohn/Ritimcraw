@@ -172,6 +172,10 @@ fun ScopeStrip(
     onGraphTap: () -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
+    // False while the published frame is the GPU path's 1x1 stats-off
+    // placeholder (Settings > Preview stats readback off): the graphs
+    // show a hint instead of a "histogram" of one black pixel.
+    statsLive: Boolean = true,
 ) {
     val contentLabels = ScopeContent.entries.map { stringResource(it.labelRes) }
     val contentSelector: @Composable RowScope.(Float) -> Unit = { weight ->
@@ -236,6 +240,7 @@ fun ScopeStrip(
                         },
                         onGraphTap = onGraphTap,
                         graphHeight = graphHeight,
+                        dataLive = statsLive,
                         leading = leading,
                         trailing = trailing,
                     )
@@ -250,6 +255,7 @@ fun ScopeStrip(
                         onGraphTap = onGraphTap,
                         modifier = Modifier.fillMaxWidth(),
                         graphHeight = graphHeight,
+                        dataLive = statsLive,
                         leading = leading,
                         trailing = trailing,
                     )
@@ -279,6 +285,7 @@ fun WaveformScopeView(
     onGraphTap: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     graphHeight: Dp = ScopeGraphHeight,
+    dataLive: Boolean = true,
     leading: (@Composable RowScope.() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
@@ -312,6 +319,7 @@ fun WaveformScopeView(
             onGraphTap = onGraphTap,
             caption = caption,
             parade = mode == WaveformMode.PARADE,
+            dataLive = dataLive,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(graphHeight)
@@ -341,6 +349,7 @@ internal fun WaveformGraph(
     caption: String? = null,
     mini: Boolean = false,
     parade: Boolean = false,
+    dataLive: Boolean = true,
 ) {
     val colors = rememberScopeColors(mini)
     val labels = if (mini) null else rememberGraticuleLabels()
@@ -386,7 +395,7 @@ internal fun WaveformGraph(
                 )
             }
             val b = bitmap
-            if (b != null) {
+            if (b != null && dataLive) {
                 drawImage(
                     image = b,
                     srcSize = IntSize(b.width, b.height),
@@ -400,6 +409,7 @@ internal fun WaveformGraph(
         if (caption != null) {
             ScopeCaption(caption, colors, Modifier.align(Alignment.TopEnd))
         }
+        if (!dataLive && !mini) NoStatsHint(colors, Modifier.align(Alignment.Center))
     }
 }
 
@@ -588,6 +598,7 @@ fun ScopeMiniOverlay(
     midGrayShown: Boolean,
     onMiniTap: () -> Unit,
     modifier: Modifier = Modifier,
+    statsLive: Boolean = true,
 ) {
     val description = stringResource(R.string.editor_scope_show)
     // The honesty gate is derived by the screen and passed here as
@@ -613,6 +624,7 @@ fun ScopeMiniOverlay(
                 modifier = Modifier.fillMaxSize(),
                 mini = true,
                 parade = waveformModeOrdinal == WaveformMode.PARADE.ordinal,
+                dataLive = statsLive,
             )
         } else {
             HistogramGraph(
@@ -625,6 +637,7 @@ fun ScopeMiniOverlay(
                 onGraphTap = null,
                 modifier = Modifier.fillMaxSize(),
                 mini = true,
+                dataLive = statsLive,
             )
         }
     }

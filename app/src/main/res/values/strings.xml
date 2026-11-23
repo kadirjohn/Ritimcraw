@@ -324,6 +324,7 @@
     <string name="editor_scope_midgray_show">Show mid-gray reference</string>
     <string name="editor_scope_midgray_hide">Hide mid-gray reference</string>
     <string name="editor_scope_hz">%1$d Hz</string>
+    <string name="editor_scope_no_stats">No scope data. Turn on Settings › Preview stats readback.</string>
     <string name="editor_zebra_show">Show clipping</string>
     <string name="editor_zebra_hide">Hide clipping</string>
     <string name="export_queued_snackbar">Export queued — see Exports</string>
