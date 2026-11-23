@@ -301,7 +301,7 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
                         NativeSource.jniStabWarpResolve(
                             clipHandle, gyroPath, stabMode, stabStrength,
                             stabZoomLimit, stabFocalMm, stabTrimMs,
-                            frameIndex, maxDim,
+                            frameIndex, maxDim, asyncRefine = true,
                         )
                     } catch (t: Throwable) {
                         null // unavailable guard: no verdict, the render skips draw 10

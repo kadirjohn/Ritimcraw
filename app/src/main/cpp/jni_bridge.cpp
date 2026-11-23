@@ -38,6 +38,8 @@
 #include <rawedit/RawStats.h>
 #include <rawedit/Source.h>
 #include <rawedit/Stabilization.h>
+#include <thread>
+#include <unistd.h>
 #include <rawedit/Sync.h>
 #include <rawedit/Temporal.h>
 #include <rawedit/Thumbnail.h>
@@ -459,6 +461,11 @@ struct StabRequest {
     double focalMmOverride = 0.0;
     double trimMs = 0.0;
     bool syncRefine = false;
+    // Round 3: preview paths run the optical refine on a background thread
+    // and render with the (lag-prior) anchor until it lands; export paths
+    // leave this false and wait for it (every exported frame must ride the
+    // same offset). Not a plan-cache key: both converge to the same plan.
+    bool asyncRefine = false;
 };
 
 StabRequest stabRequestOf(jint mode, jfloat strength, jfloat zoomLimit,
@@ -681,7 +688,7 @@ rawedit::SyncEstimate refineSyncEstimate(rawedit::Source& src,
 // cachedCfa/ring/mafdByPairEnd above/below); the registry mutex guards
 // slot bookkeeping, not per-render reads. The export path opens its OWN
 // handle (a fresh Entry) so preview and export never share a cache.
-struct StabPlanCache {
+struct StabPlanSlot {
     // Key.
     rawedit::StabilizationMode mode = rawedit::StabilizationMode::Smooth;
     double strength = 0.5;
@@ -702,6 +709,50 @@ struct StabPlanCache {
     int syncKind = 0;          // 0 manual, 1 anchored, 2 refined (StabMeasure)
     double syncOffsetMs = 0.0;
     double syncBoundMs = 0.0;
+};
+
+// A background optical refine (round 3). Owns everything it touches; the
+// Entry may close while it runs (the result is then simply dropped).
+struct RefineJob {
+    std::atomic<bool> done{false};
+    rawedit::SyncEstimate result{};  // written before done (release)
+    // Key it was launched for (a toggle/focal/log change ignores it).
+    std::string gyroPath;
+    size_t frameCount = 0;
+    double focalMm = 0.0;
+};
+
+// Round 3 stutter fix (2026-11-23): the preview flips buffer dims on every
+// play/pause/drag (1280 settle, 640 drag, 1280 playback, full-res
+// follow-up), and the single slot keyed on bufW/bufH rebuilt the WHOLE plan
+// on each flip — measured 2.3-2.6 s per rebuild on device once the optical
+// refine became the default, for the SAME offset every time. Now:
+//  - a small round-robin set of plan slots (one per recent dims/settings),
+//  - the sync estimate cached separately (it depends on the clip, the log,
+//    the refine flag and the focal — never on the buffer dims), with the
+//    optical refine on a background thread for preview paths,
+//  - the frames' representative times cached (one metadata JSON parse per
+//    frame per clip, not per plan).
+struct StabPlanCache {
+    static constexpr int kSlots = 4;
+    StabPlanSlot slots[kSlots];
+    int next = 0;
+
+    bool syncValid = false;
+    bool syncProvisional = false;  // anchor in use, a refine is pending
+    std::string syncGyroPath;
+    size_t syncFrameCount = 0;
+    bool syncRefine = false;
+    double syncFocalMm = 0.0;
+    rawedit::SyncEstimate syncEst{};
+    int64_t syncIntervalNs = 0;
+    std::shared_ptr<RefineJob> refineJob;
+
+    std::vector<int64_t> repTimes;
+
+    void invalidatePlans() {
+        for (StabPlanSlot& c : slots) c.valid = false;
+    }
 };
 
 // The clip-wide stabilization plan evaluated at [frameIndex], for the
@@ -748,16 +799,47 @@ void stabilizationFrameFor(const StabRequest& req,
     // (StabPlanCache above). A hit skips the sync estimate, the frameTs
     // walk AND computeStabilization — everything up to the per-frame
     // tail, which is the only part that varies frame to frame.
-    const bool hit = planCache != nullptr && planCache->valid &&
-        planCache->mode == req.mode &&
-        planCache->strength == req.strength &&
-        planCache->zoomLimit == req.zoomLimit &&
-        planCache->focalMmOverride == req.focalMmOverride &&
-        planCache->trimMs == req.trimMs &&
-        planCache->syncRefine == req.syncRefine &&
-        planCache->bufW == bufW && planCache->bufH == bufH &&
-        planCache->gyroPath == gyro->path &&
-        planCache->frameCount == src.frameCount();
+    // A finished background refine lands here (one atomic load per
+    // frame): it replaces the provisional anchor and drops the plans built
+    // on it, so the next lookup rebuilds — cheaply, sync and frame times
+    // are cached — on the refined offset.
+    if (planCache != nullptr && planCache->refineJob &&
+        planCache->refineJob->done.load(std::memory_order_acquire)) {
+        const std::shared_ptr<RefineJob> job = std::move(planCache->refineJob);
+        planCache->refineJob.reset();
+        if (planCache->syncValid && planCache->syncProvisional &&
+            job->gyroPath == planCache->syncGyroPath &&
+            job->frameCount == planCache->syncFrameCount &&
+            job->focalMm == planCache->syncFocalMm && planCache->syncRefine) {
+            planCache->syncEst = job->result;
+            planCache->syncProvisional = false;
+            planCache->invalidatePlans();
+        }
+    }
+
+    StabPlanSlot* slot = nullptr;
+    if (planCache != nullptr) {
+        for (StabPlanSlot& c : planCache->slots) {
+            if (c.valid &&
+                c.mode == req.mode &&
+                c.strength == req.strength &&
+                c.zoomLimit == req.zoomLimit &&
+                c.focalMmOverride == req.focalMmOverride &&
+                c.trimMs == req.trimMs &&
+                c.syncRefine == req.syncRefine &&
+                c.bufW == bufW && c.bufH == bufH &&
+                c.gyroPath == gyro->path &&
+                c.frameCount == src.frameCount()) {
+                slot = &c;
+                break;
+            }
+        }
+    }
+    // A blocking (export) caller never rides a provisional anchor.
+    if (slot != nullptr && !req.asyncRefine && planCache->syncProvisional) {
+        slot = nullptr;
+    }
+    const bool hit = slot != nullptr;
     if (hit && fromCache != nullptr) *fromCache = true;
 
     // The plan in hand, whichever way it was obtained. A local keeps the
@@ -773,13 +855,13 @@ void stabilizationFrameFor(const StabRequest& req,
     double syncBoundMs = 0.0;
 
     if (hit) {
-        plan = &planCache->result;
-        anchored = planCache->anchored;
-        maxAngleDeg = planCache->maxAngleDeg;
-        framesInside = planCache->framesInside;
-        syncKind = planCache->syncKind;
-        syncOffsetMs = planCache->syncOffsetMs;
-        syncBoundMs = planCache->syncBoundMs;
+        plan = &slot->result;
+        anchored = slot->anchored;
+        maxAngleDeg = slot->maxAngleDeg;
+        framesInside = slot->framesInside;
+        syncKind = slot->syncKind;
+        syncOffsetMs = slot->syncOffsetMs;
+        syncBoundMs = slot->syncBoundMs;
     } else {
         // Focal: the grade's override wins; 0 = the container's 35mm-equiv
         // value. Resolved FIRST so the optical refine below uses the same
@@ -793,43 +875,81 @@ void stabilizationFrameFor(const StabRequest& req,
             ? req.focalMmOverride
             : src.rawMeta().focalLengthMm;
 
-        // Sync: frame-0 anchors from the Source itself.
-        const rawedit::FrameInfo first = src.frameInfo(0);
-        rawedit::SyncEstimate est = rawedit::estimateOffsetFromAnchors(
-            first.recvdMs, gyro->imu.logStartWallMs, first.ptsUs * 1000,
-            kReceiveLagPriorMs, kReceiveLagBoundMs);
-
-        // Optical refinement (M5 commit b, GY-04): when the toggle is on
-        // and the anchor estimate exists, refine the offset against the
-        // decoded frames + the RAW orientation series ONCE per plan build
-        // (this whole branch runs once per cache key change, never per
-        // frame — the refine is a ~seconds-class cost on the host). The
-        // core never re-anchors and never fabricates: a rejected refine
-        // (weak texture, no curvature improvement, disagreement) returns
-        // not-refined and the anchor estimate stays exactly as it was.
+        // Sync — cached per clip/log/refine-flag/focal (never per buffer
+        // dims). The anchor is instant; the optical refine is seconds-class:
+        // preview callers launch it on a background thread and ride the
+        // lag-prior anchor meanwhile (the plan is rebuilt when it lands),
+        // export callers wait for it.
+        rawedit::SyncEstimate est;
         int64_t frameIntervalNs = 0;
-        {
+        const bool syncHit = planCache != nullptr && planCache->syncValid &&
+            planCache->syncGyroPath == gyro->path &&
+            planCache->syncFrameCount == src.frameCount() &&
+            planCache->syncRefine == req.syncRefine &&
+            planCache->syncFocalMm == focalMm &&
+            (req.asyncRefine || !planCache->syncProvisional);
+        if (syncHit) {
+            est = planCache->syncEst;
+            frameIntervalNs = planCache->syncIntervalNs;
+        } else {
+            const rawedit::FrameInfo first = src.frameInfo(0);
+            est = rawedit::estimateOffsetFromAnchors(
+                first.recvdMs, gyro->imu.logStartWallMs, first.ptsUs * 1000,
+                kReceiveLagPriorMs, kReceiveLagBoundMs);
             const size_t frames = src.frameCount();
-            // The frame interval from the pts span (uniform-interval
-            // fallback the repTime formation documents; a 1-frame clip has
-            // no span and no refine — the anchor stays, honestly).
             if (frames >= 2) {
                 const int64_t firstTs = first.ptsUs * 1000;
-                const int64_t lastTs =
-                    src.frameInfo(frames - 1).ptsUs * 1000;
+                const int64_t lastTs = src.frameInfo(frames - 1).ptsUs * 1000;
                 if (lastTs > firstTs) {
                     frameIntervalNs =
-                        (lastTs - firstTs) /
-                        static_cast<int64_t>(frames - 1);
+                        (lastTs - firstTs) / static_cast<int64_t>(frames - 1);
                 }
             }
+            bool provisional = false;
             if (req.syncRefine && est.isAnchored() && frameIntervalNs > 0) {
                 // The refine measures against the bias-corrected gyro-only
-                // series (round 3): the VQF series' accel corrections are
-                // not image motion, and with them the refine was rejected
-                // on two of four real handheld clips that gyro-only synced.
-                est = refineSyncEstimate(src, gyro->gyroOnly,
-                                         est, frameIntervalNs, focalMm);
+                // series (round 3): with VQF's accel corrections in the
+                // series it was rejected on two of four real handheld clips
+                // that gyro-only synced.
+                const int bgFd = req.asyncRefine && planCache != nullptr
+                    ? src.reopenIndependentFd() : -1;
+                if (bgFd >= 0) {
+                    auto job = std::make_shared<RefineJob>();
+                    job->gyroPath = gyro->path;
+                    job->frameCount = frames;
+                    job->focalMm = focalMm;
+                    const rawedit::SyncEstimate anchorCopy = est;
+                    const rawedit::OrientationSeries seriesCopy = gyro->gyroOnly;
+                    const int64_t interval = frameIntervalNs;
+                    const double fmm = focalMm;
+                    std::thread([job, bgFd, anchorCopy, seriesCopy, interval, fmm]() {
+                        rawedit::SyncEstimate out = anchorCopy;
+                        auto opened = rawedit::Source::open(bgFd);
+                        ::close(bgFd);
+                        if (opened.isOk()) {
+                            out = refineSyncEstimate(**opened.value, seriesCopy,
+                                                     anchorCopy, interval, fmm);
+                        }
+                        job->result = out;
+                        job->done.store(true, std::memory_order_release);
+                    }).detach();
+                    planCache->refineJob = job;
+                    provisional = true;
+                } else {
+                    est = refineSyncEstimate(src, gyro->gyroOnly,
+                                             est, frameIntervalNs, focalMm);
+                }
+            }
+            if (planCache != nullptr) {
+                planCache->syncValid = true;
+                planCache->syncProvisional = provisional;
+                planCache->syncGyroPath = gyro->path;
+                planCache->syncFrameCount = src.frameCount();
+                planCache->syncRefine = req.syncRefine;
+                planCache->syncFocalMm = focalMm;
+                planCache->syncEst = est;
+                planCache->syncIntervalNs = frameIntervalNs;
+                planCache->invalidatePlans();  // new sync -> old plans stale
             }
         }
 
@@ -890,9 +1010,15 @@ void stabilizationFrameFor(const StabRequest& req,
         // Representative times (capture + 0.5*exposure — round 3): the
         // instant each frame's content was seen, the same formation the
         // optical refine used.
-        std::vector<int64_t> frameTs(frames);
-        for (size_t i = 0; i < frames; ++i) {
-            frameTs[i] = repTimeNs(src.frameInfo(i), frameIntervalNs);
+        std::vector<int64_t> frameTs;
+        if (planCache != nullptr && planCache->repTimes.size() == frames) {
+            frameTs = planCache->repTimes;
+        } else {
+            frameTs.resize(frames);
+            for (size_t i = 0; i < frames; ++i) {
+                frameTs[i] = repTimeNs(src.frameInfo(i), frameIntervalNs);
+            }
+            if (planCache != nullptr) planCache->repTimes = frameTs;
         }
 
         // Smooth / LockFirstFrame ride the gyro-only series; HorizonLock
@@ -919,25 +1045,27 @@ void stabilizationFrameFor(const StabRequest& req,
                        overlap.afterGyroEnd;
 
         if (planCache != nullptr) {
-            planCache->mode = req.mode;
-            planCache->strength = req.strength;
-            planCache->zoomLimit = req.zoomLimit;
-            planCache->focalMmOverride = req.focalMmOverride;
-            planCache->trimMs = req.trimMs;
-            planCache->syncRefine = req.syncRefine;
-            planCache->bufW = bufW;
-            planCache->bufH = bufH;
-            planCache->gyroPath = gyro->path;
-            planCache->frameCount = frames;
-            planCache->valid = true;
-            planCache->anchored = anchored;
-            planCache->maxAngleDeg = maxAngleDeg;
-            planCache->framesInside = framesInside;
-            planCache->syncKind = syncKind;
-            planCache->syncOffsetMs = syncOffsetMs;
-            planCache->syncBoundMs = syncBoundMs;
-            planCache->result = std::move(computed);
-            plan = &planCache->result;
+            StabPlanSlot& dst = planCache->slots[planCache->next];
+            planCache->next = (planCache->next + 1) % StabPlanCache::kSlots;
+            dst.mode = req.mode;
+            dst.strength = req.strength;
+            dst.zoomLimit = req.zoomLimit;
+            dst.focalMmOverride = req.focalMmOverride;
+            dst.trimMs = req.trimMs;
+            dst.syncRefine = req.syncRefine;
+            dst.bufW = bufW;
+            dst.bufH = bufH;
+            dst.gyroPath = gyro->path;
+            dst.frameCount = frames;
+            dst.valid = true;
+            dst.anchored = anchored;
+            dst.maxAngleDeg = maxAngleDeg;
+            dst.framesInside = framesInside;
+            dst.syncKind = syncKind;
+            dst.syncOffsetMs = syncOffsetMs;
+            dst.syncBoundMs = syncBoundMs;
+            dst.result = std::move(computed);
+            plan = &dst.result;
         } else {
             local = std::move(computed);
             plan = &local;
@@ -1023,7 +1151,8 @@ StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
                                     jfloat stabZoomLimit, jfloat stabFocalMm,
                                     jfloat stabTrimMs,
                                     rawedit::Source* src, int frameIndex,
-                                    StabPlanCache* planCache = nullptr) {
+                                    StabPlanCache* planCache = nullptr,
+                                    bool asyncRefine = false) {
     StabResolution r;
     const GyroArtifacts* gyro = nullptr;
     if (!resolveGyro(env, gyroPath, &gyro)) {
@@ -1033,6 +1162,7 @@ StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
     if (gyro == nullptr) return r; // off / no log: the no-warp default
     r.input.request = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
                                     stabFocalMm, stabTrimMs);
+    r.input.request.asyncRefine = asyncRefine;
     r.input.source = src;
     r.input.frameIndex = frameIndex;
     r.input.gyro = gyro;
@@ -2118,7 +2248,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         const StabResolution stab =
             resolveStabilization(env, gyroPath, stabMode, stabStrength,
                                  stabZoomLimit, stabFocalMm, stabTrimMs,
-                                 s, frameIndex, &e.stabPlan);
+                                 s, frameIndex, &e.stabPlan,
+                                 /*asyncRefine=*/true);
         if (!stab.ok) return nullptr;
 
         // 1. Frame read — through the ring, so with temporal NR on the
@@ -2226,7 +2357,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         const StabResolution stab =
             resolveStabilization(env, gyroPath, stabMode, stabStrength,
                                  stabZoomLimit, stabFocalMm, stabTrimMs,
-                                 s, frameIndex, &e.stabPlan);
+                                 s, frameIndex, &e.stabPlan,
+                                 /*asyncRefine=*/true);
         if (!stab.ok) return nullptr;
 
         // 1. Decode only when the requested frame is not the cached one —
@@ -4262,8 +4394,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabZoomProbe(
     // fix): a probe at the same request + recorded dims as a previous
     // probe or render SERVES from it, and a first probe WARMS it for the
     // renders that follow — the probe is the settle-time plan builder.
-    const StabRequest req = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
-                                          stabFocalMm, stabTrimMs);
+    StabRequest req = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
+                                    stabFocalMm, stabTrimMs);
+    req.asyncRefine = true;  // UI readout: never block
     rawedit::StabilizationFrame frame;
     StabMeasure measure;
     stabilizationFrameFor(req, *s, /*frameIndex=*/0, bufW, bufH, gyro,
@@ -4334,7 +4467,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabWarpResolve(
         JNIEnv* env, jclass, jlong handle, jstring gyroPath,
         jint stabMode, jfloat stabStrength, jfloat stabZoomLimit,
         jfloat stabFocalMm, jfloat stabTrimMs,
-        jint frameIndex, jint maxDim) {
+        jint frameIndex, jint maxDim, jboolean asyncRefine) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageDevelop;
     rawedit::Source* s = sourceFor(handle);
@@ -4367,8 +4500,9 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabWarpResolve(
     // dims, riding the handle's Entry plan cache (once per key change, the
     // 2026-11-13 perf fix — the resolver runs per frame, so the cache is
     // what keeps it cheap).
-    const StabRequest req = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
-                                          stabFocalMm, stabTrimMs);
+    StabRequest req = stabRequestOf(stabMode, stabStrength, stabZoomLimit,
+                                    stabFocalMm, stabTrimMs);
+    req.asyncRefine = asyncRefine == JNI_TRUE;
     rawedit::StabilizationFrame frame;
     StabMeasure measure;
     bool planFromCache = false;
