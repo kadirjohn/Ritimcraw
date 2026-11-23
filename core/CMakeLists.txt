@@ -62,11 +62,17 @@ add_library(rawedit STATIC
     src/RawStats.cpp
     src/Parallel.cpp
     src/ImageStab.cpp
+    src/ImageStabSource.cpp
+    src/ImageStabPlan.cpp
     src/Yuv.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
 set_source_files_properties(src/Yuv.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# ImageStabPlan.cpp: a pure double-precision plan that must round the same
+# on every target (preview == export == timeline); same opt-out.
+set_source_files_properties(src/ImageStabPlan.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)

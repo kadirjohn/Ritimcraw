@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace rawedit {
@@ -153,31 +154,30 @@ std::vector<Pt> pickCorners(const ImagePyramid& P, const ImageStabOptions& o) {
         ixy[i] = a * b;
         iyy[i] = b * b;
     }
-    // Separable box sums (horizontal then vertical), zero outside.
+    // Separable 5x5 box sums with sliding windows (zero outside).
     auto box = [&](std::vector<float>& v) {
         std::vector<float> tmp(v.size());
         for (int y = 0; y < h; ++y) {
             const float* r = &v[static_cast<size_t>(y) * w];
             float* t = &tmp[static_cast<size_t>(y) * w];
+            float s = 0;
+            for (int k = 0; k <= R && k < w; ++k) s += r[k];
             for (int x = 0; x < w; ++x) {
-                float s = 0;
-                for (int k = -R; k <= R; ++k) {
-                    const int xx = x + k;
-                    if (xx >= 0 && xx < w) s += r[xx];
-                }
                 t[x] = s;
+                if (x + R + 1 < w) s += r[x + R + 1];
+                if (x - R >= 0) s -= r[x - R];
             }
         }
+        std::vector<float> col(static_cast<size_t>(w), 0.0f);
+        for (int k = 0; k <= R && k < h; ++k)
+            for (int x = 0; x < w; ++x) col[x] += tmp[static_cast<size_t>(k) * w + x];
         for (int y = 0; y < h; ++y) {
             float* r = &v[static_cast<size_t>(y) * w];
-            for (int x = 0; x < w; ++x) {
-                float s = 0;
-                for (int k = -R; k <= R; ++k) {
-                    const int yy = y + k;
-                    if (yy >= 0 && yy < h) s += tmp[static_cast<size_t>(yy) * w + x];
-                }
-                r[x] = s;
-            }
+            for (int x = 0; x < w; ++x) r[x] = col[x];
+            if (y + R + 1 < h)
+                for (int x = 0; x < w; ++x) col[x] += tmp[static_cast<size_t>(y + R + 1) * w + x];
+            if (y - R >= 0)
+                for (int x = 0; x < w; ++x) col[x] -= tmp[static_cast<size_t>(y - R) * w + x];
         }
     };
     box(ixx);
@@ -547,6 +547,296 @@ PairMotion estimatePair(const ImagePyramid& A, const ImagePyramid& B,
     }
     if (times) times->fitMs += msSince(t);
     return out;
+}
+
+// =========================================================================
+// S2
+// =========================================================================
+
+bool cfaToLuma(const uint16_t* cfa, int cfaW, int cfaH, const int32_t black[4],
+               int32_t white, int targetLongSide, std::vector<uint8_t>& out,
+               int& outW, int& outH) {
+    if (!cfa || cfaW < 4 || cfaH < 4 || targetLongSide < 16) return false;
+    const int cw = cfaW / 2, ch = cfaH / 2;  // 2x2 cells
+    const int f = std::max(1, static_cast<int>(std::lround(
+                                  static_cast<double>(std::max(cw, ch)) / targetLongSide)));
+    outW = cw / f;
+    outH = ch / f;
+    if (outW < 16 || outH < 16) return false;
+    float inv[4];
+    for (int k = 0; k < 4; ++k) {
+        const int32_t r = white > black[k] ? white - black[k] : 1;
+        inv[k] = 1.0f / static_cast<float>(r);
+    }
+    out.assign(static_cast<size_t>(outW) * outH, 0);
+    std::vector<float> acc(static_cast<size_t>(outW));
+    const float norm = 1.0f / static_cast<float>(4 * f * f);
+    for (int oy = 0; oy < outH; ++oy) {
+        std::fill(acc.begin(), acc.end(), 0.0f);
+        for (int cy = oy * f; cy < oy * f + f; ++cy) {
+            const uint16_t* r0 = cfa + static_cast<size_t>(2 * cy) * cfaW;
+            const uint16_t* r1 = r0 + cfaW;
+            for (int ox = 0; ox < outW; ++ox) {
+                float sum = 0.0f;
+                for (int cx = ox * f; cx < ox * f + f; ++cx) {
+                    const int a = static_cast<int>(r0[2 * cx]) - black[0];
+                    const int b = static_cast<int>(r0[2 * cx + 1]) - black[1];
+                    const int c = static_cast<int>(r1[2 * cx]) - black[2];
+                    const int d = static_cast<int>(r1[2 * cx + 1]) - black[3];
+                    sum += (a > 0 ? a * inv[0] : 0.0f) + (b > 0 ? b * inv[1] : 0.0f) +
+                           (c > 0 ? c * inv[2] : 0.0f) + (d > 0 ? d * inv[3] : 0.0f);
+                }
+                acc[ox] += sum;
+            }
+        }
+        uint8_t* o = &out[static_cast<size_t>(oy) * outW];
+        for (int ox = 0; ox < outW; ++ox) {
+            const float v = std::min(1.0f, acc[ox] * norm);
+            o[ox] = static_cast<uint8_t>(std::sqrt(v) * 255.0f + 0.5f);
+        }
+    }
+    return true;
+}
+
+PairRecord toRecord(int64_t ptsUs, const PairMotion& m) {
+    PairRecord r;
+    r.ptsUs = ptsUs;
+    r.tx = static_cast<float>(m.tx);
+    r.ty = static_cast<float>(m.ty);
+    r.logS = static_cast<float>(m.logS);
+    r.theta = static_cast<float>(m.theta);
+    r.inlierRatio8 = static_cast<uint8_t>(std::lround(std::min(1.0f, std::max(0.0f, m.inlierRatio)) * 255.0f));
+    r.coverage8 = static_cast<uint8_t>(std::lround(std::min(1.0f, std::max(0.0f, m.coverage)) * 255.0f));
+    r.nInliers = m.nInliers;
+    r.residualMilliPx = static_cast<uint16_t>(std::min(65535.0f, std::max(0.0f, m.residualRms * 1000.0f + 0.5f)));
+    r.status = static_cast<uint8_t>(m.status);
+    return r;
+}
+
+PairMotion toMotion(const PairRecord& r) {
+    PairMotion m;
+    m.tx = r.tx;
+    m.ty = r.ty;
+    m.logS = r.logS;
+    m.theta = r.theta;
+    m.inlierRatio = r.inlierRatio8 / 255.0f;
+    m.coverage = r.coverage8 / 255.0f;
+    m.residualRms = r.residualMilliPx / 1000.0f;
+    m.nInliers = r.nInliers;
+    m.nTracked = r.nInliers;  // not stored; inliers is the honest lower bound
+    m.status = r.status <= 2 ? static_cast<PairStatus>(r.status) : PairStatus::Lost;
+    return m;
+}
+
+uint32_t crc32Ieee(const uint8_t* p, size_t n) {
+    static uint32_t table[256];
+    static bool init = false;
+    if (!init) {  // benign race: identical values written
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[i] = c;
+        }
+        init = true;
+    }
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; ++i) c = table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+
+namespace {
+constexpr uint32_t kMagic = 0x54534952u;  // "RIST" little-endian
+constexpr uint32_t kFormatVersion = 1;
+constexpr size_t kHeaderBytes = 56;
+constexpr size_t kRecBytes = 32;
+
+void put32(std::vector<uint8_t>& b, uint32_t v) {
+    for (int i = 0; i < 4; ++i) b.push_back(static_cast<uint8_t>(v >> (8 * i)));
+}
+void put64(std::vector<uint8_t>& b, uint64_t v) {
+    for (int i = 0; i < 8; ++i) b.push_back(static_cast<uint8_t>(v >> (8 * i)));
+}
+void put16(std::vector<uint8_t>& b, uint16_t v) {
+    b.push_back(static_cast<uint8_t>(v));
+    b.push_back(static_cast<uint8_t>(v >> 8));
+}
+void putF(std::vector<uint8_t>& b, float f) {
+    uint32_t u;
+    std::memcpy(&u, &f, 4);
+    put32(b, u);
+}
+uint32_t get32(const uint8_t* p) {
+    return p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+uint64_t get64(const uint8_t* p) {
+    return static_cast<uint64_t>(get32(p)) | (static_cast<uint64_t>(get32(p + 4)) << 32);
+}
+float getF(const uint8_t* p) {
+    const uint32_t u = get32(p);
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
+}  // namespace
+
+std::vector<uint8_t> serializeImagePath(const ImagePath& p) {
+    std::vector<uint8_t> b;
+    b.reserve(kHeaderBytes + p.recs.size() * kRecBytes);
+    put32(b, kMagic);
+    put32(b, kFormatVersion);
+    put32(b, p.analysisVersion);
+    put32(b, p.workW);
+    put32(b, p.workH);
+    put32(b, p.frameCount);
+    put32(b, p.complete ? 1u : 0u);                       // flags
+    put32(b, static_cast<uint32_t>(p.recs.size()));        // analyzedUpTo
+    put64(b, p.recs.empty() ? 0 : static_cast<uint64_t>(p.recs.front().ptsUs));
+    put64(b, p.recs.empty() ? 0 : static_cast<uint64_t>(p.recs.back().ptsUs));
+    put32(b, 0);  // crc placeholder (offset 48)
+    put32(b, 0);  // reserved
+    for (const PairRecord& r : p.recs) {
+        put64(b, static_cast<uint64_t>(r.ptsUs));
+        putF(b, r.tx);
+        putF(b, r.ty);
+        putF(b, r.logS);
+        putF(b, r.theta);
+        b.push_back(r.inlierRatio8);
+        b.push_back(r.coverage8);
+        put16(b, r.nInliers);
+        put16(b, r.residualMilliPx);
+        b.push_back(r.status);
+        b.push_back(0);
+    }
+    const uint32_t crc = crc32Ieee(b.data(), b.size());  // crc field is zero here
+    for (int i = 0; i < 4; ++i) b[48 + i] = static_cast<uint8_t>(crc >> (8 * i));
+    return b;
+}
+
+PathParse parseImagePath(const uint8_t* p, size_t n, ImagePath& out) {
+    if (n < kHeaderBytes) return PathParse::Truncated;
+    if (get32(p) != kMagic) return PathParse::BadMagic;
+    if (get32(p + 4) != kFormatVersion) return PathParse::BadVersion;
+    if (get32(p + 8) != kImageStabAnalysisVersion) return PathParse::BadVersion;
+    const uint32_t upTo = get32(p + 28);
+    if (n < kHeaderBytes + static_cast<size_t>(upTo) * kRecBytes) return PathParse::Truncated;
+    const size_t total = kHeaderBytes + static_cast<size_t>(upTo) * kRecBytes;
+    std::vector<uint8_t> copy(p, p + total);
+    const uint32_t stored = get32(copy.data() + 48);
+    std::memset(copy.data() + 48, 0, 4);
+    if (crc32Ieee(copy.data(), copy.size()) != stored) return PathParse::BadCrc;
+    ImagePath r;
+    r.analysisVersion = get32(p + 8);
+    r.workW = get32(p + 12);
+    r.workH = get32(p + 16);
+    r.frameCount = get32(p + 20);
+    r.complete = (get32(p + 24) & 1u) != 0;
+    r.recs.resize(upTo);
+    for (uint32_t i = 0; i < upTo; ++i) {
+        const uint8_t* q = p + kHeaderBytes + static_cast<size_t>(i) * kRecBytes;
+        PairRecord& rec = r.recs[i];
+        rec.ptsUs = static_cast<int64_t>(get64(q));
+        rec.tx = getF(q + 8);
+        rec.ty = getF(q + 12);
+        rec.logS = getF(q + 16);
+        rec.theta = getF(q + 20);
+        rec.inlierRatio8 = q[24];
+        rec.coverage8 = q[25];
+        rec.nInliers = static_cast<uint16_t>(q[26] | (q[27] << 8));
+        rec.residualMilliPx = static_cast<uint16_t>(q[28] | (q[29] << 8));
+        rec.status = q[30];
+    }
+    if (r.complete && r.recs.size() != r.frameCount) return PathParse::Mismatch;
+    out = std::move(r);
+    return PathParse::Ok;
+}
+
+bool writeImagePathFile(const std::string& file, const ImagePath& p) {
+    const std::vector<uint8_t> b = serializeImagePath(p);
+    const std::string tmp = file + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) return false;
+    const bool ok = std::fwrite(b.data(), 1, b.size(), f) == b.size();
+    const bool closed = std::fclose(f) == 0;
+    if (!ok || !closed) {
+        std::remove(tmp.c_str());
+        return false;
+    }
+    if (std::rename(tmp.c_str(), file.c_str()) != 0) {
+        std::remove(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
+PathParse readImagePathFile(const std::string& file, ImagePath& out) {
+    FILE* f = std::fopen(file.c_str(), "rb");
+    if (!f) return PathParse::Truncated;
+    std::vector<uint8_t> b;
+    uint8_t buf[65536];
+    size_t k;
+    while ((k = std::fread(buf, 1, sizeof buf, f)) > 0) b.insert(b.end(), buf, buf + k);
+    std::fclose(f);
+    return parseImagePath(b.data(), b.size(), out);
+}
+
+bool priorFromRecords(const std::vector<PairRecord>& recs, size_t i, PairMotion& out) {
+    for (size_t back = 1; back <= 2; ++back) {
+        if (i < back) return false;
+        if (i - back == 0) return false;  // record 0 is the identity placeholder
+        const PairRecord& r = recs[i - back];
+        if (r.status != static_cast<uint8_t>(PairStatus::Lost)) {
+            out = toMotion(r);
+            return true;
+        }
+    }
+    return false;
+}
+
+ImageStabAnalyzer::ImageStabAnalyzer(const ImageStabOptions& opts, uint32_t expectedFrames)
+    : opts_(opts) {
+    path_.frameCount = expectedFrames;
+}
+
+bool ImageStabAnalyzer::resume(const ImagePath& partial) {
+    if (partial.analysisVersion != kImageStabAnalysisVersion || partial.recs.empty() ||
+        partial.complete || partial.frameCount != path_.frameCount)
+        return false;
+    path_ = partial;
+    havePrev_ = false;
+    return true;
+}
+
+void ImageStabAnalyzer::seed(const LumaFrame& f) {
+    prev_ = buildPyramid(f, opts_.levels);
+    havePrev_ = true;
+    path_.workW = static_cast<uint32_t>(f.w);
+    path_.workH = static_cast<uint32_t>(f.h);
+}
+
+void ImageStabAnalyzer::push(const LumaFrame& f, int64_t ptsUs) {
+    const auto t0 = Clock::now();
+    ImagePyramid cur = buildPyramid(f, opts_.levels);
+    times_.pyramidMs += msSince(t0);
+    if (path_.workW == 0) {
+        path_.workW = static_cast<uint32_t>(f.w);
+        path_.workH = static_cast<uint32_t>(f.h);
+    }
+    if (!havePrev_ && path_.recs.empty()) {
+        PairMotion id;
+        id.status = PairStatus::Ok;
+        id.inlierRatio = 1.0f;
+        id.coverage = 1.0f;
+        path_.recs.push_back(toRecord(ptsUs, id));
+    } else {
+        PairMotion prior;
+        const bool hasPrior = priorFromRecords(path_.recs, path_.recs.size(), prior);
+        const PairMotion m =
+            estimatePair(prev_, cur, opts_, hasPrior ? &prior : nullptr, &times_);
+        path_.recs.push_back(toRecord(ptsUs, m));
+    }
+    prev_ = std::move(cur);
+    havePrev_ = true;
+    if (path_.recs.size() == path_.frameCount) path_.complete = true;
 }
 
 }  // namespace rawedit
