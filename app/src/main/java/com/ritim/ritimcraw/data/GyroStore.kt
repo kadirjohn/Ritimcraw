@@ -128,12 +128,10 @@ class GyroStore(
             renderedSection = renderGyrosArray(gyros),
             version = SCHEMA_VERSION,
         )
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(merged, Charsets.UTF_8)
-        if (!tmp.renameTo(file)) {
-            file.writeText(merged, Charsets.UTF_8)
-            tmp.delete()
-        }
+        // AtomicFiles via the single write gate (plan §6.5/F1-2): tmp +
+        // fsync + atomic rename, and an observable no-op when the process
+        // is read-only (a newer build's project file).
+        ProjectFile.writeTextIfWritable(file, merged)
     }
 
     companion object {

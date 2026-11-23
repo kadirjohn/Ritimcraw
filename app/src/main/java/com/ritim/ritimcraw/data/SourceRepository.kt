@@ -505,12 +505,10 @@ class SourceRepository(
         store.parentFile?.mkdirs()
         val text = store.takeIf { it.exists() }?.readText(Charsets.UTF_8)
         val merged = mergeInto(text, sources)
-        val tmp = File(store.parentFile, store.name + ".tmp")
-        tmp.writeText(merged, Charsets.UTF_8)
-        if (!tmp.renameTo(store)) {
-            store.writeText(merged, Charsets.UTF_8)
-            tmp.delete()
-        }
+        // AtomicFiles via the single write gate (plan §6.5/F1-2): tmp +
+        // fsync + atomic rename, and an observable no-op when the process
+        // is read-only (a newer build's project file).
+        ProjectFile.writeTextIfWritable(store, merged)
     }
 
     companion object {

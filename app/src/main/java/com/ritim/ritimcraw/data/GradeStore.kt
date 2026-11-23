@@ -282,7 +282,9 @@ class GradeStore(private val file: File) {
     /** Crash-safe: temp -> fsync -> atomic rename (see [AtomicFiles]). */
     private fun write(grades: Map<String, GradeK>) {
         val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
-        AtomicFiles.writeText(file, mergeInto(text, grades))
+        // The single write gate (plan §6.5/F1-2): same atomic write when
+        // writable, an observable no-op when the process is read-only.
+        ProjectFile.writeTextIfWritable(file, mergeInto(text, grades))
     }
 
     companion object {

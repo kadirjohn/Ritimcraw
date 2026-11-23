@@ -50,12 +50,9 @@ class GyroFolderStore(private val file: File) {
             if (!file.exists()) return
             val text = file.readText(StandardCharsets.UTF_8)
             val merged = mergeInto(text, null)
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(merged, StandardCharsets.UTF_8)
-            if (!tmp.renameTo(file)) {
-                file.writeText(merged, StandardCharsets.UTF_8)
-                tmp.delete()
-            }
+            // The single write gate (plan §6.5/F1-2): atomic, and an
+            // observable no-op when the process is read-only.
+            ProjectFile.writeTextIfWritable(file, merged)
         }
     }
 
@@ -78,14 +75,9 @@ class GyroFolderStore(private val file: File) {
         val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
         val merged = mergeInto(text, uri)
         file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(merged, StandardCharsets.UTF_8)
-        if (!tmp.renameTo(file)) {
-            // Rename can fail across filesystems; fall back to
-            // copy+delete (the GradeStore pattern).
-            file.writeText(merged, StandardCharsets.UTF_8)
-            tmp.delete()
-        }
+        // The single write gate (plan §6.5/F1-2): atomic, and an
+        // observable no-op when the process is read-only.
+        ProjectFile.writeTextIfWritable(file, merged)
     }
 
     companion object {

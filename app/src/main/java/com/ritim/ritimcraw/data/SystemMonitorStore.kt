@@ -19,12 +19,9 @@ class SystemMonitorStore(private val file: File) {
             val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
             val merged = mergeInto(text, visible)
             file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(merged, StandardCharsets.UTF_8)
-            if (!tmp.renameTo(file)) {
-                file.writeText(merged, StandardCharsets.UTF_8)
-                tmp.delete()
-            }
+            // The single write gate (plan §6.5/F1-2): atomic, and an
+            // observable no-op when the process is read-only.
+            ProjectFile.writeTextIfWritable(file, merged)
         }
     }
 

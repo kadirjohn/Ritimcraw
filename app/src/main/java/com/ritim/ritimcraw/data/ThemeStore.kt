@@ -79,14 +79,10 @@ class ThemeStore(private val file: File) {
             val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
             val merged = mergeInto(text, mode)
             file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(merged, StandardCharsets.UTF_8)
-            if (!tmp.renameTo(file)) {
-                // Rename can fail across filesystems; fall back to
-                // copy+delete (GradeStore's pattern).
-                file.writeText(merged, StandardCharsets.UTF_8)
-                tmp.delete()
-            }
+            // AtomicFiles via the single write gate (plan §6.5/F1-2):
+            // tmp + fsync + atomic rename, and an observable no-op when
+            // the process is read-only (a newer build's project file).
+            ProjectFile.writeTextIfWritable(file, merged)
         }
     }
 

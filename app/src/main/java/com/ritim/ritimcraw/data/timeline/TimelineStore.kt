@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.data.timeline
 
 import com.ritim.ritimcraw.data.JsonParser
+import com.ritim.ritimcraw.data.ProjectFile
 import com.ritim.ritimcraw.data.ProjectJson
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -87,13 +88,10 @@ class TimelineStore(private val file: File) {
             renderedSection = renderTimeline(project),
             version = SCHEMA_VERSION,
         )
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(merged, StandardCharsets.UTF_8)
-        if (!tmp.renameTo(file)) {
-            // Rename can fail across filesystems; fall back to copy+delete.
-            file.writeText(merged, StandardCharsets.UTF_8)
-            tmp.delete()
-        }
+        // AtomicFiles via the single write gate (plan §6.5/F1-2): tmp +
+        // fsync + atomic rename, and an observable no-op when the process
+        // is read-only (a newer build's project file).
+        ProjectFile.writeTextIfWritable(file, merged)
     }
 
     companion object {
