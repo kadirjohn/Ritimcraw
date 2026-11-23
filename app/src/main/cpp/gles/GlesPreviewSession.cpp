@@ -84,8 +84,26 @@
 #include <GLES3/gl31.h>
 #include <android/log.h>
 
+// GL_EXT_disjoint_timer_query tokens (ES 3.0 lets the extension's
+// TIME_ELAPSED target ride the core glBeginQuery/glEndQuery/
+// glGetQueryObjectuiv entry points, so no proc-address lookup is needed).
+#ifndef GL_TIME_ELAPSED_EXT
+#define GL_TIME_ELAPSED_EXT 0x88BF
+#endif
+#ifndef GL_GPU_DISJOINT_EXT
+#define GL_GPU_DISJOINT_EXT 0x8FBB
+#endif
+
 namespace gles {
 namespace {
+
+// The app's cumulative GPU time on the preview path (system monitor strip,
+// 2026-11-23): device GPU-busy sysfs nodes are SELinux-blocked for apps, so
+// the strip shows the app's OWN GPU share — the sum of every preview frame's
+// GL_TIME_ELAPSED query, read back non-blocking a few frames later. Kotlin
+// samples the counter once a second and divides the delta by wall time.
+std::atomic<uint64_t> gPreviewGpuNanos{0};
+std::atomic<bool> gPreviewGpuTimerOk{false};
 
 // ---- GL helpers — verbatim from GlesPipeline.cpp's anonymous namespace
 // ---- (same keep-in-sync rule). -------------------------------------------
@@ -212,6 +230,12 @@ bool windowProbeEnabled() {
     return gWindowProbe.load(std::memory_order_relaxed);
 }
 
+int64_t previewGpuNanosTotal() {
+    return gPreviewGpuTimerOk.load(std::memory_order_relaxed)
+        ? static_cast<int64_t>(gPreviewGpuNanos.load(std::memory_order_relaxed))
+        : -1;
+}
+
 // ---- Impl -----------------------------------------------------------------
 
 struct PreviewSession::Impl {
@@ -310,6 +334,17 @@ struct PreviewSession::Impl {
     // shape per attach, none per frame.
     bool probeGeometryLogged = false;
     uint32_t probeW = 0, probeH = 0;
+
+    // GPU time measurement (system monitor): a ring of TIME_ELAPSED
+    // queries, one per frame, harvested when their result is available —
+    // never a blocking read. Only one TIME_ELAPSED query may be active at a
+    // time; runJob's FrameGpuTimer scope owns it.
+    static constexpr int kGpuQueryCount = 4;
+    bool timerQueryOk = false;
+    GLuint gpuQueries[kGpuQueryCount] = {};
+    bool gpuQueryPending[kGpuQueryCount] = {};
+    int gpuQueryNext = 0;
+    void harvestGpuQueries();
 
     // The first-frame fence's latch (white-window round 5, kept through
     // round 6, GL-thread state): the develop resolution whose first
@@ -685,6 +720,12 @@ bool PreviewSession::Impl::initOnGlThread(
     const bool floatLinearAdvertised =
         extensions.find("GL_OES_texture_float_linear") != std::string::npos;
     (void)floatLinearAdvertised;  // recorded above; never fed — the pin
+    timerQueryOk = extensions.find("GL_EXT_disjoint_timer_query") != std::string::npos;
+    if (timerQueryOk) {
+        glGenQueries(kGpuQueryCount, gpuQueries);
+        if (glGetError() != GL_NO_ERROR) timerQueryOk = false;
+    }
+    gPreviewGpuTimerOk.store(timerQueryOk, std::memory_order_relaxed);
 
     // --- the shared develop chain, compiled ONCE by the pipeline ------------
     // The pipeline owns the twelve chain+store programs, every chain uniform
@@ -859,8 +900,50 @@ void PreviewSession::Impl::runSurfaceJob(ANativeWindow* window,
 
 // ---- the frame job ------------------------------------------------------------
 
+void PreviewSession::Impl::harvestGpuQueries() {
+    for (int i = 0; i < kGpuQueryCount; ++i) {
+        if (!gpuQueryPending[i]) continue;
+        GLuint available = 0;
+        glGetQueryObjectuiv(gpuQueries[i], GL_QUERY_RESULT_AVAILABLE, &available);
+        if (available == 0) continue;
+        GLuint ns = 0;
+        glGetQueryObjectuiv(gpuQueries[i], GL_QUERY_RESULT, &ns);
+        gpuQueryPending[i] = false;
+        GLint disjoint = 0;
+        glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+        if (disjoint == 0) {
+            gPreviewGpuNanos.fetch_add(ns, std::memory_order_relaxed);
+        }
+    }
+    while (glGetError() != GL_NO_ERROR) {}  // never leak into the frame's checks
+}
+
 void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                                    PreviewFrameResult& out) {
+    // The frame's GPU-time scope (system monitor): harvests finished
+    // queries, begins this frame's TIME_ELAPSED query when its ring slot is
+    // free, and ends it on EVERY exit path (destructor) — the whole frame's
+    // GL work (chain, present, stats) lands inside it.
+    struct FrameGpuTimer {
+        Impl& s;
+        bool active = false;
+        explicit FrameGpuTimer(Impl& self) : s(self) {
+            if (!s.timerQueryOk) return;
+            s.harvestGpuQueries();
+            const int slot = s.gpuQueryNext;
+            if (s.gpuQueryPending[slot]) return;  // GPU >4 frames behind: skip
+            glBeginQuery(GL_TIME_ELAPSED_EXT, s.gpuQueries[slot]);
+            if (glGetError() != GL_NO_ERROR) return;
+            active = true;
+        }
+        ~FrameGpuTimer() {
+            if (!active) return;
+            glEndQuery(GL_TIME_ELAPSED_EXT);
+            while (glGetError() != GL_NO_ERROR) {}
+            s.gpuQueryPending[s.gpuQueryNext] = true;
+            s.gpuQueryNext = (s.gpuQueryNext + 1) % kGpuQueryCount;
+        }
+    } frameGpuTimer(*this);
     // The whole chain — the input contract, the CPU-side uniform math, the
     // once-per-resolution allocation, the shading + LUT upload caches, the
     // PRE -> [NR] -> POST -> [unsharp] -> [WARP] -> TAIL draw sequence with
@@ -1735,6 +1818,11 @@ void PreviewSession::Impl::teardownOnGlThread() {
     // deletes them, on this same GL thread with this session's context
     // still current.
     pipeline.teardown();
+    if (timerQueryOk) {
+        glDeleteQueries(kGpuQueryCount, gpuQueries);
+        timerQueryOk = false;
+        gPreviewGpuTimerOk.store(false, std::memory_order_relaxed);
+    }
     if (twinFbo != 0) { glDeleteFramebuffers(1, &twinFbo); twinFbo = 0; }
     if (twinTex != 0) { glDeleteTextures(1, &twinTex); twinTex = 0; }
     twinAllocW = 0;

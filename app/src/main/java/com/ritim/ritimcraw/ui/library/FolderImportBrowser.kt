@@ -17,8 +17,8 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import com.ritim.ritimcraw.ui.components.AdaptiveMinGridCells
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -350,7 +350,7 @@ fun FolderImportBrowser(
                         EmptyFolder(Modifier.weight(1f))
                     } else {
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(3),
+                            columns = AdaptiveMinGridCells(),
                             modifier = Modifier.weight(1f).fillMaxWidth(),
                             // 16dp screen gutters (DESIGN.md Layout), 8dp
                             // between cells (8dp groups); no FAB, so no
