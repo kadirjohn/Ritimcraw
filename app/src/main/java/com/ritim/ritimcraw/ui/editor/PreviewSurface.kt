@@ -303,6 +303,11 @@ fun PreviewSurface(
     // surface is a lifecycle signal, never a render failure). Null keeps
     // the SurfaceView inert (never composed) at every existing call site.
     onGpuSurfaceChanged: ((surface: Any?) -> Unit)? = null,
+    // DEBUG-only path badge (2026-11-23, owner report: GPU preview shows no
+    // change on slider moves — the owner needs to SEE which path rendered
+    // the last frame): "GPU" / "CPU", null (the default and every release
+    // call site) draws nothing. The caller gates it on BuildConfig.DEBUG.
+    debugPathBadge: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val currentGpuSurfaceChanged by rememberUpdatedState(onGpuSurfaceChanged)
@@ -634,6 +639,23 @@ fun PreviewSurface(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(32.dp),
                 )
+            }
+            // The debug path badge: tiny, top-start, over the picture.
+            if (debugPathBadge != null && f != null) {
+                Surface(
+                    color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(4.dp),
+                ) {
+                    Text(
+                        debugPathBadge,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = androidx.compose.ui.graphics.Color.White,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                    )
+                }
             }
         }
     }

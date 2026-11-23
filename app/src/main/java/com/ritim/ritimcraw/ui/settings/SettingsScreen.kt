@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -127,6 +128,9 @@ fun SettingsScreen(
     // the old codec AlertDialog): AppNav owns the route flag.
     onOpenDeviceReport: () -> Unit = {},
     onMeasure: (() -> Unit)? = null,
+    // Debug-only GPU-vs-CPU per-control parity sweep (2026-11-23, owner
+    // report: GPU preview shows no change on slider moves); null in release.
+    onGradeSweep: (() -> Unit)? = null,
     measuring: Boolean = false,
     // ---- Preview quality (owner request 2026-11-11b section 3) ----
     // The persisted level (AppNav reads PreviewQualityStore) and the
@@ -361,6 +365,21 @@ fun SettingsScreen(
                             lineHeight = 20.sp,
                             fontWeight = FontWeight.SemiBold,
                         ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (onGradeSweep != null) {
+                OutlinedButton(
+                    onClick = onGradeSweep,
+                    enabled = !measuring,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_grade_sweep),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

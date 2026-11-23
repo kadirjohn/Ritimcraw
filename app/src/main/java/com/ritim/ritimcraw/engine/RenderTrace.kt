@@ -228,4 +228,31 @@ object RenderTrace {
     fun log(record: Record) {
         if (enabled) Log.i(TAG, line(record))
     }
+
+    /**
+     * GPU grade-handoff summary (2026-11-23, owner report: the GPU preview
+     * shows no change when a develop slider moves). The develop controls
+     * the Kotlin GPU arm hands to gpu.render, as one compact line that
+     * pairs with the native `pass probe: uniforms ... grade[...]` /
+     * `window probe: ... grade[...]` lines (same field set and number
+     * formats) — a mismatch between the two sides names the seam that
+     * dropped the move. Pure so it is unit-testable.
+     */
+    fun gpuGradeSummary(g: GradeK, frameIndex: Int, maxDim: Int, sequence: Long): String =
+        String.format(
+            java.util.Locale.US,
+            "gpu grade seq=%d frame=%d maxDim=%d grade[ev=%.3f hi=%.1f bp=%.1f wp=%.1f sh=%.1f " +
+                "mid=%.1f con=%.1f sat=%.1f temp=%.0f tint=%.1f asShot=%d sharp=%.1f det=%.1f " +
+                "nr=(%.1f,%.1f) tm=%d]",
+            sequence, frameIndex, maxDim,
+            g.exposureEv, g.highlights, g.blackPoint, g.whitePoint, g.shadows,
+            g.midtones, g.contrast, g.saturation, g.tempK, g.tint,
+            if (g.asShot) 1 else 0, g.sharpness, g.detail,
+            g.chromaDenoise, g.noiseReduction, g.tonemap,
+        )
+
+    /** Debug-only, rate-limited by the caller to grade changes. */
+    fun logGpuGrade(g: GradeK, frameIndex: Int, maxDim: Int, sequence: Long) {
+        if (enabled) Log.i(TAG, gpuGradeSummary(g, frameIndex, maxDim, sequence))
+    }
 }

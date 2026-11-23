@@ -369,6 +369,19 @@ struct PreviewSession::Impl {
     // the whole ladder (probeW/H reset re-fires the first line).
     bool probeSecondShot = false;
 
+    // GRADE-CHANGE RE-ARM (2026-11-23, owner report: the GPU preview does not
+    // change when a develop slider moves; DEBUG probe only). [probeGradeHash]
+    // is the hash of the develop controls the GPU actually decoded on the
+    // last probed frame; a different hash re-arms BOTH probes (the pass
+    // probe and the window probe) for that frame so one slider move leaves
+    // a before/after pair of "pass probe:" + "window probe:" lines carrying
+    // the grade summary. [probeGradeAt] rate-limits the re-arm to one per
+    // kProbeGradeGapMs (a drag would otherwise pay six float readbacks per
+    // frame).
+    uint64_t probeGradeHash = 0;
+    std::chrono::steady_clock::time_point probeGradeAt{};
+    static constexpr int kProbeGradeGapMs = 150;
+
     // --- Handoff state (guarded by [mutex]) --------------------------------
     std::mutex mutex;
     std::condition_variable cvRequest;
@@ -955,9 +968,22 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // the develop dims draw() will report), so each "window probe: shot="
     // line is preceded by that frame's "pass probe:" lines. DEBUG-only via
     // the same windowProbeEnabled() gate; release builds never arm it.
+    // GRADE-CHANGE RE-ARM (2026-11-23): see probeGradeHash. Computed once
+    // per frame, DEBUG only (the gate short-circuits in release).
+    bool gradeProbeFire = false;
+    if (windowProbeEnabled() && windowSurface != EGL_NO_SURFACE) {
+        const uint64_t gh = gradeProbeHash(req);
+        const auto nowTp = std::chrono::steady_clock::now();
+        if (gh != probeGradeHash &&
+            nowTp - probeGradeAt >= std::chrono::milliseconds(kProbeGradeGapMs)) {
+            gradeProbeFire = true;
+            probeGradeHash = gh;
+            probeGradeAt = nowTp;
+        }
+    }
     if (windowProbeEnabled() && windowSurface != EGL_NO_SURFACE &&
         (!probeGeometryLogged || probeW != req.info.width ||
-         probeH != req.info.height || probeSecondShot)) {
+         probeH != req.info.height || probeSecondShot || gradeProbeFire)) {
         pipeline.armPassProbe();
     }
     const GpuDevelopPipeline::DrawResult r = pipeline.draw(req);
@@ -1035,7 +1061,7 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
             // white/partial first line with a colored second line).
             const bool probeThisFrame = windowProbeEnabled() &&
                 (!probeGeometryLogged || probeW != w || probeH != h ||
-                 probeSecondShot);
+                 probeSecondShot || gradeProbeFire);
             GLboolean entryScissor = GL_FALSE;
             GLboolean entryBlend = GL_FALSE;
             GLboolean entryDepth = GL_FALSE;
@@ -1408,7 +1434,7 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                         "win=%dx%d vp=%dx%d "
                         "rect=(%.1f,%.1f,%.1f,%.1f) src=%ux%u orient=%d "
                         "entry[scissor=%d box=(%d,%d,%d,%d) blend=%d depth=%d "
-                        "stencil=%d mask=(%d,%d,%d,%d)]",
+                        "stencil=%d mask=(%d,%d,%d,%d)] grade[%s]",
                         probeResChanged ? 1 : 2,
                         devReadOk ? static_cast<int>(devPx[0]) : -1,
                         devReadOk ? static_cast<int>(devPx[1]) : -1,
@@ -1431,7 +1457,8 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
                         entryDepth ? 1 : 0,
                         entryStencil ? 1 : 0,
                         entryColorMask[0], entryColorMask[1],
-                        entryColorMask[2], entryColorMask[3]);
+                        entryColorMask[2], entryColorMask[3],
+                        gradeProbeSummary(req).c_str());
                     if (probeResChanged) {
                         // A new resolution's first line fired: arm the second
                         // shot so the NEXT frame at THIS resolution logs the

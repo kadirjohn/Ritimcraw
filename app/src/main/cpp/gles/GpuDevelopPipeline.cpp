@@ -47,6 +47,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <utility>
 
 #include <GLES3/gl31.h>
@@ -1055,7 +1056,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
             "invNeutral=(%.4f,%.4f,%.4f) hr=%d hrGain=(%.4f,%.4f,%.4f) "
             "hasProfile=%d cam2rgb=[%.4f %.4f %.4f; %.4f %.4f %.4f; %.4f %.4f %.4f] "
             "exposure=%.4f ev=%.3f nr=(%.1f,%.1f) sharp=%.1f detail=%.1f "
-            "warp=%d tonemap=%d lut=%.2f",
+            "warp=%d tonemap=%d lut=%.2f grade[%s]",
             static_cast<unsigned>(w), static_cast<unsigned>(h),
             cell[0], cell[1], cell[2], cell[3],
             static_cast<double>(white), static_cast<int>(req.meta->white),
@@ -1086,7 +1087,8 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
             static_cast<double>(req.noiseReduction),
             static_cast<double>(req.sharpness), static_cast<double>(req.detail),
             req.warpActive ? 1 : 0, static_cast<int>(req.tonemap),
-            static_cast<double>(req.lutStrength));
+            static_cast<double>(req.lutStrength),
+            gradeProbeSummary(req).c_str());
     }
     auto probePassFbo = [&](const char* tag, GLuint fbo) {
         if (!passProbe) return;
@@ -1888,6 +1890,45 @@ bool GpuDevelopPipeline::init(const std::string& vertexSource,
                        sharpnessVSource, detailHSource, detailVSource,
                        warpFragmentSource, nrChromaHSource, nrChromaVSource,
                        nrLumaSource, storeFragmentSource, config, detail);
+}
+
+std::string gradeProbeSummary(const DevelopFrameRequest& r) {
+    char buf[320];
+    std::snprintf(buf, sizeof(buf),
+        "ev=%.3f hi=%.1f bp=%.1f wp=%.1f sh=%.1f mid=%.1f con=%.1f sat=%.1f "
+        "temp=%.0f tint=%.1f asShot=%d sharp=%.1f det=%.1f nr=(%.1f,%.1f) tm=%d",
+        static_cast<double>(r.exposureEv), static_cast<double>(r.highlights),
+        static_cast<double>(r.blackPoint), static_cast<double>(r.whitePoint),
+        static_cast<double>(r.shadows), static_cast<double>(r.midtones),
+        static_cast<double>(r.contrast), static_cast<double>(r.saturation),
+        static_cast<double>(r.tempK), static_cast<double>(r.tint),
+        r.asShot ? 1 : 0, static_cast<double>(r.sharpness),
+        static_cast<double>(r.detail), static_cast<double>(r.chromaDenoise),
+        static_cast<double>(r.noiseReduction), r.tonemap);
+    return std::string(buf);
+}
+
+uint64_t gradeProbeHash(const DevelopFrameRequest& r) {
+    // FNV-1a over the float bit patterns of every develop control.
+    const float v[] = {
+        r.exposureEv, r.highlights, r.blackPoint, r.whitePoint, r.shadows,
+        r.midtones, r.contrast, r.tempK, r.tint, r.saturation,
+        r.asShot ? 1.0f : 0.0f, r.sharpness, r.detail, r.chromaDenoise,
+        r.noiseReduction, static_cast<float>(r.tonemap),
+        r.wheelShadowX, r.wheelShadowY, r.wheelMidX, r.wheelMidY,
+        r.wheelHighX, r.wheelHighY, r.splitShadowHue, r.splitHighlightHue,
+        r.splitBalance,
+    };
+    uint64_t h = 1469598103934665603ull;
+    for (float f : v) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof(bits));
+        for (int i = 0; i < 4; ++i) {
+            h ^= (bits >> (8 * i)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    }
+    return h;
 }
 
 GpuDevelopPipeline::DrawResult GpuDevelopPipeline::draw(
