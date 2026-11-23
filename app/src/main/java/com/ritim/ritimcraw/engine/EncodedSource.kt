@@ -592,7 +592,18 @@ class EncodedSource(
      * complete message on any failure. Sequential requests never re-seek;
      * a jump seeks to the keyframe at-or-before the target.
      */
-    fun renderFrame(frameIndex: Int, grade: GradeK, lutPath: String? = null): IntArray {
+    fun renderFrame(
+        frameIndex: Int,
+        grade: GradeK,
+        lutPath: String? = null,
+        /**
+         * true (the preview) = rotated upright by the container hint; false
+         * (the export) = the coded orientation - the export pipeline rotates
+         * pixels itself from [EncodedClipInfo.orientationDeg] and the
+         * manual delta, exactly like the MCRAW session.
+         */
+        upright: Boolean = true,
+    ): IntArray {
         val fmt = requireOpen()
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
         val frame = decode(frameIndex)
@@ -600,7 +611,7 @@ class EncodedSource(
         // decoder that returned 8-bit for a 10-bit track is developed (and
         // reported) as 8-bit, never mis-read as 10.
         val color = fmt.color.withDecodedBitDepth(frame.bitDepth)
-        val argb = developer.develop(frame, color, fmt.orientationDeg, grade, lutPath)
+        val argb = developer.develop(frame, color, if (upright) fmt.orientationDeg else 0, grade, lutPath)
             ?: throw IllegalStateException(
                 EncodedErrors.message(developer.code(), developer.stage(), developer.detail())
             )

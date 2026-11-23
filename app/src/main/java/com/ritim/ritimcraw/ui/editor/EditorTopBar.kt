@@ -118,6 +118,10 @@ fun EditorTopBar(
     // MP4 tap passes the selected entry's bound.
     onExport: (Target, Int?, Int?, ExportSettings?) -> Unit,
     exportEnabled: Boolean,
+    // (E0) an encoded (Mi-Log / MP4) clip: the export sheet offers MP4 only
+    // (DNG/Linear DNG are RAW deliverables), and 10-bit is not offered (the
+    // encoded decode path is CPU in v1).
+    encodedSource: Boolean = false,
     // (E1c) how fast this device exported last time, for the sheet's time estimate; null = no estimate yet.
     exportRate: ExportSheetModel.Rate? = null,
     clipInfo: ClipInfo,
@@ -235,6 +239,7 @@ fun EditorTopBar(
             grade = grade,
             manualRotationDeg = manualRotationDeg,
             exportRate = exportRate,
+            encodedSource = encodedSource,
             onExport = { target, resolutionW, resolutionH, settings ->
                 exportSheetOpen = false
                 onExport(target, resolutionW, resolutionH, settings)
@@ -307,6 +312,7 @@ private fun ExportSheet(
     grade: GradeK,
     manualRotationDeg: Int,
     exportRate: ExportSheetModel.Rate?,
+    encodedSource: Boolean = false,
     onExport: (Target, Int?, Int?, ExportSettings?) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -361,7 +367,8 @@ private fun ExportSheet(
         }
     }
     val gradeOnGpu = remember(grade) {
-        BackendRules.fragmentUncoveredStages(grade, true).isEmpty() &&
+        !encodedSource &&
+            BackendRules.fragmentUncoveredStages(grade, true).isEmpty() &&
             BackendRules.fragmentUncoveredPreStages(grade).isEmpty()
     }
     val exportContext = ExportSheetModel.tenBitContext(
@@ -428,8 +435,8 @@ private fun ExportSheet(
             ) {
                 Text(stringResource(R.string.editor_export_mp4))
             }
-            HorizontalDivider(Modifier.padding(vertical = 4.dp))
-            ListItem(
+            if (!encodedSource) HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            if (!encodedSource) ListItem(
                 headlineContent = { Text(stringResource(R.string.editor_export_choice_dng)) },
                 supportingContent = {
                     // The DNG write format, separate from the RAW source info
@@ -445,7 +452,7 @@ private fun ExportSheet(
                 },
                 modifier = Modifier.clickable { onExport(Target.DNG, null, null, null) },
             )
-            ListItem(
+            if (!encodedSource) ListItem(
                 headlineContent = { Text(stringResource(R.string.editor_export_choice_dng_linear)) },
                 supportingContent = {
                     // RAW-13: the second DNG file contract — the demosaiced,

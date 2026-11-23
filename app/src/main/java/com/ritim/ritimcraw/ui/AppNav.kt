@@ -299,6 +299,9 @@ fun AppNav(
             mp4 = Mp4Exporter(
                 lutPathFor = { id -> stores.luts.pathFor(id) },
                 gyroPathFor = { sourceId -> stores.gyros.pathFor(stores.sources.get(sourceId)?.gyroId) },
+                // E0: an encoded (Mi-Log / MP4) source decodes through
+                // MediaCodec and shares the rest of the export pipeline.
+                isEncoded = { sourceId -> stores.sources.get(sourceId)?.kind == SourceKind.ENCODED },
                 // AUD-02: the job's sourceId -> the source's CURRENT link
                 // state, resolved once per export (AudioProject.link's
                 // absent-record default is ATTACHED, so a source without
