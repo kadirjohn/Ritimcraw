@@ -422,6 +422,10 @@
     <string name="settings_device_report_count">%1$d codec</string>
     <string name="settings_codec_hw">Donanım</string>
     <string name="settings_codec_sw">Yazılım</string>
+    <string name="settings_device_report_cap_profiles">Profiller: %1$s</string>
+    <string name="settings_device_report_cap_color_formats">Renk formatları: %1$s</string>
+    <string name="settings_device_report_cap_bitrate_modes">Bitrate modları: %1$s</string>
+    <string name="settings_device_report_cap_max_bitrate">En yüksek bitrate: %1$s</string>
     <string name="settings_report_close">Kapat</string>
     <string name="settings_measure">Önizleme performansını ölç</string>
     <string name="settings_measuring">Ölçülüyor…</string>

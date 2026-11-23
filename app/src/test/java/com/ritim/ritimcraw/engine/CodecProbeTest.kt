@@ -170,4 +170,53 @@ class CodecProbeTest {
         assertEquals("", report.maxSize)
         assertFalse(report.hardware)
     }
+
+    // ---- F0 extension (plan 13.1) ----
+
+    private val dvEnc = CodecReport(
+        name = "c2.vendor.dv.encoder",
+        mime = "video/dolby-vision",
+        hardware = true,
+        profiles = listOf("256"),
+        maxSize = "3840x2160",
+        main10Ok = null,
+        isEncoder = true,
+        profileLevels = listOf(ProfileLevel(256, 0x200)),
+        colorFormats = listOf(2130708361, 54),
+        bitrateModes = listOf(2, 1),
+        bitrateUpper = 160_000_000,
+    )
+
+    @Test
+    fun format_report_names_dv_av1_apv() {
+        assertTrue(CodecProbe.formatReport(dvEnc).contains("Dolby Vision, hardware"))
+        assertTrue(CodecProbe.formatReport(dvEnc.copy(mime = "video/av01")).contains("— AV1, hardware"))
+        assertTrue(CodecProbe.formatReport(dvEnc.copy(mime = "video/apv")).contains("— APV, hardware"))
+    }
+
+    @Test
+    fun older_reports_keep_neutral_defaults() {
+        assertEquals(null, avcHw.isEncoder)
+        assertTrue(avcHw.profileLevels.isEmpty() && avcHw.colorFormats.isEmpty())
+        assertTrue(avcHw.bitrateModes.isEmpty())
+        assertEquals(null, avcHw.bitrateUpper)
+    }
+
+    @Test
+    fun json_carries_the_new_capability_fields() {
+        val json = CodecProbe.toDeviceReportJson(listOf(dvEnc))
+        assertTrue(json, json.contains("\"isEncoder\":true"))
+        assertTrue(json, json.contains("\"profileLevels\":[{\"profile\":256,\"level\":512}]"))
+        assertTrue(json, json.contains("\"colorFormats\":[2130708361,54]"))
+        assertTrue(json, json.contains("\"bitrateModes\":[2,1]"))
+        assertTrue(json, json.contains("\"bitrateUpper\":160000000"))
+    }
+
+    @Test
+    fun json_of_a_plain_report_has_null_and_empty_capabilities() {
+        val json = CodecProbe.toDeviceReportJson(listOf(avcHw))
+        assertTrue(json, json.contains("\"isEncoder\":null"))
+        assertTrue(json, json.contains("\"profileLevels\":[]"))
+        assertTrue(json, json.contains("\"bitrateUpper\":null"))
+    }
 }

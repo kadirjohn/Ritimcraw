@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.engine.CodecNames
 import com.ritim.ritimcraw.engine.CodecReport
 import com.ritim.ritimcraw.ui.components.ArrowBack
 import com.ritim.ritimcraw.ui.components.Copy
@@ -478,6 +479,11 @@ fun DeviceReportScreen(
                                                     )
                                                 }
                                             }
+                                            // Line 3+: the declared capabilities
+                                            // (plan 13.1): profile@level, color
+                                            // formats, rate-control modes and the
+                                            // codec's own bitrate ceiling.
+                                            CodecCapabilityLines(report)
                                         }
                                     }
                                 }
@@ -565,6 +571,9 @@ internal object DeviceReportGrouping {
     fun codecLabel(mime: String): String = when (mime) {
         "video/avc" -> "AVC"
         "video/hevc" -> "HEVC"
+        "video/dolby-vision" -> "Dolby Vision"
+        "video/av01" -> "AV1"
+        "video/apv" -> "APV"
         else -> mime.substringAfter('/').uppercase()
     }
 
@@ -631,5 +640,44 @@ internal object DeviceReportGrouping {
         headerText(group, decodersFormat, encodersFormat) +
             "\n" +
             group.codecs.joinToString("\n") { it.name }
+    }
+}
+
+/**
+ * The capability lines of one codec item (plan 13.1, F0): only the lines
+ * the codec actually reported are shown. Values come from the pure
+ * [CodecNames] formatters; the labels are localized resources.
+ */
+@Composable
+private fun CodecCapabilityLines(report: CodecReport) {
+    val profiles = CodecNames.describeProfileLevels(report.mime, report.profileLevels)
+    val colors = CodecNames.describeColorFormats(report.colorFormats)
+    val modes = report.bitrateModes.map { CodecNames.bitrateModeName(it) }
+    val upper = report.bitrateUpper?.takeIf { it > 0 }?.let { CodecNames.formatBitrate(it) }
+    if (profiles.isEmpty() && colors.isEmpty() && modes.isEmpty() && upper == null) return
+    Column(
+        modifier = Modifier.padding(top = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        @Composable
+        fun line(labelRes: Int, value: String) {
+            Text(
+                text = stringResource(labelRes, value),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (profiles.isNotEmpty()) {
+            line(R.string.settings_device_report_cap_profiles, profiles.joinToString(", "))
+        }
+        if (colors.isNotEmpty()) {
+            line(R.string.settings_device_report_cap_color_formats, colors.joinToString(", "))
+        }
+        if (modes.isNotEmpty()) {
+            line(R.string.settings_device_report_cap_bitrate_modes, modes.joinToString(", "))
+        }
+        if (upper != null) {
+            line(R.string.settings_device_report_cap_max_bitrate, upper)
+        }
     }
 }

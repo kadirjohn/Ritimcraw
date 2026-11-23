@@ -52,8 +52,18 @@ class DeviceReportGroupingTest {
 
     @Test
     fun codecLabel_uppercasesTheSubtypeOfOtherMimes() {
-        assertEquals("AV01", DeviceReportGrouping.codecLabel("video/av01"))
-        assertEquals("DOLBY-VISION", DeviceReportGrouping.codecLabel("video/dolby-vision"))
+        // Mimes the report does not name still fall back to the subtype.
+        assertEquals("VP9", DeviceReportGrouping.codecLabel("video/vp9"))
+        assertEquals("X-VND.ON2.VP8", DeviceReportGrouping.codecLabel("video/x-vnd.on2.vp8"))
+    }
+
+    @Test
+    fun codecLabel_namesTheF0ReportMimes() {
+        // F0 (plan 13.1): DV, AV1 and APV joined REPORT_MIMES and read as
+        // their product names, not the raw subtype ("AV01", "DOLBY-VISION").
+        assertEquals("AV1", DeviceReportGrouping.codecLabel("video/av01"))
+        assertEquals("Dolby Vision", DeviceReportGrouping.codecLabel("video/dolby-vision"))
+        assertEquals("APV", DeviceReportGrouping.codecLabel("video/apv"))
     }
 
     @Test

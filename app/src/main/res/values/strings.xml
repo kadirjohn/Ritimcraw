@@ -501,6 +501,10 @@
     <string name="settings_device_report_group_decoders">%1$s · Decoders</string>
     <string name="settings_device_report_group_encoders">%1$s · Encoders</string>
     <string name="settings_device_report_pill_low_latency">Low latency</string>
+    <string name="settings_device_report_cap_profiles">Profiles: %1$s</string>
+    <string name="settings_device_report_cap_color_formats">Color formats: %1$s</string>
+    <string name="settings_device_report_cap_bitrate_modes">Bitrate modes: %1$s</string>
+    <string name="settings_device_report_cap_max_bitrate">Max bitrate: %1$s</string>
     <string name="gyro_auto_attached">Gyro data attached</string>
     <string name="gyro_folder_hint_snackbar">Import a MotionCam clip and a same-named .gcsv gyro log can attach automatically. Pick the gyro folder?</string>
     <string name="gyro_folder_hint_action">Pick folder</string>
