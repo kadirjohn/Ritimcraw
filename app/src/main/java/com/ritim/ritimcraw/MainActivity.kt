@@ -41,6 +41,10 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Owner request 2026-11-24: the screen stays on while Ritimcraw is in front (long exports, playback
+        // measurements and editing sessions were interrupted by the screen timeout). The flag only holds while
+        // this activity is visible; it is released the moment the app goes to the background.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableEdgeToEdge()
         // The single entry gate (color model v2 plan §6.4, F1-2): project.json
         // is read ONCE here, before any store touches it. Newer-than-build =>
