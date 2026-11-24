@@ -89,7 +89,10 @@ import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.engine.ImageStabActivity
+import com.ritim.ritimcraw.engine.ImageStabLoads
 import com.ritim.ritimcraw.engine.StabilizationGate
+import com.ritim.ritimcraw.engine.WarpResolver
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
 import com.ritim.ritimcraw.engine.BackendGates
@@ -2181,7 +2184,10 @@ fun ClipEditorScreen(
             gyroId, session, syncRefine,
         ) {
             val s = session ?: return@LaunchedEffect
-            if (!grade.stabilization || gyroId.isBlank()) {
+            if (!grade.stabilization || gyroId.isBlank() ||
+                grade.stabilizationEngine == StabilizationGate.ENGINE_IMAGE
+            ) {
+                // (the zoom probe is gyro-only; the image engine's probe is S5's)
                 stabZoom = null
                 return@LaunchedEffect
             }
@@ -2290,7 +2296,17 @@ fun ClipEditorScreen(
                         // itself lives at the seam (GradeMapping.stabilizationArgs
                         // -> PreviewTiers.stabilizationAppliesAt), so the pump
                         // stays policy-free and every arm just carries the path.
-                        val gyroPath = currentGyroId.takeIf { it.isNotBlank() }?.let(currentGyroPathFor)
+                        // S4: the SAME slot also carries the image engine
+                        // (WarpResolver.stabPathArg): the image argument when
+                        // the grade selects it and its analysis is loaded in
+                        // this clip's handle, null when it asks for the image
+                        // engine and it is not ready (never the gyro log),
+                        // else the attached gyro path untouched.
+                        val gyroPath = WarpResolver.stabPathArg(
+                            req.grade,
+                            currentGyroId.takeIf { it.isNotBlank() }?.let(currentGyroPathFor),
+                            imageAnalysisReady = ImageStabLoads.isLoaded(s?.nativeClipHandle ?: 0L),
+                        )
                         // Render trace (audit M0, 2026-11-13): wall time of the
                         // render call itself (the PreviewMetrics precedent), so
                         // the trace's ms= carries the develop pipeline the
@@ -2367,27 +2383,42 @@ fun ClipEditorScreen(
                             // handle, parse failure) folds to inactive + the
                             // identity M, and the render then skips draw 10
                             // entirely: the pass's absence IS the identity.
-                            val warp = gpu.resolveWarp(
-                                clipHandle = s.nativeClipHandle,
-                                gyroPath = if (StabilizationGate.active(req.grade.stabilization, gyroPath)) gyroPath else null,
-                                stabMode = req.grade.stabilizationMode,
-                                stabStrength = if (StabilizationGate.active(req.grade.stabilization, gyroPath)) {
-                                    req.grade.stabilizationStrength / 100f
-                                } else {
-                                    0f
-                                },
-                                stabZoomLimit = req.grade.stabilizationZoomLimit,
-                                stabFocalMm = req.grade.stabilizationFocalMm,
-                                stabTrimMs = req.grade.stabilizationTrimMs,
-                                frameIndex = req.frameIndex,
-                                maxDim = req.maxDim,
+                            // S4: the engine decision + fold live in
+                            // WarpResolver (shared with the export); the gyro
+                            // door receives exactly the values spelled out
+                            // here before.
+                            val warpVerdict = WarpResolver.verdict(
+                                WarpResolver.resolve(
+                                    WarpResolver.plan(req.grade, gyroPath),
+                                    gyro = { a ->
+                                        gpu.resolveWarp(
+                                            clipHandle = s.nativeClipHandle,
+                                            gyroPath = a.gyroPath,
+                                            stabMode = a.mode,
+                                            stabStrength = a.strength,
+                                            stabZoomLimit = a.zoomLimit,
+                                            stabFocalMm = a.focalMm,
+                                            stabTrimMs = a.trimMs,
+                                            frameIndex = req.frameIndex,
+                                            maxDim = req.maxDim,
+                                        )
+                                    },
+                                    image = { a ->
+                                        gpu.resolveImageWarp(
+                                            clipHandle = s.nativeClipHandle,
+                                            stabMode = a.mode,
+                                            stabStrength = a.strength,
+                                            stabZoomLimit = a.zoomLimit,
+                                            rangeStart = a.rangeStart,
+                                            rangeEnd = a.rangeEnd,
+                                            frameIndex = req.frameIndex,
+                                            maxDim = req.maxDim,
+                                        )
+                                    },
+                                ),
                             )
-                            val warpActive = warp != null && warp[0] != 0.0f
-                            val warpM = if (warp != null && warp.size >= 10) {
-                                warp.copyOfRange(1, 10)
-                            } else {
-                                floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
-                            }
+                            val warpActive = warpVerdict.active
+                            val warpM = warpVerdict.m
                             // The A2 crop verdict (owner request 2026-11-23,
                             // guide A2): the mapRect'ed parcel for THIS
                             // request's DISPLAY grade through the manual
@@ -2764,7 +2795,7 @@ fun ClipEditorScreen(
                                                 PreviewTiers.temporalNrAppliesAt(
                                                     req.maxDim, req.renderClass,
                                                 ),
-                                            stabilizationApplied = StabilizationGate.active(req.grade.stabilization, gyroPath),
+                                            stabilizationApplied = StabilizationGate.appliedFor(req.grade.stabilization, gyroPath),
                                             servedByGpu = servedByGpuWindow,
                                             // The GPU-path measurement fields
                                             // (trace-dims fix 2026-11-14): out=
@@ -3073,6 +3104,11 @@ fun ClipEditorScreen(
         // which frame is current). Renders go through the same render gate
         // (one running + one pending), at the coarser playback tier. Stops
         // at the last frame and resets the play state (owner request §1).
+        // The image-stabilization analysis stands down while this plays (S4).
+        DisposableEffect(isPlaying) {
+            ImageStabActivity.playing = isPlaying
+            onDispose { ImageStabActivity.playing = false }
+        }
         LaunchedEffect(isPlaying, ptsUs) {
             val pts = ptsUs ?: return@LaunchedEffect
             if (!isPlaying || pts.isEmpty()) return@LaunchedEffect

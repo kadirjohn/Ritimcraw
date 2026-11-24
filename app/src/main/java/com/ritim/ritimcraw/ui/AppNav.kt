@@ -280,6 +280,27 @@ fun AppNav(
             importFolder = ImportFolderStore(project),
         )
     }
+    // Image-based stabilization analysis service (S4, ships dark behind
+    // FeatureFlags.IMAGE_STABILIZATION_ENABLED; the S5 Stabilize tab is its
+    // consumer). App-lifetime coroutines, no foreground service: it stands
+    // down while an export runs / the editor plays / the device is hot and
+    // resumes from its checkpoint. Clip deletion drops its files. The MP4
+    // arm's pre-stage (imageAnalysisFor below) is its "urgent" consumer, so
+    // it is constructed BEFORE the queue.
+    val imageStabService = remember {
+        com.ritim.ritimcraw.engine.ImageStabAnalysisService(
+            cache = com.ritim.ritimcraw.engine.ImageStabCache(
+                com.ritim.ritimcraw.engine.ImageStabAndroid.cacheDir(context.filesDir),
+            ),
+            backend = com.ritim.ritimcraw.engine.NativeImageStabBackend,
+            signals = com.ritim.ritimcraw.engine.AndroidImageStabSignals(context) {
+                stores.exports.all().any { it.state == com.ritim.ritimcraw.export.State.RUNNING }
+            },
+            scope = kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default,
+            ),
+        )
+    }
     // The serial queue runner: one job at a time, DNG via DngExporter, MP4
     // via Mp4Exporter. The output lands in the app's export directory.
     val exportDir = remember { File(context.filesDir, "exports").apply { mkdirs() } }
@@ -308,6 +329,21 @@ fun AppNav(
                 // REMOVED and LINKED_EDITED export video-only.
                 audioLinkFor = { sourceId ->
                     stores.audio.load().link(sourceId).state
+                },
+                // S4 image-engine pre-stage (plan section 3.6): a snapshot
+                // that selects the image engine waits for the clip's
+                // COMPLETE analysis here before the encode starts (the
+                // service's urgent ensure — the run ignores the pause
+                // policy and resumes from its checkpoint). Never called
+                // while the image flag is off, so the shipped export runs
+                // exactly as before.
+                imageAnalysisFor = { sourceId ->
+                    val source = stores.sources.get(sourceId) ?: return@Mp4Exporter null
+                    val ok = imageStabService.ensure(
+                        source.fingerprint,
+                        com.ritim.ritimcraw.engine.ImageStabAndroid.fdSource(context, source.uri),
+                    )
+                    if (ok) imageStabService.analysisPath(source.fingerprint) else null
                 },
                 // Export stage timing (owner request 2026-11-13): one
                 // sample/average/summary line set per export under the
@@ -2022,6 +2058,7 @@ fun AppNav(
                                     sources = stores.sources,
                                     grades = stores.grades,
                                     thumbnails = thumbnailStore,
+                                    imageStab = imageStabService,
                                 )
                                 sources = stores.sources.all()
                             },

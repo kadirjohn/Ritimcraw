@@ -1629,6 +1629,120 @@ class NativeSource private constructor(
                 stabZoomLimit, stabFocalMm, stabTrimMs, frameIndex, maxDim, asyncRefine)
         }
 
+        // ---- Image-based stabilization (package S4) ----
+        // Every wrapper throws IllegalStateException when the .so is
+        // absent (the gate every bridge wrapper uses). Load/resolve/probe
+        // run on the clip handle's engine thread like every session call.
+
+        /**
+         * Loads the COMPLETE analysis file at [analysisPath] into [handle].
+         * 0 = loaded; 1 bad handle; 2 missing/unreadable/stale/corrupt
+         * file; 3 incomplete analysis; 4 not this clip (frame count).
+         */
+        internal fun jniImageStabLoad(handle: Long, analysisPath: String): Int {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeImageStabLoad(handle, analysisPath)
+        }
+
+        /**
+         * The image engine's per-frame verdict: the SAME 10-element layout as
+         * [jniStabWarpResolve] ([0] active, [1..9] M) or null = no verdict
+         * (no analysis loaded, dead handle, frame out of range). [strength]
+         * is rawedit's 0..1; [rangeEnd] < 0 = through the last frame.
+         */
+        internal fun jniImageStabWarpResolve(
+            handle: Long,
+            mode: Int,
+            strength: Float,
+            zoomLimit: Float,
+            rangeStart: Int,
+            rangeEnd: Int,
+            frameIndex: Int,
+            maxDim: Int,
+        ): FloatArray? {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeImageStabWarpResolve(
+                handle, mode, strength, zoomLimit, rangeStart, rangeEnd, frameIndex, maxDim)
+        }
+
+        /** See [ImageStabProbe]; null = no analysis loaded. */
+        internal fun jniImageStabProbe(
+            handle: Long,
+            mode: Int,
+            strength: Float,
+            zoomLimit: Float,
+            rangeStart: Int,
+            rangeEnd: Int,
+        ): DoubleArray? {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeImageStabProbe(handle, mode, strength, zoomLimit, rangeStart, rangeEnd)
+        }
+
+        internal fun jniImageStabJobNew(): Int {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeImageStabJobNew()
+        }
+
+        internal fun jniImageStabJobCancel(job: Int) {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            nativeImageStabJobCancel(job)
+        }
+
+        /** [done, total] frames of the slot's running analysis, or null. */
+        internal fun jniImageStabJobProgress(job: Int): LongArray? {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeImageStabJobProgress(job)
+        }
+
+        internal fun jniImageStabJobFree(job: Int) {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            nativeImageStabJobFree(job)
+        }
+
+        /**
+         * Blocking whole-clip analysis of the clip behind [fd] into
+         * [finalFile] (checkpointing to "<finalFile>.part", resuming from
+         * it). 0 Done, 1 Cancelled (partial kept), 2 Failed, 3 I/O failure.
+         * [threads] >= 2 adds a decode thread (bit-identical result).
+         */
+        internal fun jniImageStabAnalyze(fd: Int, finalFile: String, job: Int, threads: Int): Int {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeImageStabAnalyze(fd, finalFile, job, threads)
+        }
+
+        @JvmStatic private external fun nativeImageStabLoad(handle: Long, analysisPath: String): Int
+
+        @JvmStatic private external fun nativeImageStabWarpResolve(
+            handle: Long,
+            mode: Int,
+            strength: Float,
+            zoomLimit: Float,
+            rangeStart: Int,
+            rangeEnd: Int,
+            frameIndex: Int,
+            maxDim: Int,
+        ): FloatArray?
+
+        @JvmStatic private external fun nativeImageStabProbe(
+            handle: Long,
+            mode: Int,
+            strength: Float,
+            zoomLimit: Float,
+            rangeStart: Int,
+            rangeEnd: Int,
+        ): DoubleArray?
+
+        @JvmStatic private external fun nativeImageStabJobNew(): Int
+        @JvmStatic private external fun nativeImageStabJobCancel(job: Int)
+        @JvmStatic private external fun nativeImageStabJobProgress(job: Int): LongArray?
+        @JvmStatic private external fun nativeImageStabJobFree(job: Int)
+        @JvmStatic private external fun nativeImageStabAnalyze(
+            fd: Int,
+            finalFile: String,
+            job: Int,
+            threads: Int,
+        ): Int
+
         /**
          * JNI bridge: see nativeSetSyncRefine. Throws IllegalStateException
          * when the .so is absent; otherwise the runtime toggle is set and
@@ -1739,7 +1853,10 @@ class NativeSource private constructor(
         }
 
         /** JNI bridge: closeSource for export sessions. */
-        internal fun jniCloseSource(handle: Long): Long = nativeCloseSource(handle)
+        internal fun jniCloseSource(handle: Long): Long {
+            ImageStabLoads.forget(handle) // a reused slot must not inherit "loaded"
+            return nativeCloseSource(handle)
+        }
 
         /**
          * JNI bridge: the production GPU develop session (M3 commit a +

@@ -12,7 +12,9 @@ package com.ritim.ritimcraw.data
  *  - the clip's persisted grade (project.json "grades" section) — a
  *    re-import of the same file gets the same fingerprint id back, and
  *    with the grade row gone it opens NEUTRAL, never on a stale grade;
- *  - the persisted thumbnail PNG (files/thumbnails/&lt;id&gt;.png).
+ *  - the persisted thumbnail PNG (files/thumbnails/&lt;id&gt;.png);
+ *  - the image-stabilization analysis (files/cache/imagestab/, keyed by
+ *    the source fingerprint, complete file and checkpoint alike).
  *
  * What a delete NEVER touches:
  *  - the user's ORIGINAL SAF file: no store here writes to (or deletes)
@@ -38,11 +40,25 @@ object ClipDeletion {
         sources: SourceRepository,
         grades: GradeStore,
         thumbnails: ThumbnailStore,
+        imageStab: ImageStabCleanup? = null,
     ) {
         for (id in ids) {
+            // The analysis is keyed by the FINGERPRINT, which only the
+            // source record knows: read it before the record goes.
+            sources.get(id)?.fingerprint?.let { imageStab?.forget(it) }
             sources.remove(id)
             grades.remove(id)
             thumbnails.remove(id)
         }
     }
+}
+
+/**
+ * What a clip delete asks of the image-stabilization analysis store: stop
+ * any run of [fingerprint] and drop every file of it. Implemented by
+ * ImageStabAnalysisService (which also owns the cache), kept as a seam so
+ * the data layer stays free of the engine package.
+ */
+fun interface ImageStabCleanup {
+    fun forget(fingerprint: String)
 }

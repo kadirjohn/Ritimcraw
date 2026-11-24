@@ -5,6 +5,7 @@ import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.StabilizationGate
+import com.ritim.ritimcraw.engine.WarpResolver
 import com.ritim.ritimcraw.engine.BackendGates
 import com.ritim.ritimcraw.engine.BackendRules
 import com.ritim.ritimcraw.engine.EffectiveRenderBackend
@@ -119,6 +120,14 @@ interface Mp4Session {
     fun open(fd: Int): Mp4SessionInfo?
 
     /**
+     * Loads the image-stabilization analysis at [analysisPath] into the
+     * open clip [handle] (S4). 0 = loaded; non-zero = not usable (see
+     * NativeSource.jniImageStabLoad). The default keeps fakes honest: a
+     * fake that does not override it never claims an analysis.
+     */
+    fun loadImageStab(handle: Long, analysisPath: String): Int = 1
+
+    /**
      * Develops frame [frameIndex] at FULL resolution with [grade]:
      * developCpu -> linearToRec709 -> clamp -> 8-bit RGB888 (row-major,
      * NOT rotated — orientation travels as the muxer hint). [lutPath] is
@@ -192,6 +201,11 @@ internal object NativeMp4Session : Mp4Session {
         }
     }
 
+    override fun loadImageStab(handle: Long, analysisPath: String): Int {
+        requireNative()
+        return NativeSource.jniImageStabLoad(handle, analysisPath)
+    }
+
     override fun open(fd: Int): Mp4SessionInfo? {
         requireNative()
         val r = NativeSource.jniPreviewOpen(fd) ?: return null
@@ -221,7 +235,10 @@ internal object NativeMp4Session : Mp4Session {
         // of 2026-11-12 made that gate pass at every tier). Strength maps
         // 0..100 -> 0..1 exactly like lutStrength; mode/zoomLimit/focalMm/
         // trimMs pass through raw (the C++ side owns their composition).
-        val stab = if (StabilizationGate.active(grade.stabilization, gyroPath)) {
+        // Image engine (S4): the image argument rides the gyroPath slot and
+        // is honored here exactly like a gyro path (renderPathIfActive).
+        val stabPath = StabilizationGate.renderPathIfActive(grade.stabilization, gyroPath)
+        val stab = if (stabPath != null) {
             grade.stabilizationStrength / 100f
         } else {
             0f
@@ -241,7 +258,7 @@ internal object NativeMp4Session : Mp4Session {
             // Gyro Phase 5: null gyroPath (or stabilization off) = the
             // bridge's no-warp default (null path -> resolveStabilization
             // returns the default StabInput -> applyStabilization no-ops).
-            if (StabilizationGate.active(grade.stabilization, gyroPath)) gyroPath else null,
+            stabPath,
             grade.stabilizationMode,
             stab,
             grade.stabilizationZoomLimit,
@@ -500,6 +517,22 @@ interface GpuDevelop {
         maxDim: Int,
     ): FloatArray? = null
 
+    /**
+     * The image engine's twin of [resolveWarp] (S4): the SAME
+     * `[active, M x 9]` answer, from the clip's loaded analysis.
+     * Default null keeps fakes honest (no verdict, no fabricated warp).
+     */
+    fun resolveImageWarp(
+        clipHandle: Long,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        rangeStart: Int,
+        rangeEnd: Int,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = null
+
     /** The bridge's thread-local last-error detail (same thread as the failed call). */
     fun lastDetail(): String?
 }
@@ -632,6 +665,20 @@ internal object NativeGpuDevelop : GpuDevelop {
     ): FloatArray? = NativeSource.jniStabWarpResolve(
         clipHandle, gyroPath, stabMode, stabStrength,
         stabZoomLimit, stabFocalMm, stabTrimMs, frameIndex, maxDim,
+    )
+
+    override fun resolveImageWarp(
+        clipHandle: Long,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        rangeStart: Int,
+        rangeEnd: Int,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = NativeSource.jniImageStabWarpResolve(
+        clipHandle, stabMode, stabStrength, stabZoomLimit,
+        rangeStart, rangeEnd, frameIndex, maxDim,
     )
 
     override fun closeSession(sessionHandle: Long) =
@@ -1270,6 +1317,12 @@ class ExportPipeline(
      */
     private val audioAttached: Boolean = true,
     /**
+     * The image-stabilization analysis file of this clip (S4), loaded into
+     * the clip's native handle at encode start when the grade selects the
+     * image engine. Null = none (the only value today's callers pass).
+     */
+    private val imageAnalysisPath: String? = null,
+    /**
      * The export resolution bound (owner request 2026-11-13): the job's
      * ladder choice, snapshotted at ENQUEUE and resolved here against the
      * source's effective size through ExportResolution.outputSize
@@ -1298,6 +1351,26 @@ class ExportPipeline(
      */
     private val planRun: ExportPlanRun? = null,
 ) {
+
+    private fun stabPathFor(info: Mp4SessionInfo, grade: GradeK, attachedGyroPath: String?): String? {
+        if (!grade.stabilization || grade.stabilizationEngine != StabilizationGate.ENGINE_IMAGE) {
+            return attachedGyroPath
+        }
+        if (!com.ritim.ritimcraw.util.FeatureFlags.IMAGE_STABILIZATION_ENABLED) {
+            return WarpResolver.stabPathArg(grade, attachedGyroPath, imageAnalysisReady = false)
+        }
+        val analysis = imageAnalysisPath
+        val code = if (analysis == null) 1 else session.loadImageStab(info.handle, analysis)
+        if (code != 0) {
+            throw IllegalStateException(
+                Mp4ExportErrors.message(
+                    Mp4ExportErrors.CODE_UNSUPPORTED, Mp4ExportErrors.STAGE_OPEN,
+                    "stabilization: the image analysis is not ready (code $code)",
+                )
+            )
+        }
+        return WarpResolver.imageArg()
+    }
 
     /**
      * Runs the whole encode for the clip at [sourceFd] with [grade] into
@@ -1346,10 +1419,17 @@ class ExportPipeline(
         grade: GradeK,
         outPath: String,
         lutPath: String?,
-        gyroPath: String?,
+        attachedGyroPath: String?,
         manualRotationDeg: Int,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
     ) {
+        // The stabilization slot every render below shares (S4): a gyro
+        // grade passes the attached gyro path through UNCHANGED; an
+        // image-engine grade resolves to the image argument once the
+        // analysis is loaded into this clip's handle, to null while the
+        // image flag is off, and FAILS LOUDLY when the flag is on and the
+        // analysis is missing — never a silently unstabilized export.
+        val gyroPath = stabPathFor(info, grade, attachedGyroPath)
         // 1. Timeline: video pts from the source, normalized to 0.
         val rawPts = ArrayList<Long>(info.frameCount)
         for (i in 0 until info.frameCount) {
@@ -1809,20 +1889,25 @@ class ExportPipeline(
                         // jniExportFrameParcel, whose bridge folds the same way.
                         val warp = if (gpuDevelopActive || encoderSurfaceAttached) {
                             try {
-                                gpuDevelop.resolveWarp(
-                                    info.handle,
-                                    if (StabilizationGate.active(grade.stabilization, gyroPath)) gyroPath else null,
-                                    grade.stabilizationMode,
-                                    if (StabilizationGate.active(grade.stabilization, gyroPath)) {
-                                        grade.stabilizationStrength / 100f
-                                    } else {
-                                        0f
+                                // THE shared resolver (S4): the same engine
+                                // decision + [active, M x 9] answer the
+                                // preview uses. Gyro args are exactly the
+                                // values this site always threaded.
+                                WarpResolver.resolve(
+                                    WarpResolver.plan(grade, gyroPath),
+                                    gyro = { a ->
+                                        gpuDevelop.resolveWarp(
+                                            info.handle, a.gyroPath, a.mode, a.strength,
+                                            a.zoomLimit, a.focalMm, a.trimMs,
+                                            s.frameIndex, 0,
+                                        )
                                     },
-                                    grade.stabilizationZoomLimit,
-                                    grade.stabilizationFocalMm,
-                                    grade.stabilizationTrimMs,
-                                    s.frameIndex,
-                                    0,
+                                    image = { a ->
+                                        gpuDevelop.resolveImageWarp(
+                                            info.handle, a.mode, a.strength, a.zoomLimit,
+                                            a.rangeStart, a.rangeEnd, s.frameIndex, 0,
+                                        )
+                                    },
                                 )
                             } catch (e: IllegalStateException) {
                                 null // no .so mid-export: the renders latch below
@@ -1830,16 +1915,9 @@ class ExportPipeline(
                         } else {
                             null
                         }
-                        val warpActive = warp != null && warp[0] != 0.0f
-                        val warpM = if (warp != null && warp.size >= 10) {
-                            warp.copyOfRange(1, 10)
-                        } else {
-                            floatArrayOf(
-                                1f, 0f, 0f,
-                                0f, 1f, 0f,
-                                0f, 0f, 1f,
-                            )
-                        }
+                        val warpVerdict = WarpResolver.verdict(warp)
+                        val warpActive = warpVerdict.active
+                        val warpM = warpVerdict.m
                         // M5 — the encoder-surface fast path: the session
                         // develops AND blits straight to the codec input
                         // surface on its GL thread, stamping the frame's
@@ -2323,6 +2401,20 @@ class Mp4Exporter(
      */
     private val audioLinkFor: (String) -> AudioLinkState = { AudioLinkState.ATTACHED },
     /**
+     * The image-stabilization analysis pre-stage (S4, plan section 3.6):
+     * suspends until the clip's COMPLETE analysis exists and returns its
+     * file path, the way the app wires it to
+     * [com.ritim.ritimcraw.engine.ImageStabAnalysisService.ensure] — the
+     * export itself waits on the analysis (the "urgent" run: the pause
+     * policy is ignored) and never "fails" it away. Null (the default) =
+     * no analysis provider: a grade that selects the image engine while
+     * [com.ritim.ritimcraw.util.FeatureFlags.IMAGE_STABILIZATION_ENABLED]
+     * is on fails LOUDLY (never a silently unstabilized export); with the
+     * flag off — the shipped state — the seam is never called and every
+     * export runs exactly as before.
+     */
+    private val imageAnalysisFor: suspend (sourceId: String) -> String? = { null },
+    /**
      * Per-export stage-timing log sink (owner request 2026-11-13): each
      * line the timing emits lands here (the app wires it to Log.i under
      * the "ritim-export" tag, DEBUG builds only — see [ExportStageTiming]
@@ -2387,6 +2479,34 @@ class Mp4Exporter(
         // starts with the same audio choice the user queued); only a
         // legacy/un-snapshotted row (null) falls back to the live lookup.
         val audioAttached = effectiveAudioLink(job) == AudioLinkState.ATTACHED
+        // Image-engine pre-stage (S4, plan section 3.6): a grade that
+        // selects the image engine with the flag ON resolves its analysis
+        // ONCE here, BEFORE the engine runs (the analysis service's
+        // "urgent" ensure — the export waits on it, checkpoints included).
+        // A missing analysis FAILS the job loudly below ("never a
+        // silently unstabilized export"); with the flag off (the shipped
+        // state) the snapshot's engine value is never even read here and
+        // the whole export runs exactly as before.
+        val imageAnalysisPath = if (
+            com.ritim.ritimcraw.util.FeatureFlags.IMAGE_STABILIZATION_ENABLED &&
+            job.snapshot.stabilization &&
+            job.snapshot.stabilizationEngine == StabilizationGate.ENGINE_IMAGE
+        ) {
+            imageAnalysisFor(job.sourceId)
+        } else {
+            null
+        }
+        if (
+            com.ritim.ritimcraw.util.FeatureFlags.IMAGE_STABILIZATION_ENABLED &&
+            job.snapshot.stabilization &&
+            job.snapshot.stabilizationEngine == StabilizationGate.ENGINE_IMAGE &&
+            imageAnalysisPath == null
+        ) {
+            return job.copy(
+                state = State.FAILED,
+                detail = "stabilization: the image analysis is not ready (code 1)",
+            )
+        }
         val partial = ExportStaging.partial(out)
         val run = job.settings?.let { ExportPlanRun(it, encoderFacts, ExportContext(), planLog) }
         val startedNs = System.nanoTime()
@@ -2402,6 +2522,7 @@ class Mp4Exporter(
                                     partial.absolutePath, lutPath, gyroPath,
                                     job.manualRotationDeg, audioAttached, onProgress,
                                     job.resolutionW, job.resolutionH, run,
+                                    imageAnalysisPath,
                                 )
                                 break
                             } catch (e: SurfaceInputUnavailable) {
@@ -2523,6 +2644,7 @@ class Mp4Exporter(
         resolutionW: Int? = null,
         resolutionH: Int? = null,
         planRun: ExportPlanRun? = null,
+        imageAnalysisPath: String? = null,
     ) {
         ExportPipeline(
             session,
@@ -2534,6 +2656,7 @@ class Mp4Exporter(
             resolutionW = resolutionW,
             resolutionH = resolutionH,
             planRun = planRun,
+            imageAnalysisPath = imageAnalysisPath,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )

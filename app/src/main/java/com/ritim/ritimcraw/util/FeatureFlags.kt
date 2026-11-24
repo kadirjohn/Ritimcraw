@@ -18,4 +18,14 @@ object FeatureFlags {
      * mode (plan section 5b) is a separate, later package.
      */
     const val GYRO_STABILIZATION_ENABLED = false
+
+    /**
+     * Image-based (gyro-free) stabilization, docs/IMAGE_STAB_PLAN.md. The
+     * engine, analysis service and resolver ship dark: the flag turns true
+     * only after the S5 UI and the S12 on-device acceptance (owner decision
+     * 2026-11-23, plan section 6 item 10). While false, `engineFor` never
+     * returns IMAGE, so every preview/export path is byte-for-byte the
+     * pre-S4 behavior; a stored `stabilizationEngine = 1` is kept untouched.
+     */
+    const val IMAGE_STABILIZATION_ENABLED = false
 }

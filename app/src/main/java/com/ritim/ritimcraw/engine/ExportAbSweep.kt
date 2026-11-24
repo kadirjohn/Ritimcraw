@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.engine
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.export.NativeGpuDevelop
+import com.ritim.ritimcraw.util.FeatureFlags
 import java.util.Locale
 
 /**
@@ -39,6 +40,11 @@ import java.util.Locale
  *   stab         GradeK() + stabilization ON (sub-values at defaults).
  *   grade-stab   the grade case's grade + stabilization ON — the
  *                composition case, the one the warp slot bug broke.
+ *   stab-image   GradeK() + stabilization ON on the IMAGE engine
+ *                (stabilizationEngine = 1, S4) — the image twin of
+ *                the stab case.
+ *   grade-stab-image  the grade case's grade + image stabilization —
+ *                the composition case for the image engine.
  *
  * All Android/native calls live in the [run] runner ONLY; everything
  * above it is pure JVM-testable decision logic (the GradeParitySweep
@@ -91,6 +97,21 @@ object ExportAbSweep {
             "grade-stab", "grade + stabilization",
             EXPORT_GRADE.copy(stabilization = true),
         ),
+        // Image engine (S4, plan section 4): the image twins of the two
+        // stab cases. NOT pausedSkip'd with the gyro engine — a paused
+        // image FLAG skips them through imageSkip, with its own honest
+        // line, because the reason differs (no analysis vs flag off).
+        AbCase(
+            "stab-image", "image stabilization only",
+            GradeK(stabilization = true, stabilizationEngine = StabilizationGate.ENGINE_IMAGE),
+        ),
+        AbCase(
+            "grade-stab-image", "grade + image stabilization",
+            EXPORT_GRADE.copy(
+                stabilization = true,
+                stabilizationEngine = StabilizationGate.ENGINE_IMAGE,
+            ),
+        ),
     )
 
     /**
@@ -121,19 +142,43 @@ object ExportAbSweep {
 
     /**
      * Gyro paused (owner decision 2026-11-23, FeatureFlags): a case that
-     * turns stabilization on is not a meaningful A/B while the gate forces
-     * every real export unstabilized, so it is SKIPPED, never run and
-     * never counted as EXPORT_MISMATCH. Non-stab cases are unaffected.
+     * turns GYRO stabilization on is not a meaningful A/B while the gate
+     * forces every real export unstabilized, so it is SKIPPED, never run
+     * and never counted as EXPORT_MISMATCH. Non-stab cases and IMAGE-engine
+     * cases are unaffected — the image skip has its own rule ([imageSkip]).
      * [gyroAllowed] defaults to the flag; tests pass both states.
      */
     fun pausedSkip(
         c: AbCase,
         gyroAllowed: Boolean = StabilizationGate.gyroWorkAllowed(),
-    ): Boolean = c.stabilization && !gyroAllowed
+    ): Boolean =
+        c.stabilization && c.grade.stabilizationEngine != StabilizationGate.ENGINE_IMAGE && !gyroAllowed
 
     /** The log line of a paused skip: SKIPPED (gyro paused), no stats, no flag. */
     fun pausedLine(c: AbCase, frame: Int): String =
         "export-ab ${c.id} frame=$frame SKIPPED (gyro paused)"
+
+    /**
+     * Image-engine skips (S4): an image case is SKIPPED — not run, not
+     * EXPORT_MISMATCH — when the image flag is off (the same paused
+     * reasoning as gyro, never a silently unstabilized comparison) or
+     * when the harness has no COMPLETE analysis for the clip (plan
+     * section 4: "SKIPPED: no analysis"; a run with an analysis is the
+     * S12 device leg). Both flags default to their compile-time
+     * constants; the JVM tests pass the states explicitly.
+     */
+    fun imageSkip(
+        c: AbCase,
+        imageAllowed: Boolean = FeatureFlags.IMAGE_STABILIZATION_ENABLED,
+        analysisReady: Boolean,
+    ): Boolean = c.stabilization &&
+        c.grade.stabilizationEngine == StabilizationGate.ENGINE_IMAGE &&
+        (!imageAllowed || !analysisReady)
+
+    /** The log line of an image skip: SKIPPED, with which leg is missing. */
+    fun imageSkipLine(c: AbCase, frame: Int, imageAllowed: Boolean): String =
+        "export-ab ${c.id} frame=$frame SKIPPED (" +
+            (if (!imageAllowed) "image paused" else "no analysis") + ")"
 
     /**
      * One comparison's log line (GradeParitySweep.line's format
@@ -175,18 +220,21 @@ object ExportAbSweep {
      * GradeParitySweep.run contract). Everything touching the clip
      * handle runs on the shared preview engine thread (the one-thread
      * rule: the decoder is not concurrency-safe and the stabilization
-     * plan/gyro caches are thread-local). Logs one line per compared
-     * pair plus this summary under [TAG]; returns the summary line, or
-     * null when disabled / unopenable.
+     * plan/gyro caches are thread-local). [imageAnalysisPath] (S4): a
+     * COMPLETE .ristab analysis of THIS clip, loaded into the opened
+     * handle for the image-engine cases; null skips them (see
+     * [imageSkip]). Logs one line per compared pair plus this summary
+     * under [TAG]; returns the summary line, or null when disabled /
+     * unopenable.
      */
-    suspend fun run(fd: Int, gyroPath: String): String? {
+    suspend fun run(fd: Int, gyroPath: String, imageAnalysisPath: String? = null): String? {
         if (!enabled) {
             PreviewRenderer.closeFdQuietly(fd)
             return null
         }
         val engine = PreviewRenderer.previewEngine
         return try {
-            val future = engine.submit<String?> { runBlocking(fd, gyroPath) }
+            val future = engine.submit<String?> { runBlocking(fd, gyroPath, imageAnalysisPath) }
             try {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { future.get() }
             } catch (e: java.util.concurrent.ExecutionException) {
@@ -207,7 +255,7 @@ object ExportAbSweep {
      * never GpuPreviewSession.resolveWarp — it threads the preview's
      * background-refine value, which rides a different offset).
      */
-    private fun runBlocking(fd: Int, gyroPath: String): String? {
+    private fun runBlocking(fd: Int, gyroPath: String, imageAnalysisPath: String?): String? {
         if (!NativeSource.nativeAvailable) {
             android.util.Log.w(TAG, "export-ab aborted: ${NativeSource.nativeUnavailableMessage}")
             return null
@@ -238,6 +286,20 @@ object ExportAbSweep {
             NativeSource.jniCloseSource(handle)
             return null
         }
+        var imageReady = false
+        if (imageAnalysisPath != null) {
+            // S4: the analysis loads ONCE per run (the same handle every
+            // image case reads through; a load failure is "no analysis").
+            try {
+                imageReady = NativeSource.jniImageStabLoad(handle, imageAnalysisPath) == 0
+            } catch (e: IllegalStateException) {
+                imageReady = false
+            }
+            if (!imageReady) {
+                android.util.Log.w(TAG, "export-ab image analysis load failed: $imageAnalysisPath")
+            }
+        }
+        val imageArg = if (imageReady) WarpResolver.imageArg() else null
         val identityM = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
         try {
             val started = System.currentTimeMillis()
@@ -247,10 +309,39 @@ object ExportAbSweep {
             val indices = frameIndices(frameCount)
             for (c in cases()) {
                 for (i in indices) {
-                    // Gyro paused: stab cases are not an A/B (see pausedSkip).
+                    // Gyro paused: the GYRO-engine stab cases are not an
+                    // A/B (see pausedSkip). The image twins have their own
+                    // rule below — the reasons differ.
                     if (pausedSkip(c)) {
                         skipped++
                         android.util.Log.i(TAG, pausedLine(c, i))
+                        continue
+                    }
+                    if (imageSkip(c, analysisReady = imageReady)) {
+                        skipped++
+                        android.util.Log.i(TAG, imageSkipLine(c, i, imageAllowed = FeatureFlags.IMAGE_STABILIZATION_ENABLED))
+                        continue
+                    }
+                    // The per-case stabilization slot (S4): a gyro case
+                    // threads the log into both doors exactly as before;
+                    // an image case threads the image argument (the CPU
+                    // door's gyroPath slot carries it — the bridge's
+                    // sentinel, never a gyro log); a case with
+                    // stabilization off hands BOTH doors null.
+                    val imageCase = c.stabilization &&
+                        c.grade.stabilizationEngine == StabilizationGate.ENGINE_IMAGE
+                    val caseStabPath = when {
+                        !c.stabilization -> null
+                        imageCase -> imageArg
+                        else -> gyroPath
+                    }
+                    val stabStrength = if (c.stabilization) c.grade.stabilizationStrength / 100f else 0f
+                    if (c.stabilization && caseStabPath == null) {
+                        // Unreachable by the skip rules above; kept as the
+                        // honest guard so a future case typo never turns
+                        // into a silently unstabilized comparison.
+                        skipped++
+                        android.util.Log.w(TAG, "export-ab ${c.id} frame=$i skipped: no stab path")
                         continue
                     }
                     // CPU side — the reference door, full resolution. The
@@ -259,13 +350,13 @@ object ExportAbSweep {
                     // cases (a non-null path on a grade-only case warps the
                     // reference and turns the comparison into noise);
                     // strength crosses as percent/100; mode/zoomLimit/
-                    // focalMm/trimMs raw. No LUT in this harness: slot null
-                    // + 0f and all five interp ints -1.
-                    val stabGyroPath = if (c.stabilization) gyroPath else null
-                    val stabStrength = if (c.stabilization) c.grade.stabilizationStrength / 100f else 0f
+                    // focalMm/trimMs raw. The image argument rides the
+                    // same slot (focal/trim are inert for the image
+                    // engine — the bridge ignores them). No LUT in this
+                    // harness: slot null + 0f and all five interp ints -1.
                     val cpu = NativeSource.jniExportFrameParcel(
                         handle, i, GradeParcel.encode(c.grade),
-                        null, 0f, stabGyroPath, c.grade.stabilizationMode, stabStrength,
+                        null, 0f, caseStabPath, c.grade.stabilizationMode, stabStrength,
                         c.grade.stabilizationZoomLimit, c.grade.stabilizationFocalMm,
                         c.grade.stabilizationTrimMs, -1, -1, -1, -1, -1,
                     )
@@ -279,9 +370,24 @@ object ExportAbSweep {
                         continue
                     }
                     // GPU side — warp first, from the SAME handle, on the
-                    // SAME thread, with the WAITING refine (the sync-offset
-                    // rule; maxDim = 0 is the export full-res convention).
-                    val warp = if (c.stabilization) {
+                    // SAME thread. A gyro case uses the WAITING refine (the
+                    // sync-offset rule, §A7 design point 4; maxDim = 0 is
+                    // the export full-res convention); an image case uses
+                    // the image resolver — the image engine has no sync
+                    // offset at all, so the counterpart rule cannot drift.
+                    val warp = if (!c.stabilization) {
+                        null
+                    } else if (imageCase) {
+                        try {
+                            NativeSource.jniImageStabWarpResolve(
+                                handle, c.grade.stabilizationMode, stabStrength,
+                                c.grade.stabilizationZoomLimit,
+                                0, -1, i, 0,
+                            )
+                        } catch (e: IllegalStateException) {
+                            null // no .so mid-run: the render below fails honestly
+                        }
+                    } else {
                         try {
                             NativeSource.jniStabWarpResolve(
                                 handle, gyroPath, c.grade.stabilizationMode, stabStrength,
@@ -296,8 +402,6 @@ object ExportAbSweep {
                         } catch (e: IllegalStateException) {
                             null // no .so mid-run: the render below fails honestly
                         }
-                    } else {
-                        null
                     }
                     // A stab case with no warp verdict is NOT an A/B of
                     // stabilization — fold to identity (the session skips

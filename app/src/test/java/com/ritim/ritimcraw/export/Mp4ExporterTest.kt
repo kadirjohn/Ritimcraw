@@ -696,6 +696,10 @@ class Mp4ExporterTest {
         val opened = AtomicInteger()
         val closed = AtomicInteger()
         val rendered = ArrayList<Int>()
+        // The gyroPath slot every CPU render carried (S4: the lock that an
+        // image-engine grade never leaks a gyro path and a gyro grade's
+        // path still arrives untouched).
+        val renderGyroPaths = ArrayList<String?>()
         var lastCode = 0
         var lastStage = 0
         var lastDetail: String? = null
@@ -719,6 +723,7 @@ class Mp4ExporterTest {
                 return null
             }
             rendered.add(frameIndex)
+            renderGyroPaths.add(gyroPath)
             return ByteArray(width * height * 3) { 128.toByte() }
         }
 
@@ -1380,6 +1385,52 @@ class Mp4ExporterTest {
             File(out.parentFile, out.name + ".partial").absolutePath,
             writer.startArgs!![0],
         )
+    }
+
+    @Test
+    fun the_image_pre_stage_seam_is_never_called_while_the_flag_is_off() {
+        // S4: imageAnalysisFor is the export's analysis pre-stage — but
+        // with IMAGE_STABILIZATION_ENABLED false (the shipped state) an
+        // image-engine snapshot NEVER reaches it: the export runs
+        // unstabilized, exactly as before, and the app's seam (which
+        // would suspend on the analysis service) is never invoked.
+        var seamCalls = 0
+        val session = FakeSession(frames = 2, audio = false)
+        val exporter = Mp4Exporter(
+            session = session,
+            writerFactory = { FakeWriter() },
+            engine = freshEngine(),
+            imageAnalysisFor = { seamCalls++; "/never/built.ristab" },
+        )
+        val imageJob = job().copy(
+            snapshot = GradeK(stabilization = true, stabilizationEngine = 1),
+        )
+        val out = File(tmp.root, "dark.mp4")
+        val result = runBlocking { exporter.export(imageJob, 7, out) }
+        assertEquals(State.DONE, result.state)
+        assertEquals(0, seamCalls)
+        assertEquals(listOf<String?>(null, null), session.renderGyroPaths)
+    }
+
+    @Test
+    fun gyro_and_off_snapshots_never_ask_the_image_pre_stage_seam() {
+        // Even with the flag flipped on in the future engine build, a
+        // gyro grade (engine 0 / absent) and a stabilization-off grade
+        // never ask for an analysis: the seam is image-engine-only.
+        var seamCalls = 0
+        val exporter = Mp4Exporter(
+            session = FakeSession(frames = 1, audio = false),
+            writerFactory = { FakeWriter() },
+            engine = freshEngine(),
+            imageAnalysisFor = { seamCalls++; "/never/built.ristab" },
+        )
+        // The snapshot gate reads the grade BEFORE any flag choice, so
+        // these two jobs skip the seam at any flag state.
+        val gyroJob = job().copy(snapshot = GradeK(stabilization = true))
+        val offJob = job()
+        runBlocking { exporter.export(gyroJob, 7, File(tmp.root, "g.mp4")) }
+        runBlocking { exporter.export(offJob, 7, File(tmp.root, "n.mp4")) }
+        assertEquals(0, seamCalls)
     }
 
     @Test
@@ -2351,6 +2402,10 @@ class Mp4ExporterTest {
         // never once per job).
         val warpResolved = ArrayList<Int>()
 
+        // Every image-engine resolve (S4); must stay empty while the
+        // image flag is off.
+        val imageResolved = ArrayList<Int>()
+
         override fun probe(): DoubleArray? {
             probeCalls++
             return probeArray
@@ -2495,6 +2550,20 @@ class Mp4ExporterTest {
             }
             warpResolved.add(frameIndex)
             return warpArray
+        }
+
+        override fun resolveImageWarp(
+            clipHandle: Long,
+            stabMode: Int,
+            stabStrength: Float,
+            stabZoomLimit: Float,
+            rangeStart: Int,
+            rangeEnd: Int,
+            frameIndex: Int,
+            maxDim: Int,
+        ): FloatArray? {
+            imageResolved.add(frameIndex)
+            return null
         }
 
         override fun closeSession(sessionHandle: Long) {
@@ -2955,6 +3024,43 @@ class Mp4ExporterTest {
         // The bytes writer never runs the encoder blit — the
         // session_encoder_warp test below owns that leg.
         assertNull(gpu.lastEncoderWarp)
+    }
+
+    @Test
+    fun image_engine_grade_with_the_flag_off_exports_unstabilized_on_both_paths() {
+        // S4 A/B lock: IMAGE_STABILIZATION_ENABLED is false, so a grade that
+        // selects the image engine must behave exactly like an unstabilized
+        // one — no gyro resolve (even with a log attached: an image grade
+        // never falls back to gyro), no image resolve, the identity verdict
+        // on the GPU path, and a null stabilization slot on the CPU path.
+        val image = GradeK(stabilization = true, stabilizationEngine = 1)
+        val gpu = FakeGpuDevelop()
+        ExportPipeline(
+            FakeSession(frames = 2, audio = false), FakeWriter(), null,
+            renderBackend = RenderBackend.GPU_EXPERIMENTAL,
+            gpuDevelop = gpu,
+        ).run(7, image, "/tmp/out.partial", gyroPath = "/tmp/gyro.log")
+        assertTrue(gpu.warpResolved.isEmpty())
+        assertTrue(gpu.imageResolved.isEmpty())
+        val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        assertEquals(WarpControls(false, identity), gpu.lastWarp)
+
+        val cpu = FakeSession(frames = 2, audio = false)
+        ExportPipeline(cpu, FakeWriter(), null)
+            .run(7, image, "/tmp/out.partial", gyroPath = "/tmp/gyro.log")
+        assertEquals(listOf<String?>(null, null), cpu.renderGyroPaths)
+        // while dark the same grade exports fine (no hidden failure)
+        assertEquals(listOf(0, 1), cpu.rendered)
+    }
+
+    @Test
+    fun gyro_grade_keeps_threading_its_path_to_the_cpu_renders() {
+        // The pre-S4 behavior, locked: the exporter handed the attached
+        // path straight to every CPU render (the bridge folds it).
+        val cpu = FakeSession(frames = 2, audio = false)
+        ExportPipeline(cpu, FakeWriter(), null)
+            .run(7, GradeK(stabilization = true), "/tmp/out.partial", gyroPath = "/tmp/gyro.log")
+        assertEquals(listOf<String?>("/tmp/gyro.log", "/tmp/gyro.log"), cpu.renderGyroPaths)
     }
 
     @Test

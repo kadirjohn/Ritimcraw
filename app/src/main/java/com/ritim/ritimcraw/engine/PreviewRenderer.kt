@@ -170,10 +170,30 @@ object GradeMapping {
         maxDim: Int,
         gyroPath: String?,
         enabled: Boolean = com.ritim.ritimcraw.util.FeatureFlags.GYRO_STABILIZATION_ENABLED,
+        imageEnabled: Boolean = com.ritim.ritimcraw.util.FeatureFlags.IMAGE_STABILIZATION_ENABLED,
     ): StabilizationArgs? {
+        // Image engine (S4): the caller (WarpResolver.stabPathArg) put the
+        // image argument in the gyroPath slot only when the engine is on
+        // and the analysis is ready; it is not a gyro log, so mode /
+        // strength / zoomLimit ride as for gyro and focal / trim are inert.
+        if (StabilizationGate.isImageArg(gyroPath)) {
+            if (!grade.stabilization || !imageEnabled) return null
+            if (!PreviewTiers.stabilizationAppliesAt(maxDim)) return null
+            return StabilizationArgs(
+                gyroPath = gyroPath,
+                mode = grade.stabilizationMode,
+                strength = grade.stabilizationStrength / 100f,
+                zoomLimit = grade.stabilizationZoomLimit,
+                focalMm = 0f,
+                trimMs = 0f,
+            )
+        }
         // Owner decision 2026-11-23: gyro stabilization is paused behind
         // FeatureFlags.GYRO_STABILIZATION_ENABLED. [enabled] defaults to the flag;
         // the stored grade is never touched, so flag-on is the old behavior.
+        // A grade on the image engine never reaches the gyro gate (it has
+        // no gyro semantics); its image argument was handled above.
+        if (grade.stabilization && grade.stabilizationEngine == StabilizationGate.ENGINE_IMAGE) return null
         if (!StabilizationGate.active(grade.stabilization, gyroPath, enabled)) return null
         if (gyroPath == null) return null
         if (!PreviewTiers.stabilizationAppliesAt(maxDim)) return null
