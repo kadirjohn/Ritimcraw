@@ -791,6 +791,7 @@ private fun levelName(l: BitrateLevel): Int = when (l) {
     BitrateLevel.STANDARD -> R.string.export_level_standard
     BitrateLevel.HIGH -> R.string.export_level_high
     BitrateLevel.MAX -> R.string.export_level_max
+    BitrateLevel.QUALITY -> R.string.export_preset_quality
     BitrateLevel.HIGHER -> R.string.export_level_higher
     BitrateLevel.CEILING -> R.string.export_level_ceiling
     BitrateLevel.CUSTOM -> R.string.export_level_custom

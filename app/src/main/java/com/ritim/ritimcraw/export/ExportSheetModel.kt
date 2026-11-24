@@ -114,6 +114,8 @@ object ExportSheetModel {
         return BitrateLevel.entries.filter {
             when (it) {
                 BitrateLevel.HIGHER, BitrateLevel.CEILING -> it in extra || it == current
+                // QUALITY belongs to the preset: listed only while it is the current choice.
+                BitrateLevel.QUALITY -> it == current
                 else -> true
             }
         }

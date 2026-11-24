@@ -108,4 +108,23 @@ class BitrateTableTest {
         assertEquals(75.0, at(BitrateLevel.CEILING, null), 0.0)
         assertEquals(75.0, at(BitrateLevel.HIGHER, 80.0), 0.0)
     }
+
+    // ---- the Quality level (owner decision 2026-11-25: Quality = 160 Mb/s HEVC) ----
+
+    @Test
+    fun the_quality_level_is_160_at_4k30_hevc_and_scales_with_the_picture_below_it() {
+        fun q(w: Int, h: Int, fps: Double, ceil: Double? = null) =
+            BitrateTable.mbps(BitrateLevel.QUALITY, w, h, fps, ExportCodec.HEVC, ceil)
+        assertEquals(160.0, q(3840, 2160, 30.0), 0.0)
+        // 1080p30 is a quarter of the pixel rate: the table's own ^0.85 scaling, not 160.
+        assertEquals(49.0, q(1920, 1080, 30.0), 0.0)
+        assertTrue(q(1920, 1080, 30.0) < q(2560, 1440, 30.0) && q(2560, 1440, 30.0) < q(3840, 2160, 30.0))
+    }
+
+    @Test
+    fun the_quality_level_never_asks_above_the_encoders_listed_ceiling() {
+        // 4K60 would scale to ~288; with the 160 ceiling it reads 160, with none it is the scaled value.
+        assertEquals(160.0, BitrateTable.mbps(BitrateLevel.QUALITY, 3840, 2160, 60.0, ExportCodec.HEVC, 160.0), 0.0)
+        assertTrue(BitrateTable.mbps(BitrateLevel.QUALITY, 3840, 2160, 60.0, ExportCodec.HEVC, null) > 250.0)
+    }
 }

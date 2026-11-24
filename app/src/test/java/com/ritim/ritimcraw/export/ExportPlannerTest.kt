@@ -112,12 +112,15 @@ class ExportPlannerTest {
     }
 
     @Test
-    fun hevc_quality_4k30_max_uses_the_table_value_under_the_160_ceiling() {
+    fun hevc_quality_4k30_is_160_mbps_the_owner_decision_and_the_plan_has_no_issue() {
         val s = ExportPreset.QUALITY.apply(ExportSettings())
         val plan = ExportPlanner.resolve(s, uhd30, ultra)
-        // 16 * 3.249 * 2.4 * 0.6 = 74.9 -> 75.0
-        assertEquals(75_000_000, plan.bitrateBps)
+        // Owner decision 2026-11-25: Quality = 160 Mb/s for HEVC (QUALITY level,
+        // 16 * 3.249 * 5.13 * 0.6 = 160.0), exactly the listed ceiling: no issue.
+        assertEquals(160_000_000, plan.bitrateBps)
         assertTrue(plan.issues.isEmpty())
+        // The old MAX level (2.4x) is untouched and still reads 75 Mb/s.
+        assertEquals(75_000_000, ExportPlanner.resolve(s.copy(bitrateLevel = BitrateLevel.MAX), uhd30, ultra).bitrateBps)
         assertEquals(null, plan.profile)            // 8-bit HEVC: the encoder's own default (Main)
     }
 

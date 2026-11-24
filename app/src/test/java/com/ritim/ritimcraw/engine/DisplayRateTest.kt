@@ -55,4 +55,14 @@ class DisplayRateTest {
         assertEquals(2, DisplayRate.modeIdFor(modes, 1080, 2400, 24.0))
         assertEquals(0, DisplayRate.modeIdFor(modes, 720, 1600, 30.0)) // no mode at that size: the system's
     }
+
+    @Test
+    fun the_request_is_off_by_default_and_the_flags_only_matter_in_the_way_they_say() {
+        assertEquals(false, DisplayRateApply.ENABLED_BY_DEFAULT)
+        assertEquals(false, DisplayRate.shouldRequest(false, false, false))
+        assertEquals(true, DisplayRate.shouldRequest(false, true, false))   // debug enable flag
+        assertEquals(false, DisplayRate.shouldRequest(false, true, true))   // disable wins
+        assertEquals(true, DisplayRate.shouldRequest(true, false, false))   // a future default-on
+        assertEquals(false, DisplayRate.shouldRequest(true, false, true))
+    }
 }

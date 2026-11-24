@@ -33,7 +33,9 @@ class ExportSettingsTest {
         val s = ExportPreset.SMALLER.apply(ExportSettings())
         assertEquals(ExportCodec.HEVC, s.codec); assertEquals(8, s.bitDepth); assertEquals(BitrateLevel.LOW, s.bitrateLevel)
         val q = ExportPreset.QUALITY.apply(ExportSettings())
-        assertEquals(ExportCodec.HEVC, q.codec); assertEquals(BitrateLevel.MAX, q.bitrateLevel)
+        assertEquals(ExportCodec.HEVC, q.codec); assertEquals(BitrateLevel.QUALITY, q.bitrateLevel)
+        // Without a HEVC encoder the preset falls back to AVC at the old MAX level (160 Mb/s is a HEVC figure).
+        assertEquals(BitrateLevel.MAX, ExportPreset.QUALITY.apply(ExportSettings(), hevcAvailable = false).bitrateLevel)
         // E1b/c: QUALITY is 8-bit until the 10-bit path (E1d) exists.
         assertEquals(8, q.bitDepth)
     }
