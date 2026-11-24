@@ -201,6 +201,33 @@ inline CropFramePlan planCrop(
     const double theta = static_cast<double>(deg) * 3.14159265358979323846 / 180.0;
     p.cos = static_cast<float>(std::cos(theta));
     p.sin = static_cast<float>(std::sin(theta));
+    if (deg == 0.0f) {
+        // The CPU twin's 0-degree arm (CropState.applyToArgb) does not resample: it
+        // copies a WHOLE-PIXEL window (pixelRect: round x/y, round w/h, shift to fit;
+        // x0 = min(px.x, width - outW)). The continuous rect mapped here lands between
+        // texels whenever x*W, y*H, w*W or h*H is fractional, which the device crop sweep
+        // measured as up to 57 LSB / 78% of pixels on the same frame (2026-11-25;
+        // a rect on whole pixels read 0 LSB, the same rect moved half a pixel 53 LSB).
+        // Snap the rect to that window so the preview shows exactly the pixels the CPU
+        // preview and the export copy; rotated crops keep the continuous map.
+        const int W = static_cast<int>(uprightW);
+        const int H = static_cast<int>(uprightH);
+        auto clampi = [](int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); };
+        int x = clampi(cropRoundDim(p.rectX * static_cast<float>(W)), 0, W - 1);
+        int y = clampi(cropRoundDim(p.rectY * static_cast<float>(H)), 0, H - 1);
+        int w = cropRoundDim(p.rectW * static_cast<float>(W));
+        int h = cropRoundDim(p.rectH * static_cast<float>(H));
+        if (w < 1) w = 1;
+        if (h < 1) h = 1;
+        if (x + w > W) x = (W - w > 0) ? W - w : 0;
+        if (y + h > H) y = (H - h > 0) ? H - h : 0;
+        int x0 = x < W - p.outW ? x : W - p.outW;
+        if (x0 < 0) x0 = 0;
+        p.rectX = static_cast<float>(x0) / static_cast<float>(W);
+        p.rectY = static_cast<float>(y) / static_cast<float>(H);
+        p.rectW = static_cast<float>(p.outW) / static_cast<float>(W);
+        p.rectH = static_cast<float>(p.outH) / static_cast<float>(H);
+    }
     return p;
 }
 

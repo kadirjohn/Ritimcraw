@@ -201,3 +201,45 @@ TEST_CASE("cropNeutral: the neutral set is deg 0 AND the full rect") {
     const float rectOnly[5] = {0.0f, 0.0f, 0.5f, 1.0f, 0.0f};
     CHECK_FALSE(cropNeutral(rectOnly));
 }
+
+// ---- 0 degrees: the rect snaps to the CPU twin's whole-pixel window (2026-11-25) ----
+
+TEST_CASE("planCrop 0deg: a fractional rect snaps to CropState.pixelRect's whole-pixel window") {
+    // 256x144 preview, the device sweep's mismatching rect 0.4,0.35,0.45,0.4:
+    // x = 102.4 -> 102, y = 50.4 -> 50, w = 115.2 -> 115, h = 57.6 -> 58.
+    const float p[5] = {0.4f, 0.35f, 0.45f, 0.4f, 0.0f};
+    const CropFramePlan plan = planCrop(256, 144, true, p);
+    CHECK(plan.active);
+    CHECK(plan.outW == 115);
+    CHECK(plan.outH == 58);
+    CHECK(plan.rectX * 256.0f == doctest::Approx(102.0f).epsilon(1e-5));
+    CHECK(plan.rectY * 144.0f == doctest::Approx(50.0f).epsilon(1e-5));
+    CHECK(plan.rectW * 256.0f == doctest::Approx(115.0f).epsilon(1e-5));
+    CHECK(plan.rectH * 144.0f == doctest::Approx(58.0f).epsilon(1e-5));
+}
+
+TEST_CASE("planCrop 0deg: a whole-pixel rect is untouched") {
+    const float p[5] = {104.0f / 256.0f, 45.0f / 144.0f, 120.0f / 256.0f, 64.0f / 144.0f, 0.0f};
+    const CropFramePlan plan = planCrop(256, 144, true, p);
+    CHECK(plan.rectX * 256.0f == doctest::Approx(104.0f).epsilon(1e-5));
+    CHECK(plan.rectY * 144.0f == doctest::Approx(45.0f).epsilon(1e-5));
+    CHECK(plan.outW == 120);
+    CHECK(plan.outH == 64);
+}
+
+TEST_CASE("planCrop 0deg: the window is shifted to fit like pixelRect (x0 = min(x, W - outW))") {
+    // x = 0.9 * 256 = 230.4 -> 230, w = 0.3 * 256 = 76.8 -> 77: 230 + 77 > 256, so x -> 179.
+    const float p[5] = {0.9f, 0.1f, 0.3f, 0.5f, 0.0f};
+    const CropFramePlan plan = planCrop(256, 144, true, p);
+    CHECK(plan.outW == 77);
+    CHECK(plan.rectX * 256.0f == doctest::Approx(179.0f).epsilon(1e-5));
+}
+
+TEST_CASE("planCrop: a rotated crop keeps the continuous rect (only 0 deg snaps)") {
+    const float p[5] = {0.4f, 0.35f, 0.45f, 0.4f, 7.0f};
+    const CropFramePlan plan = planCrop(256, 144, true, p);
+    CHECK(plan.rectX == 0.4f);
+    CHECK(plan.rectY == 0.35f);
+    CHECK(plan.rectW == 0.45f);
+    CHECK(plan.rectH == 0.4f);
+}
