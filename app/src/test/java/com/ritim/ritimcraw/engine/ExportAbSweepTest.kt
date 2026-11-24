@@ -15,13 +15,18 @@ import org.junit.Test
 class ExportAbSweepTest {
 
     @Test
-    fun cases_are_the_four_fixed_axes_in_order() {
+    fun cases_are_the_six_fixed_axes_in_order() {
         val cases = ExportAbSweep.cases()
-        assertEquals(listOf("neutral", "grade", "stab", "grade-stab"), cases.map { it.id })
+        assertEquals(
+            listOf("neutral", "grade", "stab", "grade-stab", "stab-image", "grade-stab-image"),
+            cases.map { it.id },
+        )
         assertEquals(false, cases[0].stabilization)
         assertEquals(false, cases[1].stabilization)
         assertEquals(true, cases[2].stabilization)
         assertEquals(true, cases[3].stabilization)
+        assertEquals(true, cases[4].stabilization)
+        assertEquals(true, cases[5].stabilization)
     }
 
     @Test
@@ -72,6 +77,21 @@ class ExportAbSweepTest {
         val both = cases.first { it.id == "grade-stab" }.grade
         assertEquals(gradeOnly.copy(stabilization = true), both)
         assertTrue(both.stabilization)
+    }
+
+    @Test
+    fun stab_image_cases_select_the_image_engine_with_the_same_axes() {
+        val cases = ExportAbSweep.cases()
+        val stabImage = cases.first { it.id == "stab-image" }.grade
+        val gradeStabImage = cases.first { it.id == "grade-stab-image" }.grade
+        // The image twins of the two gyro stab cases: the same grades,
+        // engine = 1, and every sub-value at the UI defaults.
+        assertEquals(GradeK(stabilization = true, stabilizationEngine = 1), stabImage)
+        val gradeOnly = cases.first { it.id == "grade" }.grade
+        assertEquals(gradeOnly.copy(stabilization = true, stabilizationEngine = 1), gradeStabImage)
+        assertEquals(1, stabImage.stabilizationEngine)
+        // The gyro cases never pick up the engine key by accident.
+        assertEquals(0, cases.first { it.id == "stab" }.grade.stabilizationEngine)
     }
 
     @Test
@@ -151,7 +171,10 @@ class ExportAbSweepTest {
     // ---- gyro paused (2026-11-23) ----
 
     @Test
-    fun paused_skips_exactly_the_stabilization_cases() {
+    fun paused_skips_exactly_the_gyro_stabilization_cases() {
+        // Only the GYRO-engine stab cases pause with the gyro flag off; the
+        // image twins are governed by imageSkip (their own flag), and the
+        // grade/neutral axes never pause.
         val skipped = ExportAbSweep.cases().filter { ExportAbSweep.pausedSkip(it, gyroAllowed = false) }
         assertEquals(listOf("stab", "grade-stab"), skipped.map { it.id })
     }
@@ -174,5 +197,54 @@ class ExportAbSweepTest {
         val line = ExportAbSweep.pausedLine(c, 7)
         assertEquals("export-ab grade-stab frame=7 SKIPPED (gyro paused)", line)
         assertFalse(line.contains("EXPORT_MISMATCH"))
+    }
+
+    // ---- image-engine skips (S4) ----
+
+    @Test
+    fun image_skip_skips_exactly_the_image_cases_while_the_flag_is_off() {
+        // The shipped state: the image flag is false, so BOTH image cases
+        // skip with their own reason — never a silently unstabilized
+        // comparison, never the gyro-pause line.
+        val skipped = ExportAbSweep.cases().filter {
+            ExportAbSweep.imageSkip(it, imageAllowed = false, analysisReady = true)
+        }
+        assertEquals(listOf("stab-image", "grade-stab-image"), skipped.map { it.id })
+    }
+
+    @Test
+    fun image_allowed_and_ready_runs_the_image_cases() {
+        assertTrue(
+            ExportAbSweep.cases().none {
+                ExportAbSweep.imageSkip(it, imageAllowed = true, analysisReady = true)
+            },
+        )
+    }
+
+    @Test
+    fun image_allowed_without_an_analysis_still_skips() {
+        val c = ExportAbSweep.cases().first { it.id == "stab-image" }
+        assertTrue(ExportAbSweep.imageSkip(c, imageAllowed = true, analysisReady = false))
+        // the "no analysis" line, not the "paused" one
+        val line = ExportAbSweep.imageSkipLine(c, 3, imageAllowed = true)
+        assertEquals("export-ab stab-image frame=3 SKIPPED (no analysis)", line)
+    }
+
+    @Test
+    fun a_gyro_case_is_never_image_skipped() {
+        val stab = ExportAbSweep.cases().first { it.id == "stab" }
+        assertFalse(ExportAbSweep.imageSkip(stab, imageAllowed = false, analysisReady = false))
+    }
+
+    @Test
+    fun image_skip_line_says_which_leg_is_missing() {
+        val c = ExportAbSweep.cases().first { it.id == "grade-stab-image" }
+        assertEquals(
+            "export-ab grade-stab-image frame=0 SKIPPED (image paused)",
+            ExportAbSweep.imageSkipLine(c, 0, imageAllowed = false),
+        )
+        assertFalse(
+            ExportAbSweep.imageSkipLine(c, 0, imageAllowed = false).contains("EXPORT_MISMATCH"),
+        )
     }
 }
