@@ -3411,10 +3411,16 @@ fun ClipEditorScreen(
         }
         DisposableEffect(isPlaying, displaySurface, clipInfo.fps) {
             val surf = displaySurface
-            if (isPlaying && clipInfo.fps > 0f) {
+            // Captured NOW: isPlaying is a delegated state, and the dispose
+            // lambda would read its value at dispose time (already false when
+            // the run is being torn down BECAUSE playback stopped), so the
+            // release was silently skipped (device check 2026-11-25: begin
+            // logged, end never).
+            val requested = isPlaying && clipInfo.fps > 0f
+            if (requested) {
                 DisplayRateApply.begin(displayActivity, surf, clipInfo.fps.toDouble())
             }
-            onDispose { if (isPlaying && clipInfo.fps > 0f) DisplayRateApply.end(displayActivity, surf) }
+            onDispose { if (requested) DisplayRateApply.end(displayActivity, surf) }
         }
 
         // ---- Landscape workspace decision (owner request 2026-11-11d
