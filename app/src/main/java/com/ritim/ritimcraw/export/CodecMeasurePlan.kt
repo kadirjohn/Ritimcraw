@@ -207,11 +207,13 @@ object CodecMeasurePlanner {
 
     /**
      * The uncapped probe points (plan §2/§8.3): below-ceiling 0.875x (the
-     * control row), the listed ceiling itself, and the two above-ceiling
-     * points 1.25x/1.5x — the uncapped question's data. HEVC 160 -> 140 /
-     * 160 / 200 / 240; AVC 220 -> 192.5 / 220 / 275 / 330 Mb/s.
+     * control row), the listed ceiling itself, and the three above-ceiling
+     * points 1.125x/1.25x/1.5x — the uncapped question's data (1.125x added
+     * 2026-11-25 so HEVC is tried at 180 Mb/s too, the owner's request to
+     * find the really accepted ceiling). HEVC 160 -> 140 / 160 / 180 / 200 /
+     * 240; AVC 220 -> 192.5 / 220 / 247.5 / 275 / 330 Mb/s.
      */
-    val BITRATE_MULTIPLIERS = doubleArrayOf(0.875, 1.0, 1.25, 1.5)
+    val BITRATE_MULTIPLIERS = doubleArrayOf(0.875, 1.0, 1.125, 1.25, 1.5)
 
     /** The two measurement points (plan §13.1): 4K30 and 4K60. */
     val SIZES = listOf(

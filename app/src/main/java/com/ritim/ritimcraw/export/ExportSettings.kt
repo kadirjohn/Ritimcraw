@@ -47,6 +47,16 @@ enum class BitrateLevel(val factor: Double) {
     STANDARD(0.75),
     HIGH(1.2),
     MAX(2.4),
+    /**
+     * Ladder steps above MAX, up to the chosen encoder's listed ceiling
+     * (P2, 2026-11-25). They have no fixed factor: their value is a function
+     * of MAX's table value and the ceiling ([BitrateTable.extraSteps]); an
+     * encoder with no listed ceiling resolves them as MAX and the sheet does
+     * not offer them. HIGHER sits between MAX and the ceiling, CEILING is the
+     * ceiling itself.
+     */
+    HIGHER(0.0),
+    CEILING(0.0),
     CUSTOM(0.0),
 }
 

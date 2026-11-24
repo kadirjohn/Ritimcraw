@@ -60,4 +60,52 @@ class BitrateTableTest {
         assertEquals(2_000_000, BitrateTable.legacyBitsPerSecond(320, 240))
         assertEquals(25_000_000, BitrateTable.legacyBitsPerSecond(7680, 4320))
     }
+
+    // ---- ladder up to the encoder's listed ceiling (P2, 2026-11-25) ----
+
+    @Test
+    fun the_existing_levels_keep_their_values_to_the_half_megabit() {
+        // The presets lean on these: Compatible = STANDARD, Smaller = LOW, Quality = MAX.
+        fun hevc(l: BitrateLevel) = BitrateTable.mbps(l, 3840, 2160, 30.0, ExportCodec.HEVC)
+        assertEquals(75.0, hevc(BitrateLevel.MAX), 0.0)
+        assertEquals(37.5, hevc(BitrateLevel.HIGH), 0.0)
+        assertEquals(23.5, hevc(BitrateLevel.STANDARD), 0.0)
+        assertEquals(14.0, hevc(BitrateLevel.LOW), 0.0)
+        // A ceiling must not move them.
+        assertEquals(75.0, BitrateTable.mbps(BitrateLevel.MAX, 3840, 2160, 30.0, ExportCodec.HEVC, ceilingMbps = 160.0), 0.0)
+    }
+
+    @Test
+    fun a_160_ceiling_over_a_75_max_adds_two_steps_ending_at_the_ceiling() {
+        val steps = BitrateTable.extraSteps(75.0, 160.0)
+        assertEquals(listOf(BitrateLevel.HIGHER, BitrateLevel.CEILING), steps.map { it.first })
+        assertEquals(117.5, steps[0].second, 0.0)
+        assertEquals(160.0, steps[1].second, 0.0)
+    }
+
+    @Test
+    fun steps_never_pass_the_ceiling_and_a_fractional_ceiling_rounds_down() {
+        for (c in listOf(100.0, 160.0, 220.0, 161.9, 400.0)) {
+            for ((_, v) in BitrateTable.extraSteps(75.0, c)) assertTrue("$v > $c", v <= c)
+        }
+        assertEquals(161.5, BitrateTable.extraSteps(75.0, 161.9).last().second, 0.0)
+    }
+
+    @Test
+    fun no_room_above_max_means_no_extra_steps() {
+        assertTrue(BitrateTable.extraSteps(75.0, null).isEmpty())
+        assertTrue(BitrateTable.extraSteps(75.0, 80.0).isEmpty())
+        assertTrue(BitrateTable.extraSteps(75.0, 93.0).isEmpty())
+        // Just enough room for the ceiling, not for a middle step.
+        assertEquals(listOf(BitrateLevel.CEILING), BitrateTable.extraSteps(75.0, 100.0).map { it.first })
+    }
+
+    @Test
+    fun the_new_levels_resolve_through_the_table_and_fall_back_to_max_without_a_ceiling() {
+        fun at(l: BitrateLevel, c: Double?) = BitrateTable.mbps(l, 3840, 2160, 30.0, ExportCodec.HEVC, c)
+        assertEquals(160.0, at(BitrateLevel.CEILING, 160.0), 0.0)
+        assertEquals(117.5, at(BitrateLevel.HIGHER, 160.0), 0.0)
+        assertEquals(75.0, at(BitrateLevel.CEILING, null), 0.0)
+        assertEquals(75.0, at(BitrateLevel.HIGHER, 80.0), 0.0)
+    }
 }

@@ -100,6 +100,25 @@ object ExportSheetModel {
         tenBitPathAvailable = probeOk && originalSize && cropFull && straightenZero && gradeOnGpu,
     )
 
+    /**
+     * The bitrate levels the sheet lists (pure): LOW..MAX always, HIGHER and
+     * CEILING only when [plan]'s encoder lists a ceiling with room above MAX
+     * ([BitrateTable.extraSteps]), then CUSTOM. The level currently chosen is
+     * always listed so a saved pick never vanishes from its own picker.
+     */
+    fun offeredBitrateLevels(plan: ExportPlan, facts: List<EncoderFacts>, current: BitrateLevel): List<BitrateLevel> {
+        val ceilMbps = facts.firstOrNull { it.name == plan.encoderName }
+            ?.bitrateRangeBps?.last?.let { it / 1_000_000.0 }
+        val max = BitrateTable.mbps(BitrateLevel.MAX, plan.width, plan.height, plan.fps, ExportCodec.entries.first { it.mime == plan.mime })
+        val extra = BitrateTable.extraSteps(max, ceilMbps).map { it.first }
+        return BitrateLevel.entries.filter {
+            when (it) {
+                BitrateLevel.HIGHER, BitrateLevel.CEILING -> it in extra || it == current
+                else -> true
+            }
+        }
+    }
+
     /** True when an HEVC Main10 video encoder (10-bit input) is on the device; unknown facts = assumed. */
     fun tenBitEncoderAvailable(facts: List<EncoderFacts>): Boolean =
         facts.isEmpty() || facts.any {

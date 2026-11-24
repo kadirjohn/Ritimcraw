@@ -151,4 +151,58 @@ class ExportSheetModelTest {
         assertEquals(10, yes.bitDepth)
         assertEquals(2, yes.profile)
     }
+
+    // ---- bitrate ladder up to the encoder's ceiling (P2, 2026-11-25) ----
+
+    private val uhd = ExportSheetModel.Subject(3840, 2160, 30.0, 60.0)
+    private fun hevcUhd(level: BitrateLevel, extra: ExportSettings.() -> ExportSettings = { this }) =
+        ExportSheetModel.plan(
+            ExportSettings(codec = ExportCodec.HEVC, bitrateLevel = level).extra(), uhd, hevcFacts,
+        )
+
+    @Test
+    fun the_sheet_offers_the_extra_steps_when_the_encoder_lists_a_ceiling() {
+        val plan = hevcUhd(BitrateLevel.STANDARD)
+        assertEquals(
+            listOf("LOW", "STANDARD", "HIGH", "MAX", "HIGHER", "CEILING", "CUSTOM"),
+            ExportSheetModel.offeredBitrateLevels(plan, hevcFacts, BitrateLevel.STANDARD).map { it.name },
+        )
+    }
+
+    @Test
+    fun without_a_listed_ceiling_the_extra_steps_are_not_offered_unless_already_chosen() {
+        val noCeiling = hevcFacts.map { EncoderFacts(it.name, it.mime, it.hardware, maxWidth = 8192, maxHeight = 8192) }
+        val plan = ExportSheetModel.plan(ExportSettings(codec = ExportCodec.HEVC), uhd, noCeiling)
+        assertEquals(
+            listOf("LOW", "STANDARD", "HIGH", "MAX", "CUSTOM"),
+            ExportSheetModel.offeredBitrateLevels(plan, noCeiling, BitrateLevel.STANDARD).map { it.name },
+        )
+        // A saved CEILING pick never vanishes from its own picker.
+        assertTrue(BitrateLevel.CEILING in ExportSheetModel.offeredBitrateLevels(plan, noCeiling, BitrateLevel.CEILING))
+    }
+
+    @Test
+    fun the_ceiling_step_plans_exactly_the_listed_ceiling_with_no_warning() {
+        val p = hevcUhd(BitrateLevel.CEILING)
+        assertEquals(160_000_000, p.bitrateBps)
+        assertTrue(p.issues.none { it.kind == ExportIssue.Kind.BITRATE_ABOVE_CEILING })
+        val h = hevcUhd(BitrateLevel.HIGHER)
+        assertEquals(117_500_000, h.bitrateBps)
+        // MAX itself is untouched (preset meaning does not change).
+        assertEquals(75_000_000, hevcUhd(BitrateLevel.MAX).bitrateBps)
+    }
+
+    @Test
+    fun custom_is_free_up_to_the_ceiling_and_above_it_only_with_uncapped() {
+        fun custom(mbps: Double, uncapped: Boolean) =
+            hevcUhd(BitrateLevel.CUSTOM) { copy(customMbps = mbps, uncapped = uncapped) }
+        assertEquals(160_000_000, custom(160.0, false).bitrateBps)
+        assertTrue(custom(160.0, false).issues.none { it.kind == ExportIssue.Kind.BITRATE_ABOVE_CEILING })
+        val clamped = custom(200.0, false)
+        assertEquals(160_000_000, clamped.bitrateBps)
+        assertTrue(clamped.issues.any { it.kind == ExportIssue.Kind.BITRATE_ABOVE_CEILING })
+        val over = custom(200.0, true)
+        assertEquals(200_000_000, over.bitrateBps)
+        assertTrue(over.issues.any { it.kind == ExportIssue.Kind.BITRATE_UNCAPPED_RISK })
+    }
 }
