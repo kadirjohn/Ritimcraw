@@ -142,7 +142,7 @@ echo "== building tests =="
 # a real clip, acceleration/jerk + zoom-rate A/B plan sweep (with pan-speed
 # percentiles and the section 3.10 confidence components), raw-vs-developed
 # luma check, and the gyro cross-check (gyrocheck, hand-held clips 2026-11-24).
-# Run by hand: `image_stab_measure bench|analyze|plan|lumacheck|gyrocheck`.
+# Run by hand: `image_stab_measure bench|analyze|plan|lumacheck|gyrocheck|residual`.
 # scale-test (S11a counterfactual, 2026-11-24): scale-policy plan sweep on a
 # stored .ristab — free/lock/clamp records rewrite + both modes; the numbers
 # behind docs/S11_ROBUSTNESS_NOTES.md, now reproducible.
@@ -163,6 +163,11 @@ echo "== building tests =="
 # scaling is exactly linear, Lost/outside pairs are gated out).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_focus_fit.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_focus_fit"
+# test_residual_analysis: the residual-decomposition legs' proofs (the
+# region-fit edge stretch on a true rotation homography, the per-pair
+# sync-jitter probe, the no-jitter control). Synthetic only.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_residual_analysis.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_residual_analysis"
 # test_warp: Phase 5 CPU warp (warpFrame); runs from the repo root so
 # it finds the STEPS/media/test fixtures (the cost-evidence case).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_warp.cpp" \
@@ -290,6 +295,8 @@ echo "== running test_scale_tool =="
 "$BUILD/test_scale_tool"
 echo "== running test_focus_fit =="
 "$BUILD/test_focus_fit"
+echo "== running test_residual_analysis =="
+"$BUILD/test_residual_analysis"
 echo "== running test_rawstats =="
 "$BUILD/test_rawstats"
 echo "== running test_yuv =="
