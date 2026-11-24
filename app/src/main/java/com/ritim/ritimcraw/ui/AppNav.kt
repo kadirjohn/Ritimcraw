@@ -1190,6 +1190,9 @@ fun AppNav(
         }
     }
 
+    // Editors — the timeline — and the Device report — are full screen
+    // without nav; the browse destinations show it (bottom bar on phones,
+    // rail on wide windows).
     val showNav = editorRoute == null && !timelineOpen && !deviceReportOpen
     val wideNav = LocalConfiguration.current.screenWidthDp >= WIDE_NAV_MIN_WIDTH_DP
     // Status/navigation bar icon colors follow the APP's resolved theme, not
