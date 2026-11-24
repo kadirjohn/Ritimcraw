@@ -466,7 +466,7 @@ class EncodedPreviewSessionTest {
 
         override fun develop(
             frame: YuvFrameK,
-            isBt709: Boolean,
+            color: EncodedColorSpec,
             orientationDeg: Int,
             grade: GradeK,
             lutPath: String?,
@@ -536,7 +536,7 @@ private fun testFormat(): EncodedVideoFormat = EncodedVideoFormat(
     width = 4,
     height = 4,
     orientationDeg = 0,
-    isBt709 = true,
+    color = EncodedColorSpec.legacy8bit(),
     codecConfig = listOf(byteArrayOf(1, 2)),
 )
 

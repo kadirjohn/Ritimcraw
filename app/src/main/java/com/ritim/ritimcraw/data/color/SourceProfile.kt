@@ -58,6 +58,8 @@ enum class SourceTransfer {
 enum class SourceMatrix {
     BT601,
     BT709,
+    /** BT.2020 non-constant-luminance (Mi-Log: matrix_coefficients 9). E0. */
+    BT2020,
 }
 
 /** The YCbCr range expansion. */
@@ -425,6 +427,12 @@ object SourceProfileVectors {
                 yc + 1.5748f * crN,
                 yc - 0.187324f * cbN - 0.468124f * crN,
                 yc + 1.8556f * cbN,
+            )
+            // E0: BT.2020 NCL (Kr .2627, Kb .0593) - Transfer.cpp kCoeff2020.
+            SourceMatrix.BT2020 -> floatArrayOf(
+                yc + 1.4746f * crN,
+                yc - 0.164553f * cbN - 0.571353f * crN,
+                yc + 1.8814f * cbN,
             )
         }
     }

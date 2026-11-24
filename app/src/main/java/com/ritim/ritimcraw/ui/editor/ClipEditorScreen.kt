@@ -4326,6 +4326,7 @@ fun ClipEditorScreen(
                     onExport = onExport,
                     exportRate = exportRate,
                     exportEnabled = sourceFd >= 0,
+                    encodedSource = sourcePath == SourcePath.ENCODED,
                     clipInfo = clipInfo,
                     // The export sheet's ladder composes the manual
                     // rotation (the exporter's own chain) so its chips

@@ -30,9 +30,43 @@ float miLogToLinear(float x);
 // clamped; callers clamp to [0,1] for display.
 float linearToRec709(float lin);
 
+// How an encoded clip's YCbCr samples are to be read (E0). The container
+// (MediaFormat KEY_COLOR_STANDARD / RANGE / TRANSFER + the track profile)
+// declares these; the Kotlin side maps them to this vocabulary ONCE
+// (EncodedColorSpec) and preview and export hand the same values down.
+enum class YuvMatrix : int {
+    FromFlag = -1,  // legacy: developEncoded's isBt709 argument decides (601/709)
+    BT601 = 0,
+    BT709 = 1,
+    BT2020 = 2,     // BT.2020 non-constant-luminance (Mi-Log: matrix 9)
+};
+
+// The transfer curve the decoded RGB carries. MiLog and Linear are handled
+// here; the SDR curves map onto Color.h decodeTransfer.
+enum class EncodedTransfer : int {
+    MiLog = 0,    // Xiaomi Mi-Log (the app's encoded default; see miLogToLinear)
+    Rec709 = 1,   // BT.709 / BT.601 / BT.2020 SDR OETF (Color.h Rec709OETF)
+    Srgb = 2,
+    Linear = 3,
+};
+
+enum class EncodedPrimaries : int {
+    BT709 = 0,    // already the working space: no gamut step
+    BT2020 = 1,   // converted to the Rec.709 working space in linear light
+};
+
 // One decoded frame of an encoded (Mi-Log) clip: planar or semi-planar YUV.
-// Data is limited-range (SMPTE) 8-bit unless yuv10 indicates 10-bit; the
-// develop stage expands limited -> full before conversion.
+//
+// Sample layout: bitDepth == 8 -> one byte per sample. bitDepth > 8 -> one
+// 16-bit LITTLE-ENDIAN word per sample with the value in the HIGH bits (MSB
+// aligned: exactly MediaCodec's P010), so a 10-bit code is word >> 6.
+// Strides are always BYTES per row. Range: limited (SMPTE 16-235 luma /
+// 16-240 chroma, scaled to the depth) unless fullRange; the develop expands
+// either to full before the matrix.
+//
+// The defaults (8-bit, limited, matrix from the legacy isBt709 flag,
+// Mi-Log, BT.709 primaries) are bit-identical to the pre-E0 develop, so
+// every older caller is untouched.
 struct YuvFrame {
     uint32_t width = 0;   // luma width
     uint32_t height = 0;  // luma height
@@ -40,13 +74,20 @@ struct YuvFrame {
     std::vector<uint8_t> y;
     std::vector<uint8_t> u;
     std::vector<uint8_t> v;  // semiPlanar: interleaved UV in u, v unused
-    int stride = 0;        // bytes per luma row (0 = width)
-    int uvStride = 0;      // bytes per chroma row (0 = width/2)
+    int stride = 0;        // bytes per luma row (0 = width * bytesPerSample)
+    int uvStride = 0;      // bytes per chroma row (0 = packed: chroma width * (2 if semiPlanar) * bytesPerSample)
+    int bitDepth = 8;      // 8, or 10/12/16 as 16-bit MSB-aligned words
+    bool fullRange = false;
+    YuvMatrix matrix = YuvMatrix::FromFlag;
+    EncodedTransfer transfer = EncodedTransfer::MiLog;
+    EncodedPrimaries primaries = EncodedPrimaries::BT709;
 };
 
-// Develops one decoded Mi-Log frame: limited->full YUV (BT.601/709 chosen
-// by matrixFromIsbt709; encoded clips carry BT.709 tags, BT.601 kept for
-// legacy clips), YUV->RGB, then WB/temp/tint + exposure grade, and after the
+// Develops one decoded Mi-Log frame: range expansion (limited or full, 8 or
+// 10+ bit, per the frame's own fields) -> YUV->RGB with the frame's matrix
+// (BT.601/709/2020; FromFlag defers to isBt709) -> the frame's transfer
+// decode (Mi-Log by default) -> BT.2020 primaries to the Rec.709 working
+// space (E0), then WB/temp/tint + exposure grade, and after the
 // grade the same denoise stages, detail stages, optional tonemapping and
 // optional LUT the MCRAW path runs (Grade.chromaDenoise radius 2 px and
 // Grade.noiseReduction 3x3 bilateral FIRST — the codec's noise is in the
@@ -57,8 +98,9 @@ struct YuvFrame {
 // All genuinely apply to an encoded clip: its decoded pixels are
 // ordinary linear RGB. Neutral grades skip every new stage (exact
 // passthrough, the old look). Mi-Log clips carry Rec.2020 primaries (see
-// the DCTL); the gamut conversion to the working space lands with the ACES
-// pass, so today the RGB is treated as the working space directly.
+// the DCTL): a frame that declares EncodedPrimaries::BT2020 is converted to
+// the Rec.709 working space after the transfer decode (E0); the default
+// BT709 declaration keeps the pre-E0 behavior (the RGB IS the working space).
 //   lut: optional stage-22 LUT (COL-07). nullptr = no LUT selected — the
 //   stage is skipped entirely, so every existing call site stays
 //   bit-identical to the pre-LUT pipeline.

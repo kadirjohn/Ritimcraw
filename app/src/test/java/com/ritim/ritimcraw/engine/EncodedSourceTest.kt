@@ -458,6 +458,32 @@ class EncodedSourceTest {
     // ---- render inputs and lifecycle ----
 
     @Test
+    fun render_hands_the_declared_color_to_the_developer_at_the_decoded_depth() {
+        // E0: the SAME EncodedColorSpec reaches the develop for preview and
+        // export. A 10-bit Mi-Log track whose decoder returned 8-bit planes
+        // (the fake) is developed - and reported - as 8-bit, never mis-read.
+        val miLog = EncodedColorSpec.fromMediaFormat(
+            "video/hevc", EncodedColorSpec.COLOR_STANDARD_BT2020,
+            EncodedColorSpec.COLOR_RANGE_FULL, null, 2,
+        )
+        val format = testFormat().copy(mime = "video/hevc", color = miLog)
+        val developer = FakeDeveloper()
+        val source = EncodedSource(FakeReader(samples(longArrayOf(0, 40000)), format = format), FakeDecoder(), developer)
+        val info = source.open(3)
+        assertSame(miLog, info.color)
+
+        source.renderFrame(0, GradeK())
+
+        val c = developer.colors.single()
+        assertEquals(8, c.bitDepth)
+        assertEquals(10, c.declaredBitDepth)
+        assertTrue(c.fullRange)
+        assertEquals(2, c.nativeMatrix)
+        assertEquals(1, c.nativePrimaries)
+        assertTrue(c.approximations.any { it.contains("8-bit for a 10-bit") })
+    }
+
+    @Test
     fun render_passes_grade_flags_and_orientation_to_developer() {
         val reader = FakeReader(samples(longArrayOf(0, 40000)))
         val developer = FakeDeveloper()
@@ -644,7 +670,7 @@ class EncodedSourceTest {
         // with the unavailable message, never UnsatisfiedLinkError.
         val frame = YuvFrameK(1, 1, true, byteArrayOf(0), byteArrayOf(0), ByteArray(0), 1, 1)
         try {
-            NativeEncodedDeveloper.develop(frame, true, 0, GradeK())
+            NativeEncodedDeveloper.develop(frame, EncodedColorSpec.legacy8bit(), 0, GradeK())
             fail("develop must fail without the native library")
         } catch (e: IllegalStateException) {
             assertEquals(NativeSource.nativeUnavailableMessage, e.message)
@@ -893,18 +919,20 @@ class EncodedSourceTest {
         val frames = ArrayList<YuvFrameK>()
         val grades = ArrayList<GradeK>()
         val bt709Flags = ArrayList<Boolean>()
+        val colors = ArrayList<EncodedColorSpec>()
         val orientations = ArrayList<Int>()
 
         override fun develop(
             frame: YuvFrameK,
-            isBt709: Boolean,
+            color: EncodedColorSpec,
             orientationDeg: Int,
             grade: GradeK,
             lutPath: String?,
         ): IntArray? {
             frames.add(frame)
             grades.add(grade)
-            bt709Flags.add(isBt709)
+            bt709Flags.add(color.nativeMatrix != 0)
+            colors.add(color)
             orientations.add(orientationDeg)
             return result
         }
@@ -925,7 +953,7 @@ private fun testFormat(): EncodedVideoFormat = EncodedVideoFormat(
     width = 4,
     height = 4,
     orientationDeg = 90,
-    isBt709 = true,
+    color = EncodedColorSpec.legacy8bit(),
     codecConfig = listOf(byteArrayOf(1, 2), byteArrayOf(3)),
 )
 

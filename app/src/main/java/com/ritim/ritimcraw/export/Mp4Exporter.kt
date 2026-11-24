@@ -2434,6 +2434,19 @@ class Mp4Exporter(
     private val encoderFacts: () -> List<EncoderFacts> = { DeviceEncoderFacts.all() },
     /** (E1b) Where the plan trail goes: the "ritim-export" log. A failing sink never fails an export. */
     private val planLog: (String) -> Unit = { line -> runCatching { android.util.Log.i("ritim-export", line) } },
+    /**
+     * (E0) Whether the job's source is an encoded (Mi-Log / MP4) clip: the
+     * app wires it to the source's stored kind; the default (false) keeps
+     * every MCRAW caller and test unchanged.
+     */
+    private val isEncoded: (String) -> Boolean = { false },
+    /**
+     * (E0) The encoded clip's session (MediaCodec decode + developEncoded);
+     * one per export, built lazily so MCRAW exports never touch it.
+     */
+    private val encodedSessionFactory: () -> Mp4Session = {
+        EncodedMp4Session(log = { line -> runCatching { android.util.Log.i("ritim-export", line) } })
+    },
 ) {
 
     /**
@@ -2472,7 +2485,14 @@ class Mp4Exporter(
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
     ): ExportJob {
         val lutPath = lutPathFor(job.snapshot.lutId)
-        val gyroPath = gyroPathFor(job.sourceId)
+        // (E0) An encoded source decodes through MediaCodec and develops with
+        // developEncoded; the rest of the pipeline (plan, writer, audio) is
+        // shared. v1: CPU develop only (a GPU/10-bit request is re-planned
+        // by the pipeline with the reason on the report) and no gyro warp
+        // (stabilization stays hidden for encoded clips).
+        val encoded = isEncoded(job.sourceId)
+        val sessionForJob = if (encoded) encodedSessionFactory() else session
+        val gyroPath = if (encoded) null else gyroPathFor(job.sourceId)
         // AUD-02 gate, resolved ONCE before the engine runs (the same
         // rule as lut/gyro): only ATTACHED carries the audio track.
         // QA-15/EX-11: the job's ENQUEUE-time snapshot wins (a retry
@@ -2514,10 +2534,11 @@ class Mp4Exporter(
             try {
                 engine.execute {
                     val res = try {
-                        var backend = job.renderBackend
+                        var backend = if (encoded) RenderBackend.CPU else job.renderBackend
                         while (true) {
                             try {
                                 exportOnce(
+                                    sessionForJob,
                                     backend, sourceFd, job.snapshot,
                                     partial.absolutePath, lutPath, gyroPath,
                                     job.manualRotationDeg, audioAttached, onProgress,
@@ -2632,6 +2653,7 @@ class Mp4Exporter(
      * what audio the export carries).
      */
     private fun exportOnce(
+        session: Mp4Session,
         renderBackend: RenderBackend,
         sourceFd: Int,
         grade: GradeK,

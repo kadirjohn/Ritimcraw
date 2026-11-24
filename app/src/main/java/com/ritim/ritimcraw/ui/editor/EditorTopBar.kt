@@ -123,6 +123,10 @@ fun EditorTopBar(
     // MP4 tap passes the selected entry's bound.
     onExport: (Target, Int?, Int?, ExportSettings?) -> Unit,
     exportEnabled: Boolean,
+    // (E0) an encoded (Mi-Log / MP4) clip: the export sheet offers MP4 only
+    // (DNG/Linear DNG are RAW deliverables), and 10-bit is not offered (the
+    // encoded decode path is CPU in v1).
+    encodedSource: Boolean = false,
     // (E1c) how fast this device exported last time, for the sheet's time estimate; null = no estimate yet.
     exportRate: ExportSheetModel.Rate? = null,
     clipInfo: ClipInfo,
@@ -240,6 +244,7 @@ fun EditorTopBar(
             grade = grade,
             manualRotationDeg = manualRotationDeg,
             exportRate = exportRate,
+            encodedSource = encodedSource,
             onExport = { target, resolutionW, resolutionH, settings ->
                 exportSheetOpen = false
                 onExport(target, resolutionW, resolutionH, settings)
@@ -316,6 +321,9 @@ private fun ExportSheet(
     grade: GradeK,
     manualRotationDeg: Int,
     exportRate: ExportSheetModel.Rate?,
+    // (E0) true = this clip is encoded (Mi-Log / MP4): the sheet offers MP4
+    // only and 10-bit stays off (see the tabs list and the context below).
+    encodedSource: Boolean = false,
     onExport: (Target, Int?, Int?, ExportSettings?) -> Unit,
     onDevelopFrame: () -> Unit,
     onDismiss: () -> Unit,
@@ -371,7 +379,10 @@ private fun ExportSheet(
         }
     }
     val gradeOnGpu = remember(grade) {
-        BackendRules.fragmentUncoveredStages(grade, true).isEmpty() &&
+        // (E0) an encoded clip develops on the CPU (v1), so the 10-bit
+        // GPU path is never available for it - the setting stays honest.
+        !encodedSource &&
+            BackendRules.fragmentUncoveredStages(grade, true).isEmpty() &&
             BackendRules.fragmentUncoveredPreStages(grade).isEmpty()
     }
     val exportContext = ExportSheetModel.tenBitContext(
@@ -384,7 +395,17 @@ private fun ExportSheet(
     val plan = subject?.let { ExportSheetModel.plan(settings, it, facts, exportContext) }
 
     var tab by remember { mutableStateOf(ExportSheetState.Tab.MP4) }
-    val tabs = ExportSheetState.Tab.entries
+    // (E0) an encoded (Mi-Log / MP4) clip offers MP4 only: DNG and Linear
+    // DNG are RAW deliverables and v1 has no encoded frame picker, so
+    // their tabs are gone, not disabled.
+    val tabs = if (encodedSource) {
+        listOf(ExportSheetState.Tab.MP4)
+    } else {
+        ExportSheetState.Tab.entries.toList()
+    }
+    // One target left = a one-segment control is chrome with nothing to
+    // choose (the Frame row's own single-tab rule): the segment hides.
+    val showTabs = tabs.size > 1
     val tabLabels = tabs.map {
         stringResource(
             when (it) {
@@ -399,14 +420,18 @@ private fun ExportSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth()) {
             // The target, one segmented control at the top: only the chosen
-            // target's settings show below (E1c-polish).
-            AppSegmentedControl(
-                options = tabLabels,
-                selectedIndex = tabs.indexOf(tab),
-                onSelect = { tab = tabs[it] },
-                minHeight = 48.dp,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
+            // target's settings show below (E1c-polish). (E0) An encoded
+            // clip's MP4-only sheet skips the control entirely — one
+            // segment is nothing to choose.
+            if (showTabs) {
+                AppSegmentedControl(
+                    options = tabLabels,
+                    selectedIndex = tabs.indexOf(tab),
+                    onSelect = { tab = tabs[it] },
+                    minHeight = 48.dp,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            }
             // The scrolling part; the action below it stays put (sticky).
             Column(
                 Modifier
