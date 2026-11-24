@@ -82,6 +82,14 @@ object DisplayRateApply {
     /** Asks for [fps] while playing: the Surface when there is one (API 30+), else the window's mode. */
     fun begin(activity: Activity?, surface: Surface?, fps: Double) {
         if (fps < 1.0) return
+        // Debug A/B switch (debug builds only): `run-as <pkg> touch files/debug-no-display-rate`
+        // turns the request off so playback smoothness can be compared with and without it.
+        if (BuildConfig.DEBUG && activity != null &&
+            java.io.File(activity.filesDir, "debug-no-display-rate").exists()
+        ) {
+            Log.i(TAG, "display-rate disabled by the debug flag file")
+            return
+        }
         if (surface != null && surface.isValid && Build.VERSION.SDK_INT >= 30) {
             try {
                 if (Build.VERSION.SDK_INT >= 31) {
