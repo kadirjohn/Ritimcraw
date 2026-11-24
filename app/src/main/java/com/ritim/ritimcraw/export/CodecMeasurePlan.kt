@@ -55,6 +55,9 @@ private const val KEY_COLOR_TRANSFER = "color-transfer"
 /** MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible (2135033992). */
 private const val COLOR_FORMAT_YUV420FLEXIBLE = 2135033992
 
+/** MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010 (54) — the 10-bit input format. */
+private const val COLOR_FORMAT_P010 = 54
+
 /** MediaFormat.COLOR_STANDARD_BT709 (1). */
 private const val COLOR_STANDARD_BT709 = 1
 
@@ -185,7 +188,7 @@ data class MeasureOptions(
     /** I-frame interval seconds — the export default (the measurement compares like for like). */
     val keyframeSec: Float = 1f,
     /** The synthetic content recipe; [CodecMeasureCase.content] writes it into every row. */
-    val content: String = CONTENT_RECIPE,
+    val content: String = CONTENT_HEAVY,
 ) {
     companion object {
         /** Plan §8.2: 2 s — long enough that the I-frame burst does not dominate. */
@@ -200,6 +203,17 @@ data class MeasureOptions(
          * VBR to its floor) seeded with 16x16 noise blocks.
          */
         const val CONTENT_RECIPE = "ramp+v1"
+
+        /**
+         * Heavy content (2026-11-25): the ramp is too easy (VBR stayed at
+         * 20-36 Mb/s at 4K, far under the encoder's ceiling, so the ceiling
+         * was never exercised). The same ramp plus per-pixel noise of about
+         * +-24 luma / +-6 chroma that changes every frame (a deterministic tile,
+         * so runs stay reproducible): close to the worst case an encoder
+         * sees, so the realised bitrate is limited by the encoder, not by
+         * the picture. Real footage lies between the two recipes.
+         */
+        const val CONTENT_HEAVY = "noise+v2"
     }
 }
 
@@ -330,7 +344,11 @@ object CodecMeasurePlanner {
      */
     fun formatValues(c: CodecMeasureCase): Map<String, Number> {
         val v = LinkedHashMap<String, Number>()
-        v[KEY_COLOR_FORMAT] = COLOR_FORMAT_YUV420FLEXIBLE
+        // The input format must match the content depth: a 10-bit row asking for
+        // Main10 but handing the codec 8-bit YUV420Flexible input made the
+        // c2.qti HEVC encoder return EOS with zero output bytes (2026-11-25
+        // device run, 20 of 20 ten-bit rows). 10-bit rows use P010.
+        v[KEY_COLOR_FORMAT] = if (c.bitDepth == 10) COLOR_FORMAT_P010 else COLOR_FORMAT_YUV420FLEXIBLE
         v[KEY_BIT_RATE] = c.requestedBps
         v[KEY_BITRATE_MODE] = c.rateMode
         v[KEY_FRAME_RATE] = c.fps

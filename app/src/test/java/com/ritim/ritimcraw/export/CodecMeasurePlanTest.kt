@@ -316,4 +316,27 @@ class CodecMeasurePlanTest {
         assertTrue(line.contains("err=IllegalStateException"))
         assertTrue(line.contains("AVC 3840×2160@60 CBR"))
     }
+
+    // ---- 10-bit input format + heavy content (2026-11-25) ----
+
+    @Test
+    fun ten_bit_rows_configure_p010_input_and_eight_bit_rows_stay_flexible() {
+        val m = CodecMeasurePlanner.matrix(listOf(hevc160()), MeasureOptions(tenBit = true))
+        val ten = m.cases.first { it.bitDepth == 10 }
+        val eight = m.cases.first { it.bitDepth == 8 }
+        // The bug: every row asked for YUV420Flexible, so the Main10 rows fed 8-bit input
+        // and the c2.qti HEVC encoder produced zero bytes.
+        assertEquals(54, CodecMeasurePlanner.formatValues(ten)["color-format"])
+        assertEquals(2135033992, CodecMeasurePlanner.formatValues(eight)["color-format"])
+        assertEquals(ten.profile, CodecMeasurePlanner.formatValues(ten)["profile"])
+    }
+
+    @Test
+    fun the_default_content_is_the_heavy_recipe_and_the_ramp_stays_selectable() {
+        val m = CodecMeasurePlanner.matrix(listOf(hevc160()), MeasureOptions())
+        assertTrue(m.cases.all { it.content == MeasureOptions.CONTENT_HEAVY })
+        assertEquals("noise+v2", MeasureOptions.CONTENT_HEAVY)
+        val ramp = CodecMeasurePlanner.matrix(listOf(hevc160()), MeasureOptions(content = MeasureOptions.CONTENT_RECIPE))
+        assertTrue(ramp.cases.all { it.content == "ramp+v1" })
+    }
 }

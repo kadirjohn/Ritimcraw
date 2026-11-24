@@ -265,6 +265,17 @@ object CodecMeasurer {
                     val idx = codec.dequeueInputBuffer(250_000)
                     if (idx >= 0) {
                         val image = codec.getInputImage(idx)
+                        if (fed == 0) {
+                            // One line per case: what the codec really handed us (a 10-bit row
+                            // must see format 54 and two planes; this is how the 2026-11-25
+                            // zero-byte bug would have shown up at once).
+                            android.util.Log.i(
+                                TAG,
+                                "input ${c.tag()}: image=${image?.format} planes=${image?.planes?.size} " +
+                                    "yStride=${image?.planes?.getOrNull(0)?.rowStride} " +
+                                    "colorFormat=${runCatching { codec.inputFormat.getInteger(MediaFormat.KEY_COLOR_FORMAT) }.getOrNull()}",
+                            )
+                        }
                         if (image != null) {
                             synth.write(fed, image)
                             val size = filledSize(c, image)
@@ -434,7 +445,7 @@ object CodecMeasurer {
             val rowBytes = ByteArray(w)
             for (row in 0 until h) {
                 for (col in 0 until w) {
-                    rowBytes[col] = luma(row, col, step).toByte()
+                    rowBytes[col] = luma(row, col, step, i).toByte()
                 }
                 yBuf.position(row * yRow)
                 yBuf.put(rowBytes)
@@ -446,9 +457,11 @@ object CodecMeasurer {
                 val pixelStride = plane.pixelStride
                 val center = (CHROMA_CENTER + step / 8).toByte()
                 if (pixelStride == 1 && cw == rowStride) {
-                    // Tight planar row: one bulk fill.
-                    val chromaRow = ByteArray(cw) { center }
+                    // Tight planar row: one bulk fill (per row: the heavy
+                    // recipe's chroma noise differs row to row).
+                    val chromaRow = ByteArray(cw)
                     for (row in 0 until ch) {
+                        for (col in 0 until cw) chromaRow[col] = (center + chromaNoise(row, col, i)).toByte()
                         buf.position(row * rowStride)
                         buf.put(chromaRow)
                     }
@@ -457,7 +470,7 @@ object CodecMeasurer {
                         var dst = row * rowStride
                         for (col in 0 until cw) {
                             buf.position(dst)
-                            buf.put(center)
+                            buf.put((center + chromaNoise(row, col, i)).toByte())
                             dst += pixelStride
                         }
                     }
@@ -482,7 +495,7 @@ object CodecMeasurer {
             val rowShorts = ShortArray(w)
             for (row in 0 until h) {
                 for (col in 0 until w) {
-                    rowShorts[col] = (luma(row, col, step) * 4).toShort()
+                    rowShorts[col] = (luma(row, col, step, i) * 4).toShort()
                 }
                 yBuf.position(row * yRow)
                 yBuf.asShortBuffer().put(rowShorts)
@@ -495,8 +508,12 @@ object CodecMeasurer {
             val cBuf = cPlane.buffer
             val cRow = cPlane.rowStride
             val center = ((CHROMA_CENTER + step / 8) * 4).toShort()
-            val chromaRow = ShortArray(cw * 2) { center } // Cb,Cr interleaved
+            val chromaRow = ShortArray(cw * 2) // Cb,Cr interleaved
             for (row in 0 until ch) {
+                for (col in 0 until cw) {
+                    chromaRow[2 * col] = (center + chromaNoise(row, col, i) * 4).toShort()
+                    chromaRow[2 * col + 1] = (center + chromaNoise(row, col + 1, i) * 4).toShort()
+                }
                 cBuf.position(row * cRow)
                 cBuf.asShortBuffer().put(chromaRow)
             }
@@ -510,11 +527,23 @@ object CodecMeasurer {
         private fun rampStep(i: Int): Int = (i * 13) % (235 - 16)
 
         /** One luma sample: a diagonal ramp (row+col sweeps the frame) + 16x16 noise blocks. */
-        private fun luma(row: Int, col: Int, step: Int): Int {
+        private fun luma(row: Int, col: Int, step: Int, frame: Int = 0): Int {
             val ramp = (16 + step + ((row + col) * 3 / 128)) % (235 - 16)
             val blockNoise = ((row / 16 + col / 16 + step) % 7) * 3
-            return (ramp + blockNoise).coerceIn(16, 235)
+            val base = ramp + blockNoise
+            return if (heavy) {
+                (base + NOISE[(col + row * 37 + frame * 1013) and NOISE_MASK]).coerceIn(16, 235)
+            } else {
+                base.coerceIn(16, 235)
+            }
         }
+
+        /** Heavy recipe ("noise+v2"): per-pixel noise on top of the ramp (see CONTENT_HEAVY). */
+        private val heavy: Boolean = c.content == MeasureOptions.CONTENT_HEAVY
+
+        /** Chroma noise (+-6) for row [row] at pair [col]; zero for the ramp recipe. */
+        private fun chromaNoise(row: Int, col: Int, frame: Int): Int =
+            if (heavy) NOISE[(col * 3 + row * 41 + frame * 977) and NOISE_MASK] / 4 else 0
 
         private companion object {
             /** ImageFormat.YCBCR_P010's int (54): the format MediaCodec reports on a P010 input Image. */
@@ -522,6 +551,16 @@ object CodecMeasurer {
 
             /** BT.709 limited chroma neutral (128 in 8-bit). */
             const val CHROMA_CENTER = 128
+
+            /** The deterministic noise tile of the heavy recipe: 4096 values in -24..24 (xorshift, fixed seed). */
+            const val NOISE_MASK = 4095
+            val NOISE: IntArray = IntArray(NOISE_MASK + 1).also { t ->
+                var x = 0x2545F491
+                for (k in t.indices) {
+                    x = x xor (x shl 13); x = x xor (x ushr 17); x = x xor (x shl 5)
+                    t[k] = (x and 0xFFFF) % 49 - 24
+                }
+            }
         }
     }
 }
