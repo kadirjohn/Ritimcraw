@@ -3,6 +3,13 @@ package com.ritim.ritimcraw.engine
 import android.util.Log
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.grade2.toGradeK
+import com.ritim.ritimcraw.data.grade2.OutputTransformV2
+import com.ritim.ritimcraw.data.grade2.OpenDrtParamsV2
+import com.ritim.ritimcraw.data.grade2.NodeWheelV2
+import com.ritim.ritimcraw.data.grade2.NodeCurveV2
+import com.ritim.ritimcraw.data.grade2.GradeNodeV2
+import com.ritim.ritimcraw.data.grade2.ClipGradeV2
 import com.ritim.ritimcraw.export.NativeGpuDevelop
 import java.util.concurrent.ExecutionException
 
@@ -133,7 +140,121 @@ object GradeParitySweep {
     private fun fmt(v: Float): String =
         if (v == Math.rint(v.toDouble()).toFloat()) v.toInt().toString() else v.toString()
 
-    /** Byte-wise compare of two equal-length RGB buffers (unsigned). */
+    // ---- the v2 chain sweep (color model v2 F1-7, plan §10 layer 4) ----
+    //
+    // The grade sweep rides the DEVELOP session; the v2 chain cases ride
+    // the PREVIEW session — the ONLY session with nodes doors (F1-5's
+    // additive initNodes/setColorModelChain + F1-6's binding). Each case:
+    // one trimmed node chain (or a DRT output) through
+    // GradeV2Usage/NodeChainWire, the SAME wire handed to BOTH legs —
+    // setColorModelChain + the preview render door (GPU) vs the CPU
+    // preview render's chainWire leg (the reference) — at maxDim 256
+    // (kStatsLongEdge's shape: the published pack matches dims, the same
+    // rule the crop sweep rides). ACCEPTANCE for the nodes-only cases =
+    // GradeParitySweep.compare's bucket (byte stats); the drt cases
+    // ride the same thresholds (K9: the DRT GPU/CPU threshold is
+    // MEASURED on device; the sweep's line reports the numbers, the
+    // flag stays the existing rule until the owner pins one).
+
+    /** One v2 chain case: a label + the trimmed chain's wire + the drt pack when the output declares it. */
+    data class V2Case(
+        val control: String,
+        val label: String,
+        val chainWire: FloatArray,
+        /** The OpenDRT uniform pack (required when the wire's outputMode is 1). */
+        val drtUniforms: FloatArray?,
+        val grade: GradeK,
+    )
+
+    /** The device v2 case grid (pure; JVM-pinned). */
+    fun v2Cases(): List<V2Case> {
+        fun grade(
+            control: String, label: String,
+            nodes: List<GradeNodeV2>,
+            output: OutputTransformV2 =
+                OutputTransformV2(),
+        ): V2Case {
+            val v2 = ClipGradeV2(
+                nodes = nodes, output = output,
+                // The legacy develop block STAYS the identity grade (its
+                // all-neutral default): the grid measures the chain alone
+                // (the same alone-cases rule the grade sweep rides).
+            )
+            val active = GradeV2Usage.activeNodes(v2)
+            val wire = NodeChainWire.encode(v2, active)
+            val drt = if (output.mode == OutputTransformV2.MODE_OPENDRT) {
+                OpenDrtPacks.resolve(
+                    OpenDrtPacks.Spec(
+                        look = output.opendrt.look,
+                        tonescale = output.opendrt.tonescale,
+                        cwp = output.opendrt.cwp,
+                        cwpLimit = output.opendrt.cwpLimit,
+                        grey = output.opendrt.grey,
+                        display = output.opendrt.display,
+                    ),
+                )
+            } else {
+                null
+            }
+            return V2Case(control, label, wire, drt, v2.toGradeK() ?: GradeK())
+        }
+
+        return listOf(
+            // Primaries (nodes-primary, plan §10 layer 4's list).
+            grade("nodes-primary", "lift", listOf(GradeNodeV2(lift = NodeWheelV2(0.3f, 0.1f)))),
+            grade("nodes-primary", "gain", listOf(GradeNodeV2(gain = NodeWheelV2(-0.2f, 0.25f, 0.1f)))),
+            grade("nodes-primary", "contrast+sat", listOf(GradeNodeV2(contrast = 1.4f, sat = 1.2f))),
+            // Log wheels.
+            grade("nodes-log", "shadow", listOf(GradeNodeV2(logShadow = NodeWheelV2(0.2f, 0.1f, 0.15f)))),
+            grade("nodes-log", "mid", listOf(GradeNodeV2(logMid = NodeWheelV2(-0.1f, 0.1f, 0.05f)))),
+            // Curves (nodes-curves).
+            grade(
+                "nodes-curves", "yS",
+                listOf(
+                    GradeNodeV2(curveY = NodeCurveV2(
+                        listOf(0f to 0f, 0.4f to 0.32f, 1f to 1f),
+                    )),
+                ),
+            ),
+            // Hue + WB.
+            grade("nodes-hue", "30deg", listOf(GradeNodeV2(hue = 30f))),
+            grade("nodes-temp", "warm", listOf(GradeNodeV2(temp = 0.5f, tint = -0.2f))),
+            // The multi-node chain + mix.
+            grade(
+                "nodes-chain", "3-nodes",
+                listOf(
+                    GradeNodeV2(lift = NodeWheelV2(0.2f, -0.1f)),
+                    GradeNodeV2(sat = 1.15f, hue = -15f),
+                    GradeNodeV2(gain = NodeWheelV2(0.15f, 0f, -0.1f), mix = 0.7f),
+                ),
+            ),
+            // The OpenDRT outputs (drt-sdr / drt-hlg, plan's list).
+            grade(
+                "drt-sdr", "standard",
+                emptyList(),
+                OutputTransformV2(
+                    mode = OutputTransformV2.MODE_OPENDRT,
+                ),
+            ),
+            grade(
+                "drt-hlg", "standard",
+                emptyList(),
+                OutputTransformV2(
+                    mode = OutputTransformV2.MODE_OPENDRT,
+                    opendrt = OpenDrtParamsV2(display = 2),
+                ),
+            ),
+            // nodes + drt (the plan's grade+nodes+drt composition).
+            grade(
+                "nodes+drt", "chain",
+                listOf(GradeNodeV2(sat = 1.2f, contrast = 1.15f)),
+                OutputTransformV2(
+                    mode = OutputTransformV2.MODE_OPENDRT,
+                ),
+            ),
+        )
+    }
+
     fun compare(gpu: ByteArray, cpu: ByteArray): Stats {
         val n = minOf(gpu.size, cpu.size)
         var maxD = 0
@@ -523,6 +644,188 @@ object GradeParitySweep {
                 Log.i(TAG, cropLine(c.x, c.y, c.w, c.h, c.deg, stats))
             }
             val summary = cropSummaryLine(rows, skipped)
+            Log.i(TAG, summary)
+            return summary
+        } finally {
+            NativeSource.jniPreviewSessionClose(session)
+            NativeSource.jniCloseSource(clip)
+        }
+    }
+
+    // ---- the v2 chain sweep's runner (device; the preview session's doors) ---
+
+    fun v2Line(c: V2Case, s: Stats): String =
+        String.format(
+            java.util.Locale.US,
+            "v2-sweep %s %s: maxDiffLsb=%d mismatch=%.3f%% over1=%.3f%% samples=%d",
+            c.control, c.label, s.maxDiffLsb, s.mismatchPct, s.over1Pct, s.samples,
+        )
+
+    fun v2SummaryLine(rows: List<Pair<V2Case, Stats>>, skipped: Int): String {
+        val worst = rows.maxByOrNull { it.second.maxDiffLsb }
+        return "v2-sweep summary: cases=${rows.size} skipped=$skipped " +
+            "worstMaxDiffLsb=${worst?.second?.maxDiffLsb ?: 0}" +
+            (if (worst != null) " (${worst.first.control} ${worst.first.label})" else "")
+    }
+
+    /**
+     * Runs the v2 chain sweep over the clip at [fd] (TAKES OWNERSHIP of
+     * the fd: closed here, always). Frame 0, maxDim 256 (the stats pack's
+     * own tier: dims stay honest), no LUT, warp off, zebra off, crop off.
+     * The GPU leg rides the PREVIEW session — the only session with the
+     * F1-5/F1-6 nodes doors; initNodes compiles the two v2 programs when
+     * the session opens, setColorModelChain hands each case's chain, and
+     * the render door publishes the stats pack. The CPU reference is the
+     * CPU PREVIEW door's own chainWire leg at the same maxDim (not the
+     * export door: the pack and the CPU preview BOTH scale by maxDim, so
+     * the bytes compare 1:1 — the crop sweep's same-dims rule).
+     */
+    suspend fun runV2(fd: Int): String? {
+        if (!enabled) {
+            PreviewRenderer.closeFdQuietly(fd)
+            return null
+        }
+        val engine = PreviewRenderer.previewEngine
+        return try {
+            val future = engine.submit<String?> { runV2Blocking(fd) }
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { future.get() }
+            } catch (e: java.util.concurrent.ExecutionException) {
+                Log.w(TAG, "v2-sweep aborted: ${e.cause?.message}")
+                null
+            }
+        } finally {
+            PreviewRenderer.closeFdQuietly(fd)
+        }
+    }
+
+    private fun runV2Blocking(fd: Int): String? {
+        if (!NativeSource.nativeAvailable) {
+            Log.w(TAG, "v2-sweep aborted: ${NativeSource.nativeUnavailableMessage}")
+            return null
+        }
+        val info = NativeSource.jniPreviewOpen(fd)
+        if (info == null || info.size < 7 || info[0] == 0) {
+            Log.w(TAG, "v2-sweep aborted: clip open failed (${NativeSource.previewLastError()})")
+            return null
+        }
+        val clip = info[0].toLong()
+        val session = NativeSource.jniPreviewSessionOpen(
+            GlesShaderSources.FULLSCREEN_VERTEX,
+            GlesShaderSources.FULLSCREEN_VERTEX_310,
+            GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+            GlesShaderSources.DEVELOP_FRAGMENT_POST,
+            GlesShaderSources.DEVELOP_FRAGMENT_TAIL,
+            GlesShaderSources.SHARPNESS_H,
+            GlesShaderSources.SHARPNESS_V,
+            GlesShaderSources.DETAIL_H,
+            GlesShaderSources.DETAIL_V,
+            GlesShaderSources.WARP,
+            GlesShaderSources.NR_CHROMA_H,
+            GlesShaderSources.NR_CHROMA_V,
+            GlesShaderSources.NR_LUMA,
+            GlesShaderSources.STORE_FRAGMENT,
+            GlesShaderSources.WINDOW_FRAGMENT,
+        )
+        if (session == 0L) {
+            Log.w(TAG, "v2-sweep aborted: gpu preview session open failed " +
+                "(${NativeSource.previewLastError()})")
+            NativeSource.jniCloseSource(clip)
+            return null
+        }
+        var nodesInit: IntArray? = null
+        try {
+            nodesInit = runCatching {
+                NativeSource.jniPreviewSessionInitNodes(
+                    session,
+                    GlesShaderSources.NODES,
+                    GlesShaderSources.FULLSCREEN_VERTEX,
+                    GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+                )
+            }.getOrNull()
+            if (nodesInit == null || nodesInit.isEmpty() || nodesInit[0] == 0) {
+                Log.w(TAG, "v2-sweep aborted: nodes programs did not compile " +
+                    "(${NativeSource.previewLastError()})")
+                NativeSource.jniPreviewSessionClose(session)
+                NativeSource.jniCloseSource(clip)
+                return null
+            }
+            Log.i(TAG, "v2-sweep nodes init: fragmentUniformVectors=${nodesInit[1]} " +
+                "textureImageUnits=${nodesInit[2]}")
+            val maxDim = 256
+            val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+            fun cpu(c: V2Case): IntArray? = NativeSource.jniPreviewRender(
+                clip, 0,
+                c.grade.exposureEv, c.grade.highlights, c.grade.tempK, c.grade.tint,
+                c.grade.saturation, c.grade.blackPoint, c.grade.whitePoint,
+                c.grade.shadows, c.grade.midtones, c.grade.contrast,
+                c.grade.asShot, c.grade.highlightReconstruction, c.grade.keepVignetting,
+                c.grade.sharpness, c.grade.detail, c.grade.tonemap,
+                null, c.grade.lutStrength,
+                c.grade.noiseReduction, c.grade.chromaDenoise,
+                false, c.grade.temporalStrength,
+                c.grade.wheelShadowX, c.grade.wheelShadowY,
+                c.grade.wheelMidX, c.grade.wheelMidY,
+                c.grade.wheelHighX, c.grade.wheelHighY,
+                c.grade.splitShadowHue, c.grade.splitHighlightHue, c.grade.splitBalance,
+                null, 0, 0f, 0f, 0f, 0f,
+                maxDim,
+                -1, -1, -1, -1, -1,
+                c.chainWire,
+            )
+            val rows = ArrayList<Pair<V2Case, Stats>>()
+            var skipped = 0
+            for (c in v2Cases()) {
+                val chainOk = runCatching {
+                    NativeSource.jniPreviewSessionSetColorModelChain(
+                        session, c.chainWire, c.drtUniforms,
+                    )
+                }.getOrDefault(false)
+                if (!chainOk) {
+                    skipped++
+                    Log.w(TAG, v2Line(c, Stats(0, 0, 0, 0, 0.0)) + " SKIPPED (chain door refused: " +
+                        NativeSource.previewLastError() + ")")
+                    continue
+                }
+                val cpuOut = cpu(c)
+                val gpuOut = NativeSource.jniPreviewSessionRenderFrameParcel(
+                    session, clip, 0, maxDim, GradeParcel.encode(c.grade),
+                    null, 0f, -1, -1, -1, -1, -1,
+                    false, identity, PreviewStatsMode.SYNC.native,
+                    false, floatArrayOf(0f, 0f, 1f, 1f, 0f),
+                    false, 253, 12, 200f / 255f,
+                )
+                if (cpuOut == null || cpuOut.size < 2 || gpuOut == null || gpuOut.size < 2) {
+                    skipped++
+                    Log.w(TAG, "v2-sweep ${c.control} ${c.label}: render failed " +
+                        "gpu=${gpuOut != null} cpu=${cpuOut != null} " +
+                        "(${NativeSource.previewLastError()})")
+                    continue
+                }
+                val gw = gpuOut[0]; val gh = gpuOut[1]
+                val cw = cpuOut[0]; val ch = cpuOut[1]
+                if (gw != cw || gh != ch) {
+                    skipped++
+                    Log.w(TAG, "v2-sweep ${c.control} ${c.label}: DIMS MISMATCH " +
+                        "gpu=${gw}x${gh} cpu=${cw}x${ch}")
+                    continue
+                }
+                val gpuArgb = gpuOut.copyOfRange(2, 2 + gw * gh)
+                val cpuArgb = cpuOut.copyOfRange(2, 2 + cw * ch)
+                val stats = compare(argbBytes(gpuArgb), argbBytes(cpuArgb))
+                rows += c to stats
+                Log.i(TAG, v2Line(c, stats))
+                // The CLEAR after every case: the next case's chain is
+                // handed explicitly, but the sweep's own discipline keeps
+                // the session's state obvious per case (K2's shape
+                // re-asserted even on the last one).
+                NativeSource.jniPreviewSessionSetColorModelChain(
+                    session, NodeChainWire.encode(
+                        com.ritim.ritimcraw.data.grade2.ClipGradeV2(), emptyList(),
+                    ), null,
+                )
+            }
+            val summary = v2SummaryLine(rows, skipped)
             Log.i(TAG, summary)
             return summary
         } finally {
