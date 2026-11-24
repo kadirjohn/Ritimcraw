@@ -1373,7 +1373,11 @@ private fun LibraryGridCell(
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 6.dp),
+            // The Column above clips to the 12dp rounded shape (ripple), so
+            // a label flush at x=0 / the bottom edge had its first glyph
+            // shaved by the bottom-start corner arc. Start 8dp and bottom
+            // 8dp keep the whole first glyph inside the arc (12dp radius).
+            modifier = Modifier.padding(start = 8.dp, top = 6.dp, end = 4.dp, bottom = 8.dp),
         )
     }
 }
