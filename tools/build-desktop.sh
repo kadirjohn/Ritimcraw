@@ -61,6 +61,15 @@ CORE_OBJS+=("$BUILD/core_ImageStabPlan.o")
 # the NDK build flags may differ from this script's).
 "$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Loudness.cpp" -o "$BUILD/core_Loudness.o"
 CORE_OBJS+=("$BUILD/core_Loudness.o")
+# Resample.cpp (E5-B, unwired): the interpolator's lerp
+# (a + (b - a) * frac) is what filmcraft's f32 op sequence rounds; the
+# default fp-contract collapses it into one FMA (measured: clang arm64
+# emits two fmadd with the default, zero with the opt-out), one rounding
+# where the crate has three. The crate-vector tests pin "the numbers
+# filmcraft runs", and the one-sample lag must round the same on
+# desktop, phone and any later JNI wiring (ImageStabPlan precedent).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Resample.cpp" -o "$BUILD/core_Resample.o"
+CORE_OBJS+=("$BUILD/core_Resample.o")
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
@@ -215,6 +224,10 @@ echo "== building tests =="
 # reference vectors in core/tests/data (runs from the repo root).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_opendrt.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_opendrt"
+# test_resample: E5-B streaming resampler + stereo/mono downmix core
+# (unwired filmcraft audio-dsp port) — synthetic only, no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_resample.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_resample"
 # bench_develop: M1 developCpu serial-vs-parallel measurement on the real
 # clip. The measured case is RAWEDIT_REALCLIP-gated (2 GB fixture, decode
 # is slow); without the gate the doctest prints a SKIP line. Runs from the
@@ -289,6 +302,8 @@ echo "== running test_opendrt =="
 (cd "$ROOT" && "$BUILD/test_opendrt")
 echo "== running test_loudness =="
 "$BUILD/test_loudness"
+echo "== running test_resample =="
+"$BUILD/test_resample"
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
 (cd "$ROOT" && "$BUILD/bench_develop")
 

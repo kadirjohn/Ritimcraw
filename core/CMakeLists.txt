@@ -67,6 +67,7 @@ add_library(rawedit STATIC
     src/ImageStabSource.cpp
     src/ImageStabPlan.cpp
     src/Loudness.cpp
+    src/Resample.cpp
     src/Yuv.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
@@ -84,7 +85,16 @@ set_source_files_properties(src/ImageStabPlan.cpp PROPERTIES
 # flag; the NDK build goes through THIS file, so without the same opt-out
 # the device could contract multiplies into FMAs and drift off the port's
 # expected numbers (Yuv.cpp precedent).
+# Resample.cpp (E5-B, unwired): the interpolator's lerp
+# (a + (b - a) * frac) is what filmcraft's f32 op sequence rounds; the
+# default fp-contract collapses it into one FMA (measured: clang arm64
+# emits two fmadd with the default, zero with the opt-out), one rounding
+# where the crate has three. The crate-vector tests pin "the numbers
+# filmcraft runs", and the one-source-sample-lag contract must round the
+# same on desktop, phone and any later JNI wiring; same opt-out.
 set_source_files_properties(src/Loudness.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(src/Resample.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
@@ -163,6 +173,11 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_loudness tests/test_loudness.cpp)
     target_include_directories(test_loudness PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_loudness PRIVATE rawedit)
+    # test_resample: E5-B streaming resampler + stereo/mono downmix core
+    # (unwired; filmcraft audio-dsp vectors) — synthetic only, no cwd needs.
+    add_executable(test_resample tests/test_resample.cpp)
+    target_include_directories(test_resample PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_resample PRIVATE rawedit)
     # bench_develop: M1 developCpu serial-vs-parallel measurement on the
     # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
     # asserts byte-exactness, reports (never asserts) the speedup.
@@ -189,5 +204,6 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME color_model COMMAND test_color_model)
     add_test(NAME opendrt COMMAND test_opendrt WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
     add_test(NAME loudness COMMAND test_loudness)
+    add_test(NAME resample COMMAND test_resample)
     add_test(NAME bench_develop COMMAND bench_develop)
 endif()
