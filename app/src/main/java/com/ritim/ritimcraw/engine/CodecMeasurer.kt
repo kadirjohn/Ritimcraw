@@ -59,6 +59,9 @@ object CodecMeasurer {
      */
     private const val DRAIN_DEADLINE_NS = 10_000_000_000L
 
+    /** The cap on a whole feed phase (synthesizing 4K noise frames is slow, not a stall). */
+    private const val FEED_DEADLINE_NS = 120_000_000_000L
+
     /** Debug builds only — nothing here runs or logs in release. */
     val enabled: Boolean get() = BuildConfig.DEBUG
 
@@ -256,7 +259,11 @@ object CodecMeasurer {
             // Drain deadline (the writer's EOS_DEADLINE: a codec that
             // never returns EOS ends the run honestly at the deadline with
             // what it produced — the row keeps its bytes, the series moves).
-            val drainDeadline = System.nanoTime() + DRAIN_DEADLINE_NS
+            // Two clocks: feeding may take as long as it takes (heavy 4K content is
+            // slow to synthesize, which is NOT the encoder stalling) but is capped at
+            // FEED_DEADLINE_NS; once EOS is queued the encoder gets DRAIN_DEADLINE_NS to
+            // return it (the old single 10 s clock from loop start cut a slow feed short).
+            var drainDeadline = System.nanoTime() + FEED_DEADLINE_NS
             val info = MediaCodec.BufferInfo()
             while (!eosSeen && System.nanoTime() < drainDeadline) {
                 // Feed first: the encoder turns frames into output while
@@ -295,6 +302,7 @@ object CodecMeasurer {
                     if (idx >= 0) {
                         codec.queueInputBuffer(idx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         eosSent = true
+                        drainDeadline = System.nanoTime() + DRAIN_DEADLINE_NS
                     }
                 }
                 // Drain whatever is ready; after EOS block up to the
@@ -361,7 +369,7 @@ object CodecMeasurer {
      * that would throw on the Main10 rows.
      */
     internal fun filledSize(c: CodecMeasureCase, image: Image): Int =
-        if (image.planes.size >= 3) {
+        if (c.bitDepth != 10 && image.planes.size >= 3) {
             imageInputSize(
                 c.width, c.height,
                 image.planes[0].rowStride,
@@ -369,8 +377,9 @@ object CodecMeasurer {
                 image.planes[2].rowStride, image.planes[2].pixelStride,
             )
         } else {
-            // P010: luma shorts (w per row at the Y row stride in BYTES) +
-            // the chroma block (cw interleaved CbCr pairs per row).
+            // P010 (whatever plane count the Image reports): 16-bit luma rows at the Y row
+            // stride, then the interleaved CbCr block (cw pairs of two words per row). The
+            // extent is the end of the last chroma pair - the same maximum-of-plane-ends rule.
             val yEnd = 2 * c.width + (c.height - 1) * image.planes[0].rowStride
             val cRow = image.planes[1].rowStride
             val cw = (c.width + 1) / 2
@@ -481,7 +490,10 @@ object CodecMeasurer {
         /**
          * 10-bit P010 (HEVC Main10 rows): 16-bit little-endian words, the
          * 10 data bits in the MSBs, lower 6 zero (the ImageFormat.YCBCR_P010
-         * doc; the 10-bit value's *4 shift = <<2 does exactly that).
+         * doc). An 8-bit level becomes a 10-bit one (x4) and then moves up
+         * by 6 bits, so x256 in all. (The first version stored only x4: the
+         * value sat in the LOW bits, the frames were ~1.4% bright, and the
+         * encoder saw near-black noise: 1.3 Mb/s at a 140 Mb/s ask.)
          */
         private fun writeP010(i: Int, image: Image) {
             val w = c.width
@@ -489,33 +501,59 @@ object CodecMeasurer {
             val cw = (w + 1) / 2
             val ch = (h + 1) / 2
             val step = rampStep(i)
+            // Plane buffers: explicit little-endian views (P010 words are LE; never trust the
+            // buffer's own order), duplicated so the codec's buffer state is not disturbed.
             val yPlane = image.planes[0]
-            val yBuf = yPlane.buffer
+            val yBuf = yPlane.buffer.duplicate().order(java.nio.ByteOrder.LITTLE_ENDIAN)
             val yRow = yPlane.rowStride
             val rowShorts = ShortArray(w)
             for (row in 0 until h) {
                 for (col in 0 until w) {
-                    rowShorts[col] = (luma(row, col, step, i) * 4).toShort()
+                    rowShorts[col] = p010Word(luma(row, col, step, i)).toShort()
                 }
                 yBuf.position(row * yRow)
                 yBuf.asShortBuffer().put(rowShorts)
             }
-            // P010 chroma: ONE semiplanar 16-bit plane, Cb/Cr interleaved
-            // (pixelStride = 2 words). The bulk row buffer writes each pair
-            // as Cb,Cr adjacent shorts — the row-based shape the 8-bit path
-            // uses, adapted to the 16-bit word.
-            val cPlane = image.planes[1]
-            val cBuf = cPlane.buffer
-            val cRow = cPlane.rowStride
-            val center = ((CHROMA_CENTER + step / 8) * 4).toShort()
+            // Chroma: the P010 Image reports THREE planes on this device (Y, Cb, Cr; chroma
+            // pixelStride 4 bytes: Cb and Cr words interleaved, the Cb view is one word shorter
+            // than the interleaved row because the last Cr word lives only in the Cr view). So
+            // each sample goes to ITS plane by absolute index; the 2008-style "write the whole
+            // interleaved row through plane 1" overflowed the last row (BufferOverflowException
+            // on the first frame, 20 of 20 ten-bit rows, 2026-11-25). With a two-plane Image the
+            // Cr word is the next word of plane 1.
+            val cbPlane = image.planes[1]
+            val cbBuf = cbPlane.buffer.duplicate().order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val crPlane = if (image.planes.size >= 3) image.planes[2] else null
+            val crBuf = crPlane?.buffer?.duplicate()?.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val center = (CHROMA_CENTER + step / 8)
+            // Bulk per row (a per-sample absolute put is ~0.5 s per 4K frame, which starved the feed
+            // loop): the interleaved Cb,Cr row goes through the Cb view in one put, minus its last
+            // word, and that last Cr word goes through the Cr view. With the usual layout (Cr view
+            // = Cb view + 2 bytes) this is exactly the interleaved P010 chroma row.
             val chromaRow = ShortArray(cw * 2) // Cb,Cr interleaved
             for (row in 0 until ch) {
                 for (col in 0 until cw) {
-                    chromaRow[2 * col] = (center + chromaNoise(row, col, i) * 4).toShort()
-                    chromaRow[2 * col + 1] = (center + chromaNoise(row, col + 1, i) * 4).toShort()
+                    chromaRow[2 * col] = p010Word(center + chromaNoise(row, col, i)).toShort()
+                    chromaRow[2 * col + 1] = p010Word(center + chromaNoise(row, col + 1, i)).toShort()
                 }
-                cBuf.position(row * cRow)
-                cBuf.asShortBuffer().put(chromaRow)
+                cbBuf.position(row * cbPlane.rowStride)
+                if (cbPlane.pixelStride == 4) {
+                    cbBuf.asShortBuffer().put(chromaRow, 0, chromaRow.size - 1)
+                    val lastCr = chromaRow[chromaRow.size - 1]
+                    if (crBuf != null && crPlane != null) {
+                        crBuf.putShort(row * crPlane.rowStride + (cw - 1) * crPlane.pixelStride, lastCr)
+                    } else {
+                        cbBuf.putShort(row * cbPlane.rowStride + (cw - 1) * 4 + 2, lastCr)
+                    }
+                } else {
+                    // Unusual layout: fall back to the exact per-sample indices.
+                    for (col in 0 until cw) {
+                        cbBuf.putShort(row * cbPlane.rowStride + col * cbPlane.pixelStride, chromaRow[2 * col])
+                        val crIdx = row * (crPlane?.rowStride ?: cbPlane.rowStride) + col * (crPlane?.pixelStride ?: cbPlane.pixelStride)
+                        if (crBuf != null) crBuf.putShort(crIdx, chromaRow[2 * col + 1])
+                        else cbBuf.putShort(row * cbPlane.rowStride + col * cbPlane.pixelStride + 2, chromaRow[2 * col + 1])
+                    }
+                }
             }
         }
 
@@ -524,6 +562,9 @@ object CodecMeasurer {
          * wraps — a per-frame luminance CHANGE, so every frame forces
          * fresh bits (flat content would make VBR rings near-lossless).
          */
+        /** An 8-bit level as a P010 word: 10-bit value (x4) in the top ten bits (<< 6), clamped. */
+        private fun p010Word(level8: Int): Int = (level8.coerceIn(0, 255) * 4).coerceAtMost(1023) shl 6
+
         private fun rampStep(i: Int): Int = (i * 13) % (235 - 16)
 
         /** One luma sample: a diagonal ramp (row+col sweeps the frame) + 16x16 noise blocks. */
