@@ -60,6 +60,8 @@ object GradeParitySweep {
         val label: String,
         val grade: GradeK,
         val warpM: FloatArray? = null,
+        /** [LUT_TEST_CUBE] = the sweep's own generated 17^3 .cube (resolved at run time); null = no LUT. */
+        val lutPath: String? = null,
     ) {
         /** Warp cases compared against the CPU door: identity is the CPU's
          *  own no-warp fast path, so the CPU render IS the reference. */
@@ -69,6 +71,25 @@ object GradeParitySweep {
          *  GPU(no warp) (expected to differ) and the INERT flag uses
          *  GPU(warp, grade) vs GPU(warp, neutral). */
         val isWarpReal: Boolean get() = warpM != null && !isWarpIdentity
+    }
+
+    /** Marker for [Case.lutPath]: the run writes the sweep's own cube to the cache dir and substitutes its path. */
+    const val LUT_TEST_CUBE = "<sweep-test-cube>"
+
+    /** A 17^3 .cube that is clearly not the identity (gamma lift mixed with a channel rotation). */
+    private fun writeSweepCube(): java.io.File {
+        val n = 17
+        val sb = StringBuilder("TITLE \"grade-sweep\"\nLUT_3D_SIZE $n\n")
+        for (b in 0 until n) for (g in 0 until n) for (r in 0 until n) {
+            val rf = r / (n - 1f); val gf = g / (n - 1f); val bf = b / (n - 1f)
+            val lift = { v: Float -> Math.pow(v.toDouble(), 0.85).toFloat() }
+            sb.append(String.format(java.util.Locale.ROOT, "%.6f %.6f %.6f\n",
+                0.8f * lift(rf) + 0.2f * gf, 0.8f * lift(gf) + 0.2f * bf, 0.8f * lift(bf) + 0.2f * rf))
+        }
+        // java.io.tmpdir is the app's cache dir on Android.
+        val f = java.io.File(System.getProperty("java.io.tmpdir") ?: ".", "grade-sweep.cube")
+        f.writeText(sb.toString())
+        return f
     }
 
     const val CONTROL_WARP_IDENTITY = "warp-identity"
@@ -134,6 +155,9 @@ object GradeParitySweep {
         add("tonemap", "ACES", GradeK(tonemap = 1))
         add("tonemap", "AgX Punchy", GradeK(tonemap = 2))
         add("tonemap", "AgX Base", GradeK(tonemap = 5))
+        // LUT case (2026-11-24): the shared LUT stage became a float32 table read with texelFetch and blended by
+        // hand; the sweep had no LUT case, so this is the first device parity number for the MCRAW LUT stage.
+        out += Case("lut", "17^3 100%", GradeK(lutStrength = 100f), lutPath = LUT_TEST_CUBE)
         // Warp cases (grade non-neutral so an un-graded TAIL input is visible):
         // identity must equal the CPU render; a small rotation+translation
         // must still follow the grade.
@@ -384,13 +408,13 @@ object GradeParitySweep {
             return null
         }
         val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
-        fun gpu(g: GradeK, warpM: FloatArray? = null): ByteArray? = NativeGpuDevelop.renderFrameParcel(
+        fun gpu(g: GradeK, warpM: FloatArray? = null, lut: String? = null): ByteArray? = NativeGpuDevelop.renderFrameParcel(
             session, clip, 0, GradeParcel.encode(g),
-            null, 0f, -1, -1, -1, -1, -1, warpM != null, warpM ?: identity,
+            lut, if (lut != null) g.lutStrength / 100f else 0f, -1, -1, -1, -1, -1, warpM != null, warpM ?: identity,
         )
-        fun cpu(g: GradeK): ByteArray? = NativeSource.jniExportFrameParcel(
+        fun cpu(g: GradeK, lut: String? = null): ByteArray? = NativeSource.jniExportFrameParcel(
             clip, 0, GradeParcel.encode(g),
-            null, 0f, null, 0, 0f, 0f, 0f, 0f, -1, -1, -1, -1, -1,
+            lut, if (lut != null) g.lutStrength / 100f else 0f, null, 0, 0f, 0f, 0f, 0f, -1, -1, -1, -1, -1,
         )
         try {
             val neutralGrade = GradeK()
@@ -406,8 +430,9 @@ object GradeParitySweep {
             val rows = ArrayList<Triple<Case, Stats, Pair<Double, Double>>>()
             var skipped = 0
             for (c in cases()) {
-                val g = gpu(c.grade, c.warpM)
-                val cpuRef = cpu(c.grade)
+                val lut = if (c.lutPath == LUT_TEST_CUBE) writeSweepCube().path else c.lutPath
+                val g = gpu(c.grade, c.warpM, lut)
+                val cpuRef = cpu(c.grade, lut)
                 // Real warp: reference for the stats is the GPU's own
                 // no-warp render (no CPU door for a matrix).
                 val r = if (c.isWarpReal) gpu(c.grade) else cpuRef
