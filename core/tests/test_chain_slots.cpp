@@ -24,10 +24,13 @@ TEST_CASE("every combination satisfies the chain invariants") {
     for (int nr = 0; nr < 4; ++nr)
     for (int sharp = 0; sharp < 2; ++sharp)
     for (int detail = 0; detail < 2; ++detail)
-    for (int warp = 0; warp < 2; ++warp) {
+    for (int warp = 0; warp < 2; ++warp)
+    for (int nodes = 0; nodes < 2; ++nodes) {
         CAPTURE(nr); CAPTURE(sharp); CAPTURE(detail); CAPTURE(warp);
-        const ChainPlan p = planChain(kNrLive[nr], sharp, detail, warp);
-        REQUIRE(p.count == 1 + 2 * sharp + 2 * detail + warp);
+        CAPTURE(nodes);
+        const ChainPlan p = planChain(kNrLive[nr], sharp, detail, warp,
+                                      nodes != 0);
+        REQUIRE(p.count == 1 + 2 * sharp + 2 * detail + warp + nodes);
         CHECK(p.passes[0].kind == kPassPost);
         CHECK(p.passes[0].in == kNrLive[nr]);
         int live = kNrLive[nr];
@@ -53,16 +56,37 @@ TEST_CASE("every combination satisfies the chain invariants") {
         // The last executed pass writes the final slot; TAIL reads it.
         CHECK(p.passes[p.count - 1].out == p.finalSlot);
         CHECK(live == p.finalSlot);
-        if (!sharp && !detail && !warp) CHECK(p.finalSlot == p.passes[0].out);  // POST's output
-        // The warp reads the chain and renders where it records.
+        if (!sharp && !detail && !warp && !nodes)
+            CHECK(p.finalSlot == p.passes[0].out);  // POST's output
+        // The warp reads the chain and renders where it records. With the
+        // NODES pass in the chain (F1-5) the warp stops being the LAST
+        // pass — it keeps its position (nodes runs after it) and the old
+        // "warp == count - 1" claim becomes warp == count - 1 - nodes.
         if (warp) {
             REQUIRE(p.warp >= 0);
             CHECK(p.passes[p.warp].kind == kPassWarp);
-            CHECK(p.warp == p.count - 1);
+            CHECK(p.warp == p.count - 1 - nodes);
             CHECK(p.passes[p.warp].out == chainNextSlot(p.passes[p.warp].in));
-            CHECK(p.finalSlot == p.passes[p.warp].out);
+            if (!nodes)
+                CHECK(p.finalSlot == p.passes[p.warp].out);
+            else
+                // nodes reads the warp's output: the warp feeds the chain.
+                CHECK(p.passes[p.warp].out == p.passes[p.nodes].in);
         } else {
             CHECK(p.warp == -1);
+        }
+        // The NODES pass (F1-5): runs last when present, reads the previous
+        // pass's output, writes the next slot, never itself, no guide.
+        if (nodes) {
+            REQUIRE(p.nodes >= 0);
+            CHECK(p.nodes == p.count - 1);
+            CHECK(p.passes[p.nodes].kind == kPassNodes);
+            CHECK(p.passes[p.nodes].in == p.passes[p.nodes - 1].out);
+            CHECK(p.passes[p.nodes].out == chainNextSlot(p.passes[p.nodes].in));
+            CHECK(p.passes[p.nodes].guide == -1);
+            CHECK(p.finalSlot == p.passes[p.nodes].out);
+        } else {
+            CHECK(p.nodes == -1);
         }
         CHECK((p.sharpH >= 0) == (sharp != 0));
         CHECK((p.sharpV >= 0) == (sharp != 0));
@@ -114,4 +138,56 @@ TEST_CASE("regression: NR and unsharp off, warp renders into POST's next slot an
     CHECK(p.passes[p.warp].in == kSlotB);
     CHECK(p.passes[p.warp].out == kSlotC);   // warp renders into C ...
     CHECK(p.finalSlot == kSlotC);            // ... and TAIL reads C, never A (PRE)
+}
+
+// The plan doc's hand-derived full-chain example (COLOR_MODEL_V2_PLAN §5.2:
+// "NR yok, sharp+detail+warp+nodes açıkken: POST A->B; sharpH B->C, sharpV
+// C->A (guide B); detailH A->B, detailV B->C (guide A); warp C->A; nodes
+// A->B; TAIL B'yi okur"), verified against the planner output — the table
+// the warp-slot lesson made mandatory, now with the NODES row appended.
+TEST_CASE("F1-5: the plan doc's full-chain slot table (sharp+detail+warp+nodes)") {
+    const ChainPlan p = planChain(kSlotA, true, true, true, true);
+    REQUIRE(p.count == 7);
+    CHECK(p.passes[0].out == kSlotB);                        // POST A->B
+    CHECK(p.passes[p.sharpH].in == kSlotB);                 // sharpH B->C
+    CHECK(p.passes[p.sharpH].out == kSlotC);
+    CHECK(p.passes[p.sharpV].out == kSlotA);                 // sharpV C->A
+    CHECK(p.passes[p.sharpV].guide == kSlotB);
+    CHECK(p.passes[p.detailH].in == kSlotA);                 // detailH A->B
+    CHECK(p.passes[p.detailH].out == kSlotB);
+    CHECK(p.passes[p.detailV].out == kSlotC);                // detailV B->C
+    CHECK(p.passes[p.detailV].guide == kSlotA);
+    CHECK(p.passes[p.warp].in == kSlotC);                    // warp C->A
+    CHECK(p.passes[p.warp].out == kSlotA);
+    CHECK(p.passes[p.nodes].in == kSlotA);                    // nodes A->B
+    CHECK(p.passes[p.nodes].out == kSlotB);
+    CHECK(p.finalSlot == kSlotB);                            // TAIL reads B
+}
+
+// The regression lock: runNodes=false must reproduce the pre-F1-5 planner's
+// table EXACTLY — the same slots for POST/sharp/detail/warp and the same
+// finalSlot, on every legacy combination. The default argument keeps the
+// old call sites (draw()'s pre-F1-5 shape) bit-identical.
+TEST_CASE("F1-5 regression: runNodes=false equals the pre-F1-5 planner everywhere") {
+    for (int nr = 0; nr < 4; ++nr)
+    for (int sharp = 0; sharp < 2; ++sharp)
+    for (int detail = 0; detail < 2; ++detail)
+    for (int warp = 0; warp < 2; ++warp) {
+        CAPTURE(nr); CAPTURE(sharp); CAPTURE(detail); CAPTURE(warp);
+        const ChainPlan p = planChain(kNrLive[nr], sharp, detail, warp, false);
+        // The explicitly-threaded form and the default-argument form agree.
+        const ChainPlan def = planChain(kNrLive[nr], sharp, detail, warp);
+        CHECK(def.count == p.count);
+        CHECK(def.finalSlot == p.finalSlot);
+        CHECK(def.nodes == -1);
+        for (int i = 0; i < p.count; ++i) {
+            CHECK(def.passes[i].kind == p.passes[i].kind);
+            CHECK(def.passes[i].in == p.passes[i].in);
+            CHECK(def.passes[i].out == p.passes[i].out);
+            CHECK(def.passes[i].guide == p.passes[i].guide);
+        }
+        // And no nodes pass exists anywhere in the legacy plan.
+        for (int i = 0; i < p.count; ++i)
+            CHECK(p.passes[i].kind != kPassNodes);
+    }
 }
