@@ -708,13 +708,14 @@ class GradeStoreTest {
     @Test
     fun newer_schema_file_is_rejected_and_never_overwritten() {
         val f = File(tmp.root, "project.json")
-        val newer = "{\"version\":2,\"grades\":{\"a\":{\"exposureEv\":1.5}},\"future\":{\"x\":1}}"
+        // F1-3: schema 2 is OURS now, so the too-new probe is version 99.
+        val newer = "{\"version\":99,\"grades\":{\"a\":{\"exposureEv\":1.5}},\"future\":{\"x\":1}}"
         f.writeText(newer)
         val store = GradeStore(f)
 
-        // reads as empty (an older build must not reinterpret v2) ...
+        // reads as empty (an older build must not reinterpret a newer schema) ...
         assertEquals(GradeK(), store.get("a"))
-        assertEquals(2, store.rejectedNewerVersion)
+        assertEquals(99, store.rejectedNewerVersion)
 
         // ... and writes are refused, so the newer file survives byte for byte.
         store.put("b", GradeK(exposureEv = 1f))
@@ -729,7 +730,10 @@ class GradeStoreTest {
         store.put("a", GradeK(exposureEv = 0.5f))
         assertNull(store.rejectedNewerVersion)
         assertEquals(0.5f, GradeStore(f).get("a").exposureEv, 1e-6f)
-        assertTrue(f.readText().startsWith("{\"version\":1"))
+        // A fresh file stamps CURRENT_VERSION (F1-3: that is 2) and the
+        // record is the v2 wire shape.
+        assertTrue(f.readText().startsWith("{\"version\":2"))
+        assertTrue(f.readText().contains("\"v2\":2"))
         assertTrue(!File(tmp.root, "project.json.tmp").exists())
     }
 

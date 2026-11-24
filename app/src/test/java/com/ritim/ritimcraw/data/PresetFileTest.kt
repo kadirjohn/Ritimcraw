@@ -43,15 +43,33 @@ class PresetFileTest {
     fun ids_are_not_exported_and_header_is_versioned() {
         val text = PresetFile.render(listOf(GradePreset("pres-secret-1", "A", flat)))
         assertTrue(!text.contains("pres-secret-1"))
-        assertTrue(text.startsWith("{\"format\":\"ritimcraw-grade-preset\",\"formatVersion\":1,"))
+        // K12 (F1-3): portable presets are formatVersion 2; the grade rides
+        // the v2 wire shape.
+        assertTrue(text.startsWith("{\"format\":\"ritimcraw-grade-preset\",\"formatVersion\":2,"))
+        assertTrue(text.contains("\"v2\":2"))
     }
 
     @Test
     fun newer_format_version_is_refused_not_half_read() {
         val text = PresetFile.render(listOf(GradePreset("p", "A", flat)))
-            .replace("\"formatVersion\":1", "\"formatVersion\":2")
+            .replace("\"formatVersion\":2", "\"formatVersion\":3")
         val r = PresetFile.parse(text) as PresetFile.Failure
         assertEquals(PresetFile.Failure.Reason.TOO_NEW, r.reason)
+    }
+
+    @Test
+    fun a_v1_preset_file_imports_through_the_migrate_hook_with_a_note() {
+        // K12: a file a v1 build wrote (flat grade) imports — the grade is
+        // upgraded through the SAME conversion the project migration uses,
+        // and the note names the change.
+        val v1 = "{\"format\":\"ritimcraw-grade-preset\",\"formatVersion\":1," +
+            "\"presets\":[{\"name\":\"Old\",\"grade\":{\"version\":1,\"exposureEv\":1.5,\"stabilization\":true}}]}"
+        val r = PresetFile.parse(v1) as PresetFile.Ok
+        assertEquals(listOf("Old"), r.presets.map { it.name })
+        val g = r.presets.single().grade
+        assertEquals(1.5f, g.exposureEv, 0f)
+        assertTrue(g.stabilization) // folded into transform.stab, read back
+        assertTrue(r.notes.single().contains("format 1"))
     }
 
     @Test
@@ -89,7 +107,8 @@ class PresetFileTest {
         assertEquals(listOf("Old"), r.presets.map { it.name })
         // Fields an older writer did not know load neutral (the shared parser).
         assertEquals(GradeK(exposureEv = 1.5f), r.presets[0].grade)
-        assertEquals(2, r.notes.size)
+        // 3 notes: two skips + the v1->v2 upgrade note for the good entry.
+        assertEquals(3, r.notes.size)
         assertTrue(r.lutIdsReferenced.isEmpty())
     }
 
@@ -100,6 +119,9 @@ class PresetFileTest {
         val r = PresetFile.parse(file.readText()) as PresetFile.Ok
         assertEquals("Shared", r.presets.single().name)
         assertEquals(tealOrange, r.presets.single().grade)
+        // The stored preset grade is v2 (this build's wire), so the
+        // formatVersion-less project source reads as format 2: no
+        // conversion note, just the legacy-source note.
         assertEquals(1, r.notes.size)
     }
 

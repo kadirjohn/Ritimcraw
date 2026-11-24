@@ -1,10 +1,14 @@
 package com.ritim.ritimcraw.data
 
+import com.ritim.ritimcraw.data.grade2.GradeV2Migration
+
 /**
  * The schema migration chain for `files/project.json` (plan section 3.2,
- * the FilmCraft `format` pattern). Infrastructure only: there is NO v2
- * schema yet, so [MIGRATIONS] is empty and [CURRENT_VERSION] is 1. The
- * color model v2 package adds its first step here.
+ * the FilmCraft `format` pattern). The color model v2 package (F1-3) lands
+ * the first real step: [MIGRATIONS]`[0]` folds schema 1's flat grade
+ * records into the schema-2 nested shape (GradeV2Migration — grades,
+ * presets, export snapshots and the inputless-clip materialization rule),
+ * so [CURRENT_VERSION] is 2.
  *
  * Rules:
  *  - [MIGRATIONS]`[i]` upgrades a root object from schema `i + 1` to
@@ -22,8 +26,12 @@ internal typealias MigrationStep = (Map<String, Any?>) -> Map<String, Any?>
 
 internal object ProjectMigrations {
 
-    /** v1 -> v2 is the first entry once the color model v2 schema exists. */
-    val MIGRATIONS: List<MigrationStep> = emptyList()
+    /**
+     * The shipped chain. Step 0 (v1 -> v2, F1-3): the grade schema fold
+     * (GradeV2Migration.fromV1) — a hot-swap piece: tests may pass their
+     * own chains that start with this step.
+     */
+    val MIGRATIONS: List<MigrationStep> = listOf(GradeV2Migration::fromV1)
 
     /** The schema version this build reads and writes. */
     val CURRENT_VERSION: Int get() = 1 + MIGRATIONS.size

@@ -31,9 +31,9 @@ package com.ritim.ritimcraw.data
  *    silently dropped would change the look without telling the user.
  *    Older versions run through [migrate], which returns the human-readable
  *    notes of every change it made (the "değişikliği açıklayan migration"
- *    clause): today version 1 is the only version, so the chain is the
- *    identity, and the hook is where a future WB-model change (e.g. a
- *    Kelvin/tint re-parameterization) records its explanation.
+ *    clause): version 1 records are converted to the schema-2 nested
+ *    grade shape (color model v2 F1-3, K12), the SAME field mapping the
+ *    project migration uses, with the note naming the change.
  *  - A bare project.json (its "presets" section) is accepted as a legacy
  *    source too (formatVersion absent): sharing a whole project file is the
  *    pre-format way a user could have moved presets, so it imports, with a
@@ -50,7 +50,7 @@ object PresetFile {
     const val FORMAT = "ritimcraw-grade-preset"
 
     /** The newest format version this build writes and fully reads. */
-    const val FORMAT_VERSION = 1
+    const val FORMAT_VERSION = 2
 
     /** A preset as it travels in a file: no id (the importer mints one). */
     data class Portable(val name: String, val grade: GradeK)
@@ -89,7 +89,10 @@ object PresetFile {
         presets.forEachIndexed { i, p ->
             if (i > 0) sb.append(',')
             sb.append("{\"name\":").append(ProjectJson.quote(p.name))
-                .append(",\"grade\":").append(GradeStore.renderGrade(p.grade))
+                // The grade travels in the v2 wire shape (K12: portable
+                // presets are formatVersion 2; the v1 import path is
+                // [migrate]).
+                .append(",\"grade\":").append(GradeStore.renderGradeWire(p.grade))
                 .append('}')
         }
         sb.append("]}")
@@ -152,9 +155,7 @@ object PresetFile {
             }
             val migrated = migrate(version, gradeMap, notes, name)
             val grade = try {
-                GradeStore.parseGrades(
-                    "{\"grades\":{\"entry\":${ProjectJson.renderRaw(migrated)}}}"
-                )["entry"]
+                GradeStore.mapOfGrade(migrated)
             } catch (e: IllegalArgumentException) {
                 null
             }
@@ -174,9 +175,10 @@ object PresetFile {
     /**
      * The migration chain from [fromVersion] up to [FORMAT_VERSION] on one
      * raw grade object. Each step appends a note naming the preset and the
-     * change. Version 1 is the only version today: the identity. A future
-     * step (say, version 2 re-parameterizing tempK/tint) converts the old
-     * fields here AND explains the conversion in [notes] — never silently.
+     * change. Version 1 -> 2 (color model v2 F1-3, K12): the flat grade
+     * record folds into the schema-2 nested shape through the PROJECT
+     * migration's own step (one field mapping, no drift); the note names
+     * the upgrade so the import dialog can say what changed.
      */
     internal fun migrate(
         fromVersion: Int,
@@ -184,11 +186,26 @@ object PresetFile {
         notes: MutableList<String>,
         presetName: String,
     ): Map<String, Any?> {
-        val g = grade
+        var g = grade
         var v = fromVersion
         while (v < FORMAT_VERSION) {
-            // No step exists yet below version 1; this loop is the hook.
-            notes.add("'$presetName': migrated from preset format $v.")
+            if (v == 1) {
+                // K12: v1 flat record -> the schema-2 nested shape, the
+                // SAME conversion the project file's v1->v2 step applies
+                // (GradeV2Migration.convertGradeCarrier). An already-v2
+                // record passes through untouched AND unnoted (the
+                // idempotence guard lives in the shared converter — a v2
+                // record in a v1-versioned container is not an upgrade).
+                val converted = com.ritim.ritimcraw.data.grade2.GradeV2Migration
+                    .convertGradeCarrier(g) as Map<String, Any?>
+                if (converted !== g) {
+                    notes.add(
+                        "'$presetName': upgraded the preset's grade from format 1 " +
+                            "to the nested format 2 (same controls, new shape).",
+                    )
+                }
+                g = converted
+            }
             v += 1
         }
         return g

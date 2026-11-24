@@ -139,7 +139,10 @@ object ProjectFile {
             }
             is ProjectMigrations.Result.Ok -> {
                 if (result.migrated) {
-                    AtomicFiles.writeText(file, ProjectJson.renderRaw(result.root))
+                    // Canonical order (version first): same shape a store
+                    // write produces, so the gate's file and a store's
+                    // file are byte-stable against each other.
+                    AtomicFiles.writeText(file, ProjectJson.renderRoot(result.root))
                     Outcome.Migrated(from, backup)
                 } else {
                     // The chain decided nothing needed doing; the backup

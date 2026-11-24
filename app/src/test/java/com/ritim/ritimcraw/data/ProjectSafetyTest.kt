@@ -145,10 +145,13 @@ class ProjectSafetyTest {
     // ---- (b) v1 files: the stamp never goes down, behavior identical ----
 
     @Test
-    fun store_writes_on_a_v1_file_keep_the_stamp_at_one() {
+    fun store_writes_on_a_v1_file_keep_the_stamp_at_one_until_the_gate_migrates() {
+        // The store-priority call order (no gate open first — the JVM
+        // tests' own pattern): a write must not leap a v1 file to 2 over
+        // still-flat-v1 sections; the gate is the only version mover, so
+        // the NEXT open (the production startup's real first act) still
+        // sees schema 1 and migrates.
         file.writeText(fullV1File(), StandardCharsets.UTF_8)
-        ProjectFile.open(projectFile())
-        assertTrue(ProjectFile.writable())
 
         // The section-writing stores.
         GradeStore(projectFile()).put("clip-new", GradeK(exposureEv = 0.25f))
@@ -169,43 +172,102 @@ class ProjectSafetyTest {
         PreviewQualityStore(projectFile()).put(PreviewQuality.BALANCED)
         PreviewStatsStore(projectFile()).put(true)
 
-        // Still schema 1, still a valid project.json every store re-reads.
+        // F1-3's stamp rule (§6.5 completed): an OLDER file keeps its OWN
+        // stamp through every store write.
         assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":1"))
+        // The gate then migrates it (the production startup's real order).
         val reopened = ProjectFile.open(projectFile())
-        assertTrue(reopened is ProjectFile.Outcome.Open)
-        assertEquals(1, ProjectMigrations.CURRENT_VERSION)
-        assertTrue(ProjectMigrations.MIGRATIONS.isEmpty())
+        assertTrue(reopened is ProjectFile.Outcome.Migrated)
     }
 
     @Test
-    fun withSection_ignores_the_caller_version_and_takes_the_max() {
-        // A v2-shaped file ( TooNew today, but the merge math must hold
-        // for any future version ) merged through any of the section
-        // stores keeps 2 — the exact bug §6.5 describes, now impossible.
+    fun the_gate_migrates_a_v1_file_to_v2_with_a_backup_and_all_stores_agree() {
+        // THE F1-3 gate case (K4): a real v1 project.json open takes the
+        // backup FIRST, runs the shipped chain, writes the migrated file
+        // once, and every store then reads v2 records through the shared
+        // version-aware parser.
+        file.writeText(fullV1File(), StandardCharsets.UTF_8)
+        val outcome = ProjectFile.open(
+            projectFile(),
+            nowMillis = 1_758_000_000_000L,
+        )
+        assertTrue(outcome is ProjectFile.Outcome.Migrated)
+        outcome as ProjectFile.Outcome.Migrated
+        assertEquals(1, outcome.fromVersion)
+
+        // The backup holds the ORIGINAL bytes and lives forever (K4).
+        assertEquals(fullV1File(), outcome.backup.readText(StandardCharsets.UTF_8))
+        assertTrue(outcome.backup.name.startsWith("project-v1-"))
+
+        // The live file: stamped 2 by the chain, every grade record v2.
+        val live = file.readText(StandardCharsets.UTF_8)
+        assertTrue(live.startsWith("{\"version\":2"))
+        assertTrue(live.contains("\"v2\":2"))
+
+        // GradeStore reads the migrated record through the adapter.
+        assertEquals(0.8f, GradeStore(projectFile()).get("clip-a").exposureEv, 1e-6f)
+        assertEquals(4600f, GradeStore(projectFile()).get("clip-a").tempK, 1e-6f)
+        // The export row migrated as a QUEUED job with a v2 snapshot.
+        val job = ExportStore(projectFile()).all().single()
+        assertEquals(State.QUEUED, job.state)
+        assertEquals(0.0f, job.snapshot.exposureEv, 1e-6f)
+        // Each store write keeps the 2 stamp now (the merge policy on a
+        // current file).
+        GradeStore(projectFile()).put("clip-new", GradeK(exposureEv = 1f))
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        // Re-opening the migrated file is a plain Open (idempotence).
+        val second = ProjectFile.open(projectFile())
+        assertTrue(second is ProjectFile.Outcome.Open)
+    }
+
+    @Test
+    fun running_export_rows_fail_honestly_through_the_gate() {
+        // K13 end-to-end: a RUNNING row in a v1 file lands FAILED with the
+        // recovery note; nothing else about the row changes.
+        val v1 = "{\"version\":1,\"exports\":[" +
+            "{\"id\":\"r\",\"sourceId\":\"a\",\"snapshot\":{\"version\":1,\"exposureEv\":0.5}," +
+            "\"target\":\"MP4\",\"state\":\"RUNNING\",\"framesDone\":3,\"framesTotal\":90}" +
+            "]}"
+        file.writeText(v1, StandardCharsets.UTF_8)
+        ProjectFile.open(projectFile())
+        val job = ExportStore(projectFile()).all().single()
+        assertEquals(State.FAILED, job.state)
+        assertTrue(job.detail!!.contains("queue the export again"))
+        assertEquals(0.5f, job.snapshot.exposureEv, 1e-6f)
+    }
+
+    @Test
+    fun withSection_ignores_the_caller_version_and_takes_the_file_s_own() {
+        // §6.5, completed by F1-3: the stamp is the FILE'S OWN version on
+        // both sides — a v2 file stays 2 through any merge (never dragged
+        // down), a v1 file stays 1 (never leapt up over flat sections).
         val v2 = "{\"version\":2,\"grades\":{\"a\":{\"exposureEv\":1}},\"future\":{\"x\":1}}"
         val merged = GradeStore.mergeInto(v2, mapOf("b" to GradeK()))
         assertTrue(merged.startsWith("{\"version\":2"))
 
-        // A v1 file merged with a caller screaming for version 7 cannot
-        // go UP, either — only the migration chain changes the version.
         val v1 = "{\"version\":1,\"grades\":{}}"
         val stamped = ProjectJson.withSection(v1, "grades", "{}", version = 7)
         assertTrue(stamped.startsWith("{\"version\":1"))
 
-        // An unversioned file (the pre-version legacy shape) stamps 1.
-        val unversioned = ProjectJson.withSection("{\"grades\":{}}", "grades", "{}", version = 1)
+        // An unversioned EXISTING file (the pre-version legacy shape) is
+        // schema 1: it keeps stamp 1 until the gate migrates it.
+        val unversioned = ProjectJson.withSection("{\"grades\":{}}", "grades", "{}", version = 2)
         assertTrue(unversioned.startsWith("{\"version\":1"))
+
+        // A FRESH file (nothing readable on disk) stamps CURRENT_VERSION.
+        val fresh = ProjectJson.withSection(null, "grades", "{}", version = 1)
+        assertTrue(fresh.startsWith("{\"version\":2"))
     }
 
     @Test
-    fun unversioned_legacy_file_opens_as_v1_and_stays_writable() {
+    fun unversioned_legacy_file_migrates_on_open() {
+        // F1-3: an unversioned file IS schema 1, so the gate migrates it
+        // (F1-2 kept it as a no-op Open while the chain was empty).
         file.writeText("{\"grades\":{\"a\":{\"exposureEv\":2}}}", StandardCharsets.UTF_8)
         val outcome = ProjectFile.open(projectFile())
-        assertTrue(outcome is ProjectFile.Outcome.Open)
-        GradeStore(projectFile()).put("b", GradeK(exposureEv = 0.5f))
-        assertEquals(0.5f, GradeStore(projectFile()).get("b").exposureEv, 1e-6f)
+        assertTrue(outcome is ProjectFile.Outcome.Migrated)
         assertEquals(2f, GradeStore(projectFile()).get("a").exposureEv, 1e-6f)
-        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":1"))
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
     }
 
     // ---- (c) K4: the migration path takes a never-deleted backup ----
@@ -311,7 +373,9 @@ class ProjectSafetyTest {
 
         assertEquals(preset, PresetStore(projectFile()).get(preset.id))
         assertEquals(grade, PresetStore(projectFile()).get(preset.id)?.grade)
-        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":1"))
+        // Fresh file stamps CURRENT_VERSION (F1-3: 2); the preset's grade
+        // rides the v2 wire and parses back through the shared parser.
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
         // Atomic write: no temp file survives a successful write.
         assertFalse(File(tmp.root, "project.json.tmp").exists())
     }
@@ -323,7 +387,7 @@ class ProjectSafetyTest {
         store.save(project)
 
         assertEquals(project, TimelineStore(projectFile()).load())
-        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":1"))
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
         assertFalse(File(tmp.root, "project.json.tmp").exists())
     }
 

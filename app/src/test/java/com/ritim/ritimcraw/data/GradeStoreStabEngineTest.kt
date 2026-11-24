@@ -58,7 +58,10 @@ class GradeStoreStabEngineTest {
         val f = File(tmp.root, "project.json")
         GradeStore(f).put("a", GradeK(exposureEv = 0.5f))
         assertFalse(f.readText().contains("stabilizationEngine"))
-        assertTrue(f.readText().startsWith("{\"version\":1"))
+        // F1-3: the file speech is schema 2 now (fresh file stamps
+        // CURRENT_VERSION = 2); the record carries stab folded (K10) —
+        // and no engine key while the grade is gyro/off.
+        assertTrue(f.readText().startsWith("{\"version\":2"))
     }
 
     @Test
@@ -117,22 +120,26 @@ class GradeStoreStabEngineTest {
 
         // a file from a NEWER schema is rejected whatever it carries, and a
         // store over it never writes (the engine key changes nothing here).
-        val newer = "{\"version\":2,\"grades\":{\"a\":{\"stabilization\":true,\"stabilizationEngine\":1}}}"
+        // F1-3: schema 2 is ours; the probe is 3.
+        val newer = "{\"version\":3,\"grades\":{\"a\":{\"stabilization\":true,\"stabilizationEngine\":1}}}"
         var tooNew: Int? = null
         assertTrue(GradeStore.parseGradesMigrated(newer) { tooNew = it }.isEmpty())
-        assertEquals(2, tooNew)
+        assertEquals(3, tooNew)
         val f = File(tmp.root, "project.json")
         f.writeText(newer)
         val store = GradeStore(f)
         assertEquals(GradeK(), store.get("a"))
         store.put("a", stabOn.copy(stabilizationEngine = 1))
         assertEquals(newer, f.readText())
-        assertEquals(2, store.rejectedNewerVersion)
+        assertEquals(3, store.rejectedNewerVersion)
     }
 
     @Test
     fun schema_version_does_not_move() {
+        // The GradeK record's own flat-shape marker is still 1 (the v1 flat
+        // renderer writes version:1 — it is the archive-grade API); the
+        // FILE schema is 2 (F1-3), carried by the git-record marker `v2`.
         assertEquals(1, GradeK.SCHEMA_VERSION)
-        assertEquals(1, ProjectMigrations.CURRENT_VERSION)
+        assertEquals(2, ProjectMigrations.CURRENT_VERSION)
     }
 }
