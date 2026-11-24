@@ -46,8 +46,9 @@ class MainActivity : ComponentActivity() {
         // is read ONCE here, before any store touches it. Newer-than-build =>
         // the process goes read-only (every store write becomes an observable
         // no-op); older => a timestamped backup is taken and the migration
-        // chain runs in this one place. Today the chain is empty, so this is
-        // a version check that keeps v1 files exactly as they were.
+        // chain runs in this one place. MIGRATIONS[0] (v1 -> v2) is the
+        // first link: it rewrites a v1 file as v2, and the backup above is
+        // the only copy of the original.
         ProjectFile.open(File(filesDir, "project.json"))
         setContent {
             // Read once per composition; the Settings row's callback
