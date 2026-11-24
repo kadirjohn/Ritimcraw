@@ -251,7 +251,7 @@ struct DevelopSession::Impl {
     //              release the surface.
     //   Encoder   — a render-to-encoder (runEncoderJob); failures LATCH
     //              (same mid-render semantics as Render).
-    enum class JobKind { None, Render, Surface, Encoder };
+    enum class JobKind { None, Render, Surface, Encoder, InitNodes };
     std::mutex mutex;
     std::condition_variable cvRequest;
     std::condition_variable cvDone;
@@ -270,6 +270,17 @@ struct DevelopSession::Impl {
     ANativeWindow* pendingWindow = nullptr;
     bool pendingSurfaceOk = false;
     std::string pendingSurfaceDetail;
+    // InitNodes job (owned copies + out pointers into the submitter's frame; the submitter blocks).
+    std::string pendingNodesSource, pendingVertexSource, pendingTailDrtSource;
+    bool* pendingNodesOk = nullptr;
+    std::string* pendingNodesDetail = nullptr;
+    GpuDevelopPipeline::NodesLimits* pendingNodesLimits = nullptr;
+    // The color chain state (setColorModelChain's deep copies, guarded by [mutex]).
+    std::vector<rawedit::GradeNode> colorNodes;
+    std::vector<float> colorDrtUniforms;
+    uint64_t colorChainHash = 0;
+    int colorOutputMode = 0;
+    bool colorNodesActive = false;
     bool closeRequested = false;
     // Latched failure (the header's failure semantics): set on the GL
     // thread, read through the mutex (a failed session never recovers —
@@ -340,8 +351,19 @@ void DevelopSession::Impl::glThreadLoop() {
         ANativeWindow* window = pendingWindow;
         bool* surfaceOk = &pendingSurfaceOk;
         std::string* surfaceDetail = &pendingSurfaceDetail;
+        bool* nodesOk = pendingNodesOk;
+        std::string* nodesDetail = pendingNodesDetail;
+        GpuDevelopPipeline::NodesLimits* nodesLimits = pendingNodesLimits;
+        std::string nodesSource = std::move(pendingNodesSource);
+        std::string vertexSource = std::move(pendingVertexSource);
+        std::string tailDrtSource = std::move(pendingTailDrtSource);
+        pendingNodesSource.clear();
+        pendingVertexSource.clear();
+        pendingTailDrtSource.clear();
         lock.unlock();
-        if (kind == JobKind::Surface) {
+        if (kind == JobKind::InitNodes) {
+            *nodesOk = pipeline.initNodes(nodesSource, vertexSource, tailDrtSource, nodesLimits, nodesDetail);
+        } else if (kind == JobKind::Surface) {
             // An attach/detach job. NEVER latches (see the Impl comment):
             // the outcome lands in pendingSurfaceOk/pendingSurfaceDetail.
             runSurfaceJob(window, surfaceOk, surfaceDetail);
@@ -885,6 +907,17 @@ DevelopFrameResult DevelopSession::renderFrame(
         const DevelopFrameRequest& req, const DevelopGrade& grade) {
     DevelopFrameRequest folded = req;
     applyGradeToRequest(grade, &folded);
+    if (impl_ != nullptr) {
+        std::lock_guard<std::mutex> stateLock(impl_->mutex);
+        if (impl_->colorNodesActive) {
+            folded.nodesActive = true;
+            folded.nodeCount = static_cast<int>(impl_->colorNodes.size());
+            folded.outputMode = impl_->colorOutputMode;
+            folded.nodeChain = impl_->colorNodes.empty() ? nullptr : impl_->colorNodes.data();
+            folded.nodeChainHash = impl_->colorChainHash;
+            folded.drtUniforms = impl_->colorDrtUniforms.empty() ? nullptr : impl_->colorDrtUniforms.data();
+        }
+    }
     DevelopFrameResult res;
     if (impl_ == nullptr) {
         res.detail = "session not open";
@@ -916,6 +949,82 @@ DevelopFrameResult DevelopSession::renderFrame(
     // [res] was filled by the GL thread while we held the wait; the
     // unique_lock releases on return.
     return res;
+}
+
+bool DevelopSession::initNodes(const std::string& nodesSource, const std::string& vertexSource,
+                                const std::string& tailDrtSource,
+                                GpuDevelopPipeline::NodesLimits* limits, std::string* detail) {
+    if (impl_ == nullptr) {
+        if (detail != nullptr) *detail = "session not open";
+        if (limits != nullptr) *limits = GpuDevelopPipeline::NodesLimits();
+        return false;
+    }
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    if (!impl_->threadRunning) {
+        if (detail != nullptr) *detail = "session closed";
+        if (limits != nullptr) *limits = GpuDevelopPipeline::NodesLimits();
+        return false;
+    }
+    impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None || !impl_->threadRunning; });
+    if (!impl_->threadRunning) {
+        if (detail != nullptr) *detail = "session closed";
+        if (limits != nullptr) *limits = GpuDevelopPipeline::NodesLimits();
+        return false;
+    }
+    bool ok = false;
+    std::string inner;
+    GpuDevelopPipeline::NodesLimits lim;
+    impl_->pendingKind = Impl::JobKind::InitNodes;
+    impl_->pendingNodesSource = nodesSource;
+    impl_->pendingVertexSource = vertexSource;
+    impl_->pendingTailDrtSource = tailDrtSource;
+    impl_->pendingNodesOk = &ok;
+    impl_->pendingNodesDetail = &inner;
+    impl_->pendingNodesLimits = &lim;
+    impl_->cvRequest.notify_one();
+    impl_->cvDone.wait(lock, [&]() { return impl_->pendingKind == Impl::JobKind::None || !impl_->threadRunning; });
+    if (detail != nullptr) *detail = inner;
+    if (limits != nullptr) *limits = lim;
+    return ok;
+}
+
+bool DevelopSession::setColorModelChain(const rawedit::GradeNode* nodes, int nodeCount, int outputMode,
+                                        const float* drtUniforms, uint64_t chainHash, std::string* detail) {
+    if (impl_ == nullptr) {
+        if (detail != nullptr) *detail = "session not open";
+        return false;
+    }
+    if (nodeCount < 0 || nodeCount > static_cast<int>(rawedit::kMaxNodes)) {
+        if (detail != nullptr)
+            *detail = "color model chain: nodeCount " + std::to_string(nodeCount) +
+                      " outside the N1 cap 0..8 (recovery: the editor caps the chain at 8)";
+        return false;
+    }
+    const std::string chainErr = rawedit::validateNodeChain(nodes, static_cast<size_t>(nodeCount));
+    if (!chainErr.empty()) {
+        if (detail != nullptr) *detail = "color model chain: " + chainErr;
+        return false;
+    }
+    std::vector<float> drt;
+    if (outputMode == 1) {
+        if (drtUniforms == nullptr) {
+            if (detail != nullptr)
+                *detail = "color model chain: outputMode 1 needs the DRT uniform block";
+            return false;
+        }
+        drt.assign(drtUniforms, drtUniforms + GpuDevelopPipeline::kDrtUniformSlots);
+    } else if (outputMode != 0) {
+        if (detail != nullptr)
+            *detail = "color model chain: outputMode " + std::to_string(outputMode) + " is not 0 or 1";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->colorNodes.assign(nodes, nodes + nodeCount);
+    impl_->colorDrtUniforms = std::move(drt);
+    impl_->colorChainHash = chainHash;
+    impl_->colorOutputMode = outputMode;
+    impl_->colorNodesActive = nodeCount > 0 || outputMode == 1;
+    return true;
 }
 
 bool DevelopSession::setEncoderSurface(ANativeWindow* window,
@@ -973,6 +1082,17 @@ DevelopFrameResult DevelopSession::renderFrameToEncoder(
         int64_t ptsUs, int rotationDeg) {
     DevelopFrameRequest folded = req;
     applyGradeToRequest(grade, &folded);
+    if (impl_ != nullptr) {
+        std::lock_guard<std::mutex> stateLock(impl_->mutex);
+        if (impl_->colorNodesActive) {
+            folded.nodesActive = true;
+            folded.nodeCount = static_cast<int>(impl_->colorNodes.size());
+            folded.outputMode = impl_->colorOutputMode;
+            folded.nodeChain = impl_->colorNodes.empty() ? nullptr : impl_->colorNodes.data();
+            folded.nodeChainHash = impl_->colorChainHash;
+            folded.drtUniforms = impl_->colorDrtUniforms.empty() ? nullptr : impl_->colorDrtUniforms.data();
+        }
+    }
     DevelopFrameResult res;
     if (impl_ == nullptr) {
         res.detail = "session not open";

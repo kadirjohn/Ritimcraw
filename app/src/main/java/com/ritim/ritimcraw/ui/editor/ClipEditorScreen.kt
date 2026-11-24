@@ -2544,7 +2544,13 @@ fun ClipEditorScreen(
                                     } else {
                                         null
                                     }
-                                    if (v2NeedsDrt && drtPack == null) {
+                                    // The OpenDRT tail draw fails on this device (gl error 0x0502 in the tail-drt
+                                    // draw, first v2-sweep run 2026-11-25) and the failure latches the GPU
+                                    // preview unhealthy: until it is fixed an OpenDRT grade renders on the CPU
+                                    // arm (which is what happened silently before the NODES programs compiled).
+                                    if (v2NeedsDrt) {
+                                        chainDoorOk = false
+                                    } else if (v2NeedsDrt && drtPack == null) {
                                         chainDoorOk = false
                                     } else {
                                         chainDoorOk = runCatching {

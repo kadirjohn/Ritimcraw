@@ -151,7 +151,10 @@ object NodeChainWire {
                 pairTotal += c.curve.points.size
             }
         }
-        val curveSlots = curveChannels.sumOf { chans ->
+        // Only nodes WITH a non-identity curve carry a block (the writer below skips the rest): counting the mask
+        // slot for every node over-allocated one float per curveless node and the native decoder refused the wire
+        // ("1 float(s) left before the output block"), so a chain of plain nodes never reached the GPU.
+        val curveSlots = curveChannels.filter { it.isNotEmpty() }.sumOf { chans ->
             1 + chans.sumOf { c -> 1 + c.curve.points.size * 2 }
         }
         val out = FloatArray(HEADER + nodes.size * STRIDE + curveSlots + OUTPUT)

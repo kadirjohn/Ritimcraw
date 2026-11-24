@@ -2877,6 +2877,16 @@ uniform vec4 uNodeFlags[8];        // x: hasCurves, y: hasLut, z: lutIndex, w: l
 
 // Node LUT sampler set (the stage-24 LUT port's own contract, per slot).
 uniform highp sampler3D uNodeLut[4];      // units 7..10 (RGBA16F, trilinear)
+
+// GLSL ES 3.00 allows a sampler array to be indexed only by a constant expression (a dynamic index needs
+// GL_EXT_gpu_shader5, and Adreno refuses it: "'sampler3D' : requires extension GL_EXT_gpu_shader5"), so the
+// slot select is spelled out: four constant-indexed samples, one taken.
+vec3 nodeLutSample(int s, vec3 t) {
+    if (s == 0) return texture(uNodeLut[0], t).rgb;
+    if (s == 1) return texture(uNodeLut[1], t).rgb;
+    if (s == 2) return texture(uNodeLut[2], t).rgb;
+    return texture(uNodeLut[3], t).rgb;
+}
 uniform vec4 uNodeLutShape[4];           // x: size N, yzw: domainMin (the dummy pins 0)
 uniform vec4 uNodeLutShapeHi[4];         // xyz: domainMax (w unused)
 uniform vec4 uNodeLutInterp[4];          // x: inTransfer, y: outTransfer, z: passthrough, w: reserved
@@ -2961,7 +2971,7 @@ void applyNode(inout vec3 di, int i) {
         vec3 scale = (n - 1.0) / max(span, vec3(1e-20));
         vec3 fx = clamp((l709 - uNodeLutShape[s].yzw) * scale, vec3(0.0), vec3(n - 1.0));
         vec3 t = (fx + 0.5) / n;
-        vec3 sampled = texture(uNodeLut[s], t).rgb;
+        vec3 sampled = nodeLutSample(s, t);
         vec3 out709 = uNodeLutOutputToWorking[s] * sampled;
         vec3 outDwg = uM709ToDwg * out709;
         vec3 outDi = vec3(diEncode(outDwg.r), diEncode(outDwg.g), diEncode(outDwg.b));
@@ -3141,6 +3151,8 @@ float softplus(float x, float s) {
     return s * log(max(0.0, 1.0 + exp(x / s)));
 }
 float gaussWindow(float x, float w) { return exp(-x * x / w); }
+const float kPi = 3.14159265358979323846;  // core/src/ColorModel.cpp's kPi (the shader used it without declaring it)
+const float kSqrt3 = 1.7320508;  // core/src/OpenDrt.cpp's kSqrt3 (also used undeclared)
 float hueOffset(float h, float o) { return mod(h - o + kPi, 2.0 * kPi) - kPi; }
 
 void main() {

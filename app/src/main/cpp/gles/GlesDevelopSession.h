@@ -314,6 +314,21 @@ public:
                                             int64_t ptsUs,
                                             int rotationDeg);
 
+    // ---- E0b-4b follow-up (2026-11-25): the color model v2 NODES chain on the develop session ----
+    //
+    // The same two doors GlesPreviewSession carries (compile the NODES / TAIL-DRT programs on the GL
+    // thread once, then hand a chain per frame), so the encoded GPU door can keep nodes on the GPU
+    // instead of falling to the CPU oracle. Semantics are the preview session's: [initNodes] posts one
+    // job on the single-slot handoff and blocks; [setColorModelChain] deep-copies the nodes under the
+    // session mutex, the state stays live for the following renderFrame calls until replaced, and
+    // nodeCount 0 + outputMode 0 clears it (the plain chain). The node Luts, if any, stay the caller's
+    // (borrowed until the blocking render returns).
+    bool initNodes(const std::string& nodesSource, const std::string& vertexSource,
+                   const std::string& tailDrtSource,
+                   GpuDevelopPipeline::NodesLimits* limits, std::string* detail);
+    bool setColorModelChain(const rawedit::GradeNode* nodes, int nodeCount, int outputMode,
+                            const float* drtUniforms, uint64_t chainHash, std::string* detail);
+
     // See the destructor. Callable from the owning thread.
     void close();
 

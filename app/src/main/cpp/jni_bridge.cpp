@@ -5105,6 +5105,143 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetColorModelCh
     return JNI_TRUE;
 }
 
+// E0b-4b follow-up: the develop session's NODES chain doors (the preview session's pair, mirrored).
+// InitNodes compiles the NODES / TAIL-DRT programs on the session's GL thread; SetColorModelChain carries the
+// grade's node chain on the same wire the preview session reads, so the encoded GPU door keeps nodes on the GPU.
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionInitNodes(
+        JNIEnv* env, jclass, jlong sessionHandle,
+        jstring nodesSource, jstring vertexSource, jstring tailDrtSource) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    gles::DevelopSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        if (sessionHandle > 0 && sessionHandle <= kMaxDevelopSessions) {
+            session = gDevelopSessions[sessionHandle - 1].get();
+        }
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session nodes init: session is closed "
+                 "(recovery: reopen the export)");
+        return nullptr;
+    }
+    // The three sources, the nativePreviewSessionOpen pattern (copy then
+    // release; null chars = JNI OOM).
+    const char* chars[3] = {nullptr, nullptr, nullptr};
+    std::string texts[3];
+    jstring sources[3] = {nodesSource, vertexSource, tailDrtSource};
+    const char* names[3] = {"nodes", "vertex", "tail-drt"};
+    for (int i = 0; i < 3; ++i) {
+        chars[i] = env->GetStringUTFChars(sources[i], nullptr);
+        if (chars[i] == nullptr) {
+            setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                     std::string("develop session nodes init: out of memory reading the ") +
+                         names[i] + " source (recovery: free memory and retry)");
+            // Release the ones acquired before the OOM (chars[i] failed —
+            // nothing acquired there).
+            for (int j = 0; j < i; ++j) env->ReleaseStringUTFChars(sources[j], chars[j]);
+            return nullptr;
+        }
+        texts[i] = chars[i];
+    }
+    for (int i = 0; i < 3; ++i) {
+        env->ReleaseStringUTFChars(sources[i], chars[i]);
+    }
+    gles::GpuDevelopPipeline::NodesLimits limits;
+    std::string detail;
+    const bool ok = session->initNodes(texts[0], texts[1], texts[2], &limits, &detail);
+    if (!ok) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "develop session nodes init: " + (detail.empty() ? std::string("compile failed") : detail) +
+                     " (recovery: the CPU develop takes the frame)");
+    }
+    jint out[3] = {ok ? 1 : 0, limits.fragmentUniformVectors, limits.textureImageUnits};
+    jintArray arr = env->NewIntArray(3);
+    if (arr == nullptr) return nullptr;
+    env->SetIntArrayRegion(arr, 0, 3, out);
+    return arr;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionSetColorModelChain(
+        JNIEnv* env, jclass, jlong sessionHandle, jfloatArray chainWire,
+        jfloatArray drtUniforms) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    gles::DevelopSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        if (sessionHandle > 0 && sessionHandle <= kMaxDevelopSessions) {
+            session = gDevelopSessions[sessionHandle - 1].get();
+        }
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "develop session color chain: session is closed "
+                 "(recovery: reopen the export)");
+        return JNI_FALSE;
+    }
+    gles::NodeChainDecoded decoded;
+    std::string wireError;
+    if (!readNodeChainWire(env, chainWire, &decoded, &wireError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "develop session color chain: " + wireError);
+        return JNI_FALSE;
+    }
+    // The DRT uniform block: required for outputMode 1 (the pipeline's
+    // own contract; the session re-checks), ignored for legacy.
+    std::vector<float> drt;
+    if (decoded.outputMode == 1) {
+        if (drtUniforms == nullptr) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                     "develop session color chain: the OpenDRT output needs "
+                     "its uniform pack (recovery: resolve it with OpenDrtPacks.resolve)");
+            return JNI_FALSE;
+        }
+        const jsize drtLen = env->GetArrayLength(drtUniforms);
+        if (drtLen != gles::GpuDevelopPipeline::kDrtUniformSlots) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                     "develop session color chain: the DRT uniform pack has " +
+                         std::to_string(drtLen) + " floats, needs " +
+                         std::to_string(gles::GpuDevelopPipeline::kDrtUniformSlots));
+            return JNI_FALSE;
+        }
+        drt.assign(static_cast<size_t>(drtLen), 0.0f);
+        env->GetFloatArrayRegion(drtUniforms, 0, drtLen, drt.data());
+    }
+    // The chain hash: the DECODED values' content key (the session's
+    // revision cache key; matching setColorModelChain's contract — "the
+    // same values in the same order hash the same"). Computed from the
+    // canonical wire floats so it agrees with the Kotlin-side
+    // NodeChainWire.chainHash (both hash the SAME bytes).
+    const jsize wireLen = env->GetArrayLength(chainWire);
+    std::vector<float> wireBuf(static_cast<size_t>(wireLen));
+    env->GetFloatArrayRegion(chainWire, 0, wireLen, wireBuf.data());
+    uint64_t h = 1469598103934665603ull;
+    for (float f : wireBuf) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof(bits));
+        for (int i = 0; i < 4; ++i) {
+            h ^= (bits >> (8 * i)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    }
+    std::string detail;
+    const bool ok = session->setColorModelChain(
+        decoded.nodes.empty() ? nullptr : decoded.nodes.data(),
+        decoded.nodeCount, decoded.outputMode,
+        drt.empty() ? nullptr : drt.data(), h, &detail);
+    if (!ok) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "develop session color chain: " + detail);
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
 // Stabilization zoom probe (audit fix 2026-11-12, Fix 5) -----------------------
 //
 // The zoom-limit honesty readout behind the Stabilization group's status

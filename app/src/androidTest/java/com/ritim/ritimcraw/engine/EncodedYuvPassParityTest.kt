@@ -406,4 +406,80 @@ class EncodedYuvPassParityTest {
             NativeSource.jniDevelopSessionClose(session)
         }
     }
+
+    // ---- the v2 node chain on an encoded frame (develop session nodes door, owner request 2026-11-24) ----
+
+    @Test
+    fun a_node_chain_on_an_encoded_frame_matches_the_cpu_oracle() {
+        val session = com.ritim.ritimcraw.export.NativeGpuDevelop.openSession()
+        assertTrue("the develop session did not open", session > 0)
+        try {
+            val init = NativeSource.jniDevelopSessionInitNodes(
+                session, GlesShaderSources.NODES, GlesShaderSources.FULLSCREEN_VERTEX,
+                GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+            )
+            assertTrue("the develop session's NODES programs did not compile (${NativeSource.previewLastError()})",
+                init != null && init.isNotEmpty() && init[0] == 1)
+            val chains = listOf(
+                "primaries" to listOf(
+                    com.ritim.ritimcraw.data.grade2.GradeNodeV2(
+                        sat = 1.3f, contrast = 1.2f,
+                        lift = com.ritim.ritimcraw.data.grade2.NodeWheelV2(0.05f, -0.02f, 0.03f),
+                    ),
+                ),
+                "two nodes, temp/tint/hue + log highlight wheel" to listOf(
+                    com.ritim.ritimcraw.data.grade2.GradeNodeV2(temp = 0.4f, tint = -0.2f, hue = 15f),
+                    com.ritim.ritimcraw.data.grade2.GradeNodeV2(
+                        logHi = com.ritim.ritimcraw.data.grade2.NodeWheelV2(0f, 0f, -0.1f), gain = com.ritim.ritimcraw.data.grade2.NodeWheelV2(0.02f, 0.03f, 0.05f),
+                    ),
+                ),
+            )
+            val lines = ArrayList<String>()
+            var worst = 0
+            val failures = ArrayList<String>()
+            for ((i, caseIndex) in intArrayOf(4, 8).withIndex()) {
+                val base = cases[caseIndex]
+                val f = fixture(320, 180, base.bits, 0x6161 + 11 * i)
+                val reduce = 2
+                val small = reduceFrame(f, reduce)
+                val spec = EncodedColorSpec(
+                    profile = SourceProfile(
+                        primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                        range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                        primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                        rangeProvenance = null, bitDepthProvenance = null,
+                    ),
+                    declaredBitDepth = base.bits,
+                )
+                val frame = YuvFrameK(small.w, small.h, true, small.y, small.c, ByteArray(0), small.stride, small.uvStride, base.bits)
+                for ((name, nodes) in chains) {
+                    val wire = NodeChainWire.encode(com.ritim.ritimcraw.data.grade2.ClipGradeV2(), nodes)
+                    val cpu = NativeEncodedDeveloper.develop(frame, spec, 0, GradeK(), null, wire)
+                    assertNotNull("$name: the CPU oracle returned null (${NativeSource.previewLastError()})", cpu)
+                    assertTrue("$name: chain door refused (${NativeSource.previewLastError()})",
+                        NativeSource.jniDevelopSessionSetColorModelChain(session, wire, null))
+                    val gpu = NativeSource.jniDevelopSessionRenderYuvParcel(
+                        session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                        spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, reduce,
+                        GradeParcel.encode(GradeK()),
+                    )
+                    assertNotNull("$name: the chain returned null (${NativeSource.previewLastError()})", gpu)
+                    val n = small.w * small.h
+                    val stats = GradeParitySweep.compare(gpu!!, GradeParitySweep.argbBytes(cpu!!.copyOfRange(2, 2 + n)))
+                    val line = String.format(java.util.Locale.ROOT, "nodes case %d [%s] (%dx%d): maxDiffLsb=%d mismatch=%.4f%% over1=%.4f%%",
+                        caseIndex, name, small.w, small.h, stats.maxDiffLsb, stats.mismatchPct, stats.over1Pct)
+                    Log.i("ritim-parity", "e0b-nodes $line")
+                    lines += line
+                    if (stats.maxDiffLsb > worst) worst = stats.maxDiffLsb
+                    if (stats.mismatchPct > STRICT_MISMATCH_BOUND_PCT) failures += "case $caseIndex [$name]: ${stats.mismatchPct}%"
+                }
+            }
+            assertTrue(
+                "encoded nodes GPU vs CPU oracle: worst maxDiffLsb=$worst, over-bound=$failures\n" + lines.joinToString("\n"),
+                worst <= 1 && failures.isEmpty(),
+            )
+        } finally {
+            NativeSource.jniDevelopSessionClose(session)
+        }
+    }
 }

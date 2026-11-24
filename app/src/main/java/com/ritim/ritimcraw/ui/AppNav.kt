@@ -1124,6 +1124,13 @@ fun AppNav(
                 .openFileDescriptor(Uri.parse(first.uri), "r")
                 ?.detachFd() ?: -1
             if (cropFd >= 0) GradeParitySweep.runCrop(cropFd)
+            // The v2 node-chain sweep (F1-7's harness, never wired to this button until 2026-11-25: the NODES
+            // programs did not even compile on the device before that day's fixes): GPU preview chain vs the
+            // CPU preview door's chain leg, its own fd.
+            val v2Fd = context.contentResolver
+                .openFileDescriptor(Uri.parse(first.uri), "r")
+                ?.detachFd() ?: -1
+            if (v2Fd >= 0) GradeParitySweep.runV2(v2Fd)
         } catch (e: Exception) {
             // The sweep logs its own failures; a lost grant is "no run".
         } finally {

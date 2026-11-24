@@ -447,7 +447,12 @@ object EncodedYuv {
 interface EncodedGpuDeveloper {
     fun available(): Boolean
     /** [lutPath] = the selected .cube (null = no LUT); the LUT binding rides in [grade] (strength, interpretation). */
-    fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int, lutPath: String? = null): IntArray?
+    fun develop(
+        frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int,
+        lutPath: String? = null,
+        /** F1-6 node chain wire (null = the plain chain); the door keeps nodes on the GPU or answers null (CPU fallback). */
+        chainWire: FloatArray? = null,
+    ): IntArray?
     fun close()
 }
 
@@ -455,6 +460,10 @@ interface EncodedGpuDeveloper {
 internal class NativeEncodedGpuDeveloper : EncodedGpuDeveloper {
     private var session = 0L
     private var dead = false
+    /** The develop session's NODES programs compiled (once per session); false = a chain request falls back. */
+    private var nodesReady = false
+    /** The session currently holds a node chain (cleared again when a chainless frame follows). */
+    private var chainSet = false
 
     override fun available(): Boolean = !dead && NativeSource.nativeAvailable
 
@@ -463,11 +472,60 @@ internal class NativeEncodedGpuDeveloper : EncodedGpuDeveloper {
         if (dead) return false
         session = try { com.ritim.ritimcraw.export.NativeGpuDevelop.openSession() } catch (_: Throwable) { 0L }
         if (session <= 0) { dead = true; session = 0 }
+        if (session > 0) {
+            nodesReady = runCatching {
+                val r = NativeSource.jniDevelopSessionInitNodes(
+                    session, GlesShaderSources.NODES, GlesShaderSources.FULLSCREEN_VERTEX,
+                    GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+                )
+                r != null && r.isNotEmpty() && r[0] == 1
+            }.getOrDefault(false)
+        }
         return session > 0
     }
 
-    override fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int, lutPath: String?): IntArray? {
+    override fun develop(
+        frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int, lutPath: String?,
+        chainWire: FloatArray?,
+    ): IntArray? {
         if (!ensure()) return null
+        // The node chain door (the preview session's own pair, mirrored on the develop session). A chain the
+        // GPU cannot take (programs not compiled, an OpenDRT pack that does not resolve, a refused wire) answers
+        // null so the frame takes the CPU oracle; a chainless frame clears a chain the session still holds.
+        if (chainWire != null) {
+            if (!nodesReady) return null
+            // The OpenDRT output stays on the CPU oracle for now: the tail-drt draw fails on this device
+            // (glDrawArrays(tail-drt): gl error 0x0502, found by the first v2-sweep run, 2026-11-25) and a render
+            // failure latches the session unhealthy, which would take every later frame to the CPU as well.
+            if (chainWire.size >= 2 && chainWire[1] == 1.0f) return null
+            val drtPack = if (chainWire.size >= 7 && chainWire[1] == 1.0f) {
+                val o = chainWire.size - 6
+                runCatching {
+                    OpenDrtPacks.resolve(
+                        OpenDrtPacks.Spec(
+                            look = chainWire[o].toInt(), tonescale = chainWire[o + 1].toInt(),
+                            cwp = chainWire[o + 2].toInt(), cwpLimit = chainWire[o + 3],
+                            grey = chainWire[o + 4], display = chainWire[o + 5].toInt(),
+                        ),
+                    )
+                }.getOrNull() ?: return null
+            } else {
+                null
+            }
+            val ok = runCatching {
+                NativeSource.jniDevelopSessionSetColorModelChain(session, chainWire, drtPack)
+            }.getOrDefault(false)
+            if (!ok) return null
+            chainSet = true
+        } else if (chainSet) {
+            val cleared = runCatching {
+                NativeSource.jniDevelopSessionSetColorModelChain(
+                    session, NodeChainWire.encode(com.ritim.ritimcraw.data.grade2.ClipGradeV2(), emptyList()), null,
+                )
+            }.getOrDefault(false)
+            if (!cleared) return null
+            chainSet = false
+        }
         val rgb = try {
             NativeSource.jniDevelopSessionRenderYuvParcel(
                 session, frame.y, frame.u, frame.width, frame.height, frame.stride, frame.uvStride,
@@ -754,9 +812,10 @@ class EncodedSource(
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
         val gpu = gpuDeveloper
         // The GPU door covers the preview's common shape, including a LUT (the develop session's own 3D LUT
-        // texture, the same stage the MCRAW chain uses); nodes, a rotated clip and a manual orientation still
+        // texture, the same stage the MCRAW chain uses) and the v2 node chain (its NODES programs; a chain the GPU
+        // cannot carry answers null and the frame takes the CPU oracle); a rotated clip and a manual orientation still
         // go to the CPU oracle (honest fallback, noted in the trace).
-        val gpuEligible = gpu != null && maxDim >= 0 && chainWire == null &&
+        val gpuEligible = gpu != null && maxDim >= 0 &&
             upright && fmt.orientationDeg == 0 && gpu.available()
         // A safety net: an 8K-class preview frame that still cannot take the GPU door (nodes, a rotated clip)
         // would fall to the CPU oracle, which allocates the whole frame as ARGB (132 MB at 8K:
@@ -779,7 +838,7 @@ class EncodedSource(
             val budget = if (maxDim == 0) GPU_MAX_EDGE else minOf(maxDim, GPU_MAX_EDGE)
             val reduce = maxOf(1, (maxOf(planes.width, planes.height) + budget - 1) / budget).coerceAtMost(8)
             val tDev = System.nanoTime()
-            val out = if (g != null) gpu!!.develop(g, color, grade, reduce, lutPath) else null
+            val out = if (g != null) gpu!!.develop(g, color, grade, reduce, lutPath, chainWire) else null
             val now = System.nanoTime()
             EncodedFrameTrace.logPath(
                 if (out != null) "gpu" else "cpu-fallback", planes.width, planes.height, planes.bitDepth, reduce,
