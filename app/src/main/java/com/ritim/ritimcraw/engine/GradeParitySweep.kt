@@ -285,6 +285,31 @@ object GradeParitySweep {
         return diff * 100.0 / n
     }
 
+    /**
+     * The frame DIGEST (plan §10 layer 5's karne line): the IEEE CRC32
+     * of one rendered frame's bytes. The sweep prints it per case so a
+     * device run before/after a merge compares EXACT hex — two builds
+     * that agree on maxDiffLsb but disagree on content still disagree
+     * here (the stats' own bucket rounds 1-2 LSB jitter to the same
+     * line; the CRC does not). Pure Kotlin, core's crc32Ieee's own
+     * polynomial (0xEDB88320 reflected) — pinned against a known vector
+     * in GradeParitySweepTest.
+     */
+    fun frameDigest(frame: ByteArray): Long {
+        var crc = 0xFFFFFFFFL
+        for (b in frame) {
+            crc = (crc xor (b.toLong() and 0xFF)) and 0xFFFFFFFFL
+            for (k in 0 until 8) {
+                crc = if (crc and 1L != 0L) {
+                    ((crc ushr 1) xor 0xEDB88320L) and 0xFFFFFFFFL
+                } else {
+                    (crc ushr 1) and 0xFFFFFFFFL
+                }
+            }
+        }
+        return (crc xor 0xFFFFFFFFL) and 0xFFFFFFFFL
+    }
+
     fun line(c: Case, s: Stats, cpuMovedPct: Double, gpuMovedPct: Double): String =
         String.format(
             java.util.Locale.US,
@@ -394,6 +419,12 @@ object GradeParitySweep {
                 val moved = movedPct(cpuRef, cpuNeutral) to movedPct(g, gpuBase)
                 rows += Triple(c, stats, moved)
                 Log.i(TAG, line(c, stats, moved.first, moved.second))
+                // The frame digest (plan §10 layer 5's karne): one hex
+                // line per case — the before/after-merge comparison the
+                // stats' bucket cannot make (1-2 LSB jitter rounds to the
+                // same line; the CRC does not).
+                Log.i(TAG, "grade-sweep ${c.control} ${c.label}: frameDigest=cpu:%08x gpu:%08x"
+                    .format(frameDigest(r), frameDigest(g)))
             }
             val summary = summaryLine(rows, skipped)
             Log.i(TAG, summary)
@@ -815,6 +846,10 @@ object GradeParitySweep {
                 val stats = compare(argbBytes(gpuArgb), argbBytes(cpuArgb))
                 rows += c to stats
                 Log.i(TAG, v2Line(c, stats))
+                // The frame digest (the grade sweep's karne line, the
+                // same shape): the v2 chain's before/after content proof.
+                Log.i(TAG, "v2-sweep ${c.control} ${c.label}: frameDigest=cpu:%08x gpu:%08x"
+                    .format(frameDigest(argbBytes(cpuArgb)), frameDigest(argbBytes(gpuArgb))))
                 // The CLEAR after every case: the next case's chain is
                 // handed explicitly, but the sweep's own discipline keeps
                 // the session's state obvious per case (K2's shape

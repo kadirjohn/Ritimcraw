@@ -182,6 +182,19 @@ class GradeParitySweepTest {
     }
 
     @Test
+    fun frame_digest_is_the_ieee_crc32() {
+        // The standard check vectors (IEEE 802.3, reflected 0xEDB88320):
+        // "" -> 0, "123456789" -> 0xCBF43926 — core's crc32Ieee's own
+        // polynomial; the sweep's karne line and the owner's before/after
+        // greps ride this exact function.
+        assertEquals(0L, GradeParitySweep.frameDigest(ByteArray(0)))
+        assertEquals(0xCBF43926L,
+            GradeParitySweep.frameDigest("123456789".toByteArray(Charsets.US_ASCII)))
+        // And the empty array's identity is NOT the zero byte's.
+        assertEquals(0xD202EF8DL, GradeParitySweep.frameDigest(byteArrayOf(0)))
+    }
+
+    @Test
     fun v2_line_and_summary_formats() {
         val c = GradeParitySweep.V2Case(
             "nodes-primary", "lift", FloatArray(9), null, com.ritim.ritimcraw.data.GradeK(),
