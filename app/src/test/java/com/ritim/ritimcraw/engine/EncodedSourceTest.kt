@@ -219,6 +219,47 @@ class EncodedSourceTest {
     }
 
     @Test
+    fun read_ahead_returns_the_requested_frames_and_survives_skips_and_backward_jumps() {
+        // E0b-4b: the decode runs on a helper thread a couple of frames ahead; whatever the render thread
+        // asks for (sequential, a skip, a jump back across a GOP) must come back as exactly that frame.
+        val pts = LongArray(12) { it * 10000L }
+        val reader = FakeReader(samples(pts, syncAt = intArrayOf(0, 6)))
+        val decoder = FakeDecoder()
+        val developer = FakeDeveloper()
+        val source = EncodedSource(reader, decoder, developer, gpuDeveloper = null, readAhead = true)
+        source.open(3)
+        try {
+            val order = intArrayOf(0, 1, 2, 5, 6, 7, 9, 3, 4, 11, 0)
+            for ((n, f) in order.withIndex()) {
+                source.renderFrame(f, GradeK())
+                assertEquals("frame $f", marker(pts[f]).toByte(), developer.frames[n].y[0])
+            }
+            assertEquals(order.size, developer.frames.size)
+        } finally {
+            source.close()
+        }
+    }
+
+    @Test
+    fun read_ahead_reports_a_decode_failure_and_recovers_on_the_next_request() {
+        val pts = LongArray(4) { it * 10000L }
+        val reader = FakeReader(samples(pts))
+        val decoder = FakeDecoder()
+        val developer = FakeDeveloper()
+        val source = EncodedSource(reader, decoder, developer, gpuDeveloper = null, readAhead = true)
+        source.open(3)
+        try {
+            source.renderFrame(1, GradeK())
+            val failed = runCatching { source.renderFrame(99, GradeK()) }
+            org.junit.Assert.assertTrue(failed.isFailure) // out of range is rejected before any thread work
+            source.renderFrame(2, GradeK())
+            assertEquals(marker(pts[2]).toByte(), developer.frames.last().y[0])
+        } finally {
+            source.close()
+        }
+    }
+
+    @Test
     fun forward_jump_inside_the_same_gop_does_not_reseek() {
         // E0b-4b: keyframes at 0 and 6; a playback that skips frames 1 -> 4 stays in GOP 0 and just
         // decodes forward (frames 2 and 3 are discarded), no seek and no flush.

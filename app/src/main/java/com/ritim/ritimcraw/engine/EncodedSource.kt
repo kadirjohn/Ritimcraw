@@ -352,6 +352,19 @@ object EncodedYuv {
         val cw = (w + 1) / 2
         val ch = (h + 1) / 2
         if (p.y.pixelStride != bps || p.y.offset != 0) return null
+        // The pooled adapter's frames: ONE interleaved chroma array, U and V views of it (no copy at all).
+        if (p.u.buffer === p.v.buffer && p.u.offset == 0 && p.v.offset == bps && p.u.pixelStride == 2 * bps &&
+            p.u.rowStride % (2 * bps) == 0 && p.y.rowStride % bps == 0
+        ) {
+            val cs = p.u.rowStride
+            val yn = (h - 1) * p.y.rowStride + w * bps
+            val cn = (ch - 1) * cs + cw * 2 * bps
+            if (p.y.buffer.size < yn || p.u.buffer.size < cn) return null
+            return YuvFrameK(
+                w, h, semiPlanar = true, p.y.buffer, p.u.buffer, ByteArray(0),
+                stride = p.y.rowStride, uvStride = cs, bitDepth = if (bps == 2) 10 else 8,
+            )
+        }
         if (p.u.pixelStride != 2 * bps || p.v.pixelStride != 2 * bps) return null
         if (p.u.offset != 0 || p.v.offset != 0 || p.u.rowStride != p.v.rowStride) return null
         val yNeed = (h - 1) * p.y.rowStride + w * bps
@@ -599,6 +612,12 @@ class EncodedSource(
     private val developer: EncodedDeveloper = NativeEncodedDeveloper,
     /** E0b-4b: the GPU develop for PREVIEW renders (null = CPU only). Falls back to [developer] per frame. */
     private val gpuDeveloper: EncodedGpuDeveloper? = NativeEncodedGpuDeveloper(),
+    /**
+     * E0b-4b: decode on a helper thread, a couple of frames AHEAD of the render thread (the preview's
+     * sequential playback). Off by default (the export reads frames strictly in order, and the JVM tests'
+     * fakes assume one thread); the preview session turns it on.
+     */
+    private val readAhead: Boolean = false,
 ) : AutoCloseable {
 
     private var format: EncodedVideoFormat? = null
@@ -729,7 +748,7 @@ class EncodedSource(
         val gpuEligible = gpu != null && maxDim > 0 && chainWire == null && lutPath == null &&
             upright && fmt.orientationDeg == 0 && grade.lutInterp == null && gpu.available()
         val tDecode = System.nanoTime()
-        val planes = decodePlanes(frameIndex)
+        val planes = if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex)
         val decodeWallNs = System.nanoTime() - tDecode
         if (gpuEligible) {
             val color = fmt.color.withDecodedBitDepth(planes.bitDepth)
@@ -762,6 +781,7 @@ class EncodedSource(
     override fun close() {
         if (closed) return
         closed = true
+        stopAhead()
         try { gpuDeveloper?.close() } catch (_: Throwable) {}
         decoder.release()
         reader.release()
@@ -784,10 +804,141 @@ class EncodedSource(
         return p to s
     }
 
-    private fun decode(target: Int): YuvFrameK = EncodedYuv.toNv12(decodePlanes(target))
+    private fun decode(target: Int): YuvFrameK =
+        EncodedYuv.toNv12(if (readAhead) fetchAhead(target) else decodePlanes(target))
+
+    // ---- E0b-4b: decode-ahead (readAhead = true) ----
+    //
+    // ONE helper thread owns the reader, the decoder and every decode-state field (decodePlanes and what it
+    // touches); the render thread only talks to it through [aheadLock]. The helper decodes the frame the
+    // render thread asked for (frames before it are dequeued WITHOUT a pixel copy), then keeps decoding the
+    // following frames into a small queue so a sequential playback finds its next frame already waiting
+    // and the decode overlaps the GPU develop of the previous one. A request that is not in the queue
+    // clears it and is decoded from the current position (same-GOP skip, or a seek: decodePlanes decides).
+    // The queue depth is bounded by memory (a 4K P010 frame is 25 MB, an 8K one 50 MB, heap limit 256 MB).
+
+    private val aheadLock = Object()
+    private var aheadThread: Thread? = null
+    private var aheadStop = false
+    private var aheadWant = -1            // newest requested frame (render thread writes)
+    private var aheadServed = -1          // the request the render thread already took from the queue
+    private var aheadNext = -1            // next frame the helper will produce ahead of the request
+    private var aheadFailure: Throwable? = null
+    private var aheadFailedFor = -1
+    private val aheadReady = ArrayList<Pair<Int, YuvPlanes>>()
+    private var aheadDepth = 2
+
+    private fun fetchAhead(target: Int): YuvPlanes {
+        synchronized(aheadLock) {
+            if (aheadThread == null) {
+                val t = Thread({ aheadLoop() }, "encoded-decode-ahead")
+                t.isDaemon = true
+                aheadThread = t
+                t.start()
+            }
+            aheadWant = target
+            aheadServed = -1
+            aheadFailure = null
+            aheadFailedFor = -1
+            aheadLock.notifyAll()
+            val deadline = System.nanoTime() + AHEAD_TIMEOUT_NS
+            while (true) {
+                aheadFailure?.let { throw it }
+                val at = aheadReady.indexOfFirst { it.first == target }
+                if (at >= 0) {
+                    val hit = aheadReady[at].second
+                    // Older frames the playback skipped over go back to the pool; newer ones stay queued.
+                    for (i in at - 1 downTo 0) decoder.recycle(aheadReady.removeAt(i).second)
+                    aheadReady.removeAt(0)
+                    aheadServed = target
+                    aheadLock.notifyAll()
+                    return hit
+                }
+                val left = deadline - System.nanoTime()
+                if (left <= 0) throw decodeFailure("the decode-ahead made no progress on frame $target")
+                aheadLock.wait(left / 1_000_000L, (left % 1_000_000L).toInt())
+            }
+        }
+    }
+
+    private fun aheadLoop() {
+        // The helper competes with the render thread and the UI for the big cores; a late decoded frame is
+        // a dropped frame, so it runs at display priority (best effort: the JVM tests have no Process).
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) } catch (_: Throwable) {}
+        while (true) {
+            val goal: Int
+            synchronized(aheadLock) {
+                while (true) {
+                    if (aheadStop) return
+                    val w = aheadWant
+                    if (w >= 0 && aheadFailedFor != w) {
+                        // Frames older than the request are useless to a forward playback.
+                        while (aheadReady.isNotEmpty() && aheadReady[0].first < w) decoder.recycle(aheadReady.removeAt(0).second)
+                        if (aheadServed != w && aheadReady.none { it.first == w }) {
+                            // Not queued: stale newer frames (a backward jump) go too, then decode the request.
+                            if (aheadReady.isNotEmpty() && aheadReady[0].first > w) {
+                                for (e in aheadReady) decoder.recycle(e.second)
+                                aheadReady.clear()
+                            }
+                            goal = w; break
+                        }
+                        if (aheadReady.size < aheadDepth && aheadNext in 0 until pts.size && aheadNext > w) {
+                            goal = aheadNext; break
+                        }
+                    }
+                    aheadLock.wait()
+                }
+            }
+            try {
+                val tP = System.nanoTime()
+                val planes = decodePlanes(goal)
+                EncodedFrameTrace.logAhead(goal, aheadWant, lastDecodedCount, System.nanoTime() - tP)
+                synchronized(aheadLock) {
+                    if (aheadStop) { decoder.recycle(planes); return }
+                    if (aheadWant > goal) {
+                        decoder.recycle(planes) // the request moved past this frame while it decoded
+                    } else {
+                        aheadReady.add(goal to planes)
+                        aheadReady.sortBy { it.first }
+                    }
+                    aheadNext = goal + 1
+                    aheadDepth = aheadDepthFor(planes)
+                    aheadLock.notifyAll()
+                }
+            } catch (t: Throwable) {
+                synchronized(aheadLock) {
+                    aheadFailure = t
+                    aheadFailedFor = goal
+                    aheadNext = -1
+                    aheadLock.notifyAll()
+                    // Park until the render thread asks for something else.
+                    while (!aheadStop && aheadWant == aheadFailedFor) aheadLock.wait()
+                    aheadFailedFor = -1
+                }
+            }
+        }
+    }
+
+    /** Queue depth for the frame size just produced: 2 for 4K-class frames, 1 when a frame is huge (8K). */
+    private fun aheadDepthFor(p: YuvPlanes): Int {
+        val bytes = p.y.buffer.size.toLong() + p.u.buffer.size + (if (p.v.buffer === p.u.buffer) 0 else p.v.buffer.size)
+        return if (bytes > AHEAD_BIG_FRAME_BYTES) 1 else 2
+    }
+
+    private fun stopAhead() {
+        val t: Thread?
+        synchronized(aheadLock) {
+            aheadStop = true
+            t = aheadThread
+            aheadLock.notifyAll()
+        }
+        if (t != null && t !== Thread.currentThread()) {
+            try { t.join(AHEAD_JOIN_MS) } catch (_: InterruptedException) {}
+        }
+    }
 
     /** Frames the decoder emitted for the LAST render (the skipped ones plus the target), for the trace. */
-    private var lastDecodedCount = 0
+    @Volatile private var lastDecodedCount = 0
 
     private fun decodePlanes(target: Int): YuvPlanes {
         lastDecodedCount = 0
@@ -938,6 +1089,10 @@ class EncodedSource(
 
         /** A decoder may buffer frames; this many extra samples without output = stuck. */
         private const val SAMPLE_SLACK = 32
+        private const val AHEAD_TIMEOUT_NS = 30_000_000_000L
+        private const val AHEAD_JOIN_MS = 3_000L
+        /** A decoded frame above this many plane bytes (8K) is only queued one deep: heap limit 256 MB. */
+        private const val AHEAD_BIG_FRAME_BYTES = 40L * 1024 * 1024
 
         /** Empty dequeue polls tolerated after end-of-stream before "truncated". */
         private const val EOS_POLLS = 64
@@ -984,14 +1139,21 @@ internal object EncodedFrameTrace {
     val copyNanos = java.util.concurrent.atomic.AtomicLong(0)
     val planeBytes = java.util.concurrent.atomic.AtomicLong(0)
 
+    fun logAhead(goal: Int, want: Int, decoded: Int, nanos: Long) {
+        if (!com.ritim.ritimcraw.BuildConfig.DEBUG) return
+        runCatching { android.util.Log.i("ritim-trace", String.format(java.util.Locale.ROOT, "ahead-produce goal=%d want=%d decoded=%d took=%.1fms", goal, want, decoded, nanos / 1e6)) }
+    }
+
     /** Which develop path took the frame (E0b-4b): "gpu" or "cpu-fallback"; the CPU-only case logs via [logFrame]. */
     fun logPath(path: String, w: Int, h: Int, bits: Int, reduce: Int, nanos: Long,
                 decodeWallNs: Long = 0, adapterCopyNs: Long = 0, packNs: Long = 0, gpuNs: Long = 0, decoded: Int = 0) {
         if (!com.ritim.ritimcraw.BuildConfig.DEBUG) return
+        runCatching {
         android.util.Log.i(
             "ritim-trace",
             String.format(java.util.Locale.ROOT, "encoded-path %s src=%dx%d bits=%d reduce=%d develop=%.1fms decodeWait=%.1fms (adapterCopy=%.1fms) pack=%.1fms gpuJni=%.1fms decoded=%d", path, w, h, bits, reduce, nanos / 1e6, decodeWallNs / 1e6, adapterCopyNs / 1e6, packNs / 1e6, gpuNs / 1e6, decoded),
         )
+        }
     }
 
     fun logFrame(w: Int, h: Int, bits: Int, developNanos: Long, ok: Boolean) {
