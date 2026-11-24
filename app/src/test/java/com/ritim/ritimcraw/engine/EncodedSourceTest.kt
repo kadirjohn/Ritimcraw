@@ -219,6 +219,29 @@ class EncodedSourceTest {
     }
 
     @Test
+    fun forward_jump_inside_the_same_gop_does_not_reseek() {
+        // E0b-4b: keyframes at 0 and 6; a playback that skips frames 1 -> 4 stays in GOP 0 and just
+        // decodes forward (frames 2 and 3 are discarded), no seek and no flush.
+        val pts = LongArray(8) { it * 10000L }
+        val reader = FakeReader(samples(pts, syncAt = intArrayOf(0, 6)))
+        val decoder = FakeDecoder()
+        val developer = FakeDeveloper()
+        val source = EncodedSource(reader, decoder, developer)
+        source.open(3)
+
+        source.renderFrame(1, GradeK())
+        source.renderFrame(4, GradeK())
+        assertEquals(listOf(0L), reader.seeks)
+        assertEquals(1, decoder.flushes)
+        assertEquals(marker(40000).toByte(), developer.frames[1].y[0])
+
+        // Crossing into the next GOP seeks to ITS keyframe (cheaper than decoding the tail of GOP 0).
+        source.renderFrame(7, GradeK())
+        assertEquals(listOf(0L, 60000L), reader.seeks)
+        assertEquals(marker(70000).toByte(), developer.frames[2].y[0])
+    }
+
+    @Test
     fun jump_seeks_to_keyframe_at_or_before() {
         // Keyframes at frames 0 and 3; frames 3..5 form the second GOP.
         val pts = LongArray(6) { it * 10000L }
