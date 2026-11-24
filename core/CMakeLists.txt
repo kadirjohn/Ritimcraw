@@ -66,6 +66,7 @@ add_library(rawedit STATIC
     src/ImageStab.cpp
     src/ImageStabSource.cpp
     src/ImageStabPlan.cpp
+    src/Loudness.cpp
     src/Yuv.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
@@ -75,6 +76,15 @@ set_source_files_properties(src/Yuv.cpp PROPERTIES
 # ImageStabPlan.cpp: a pure double-precision plan that must round the same
 # on every target (preview == export == timeline); same opt-out.
 set_source_files_properties(src/ImageStabPlan.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# Loudness.cpp (E5-A): the BS.1770-4 meter is a numeric port of the
+# filmcraft audio-dsp crate whose test vectors (test_loudness) pin exact
+# values (1e-8 on the K-weighting coefficient table, bit-equality across
+# feeding patterns). The desktop script already compiles this TU with the
+# flag; the NDK build goes through THIS file, so without the same opt-out
+# the device could contract multiplies into FMAs and drift off the port's
+# expected numbers (Yuv.cpp precedent).
+set_source_files_properties(src/Loudness.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
@@ -148,6 +158,11 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_opendrt tests/test_opendrt.cpp)
     target_include_directories(test_opendrt PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_opendrt PRIVATE rawedit)
+    # test_loudness: BS.1770-4 meter + true-peak port (E5-A first half);
+    # filmcraft audio-dsp test vectors, synthetic signals only, no cwd needs.
+    add_executable(test_loudness tests/test_loudness.cpp)
+    target_include_directories(test_loudness PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_loudness PRIVATE rawedit)
     # bench_develop: M1 developCpu serial-vs-parallel measurement on the
     # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
     # asserts byte-exactness, reports (never asserts) the speedup.
@@ -173,5 +188,6 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME color COMMAND test_color)
     add_test(NAME color_model COMMAND test_color_model)
     add_test(NAME opendrt COMMAND test_opendrt WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    add_test(NAME loudness COMMAND test_loudness)
     add_test(NAME bench_develop COMMAND bench_develop)
 endif()
