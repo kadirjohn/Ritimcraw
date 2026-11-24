@@ -51,6 +51,18 @@ object PtsTimeline {
     }
 
     /**
+     * The clip's measured frame rate: N frames span N-1 intervals, so
+     * (N-1) / (last - first). The old N / span read low by a factor
+     * (N-1)/N (a 30.06 fps clip of 130 frames showed 29.83 fps). 0 when
+     * there is no span to measure.
+     */
+    fun measuredFps(ptsUs: LongArray): Float {
+        val total = totalDurationUs(ptsUs)
+        if (total <= 0L) return 0f
+        return ((ptsUs.size - 1) * 1_000_000.0 / total).toFloat()
+    }
+
+    /**
      * Elapsed played within the clip for the transport readout: frame
      * [index]'s pts relative to the first frame, clamped to the total.
      */

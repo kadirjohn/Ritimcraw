@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -48,6 +49,8 @@ fun AppSegmentedControl(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    // (E1c-polish) the export sheet asks for the 48dp touch target; others keep 40dp.
+    minHeight: Dp = 40.dp,
 ) {
     SingleChoiceSegmentedButtonRow(modifier = modifier.fillMaxWidth()) {
         options.forEachIndexed { index, label ->
@@ -60,7 +63,7 @@ fun AppSegmentedControl(
                 selected = selected,
                 onClick = { onSelect(index) },
                 modifier = Modifier
-                    .heightIn(min = 40.dp),
+                    .heightIn(min = minHeight),
                 icon = {},
                 label = {
                     Text(

@@ -3179,7 +3179,7 @@ fun ClipEditorScreen(
             height = EditorPreviewLogic.recordedWidth(session?.height ?: 0, sourceHeight),
             totalUs = totalUs,
             frameCount = pts?.size ?: 0,
-            fps = if (pts != null && totalUs > 0L) (pts.size.toFloat() / (totalUs / 1_000_000f)) else 0f,
+            fps = if (pts != null) PtsTimeline.measuredFps(pts) else 0f,
             // RAW rows (owner request 2026-11-11 section 2/3): MCRAW-only.
             // The sample format is the container's 16-bit sample storage
             // (raw16) — never presented as a sensor bit-depth claim. The white

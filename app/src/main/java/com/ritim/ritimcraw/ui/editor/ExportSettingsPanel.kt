@@ -1,7 +1,10 @@
 package com.ritim.ritimcraw.ui.editor
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -52,6 +55,7 @@ import com.ritim.ritimcraw.export.ExportSettings
 import com.ritim.ritimcraw.export.ExportSheetModel
 import com.ritim.ritimcraw.export.ExportText
 import com.ritim.ritimcraw.export.KeyframeInterval
+import com.ritim.ritimcraw.ui.components.AppSegmentedControl
 import com.ritim.ritimcraw.ui.theme.Tnum
 import java.util.Locale
 
@@ -87,22 +91,20 @@ internal fun ExportSettingsPanel(
     var advanced by remember { mutableStateOf(false) }
 
     HelpTitle(R.string.export_settings_title, R.string.export_help_presets)
-    FlowRow(
+    // (E1c-polish) The three presets are one segmented row. Custom is not a
+    // segment: when the settings match no preset nothing is selected and the
+    // summary card carries the "Custom" label.
+    val presets = listOf(ExportPreset.COMPATIBLE, ExportPreset.SMALLER, ExportPreset.QUALITY)
+    val presetLabels = presets.map { stringResource(presetName(it)) }
+    AppSegmentedControl(
+        options = presetLabels,
+        selectedIndex = presets.indexOf(preset),
+        onSelect = { i ->
+            onSettings(ExportSheetModel.applyPreset(settings, presets[i], facts, tenBitAvailable))
+        },
+        minHeight = 48.dp,
         modifier = Modifier.padding(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        for (p in ExportPreset.entries) {
-            FilterChip(
-                selected = preset == p,
-                onClick = { if (p != ExportPreset.CUSTOM) onSettings(ExportSheetModel.applyPreset(settings, p, facts, tenBitAvailable)) },
-                label = { Text(stringResource(presetName(p))) },
-                // Custom is a state, not an action: it shows when the settings
-                // match no preset and cannot be picked.
-                enabled = p != ExportPreset.CUSTOM || preset == ExportPreset.CUSTOM,
-            )
-        }
-    }
+    )
     if (preset == ExportPreset.QUALITY && !tenBitAvailable) {
         Text(
             stringResource(R.string.export_preset_quality_note),
@@ -112,7 +114,8 @@ internal fun ExportSettingsPanel(
         )
     }
 
-    ProducedSummary(plan, subject, rate)
+    Spacer(Modifier.height(8.dp))
+    ProducedSummary(plan, subject, rate, custom = preset == ExportPreset.CUSTOM)
 
     for (issue in plan.issues) {
         IssueRow(issue, settings, onSettings, onUseResolution)
@@ -120,7 +123,7 @@ internal fun ExportSettingsPanel(
 
     TextButton(
         onClick = { advanced = !advanced },
-        modifier = Modifier.padding(horizontal = 8.dp),
+        modifier = Modifier.padding(horizontal = 8.dp).heightIn(min = 48.dp),
     ) {
         Text(stringResource(R.string.export_advanced))
         Icon(
@@ -141,39 +144,62 @@ private fun presetName(p: ExportPreset): Int = when (p) {
     ExportPreset.CUSTOM -> R.string.export_preset_custom
 }
 
-/** The "what will really be produced" card: the plan's own numbers, not the request's. */
+/**
+ * The "what will really be produced" card: the plan's own numbers, not the
+ * request's, as one line that reads at a glance; the time estimate under it;
+ * the encoder's name as a small secondary line. [custom] shows the "Custom"
+ * label when the settings match no preset.
+ */
 @Composable
-private fun ProducedSummary(plan: ExportPlan, subject: ExportSheetModel.Subject, rate: ExportSheetModel.Rate?) {
+private fun ProducedSummary(
+    plan: ExportPlan,
+    subject: ExportSheetModel.Subject,
+    rate: ExportSheetModel.Rate?,
+    custom: Boolean,
+) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(stringResource(R.string.export_produced_title), style = MaterialTheme.typography.labelLarge)
-            Text(
-                stringResource(
-                    R.string.export_produced_line,
-                    plan.width.toString(), plan.height.toString(), ExportText.fps(plan.fps),
-                    ExportText.codec(plan.mime), plan.bitDepth,
-                    ExportText.mbps(plan.bitrateBps.toLong()),
-                ),
-                style = MaterialTheme.typography.bodyLarge.merge(Tnum),
-                modifier = Modifier.padding(top = 4.dp),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.export_produced_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                if (custom) {
+                    Text(
+                        stringResource(R.string.export_preset_custom),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier
+                            .background(
+                                MaterialTheme.colorScheme.secondaryContainer,
+                                MaterialTheme.shapes.small,
+                            )
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
+            }
             val size = if (subject.durationSec > 0.0) {
                 ExportText.megabytes(plan.estimatedBytes(subject.durationSec))
             } else {
                 null
             }
+            Text(
+                ExportSheetState.summaryLine(plan, size),
+                style = MaterialTheme.typography.bodyLarge.merge(Tnum),
+                modifier = Modifier.padding(top = 4.dp),
+            )
             val secs = ExportSheetModel.estimatedSeconds(subject, rate)
             Text(
                 when {
-                    size != null && secs != null ->
-                        stringResource(R.string.export_estimate_both, size, formatEstimate(secs))
-                    size != null -> stringResource(R.string.export_estimate_size_only, size)
-                    else -> stringResource(R.string.export_estimate_unknown)
+                    size == null -> stringResource(R.string.export_estimate_unknown)
+                    secs != null -> stringResource(R.string.export_time_estimate, formatEstimate(secs))
+                    else -> stringResource(R.string.export_time_unknown)
                 },
                 style = MaterialTheme.typography.bodyMedium.merge(Tnum),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -410,7 +436,7 @@ private fun AdvancedSection(
         }
     }
     // Read-only facts
-    ReadOnlyRow(R.string.export_frame_rate, stringResource(R.string.export_frame_rate_value, ExportText.fps(subject.fps)))
+    ReadOnlyRow(R.string.export_frame_rate, stringResource(R.string.export_frame_rate_value, ExportSheetState.fpsText(subject.fps)))
     ReadOnlyRow(R.string.export_audio_format, stringResource(R.string.export_audio_format_value))
 }
 
