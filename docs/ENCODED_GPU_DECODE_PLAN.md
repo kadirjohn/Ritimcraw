@@ -49,3 +49,38 @@ parity kanıtlanırsa preview için ayrı bir seçenek olabilir.
   sayısı ve stride'ı cihazda loglamak.
 - Satır aralığı (stride) ve `GL_UNPACK_ROW_LENGTH` (GLES 3.0'da var) ile kopyasız yükleme mümkün; kopya sayısı ölçülür.
 - Parity beklenmedik büyük çıkarsa (ör. 10-bit MSB ölçeği, birincil dönüşüm): bulgular raporlanır, eşik değişmez, export'a bağlanmaz.
+
+## 6. REVİZYON 2 (2026-11-25, sahip yönergesi): iki yol, küçült-sonra-işle, proxy ayrı iş
+
+Sahip, Klipp'in (`~/projects/klipp`) kaynağını inceledi; aşağıdaki iddialar Klipp kodunda DOĞRULANDI:
+`engine/VideoPipeline.kt` `previewShort = 1080` ("playback downscales the footage to it before the nodes, film and look are computed
+(≈ 4× less work per stage for 4K at 1080) ... Export ... always compute at full resolution from the originals");
+`engine/Proxies.kt` (arka planda donanım encoder ile hafif, sık anahtar kareli kopya; oynatma/sarma proxy'den, export orijinalden;
+varsayılan kısa kenar 1080; 10-bit kaynakta HEVC Main10, 8-bit'te H.264; "yeni proxy bitene kadar eskisi kullanılır").
+
+**Alınmayacaklar:** Media3'ün tamamı (kendi GLES hattımız + CPU ile parity testlerimiz var; geçmek onları baştan yazmak olur);
+`KlippPrecision` (Media3'ün iç texture havuzlarına RGBA16F yaması; biz Media3 kullanmıyoruz ve kendi develop zincirimiz zaten RGBA32F,
+yani uygulanamaz). Lisans notu: Klipp bütünüyle GPL-3.0-only; yalnızca `KlippPrecision.java`'nın başlığı Apache-2.0. Klipp kodu birebir
+kopyalanmaz, yalnızca mimari alınır; porta çıkan her şey için K6 gereği NOTICE girdisi.
+
+**İki yol (sahip kararı):**
+| | Preview (E0b-4) | Export + oracle (E0b-2/E0b-3) |
+|---|---|---|
+| Girdi | MediaCodec → Surface (SurfaceTexture, `GL_TEXTURE_EXTERNAL_OES`), CPU'ya kopya YOK | MediaCodec → `ImageReader` (YUV_420_888 / P010) → düzlemler GL dokusu |
+| YUV→RGB | sürücü (hızlı; matris/range sürücüye bağlı) | bizim shader, `EncodedColorSpec` uniform'ları (tam kontrol) |
+| İlk GPU adımı | **preview çözünürlüğüne küçült** (kısa kenar = kalite katmanı; 4K'da ~4× az iş) | tam çözünürlük (export orijinalden) |
+| Doğruluk | E0b-4b: aynı karede OES preview ile düzlem-shader farkı ölçülüp raporlanır | CPU oracle `developEncoded` ile parity (eşik `GradeParitySweep` ile aynı) |
+
+**Adımlar (güncel sıra):** E0b-2 (düzlem yükleme + shader + headless parity; önce cihazda ImageReader/P010 düzen probu) → E0b-3 (export bağlama)
+→ E0b-4 (preview: OES + önce-küçült) → E0b-4b (OES vs düzlem renk farkı raporu) → E0b-5 (ölçüm) → **ayrı iş F2:** Klipp tarzı proxy
+(8K ve uzun GOP için arka planda 1080p, 1 sn anahtar kareli HEVC Main10 / 8-bit'te H.264; oynatma ve sarma proxy'den, export orijinalden;
+**yarım proxy asla oynatılmaz**: Klipp'teki yeşil glitch dersi, proxy yalnızca tamamlanıp doğrulandıktan sonra kullanılır).
+
+**Kabul testleri (sahip klipleri, cihaz):** (1) Mi-Log 4K 10-bit 60p (`VID_20261124_175141.mp4`) akıcı oynasın (bugün ~0,5 kare/s);
+(2) 8K 30p 8-bit (`VID_20261124_175209_8K.mp4`) BALANCED'da akıcı oynasın (bugün: hiç kare yok, tam boy `IntArray` OOM);
+(3) renk etiketi doğru okunsun: Mi-Log klip ham `standard=6 range=1 transfer=0 profile=2` → BT.2020 / tam range / 10-bit / transfer etiketsiz
+(Mi-Log varsayımı klibin gerçek eğrisiyle DOĞRULANMADI: HLG mi Mi-Log mu, E0b'nin renk testinde kapatılacak); (4) CPU oracle ile parity.
+Bugünkü CPU yolu ölçümleri (debug izleri) `STATUS-2026-11-25.md` GÜNCELLEME 3'te.
+
+**Bilinen kusur (E0b'den bağımsız, ayrıca düzeltilecek):** `nativeEncodedDevelop` preview katmanını yok sayıp tam çözünürlükte geliştirip
+tam boy `IntArray` döndürüyor (8K = 132,7 MB, JVM 256 MB sınırında OOM) ve hata ham metin olarak gösteriliyor.
