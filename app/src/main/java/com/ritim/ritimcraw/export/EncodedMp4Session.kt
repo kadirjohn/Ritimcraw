@@ -69,10 +69,10 @@ internal class EncodedMp4Session(
         }
     }
 
-    override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?): ByteArray? {
+    override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?, chainWire: FloatArray?): ByteArray? {
         val s = sessions[handle] ?: return fail("render: no open encoded session")
         return try {
-            val argb = s.source.renderFrame(frameIndex, grade, lutPath, upright = false)
+            val argb = s.source.renderFrame(frameIndex, grade, lutPath, upright = false, chainWire = chainWire)
             argbToRgb888(argb, s.info.width, s.info.height)
         } catch (e: Throwable) {
             fail(e.message ?: e.javaClass.simpleName)

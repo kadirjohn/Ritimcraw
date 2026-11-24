@@ -66,7 +66,7 @@ class ClipThumbnailsMcrawTest {
             return Mp4SessionInfo(1L, frameCount, width, height, 0, orientationDeg)
         }
 
-        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?): ByteArray? {
+        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?, chainWire: FloatArray?): ByteArray? {
             if (failRender) return null
             renders++
             sawGrades.add(grade)

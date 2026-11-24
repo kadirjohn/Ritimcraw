@@ -79,6 +79,7 @@ class TimelineMp4ExporterTest {
             grade: GradeK,
             lutPath: String?,
             gyroPath: String?,
+                chainWire: FloatArray?,
         ): ByteArray? {
             if (handle <= 0L) return null
             rendered.add(handle.toString() to frameIndex)
@@ -412,9 +413,10 @@ class TimelineMp4ExporterTest {
                 grade: GradeK,
                 lutPath: String?,
                 gyroPath: String?,
+                chainWire: FloatArray?,
             ): ByteArray? {
                 if (frameIndex == 1) return null // clip a's second frame fails
-                return super.renderFrame(handle, frameIndex, grade, lutPath, gyroPath)
+                return super.renderFrame(handle, frameIndex, grade, lutPath, gyroPath, chainWire)
             }
         }
         val writer = FakeWriter()

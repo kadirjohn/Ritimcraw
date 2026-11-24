@@ -151,6 +151,8 @@ interface Mp4Session {
         grade: GradeK,
         lutPath: String? = null,
         gyroPath: String? = null,
+        /** F1-6: the snapshot's v2 chain wire (null = the legacy fast path, bit-identical). */
+        chainWire: FloatArray? = null,
     ): ByteArray?
 
     /** ptsUs of frame [frameIndex] (-1 on a bad handle). */
@@ -225,6 +227,7 @@ internal object NativeMp4Session : Mp4Session {
         grade: GradeK,
         lutPath: String?,
         gyroPath: String?,
+        chainWire: FloatArray?,
     ): ByteArray? {
         requireNative()
         // Gyro Phase 5: export is NOT tier-gated (the temporal NR precedent
@@ -272,6 +275,9 @@ internal object NativeMp4Session : Mp4Session {
             grade.lutInterp?.input?.transfer?.value ?: -1,
             grade.lutInterp?.output?.gamut?.value ?: -1,
             grade.lutInterp?.output?.transfer?.value ?: -1,
+            // F1-6: the snapshot's v2 chain wire (null = the legacy fast
+            // path, bit-identical — K2).
+            chainWire,
         )
     }
 
@@ -1323,6 +1329,17 @@ class ExportPipeline(
      */
     private val imageAnalysisPath: String? = null,
     /**
+     * F1-6 (color model v2): the snapshot's v2 node chain wire. Null =
+     * the LEGACY fast path (every existing export, bit-identical — K2);
+     * a NODES/DRT snapshot renders its chain through the CPU door
+     * (nativeExportFrameParcel's chainWire leg — the develop SESSION has
+     * no nodes doors, so a non-null wire ALSO forces the CPU dispatch:
+     * the honest gradeOnGpu fold, the GPU path's [BackendRules].untold
+     * tokens ride the stage log the same way today's uncovered stages
+     * do once the GPU leg exists).
+     */
+    private val chainWire: FloatArray? = null,
+    /**
      * The export resolution bound (owner request 2026-11-13): the job's
      * ladder choice, snapshotted at ENQUEUE and resolved here against the
      * source's effective size through ExportResolution.outputSize
@@ -1398,6 +1415,8 @@ class ExportPipeline(
         gyroPath: String? = null,
         manualRotationDeg: Int = 0,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)? = null,
+        /** F1-6: the snapshot's v2 chain wire (null = the legacy fast path). */
+        chainWire: FloatArray? = null,
     ) {
         val info = session.open(sourceFd)
             ?: throw IllegalStateException(
@@ -1406,7 +1425,7 @@ class ExportPipeline(
         try {
             encode(
                 sourceFd, info, grade, outPath, lutPath, gyroPath, manualRotationDeg,
-                onProgress,
+                onProgress, chainWire,
             )
         } finally {
             session.close(info.handle)
@@ -1422,6 +1441,7 @@ class ExportPipeline(
         attachedGyroPath: String?,
         manualRotationDeg: Int,
         onProgress: ((framesDone: Int, framesTotal: Int) -> Unit)?,
+        chainWire: FloatArray? = null,
     ) {
         // The stabilization slot every render below shares (S4): a gyro
         // grade passes the attached gyro path through UNCHANGED; an
@@ -2038,7 +2058,7 @@ class ExportPipeline(
                                         gpuDevelop.lastDetail() ?: "gpu develop render failed"
                                     )
                                 )
-                                rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath)
+                                rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath, chainWire)
                                     ?: throw IllegalStateException(
                                         Mp4ExportErrors.message(
                                             session.code(), session.stage(), session.detail()
@@ -2048,7 +2068,7 @@ class ExportPipeline(
                                 rgb = gpu
                             }
                         } else {
-                            rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath)
+                            rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath, chainWire)
                                 ?: throw IllegalStateException(
                                     Mp4ExportErrors.message(
                                         session.code(), session.stage(), session.detail()
@@ -2535,6 +2555,22 @@ class Mp4Exporter(
                 engine.execute {
                     val res = try {
                         var backend = if (encoded) RenderBackend.CPU else job.renderBackend
+                        // F1-6 (color model v2): a NODES/DRT snapshot rides
+                        // the CPU door (the develop session has no nodes
+                        // doors yet) - the honest gradeOnGpu fold: request
+                        // the CPU path UP FRONT with the reason on the stage
+                        // log (the plan's "nodes via GPU path when
+                        // gradeOnGpu, else honest failure" shorthand; the
+                        // CPU path DOES render the chain, so the export
+                        // succeeds with its own look).
+                        if (job.snapshotChainWire != null && backend == RenderBackend.GPU_EXPERIMENTAL) {
+                            stageLog?.invoke(
+                                "render backend fallback: requested=GPU_EXPERIMENTAL " +
+                                    "effective=CPU reason=v2-node-chain"
+                            )
+                            run?.note("gpu->cpu: v2-node-chain")
+                            backend = RenderBackend.CPU
+                        }
                         while (true) {
                             try {
                                 exportOnce(
@@ -2543,7 +2579,7 @@ class Mp4Exporter(
                                     partial.absolutePath, lutPath, gyroPath,
                                     job.manualRotationDeg, audioAttached, onProgress,
                                     job.resolutionW, job.resolutionH, run,
-                                    imageAnalysisPath,
+                                    imageAnalysisPath, job.snapshotChainWire,
                                 )
                                 break
                             } catch (e: SurfaceInputUnavailable) {
@@ -2667,6 +2703,7 @@ class Mp4Exporter(
         resolutionH: Int? = null,
         planRun: ExportPlanRun? = null,
         imageAnalysisPath: String? = null,
+        chainWire: FloatArray? = null,
     ) {
         ExportPipeline(
             session,
@@ -2679,6 +2716,7 @@ class Mp4Exporter(
             resolutionH = resolutionH,
             planRun = planRun,
             imageAnalysisPath = imageAnalysisPath,
+            chainWire = chainWire,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )

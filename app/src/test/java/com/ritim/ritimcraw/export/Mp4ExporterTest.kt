@@ -715,6 +715,7 @@ class Mp4ExporterTest {
             grade: GradeK,
             lutPath: String?,
             gyroPath: String?,
+                    chainWire: FloatArray?,
         ): ByteArray? {
             if (frameIndex == failAtFrame) {
                 lastCode = Mp4ExportErrors.CODE_IO
