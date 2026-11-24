@@ -649,4 +649,5 @@
     <string name="export_read_only_note">Follows the clip</string>
     <string name="export_level_higher">Higher</string>
     <string name="export_level_ceiling">Encoder maximum</string>
+    <string name="preview_error_too_large">This frame is too large to preview. Lower Preview quality in Settings or open a smaller clip.</string>
 </resources>

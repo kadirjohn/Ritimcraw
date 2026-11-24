@@ -108,4 +108,13 @@ class PreviewErrorsTest {
             assertTrue(recovery.isNotBlank())
         }
     }
+
+    @Test
+    fun an_out_of_memory_error_is_recognised_directly_and_through_its_causes() {
+        assertTrue(PreviewErrors.isOutOfMemory(OutOfMemoryError("Failed to allocate a 132710416 byte allocation")))
+        assertTrue(PreviewErrors.isOutOfMemory(RuntimeException("wrapper", OutOfMemoryError())))
+        assertTrue(PreviewErrors.isOutOfMemory(IllegalStateException("a", RuntimeException("b", OutOfMemoryError()))))
+        assertFalse(PreviewErrors.isOutOfMemory(IllegalStateException("not memory")))
+        assertFalse(PreviewErrors.isOutOfMemory(null))
+    }
 }
