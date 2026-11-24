@@ -43,7 +43,9 @@ parity kanıtlanırsa preview için ayrı bir seçenek olabilir.
 - **10-bit encoded export:** yalnızca P010 parity'si geçerse, ayrı commit'te, `tenBitContext` kuralı güncellenerek; geçmezse kapalı ve sebebi raporda.
 
 ## 5. Riskler / bilinmeyenler
-- Cihazda `ImageReader`'ın P010 desteği ve düzlem sırası (Image formatı 54, 2 düzlem; ölçüm koşucusunun P010 hatası bunun ispatı:
-  `COLOR_FormatYUVP010` ile yapılandırılmayınca 8-bit Image geliyordu). E0b-2 ilk iş bunu cihazda loglar.
+- Cihazda `ImageReader`'ın P010 desteği ve düzlem sırası (Image formatı 54, 2 düzlem) **doğrulanmadı**. İlgili ipucu: codec ölçümünün
+  10-bit satırları 0 bayt verdi; en olası sebep (HİPOTEZ, cihazda henüz denenmedi) satırların P010 yerine 8-bit YUV420Flexible
+  girdi istemesiydi ve düzeltme aynı gün yapıldı. E0b-2'nin ilk işi, P010 `ImageReader`/`getOutputImage` için Image formatı, düzlem
+  sayısı ve stride'ı cihazda loglamak.
 - Satır aralığı (stride) ve `GL_UNPACK_ROW_LENGTH` (GLES 3.0'da var) ile kopyasız yükleme mümkün; kopya sayısı ölçülür.
 - Parity beklenmedik büyük çıkarsa (ör. 10-bit MSB ölçeği, birincil dönüşüm): bulgular raporlanır, eşik değişmez, export'a bağlanmaz.
