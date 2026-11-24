@@ -250,11 +250,27 @@ class GradeStore(private val file: File) {
     /** Persists immediately. */
     fun put(sourceId: String, grade: GradeK) {
         synchronized(lock) {
-            val all = load().toMutableMap()
+            load()
             if (rejectedNewerVersion != null) return // never overwrite a newer file
-            all[sourceId] = grade
-            write(all)
+            // Raw carry: re-render the section from the FILE's records,
+            // keeping every sibling this build cannot express through
+            // GradeK (a node chain, an opendrt record) verbatim; only the
+            // target clip's record becomes the new grade's v2 twin.
+            val grades = rawGradesSection().toMutableMap()
+            grades[sourceId] = renderedV2Record(grade.toClipGradeV2())
+            writeRaw(grades)
         }
+    }
+
+    /**
+     * The parsed grades section RAW (records as parsed), or an empty map;
+     * the raw-carry read counterpart of [writeRaw].
+     */
+    private fun rawGradesSection(): Map<String, Any?> {
+        @Suppress("UNCHECKED_CAST")
+        val root = loadRoot() ?: return emptyMap()
+        @Suppress("UNCHECKED_CAST")
+        return (root["grades"] as? Map<String, Any?>) ?: LinkedHashMap()
     }
 
     /**
@@ -276,17 +292,31 @@ class GradeStore(private val file: File) {
             val grades = (root["grades"] as? Map<String, Any?>)?.toMutableMap()
                 ?: LinkedHashMap<String, Any?>()
             grades[sourceId] = renderedV2Record(grade)
-            ProjectFile.writeTextIfWritable(
-                file,
-                ProjectJson.withSection(
-                    existingText = file.takeIf { it.exists() }
-                        ?.readText(StandardCharsets.UTF_8),
-                    section = "grades",
-                    renderedSection = ProjectJson.renderRaw(grades),
-                    version = ProjectMigrations.CURRENT_VERSION,
-                ),
-            )
+            writeRaw(grades)
         }
+    }
+
+    /**
+     * The raw-carry section write (F1-3's sibling-preservation rule): the
+     * grades section renders from the parsed FILE records — records this
+     * build can re-render through the GradeK path render through it, and
+     * records it cannot (a v2 node chain, an opendrt output — [mapOfGrade]
+     * refuses them) ride VERBATIM. Without this, a plain [put] on clip A
+     * would DROP clip B's node record from the section (the old path
+     * re-rendered from the adaptable subset alone — a data-loss bug the
+     * golden raw-carry test catches).
+     */
+    private fun writeRaw(grades: Map<String, Any?>) {
+        ProjectFile.writeTextIfWritable(
+            file,
+            ProjectJson.withSection(
+                existingText = file.takeIf { it.exists() }
+                    ?.readText(StandardCharsets.UTF_8),
+                section = "grades",
+                renderedSection = ProjectJson.renderRaw(grades),
+                version = ProjectMigrations.CURRENT_VERSION,
+            ),
+        )
     }
 
     /** The clip's v2 record (or null when absent/not-a-record). */
@@ -324,10 +354,11 @@ class GradeStore(private val file: File) {
 
     fun remove(sourceId: String) {
         synchronized(lock) {
-            val all = load()
+            load()
             if (rejectedNewerVersion != null) return // never overwrite a newer file
-            if (sourceId in all) {
-                write(all - sourceId)
+            val grades = rawGradesSection()
+            if (sourceId in grades) {
+                writeRaw(grades - sourceId)
             }
         }
     }
@@ -355,14 +386,6 @@ class GradeStore(private val file: File) {
             // Recovery note is surfaced by callers that show error states.
             emptyMap()
         }
-    }
-
-    /** Crash-safe: temp -> fsync -> atomic rename (see [AtomicFiles]). */
-    private fun write(grades: Map<String, GradeK>) {
-        val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
-        // The single write gate (plan §6.5/F1-2): same atomic write when
-        // writable, an observable no-op when the process is read-only.
-        ProjectFile.writeTextIfWritable(file, mergeInto(text, grades))
     }
 
     companion object {

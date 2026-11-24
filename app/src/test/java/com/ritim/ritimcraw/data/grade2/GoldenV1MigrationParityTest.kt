@@ -253,6 +253,19 @@ class GoldenV1MigrationParityTest {
             assertEquals(1, minimal.nodes.size)
             assertEquals(0.2f, minimal.nodes[0].lift.x, 0f)
             assertEquals(OutputTransformV2.MODE_OPENDRT, minimal.output.mode)
+
+            // THE RAW CARRY ITSELF: a plain GradeK save on ANOTHER clip
+            // must not drop the node/opendrt record (the adaptable-subset
+            // rewrite would have lost it — the sibling-preservation rule).
+            GradeStore(file).put("gyro-stab", GradeK(exposureEv = 3f))
+            val afterV1Put = GradeStore(file).getV2("minimal")!!
+            assertEquals(1, afterV1Put.nodes.size)
+            assertEquals(OutputTransformV2.MODE_OPENDRT, afterV1Put.output.mode)
+            assertEquals(3f, GradeStore(file).get("gyro-stab").exposureEv, 0f)
+            // remove() carries the same way: deleting one clip keeps the
+            // node record.
+            GradeStore(file).remove("managed-lut")
+            assertEquals(1, GradeStore(file).getV2("minimal")!!.nodes.size)
             // The other clips still parse through the adapter.
             assertEquals(
                 0.8f,
