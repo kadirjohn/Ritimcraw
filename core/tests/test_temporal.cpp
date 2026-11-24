@@ -13,6 +13,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include <rawedit/Parallel.h>
 #include <rawedit/Source.h>
 #include <rawedit/Temporal.h>
 
@@ -1044,4 +1045,61 @@ TEST_CASE("real_clip_temporal_merge_reduces_noise_and_reports_timing"
     temporalMergeCfa(fc->data(), info, fp->data(), fn->data(), src.rawMeta(),
                      ts0, off.data(), nullptr);
     CHECK(off == *fc);
+}
+
+// ---- merge output is pinned (the temporal speed-up must not move one bit) ----
+
+namespace {
+uint64_t fnv1a64(const std::vector<uint16_t>& v) {
+    uint64_t h = 1469598103934665603ull;
+    for (uint16_t s : v) {
+        h ^= static_cast<uint64_t>(s & 0xFF); h *= 1099511628211ull;
+        h ^= static_cast<uint64_t>(s >> 8);   h *= 1099511628211ull;
+    }
+    return h;
+}
+
+// Two windows with both neighbors, real shifts, noise and a noise profile: the whole merge path
+// (proxies, matching, floor, refine, block weights, feathered full-resolution merge).
+uint64_t mergeChecksum(int scenario, bool forcedSerial, TemporalReport* repOut = nullptr) {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kLw, kLw);
+    const int s0 = scenario == 0 ? 0 : 0, s1 = scenario == 0 ? 1 : 2, s2 = scenario == 0 ? 2 : 3;
+    std::vector<uint16_t> a = makeFrame(kLw, kLw, shiftedTexture(s0, 0), 301 + scenario, 6.0f);
+    std::vector<uint16_t> b = makeFrame(kLw, kLw, shiftedTexture(s1, scenario), 302 + scenario, 6.0f);
+    std::vector<uint16_t> c = makeFrame(kLw, kLw, shiftedTexture(s2, scenario), 303 + scenario, 6.0f);
+    std::vector<uint16_t> out(b.size(), 0);
+    NoiseProfile np = constantProfile(6.0f);
+    TemporalSettings ts;
+    ts.strength = scenario == 0 ? 100.0f : 70.0f;
+    ts.centerNoise = &np;
+    ts.prevNoise = &np;
+    ts.nextNoise = &np;
+    const bool before = setParallelForcedSerial(forcedSerial);
+    TemporalReport rep;
+    temporalMergeCfa(b.data(), info, a.data(), c.data(), m, ts, out.data(), &rep);
+    setParallelForcedSerial(before);
+    if (repOut) *repOut = rep;
+    return fnv1a64(out);
+}
+} // namespace
+
+TEST_CASE("merge_output_is_identical_serial_and_parallel_and_pinned") {
+    for (int scenario = 0; scenario < 2; ++scenario) {
+        TemporalReport repS, repP;
+        const uint64_t serial = mergeChecksum(scenario, true, &repS);
+        const uint64_t parallel = mergeChecksum(scenario, false, &repP);
+        CHECK(serial == parallel);
+        CHECK(repS.prev.eligible == repP.prev.eligible);
+        CHECK(repS.next.eligible == repP.next.eligible);
+        CHECK(repS.prev.meanWeight == doctest::Approx(repP.prev.meanWeight).epsilon(1e-6));
+        CHECK(repS.next.meanWeight == doctest::Approx(repP.next.meanWeight).epsilon(1e-6));
+        MESSAGE("scenario " << scenario << " checksum=" << serial
+                << " eligible prev/next=" << repS.prev.eligible << "/" << repS.next.eligible
+                << " meanWeight prev/next=" << repS.prev.meanWeight << "/" << repS.next.meanWeight);
+        // GOLDEN: the checksums of the SERIAL implementation before the speed-up (2026-11-25).
+        const uint64_t golden[2] = {9543035966300208997ull, 12554931306165923847ull};
+        CHECK(serial == golden[scenario]);
+        CHECK(parallel == golden[scenario]);
+    }
 }

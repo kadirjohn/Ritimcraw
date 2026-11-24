@@ -8,6 +8,7 @@
 // contract (one Source per thread; the JNI bridge is single-thread).
 
 #include <rawedit/Temporal.h>
+#include <rawedit/Parallel.h>
 
 #include <algorithm>
 #include <chrono>
@@ -815,10 +816,18 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
                                     en.eligible ? en.bh - 1 : 0);
     const uint32_t maxBx = std::max(ev.eligible ? ev.bw - 1 : 0,
                                     en.eligible ? en.bw - 1 : 0);
-    double wSumPrev = 0.0;
-    double wSumNext = 0.0;
-    long long counted = 0;
-    for (uint32_t y = 0; y < h; ++y) {
+    // The rows are independent (each writes only its own output row and reads the immutable inputs),
+    // so they run through parallelForRows (the merge loop was ~90% of the stage, one thread). The only
+    // cross-row state were the two diagnostic weight sums and the pixel count: each row now keeps its
+    // own partial sums, combined in ROW ORDER below, so serial and parallel runs report identical
+    // numbers and the output pixels are bit-identical to the old single-loop code (pinned by
+    // merge_output_is_identical_serial_and_parallel_and_pinned).
+    std::vector<double> rowWPrev(h, 0.0);
+    std::vector<double> rowWNext(h, 0.0);
+    parallelForRows(h, [&](size_t rowBegin, size_t rowEnd) {
+    for (uint32_t y = static_cast<uint32_t>(rowBegin); y < static_cast<uint32_t>(rowEnd); ++y) {
+        double wSumPrev = 0.0;
+        double wSumNext = 0.0;
         const size_t row = static_cast<size_t>(y) * w;
         const uint32_t by = std::min(y >> kBlockCfaShift, maxBy);
         const uint32_t uY = y & (kBlockCfa - 1);
@@ -913,9 +922,18 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
             const long v = std::lround(dn);
             out[row + x] = static_cast<uint16_t>(
                 std::min(std::max(v, 0L), static_cast<long>(65535)));
-            ++counted;
         }
+        rowWPrev[y] = wSumPrev;
+        rowWNext[y] = wSumNext;
     }
+    });
+    double wSumPrev = 0.0;
+    double wSumNext = 0.0;
+    for (uint32_t y = 0; y < h; ++y) {
+        wSumPrev += rowWPrev[y];
+        wSumNext += rowWNext[y];
+    }
+    const long long counted = static_cast<long long>(w) * h; // every pixel is merged
     const double t4 = nowMs();
 
     if (report) {
