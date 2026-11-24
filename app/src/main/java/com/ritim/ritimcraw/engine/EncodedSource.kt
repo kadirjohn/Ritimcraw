@@ -276,6 +276,16 @@ interface EncodedFrameDecoder {
 
     /** Releases the codec (best effort; safe to call twice). */
     fun release()
+
+    /** E0b-4b: hands a frame's plane arrays back once nothing reads them (a pooling decoder reuses them; default: GC). */
+    fun recycle(planes: YuvPlanes) {}
+
+    /**
+     * E0b-4b: [dequeueFrame] that may skip the pixel copy ([copyPixels] false = only the pts matters: a frame
+     * before the target that is decoded and discarded). A skipped frame comes back with EMPTY planes. Default:
+     * the plain dequeue (fakes keep working).
+     */
+    fun dequeueFrame(timeoutUs: Long, copyPixels: Boolean): YuvPlanes? = dequeueFrame(timeoutUs)
 }
 
 /**
@@ -326,6 +336,40 @@ interface EncodedDeveloper {
  * the chroma grid UP (cw = (w+1)/2), matching COLOR_FormatYUV420Flexible.
  */
 object EncodedYuv {
+
+    /**
+     * E0b-4b: the GPU door's frame, WITHOUT the per-pixel repack: the luma plane is used in place (its own
+     * row stride) and the interleaved CbCr plane is rebuilt with ONE bulk copy, because the adapter copies
+     * the codec's Image planes separately (the U plane ends one chroma word short of the last Cr, which the V
+     * plane carries). Null when the layout is not NV12/P010-shaped (planar I420, NV21, short planes): the
+     * caller then takes the repack + CPU path.
+     */
+    fun toGpuFrame(p: YuvPlanes): YuvFrameK? {
+        val w = p.width
+        val h = p.height
+        if (w <= 0 || h <= 0) return null
+        val bps = if (p.bitDepth > 8) 2 else 1
+        val cw = (w + 1) / 2
+        val ch = (h + 1) / 2
+        if (p.y.pixelStride != bps || p.y.offset != 0) return null
+        if (p.u.pixelStride != 2 * bps || p.v.pixelStride != 2 * bps) return null
+        if (p.u.offset != 0 || p.v.offset != 0 || p.u.rowStride != p.v.rowStride) return null
+        val yNeed = (h - 1) * p.y.rowStride + w * bps
+        val cStride = p.u.rowStride
+        val cNeed = (ch - 1) * cStride + cw * 2 * bps
+        if (p.y.buffer.size < yNeed || cStride % (2 * bps) != 0) return null
+        if (p.y.rowStride % bps != 0) return null
+        // The V plane must be the U plane shifted by one component (NV12/P010, not NV21).
+        if (p.u.buffer.size < bps + 1 || p.v.buffer.size < 1 || p.u.buffer[bps] != p.v.buffer[0]) return null
+        if (p.u.buffer.size < cNeed - bps || p.v.buffer.size < bps) return null
+        val c = ByteArray(cNeed)
+        System.arraycopy(p.u.buffer, 0, c, 0, minOf(p.u.buffer.size, cNeed))
+        System.arraycopy(p.v.buffer, p.v.buffer.size - bps, c, cNeed - bps, bps)
+        return YuvFrameK(
+            w, h, semiPlanar = true, p.y.buffer, c, ByteArray(0),
+            stride = p.y.rowStride, uvStride = cStride, bitDepth = if (bps == 2) 10 else 8,
+        )
+    }
 
     fun toNv12(p: YuvPlanes): YuvFrameK {
         val w = p.width
@@ -379,6 +423,60 @@ object EncodedYuv {
             w, h, semiPlanar = true, y, uv, ByteArray(0),
             stride = w * bps, uvStride = 2 * cw * bps, bitDepth = if (bps == 2) 10 else 8,
         )
+    }
+}
+
+/**
+ * E0b-4b: the GPU develop door for the encoded PREVIEW. Same contract as [EncodedDeveloper.develop]'s return
+ * ([w, h, ARGB...], here of the REDUCED frame) but null means "take the CPU path", never an error.
+ * One instance per clip, used from the preview engine thread only (it owns a GLES context).
+ */
+interface EncodedGpuDeveloper {
+    fun available(): Boolean
+    fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int): IntArray?
+    fun close()
+}
+
+/** The real door: the develop session's YUV entry (nativeDevelopSessionRenderYuvParcel). Opens lazily, once. */
+internal class NativeEncodedGpuDeveloper : EncodedGpuDeveloper {
+    private var session = 0L
+    private var dead = false
+
+    override fun available(): Boolean = !dead && NativeSource.nativeAvailable
+
+    private fun ensure(): Boolean {
+        if (session > 0) return true
+        if (dead) return false
+        session = try { com.ritim.ritimcraw.export.NativeGpuDevelop.openSession() } catch (_: Throwable) { 0L }
+        if (session <= 0) { dead = true; session = 0 }
+        return session > 0
+    }
+
+    override fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int): IntArray? {
+        if (!ensure()) return null
+        val rgb = try {
+            NativeSource.jniDevelopSessionRenderYuvParcel(
+                session, frame.y, frame.u, frame.width, frame.height, frame.stride, frame.uvStride,
+                frame.bitDepth, color.fullRange, color.nativeMatrix, color.nativeTransfer, color.nativePrimaries,
+                reduce, GradeParcel.encode(grade),
+            )
+        } catch (_: Throwable) { null } ?: return null
+        val w = (frame.width + reduce - 1) / reduce
+        val h = (frame.height + reduce - 1) / reduce
+        if (rgb.size != w * h * 3) return null
+        val out = IntArray(2 + w * h)
+        out[0] = w; out[1] = h
+        var i = 0
+        for (k in 0 until w * h) {
+            out[2 + k] = (0xFF shl 24) or ((rgb[i].toInt() and 0xFF) shl 16) or
+                ((rgb[i + 1].toInt() and 0xFF) shl 8) or (rgb[i + 2].toInt() and 0xFF)
+            i += 3
+        }
+        return out
+    }
+
+    override fun close() {
+        if (session > 0) { NativeSource.jniDevelopSessionClose(session); session = 0 }
     }
 }
 
@@ -499,6 +597,8 @@ class EncodedSource(
     private val reader: EncodedTrackReader = MediaExtractorTrackReader(),
     private val decoder: EncodedFrameDecoder = MediaCodecFrameDecoder(),
     private val developer: EncodedDeveloper = NativeEncodedDeveloper,
+    /** E0b-4b: the GPU develop for PREVIEW renders (null = CPU only). Falls back to [developer] per frame. */
+    private val gpuDeveloper: EncodedGpuDeveloper? = NativeEncodedGpuDeveloper(),
 ) : AutoCloseable {
 
     private var format: EncodedVideoFormat? = null
@@ -615,10 +715,39 @@ class EncodedSource(
         upright: Boolean = true,
         /** F1-6 (plan §8/K11): the v2 node chain's wire; null = the legacy fast path. */
         chainWire: FloatArray? = null,
+        /**
+         * E0b-4b: the preview's long-edge budget. > 0 lets the GPU path reduce first and develop the
+         * REDUCED frame (the CPU path always develops full resolution); 0 = full resolution (CPU).
+         */
+        maxDim: Int = 0,
     ): IntArray {
         val fmt = requireOpen()
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
-        val frame = decode(frameIndex)
+        val gpu = gpuDeveloper
+        // The GPU door covers the preview's common shape; nodes, a LUT, a rotated clip and a manual
+        // orientation go to the CPU oracle (honest fallback, noted in the trace).
+        val gpuEligible = gpu != null && maxDim > 0 && chainWire == null && lutPath == null &&
+            upright && fmt.orientationDeg == 0 && grade.lutInterp == null && gpu.available()
+        val tDecode = System.nanoTime()
+        val planes = decodePlanes(frameIndex)
+        val decodeWallNs = System.nanoTime() - tDecode
+        if (gpuEligible) {
+            val color = fmt.color.withDecodedBitDepth(planes.bitDepth)
+            val tGpu = System.nanoTime()
+            val g = EncodedYuv.toGpuFrame(planes)
+            val reduce = maxOf(1, (maxOf(planes.width, planes.height) + maxDim - 1) / maxDim).coerceAtMost(8)
+            val tDev = System.nanoTime()
+            val out = if (g != null) gpu!!.develop(g, color, grade, reduce) else null
+            val now = System.nanoTime()
+            EncodedFrameTrace.logPath(
+                if (out != null) "gpu" else "cpu-fallback", planes.width, planes.height, planes.bitDepth, reduce,
+                now - tGpu, decodeWallNs, EncodedFrameTrace.copyNanos.getAndSet(0), tDev - tGpu, now - tDev,
+                lastDecodedCount,
+            )
+            if (out != null) { decoder.recycle(planes); return out }
+        }
+        val frame = EncodedYuv.toNv12(planes)
+        decoder.recycle(planes)
         // The frame's decoded depth wins over the container's claim: a
         // decoder that returned 8-bit for a 10-bit track is developed (and
         // reported) as 8-bit, never mis-read as 10.
@@ -633,6 +762,7 @@ class EncodedSource(
     override fun close() {
         if (closed) return
         closed = true
+        try { gpuDeveloper?.close() } catch (_: Throwable) {}
         decoder.release()
         reader.release()
         format = null
@@ -654,12 +784,24 @@ class EncodedSource(
         return p to s
     }
 
-    private fun decode(target: Int): YuvFrameK {
+    private fun decode(target: Int): YuvFrameK = EncodedYuv.toNv12(decodePlanes(target))
+
+    /** Frames the decoder emitted for the LAST render (the skipped ones plus the target), for the trace. */
+    private var lastDecodedCount = 0
+
+    private fun decodePlanes(target: Int): YuvPlanes {
+        lastDecodedCount = 0
         // Position the stream: continue when the request follows the current
         // decode position; otherwise (first read after open — the reader
         // opens at end of stream — a jump, or the previous decode consumed
         // end-of-stream) seek to the keyframe at-or-before the target.
-        if (!positioned || nextOutput != target || eosQueued) reposition(target)
+        // E0b-4b: a FORWARD jump inside the current GOP needs no seek: the decoder is already past the
+        // keyframe that [target] depends on, so it just keeps decoding (the frames in between are discarded
+        // without a pixel copy). The old rule re-seeked on ANY non-sequential request, so every skipped frame
+        // of a playback re-decoded the whole GOP from its keyframe (15-52 frames per render on the 4K60 clip).
+        val sameGopForward = positioned && !eosQueued && landed >= 0 && nextOutput <= target &&
+            syncIndexAtOrBefore(target) <= nextOutput
+        if (!positioned || eosQueued || (nextOutput != target && !sameGopForward)) reposition(target)
 
         var samples = 0
         var eosPolls = 0
@@ -667,9 +809,12 @@ class EncodedSource(
             // While samples remain to feed, poll without waiting (the next
             // queueSample moves the codec); while draining end of stream,
             // give the codec a real slice of time per poll.
-            val out = dequeue(if (eosQueued) EOS_POLL_TIMEOUT_US else 0)
+            // A frame known to precede the target is decoded and discarded: skip its pixel copy (the
+            // position is only known once the first sample after a seek has landed).
+            val out = dequeue(if (eosQueued) EOS_POLL_TIMEOUT_US else 0, copyPixels = landed < 0 || nextOutput >= target)
             if (out != null) {
                 eosPolls = 0
+                lastDecodedCount++
                 if (landed < 0 || nextOutput >= pts.size || out.ptsUs != pts[nextOutput]) {
                     throw decodeFailure(
                         "the decoder produced an unexpected frame",
@@ -678,9 +823,10 @@ class EncodedSource(
                 }
                 if (nextOutput == target) {
                     nextOutput++
-                    return EncodedYuv.toNv12(out)
+                    return out
                 }
                 nextOutput++ // a frame before the target: decoded and discarded
+                if (out.y.buffer.isNotEmpty()) decoder.recycle(out)
                 continue
             }
             if (eosQueued) {
@@ -757,8 +903,8 @@ class EncodedSource(
     // Adapter calls: an unexpected throw from the thin adapters is wrapped
     // with the decode stage (never a bare stack trace); the pipeline's own
     // IllegalStateExceptions propagate unchanged.
-    private fun dequeue(timeoutUs: Long): YuvPlanes? = try {
-        decoder.dequeueFrame(timeoutUs)
+    private fun dequeue(timeoutUs: Long, copyPixels: Boolean = true): YuvPlanes? = try {
+        decoder.dequeueFrame(timeoutUs, copyPixels)
     } catch (e: Throwable) {
         throw decodeFailure("the decoder failed", e.message)
     }
@@ -837,6 +983,16 @@ internal object EncodedFrameTrace {
     val decodeNanos = java.util.concurrent.atomic.AtomicLong(0)
     val copyNanos = java.util.concurrent.atomic.AtomicLong(0)
     val planeBytes = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** Which develop path took the frame (E0b-4b): "gpu" or "cpu-fallback"; the CPU-only case logs via [logFrame]. */
+    fun logPath(path: String, w: Int, h: Int, bits: Int, reduce: Int, nanos: Long,
+                decodeWallNs: Long = 0, adapterCopyNs: Long = 0, packNs: Long = 0, gpuNs: Long = 0, decoded: Int = 0) {
+        if (!com.ritim.ritimcraw.BuildConfig.DEBUG) return
+        android.util.Log.i(
+            "ritim-trace",
+            String.format(java.util.Locale.ROOT, "encoded-path %s src=%dx%d bits=%d reduce=%d develop=%.1fms decodeWait=%.1fms (adapterCopy=%.1fms) pack=%.1fms gpuJni=%.1fms decoded=%d", path, w, h, bits, reduce, nanos / 1e6, decodeWallNs / 1e6, adapterCopyNs / 1e6, packNs / 1e6, gpuNs / 1e6, decoded),
+        )
+    }
 
     fun logFrame(w: Int, h: Int, bits: Int, developNanos: Long, ok: Boolean) {
         if (!com.ritim.ritimcraw.BuildConfig.DEBUG) return

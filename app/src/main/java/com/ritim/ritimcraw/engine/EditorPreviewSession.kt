@@ -362,7 +362,7 @@ class EncodedPreviewSession private constructor(
                             // Closed while queued: never touch the dead source.
                             Result.failure(sessionClosed())
                         } else {
-                            frameOf(source.renderFrame(frameIndex, grade, lutPath, chainWire = chainWire), maxDim)
+                            frameOf(source.renderFrame(frameIndex, grade, lutPath, chainWire = chainWire, maxDim = maxDim), maxDim)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)

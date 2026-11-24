@@ -208,6 +208,13 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
 
     private var codec: MediaCodec? = null
     private var released = false
+    // E0b-2/4b: the plane copies come from a pool (a 4K P010 frame is ~25 MB; fresh arrays cost 13 ms to 900 ms
+    // under heap pressure). Only the decode thread touches it.
+    private val pool = PlaneBufferPool(maxFree = 9)
+
+    override fun recycle(planes: YuvPlanes) {
+        pool.release(planes.y.buffer); pool.release(planes.u.buffer); pool.release(planes.v.buffer)
+    }
 
     override fun configure(format: EncodedVideoFormat): String? {
         check(!released && codec == null) { "configure can be called once; use a new decoder" }
@@ -278,7 +285,9 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
         }
     }
 
-    override fun dequeueFrame(timeoutUs: Long): YuvPlanes? {
+    override fun dequeueFrame(timeoutUs: Long): YuvPlanes? = dequeueFrame(timeoutUs, true)
+
+    override fun dequeueFrame(timeoutUs: Long, copyPixels: Boolean): YuvPlanes? {
         val c = codec ?: throw IllegalStateException("configure the decoder first")
         val info = MediaCodec.BufferInfo()
         val tWait = System.nanoTime()
@@ -287,6 +296,11 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
         if (index < 0) return null // try again later / format change: nothing ready
         try {
             if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return null
+            if (!copyPixels) {
+                // E0b-4b: a discarded frame (before the seek target): its pts is all the state machine needs.
+                val none = YuvPlane(ByteArray(0), 0, 0, 0)
+                return YuvPlanes(ptsUs = info.presentationTimeUs, width = 0, height = 0, y = none, u = none, v = none)
+            }
             val image = c.getOutputImage(index)
                 ?: throw IllegalStateException("decoder gave no output Image")
             val tCopy = System.nanoTime()
@@ -315,8 +329,9 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
     private fun imageToPlanes(image: Image, ptsUs: Long): YuvPlanes {
         fun plane(p: Image.Plane): YuvPlane {
             val buf = p.buffer
-            val bytes = ByteArray(buf.remaining())
-            buf.get(bytes)
+            val n = buf.remaining()
+            val bytes = pool.acquire(n)
+            buf.get(bytes, 0, n)
             return YuvPlane(bytes, 0, p.rowStride, p.pixelStride)
         }
         // Depth from the delivered layout: P010 is a 16-bit word per sample
