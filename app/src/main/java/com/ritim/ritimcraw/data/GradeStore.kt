@@ -139,6 +139,15 @@ data class GradeK(
     val stabilizationTrimMs: Float = 0f,
     /** 35mm-equivalent focal override in mm; 0 = use the container's value. */
     val stabilizationFocalMm: Float = 0f,
+    /**
+     * Which engine stabilizes this clip when [stabilization] is on: 0 = gyro
+     * (the pre-image-engine value, ALSO what a record without this key means
+     * — old projects resolve exactly as before), 1 = image-based
+     * (docs/IMAGE_STAB_PLAN.md S4). Written ONLY when 1 (see GradeStore),
+     * so gyro/off grades stay byte-identical; the schema version does not
+     * move. Interpreted by [com.ritim.ritimcraw.engine.StabEngine].
+     */
+    val stabilizationEngine: Int = 0,
     // Crop + straighten (RAW-09) — appended LAST, rendered
     // omit-when-neutral (see the class KDoc): a full-rect FREE crop
     // with 0-deg straighten writes NONE of the six keys, so files this
@@ -381,6 +390,12 @@ class GradeStore(private val file: File) {
                     .append("\"stabilizationTrimMs\":").append(num(g.stabilizationTrimMs))
                     .append(',')
                     .append("\"stabilizationFocalMm\":").append(num(g.stabilizationFocalMm))
+                // Image engine (S4): written ONLY when 1, so every gyro/off
+                // grade file stays byte-identical to the pre-engine format
+                // and an absent key reads back as 0 = gyro.
+                if (g.stabilizationEngine == 1) {
+                    sb.append(',').append("\"stabilizationEngine\":").append(g.stabilizationEngine)
+                }
             }
             // Crop + straighten (RAW-09): omit-when-neutral — a grade
             // whose crop group is neutral (full rect, FREE, 0 straighten)
@@ -608,6 +623,9 @@ class GradeStore(private val file: File) {
                     stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.25f,
                     stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                     stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
+                    // Absent = 0 = gyro (the "no key means gyro" rule: records
+                    // that predate the image engine resolve as before).
+                    stabilizationEngine = (m["stabilizationEngine"] as? Double)?.toInt() ?: 0,
                     // Crop + straighten fields (RAW-09) postdate older
                     // schema-1 files: absent parses as the neutral
                     // defaults (full rect, FREE, 0 deg) — the old look

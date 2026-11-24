@@ -233,6 +233,10 @@ struct AnalyzeControl {
     std::string checkpointFile;     // empty = no checkpointing / resume
     size_t checkpointEvery = 256;   // frames between checkpoint writes
     int targetLongSide = 640;
+    // 2 = decode + luma on a producer thread, tracking on the caller's
+    // (the S4 two-thread budget). Results are bit-identical to 1: the
+    // tracker still sees the frames strictly in order.
+    int threads = 1;
 };
 struct AnalyzeStats {
     double readMs = 0;   // Source::readFrame (decode)
