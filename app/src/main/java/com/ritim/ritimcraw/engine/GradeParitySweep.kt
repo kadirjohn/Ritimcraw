@@ -483,6 +483,66 @@ object GradeParitySweep {
         return out
     }
 
+    /**
+     * DIAGNOSTIC crop cases (2026-11-25, owner request: find WHY the crop
+     * parity misses its 2 LSB bound; no threshold moves). One variable at a
+     * time over the 256x144 preview the sweep renders (x = n/256, y = m/144
+     * land on whole pixels):
+     *  - D1  whole-pixel rect at 0 deg: if the 0 deg misses are the CPU's
+     *        rounded integer window vs the GPU's continuous rect, this one
+     *        must read ~1 LSB.
+     *  - D2  the same rect shifted half a pixel in x: the sensitivity of
+     *        the compare to a half-pixel origin convention.
+     *  - D3  the same whole-pixel rect at 0.05 / 0.1 / 0.25 / 0.5 deg: how
+     *        the mismatch scales with the angle (a constant floor points at
+     *        the sampler or the zoom; a growing one at the interpolation).
+     *  - D4  the whole frame at 0.5 and 7 deg: isolates the auto-zoom and
+     *        the clamp-to-edge slivers from the rect arithmetic.
+     * Logged as "crop-diag" lines + one "crop-diag summary".
+     */
+    fun cropDiagnosticCases(): List<CropCase> {
+        val x = 104f / 256f
+        val y = 45f / 144f
+        val w = 120f / 256f
+        val h = 64f / 144f
+        return listOf(
+            CropCase(x, y, w, h, 0f),
+            CropCase(x + 0.5f / 256f, y, w, h, 0f),
+            CropCase(x, y, w, h, 0.05f),
+            CropCase(x, y, w, h, 0.1f),
+            CropCase(x, y, w, h, 0.25f),
+            CropCase(x, y, w, h, 0.5f),
+            CropCase(0f, 0f, 1f, 1f, 0.5f),
+            CropCase(0f, 0f, 1f, 1f, 7f),
+        )
+    }
+
+    /**
+     * Where the big disagreements sit (diagnostics only): of the pixels whose
+     * worst channel differs by more than [over] LSB, how many lie within
+     * [band] pixels of the output border. Returns (total, inBand). All
+     * outliers in the band point at an edge/clamp convention; interior ones at
+     * the sampling position or the interpolation.
+     */
+    fun outlierSplit(gpuRgb: ByteArray, cpuRgb: ByteArray, w: Int, h: Int, over: Int = 2, band: Int = 2): Pair<Int, Int> {
+        var total = 0
+        var inBand = 0
+        for (i in 0 until w * h) {
+            var worst = 0
+            for (c in 0 until 3) {
+                val d = Math.abs((gpuRgb[i * 3 + c].toInt() and 0xFF) - (cpuRgb[i * 3 + c].toInt() and 0xFF))
+                if (d > worst) worst = d
+            }
+            if (worst > over) {
+                total++
+                val x = i % w
+                val y = i / w
+                if (x < band || y < band || x >= w - band || y >= h - band) inBand++
+            }
+        }
+        return total to inBand
+    }
+
     /** ARGB int pack (0xFFRRGGBB) -> RGB bytes (the compare's format). */
     fun argbBytes(argb: IntArray): ByteArray {
         val out = ByteArray(argb.size * 3)
@@ -633,8 +693,11 @@ object GradeParitySweep {
                 -1, -1, -1, -1, -1,
             )
             val rows = ArrayList<Pair<CropCase, Stats>>()
+            val diagRows = ArrayList<Pair<CropCase, Stats>>()
             var skipped = 0
-            for (c in cropCases()) {
+            val standard = cropCases()
+            for (c in standard + cropDiagnosticCases()) {
+                val diag = c !in standard
                 // GPU leg: the preview session's stats pack IS the cropped
                 // region (the window pass maps the crop; SYNC readback for
                 // the paused exact frame). The parcel is the mapRect'ed
@@ -695,8 +758,22 @@ object GradeParitySweep {
                     continue
                 }
                 val stats = compare(argbBytes(gpuArgb), argbBytes(cpuCropped.argb))
-                rows += c to stats
-                Log.i(TAG, cropLine(c.x, c.y, c.w, c.h, c.deg, stats))
+                if (diag) {
+                    diagRows += c to stats
+                    val (outliers, inBand) = outlierSplit(
+                        argbBytes(gpuArgb), argbBytes(cpuCropped.argb), gw, gh,
+                    )
+                    Log.i(TAG, cropLine(c.x, c.y, c.w, c.h, c.deg, stats).replaceFirst("crop-sweep", "crop-diag") +
+                        " out=${gw}x${gh} over2=$outliers inBand=$inBand")
+                } else {
+                    rows += c to stats
+                    Log.i(TAG, cropLine(c.x, c.y, c.w, c.h, c.deg, stats))
+                }
+            }
+            if (diagRows.isNotEmpty()) {
+                val worst = diagRows.maxByOrNull { it.second.maxDiffLsb }!!
+                Log.i(TAG, "crop-diag summary: cases=${diagRows.size} worstMaxDiffLsb=${worst.second.maxDiffLsb} " +
+                    "(rect=${worst.first.x},${worst.first.y},${worst.first.w},${worst.first.h} deg=${worst.first.deg})")
             }
             val summary = cropSummaryLine(rows, skipped)
             Log.i(TAG, summary)

@@ -208,4 +208,43 @@ class GradeParitySweepTest {
         assertTrue(summary.startsWith("v2-sweep summary: cases=1 skipped=3"))
         assertTrue(summary.contains("(nodes-primary lift)"))
     }
+
+    @Test
+    fun the_diagnostic_crop_cases_vary_one_thing_and_use_whole_pixels() {
+        val d = GradeParitySweep.cropDiagnosticCases()
+        assertEquals(8, d.size)
+        // D1: on the 256x144 preview the rect lands on whole pixels, so any 0 deg mismatch
+        // on it cannot be rounding.
+        val d1 = d[0]
+        assertEquals(0f, d1.deg, 0f)
+        assertEquals(104f, d1.x * 256f, 1e-3f)
+        assertEquals(45f, d1.y * 144f, 1e-3f)
+        assertEquals(120f, d1.w * 256f, 1e-3f)
+        assertEquals(64f, d1.h * 144f, 1e-3f)
+        // D2: only x moved, by half a pixel.
+        assertEquals(0.5f, (d[1].x - d1.x) * 256f, 1e-3f)
+        assertEquals(d1.y, d[1].y, 0f); assertEquals(d1.w, d[1].w, 0f); assertEquals(d1.h, d[1].h, 0f)
+        // D3: the same rect, only the angle differs and grows.
+        assertEquals(listOf(0.05f, 0.1f, 0.25f, 0.5f), d.subList(2, 6).map { it.deg })
+        assertTrue(d.subList(2, 6).all { it.x == d1.x && it.w == d1.w && it.y == d1.y && it.h == d1.h })
+        // D4: the whole frame.
+        assertTrue(d.subList(6, 8).all { it.x == 0f && it.y == 0f && it.w == 1f && it.h == 1f })
+        // None of them repeats a standard case.
+        assertTrue(d.none { it in GradeParitySweep.cropCases() })
+    }
+
+    @Test
+    fun the_outlier_split_counts_big_diffs_and_how_many_hug_the_border() {
+        val w = 6
+        val h = 6
+        val a = ByteArray(w * h * 3)
+        val b = ByteArray(w * h * 3)
+        fun set(x: Int, y: Int, d: Int) { b[(y * w + x) * 3 + 1] = d.toByte() }
+        set(0, 0, 10)  // corner: over 2, in the band
+        set(3, 3, 10)  // interior: over 2, not in the band
+        set(2, 2, 2)   // exactly 2: not an outlier
+        val (total, inBand) = GradeParitySweep.outlierSplit(a, b, w, h)
+        assertEquals(2, total)
+        assertEquals(1, inBand)
+    }
 }
