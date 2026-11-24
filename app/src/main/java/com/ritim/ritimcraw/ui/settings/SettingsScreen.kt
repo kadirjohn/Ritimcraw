@@ -138,6 +138,13 @@ fun SettingsScreen(
     // with an EXPORT_MISMATCH flag under "ritim-parity". Null in release; the
     // button renders only inside the sweep's debug block below.
     onExportAb: (() -> Unit)? = null,
+    // Debug-only codec measurement (E1e, docs/E1E_CODEC_MEASURE_PLAN): the
+    // uncapped-ceiling + VBR-drift run over the device's real encoders.
+    // Null in release; the button renders only inside the debug block.
+    onCodecMeasure: (() -> Unit)? = null,
+    // The codec measurement's live progress: runs done of total (0/0 when
+    // idle); the button label shows the count while a run is in flight.
+    codecMeasureProgress: Pair<Int, Int> = 0 to 0,
     measuring: Boolean = false,
     // ---- Preview quality (owner request 2026-11-11b section 3) ----
     // The persisted level (AppNav reads PreviewQualityStore) and the
@@ -407,6 +414,32 @@ fun SettingsScreen(
                 ) {
                     Text(
                         text = stringResource(R.string.settings_export_ab),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            // Codec measurement (E1e): below Export A/B, same debug block,
+            // same one-at-a-time gate. While a run is in flight the label
+            // shows the live run count (progress rides AppNav's state; the
+            // button disables itself for the whole session). A finished
+            // run's table lives in the Device report — the toast the
+            // runner emits points there.
+            if (onCodecMeasure != null) {
+                OutlinedButton(
+                    onClick = onCodecMeasure,
+                    enabled = !measuring,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                ) {
+                    val (done, total) = codecMeasureProgress
+                    Text(
+                        text = if (measuring && total > 0) {
+                            stringResource(R.string.settings_codec_measure_running, done, total)
+                        } else {
+                            stringResource(R.string.settings_codec_measure)
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

@@ -2,7 +2,6 @@ package com.ritim.ritimcraw.engine
 
 import android.media.Image
 import android.media.MediaCodec
-import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Build
 import com.ritim.ritimcraw.BuildConfig
@@ -10,7 +9,6 @@ import com.ritim.ritimcraw.export.CodecMeasureCase
 import com.ritim.ritimcraw.export.CodecMeasureReport
 import com.ritim.ritimcraw.export.CodecMeasureStore
 import com.ritim.ritimcraw.export.DeviceEncoderFacts
-import com.ritim.ritimcraw.export.EncoderDiagnostics
 import com.ritim.ritimcraw.export.MeasureOptions
 import com.ritim.ritimcraw.export.MeasureResult
 import com.ritim.ritimcraw.export.CodecMeasurePlanner
@@ -64,6 +62,27 @@ object CodecMeasurer {
         Executors.newSingleThreadExecutor { r -> Thread(r, "rawedit-codec-measure").apply { isDaemon = true } }
     }
 
+    /**
+     * The session's live progress, observed by the UI (Compose collects
+     * this on main; the runner thread only WRITES the flow — MutableStateFlow
+     * is thread-safe, so the background thread needs no handler hop).
+     * 0/0 = idle; n/total while a session runs.
+     */
+    private val progressState = kotlinx.coroutines.flow.MutableStateFlow(0 to 0)
+
+    /** The live session progress as a cold-read pair (done, total). */
+    val progress: kotlinx.coroutines.flow.StateFlow<Pair<Int, Int>> = progressState
+
+    /**
+     * The report the LAST COMPLETED session persisted (null before the
+     * first run). Written on the runner thread; the UI reads through the
+     * flow API or the store — both thread-safe.
+     */
+    private val lastReportState = kotlinx.coroutines.flow.MutableStateFlow<CodecMeasureReport?>(null)
+
+    /** The last persisted report as a StateFlow (null = never run). */
+    val lastReport: kotlinx.coroutines.flow.StateFlow<CodecMeasureReport?> = lastReportState
+
     /** False while a measurement is in flight; a second tap is a no-op. */
     fun isRunning(): Boolean = running.get()
 
@@ -90,28 +109,32 @@ object CodecMeasurer {
 
     /**
      * Starts a full measurement session in the background and returns
-     * immediately (the UI shows progress through [progress]/[isRunning]).
-     * Serial + one-at-a-time; a no-op when disabled or already running.
-     * [onDone] receives the report that was persisted (null on no-op).
+     * immediately. Serial + one-at-a-time; false when disabled or a
+     * session is already running (the caller shows that honestly).
+     * Progress and the finished report land in [progress]/[lastReport]
+     * (the runner thread only writes thread-safe flows — the UI collects
+     * them on main).
      */
     fun start(
         identity: BuildIdentity,
         store: CodecMeasureStore,
         opts: MeasureOptions = MeasureOptions(),
-        onProgress: (done: Int, total: Int, tag: String) -> Unit = { _, _, _ -> },
-        onDone: (CodecMeasureReport?) -> Unit = {},
     ): Boolean {
         if (!enabled || !running.compareAndSet(false, true)) return false
+        progressState.value = 0 to 0
         engine.execute {
             val report = try {
-                runSession(identity, store, opts, onProgress)
+                runSession(identity, store, opts) { done, total, _ ->
+                    progressState.value = done to total
+                }
             } catch (e: Exception) {
                 android.util.Log.w(TAG, "measurement session aborted: ${e.message}")
                 null
             } finally {
                 running.set(false)
             }
-            onDone(report)
+            lastReportState.value = report
+            progressState.value = 0 to 0
         }
         return true
     }
