@@ -40,19 +40,19 @@ class CodecMeasurePlanTest {
     // ---- 1. matrix generation (plan §3.1) ----
 
     @Test
-    fun hevc_ceiling_160_puts_the_four_points_at_140_160_200_240_mb() {
+    fun hevc_ceiling_160_puts_the_five_points_at_140_160_180_200_240_mb() {
         val m = CodecMeasurePlanner.matrix(listOf(hevc160(), avc220()), MeasureOptions(tenBit = false))
         val hevc4k30Cbr = m.cases.filter {
             it.mime == "video/hevc" && it.fps == 30 && it.rateMode == ExportRateMode.CBR.mediaCodecMode && it.bitDepth == 8
         }
         assertEquals(
-            listOf(140_000_000L, 160_000_000L, 200_000_000L, 240_000_000L),
+            listOf(140_000_000L, 160_000_000L, 180_000_000L, 200_000_000L, 240_000_000L),
             hevc4k30Cbr.map { it.requestedBps },
         )
     }
 
     @Test
-    fun avc_ceiling_220_puts_the_four_points_at_192_5_220_275_330_mb() {
+    fun avc_ceiling_220_puts_the_five_points_at_192_5_220_247_5_275_330_mb() {
         val m = CodecMeasurePlanner.matrix(listOf(hevc160(), avc220()), MeasureOptions(tenBit = false))
         val avc4k60Vbr = m.cases.filter {
             it.mime == "video/avc" && it.fps == 60 && it.rateMode == ExportRateMode.VBR.mediaCodecMode
@@ -61,6 +61,7 @@ class CodecMeasurePlanTest {
             listOf(
                 Math.round(220_000_000 * 0.875),
                 220_000_000L,
+                Math.round(220_000_000 * 1.125),
                 Math.round(220_000_000 * 1.25),
                 Math.round(220_000_000 * 1.5),
             ),
@@ -70,14 +71,14 @@ class CodecMeasurePlanTest {
     }
 
     @Test
-    fun full_8bit_matrix_is_32_runs_and_every_run_gates_the_uncapped_flag_correctly() {
-        // 2 codecs x 2 sizes x 2 modes x 4 points = 32 (the plan's §2 table
+    fun full_8bit_matrix_is_40_runs_and_every_run_gates_the_uncapped_flag_correctly() {
+        // 2 codecs x 2 sizes x 2 modes x 5 points = 40 (the plan's §2 table
         // minus the 10-bit group).
         val m = CodecMeasurePlanner.matrix(listOf(hevc160(), avc220()), MeasureOptions(tenBit = false))
-        assertEquals(32, m.cases.size)
+        assertEquals(40, m.cases.size)
         // uncapped is exactly the rows above that codec's ceiling
         val hevc = m.cases.filter { it.mime == "video/hevc" }
-        assertEquals(16, hevc.size)
+        assertEquals(20, hevc.size)
         assertEquals(setOf(true), hevc.filter { it.requestedBps > 160_000_000L }.map { it.uncapped }.toSet())
         assertEquals(setOf(false), hevc.filter { it.requestedBps <= 160_000_000L }.map { it.uncapped }.toSet())
     }
@@ -103,9 +104,9 @@ class CodecMeasurePlanTest {
 
     @Test
     fun ten_bit_rows_drop_without_the_main10_profile_or_p010_input() {
-        // Main10 listed + P010 in colorFormats -> the 16-row 10-bit group.
+        // Main10 listed + P010 in colorFormats -> the 20-row 10-bit group.
         val with10 = CodecMeasurePlanner.matrix(listOf(hevc160()), MeasureOptions(tenBit = true))
-        assertEquals(16, with10.cases.count { it.bitDepth == 10 })
+        assertEquals(20, with10.cases.count { it.bitDepth == 10 })
         assertEquals(2, with10.cases.first { it.bitDepth == 10 }.profile) // HEVC Main10
         // No Main10 profile in the profile list -> the 10-bit group drops.
         val noMain10 = hevc160().let {
@@ -117,7 +118,7 @@ class CodecMeasurePlanTest {
         }
         val dropped = CodecMeasurePlanner.matrix(listOf(noMain10), MeasureOptions(tenBit = true))
         assertEquals(0, dropped.cases.count { it.bitDepth == 10 })
-        assertEquals(16, dropped.cases.size)
+        assertEquals(20, dropped.cases.size)
     }
 
     @Test
