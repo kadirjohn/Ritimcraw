@@ -1,6 +1,32 @@
 package com.ritim.ritimcraw.ui.exports
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import com.ritim.ritimcraw.data.ThumbnailStore
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -79,6 +105,10 @@ fun ExportsScreen(
     // sourceId -> display name (owner request §2b): rows show the clip's
     // real file name; the id is the fallback for unknown/missing sources.
     sourceNames: Map<String, String> = emptyMap(),
+    // Thumbnail inputs (owner request 2026-11-24): the exports directory
+    // (finished MP4 frames) and the library's thumbnail store (DNG/photo).
+    exportDir: File? = null,
+    thumbnailStore: ThumbnailStore? = null,
     modifier: Modifier = Modifier,
 ) {
     // Canonical header call site (title consistency, owner finding
@@ -132,7 +162,7 @@ fun ExportsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(jobs, key = { it.id }) { job ->
-                    ExportJobCard(job, sourceNames, onRetry, onOpen, onCancel)
+                    ExportJobCard(job, sourceNames, onRetry, onOpen, onCancel, exportDir, thumbnailStore)
                 }
             }
         }
@@ -151,9 +181,15 @@ private fun ExportJobCard(
     onRetry: (ExportJob) -> Unit,
     onOpen: (ExportJob) -> Unit,
     onCancel: (ExportJob) -> Unit,
+    exportDir: File?,
+    thumbnailStore: ThumbnailStore?,
 ) {
     if (job.state == State.FAILED) {
         FailedJobCard(job, ExportRowModel.sourceName(job, sourceNames), onRetry)
+        return
+    }
+    if (job.state == State.DONE) {
+        DoneJobCard(job, ExportRowModel.sourceName(job, sourceNames), onOpen, exportDir, thumbnailStore)
         return
     }
     // DONE reads as the positive result: the Monet primary-container tint
@@ -252,50 +288,147 @@ private fun ExportJobCard(
                 // the next frame boundary — see RunningJobProgress's
                 // caller note in the screen KDoc.
                 State.RUNNING -> RunningJobProgress(job, onCancel)
-                State.DONE -> {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // Status + output filename in one line (§5): the
-                        // existing "Done — <file>" resource names the file
-                        // this job wrote — job.fileName, the single source
-                        // every path already goes through, so the row can
-                        // never name a file the job did not write. Tabular
-                        // numerals: digits in file names never reflow.
-                        // Inherits the card's onPrimaryContainer content
-                        // color (the DONE tint).
-                        Text(
-                            stringResource(
-                                R.string.exports_job_done_named,
-                                ExportRowModel.outputFileName(job),
-                            ),
-                            style = MaterialTheme.typography.bodySmall.merge(Tnum),
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        // Open stays a discoverable button on every DONE
-                        // card (§5.2), not just the tap target. Pinned to
-                        // the card's content color: TextButton defaults
-                        // to primary, which fights the container tint.
-                        TextButton(
-                            onClick = { onOpen(job) },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            ),
-                        ) {
-                            Text(stringResource(R.string.exports_job_open))
-                        }
-                    }
-                    job.report?.let { ExportReportBlock(it) }
-                }
+                State.DONE -> Unit // handled by DoneJobCard
                 State.CANCELLED ->
                     StatusLine(stringResource(R.string.exports_job_cancelled))
                 State.FAILED -> Unit // handled by FailedJobCard
             }
+        }
+    }
+}
+
+/**
+ * A finished export's card (owner request 2026-11-24): rounded thumbnail
+ * on the leading side, the clip name ONCE as the title, the real format
+ * as the subtitle, a plain "Done" status, the visible report lines
+ * (resolution/fps/codec/depth, bitrate, size) and an action row with an
+ * info toggle (technical details: encoder etc.) left of a filled Open
+ * button. The whole card still opens on tap.
+ */
+@Composable
+private fun DoneJobCard(
+    job: ExportJob,
+    sourceName: String,
+    onOpen: (ExportJob) -> Unit,
+    exportDir: File?,
+    thumbnailStore: ThumbnailStore?,
+) {
+    var expanded by rememberSaveable(job.id) { mutableStateOf(false) }
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpen(job) },
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ExportThumb(job, exportDir, thumbnailStore)
+                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text(
+                        sourceName,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val codec = ExportRowModel.codecLabel(job)
+                    Text(
+                        if (codec != null) {
+                            stringResource(R.string.exports_format_codec_mp4, codec)
+                        } else {
+                            stringResource(
+                                when (job.target) {
+                                    Target.DNG -> R.string.exports_format_dng
+                                    Target.PHOTO -> R.string.exports_format_photo
+                                    Target.MP4 -> R.string.exports_format_mp4
+                                    Target.LINEAR -> R.string.exports_format_dng_linear
+                                }
+                            )
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    Text(
+                        stringResource(R.string.exports_job_done),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
+            val report = job.report
+            if (report != null) {
+                ExportReportBlock(report, expanded)
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End,
+            ) {
+                if (report != null) {
+                    IconButton(onClick = { expanded = !expanded }) {
+                        Icon(
+                            painterResource(R.drawable.ic_info),
+                            contentDescription = stringResource(R.string.exports_job_details),
+                            tint = if (expanded) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
+                Button(
+                    onClick = { onOpen(job) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(stringResource(R.string.exports_job_open))
+                }
+            }
+        }
+    }
+}
+
+/** Rounded 16:9 thumbnail, loaded off the main thread; neutral placeholder meanwhile. */
+@Composable
+private fun ExportThumb(job: ExportJob, exportDir: File?, store: ThumbnailStore?) {
+    val context = LocalContext.current
+    val bitmap by produceState(ExportThumbnails.cached(job.id), job.id) {
+        if (value == null) {
+            value = withContext(Dispatchers.IO) {
+                ExportThumbnails.load(context, job, exportDir, store)
+            }
+        }
+    }
+    Box(
+        Modifier
+            .width(96.dp)
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        contentAlignment = Alignment.Center,
+    ) {
+        val b = bitmap
+        if (b != null) {
+            Image(
+                bitmap = b.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize(),
+            )
+        } else {
+            Icon(
+                painterResource(R.drawable.ic_track_video),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(28.dp),
+            )
         }
     }
 }
@@ -307,7 +440,7 @@ private fun ExportJobCard(
  * says so instead of silently differing from the request.
  */
 @Composable
-private fun ExportReportBlock(r: ExportReport) {
+private fun ExportReportBlock(r: ExportReport, expanded: Boolean) {
     Column(Modifier.padding(top = 4.dp)) {
         Text(
             stringResource(
@@ -316,16 +449,6 @@ private fun ExportReportBlock(r: ExportReport) {
                 ExportText.codec(r.mime), r.bitDepth,
             ),
             style = MaterialTheme.typography.bodySmall.merge(Tnum),
-        )
-        Text(
-            when {
-                r.encoder == null -> stringResource(R.string.exports_report_encoder_unknown)
-                r.hardware == false -> stringResource(R.string.exports_report_encoder_sw, r.encoder)
-                else -> stringResource(R.string.exports_report_encoder_hw, r.encoder)
-            },
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
         val real = r.actualVideoBps
         val bytes = r.fileBytes
@@ -340,14 +463,26 @@ private fun ExportReportBlock(r: ExportReport) {
             },
             style = MaterialTheme.typography.bodySmall.merge(Tnum),
         )
-        if (ExportText.wasFixed(r)) {
-            Text(stringResource(R.string.exports_report_fixed), style = MaterialTheme.typography.bodySmall)
-        }
         if (ExportText.tenBitDropped(r)) {
             Text(stringResource(R.string.exports_report_ten_bit_dropped), style = MaterialTheme.typography.bodySmall)
         }
-        if (ExportText.fellBackToCpu(r)) {
-            Text(stringResource(R.string.exports_report_cpu), style = MaterialTheme.typography.bodySmall)
+        if (expanded) {
+            // Technical details behind the info control (encoder etc.).
+            for (line in ExportRowModel.detailLines(r)) {
+                Text(
+                    when (line) {
+                        ExportRowModel.DetailLine.ENCODER -> when {
+                            r.encoder == null -> stringResource(R.string.exports_report_encoder_unknown)
+                            r.hardware == false -> stringResource(R.string.exports_report_encoder_sw, r.encoder)
+                            else -> stringResource(R.string.exports_report_encoder_hw, r.encoder)
+                        }
+                        ExportRowModel.DetailLine.FIXED -> stringResource(R.string.exports_report_fixed)
+                        ExportRowModel.DetailLine.CPU -> stringResource(R.string.exports_report_cpu)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
