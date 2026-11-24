@@ -84,3 +84,11 @@ Bugünkü CPU yolu ölçümleri (debug izleri) `STATUS-2026-11-25.md` GÜNCELLEM
 
 **Bilinen kusur (E0b'den bağımsız, ayrıca düzeltilecek):** `nativeEncodedDevelop` preview katmanını yok sayıp tam çözünürlükte geliştirip
 tam boy `IntArray` döndürüyor (8K = 132,7 MB, JVM 256 MB sınırında OOM) ve hata ham metin olarak gösteriliyor.
+
+## 7. CİHAZ PROBU (2026-11-25, Xiaomi 15 Ultra, `EncodedImageReaderProbeTest`; ham: `.planning/night-2026-11-25/device/e0b-probe*.txt`)
+- **Ham decode hızı (donanım, 40 kare):** Mi-Log 4K 10-bit 60p: 8,6–9,0 ms/kare (110–116 fps); 8K 8-bit 30p: 16,6 ms/kare (60 fps). Decode gerçek zamanın ~2 katı hızda; mevcut yavaşlık CPU kopya + CPU develop'tan.
+- **P010 ImageReader (10-bit):** 4K: 8,0 ms/kare (125 fps), görüntüler geliyor. Görüntü: `format=54 (YCBCR_P010)`, 3 düzlem: Y `rowStride=7680 pixelStride=2 cap=16.711.680` (7680×2176: **yükseklik 16'ya dolgulu**), Cb ve Cr `rowStride=7680 pixelStride=4 cap=8.355.840` (aynı belleğin iç içe görünümleri; Cb görünümü son Cr sözcüğünü kapsamaz). HardwareBuffer formatı **`0x7fa30c09` (sürücüye özel)**, usage GPU-örneklenebilir (`0x10000030400303`).
+- **YUV_420_888 ImageReader + 10-bit akış:** görüntü GELMİYOR (`images=0`); 10-bit için ImageReader yalnızca P010 olabilir.
+- **ByteBuffer yolu varsayılanı 8-bit:** `color-format=21 (NV12)`, `image format=35`; 10-bit klip bu yolda 10 biti ancak P010 istenirse verir (mevcut uygulama P010 istiyor, 31,6 MB'lık düzlemler bunu gösteriyor).
+- **Çözülmemiş:** `YUV_420_888` ImageReader'dan görüntü alıp düzlemlerine dokunmak 8K 8-bit klipte (ve 10-bit akışta) süreci native düzeyde çökertti (`Runtime aborting`, neden loga yansımadı); P010 yolunda çökme yok. 8-bit düzlem yolu için sıfır-kopya OES'e güvenilecek, CPU eşlemeli YUV_420_888 yolu bu cihazda güvenilir değil.
+- **Mimari sonuç:** sürücüye özel HardwareBuffer biçimi yüzünden bu cihazda ham düzlemlere erişim iki yoldan: (a) CPU eşlemeli düzlemler (P010'da çalışıyor; export yolu: decode 8 ms + kopya + `glTexSubImage2D` yükleme, develop CPU'dan GPU'ya taşınır), (b) EGLImage/OES (sıfır kopya; YUV→RGB'yi sürücü yapar, matris/aralık doğruluğu E0b-4b'de ölçülecek). Sahibin kararı (preview OES, export düzlem-shader) bu bulguyla uyumlu.
