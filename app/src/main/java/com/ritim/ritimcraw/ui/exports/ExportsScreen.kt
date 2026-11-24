@@ -1,6 +1,10 @@
 package com.ritim.ritimcraw.ui.exports
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -228,12 +232,21 @@ private fun ExportJobCard(
         ) {
             // Source filename (§5): the clip's display name — the row's
             // headline, medium weight (§3.1 filenames).
-            Text(
-                ExportRowModel.sourceName(job, sourceNames),
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    ExportRowModel.sourceName(job, sourceNames),
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                // Queued: Cancel rides the title row's right end.
+                if (job.state == State.QUEUED) {
+                    TextButton(onClick = { onCancel(job) }) {
+                        Text(stringResource(R.string.exports_job_cancel))
+                    }
+                }
+            }
             // Export type (§5): the existing format line. On the DONE card
             // it inherits the container's on-color (onSurfaceVariant is not
             // designed for primaryContainer); size alone separates it from
@@ -261,25 +274,12 @@ private fun ExportJobCard(
                     // row's action-row shape (status weighted, action
                     // trailing): the job has not started, so a tap cancels
                     // it instantly and the row settles as CANCELLED.
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            stringResource(R.string.exports_job_queued),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        // Plain surface card: the button keeps the default
-                        // primary content color (no container fight, unlike
-                        // the DONE row's pinned onPrimaryContainer).
-                        TextButton(onClick = { onCancel(job) }) {
-                            Text(stringResource(R.string.exports_job_cancel))
-                        }
-                    }
+                    Text(
+                        stringResource(R.string.exports_job_queued),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
                 // The running row keeps its live progress block; the cancel
                 // action rides the frames line's Row (the button never
@@ -328,7 +328,7 @@ private fun DoneJobCard(
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ExportThumb(job, exportDir, thumbnailStore)
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Column(Modifier.weight(1f).padding(start = 12.dp, end = 4.dp)) {
                     Text(
                         sourceName,
                         style = MaterialTheme.typography.titleSmall,
@@ -360,18 +360,16 @@ private fun DoneJobCard(
                         modifier = Modifier.padding(top = 2.dp),
                     )
                 }
-            }
-            val report = job.report
-            if (report != null) {
-                ExportReportBlock(report, expanded)
-            }
-            Row(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.End,
-            ) {
-                if (report != null) {
-                    IconButton(onClick = { expanded = !expanded }) {
+                if (job.report != null) {
+                    val detailsState = stringResource(
+                        if (expanded) R.string.exports_job_details_shown else R.string.exports_job_details_hidden,
+                    )
+                    IconButton(
+                        onClick = { expanded = !expanded },
+                        modifier = Modifier
+                            .testTag("export_info_${job.id}")
+                            .semantics { stateDescription = detailsState },
+                    ) {
                         Icon(
                             painterResource(R.drawable.ic_info),
                             contentDescription = stringResource(R.string.exports_job_details),
@@ -382,13 +380,30 @@ private fun DoneJobCard(
                             },
                         )
                     }
-                    Spacer(Modifier.width(8.dp))
                 }
                 Button(
                     onClick = { onOpen(job) },
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) {
                     Text(stringResource(R.string.exports_job_open))
+                }
+            }
+            val report = job.report
+            if (report != null) {
+                // Changes what the file is, so it stays visible by default.
+                if (ExportText.tenBitDropped(report)) {
+                    Text(
+                        stringResource(R.string.exports_report_ten_bit_dropped),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                // Hidden until the info button is tapped.
+                AnimatedVisibility(
+                    visible = expanded,
+                    modifier = Modifier.testTag("export_details_${job.id}"),
+                ) {
+                    ExportReportBlock(report)
                 }
             }
         }
@@ -440,7 +455,7 @@ private fun ExportThumb(job: ExportJob, exportDir: File?, store: ThumbnailStore?
  * says so instead of silently differing from the request.
  */
 @Composable
-private fun ExportReportBlock(r: ExportReport, expanded: Boolean) {
+private fun ExportReportBlock(r: ExportReport) {
     Column(Modifier.padding(top = 4.dp)) {
         Text(
             stringResource(
@@ -463,11 +478,7 @@ private fun ExportReportBlock(r: ExportReport, expanded: Boolean) {
             },
             style = MaterialTheme.typography.bodySmall.merge(Tnum),
         )
-        if (ExportText.tenBitDropped(r)) {
-            Text(stringResource(R.string.exports_report_ten_bit_dropped), style = MaterialTheme.typography.bodySmall)
-        }
-        if (expanded) {
-            // Technical details behind the info control (encoder etc.).
+        run {
             for (line in ExportRowModel.detailLines(r)) {
                 Text(
                     when (line) {
@@ -627,10 +638,20 @@ private fun FailedJobCard(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(
-                stringResource(R.string.exports_job_failed_stage, sourceName),
-                style = MaterialTheme.typography.titleMedium,
-            )
+            // Retry rides the title row's right end (compact card).
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.exports_job_failed_stage, sourceName),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                )
+                Button(
+                    onClick = { onRetry(job) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(stringResource(R.string.exports_job_retry))
+                }
+            }
             if (job.detail != null) {
                 Text(
                     stringResource(R.string.exports_job_failed_cause, job.detail),
@@ -643,16 +664,6 @@ private fun FailedJobCard(
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 4.dp),
             )
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            ) {
-                Button(onClick = { onRetry(job) }) {
-                    Text(stringResource(R.string.exports_job_retry))
-                }
-            }
         }
     }
 }
