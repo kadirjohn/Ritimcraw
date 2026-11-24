@@ -254,7 +254,7 @@ class ExportForegroundTest {
         override fun open(fd: Int): Mp4SessionInfo? =
             Mp4SessionInfo(handle = 1L, frameCount = 3, width = 4, height = 4, cfa = 0, orientationDeg = 0)
 
-        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?): ByteArray? =
+        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?, chainWire: FloatArray?): ByteArray? =
             ByteArray(4 * 4 * 3)
 
         override fun framePts(handle: Long, frameIndex: Int): Long = frameIndex * 33_336L
@@ -381,7 +381,7 @@ class ExportForegroundTest {
             override fun open(fd: Int): Mp4SessionInfo? =
                 Mp4SessionInfo(handle = 1L, frameCount = 3, width = 4, height = 4, cfa = 0, orientationDeg = 0)
 
-            override fun renderFrame(handle: Long, frameIndex: Int, call: GradeK, lutPath: String?, gyroPath: String?): ByteArray? {
+            override fun renderFrame(handle: Long, frameIndex: Int, call: GradeK, lutPath: String?, gyroPath: String?, chainWire: FloatArray?): ByteArray? {
                 log.add("render:$frameIndex")
                 if (frameIndex == 0) {
                     inFirst.countDown()

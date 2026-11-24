@@ -82,6 +82,7 @@ import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.GradePreset
 import com.ritim.ritimcraw.data.LutGamut
+import com.ritim.ritimcraw.data.grade2.ClipGradeV2
 import com.ritim.ritimcraw.data.LutInfo
 import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.LutRole
@@ -99,13 +100,16 @@ import com.ritim.ritimcraw.engine.BackendGates
 import com.ritim.ritimcraw.engine.BackendRules
 import com.ritim.ritimcraw.engine.GlesParityResult
 import com.ritim.ritimcraw.engine.GlesProbeResult
+import com.ritim.ritimcraw.engine.GlesShaderSources
 import com.ritim.ritimcraw.engine.GradeMapping
 import com.ritim.ritimcraw.engine.GradeParcel
+import com.ritim.ritimcraw.engine.GradeV2Usage
 import com.ritim.ritimcraw.engine.GpuCropMap
 import com.ritim.ritimcraw.engine.GpuParityRules
 import com.ritim.ritimcraw.engine.GpuPreviewSession
 import com.ritim.ritimcraw.engine.NativeGpuPreviewDevelop
 import com.ritim.ritimcraw.engine.NativeSource
+import com.ritim.ritimcraw.engine.NodeChainWire
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
@@ -879,6 +883,13 @@ fun ClipEditorScreen(
     onBack: () -> Unit,
     initialGrade: GradeK = GradeK(),
     onGradeChange: (GradeK) -> Unit = {},
+    // F1-6 (color model v2): the clip's schema-2 grade record reader. The
+    // editor's own state stays GradeK (every legacy control edits through
+    // it); the RENDER sites ask this seam for the clip's CURRENT v2
+    // record so a NODES/DRT grade's chain rides the request. Default
+    // null keeps every existing caller working (a v1-grade project: the
+    // null chainWire is the legacy fast path, bit-identical — K2).
+    gradeV2For: () -> com.ritim.ritimcraw.data.grade2.ClipGradeV2? = { null },
     // (Export resolution, owner request 2026-11-13) widened by the
     // resolution pair the export sheet's chip selected: null pair =
     // Original = the source's effective size, exactly what every export
@@ -1288,6 +1299,11 @@ fun ClipEditorScreen(
                 }
         }
         var grade by remember(sourceId) { mutableStateOf(initialGrade) }
+
+        // F1-6: the v2 record reader, mirrored per composition (the
+        // gyroPathFor rememberUpdatedState precedent — the requestRender
+        // closure below outlives recompositions of the param).
+        val currentGradeV2 by rememberUpdatedState(gradeV2For)
 
         // ---- Grade undo/redo history (feature N7) ----
         // Per-open-editor, keyed to the clip like every other editor
@@ -1748,9 +1764,28 @@ fun ClipEditorScreen(
             // below), so ONE point covers them all.
             val renderGrade =
                 if (cropOverlayActive) EditorPreviewLogic.displayGradeForCropOverlay(g) else g
+            // F1-6 (color model v2): the request's chain wire — null for
+            // every LEGACY grade (the K2 fast path, bit-identical); the
+            // TRIMMED chain's wire for a NODES/DRT grade. The reader seam
+            // runs per request, so an edit mid-session is picked up on
+            // the very next render (the lutPathFor precedent). A LUT-
+            // carrying node chain (the unwired follow-up) folds to null
+            // HERE — the CPU reference renders those through the legacy
+            // develop and the render stays honest rather than refusing
+            // the whole preview.
+            val chainWire = runCatching {
+                val v2 = currentGradeV2()
+                val nodes = v2?.let { GradeV2Usage.activeNodes(it) } ?: return@runCatching null
+                if (nodes.isEmpty() &&
+                    v2.output.mode != com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT
+                ) {
+                    return@runCatching null
+                }
+                NodeChainWire.encode(v2, nodes)
+            }.getOrNull()
             renderSeq += 1
             gate.offer(
-                RenderRequest(frameIndex, renderGrade, maxDim, renderSeq, cached, followUpMaxDim, renderClass)
+                RenderRequest(frameIndex, renderGrade, maxDim, renderSeq, cached, followUpMaxDim, renderClass, chainWire)
             )
             pumpKick.trySend(Unit)
         }
@@ -2070,6 +2105,24 @@ fun ClipEditorScreen(
             if (opened) {
                 gpuSession = gpu
                 gpuActive = true
+                // F1-6 (color model v2): compile the two v2 programs
+                // (NODES + the TAIL's OpenDRT variant) through the
+                // ADDITIVE init door RIGHT AFTER the open — a session
+                // that never runs nodes keeps the exact pre-F1-5 behavior
+                // (the pipeline's own contract), and the limits the init
+                // queried ride the trace when debug is on. A compile
+                // failure does NOT latch the session: the v2 doors refuse
+                // honestly per request and every legacy grade keeps the
+                // GPU path (the programs the legacy chain needs are the
+                // session's own twelve).
+                runCatching {
+                    NativeSource.jniPreviewSessionInitNodes(
+                        gpu.handle,
+                        GlesShaderSources.NODES,
+                        GlesShaderSources.FULLSCREEN_VERTEX,
+                        GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+                    )
+                }
                 // The open SUCCEEDED but the window is not done: the first
                 // pump render (or its failure latch) clears the flag —
                 // until then the placeholder keeps saying PREPARING.
@@ -2350,6 +2403,11 @@ fun ClipEditorScreen(
                         // (servedByGpuWindow is false too, so the fold reads
                         // the CPU path verbatim).
                         var gpuCropParams: FloatArray? = null
+                        // F1-6: set true when the v2 chain door refused
+                        // THIS request (the unwired node-LUT leg, a decode
+                        // failure) — the GPU arm then skips and the CPU
+                        // render serves the request honestly.
+                        var gpuChainRefused = false
                         var gpuCropActive = false
                         // gpuSurfaceLive is read at request time exactly like
                         // session/gpuSession above (snapshot state reads inside
@@ -2434,6 +2492,80 @@ fun ClipEditorScreen(
                                 req.grade, currentManualRotationDeg,
                             )
                             gpuCropActive = gpuCropParams != null
+                            // F1-6 (color model v2): the grade's chain rides
+                            // the session's setColorModelChain door BEFORE the
+                            // render — the state is LIVE for the session's
+                            // NEXT renderFrame (the F1-5 contract). Null wire
+                            // = the CLEAR (the plain v1 chain, the K2 lock);
+                            // a NODES/DRT wire carries the OpenDRT pack when
+                            // the output declares it. A refusal (the unwired
+                            // node-LUT leg, a decode failure) folds this arm
+                            // OFF for the request — the CPU render below
+                            // serves it honestly instead.
+                            if (gpu.handle == 0L) {
+                                // Unreachable in this block (the arm only
+                                // runs with a live handle); the belt for a
+                                // future refactor of the dispatch's guards.
+                            } else {
+                                var chainDoorOk = true
+                                if (req.chainWire != null) {
+                                    // The DRT pack: resolved ONCE per request
+                                    // when the output declares OpenDRT (the
+                                    // pre-compiled-packs rule; the 77-slot
+                                    // resolver mirrors core's Impl).
+                                    val v2 = currentGradeV2()
+                                    val v2NeedsDrt = v2 != null &&
+                                        v2.output.mode ==
+                                        com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT
+                                    val drtPack = if (v2NeedsDrt && v2 != null) {
+                                        runCatching {
+                                            com.ritim.ritimcraw.engine.OpenDrtPacks.resolve(
+                                                com.ritim.ritimcraw.engine.OpenDrtPacks.Spec(
+                                                    look = v2.output.opendrt.look,
+                                                    tonescale = v2.output.opendrt.tonescale,
+                                                    cwp = v2.output.opendrt.cwp,
+                                                    cwpLimit = v2.output.opendrt.cwpLimit,
+                                                    grey = v2.output.opendrt.grey,
+                                                    display = v2.output.opendrt.display,
+                                                ),
+                                            )
+                                        }.getOrNull()
+                                    } else {
+                                        null
+                                    }
+                                    if (v2NeedsDrt && drtPack == null) {
+                                        chainDoorOk = false
+                                    } else {
+                                        chainDoorOk = runCatching {
+                                            NativeSource.jniPreviewSessionSetColorModelChain(
+                                                gpu.handle,
+                                                req.chainWire,
+                                                drtPack,
+                                            )
+                                        }.getOrDefault(false)
+                                    }
+                                } else {
+                                    // The CLEAR: nodeCount 0 + mode 0 — the
+                                    // plain v1 chain again (the K2 lock's
+                                    // shape). Cheap and idempotent.
+                                    chainDoorOk = runCatching {
+                                        NativeSource.jniPreviewSessionSetColorModelChain(
+                                            gpu.handle,
+                                            NodeChainWire.encode(ClipGradeV2(), emptyList()),
+                                            null,
+                                        )
+                                    }.getOrDefault(false)
+                                }
+                                if (!chainDoorOk) {
+                                    // The honest fallback: this request takes
+                                    // the CPU arm below (the M3 per-frame
+                                    // dispatch rule; the GPU arm itself stays
+                                    // latched ON — the next request retries
+                                    // the door, a transient decode refuses
+                                    // only its own frame).
+                                    gpuChainRefused = true
+                                }
+                            }
                             // GRADE PARCEL (commit b): the grade crosses as ONE
                             // flat FloatArray, encoded HERE once per request —
                             // AFTER the temporalNr tier fold (the DN-08 gate the
@@ -2472,7 +2604,14 @@ fun ClipEditorScreen(
                                 renderClass = req.renderClass,
                                 toggle = previewStatsEnabled,
                             )
-                            val gpuFrame = gpu.render(
+                            // F1-6: a refused chain door skips the GPU render
+                            // for THIS request — the CPU dispatch below
+                            // serves it (the honest fold; the GPU arm stays
+                            // latched for the next request).
+                            val gpuFrame = if (gpuChainRefused) {
+                                null
+                            } else {
+                                gpu.render(
                                 clipHandle = s.nativeClipHandle,
                                 frameIndex = req.frameIndex,
                                 maxDim = req.maxDim,
@@ -2546,9 +2685,15 @@ fun ClipEditorScreen(
                                 zebraPeriod = ZebraOverlay.STRIPE_PERIOD,
                                 zebraAlpha = ZebraOverlay.STRIPE_ALPHA / 255f,
                             )
+                            }
                             if (gpuFrame != null) {
                                 result = Result.success(gpuFrame)
                                 gpuServed = true
+                            } else if (gpuChainRefused) {
+                                // The chain door refused THIS request: no
+                                // latch, no error line — the CPU dispatch
+                                // below serves the frame (the honest fold;
+                                // the NEXT request retries the door).
                             } else {
                                 // The latch: one failure turns the path off for
                                 // the clip's lifetime, with the honest detail
@@ -2575,11 +2720,15 @@ fun ClipEditorScreen(
                                     s.renderCached(
                                         req.frameIndex, req.grade, req.maxDim,
                                         lutPath, gyroPath, req.renderClass,
+                                        // F1-6: the v2 chain's wire (null = the
+                                        // legacy fast path, byte-identical).
+                                        req.chainWire,
                                     )
                                 } else {
                                     s.render(
                                         req.frameIndex, req.grade, req.maxDim,
                                         lutPath, gyroPath, req.renderClass,
+                                        req.chainWire,
                                     )
                                 }
                             } else {

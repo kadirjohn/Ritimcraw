@@ -404,6 +404,7 @@ class EditorAudioTest {
             lutPath: String?,
             gyroPath: String?,
             renderClass: PreviewTiers.RenderClass,
+            chainWire: FloatArray?,
         ): Result<PreviewFrame> = Result.failure(IllegalStateException("unused"))
 
         override suspend fun renderCached(
@@ -413,6 +414,7 @@ class EditorAudioTest {
             lutPath: String?,
             gyroPath: String?,
             renderClass: PreviewTiers.RenderClass,
+            chainWire: FloatArray?,
         ): Result<PreviewFrame> = Result.failure(IllegalStateException("unused"))
 
         override suspend fun framePtsUs(index: Int): Long = 0L

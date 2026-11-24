@@ -21,7 +21,7 @@ class ExportSettingsExportTest {
 
     private class Session(private val frames: Int = 4) : Mp4Session {
         override fun open(fd: Int) = Mp4SessionInfo(1L, frames, 4, 4, 0, 0)
-        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?) =
+        override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?, chainWire: FloatArray?) =
             ByteArray(4 * 4 * 3) { 100 }
         override fun framePts(handle: Long, frameIndex: Int) = frameIndex * 41_708L // 23.976 fps
         override fun audioInfo(handle: Long): IntArray? = null

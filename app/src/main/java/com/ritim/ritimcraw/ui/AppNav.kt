@@ -1592,6 +1592,12 @@ fun AppNav(
                         sourceId = r.sourceId,
                         onBack = { editorSourceId = null },
                         initialGrade = stores.grades.get(r.sourceId),
+                        // F1-6: the clip's schema-2 record reader — the
+                        // render sites read it per request so a NODES/DRT
+                        // grade's chain rides the wire (a v1-grade record
+                        // parses to its v2 twin; a null chain stays the
+                        // legacy fast path, bit-identical — K2).
+                        gradeV2For = { stores.grades.getV2(r.sourceId) },
                         onGradeChange = { g -> stores.grades.put(r.sourceId, g) },
                         // (E1c) the export sheet's time estimate: this device's
                         // last measured MP4 export speed (null until one ran).

@@ -89,6 +89,7 @@ class ExportQueueTest {
             grade: GradeK,
             lutPath: String?,
             gyroPath: String?,
+            chainWire: FloatArray?,
         ): ByteArray? = ByteArray(4 * 4 * 3)
 
         override fun framePts(handle: Long, frameIndex: Int): Long = 0
@@ -582,6 +583,7 @@ class ExportQueueTest {
                 grade: GradeK,
                 lutPath: String?,
                 gyroPath: String?,
+                chainWire: FloatArray?,
             ): ByteArray? {
                 renderedFrames.add(frameIndex)
                 return ByteArray(4 * 4 * 3)
@@ -749,6 +751,7 @@ class ExportQueueTest {
                 grade: GradeK,
                 lutPath: String?,
                 gyroPath: String?,
+                            chainWire: FloatArray?,
             ) = ByteArray(4 * 4 * 3)
 
             override fun framePts(handle: Long, frameIndex: Int): Long = 0
@@ -1133,6 +1136,7 @@ class ExportQueueTest {
                 grade: GradeK,
                 lutPath: String?,
                 gyroPath: String?,
+                            chainWire: FloatArray?,
             ): ByteArray? = ByteArray(4 * 4 * 3)
 
             override fun framePts(handle: Long, frameIndex: Int): Long = 0
@@ -1284,6 +1288,7 @@ class ExportQueueTest {
                 grade: GradeK,
                 lutPath: String?,
                 gyroPath: String?,
+                chainWire: FloatArray?,
             ): ByteArray? {
                 log.add("render:$frameIndex")
                 if (frameIndex == 1) {

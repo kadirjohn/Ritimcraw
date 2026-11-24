@@ -65,7 +65,7 @@ class EncodedMp4SessionTest {
     private class Developer : EncodedDeveloper {
         val orientations = ArrayList<Int>()
         val colors = ArrayList<EncodedColorSpec>()
-        override fun develop(frame: YuvFrameK, color: EncodedColorSpec, orientationDeg: Int, grade: GradeK, lutPath: String?): IntArray? {
+        override fun develop(frame: YuvFrameK, color: EncodedColorSpec, orientationDeg: Int, grade: GradeK, lutPath: String?, chainWire: FloatArray?): IntArray? {
             orientations.add(orientationDeg)
             colors.add(color)
             // 4x2 image: pixel i = 0xFF, R=i, G=i+10, B=i+20

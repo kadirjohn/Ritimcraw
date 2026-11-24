@@ -1,6 +1,8 @@
 package com.ritim.ritimcraw.engine
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -135,5 +137,75 @@ class GradeParitySweepTest {
         assertTrue(summary, summary.startsWith("crop-sweep summary:"))
         assertTrue(summary, summary.contains("worstMaxDiffLsb=4"))
         assertTrue(summary, summary.contains("skipped=1"))
+    }
+
+    // ---- the v2 chain sweep (color model v2 F1-7, plan §10 layer 4) ----
+
+    @Test
+    fun v2_case_grid_covers_the_plan_layer4_list() {
+        val cases = GradeParitySweep.v2Cases()
+        // nodes-primary x3 + nodes-log x2 + nodes-curves + nodes-hue +
+        // nodes-temp + nodes-chain + drt-sdr + drt-hlg + nodes+drt.
+        assertEquals(12, cases.size)
+        val controls = cases.map { it.control }.toSet()
+        for (c in listOf(
+            "nodes-primary", "nodes-log", "nodes-curves", "nodes-hue",
+            "nodes-temp", "nodes-chain", "drt-sdr", "drt-hlg", "nodes+drt",
+        )) assertTrue(c, c in controls)
+    }
+
+    @Test
+    fun v2_cases_carry_the_chain_wire_and_the_drt_pack_only_when_declared() {
+        for (c in GradeParitySweep.v2Cases()) {
+            // Every case's wire is the encoder's own shape for its grade.
+            assertTrue(c.chainWire.isNotEmpty())
+            assertTrue(NodeChainWire.chainHash(c.chainWire) != 0L)
+            if (c.control.startsWith("drt") || c.control.contains("+drt")) {
+                assertEquals(1f, c.chainWire[1], 0f) // outputMode DwgLinear
+                assertNotNull(c.drtUniforms)
+                assertEquals(OpenDrtPacks.SLOT_COUNT, c.drtUniforms!!.size)
+            } else {
+                assertEquals(0f, c.chainWire[1], 0f) // outputMode legacy
+                assertNull(c.drtUniforms)
+            }
+        }
+    }
+
+    @Test
+    fun v2_cases_never_carry_node_luts_and_stay_under_the_n1_cap() {
+        for (c in GradeParitySweep.v2Cases()) {
+            // [0] = the trimmed nodeCount; the grid never exceeds N1 and
+            // (the encoder's own LUT refusal implies) never carries one.
+            assertTrue(c.chainWire[0] <= NodeChainWire.MAX_NODES)
+            assertTrue(c.chainWire[0] >= 0f)
+        }
+    }
+
+    @Test
+    fun frame_digest_is_the_ieee_crc32() {
+        // The standard check vectors (IEEE 802.3, reflected 0xEDB88320):
+        // "" -> 0, "123456789" -> 0xCBF43926 — core's crc32Ieee's own
+        // polynomial; the sweep's karne line and the owner's before/after
+        // greps ride this exact function.
+        assertEquals(0L, GradeParitySweep.frameDigest(ByteArray(0)))
+        assertEquals(0xCBF43926L,
+            GradeParitySweep.frameDigest("123456789".toByteArray(Charsets.US_ASCII)))
+        // And the empty array's identity is NOT the zero byte's.
+        assertEquals(0xD202EF8DL, GradeParitySweep.frameDigest(byteArrayOf(0)))
+    }
+
+    @Test
+    fun v2_line_and_summary_formats() {
+        val c = GradeParitySweep.V2Case(
+            "nodes-primary", "lift", FloatArray(9), null, com.ritim.ritimcraw.data.GradeK(),
+        )
+        val line = GradeParitySweep.v2Line(c, GradeParitySweep.Stats(1, 10, 0, 0, 0.0))
+        assertTrue(line.startsWith("v2-sweep nodes-primary lift:"))
+        assertTrue(line.contains("maxDiffLsb=10"))
+        val summary = GradeParitySweep.v2SummaryLine(
+            listOf(c to GradeParitySweep.Stats(1, 10, 0, 0, 0.0)), 3,
+        )
+        assertTrue(summary.startsWith("v2-sweep summary: cases=1 skipped=3"))
+        assertTrue(summary.contains("(nodes-primary lift)"))
     }
 }

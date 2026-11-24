@@ -274,6 +274,7 @@ class PhotoExporterTest {
             grade: GradeK,
             lutPath: String?,
             gyroPath: String?,
+                    chainWire: FloatArray?,
         ): ByteArray? {
             renderedFrame = frameIndex
             sawGrade = grade
@@ -389,6 +390,7 @@ class PhotoExporterTest {
                 grade: GradeK,
                 lutPath: String?,
                 gyroPath: String?,
+                            chainWire: FloatArray?,
             ): ByteArray? = null
             override fun framePts(handle: Long, frameIndex: Int): Long = 0
             override fun audioInfo(handle: Long): IntArray? = null

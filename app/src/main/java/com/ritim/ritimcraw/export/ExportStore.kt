@@ -248,6 +248,9 @@ class ExportStore(private val file: File) {
                     id = m["id"] as? String ?: return@mapIndexedNotNull null,
                     sourceId = m["sourceId"] as? String ?: return@mapIndexedNotNull null,
                     snapshot = parseSnapshot(m["snapshot"]),
+                    // F1-6: the snapshot's v2 chain wire (in-memory only;
+                    // null = the legacy fast path).
+                    snapshotChainWire = parseSnapshotChain(m["snapshot"]),
                     target = enumOrNullOr(idx, m["target"], Target.DNG),
                     state = if (unreadable != null && runnable) State.FAILED else parsedState,
                     detail = if (unreadable != null && runnable) {
@@ -322,6 +325,43 @@ class ExportStore(private val file: File) {
         private fun parseSnapshot(v: Any?): GradeK {
             val m = v as? Map<*, *> ?: return GradeK()
             return GradeStore.mapOfGrade(m) ?: GradeK()
+        }
+
+        /**
+         * F1-6 (color model v2): the snapshot's v2 chain wire — the
+         * record's OWN node chain/DRT output, decoded when the snapshot
+         * declares one (a LEGACY record parses to null, the fast path).
+         * The adapter's honest refusal ([GradeStore.mapOfGrade] null for
+         * a nodes/DRT record) meant the GradeK snapshot alone could not
+         * carry it; the wire rides the row IN MEMORY (never persisted —
+         * `snapshot` IS the persisted record) so the exporter renders the
+         * grade the user actually queued instead of the silent neutral
+         * fallback the pre-F1-6 parse produced.
+         */
+        private fun parseSnapshotChain(v: Any?): FloatArray? {
+            val m = v as? Map<*, *> ?: return null
+            if (!m.containsKey("v2")) return null
+            val grade = try {
+                com.ritim.ritimcraw.data.grade2.ClipGradeV2.parse(m)
+            } catch (t: Throwable) {
+                return null
+            }
+            val nodes = com.ritim.ritimcraw.engine.GradeV2Usage.activeNodes(grade)
+            if (nodes.isEmpty() &&
+                grade.output.mode != com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT
+            ) {
+                return null
+            }
+            // The node-LUT leg is the unwired follow-up: the wire refuses
+            // it, and the export falls back to the neutral-snapshot
+            // behavior it had before F1-6 rather than failing the job
+            // (the LUT-carrying node grades are not reachable from the
+            // UI until F1-8; the follow-up wires both together).
+            return try {
+                com.ritim.ritimcraw.engine.NodeChainWire.encode(grade, nodes)
+            } catch (e: IllegalStateException) {
+                null
+            }
         }
 
         private inline fun <reified E : Enum<E>> enumOrNullOr(

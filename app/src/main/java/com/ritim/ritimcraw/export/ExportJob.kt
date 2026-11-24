@@ -178,6 +178,16 @@ data class ExportJob(
      * Cleared by [requeued]: a retried job reports its own run.
      */
     val report: ExportReport? = null,
+    /**
+     * F1-6 (color model v2): the snapshot record's v2 node chain wire,
+     * decoded at parse time (IN MEMORY ONLY — the persisted record is
+     * [snapshot]'s own wire bytes; this field never renders). Null = a
+     * LEGACY snapshot (the fast path, bit-identical — K2); non-null = the
+     * exporter's CPU render applies the chain the snapshot declares, so a
+     * nodes/DRT grade exports with ITS OWN look instead of the neutral
+     * fallback the adapter's honest refusal produced.
+     */
+    val snapshotChainWire: FloatArray? = null,
 ) {
 
     /**
