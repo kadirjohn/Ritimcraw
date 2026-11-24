@@ -78,26 +78,20 @@ float sampleExt256(const float* t, float x) {
     return sample256(t, x);
 }
 
-// Everything a node needs per pixel, computed once per node.
+// Everything a node needs per pixel, computed once per node. F1-5: the
+// anonymous-namespace Compiled IS the public CompiledNode (ColorModel.h —
+// the GPU's uniform pack); the struct moved out so NodeParcel.kt, the
+// pipeline and this CPU reference fold the SAME values. The Lut pointer
+// stays here: the public pack carries the BINDING only.
 struct Compiled {
     bool lutActive = false;
-    float lift[3], gain[3], offset[3], gammaExp[3];
-    bool hasY = false;
-    float ySide[3] = {0, 1, 1};
-    float contrast, pivot;
-    float wb[3];
-    float sat;
-    float hueMat[9];
-    float mix;
-    std::vector<float> curves; // 3 * kNodeCurveN, empty = none
-    // node LUT
     const Lut* lut = nullptr;
-    CompiledLutBinding binding{};
-    float lutMix = 1.0f;
+    CompiledNode pack;  // the public uniform-pack view (lift/gain/...)
 };
 
 Compiled compile(const GradeNode& n) {
     Compiled c;
+    CompiledNode& p = c.pack;
     float l[3], g[3], gn[3], o[3];
     wheelRgb(n.lift, l);
     wheelRgb(n.gamma, g);
@@ -108,27 +102,26 @@ Compiled compile(const GradeNode& n) {
         primaries(l[i] * 0.25f + n.lift.master * 0.5f,
                   std::max(1.0f + gn[i] * 0.5f + n.gain.master, 0.0f),
                   g[i] * 0.5f + n.gamma.master, a, b, e);
-        c.lift[i] = a;
-        c.gain[i] = b;
-        c.gammaExp[i] = e;
-        c.offset[i] = o[i] * 0.2f + n.offset.master * 0.25f;
+        p.lift[i] = a;
+        p.gain[i] = b;
+        p.gammaExp[i] = e;
+        p.offset[i] = o[i] * 0.2f + n.offset.master * 0.25f;
     }
     {
         float a, b, e;
         primaries(n.lift.master * 0.5f, std::max(1.0f + n.gain.master, 0.0f),
                   n.gamma.master, a, b, e);
-        c.ySide[0] = a;
-        c.ySide[1] = b;
-        c.ySide[2] = e;
+        p.ySide[0] = a;
+        p.ySide[1] = b;
+        p.ySide[2] = e;
         // Klipp always runs the luminance side; with all masters neutral it
         // is (0, 1, 1) and a no-op by construction (kept to stay a port).
-        c.hasY = true;
     }
-    c.contrast = n.contrast;
-    c.pivot = n.pivot;
-    c.wb[0] = 1.0f + 0.18f * n.temp;
-    c.wb[1] = 1.0f - 0.12f * n.tint;
-    c.wb[2] = 1.0f - 0.18f * n.temp;
+    p.contrast = n.contrast;
+    p.pivot = n.pivot;
+    p.wb[0] = 1.0f + 0.18f * n.temp;
+    p.wb[1] = 1.0f - 0.12f * n.tint;
+    p.wb[2] = 1.0f - 0.18f * n.temp;
     const float a = n.hue * kPi / 180.0f;
     const float cs = std::cos(a), sn = std::sin(a);
     const float k = 1.0f / 3.0f, sq = std::sqrt(k);
@@ -136,9 +129,9 @@ Compiled compile(const GradeNode& n) {
         cs + (1 - cs) * k,       k * (1 - cs) - sq * sn, k * (1 - cs) + sq * sn,
         k * (1 - cs) + sq * sn,  cs + k * (1 - cs),      k * (1 - cs) - sq * sn,
         k * (1 - cs) - sq * sn,  k * (1 - cs) + sq * sn, cs + k * (1 - cs)};
-    std::memcpy(c.hueMat, h, sizeof(h));
-    c.sat = n.sat;
-    c.mix = std::min(std::max(n.mix, 0.0f), 1.0f);
+    std::memcpy(p.hueMat, h, sizeof(h));
+    p.sat = n.sat;
+    p.mix = std::min(std::max(n.mix, 0.0f), 1.0f);
 
     if (n.hasCurves() || n.hasLog()) {
         const std::vector<float> y = nodeCurveTable(n.curveY);
@@ -150,7 +143,7 @@ Compiled compile(const GradeNode& n) {
         wheelRgb(n.logMid, md);
         wheelRgb(n.logHi, hi);
         const bool hasLog = n.hasLog();
-        c.curves.assign(3 * static_cast<size_t>(kNodeCurveN), 0.0f);
+        p.curves.assign(3 * static_cast<size_t>(kNodeCurveN), 0.0f);
         for (int cI = 0; cI < 3; ++cI) {
             std::vector<float> lg;
             if (hasLog) {
@@ -161,7 +154,7 @@ Compiled compile(const GradeNode& n) {
             }
             for (int i = 0; i < kNodeCurveN; ++i) {
                 const float x = hasLog ? lg[static_cast<size_t>(i)] : nodeCurveX(i);
-                c.curves[static_cast<size_t>(cI) * kNodeCurveN + i] =
+                p.curves[static_cast<size_t>(cI) * kNodeCurveN + i] =
                     sampleExt256(ch[cI].data(), sampleExt256(y.data(), x));
             }
         }
@@ -169,21 +162,25 @@ Compiled compile(const GradeNode& n) {
     if (n.hasLut()) {
         c.lutActive = true;
         c.lut = n.lut;
-        c.binding = compileLutBinding(n.lutInterp);
-        c.lutMix = std::min(std::max(n.lutMix, 0.0f), 1.0f);
+        p.lutBinding = compileLutBinding(n.lutInterp);
+        p.lutMix = std::min(std::max(n.lutMix, 0.0f), 1.0f);
     }
     return c;
 }
 
 // One DI pixel through one compiled node (Klipp GradeNode.apply, N1).
-void applyCompiled(const Compiled& p, float rgb[3]) {
+// applyCompiledNode (the public F1-5 pack form) is the same math; this one
+// keeps the Lut pointer for the managed-binding evaluation.
+void applyCompiled(const Compiled& c, float rgb[3]) {
+    const CompiledNode& p = c.pack;
     const float inR = rgb[0], inG = rgb[1], inB = rgb[2];
     const float yIn = kNodeLuma[0] * rgb[0] + kNodeLuma[1] * rgb[1] + kNodeLuma[2] * rgb[2];
     for (int i = 0; i < 3; ++i) {
-        const float c = p.lift[i] + p.gain[i] * rgb[i] + p.offset[i];
-        rgb[i] = p.gammaExp[i] == 1.0f ? c : std::pow(std::max(c, 0.0f), p.gammaExp[i]);
+        const float v = p.lift[i] + p.gain[i] * rgb[i] + p.offset[i];
+       rgb[i] = p.gammaExp[i] == 1.0f ? v : std::pow(std::max(v, 0.0f), p.gammaExp[i]);
     }
-    if (p.hasY) {
+    {
+        // The luminance side always runs (a port; neutral masters = identity).
         float yv = p.ySide[0] + p.ySide[1] * yIn +
                    kNodeLuma[0] * p.offset[0] + kNodeLuma[1] * p.offset[1] +
                    kNodeLuma[2] * p.offset[2];
@@ -209,13 +206,13 @@ void applyCompiled(const Compiled& p, float rgb[3]) {
         for (int i = 0; i < 3; ++i)
             rgb[i] = nodeCurveSample(&p.curves[static_cast<size_t>(i) * kNodeCurveN], rgb[i]);
     }
-    if (p.lutActive) {
+    if (c.lutActive) {
         float lin[3], l709[3], out709[3], outDwg[3], outDi[3];
         // DI -> DWG linear -> linear 709 (the managed binding's working space)
         for (int i = 0; i < 3; ++i)
             lin[i] = decodeTransfer(rgb[i], TransferId::DaVinciIntermediate);
         mul3(mats().to709, lin, l709);
-        evaluateManagedLutPixel(*p.lut, p.binding, l709, out709);
+        evaluateManagedLutPixel(*c.lut, p.lutBinding, l709, out709);
         mul3(mats().toDwg, out709, outDwg);
         for (int i = 0; i < 3; ++i)
             outDi[i] = encodeTransfer(outDwg[i], TransferId::DaVinciIntermediate);
@@ -233,6 +230,21 @@ void applyCompiled(const Compiled& p, float rgb[3]) {
 
 void rec709ToDwgMatrix(float out[9]) { std::memcpy(out, mats().toDwg, sizeof(float) * 9); }
 void dwgToRec709Matrix(float out[9]) { std::memcpy(out, mats().to709, sizeof(float) * 9); }
+
+// F1-5: the public uniform-pack entries (ColorModel.h). Both go through
+// the anonymous-namespace compile()/applyCompiled() — one code path for
+// the CPU reference, the Kotlin parcel mirror and the GPU fold.
+CompiledNode compileNode(const GradeNode& node) { return compile(node).pack; }
+
+void applyCompiledNode(const CompiledNode& pack, float di[3]) {
+    // The pack form: the node LUT cannot run here (the table lives with the
+    // uploader), so this is the node math MINUS the LUT branch — the part
+    // the shader's loop body mirrors verbatim; its LUT branch is the
+    // pipeline's own (DI -> DWG -> 709 -> managed sample -> back), the same
+    // order applyCompiled runs it in.
+    const Compiled holder{false, nullptr, pack};
+    applyCompiled(holder, di);
+}
 
 void linear709ToDwg(const float in[3], float out[3]) { mul3(mats().toDwg, in, out); }
 void dwgToLinear709(const float in[3], float out[3]) { mul3(mats().to709, in, out); }

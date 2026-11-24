@@ -25,7 +25,13 @@ inline int chainSlotAfterNr(bool runChroma, bool runLuma) {
 }
 
 enum ChainPassKind : int {
-    kPassPost = 0, kPassSharpH, kPassSharpV, kPassDetailH, kPassDetailV, kPassWarp
+    kPassPost = 0, kPassSharpH, kPassSharpV, kPassDetailH, kPassDetailV, kPassWarp,
+    // Color model v2 (F1-5, plan §5.2): the grade NODE chain — one pass, the
+    // node loop runs in-shader (709 -> DWG -> DI at the head, the per-node
+    // math in DI, the decode at the tail). After the warp (the warp resamples
+    // in LINEAR light; nodes work in DI) and before TAIL, so finalSlot stays
+    // a TAIL-read slot and no pass formula is hand-written.
+    kPassNodes
 };
 
 struct ChainPass {
@@ -36,14 +42,21 @@ struct ChainPass {
 };
 
 struct ChainPlan {
-    ChainPass passes[6];
+    // POST + 4 unsharp + warp + nodes: the N1 chain's own upper bound
+    // (kPassNodes is ONE pass by design — plan §5.3 rejects node-per-pass).
+    ChainPass passes[7];
     int count = 0;
     int finalSlot = kSlotA;  // what TAIL reads
     // Index into passes[] for each optional pass, -1 when it does not run.
     int sharpH = -1, sharpV = -1, detailH = -1, detailV = -1, warp = -1;
+    // kPassNodes's index, -1 when the chain runs without it (nodes empty /
+    // legacy mode — the v1 chain, byte-identical: runNodes=false is the
+    // regression lock the planner test pins).
+    int nodes = -1;
 };
 
-inline ChainPlan planChain(int nrLive, bool runSharp, bool runDetail, bool runWarp) {
+inline ChainPlan planChain(int nrLive, bool runSharp, bool runDetail, bool runWarp,
+                           bool runNodes = false) {
     ChainPlan p;
     auto add = [&](ChainPassKind k, int in, int out, int guide) {
         ChainPass& c = p.passes[p.count];
@@ -66,6 +79,14 @@ inline ChainPlan planChain(int nrLive, bool runSharp, bool runDetail, bool runWa
     if (runWarp) {
         p.warp = add(kPassWarp, cur, chainNextSlot(cur), -1);
         cur = p.passes[p.warp].out;
+    }
+    // NODES (F1-5): in = the chain's live slot, out = the next, NO guide (the
+    // node loop reads exactly one texel — 3 slots stay sufficient). Added
+    // AFTER the warp per the plan §3.2 stage order; nodes == count-1 whenever
+    // it runs, and finalSlot is its output so TAIL reads the graded texel.
+    if (runNodes) {
+        p.nodes = add(kPassNodes, cur, chainNextSlot(cur), -1);
+        cur = p.passes[p.nodes].out;
     }
     p.finalSlot = cur;
     return p;

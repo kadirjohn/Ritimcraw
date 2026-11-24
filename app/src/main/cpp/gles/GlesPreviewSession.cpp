@@ -74,6 +74,10 @@
 // and the cos/sin pair the window + stats draws upload as the crop
 // uniforms. Header-only, no GL, the StatsRing.h precedent.
 #include "GpuCropMap.h"
+// Color model v2 F1-5: the NODES chain's parcel decode (the borrowed
+// rawedit values the pipeline folds; the same honest refusals the JVM
+// mirror's validate rides). Header-only.
+#include "NodeParcel.h"
 
 #include <algorithm>
 #include <atomic>
@@ -431,7 +435,7 @@ struct PreviewSession::Impl {
     std::condition_variable cvDone;
     std::thread glThread;
     bool threadRunning = false;
-    enum class JobKind { None, Render, Surface };
+    enum class JobKind { None, Render, Surface, InitNodes };
     // The ONE in-flight job (bounded by construction: both callers wait
     // for the slot to be free, fill it under the mutex, and block on
     // cvDone until the GL thread clears it — at most one job is ever in
@@ -442,6 +446,22 @@ struct PreviewSession::Impl {
     ANativeWindow* pendingWindow = nullptr;      // attach: non-null; destroy: null
     bool* pendingSurfaceOk = nullptr;
     std::string* pendingSurfaceDetail = nullptr;
+    // F1-5: the InitNodes job's posted arguments (the GL-thread compile
+    // door; the sources are COPIES the job owns - the caller may return
+    // before the job runs).
+    std::string pendingNodesSource, pendingVertexSource, pendingTailDrtSource;
+    bool* pendingNodesOk = nullptr;
+    std::string* pendingNodesDetail = nullptr;
+    GpuDevelopPipeline::NodesLimits* pendingNodesLimits = nullptr;
+    // F1-5: the color model parcel's OWNED state (setColorModelParcel's
+    // buffers - the F1-6 binding's chain lives here, swapped under the
+    // mutex, read by renderFrame's request fold; the pipeline's request
+    // borrows pointers into THESE, per the borrowed-chain contract).
+    std::vector<rawedit::GradeNode> colorNodes;
+    std::vector<float> colorDrtUniforms;
+    uint64_t colorChainHash = 0;
+    int colorOutputMode = 0;
+    bool colorNodesActive = false;
     bool closeRequested = false;
     // Latched RENDER failure (the header's failure semantics; surface
     // failures never touch this).
@@ -597,9 +617,24 @@ void PreviewSession::Impl::glThreadLoop() {
         ANativeWindow* window = pendingWindow;
         bool* surfaceOk = pendingSurfaceOk;
         std::string* surfaceDetail = pendingSurfaceDetail;
+        bool* nodesOk = pendingNodesOk;
+        std::string* nodesDetail = pendingNodesDetail;
+        GpuDevelopPipeline::NodesLimits* nodesLimits = pendingNodesLimits;
+        // The InitNodes job takes the posted source copies BY MOVE (the
+        // job owns them from here; the pending slots clear below).
+        std::string nodesSource = std::move(pendingNodesSource);
+        std::string vertexSource = std::move(pendingVertexSource);
+        std::string tailDrtSource = std::move(pendingTailDrtSource);
+        pendingNodesSource.clear();
+        pendingVertexSource.clear();
+        pendingTailDrtSource.clear();
         lock.unlock();
         if (kind == JobKind::Surface) {
             runSurfaceJob(window, *surfaceOk, *surfaceDetail);
+        } else if (kind == JobKind::InitNodes) {
+            *nodesOk = pipeline.initNodes(nodesSource, vertexSource,
+                                          tailDrtSource, nodesLimits,
+                                          nodesDetail);
         } else {
             runJob(*req, *res);
         }
@@ -620,6 +655,9 @@ void PreviewSession::Impl::glThreadLoop() {
         pendingWindow = nullptr;
         pendingSurfaceOk = nullptr;
         pendingSurfaceDetail = nullptr;
+        pendingNodesOk = nullptr;
+        pendingNodesDetail = nullptr;
+        pendingNodesLimits = nullptr;
         // notify_ALL, not notify_one: unlike M3's single-caller handoff,
         // TWO threads can be parked on cvDone at once (the engine thread
         // waiting for the slot in renderFrame, the UI thread waiting for
@@ -2004,6 +2042,26 @@ PreviewFrameResult PreviewSession::renderFrame(
         const PreviewFrameRequest& req, const DevelopGrade& grade) {
     PreviewFrameRequest folded = req;
     applyGradeToRequest(grade, &folded);
+    // F1-5: the color model chain's fold. The session's OWNED color-chain
+    // state (setColorModelChain's deep copies, swapped under the mutex)
+    // is what the request borrows — the engine thread's next edit cannot
+    // race the render's reads. The Lut pointers inside colorNodes stay
+    // the CALLER's resolved objects (the borrowed rule the request's
+    // cfa/meta ride): the render blocks this call before the caller can
+    // free them.
+    if (impl_ != nullptr) {
+        std::lock_guard<std::mutex> stateLock(impl_->mutex);
+        if (impl_->colorNodesActive) {
+            folded.nodesActive = true;
+            folded.nodeCount = static_cast<int>(impl_->colorNodes.size());
+            folded.outputMode = impl_->colorOutputMode;
+            folded.nodeChain = impl_->colorNodes.empty()
+                ? nullptr : impl_->colorNodes.data();
+            folded.nodeChainHash = impl_->colorChainHash;
+            folded.drtUniforms = impl_->colorDrtUniforms.empty()
+                ? nullptr : impl_->colorDrtUniforms.data();
+        }
+    }
     PreviewFrameResult res;
     if (impl_ == nullptr) {
         res.detail = "session not open";
@@ -2043,6 +2101,130 @@ PreviewFrameResult PreviewSession::renderFrame(
     // [res] was filled by the GL thread while we held the wait; the
     // unique_lock releases on return.
     return res;
+}
+
+// F1-5: the additive initNodes door (the GL-thread compile through the
+// pipeline's own ADDITIVE init; see the header's doc). Posts one job on
+// the existing single-slot handoff and blocks for it — the same bounded
+// contract every other door rides.
+bool PreviewSession::initNodes(const std::string& nodesSource,
+                               const std::string& vertexSource,
+                               const std::string& tailDrtSource,
+                               GpuDevelopPipeline::NodesLimits* limits,
+                               std::string* detail) {
+    if (impl_ == nullptr) {
+        if (detail != nullptr) *detail = "session not open";
+        if (limits != nullptr) *limits = GpuDevelopPipeline::NodesLimits();
+        return false;
+    }
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    if (!impl_->threadRunning) {
+        if (detail != nullptr) *detail = "session closed";
+        if (limits != nullptr) *limits = GpuDevelopPipeline::NodesLimits();
+        return false;
+    }
+    impl_->cvDone.wait(lock, [&]() {
+        return impl_->pendingKind == Impl::JobKind::None || !impl_->threadRunning;
+    });
+    if (!impl_->threadRunning) {
+        if (detail != nullptr) *detail = "session closed";
+        if (limits != nullptr) *limits = GpuDevelopPipeline::NodesLimits();
+        return false;
+    }
+    bool ok = false;
+    std::string inner;
+    GpuDevelopPipeline::NodesLimits lim;
+    // Post under the lock (the renderFrame precedent: atomic with the
+    // threadRunning check, so no posted job is ever abandoned).
+    impl_->pendingKind = Impl::JobKind::InitNodes;
+    impl_->pendingNodesSource = nodesSource;      // COPIES the job owns
+    impl_->pendingVertexSource = vertexSource;
+    impl_->pendingTailDrtSource = tailDrtSource;
+    impl_->pendingNodesOk = &ok;
+    impl_->pendingNodesDetail = &inner;
+    impl_->pendingNodesLimits = &lim;
+    impl_->cvRequest.notify_one();
+    impl_->cvDone.wait(lock, [&]() {
+        return impl_->pendingKind == Impl::JobKind::None || !impl_->threadRunning;
+    });
+    if (detail != nullptr) *detail = inner;
+    if (limits != nullptr) *limits = lim;
+    return ok;
+}
+
+// F1-5: the color model chain door — the C++-level seam the JNI binding
+// (F1-6) wraps. The chain is BORROWED per the pipeline's request contract:
+// the CALLER keeps the GradeNode vector (and its curve point vectors, and
+// any node Lut objects) alive until the render that consumes them returns
+// (renderFrame blocks on its job, so stack locals in the engine thread's
+// frame are fine — the same contract as the request's cfa). The session
+// OWNS only the DRT uniform block (copied — it is a flat float array).
+//
+// The chain's revision hash is the CALLER's cheap content key (the same
+// values in the same order hash the same; the pipeline skips re-uploads
+// when it matches an intact cache). outputMode 0 = the legacy 709 back
+// (the v1 TAIL); 1 = the DRT variant (drtUniforms REQUIRED,
+// GpuDevelopPipeline::kDrtUniformSlots floats). nodeCount 0 + mode 0
+// CLEARS the state — the next render is the plain v1 chain (nodesActive
+// false; the kPassNodes regression lock's shape).
+bool PreviewSession::setColorModelChain(const rawedit::GradeNode* nodes,
+                                       int nodeCount, int outputMode,
+                                       const float* drtUniforms,
+                                       uint64_t chainHash,
+                                       std::string* detail) {
+    if (impl_ == nullptr) {
+        if (detail != nullptr) *detail = "session not open";
+        return false;
+    }
+    if (nodeCount < 0 || nodeCount > static_cast<int>(rawedit::kMaxNodes)) {
+        if (detail != nullptr)
+            *detail = "color model chain: nodeCount " +
+                      std::to_string(nodeCount) +
+                      " outside the N1 cap 0..8 (recovery: the editor caps "
+                      "the chain at 8)";
+        return false;
+    }
+    // Validate the chain itself (the same caps the CPU reference and the
+    // pipeline's own draw enforce — the door fails fast with the honest
+    // message instead of mid-render).
+    const std::string chainErr =
+        rawedit::validateNodeChain(nodes, static_cast<size_t>(nodeCount));
+    if (!chainErr.empty()) {
+        if (detail != nullptr) *detail = "color model chain: " + chainErr;
+        return false;
+    }
+    std::vector<float> drt;
+    if (outputMode == 1) {
+        if (drtUniforms == nullptr) {
+            if (detail != nullptr)
+                *detail = "color model chain: outputMode 1 needs the DRT "
+                          "uniform block (recovery: the binding resolves "
+                          "the OpenDRT presets with the request)";
+            return false;
+        }
+        drt.assign(drtUniforms,
+                   drtUniforms + GpuDevelopPipeline::kDrtUniformSlots);
+    } else if (outputMode != 0) {
+        if (detail != nullptr)
+            *detail = "color model chain: outputMode " +
+                      std::to_string(outputMode) + " is not 0 or 1";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    // The owned COPIES the folded request borrows: the chain values are
+    // deep-copied (GradeNode's curve points are vectors — shallow borrow
+    // would alias the engine thread's memory racing the next edit) and
+    // the pointers below point at THESE copies. The node Luts stay the
+    // CALLER's (the same borrowed rule as the request's cfa/meta — the
+    // render drains before the caller returns, so the caller's own
+    // resolved Lut outlives it; the Lut POINTERS are re-borrowed at fold
+    // time through the stored nodes again).
+    impl_->colorNodes.assign(nodes, nodes + nodeCount);
+    impl_->colorDrtUniforms = std::move(drt);
+    impl_->colorChainHash = chainHash;
+    impl_->colorOutputMode = outputMode;
+    impl_->colorNodesActive = nodeCount > 0 || outputMode == 1;
+    return true;
 }
 
 bool PreviewSession::setSurface(ANativeWindow* window, std::string* detail) {

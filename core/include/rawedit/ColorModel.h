@@ -37,6 +37,7 @@
 #include <vector>
 
 #include <rawedit/Color.h>
+#include <rawedit/Lut.h>
 
 namespace rawedit {
 
@@ -160,5 +161,44 @@ float nodeCurveSample(const float* table, float x);
 // One DI pixel through one node (the unit the shader ports). Returns
 // without change for a neutral node. di is in/out.
 void applyNodeDi(const GradeNode& node, float di[3]);
+
+// ---- The GPU uniform pack (F1-5) -------------------------------------------
+//
+// The NODES shader's per-node uniforms are the CPU compile()'s own
+// values (docs/F1_5_GPU_OPS_INVENTORY.md §2: "derleme-zamanı" — the wheel
+// cosine/atan2 fold, the primaries solve, the hue matrix, the WB vector —
+// all INIT-time and NEVER per-pixel). This struct is exactly the
+// ColorModel.cpp Compiled shape, promoted out of the anonymous namespace
+// so the Kotlin parcel layer (NodeParcel.kt mirrors this layout) and the
+// C++ pipeline fold the SAME numbers; the shader only re-applies them.
+struct CompiledNode {
+    bool lutActive = false;
+    float lift[3] = {0, 0, 0}, gain[3] = {0, 0, 0}, offset[3] = {0, 0, 0},
+          gammaExp[3] = {0, 0, 0};
+    float ySide[3] = {0, 1, 1};  // the luminance side, always run (a port)
+    float contrast = 1.0f, pivot = kDiMidGray;
+    float wb[3] = {1, 1, 1};
+    float sat = 1.0f;
+    float hueMat[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  // row-major
+    float mix = 1.0f;
+    // The composite curve table, 3 * kNodeCurveN (values, not deltas), or
+    // empty when the node has no curves/log wheels — the GPU's atlas row
+    // and the CPU's applyCompiled consume the SAME bytes.
+    std::vector<float> curves;
+    // The node LUT's binding (compileLutBinding output), copy when active.
+    CompiledLutBinding lutBinding{};
+    float lutMix = 1.0f;
+};
+
+// Compiles one node into the uniform pack. [lut] may be null with
+// node.hasLut() false; otherwise the caller keeps the Lut alive (the
+// pack carries the BINDING, not the table — the GPU uploads tables
+// separately per revision).
+CompiledNode compileNode(const GradeNode& node);
+
+// One DI pixel through the compiled pack — applyNodeDi's second half,
+// the exact function the shader's loop body must match (used by the
+// headless GLSL-parity tests to pin the order of operations).
+void applyCompiledNode(const CompiledNode& p, float di[3]);
 
 } // namespace rawedit

@@ -43,6 +43,7 @@
 
 #include "GpuDevelopPipeline.h"
 #include "ChainSlots.h"
+#include "NodeParcel.h"
 
 #include <algorithm>
 #include <chrono>
@@ -568,6 +569,68 @@ struct GpuDevelopPipeline::Impl {
     size_t shadingUploaded = 0;
     uint64_t outBytes = 0;
 
+    // --- color model v2 F1-5: the NODES pass + the TAIL's DRT variant ---
+    // Added through initNodes() (the ADDITIVE door — none of the pipeline's
+    // original init changes); both stay 0/unresolved until then, and the
+    // pre-F1-5 request shape never touches them.
+    GLuint nodesProgram = 0;
+    GLuint tailDrtProgram = 0;
+    // The NODES pass's own uniforms (all resolved at initNodes on
+    // nodesProgram). The matrix pair uploads row-major with
+    // transpose=GL_TRUE — the uCam2rgb idiom.
+    GLint nodesSrcLoc = -1, nodesSizeLoc = -1, nodesCountLoc = -1,
+          nodesOutputModeLoc = -1;
+    GLint nodesM709ToDwgLoc = -1, nodesMDwgTo709Loc = -1,
+          nodesCurvesLoc = -1;
+    // The per-node arrays (NodeParcel.h's pack, one slot per node).
+    GLint nodesPrimaryLoc = -1, nodesGainLoc = -1, nodesOffsetLoc = -1,
+          nodesGammaExpLoc = -1, nodesYSideLoc = -1,
+          nodesContrastPivotLoc = -1, nodesWbLoc = -1, nodesHueMatLoc = -1,
+          nodesFlagsLoc = -1;
+    // The node-LUT sampler set (units 7..10) + their per-slot shape /
+    // binding uniforms (the stage-24 LUT port's own contract, per slot).
+    GLint nodesLutLoc = -1, nodesLutShapeLoc = -1, nodesLutShapeHiLoc = -1,
+          nodesLutWorkingLoc = -1, nodesLutOutputLoc = -1;
+    // The DRT TAIL's own uSrc/uSize (the variant reads the NODES pass's
+    // DWG-linear output) + the resolved-preset uniform block's locations,
+    // all resolved at initNodes on tailDrtProgram.
+    GLint drtSrcLoc = -1, drtSizeLoc = -1;
+    GLint drtEotfLoc = -1, drtHdrLoc = -1, drtCwpLoc = -1,
+          drtNormLoc = -1, drtNormHdrLoc = -1;
+    GLint drtTnLoc = -1, drtRsLoc = -1, drtToeLoc = -1, drtBrlRgbLoc = -1,
+          drtBrlpRgbLoc = -1, drtLconLoc = -1, drtHconLoc = -1, drtTsLoc = -1,
+          drtHueRLoc = -1, drtHueGLoc = -1, drtHueBLoc = -1, drtHueCLoc = -1,
+          drtHueMLoc = -1, drtHueYLoc = -1, drtConf0Loc = -1, drtConf1Loc = -1,
+          drtConf2Loc = -1, drtPtLoc = -1, drtPt2Loc = -1, drtPt3Loc = -1,
+          drtPt4Loc = -1;
+    // initNodes' recorded limits (the inventory §1.3's missing-query fix).
+    NodesLimits limits;
+    // The curve atlas (unit 6): 512 x 24 GL_R32F, texelFetch-only (no
+    // filter state matters; NEAREST pinned anyway per the Adreno 32F
+    // rule). Rows past nodeCount*3 stay the zero-delta identity; the
+    // atlas is (re)filled only when the chain revision changes.
+    GLuint nodesAtlasTex = 0;
+    uint64_t nodesChainKey = 0;  // the revision key (req.nodeChainHash)
+    bool nodesChainValid = false;  // the uniform cache/reflect the key
+    // UP TO 4 node-LUT tables (units 7..10), the revision-cached upload —
+    // the stage-24 LUT port's own pattern, one table per parcel lutIndex.
+    GLuint nodeLutTex[4] = {0, 0, 0, 0};
+    uint64_t nodeLutKey[4] = {0, 0, 0, 0};  // hash of each slot's content
+    bool nodesInitialized = false;
+    // The revision cache's CPU-side state (rebuilt when nodeChainHash
+    // changes; the packs feed the per-draw uniform uploads):
+    // [nodesPacks] the compiled packs (core's compileNode — the SAME
+    // values the CPU reference and the Kotlin mirror produce);
+    // [nodesAtlasRows] the 512x24 atlas as one flat row-major copy (the
+    // compiled packs' composite curves; the neutral rows beyond the chain
+    // stay the zero-delta identity);
+    // [nodesNeutralPack]/[nodesNeutralNode] the inert surplus slots beyond
+    // the chain (the shader's uniform arrays stay complete).
+    std::vector<rawedit::CompiledNode> nodesPacks;
+    std::vector<float> nodesAtlasRows;
+    rawedit::CompiledNode nodesNeutralPack;
+    rawedit::GradeNode nodesNeutralNode;
+
     // --- GL-thread methods (called only on the owning session's GL thread) --
     bool init(const std::string& vertexSource,
               const std::string& vertex310Source,
@@ -586,9 +649,20 @@ struct GpuDevelopPipeline::Impl {
               const Config& config,
               std::string* detail);
     // The whole chain (input contract, CPU uniforms, allocation, upload,
-    // the pre -> [NR] -> pointwise -> [unsharp] -> [warp] -> tail draws
-    // into developFbo) — the body both sessions' chain bodies were.
+    // the pre -> [NR] -> pointwise -> [unsharp] -> [warp] -> [nodes] ->
+    // tail draws into developFbo) — the body both sessions' chain bodies
+    // were, plus the F1-5 NODES/DRT pair (only when the request carries
+    // them and initNodes ran).
     DrawResult draw(const DevelopFrameRequest& req);
+    // The F1-5 ADDITIVE door: compiles the NODES + DRT programs, resolves
+    // their uniforms, allocates the atlas + the dummy node-LUT tables and
+    // reads the two device limits (the inventory §1.3's missing query).
+    bool initNodes(const std::string& nodesSource, const std::string& vertexSource,
+                   const std::string& tailDrtSource, NodesLimits* limits,
+                   std::string* detail);
+    // The drtUniforms block's per-draw fold (the flat float block's one
+    // consumer; the location table is initNodes' own).
+    void drtFoldUniforms(const float* block);
     void teardown();
 };
 
@@ -963,6 +1037,205 @@ bool GpuDevelopPipeline::Impl::init(
     glUseProgram(storeProgram);
     glUniform1i(storeSrcLoc, 1); // store source: GL_TEXTURE1
     glUseProgram(0);
+    return true;
+}
+
+// ---- initNodes (color model v2 F1-5 — the ADDITIVE door) ------------------
+
+bool GpuDevelopPipeline::Impl::initNodes(const std::string& nodesSource,
+                                         const std::string& vertexSource,
+                                         const std::string& tailDrtSource,
+                                         NodesLimits* limits,
+                                         std::string* detail) {
+    // Same GL-thread + context contract as init(); called once by the
+    // sessions' F1-6 binding AFTER init(). Both programs compile from the
+    // Kotlin single-source-of-truth texts.
+    GlShader vertShader;
+    vertShader.id = compileShader(GL_VERTEX_SHADER, vertexSource, "vertex", detail);
+    if (vertShader.id == 0) return false;
+    GlShader nodesFrag;
+    nodesFrag.id = compileShader(GL_FRAGMENT_SHADER, nodesSource,
+                                 "nodes-fragment", detail);
+    if (nodesFrag.id == 0) return false;
+    GLuint nodesNew = linkProgram(vertShader.id, nodesFrag.id, "nodes", detail);
+    if (nodesNew == 0) return false;
+    GlShader drtFrag;
+    drtFrag.id = compileShader(GL_FRAGMENT_SHADER, tailDrtSource,
+                               "tail-drt-fragment", detail);
+    if (drtFrag.id == 0) return false;
+    GLuint drtNew = linkProgram(vertShader.id, drtFrag.id, "tail-drt", detail);
+    if (drtNew == 0) return false;
+    // Swap only after BOTH compiled (a partial init keeps the old programs;
+    // every delete below is guarded on the old handles).
+    if (nodesProgram != 0) glDeleteProgram(nodesProgram);
+    if (tailDrtProgram != 0) glDeleteProgram(tailDrtProgram);
+    nodesProgram = nodesNew;
+    tailDrtProgram = drtNew;
+
+    // The uniform locations, resolved with the SAME >= 0 contract as the
+    // chain's sets — a NODES program without its uniforms is a
+    // shader-contract break, not a runtime condition.
+    const auto resolve = [&](GLuint prog, const char* name) {
+        return glGetUniformLocation(prog, name);
+    };
+    nodesSrcLoc = resolve(nodesProgram, "uSrc");
+    nodesSizeLoc = resolve(nodesProgram, "uSize");
+    nodesCountLoc = resolve(nodesProgram, "uNodesCount");
+    nodesOutputModeLoc = resolve(nodesProgram, "uNodesOutputMode");
+    nodesM709ToDwgLoc = resolve(nodesProgram, "uM709ToDwg");
+    nodesMDwgTo709Loc = resolve(nodesProgram, "uMDwgTo709");
+    nodesCurvesLoc = resolve(nodesProgram, "uNodeCurves");
+    nodesPrimaryLoc = resolve(nodesProgram, "uNodePrimary");
+    nodesGainLoc = resolve(nodesProgram, "uNodeGain");
+    nodesOffsetLoc = resolve(nodesProgram, "uNodeOffset");
+    nodesGammaExpLoc = resolve(nodesProgram, "uNodeGammaExp");
+    nodesYSideLoc = resolve(nodesProgram, "uNodeYSide");
+    nodesContrastPivotLoc = resolve(nodesProgram, "uNodeContrastPivot");
+    nodesWbLoc = resolve(nodesProgram, "uNodeWb");
+    nodesHueMatLoc = resolve(nodesProgram, "uNodeHueMat");
+    nodesFlagsLoc = resolve(nodesProgram, "uNodeFlags");
+    nodesLutLoc = resolve(nodesProgram, "uNodeLut");
+    nodesLutShapeLoc = resolve(nodesProgram, "uNodeLutShape");
+    nodesLutShapeHiLoc = resolve(nodesProgram, "uNodeLutShapeHi");
+    nodesLutWorkingLoc = resolve(nodesProgram, "uNodeLutWorkingToInput");
+    nodesLutOutputLoc = resolve(nodesProgram, "uNodeLutOutputToWorking");
+    if (nodesSrcLoc < 0 || nodesSizeLoc < 0 || nodesCountLoc < 0 ||
+        nodesOutputModeLoc < 0 || nodesM709ToDwgLoc < 0 ||
+        nodesMDwgTo709Loc < 0 || nodesCurvesLoc < 0 || nodesPrimaryLoc < 0 ||
+        nodesGainLoc < 0 || nodesOffsetLoc < 0 || nodesGammaExpLoc < 0 ||
+        nodesYSideLoc < 0 || nodesContrastPivotLoc < 0 || nodesWbLoc < 0 ||
+        nodesHueMatLoc < 0 || nodesFlagsLoc < 0 || nodesLutLoc < 0 ||
+        nodesLutShapeLoc < 0 || nodesLutShapeHiLoc < 0 ||
+        nodesLutWorkingLoc < 0 || nodesLutOutputLoc < 0) {
+        *detail = "shader-contract: missing a nodes uniform";
+        return false;
+    }
+    drtSrcLoc = resolve(tailDrtProgram, "uSrc");
+    drtSizeLoc = resolve(tailDrtProgram, "uSize");
+    drtEotfLoc = resolve(tailDrtProgram, "uDrtEotf");
+    drtHdrLoc = resolve(tailDrtProgram, "uDrtHdr");
+    drtCwpLoc = resolve(tailDrtProgram, "uDrtCwp");
+    drtNormLoc = resolve(tailDrtProgram, "uNormScalar");
+    drtNormHdrLoc = resolve(tailDrtProgram, "uNormScalarHdr");
+    drtTnLoc = resolve(tailDrtProgram, "uDrtTn");
+    drtRsLoc = resolve(tailDrtProgram, "uDrtRs");
+    drtToeLoc = resolve(tailDrtProgram, "uDrtToe");
+    drtBrlRgbLoc = resolve(tailDrtProgram, "uDrtBrlRgb");
+    drtBrlpRgbLoc = resolve(tailDrtProgram, "uDrtBrlpRgb");
+    drtLconLoc = resolve(tailDrtProgram, "uDrtLcon");
+    drtHconLoc = resolve(tailDrtProgram, "uDrtHcon");
+    drtTsLoc = resolve(tailDrtProgram, "uDrtTs");
+    drtHueRLoc = resolve(tailDrtProgram, "uDrtHueR");
+    drtHueGLoc = resolve(tailDrtProgram, "uDrtHueG");
+    drtHueBLoc = resolve(tailDrtProgram, "uDrtHueB");
+    drtHueCLoc = resolve(tailDrtProgram, "uDrtHueC");
+    drtHueMLoc = resolve(tailDrtProgram, "uDrtHueM");
+    drtHueYLoc = resolve(tailDrtProgram, "uDrtHueY");
+    drtConf0Loc = resolve(tailDrtProgram, "uDrtConf0");
+    drtConf1Loc = resolve(tailDrtProgram, "uDrtConf1");
+    drtConf2Loc = resolve(tailDrtProgram, "uDrtConf2");
+    drtPtLoc = resolve(tailDrtProgram, "uDrtPt");
+    drtPt2Loc = resolve(tailDrtProgram, "uDrtPt2");
+    drtPt3Loc = resolve(tailDrtProgram, "uDrtPt3");
+    drtPt4Loc = resolve(tailDrtProgram, "uDrtPt4");
+    if (drtSrcLoc < 0 || drtSizeLoc < 0 || drtEotfLoc < 0 || drtHdrLoc < 0 ||
+        drtCwpLoc < 0 || drtNormLoc < 0 || drtNormHdrLoc < 0 || drtTnLoc < 0 ||
+        drtRsLoc < 0 || drtToeLoc < 0 || drtBrlRgbLoc < 0 ||
+        drtBrlpRgbLoc < 0 || drtLconLoc < 0 || drtHconLoc < 0 ||
+        drtTsLoc < 0 || drtHueRLoc < 0 || drtHueGLoc < 0 || drtHueBLoc < 0 ||
+        drtHueCLoc < 0 || drtHueMLoc < 0 || drtHueYLoc < 0 ||
+        drtConf0Loc < 0 || drtConf1Loc < 0 || drtConf2Loc < 0 ||
+        drtPtLoc < 0 || drtPt2Loc < 0 || drtPt3Loc < 0 || drtPt4Loc < 0) {
+        *detail = "shader-contract: missing a tail-drt uniform";
+        return false;
+    }
+
+    // The static unit bindings: the NODES source rides the chain's unit 1;
+    // the atlas pins unit 6; the node-LUT set pins units 7..10 (glUniform1i
+    // per ARRAY ELEMENT — a sampler ARRAY takes one unit per element).
+    glUseProgram(nodesProgram);
+    glUniform1i(nodesSrcLoc, 1);
+    glUniform1i(nodesCurvesLoc, 6);
+    for (int s = 0; s < 4; ++s)
+        glUniform1i(nodesLutLoc + s, 7 + s);
+    glUseProgram(tailDrtProgram);
+    glUniform1i(drtSrcLoc, 1);
+    glUseProgram(0);
+
+    // The atlas: 512 x 24 GL_R32F, texelFetch-only (NEAREST pinned — the
+    // Adreno 32F rule; no filter path exists in the shader). Storage is
+    // allocated ONCE; the CONTENT re-uploads per chain revision (the
+    // shading map's identity-keyed pattern: the per-frame work is a
+    // glTexSubImage2D only when the request's chain hash changed).
+    if (nodesAtlasTex == 0) glGenTextures(1, &nodesAtlasTex);
+    glActiveTexture(GL_TEXTURE6);
+    glBindTexture(GL_TEXTURE_2D, nodesAtlasTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F, 512, 24);
+    if (glErrorAfter("glTexStorage2D(R32F nodes atlas)", detail) != GL_NO_ERROR)
+        return false;
+    // The zero-delta fill: nodeCurveX(i) - x_i = 0 (the identity composite
+    // the CPU's own neutral-row claim pins); rows past the live chain stay
+    // this forever.
+    {
+        std::vector<float> zero(512 * 24, 0.0f);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 512, 24, GL_RED, GL_FLOAT,
+                        zero.data());
+        if (glErrorAfter("glTexSubImage2D(R32F nodes atlas)", detail) != GL_NO_ERROR)
+            return false;
+    }
+    // The four dummy node-LUT tables (units 7..10): a 2x2x2 all-1.0
+    // RGBA16F table each — the sampler-completeness rule (bindLutDummyTex's
+    // own), never sampled while a slot's uNodeFlags hasLut is 0.
+    for (int s = 0; s < 4; ++s) {
+        if (nodeLutTex[s] == 0) glGenTextures(1, &nodeLutTex[s]);
+        glActiveTexture(GL_TEXTURE7 + s);
+        glBindTexture(GL_TEXTURE_3D, nodeLutTex[s]);
+        bindLutDummyTex(nodeLutTex[s]);  // binds GL_TEXTURE5 — rebind below
+        glActiveTexture(GL_TEXTURE7 + s);
+        glBindTexture(GL_TEXTURE_3D, nodeLutTex[s]);
+        if (glErrorAfter("glTexImage3D(RGBA16F node-lut dummy)", detail) != GL_NO_ERROR)
+            return false;
+        nodeLutKey[s] = 0;  // 0 = the dummy
+    }
+    // Reset unit 5's binding (bindLutDummyTex bound GL_TEXTURE5; the chain's
+    // stage-24 LUT keeps that unit — the real table rebinds at draw when
+    // its own revision cache says so, the existing lutTex block).
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_3D, lutTex);
+    // Invalidate the chain cache: the first nodesActive draw rebuilds.
+    nodesChainKey = 0;
+    nodesChainValid = false;
+    nodesInitialized = nodesProgram != 0 && tailDrtProgram != 0;
+
+    // The two device limits — the inventory §1.3's missing query, answered
+    // in THIS context (the same re-read rule as the capability gates):
+    //   - GL_MAX_FRAGMENT_UNIFORM_VECTORS bounds the NODES pass's
+    //     ~110-115-vec4 set (§2.6);
+    //   - GL_MAX_TEXTURE_IMAGE_UNITS bounds the worst case 1 + 1 + 4 + the
+    //     chain's own unit map (§2.5).
+    // The values are RECORDED, not gated on: the ES 3.0 spec minimum is
+    // 224 vectors / 16 units; the owner's device measured in the preview
+    // probe decides whether the §4.2 narrowings are ever needed (K8).
+    GLint fragUniforms = 0;
+    glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_VECTORS, &fragUniforms);
+    GLint units = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &units);
+    while (glGetError() != GL_NO_ERROR) {}  // the queries are reads; log-only
+    limits->fragmentUniformVectors = fragUniforms;
+    limits->textureImageUnits = units;
+    this->limits = *limits;
+    __android_log_print(ANDROID_LOG_INFO, "ritim-trace",
+        "nodes init: ok=%d maxFragmentUniformVectors=%d maxTextureImageUnits=%d",
+        nodesInitialized ? 1 : 0, fragUniforms, units);
+    if (!nodesInitialized) {
+        limits->ok = false;
+        return false;
+    }
+    limits->ok = true;
     return true;
 }
 
@@ -1606,7 +1879,19 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     const int nrLive = chainSlotAfterNr(runChroma, runLuma);  // == chainTex's slot
     const bool runSharp = req.sharpness != 0.0f && w >= 2 && h >= 2;
     const bool runDetail = req.detail != 0.0f && w >= 2 && h >= 2;
-    const ChainPlan plan = planChain(nrLive, runSharp, runDetail, req.warpActive);
+    // F1-5: the NODES pass runs when the request carries a chain (or the
+    // DRT output) AND the additive door opened (initNodes). A
+    // nodesActive request on a pre-F1-5 pipeline REFUSES the frame
+    // honestly — never a silent no-op drop of the grade's nodes.
+    const bool runNodes = req.nodesActive && (req.nodeCount > 0 || req.outputMode == 1);
+    if (runNodes && !nodesInitialized) {
+        r.detail = "nodes: the NODES pass was not initialized "
+                   "(recovery: the session must call initNodes before "
+                   "nodesActive requests)";
+        return r;
+    }
+    const ChainPlan plan = planChain(nrLive, runSharp, runDetail, req.warpActive,
+                                     runNodes);
     const ChainPass& postPlan = plan.passes[0];
     GLuint postSrc = slotTex[postPlan.in];
     GLuint postDst = slotTex[postPlan.out];
@@ -1770,10 +2055,222 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         probePass("warp", warpOut);
         chainTex = warpOut;
     }
+    // --- draw 10.5: the NODES pass (color model v2 F1-5) ---------------------
+    // AFTER the warp (the warp resamples in LINEAR light; the nodes work
+    // in DI — plan §3.2 stage 6), BEFORE the tail, exactly the planned
+    // kPassNodes slot (in = the chain's live slot, out = the next, no
+    // guide — 3 slots stay sufficient; the 2026-11-23 warp-slot lesson's
+    // same-planned-slot rule). The pass converts 709 -> DWG -> DI at the
+    // head, loops the compiled node packs, and decodes back — the
+    // head/tail conversions and the loop body are pinned against the CPU
+    // reference by core/tests/test_gpu_nodes_logic.cpp.
+    if (runNodes) {
+        const ChainPass& np2 = plan.passes[plan.nodes];
+        const GLuint nodesOut = slotTex[np2.out];
+        // --- the revision cache: recompile the packs + refill the atlas
+        // only when the chain changed (the shading map's identity-keyed
+        // pattern; the key is the caller's cheap content hash). The
+        // compile is core's own compileNode() - the single source of
+        // truth the CPU reference, the Kotlin mirror and the headless
+        // desktop test all ride. Live sliders = uniform updates, never a
+        // recompile (plan SS5.5).
+        const bool revisionChanged = !nodesChainValid || nodesChainKey != req.nodeChainHash;
+        if (revisionChanged) {
+            // Validate through the N1 limits FIRST (the same caps the CPU's
+            // validateNodeChain enforces; the chain is borrowed values).
+            const std::string chainErr = rawedit::validateNodeChain(
+                req.nodeChain, static_cast<size_t>(req.nodeCount));
+            if (!chainErr.empty()) {
+                r.detail = "nodes: " + chainErr +
+                           " (recovery: cap the chain at the N1 limits)";
+                return r;
+            }
+            nodesPacks.assign(
+                static_cast<size_t>(req.nodeCount), rawedit::CompiledNode());
+            std::vector<float>& atlas = nodesAtlasRows;
+            atlas.assign(512 * 24, 0.0f);
+            for (int i = 0; i < req.nodeCount; ++i) {
+                nodesPacks[static_cast<size_t>(i)] =
+                    rawedit::compileNode(req.nodeChain[i]);
+                const rawedit::CompiledNode& p =
+                    nodesPacks[static_cast<size_t>(i)];
+                if (!p.curves.empty()) {
+                    std::memcpy(&atlas[static_cast<size_t>(i) * 3 * 512],
+                                p.curves.data(), p.curves.size() * sizeof(float));
+                }
+            }
+            glActiveTexture(GL_TEXTURE6);
+            glBindTexture(GL_TEXTURE_2D, nodesAtlasTex);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 512, 24, GL_RED,
+                            GL_FLOAT, atlas.data());
+            if (glErrorAfter("glTexSubImage2D(R32F nodes atlas)", &r.detail) != GL_NO_ERROR)
+                return r;
+            nodesChainKey = req.nodeChainHash;
+            nodesChainValid = true;
+            // The node-LUT slot content keys are (chainHash, lut-pointer)
+            // pairs, so a revision change naturally re-uploads below.
+        }
+        // --- the draw: per-frame uniform uploads from the cached packs.
+        glUseProgram(nodesProgram);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, slotTex[np2.in]);
+        glBindFramebuffer(GL_FRAMEBUFFER, slotFbo[np2.out]);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glUniform2i(nodesSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+        glUniform1i(nodesCountLoc, req.nodeCount);
+        glUniform1i(nodesOutputModeLoc, req.outputMode);
+        float mToDwg[9], mTo709[9];
+        rawedit::rec709ToDwgMatrix(mToDwg);
+        rawedit::dwgToRec709Matrix(mTo709);
+        glUniformMatrix3fv(nodesM709ToDwgLoc, 1, GL_TRUE, mToDwg);
+        glUniformMatrix3fv(nodesMDwgTo709Loc, 1, GL_TRUE, mTo709);
+        // The per-node packs (NodeParcel.h's layout); nodes past the chain
+        // carry the neutral pack so the shader's arrays stay complete.
+        float primary[8][4], gain[8][4], offs[8][4], gammaExp[8][4],
+              ySide[8][4], contrastPivot[8][4], wb[8][4], flags[8][4];
+        float hueMat[8][9];
+        int lutSlot = 0;
+        for (int i = 0; i < 8; ++i) {
+            const bool live = i < req.nodeCount;
+            const rawedit::CompiledNode& pack =
+                live ? nodesPacks[static_cast<size_t>(i)] : nodesNeutralPack;
+            const rawedit::GradeNode& n =
+                live ? req.nodeChain[i] : nodesNeutralNode;
+            for (int c = 0; c < 3; ++c) {
+                primary[i][c] = pack.lift[c];
+                gain[i][c] = pack.gain[c];
+                offs[i][c] = pack.offset[c];
+                gammaExp[i][c] = pack.gammaExp[c];
+                ySide[i][c] = pack.ySide[c];
+                wb[i][c] = pack.wb[c];
+            }
+            primary[i][3] = gain[i][3] = offs[i][3] = gammaExp[i][3] = 0.0f;
+            ySide[i][3] = 0.0f;
+            contrastPivot[i][0] = pack.contrast;
+            contrastPivot[i][1] = pack.pivot;
+            contrastPivot[i][2] = pack.sat;
+            contrastPivot[i][3] = pack.mix;
+            wb[i][3] = 0.0f;
+            for (int m = 0; m < 9; ++m)
+                hueMat[i][m] = pack.hueMat[m];
+            const bool lutOn = live && n.hasLut();
+            const int slot = lutOn ? lutSlot++ : -1;
+            flags[i][0] = (live && (n.hasCurves() || n.hasLog())) ? 1.0f : 0.0f;
+            flags[i][1] = lutOn ? 1.0f : 0.0f;
+            flags[i][2] = static_cast<float>(slot);
+            flags[i][3] = pack.lutMix;
+            if (lutOn) {
+                // --- the node-LUT revision upload (the stage-24 LUT port's
+                // pattern, per slot): the table crosses as RGBA16F once per
+                // (chain, Lut pointer) change; the .cube parse stays with
+                // the CALLER (the lutPath seam, the plan's
+                // strings-separately rule) - the pipeline never re-parses.
+                const uint64_t contentKey = req.nodeChainHash ^
+                    (reinterpret_cast<uintptr_t>(n.lut) * 0x9e3779b97f4a7c15ull);
+                if (nodeLutKey[slot] != contentKey) {
+                    const rawedit::Lut& lut = *n.lut;
+                    const size_t cnt = static_cast<size_t>(lut.n) * lut.n * lut.n;
+                    std::vector<uint16_t> rgba(cnt * 4);
+                    for (size_t e = 0; e < cnt; ++e) {
+                        rgba[e * 4 + 0] = floatToHalfBits(lut.rgb[e * 3 + 0]);
+                        rgba[e * 4 + 1] = floatToHalfBits(lut.rgb[e * 3 + 1]);
+                        rgba[e * 4 + 2] = floatToHalfBits(lut.rgb[e * 3 + 2]);
+                        rgba[e * 4 + 3] = 0x3c00u;
+                    }
+                    glActiveTexture(GL_TEXTURE7 + slot);
+                    glBindTexture(GL_TEXTURE_3D, nodeLutTex[slot]);
+                    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+                    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F,
+                                 static_cast<GLsizei>(lut.n),
+                                 static_cast<GLsizei>(lut.n),
+                                 static_cast<GLsizei>(lut.n), 0,
+                                 GL_RGBA, GL_HALF_FLOAT, rgba.data());
+                    if (glErrorAfter("glTexImage3D(RGBA16F node-lut)", &r.detail) != GL_NO_ERROR)
+                        return r;
+                    nodeLutKey[slot] = contentKey;
+                }
+                // The slot's shape + binding uniforms - the binding is
+                // core's own compileLutBinding on the node's interp (the
+                // stage-24 LUT port's contract). 4 x 12 floats per draw is
+                // the live-knob profile (plan SS5.5: uniform updates only).
+                const rawedit::CompiledLutBinding b =
+                    rawedit::compileLutBinding(n.lutInterp);
+                // Shape layout (the shader contract): .x = size n, .yzw =
+                // domainMin; the Hi vec4's .xyz = domainMax.
+                glUniform4f(nodesLutShapeLoc + slot, static_cast<float>(n.lut->n),
+                            n.lut->domainMin[0], n.lut->domainMin[1],
+                            n.lut->domainMin[2]);
+                glUniform4f(nodesLutShapeHiLoc + slot,
+                            n.lut->domainMax[0], n.lut->domainMax[1],
+                            n.lut->domainMax[2], 0.0f);
+                glUniformMatrix3fv(nodesLutWorkingLoc + slot, 1, GL_TRUE,
+                                   b.workingToInput);
+                glUniformMatrix3fv(nodesLutOutputLoc + slot, 1, GL_TRUE,
+                                   b.outputToWorking);
+            }
+        }
+        glUniform4fv(nodesPrimaryLoc, 8, &primary[0][0]);
+        glUniform4fv(nodesGainLoc, 8, &gain[0][0]);
+        glUniform4fv(nodesOffsetLoc, 8, &offs[0][0]);
+        glUniform4fv(nodesGammaExpLoc, 8, &gammaExp[0][0]);
+        glUniform4fv(nodesYSideLoc, 8, &ySide[0][0]);
+        glUniform4fv(nodesContrastPivotLoc, 8, &contrastPivot[0][0]);
+        glUniform4fv(nodesWbLoc, 8, &wb[0][0]);
+        glUniform4fv(nodesFlagsLoc, 8, &flags[0][0]);
+        for (int i = 0; i < 8; ++i)
+            glUniformMatrix3fv(nodesHueMatLoc + i, 1, GL_TRUE, hueMat[i]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(nodes)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("nodes", nodesOut);
+        chainTex = nodesOut;
+    }
     // --- draw 11: the TAIL pass (stages 23+24+OETF) into developTex ---------
     // The TAIL pass ALWAYS writes developTex — the owning session's
     // post-chain passes (the develop session's store/blit, the preview
-    // session's window/stats) read THAT texture.
+    // session's window/stats) read THAT texture. Color model v2 (F1-5):
+    // an outputMode-1 request draws the OpenDRT VARIANT program instead —
+    // the DRT takes the NODES pass's DWG-LINEAR output and writes display
+    // CODE VALUES directly (tonemap/LUT/OETF all skipped: the DRT output
+    // is display coded already, plan §3.4); the variant's uniforms ride
+    // the request's pre-compiled drtUniforms block.
+    const bool drtTail = runNodes && req.outputMode == 1;
+    if (drtTail) {
+        if (req.drtUniforms == nullptr) {
+            r.detail = "nodes: outputMode 1 needs the DRT uniform pack "
+                       "(recovery: the binding resolves the OpenDRT presets "
+                       "before the nodes request)";
+            return r;
+        }
+        glUseProgram(tailDrtProgram);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, slotTex[plan.finalSlot]);
+        glBindFramebuffer(GL_FRAMEBUFFER, developFbo);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glUniform2i(drtSizeLoc, static_cast<GLint>(w), static_cast<GLsizei>(h));
+        // --- the drtUniforms fold: the resolved preset + the Impl
+        // constructor's constants, CROSS-compiled Kotlin-side (the same
+        // pre-compiled-packs rule the node chain rides; the values are
+        // pinned by the JVM tests against core's own OpenDrt outputs in
+        // F1-6/F1-7). The block layout: [0] eotf (int-as-float), [1] hdr,
+        // [2] cwp, [3] normScalar, [4] normScalarHdr, then the 25 floats
+        // of the five hue pairs + the pt groups + the conf groups in the
+        // DRT_TAIL_UNIFORM_SLOTS order (GpuCropMap.h's requestCrop
+        // precedent: a flat float block defined once, consumed by name
+        // through the location table resolved at initNodes).
+        // The fold runs per draw (the live-knob profile; no recompile).
+        drtFoldUniforms(req.drtUniforms);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(tail-drt)", &r.detail) != GL_NO_ERROR) return r;
+        probePassFbo("tail-drt", developFbo);
+        const SteadyClock::time_point tDevelop1 = SteadyClock::now();
+        r.developUs = elapsedUs(tDevelop0, tDevelop1);
+        r.ok = true;
+        return r;
+    }
     glUseProgram(tailProgram);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, slotTex[plan.finalSlot]);
@@ -1873,6 +2370,53 @@ void GpuDevelopPipeline::Impl::teardown() {
     if (nrChromaVProgram != 0) { glDeleteProgram(nrChromaVProgram); nrChromaVProgram = 0; }
     if (nrLumaProgram != 0) { glDeleteProgram(nrLumaProgram); nrLumaProgram = 0; }
     if (storeProgram != 0) { glDeleteProgram(storeProgram); storeProgram = 0; }
+    // The F1-5 additions (initNodes' own objects; guarded no-ops on a
+    // pre-F1-5 session — every handle starts at 0).
+    if (nodesProgram != 0) { glDeleteProgram(nodesProgram); nodesProgram = 0; }
+    if (tailDrtProgram != 0) { glDeleteProgram(tailDrtProgram); tailDrtProgram = 0; }
+    for (int s = 0; s < 4; ++s) {
+        if (nodeLutTex[s] != 0) { glDeleteTextures(1, &nodeLutTex[s]); nodeLutTex[s] = 0; }
+    }
+    if (nodesAtlasTex != 0) { glDeleteTextures(1, &nodesAtlasTex); nodesAtlasTex = 0; }
+    nodesInitialized = false;
+    nodesChainValid = false;
+    nodesChainKey = 0;
+}
+
+// ---- the drtUniforms fold (F1-5) -------------------------------------------
+//
+// The flat block's layout lives in GpuDevelopPipeline.h (kDrtUniformSlots);
+// this is its ONE consumer — the locations were resolved at initNodes and
+// the per-draw cost is the live-knob profile (uniforms update, never a
+// recompile).
+
+void GpuDevelopPipeline::Impl::drtFoldUniforms(const float* b) {
+    glUniform1i(drtEotfLoc, static_cast<int>(b[0]));
+    glUniform1f(drtHdrLoc, b[1]);
+    glUniform1f(drtCwpLoc, b[2]);
+    glUniform1f(drtNormLoc, b[3]);
+    glUniform1f(drtNormHdrLoc, b[4]);
+    glUniform4fv(drtTnLoc, 1, &b[5]);
+    glUniform4fv(drtRsLoc, 1, &b[9]);
+    glUniform4fv(drtToeLoc, 1, &b[13]);
+    glUniform4fv(drtBrlRgbLoc, 1, &b[17]);
+    glUniform4fv(drtBrlpRgbLoc, 1, &b[21]);
+    glUniform4fv(drtLconLoc, 1, &b[25]);
+    glUniform4fv(drtHconLoc, 1, &b[29]);
+    glUniform4fv(drtTsLoc, 1, &b[33]);
+    glUniform2f(drtHueRLoc, b[37], b[38]);
+    glUniform2f(drtHueGLoc, b[39], b[40]);
+    glUniform2f(drtHueBLoc, b[41], b[42]);
+    glUniform2f(drtHueCLoc, b[43], b[44]);
+    glUniform2f(drtHueMLoc, b[45], b[46]);
+    glUniform2f(drtHueYLoc, b[47], b[48]);
+    glUniform4fv(drtConf0Loc, 1, &b[49]);
+    glUniform4fv(drtConf1Loc, 1, &b[53]);
+    glUniform4fv(drtConf2Loc, 1, &b[57]);
+    glUniform4fv(drtPtLoc, 1, &b[61]);
+    glUniform4fv(drtPt2Loc, 1, &b[65]);
+    glUniform4fv(drtPt3Loc, 1, &b[69]);
+    glUniform4fv(drtPt4Loc, 1, &b[73]);
 }
 
 // ---- public surface ---------------------------------------------------------
@@ -1956,6 +2500,19 @@ GLint GpuDevelopPipeline::storeSizeLoc() const { return impl_->storeSizeLoc; }
 GLuint GpuDevelopPipeline::scratchFbo() const { return impl_->scratchFbo; }
 GLuint GpuDevelopPipeline::outBuf() const { return impl_->outBuf; }
 uint64_t GpuDevelopPipeline::outBytes() const { return impl_->outBytes; }
+
+bool GpuDevelopPipeline::initNodes(const std::string& nodesFragmentSource,
+                                    const std::string& vertexSource,
+                                    const std::string& tailDrtSource,
+                                    NodesLimits* limits,
+                                    std::string* detail) {
+    return impl_->initNodes(nodesFragmentSource, vertexSource, tailDrtSource,
+                            limits, detail);
+}
+
+GpuDevelopPipeline::NodesLimits GpuDevelopPipeline::nodesLimits() const {
+    return impl_->limits;
+}
 
 void GpuDevelopPipeline::teardown() { impl_->teardown(); }
 
