@@ -90,6 +90,9 @@ import com.ritim.ritimcraw.data.LutTransfer
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.audio.AudioLinkState
+import com.ritim.ritimcraw.BuildConfig
+import com.ritim.ritimcraw.engine.DisplayRateApply
+import com.ritim.ritimcraw.engine.PlaybackTrace
 import com.ritim.ritimcraw.engine.ImageStabActivity
 import com.ritim.ritimcraw.engine.ImageStabLoads
 import com.ritim.ritimcraw.engine.StabilizationGate
@@ -1476,6 +1479,11 @@ fun ClipEditorScreen(
         // transport (slider position + playback cursor), and the clip's real
         // MCRAW timestamps fetched once after the session opens.
         var isPlaying by remember(sourceId) { mutableStateOf(false) }
+        // P3: shared between the playback loop and the render publish site (a
+        // plain array, not state: it must never recompose anything).
+        val playbackTraceHolder = remember(sourceId) { arrayOfNulls<PlaybackTrace>(1) }
+        // P3: the live preview Surface (GPU path only), for the display-rate request.
+        var displaySurface by remember { mutableStateOf<android.view.Surface?>(null) }
         var positionFrame by remember(sourceId) { mutableStateOf(0) }
         var ptsUs by remember(sourceId) { mutableStateOf<LongArray?>(null) }
         // Slider-drag tier state (SliderTiers machine): while the finger is
@@ -2979,6 +2987,9 @@ fun ClipEditorScreen(
                                     errorText = e.message
                                 },
                             )
+                            if (BuildConfig.DEBUG && req.renderClass == RenderClass.PLAYBACK && !lastRenderFailed) {
+                                playbackTraceHolder[0]?.onPublished(System.nanoTime() / 1000)
+                            }
                             lastPublished = req.sequence
                         }
                         // Progressive pause settle (owner request 2026-11-11
@@ -3258,16 +3269,25 @@ fun ClipEditorScreen(
             ImageStabActivity.playing = isPlaying
             onDispose { ImageStabActivity.playing = false }
         }
+        // P3 (2026-11-25): one "ritim-trace" summary line per playback run
+        // (picked / shown / late / dropped, published-frame gap p50/p95).
+        // The holder is shared with the publish site below (a plain array,
+        // not state: it must never recompose anything).
         LaunchedEffect(isPlaying, ptsUs) {
             val pts = ptsUs ?: return@LaunchedEffect
             if (!isPlaying || pts.isEmpty()) return@LaunchedEffect
             val startFrame = positionFrame
             val startUs = System.nanoTime() / 1000
             var lastRendered = -1
+            val periodUs = if (pts.size > 1) ((pts.last() - pts.first()) / (pts.size - 1)).coerceAtLeast(1L) else 33_333L
+            val trace = PlaybackTrace(periodUs)
+            if (BuildConfig.DEBUG) playbackTraceHolder[0] = trace
+            try {
             while (isPlaying) {
                 val elapsed = PtsTimeline.elapsedAt(pts, startFrame, System.nanoTime() / 1000 - startUs)
                 val idx = PtsTimeline.frameAt(pts, elapsed)
                 if (idx >= 0 && idx != lastRendered) {
+                    if (BuildConfig.DEBUG) trace.onPick(idx, elapsed, pts[idx])
                     positionFrame = idx
                     // Playback tier = the user's preview-quality choice
                     // (owner request 2026-11-11b section 3); the default
@@ -3303,6 +3323,12 @@ fun ClipEditorScreen(
                 }
                 val nextDelay = PtsTimeline.delayUntilNextUs(pts, idx, elapsed)
                 if (nextDelay > 0) delay(nextDelay / 1000) else delay(1)
+            }
+            } finally {
+                if (BuildConfig.DEBUG) {
+                    android.util.Log.i("ritim-trace", trace.summary(sourceId.toString(), previewQualityEffective.playbackMaxDim))
+                    playbackTraceHolder[0] = null
+                }
             }
         }
 
@@ -3374,6 +3400,22 @@ fun ClipEditorScreen(
             rawSampleFormat = if (sourcePath == SourcePath.MCRAW) "raw16" else null,
             rawWhiteLevel = session?.rawWhiteLevel ?: 0,
         )
+
+        // P3 (2026-11-25): match the display refresh rate to the clip while it
+        // PLAYS; released the moment it pauses/stops/leaves (the system picks
+        // again). Surface.setFrameRate on API 30+, the window's mode otherwise.
+        val displayActivity = run {
+            var c: android.content.Context? = androidx.compose.ui.platform.LocalContext.current
+            while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
+            c as? android.app.Activity
+        }
+        DisposableEffect(isPlaying, displaySurface, clipInfo.fps) {
+            val surf = displaySurface
+            if (isPlaying && clipInfo.fps > 0f) {
+                DisplayRateApply.begin(displayActivity, surf, clipInfo.fps.toDouble())
+            }
+            onDispose { if (isPlaying && clipInfo.fps > 0f) DisplayRateApply.end(displayActivity, surf) }
+        }
 
         // ---- Landscape workspace decision (owner request 2026-11-11d
         // sections 17.1-17.2) ----
@@ -3499,6 +3541,7 @@ fun ClipEditorScreen(
                         // the window. Never hide the CPU image until the
                         // handoff has actually succeeded. Ignore an old
                         // attach completing after a destroy/replacement.
+                        displaySurface = surface as? android.view.Surface
                         val generation = ++gpuSurfaceGeneration
                         gpuSurfaceLive = false
                         gpuWindowLive = false
