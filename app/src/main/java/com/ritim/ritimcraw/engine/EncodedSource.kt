@@ -748,6 +748,13 @@ class EncodedSource(
         // orientation go to the CPU oracle (honest fallback, noted in the trace).
         val gpuEligible = gpu != null && maxDim >= 0 && chainWire == null && lutPath == null &&
             upright && fmt.orientationDeg == 0 && grade.lutInterp == null && gpu.available()
+        // An 8K-class preview frame that cannot take the GPU door (a LUT, nodes, a rotated clip) would fall to the
+        // CPU oracle, which allocates the whole frame as ARGB (132 MB at 8K: OutOfMemoryError on the 256 MB
+        // heap, dozens per second, no frame ever shown). Refuse it up front with the OOM the screens already map
+        // to their short "preview too large" message. The export (maxDim < 0) is not preview and is untouched.
+        if (!gpuEligible && maxDim >= 0 && fmt.width.toLong() * fmt.height * 4L > CPU_PREVIEW_MAX_ARGB_BYTES) {
+            throw OutOfMemoryError("8K preview needs the GPU path (no LUT, nodes or rotated source)")
+        }
         val tDecode = System.nanoTime()
         val planes = if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex)
         val decodeWallNs = System.nanoTime() - tDecode
@@ -1308,6 +1315,8 @@ class EncodedSource(
         private const val AHEAD_JOIN_MS = 3_000L
         /** Longest edge the encoded GPU preview develops to (8K reduces by 2 to 3840x2160 = 33 MB ARGB). */
         private const val GPU_MAX_EDGE = 3840
+        /** The largest ARGB frame the CPU preview path may allocate (4K = 33 MB passes, 8K = 132 MB does not). */
+        private const val CPU_PREVIEW_MAX_ARGB_BYTES = 64L * 1024 * 1024
         /** A decoded frame above this many plane bytes (8K) is only queued one deep: heap limit 256 MB. */
         private const val AHEAD_BIG_FRAME_BYTES = 40L * 1024 * 1024
         /**
