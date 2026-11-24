@@ -2694,8 +2694,8 @@ object GlesShaderValidator {
             out += "missing the output-mode branch (`if (uNodesOutputMode == 1)` — NodesOutput::DwgLinear vs the 709 matrix back, the plan §3.2 tail)"
         }
         // The node LUT branch must sample through the managed-binding shape.
-        if (!s.contains("uNodeLut[s], t)")) {
-            out += "missing the node-LUT sample (`texture(uNodeLut[s], t)` — the stage-24 LUT port's own texel-center mapping, per slot)"
+        if (!s.contains("nodeLutSample(s, t)") || !s.contains("texture(uNodeLut[3], t).rgb")) {
+            out += "missing the node-LUT sample (`nodeLutSample(s, t)` over four constant-indexed `texture(uNodeLut[k], t)` — a dynamic sampler-array index does not compile on Adreno; the stage-24 LUT port's own texel-center mapping, per slot)"
         }
         // No develop-stage uniform may leak into NODES: the pass is a pure
         // chain transform, not a re-run of POST.

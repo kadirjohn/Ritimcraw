@@ -1327,6 +1327,20 @@ class NativeSource private constructor(
             drtUniforms: FloatArray?,
         ): Boolean
 
+        /** E0b-4b follow-up: the develop session's nodes doors (the preview pair, mirrored; see jni_bridge.cpp). */
+        @JvmStatic private external fun nativeDevelopSessionInitNodes(
+            sessionHandle: Long,
+            nodesSource: String,
+            vertexSource: String,
+            tailDrtSource: String,
+        ): IntArray?
+
+        @JvmStatic private external fun nativeDevelopSessionSetColorModelChain(
+            sessionHandle: Long,
+            chainWire: FloatArray,
+            drtUniforms: FloatArray?,
+        ): Boolean
+
         @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
 
         // ---- Cross-module wrappers (external decls stay private; see the
@@ -2304,6 +2318,27 @@ class NativeSource private constructor(
             return nativePreviewSessionSetColorModelChain(
                 sessionHandle, chainWire, drtUniforms,
             )
+        }
+
+        /** The develop session's NODES programs (see [jniPreviewSessionInitNodes]); [ok, uniformVectors, textureUnits]. */
+        internal fun jniDevelopSessionInitNodes(
+            sessionHandle: Long,
+            nodesSource: String,
+            vertexSource: String,
+            tailDrtSource: String,
+        ): IntArray? {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeDevelopSessionInitNodes(sessionHandle, nodesSource, vertexSource, tailDrtSource)
+        }
+
+        /** The develop session's node chain (the wire); the EMPTY wire clears it (see [jniPreviewSessionSetColorModelChain]). */
+        internal fun jniDevelopSessionSetColorModelChain(
+            sessionHandle: Long,
+            chainWire: FloatArray,
+            drtUniforms: FloatArray?,
+        ): Boolean {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeDevelopSessionSetColorModelChain(sessionHandle, chainWire, drtUniforms)
         }
 
         /** Last-error detail from the engine thread (thread-local in the bridge). */

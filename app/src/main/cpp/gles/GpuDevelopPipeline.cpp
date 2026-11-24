@@ -1120,8 +1120,23 @@ bool GpuDevelopPipeline::Impl::initNodes(const std::string& nodesSource,
         nodesYSideLoc < 0 || nodesContrastPivotLoc < 0 || nodesWbLoc < 0 ||
         nodesHueMatLoc < 0 || nodesFlagsLoc < 0 || nodesLutLoc < 0 ||
         nodesLutShapeLoc < 0 || nodesLutShapeHiLoc < 0 ||
-        nodesLutWorkingLoc < 0 || nodesLutOutputLoc < 0) {
-        *detail = "shader-contract: missing a nodes uniform";
+        // uNodeLutWorkingToInput is declared but never read by the NODES shader (the node-LUT leg is unwired and
+        // the wire refuses a LUT-carrying chain), so the driver drops it: -1 is expected, not a contract break.
+        nodesLutOutputLoc < 0) {
+        // Name the missing uniforms (a bare "missing a nodes uniform" hid which one the driver dropped).
+        std::string missing;
+        const std::pair<GLint, const char*> locs[] = {
+            {nodesSrcLoc, "uSrc"}, {nodesSizeLoc, "uSize"}, {nodesCountLoc, "uNodesCount"},
+            {nodesOutputModeLoc, "uNodesOutputMode"}, {nodesM709ToDwgLoc, "uM709ToDwg"},
+            {nodesMDwgTo709Loc, "uMDwgTo709"}, {nodesCurvesLoc, "uNodeCurves"},
+            {nodesPrimaryLoc, "uNodePrimary"}, {nodesGainLoc, "uNodeGain"}, {nodesOffsetLoc, "uNodeOffset"},
+            {nodesGammaExpLoc, "uNodeGammaExp"}, {nodesYSideLoc, "uNodeYSide"},
+            {nodesContrastPivotLoc, "uNodeContrastPivot"}, {nodesWbLoc, "uNodeWb"},
+            {nodesHueMatLoc, "uNodeHueMat"}, {nodesFlagsLoc, "uNodeFlags"}, {nodesLutLoc, "uNodeLut"},
+            {nodesLutShapeLoc, "uNodeLutShape"}, {nodesLutShapeHiLoc, "uNodeLutShapeHi"},
+            {nodesLutOutputLoc, "uNodeLutOutputToWorking"}};
+        for (const auto& l : locs) if (l.first < 0) missing += std::string(missing.empty() ? "" : ",") + l.second;
+        *detail = "shader-contract: missing a nodes uniform (" + missing + ")";
         return false;
     }
     drtSrcLoc = resolve(tailDrtProgram, "uSrc");
@@ -2283,8 +2298,10 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
                 glUniform4f(nodesLutShapeHiLoc + slot,
                             n.lut->domainMax[0], n.lut->domainMax[1],
                             n.lut->domainMax[2], 0.0f);
-                glUniformMatrix3fv(nodesLutWorkingLoc + slot, 1, GL_TRUE,
-                                   b.workingToInput);
+                if (nodesLutWorkingLoc >= 0) {  // the shader may have dropped it (declared, never read)
+                    glUniformMatrix3fv(nodesLutWorkingLoc + slot, 1, GL_TRUE,
+                                       b.workingToInput);
+                }
                 glUniformMatrix3fv(nodesLutOutputLoc + slot, 1, GL_TRUE,
                                    b.outputToWorking);
             }
