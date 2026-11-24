@@ -165,6 +165,21 @@ class GoldenV1MigrationParityTest {
         // The materialized record's GradeK is the neutral grade.
         val never = ClipGradeV2.parse(v2Grades["never-graded"] as Map<*, *>).toGradeK()
         assertEquals(GradeK(), never)
+
+        // §7's gate proof: the v2 records fed through the adapter drive the
+        // SAME stabilization verdicts the v1 records did (the gate is the
+        // unchanged StabilizationGate.engineFor input contract).
+        val gate = com.ritim.ritimcraw.engine.StabilizationGate
+        for ((id, v1) in v1Grades) {
+            val v2 = ClipGradeV2.parse(v2Grades[id] as Map<*, *>).toGradeK()!!
+            assertEquals(
+                "engine verdict mismatch on $id",
+                gate.engineFor(v1, "/g.gcsv", imageAnalysisReady = true,
+                    imageEnabled = true, gyroEnabled = true),
+                gate.engineFor(v2, "/g.gcsv", imageAnalysisReady = true,
+                    imageEnabled = true, gyroEnabled = true),
+            )
+        }
     }
 
     @Test

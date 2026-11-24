@@ -94,6 +94,43 @@ class GradeV2MigrationTest {
         assertEquals("ok", jobs.first { it["id"] == "d" }["detail"])
     }
 
+    /**
+     * §7's test vector (v), the exports snapshot leg: the SAME stab
+     * folding rules (i)-(iii) apply to exports[].snapshot — carried engine,
+     * explicit 0 when absent, no group when off — and read back through
+     * the GradeK adapter (the export path's StabilizationGate input).
+     */
+    @Test
+    fun exports_snapshot_stab_folding_follows_the_same_rules() {
+        val root = parseV1(
+            """{"exports":[
+               {"id":"gyro","sourceId":"a","snapshot":{"version":1,"stabilization":true,
+                  "stabilizationMode":2,"stabilizationStrength":70.0},"target":"MP4","state":"QUEUED"},
+               {"id":"image","sourceId":"a","snapshot":{"version":1,"stabilization":true,
+                  "stabilizationEngine":1},"target":"MP4","state":"QUEUED"},
+               {"id":"off","sourceId":"a","snapshot":{"version":1,"stabilization":false,
+                  "stabilizationStrength":99.0},"target":"MP4","state":"QUEUED"}]}""",
+        )
+        @Suppress("UNCHECKED_CAST")
+        val records = (fromV1(root)["exports"] as List<*>)
+            .associate { j -> (j as Map<*, *>)["id"] as String to j }
+
+        // (i) engine absent -> explicit 0, all sub values carried.
+        val gyroStab = stabOfSnapshot(records.getValue("gyro"))!!
+        assertEquals(0.0, gyroStab["engine"])
+        assertEquals(2.0, gyroStab["mode"])
+        assertEquals(70.0, gyroStab["strength"])
+        // (ii) engine 1 carried.
+        assertEquals(1.0, stabOfSnapshot(records.getValue("image"))!!["engine"])
+        // (iii) off -> no group at all.
+        assertNull(stabOfSnapshot(records.getValue("off")))
+    }
+
+    private fun stabOfSnapshot(job: Map<*, *>): Map<*, *>? {
+        val snapshot = job["snapshot"] as Map<*, *>
+        return ((snapshot["transform"] as Map<*, *>?)?.get("stab")) as Map<*, *>?
+    }
+
     @Test
     fun stab_folding_follows_the_absent_key_rules() {
         // (i) stabilization true, engine ABSENT -> engine 0 explicit.

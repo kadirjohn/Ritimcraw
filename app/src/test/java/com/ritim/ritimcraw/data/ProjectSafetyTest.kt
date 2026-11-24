@@ -221,6 +221,51 @@ class ProjectSafetyTest {
     }
 
     @Test
+    fun every_store_write_on_a_migrated_v2_file_keeps_the_stamp() {
+        // The §6.5 test F1-2 promised for the real v2: after the gate has
+        // migrated, EVERY store's write keeps version 2 — no store drags
+        // it down through its own SCHEMA_VERSION constant.
+        file.writeText(fullV1File(), StandardCharsets.UTF_8)
+        ProjectFile.open(projectFile())
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+
+        GradeStore(projectFile()).put("clip-new", GradeK(exposureEv = 1f))
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        ExportStore(projectFile()).add(
+            ExportJob(id = "job-3", sourceId = "clip-a", snapshot = GradeK(), target = Target.DNG, state = State.QUEUED),
+        )
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        PresetStore(projectFile()).put("Look 3", GradeK(contrast = 1f))
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        TimelineStore(projectFile()).save(TimelineStore.defaultProject())
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        AudioStore(projectFile()).save(AudioProject())
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        MetadataStore(projectFile()).replaceAll(emptyMap())
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        GyroStore(FakeResolver(), projectFile(), File(tmp.root, "gyros").apply { mkdirs() })
+            .import("content://gyro/1", "log")
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        LutStore(FakeResolver(), projectFile(), File(tmp.root, "luts").apply { mkdirs() })
+            .import("content://lut/1", "cube")
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        SourceRepository(FakeResolver(), projectFile()).import("content://clip/2")
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        PreviewQualityStore(projectFile()).put(PreviewQuality.HIGH)
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        ThemeStore(projectFile()).put(ThemeMode.DARK)
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+        PreviewStatsStore(projectFile()).put(false)
+        assertTrue(file.readText(StandardCharsets.UTF_8).startsWith("{\"version\":2"))
+
+        // And the file still parses as v2 with intact sections.
+        val reopened = ProjectFile.open(projectFile())
+        assertTrue(reopened is ProjectFile.Outcome.Open)
+        assertEquals(2, ProjectMigrations.CURRENT_VERSION)
+        assertEquals(1, ProjectMigrations.MIGRATIONS.size)
+    }
+
+    @Test
     fun running_export_rows_fail_honestly_through_the_gate() {
         // K13 end-to-end: a RUNNING row in a v1 file lands FAILED with the
         // recovery note; nothing else about the row changes.
