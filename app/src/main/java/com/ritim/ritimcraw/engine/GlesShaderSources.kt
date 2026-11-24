@@ -2642,6 +2642,11 @@ uniform float uZebraAlpha;     // [0,1]: the black blend fraction
 
 out vec4 oCol;
 
+// The 8-bit level of a float color: clamp [0,1], round-ties-up x255 (toByte's shape).
+vec3 q8(vec3 v) {
+    return floor(clamp(v, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+}
+
 void main() {
     // Destination pixel -> rect-local [0,1]. Pixels outside the rect are
     // the letterbox bars: black, not a smeared edge sample.
@@ -2709,10 +2714,17 @@ void main() {
         ivec2 p0 = clamp(ivec2(floor(sp - 0.5)), ivec2(0), uSrcSize - ivec2(1));
         ivec2 p1 = min(p0 + 1, uSrcSize - 1);  // the +1 tap, per axis
         vec2 f = clamp(sp - 0.5 - vec2(p0), 0.0, 1.0);  // coerced weights
-        vec3 c00 = texelFetch(uSrc, p0, 0).rgb;
-        vec3 c10 = texelFetch(uSrc, ivec2(p1.x, p0.y), 0).rgb;
-        vec3 c01 = texelFetch(uSrc, ivec2(p0.x, p1.y), 0).rgb;
-        vec3 c11 = texelFetch(uSrc, p1, 0).rgb;
+        // Each tap is quantized to the 8-bit level the CPU twin interpolates
+        // (clamp [0,1], round-ties-up x255): the CPU samples the already
+        // clamped/rounded ARGB, while this texture is float and may hold
+        // values above 1.0 (clipped highlights), so interpolating the raw
+        // taps and clamping afterwards disagreed with the CPU on every
+        // clipped edge and speck (device crop sweep 2026-11-25: sparse
+        // 40-80 LSB outliers on highlights).
+        vec3 c00 = q8(texelFetch(uSrc, p0, 0).rgb);
+        vec3 c10 = q8(texelFetch(uSrc, ivec2(p1.x, p0.y), 0).rgb);
+        vec3 c01 = q8(texelFetch(uSrc, ivec2(p0.x, p1.y), 0).rgb);
+        vec3 c11 = q8(texelFetch(uSrc, p1, 0).rgb);
         vec3 topo = c00 + (c10 - c00) * f.x;
         vec3 bottom = c01 + (c11 - c01) * f.x;
         c = topo + (bottom - topo) * f.y;
