@@ -336,4 +336,74 @@ class EncodedYuvPassParityTest {
             NativeSource.jniDevelopSessionClose(session)
         }
     }
+
+    // ---- the LUT stage on an encoded frame (encoded GPU door, owner request 2026-11-24) ----
+
+    /** A 17^3 .cube that is clearly not the identity: a gamma lift mixed with a channel rotation. */
+    private fun writeTestCube(): java.io.File {
+        val n = 17
+        val sb = StringBuilder("TITLE \"encoded-parity\"\nLUT_3D_SIZE $n\n")
+        for (b in 0 until n) for (g in 0 until n) for (r in 0 until n) {
+            val rf = r / (n - 1f); val gf = g / (n - 1f); val bf = b / (n - 1f)
+            val lift = { v: Float -> Math.pow(v.toDouble(), 0.85).toFloat() }
+            val outR = 0.8f * lift(rf) + 0.2f * gf
+            val outG = 0.8f * lift(gf) + 0.2f * bf
+            val outB = 0.8f * lift(bf) + 0.2f * rf
+            sb.append(String.format(java.util.Locale.ROOT, "%.6f %.6f %.6f\n", outR, outG, outB))
+        }
+        val f = java.io.File(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "encoded-parity.cube")
+        f.writeText(sb.toString())
+        return f
+    }
+
+    @Test
+    fun a_lut_on_an_encoded_frame_matches_the_cpu_oracle() {
+        val cube = writeTestCube()
+        val session = com.ritim.ritimcraw.export.NativeGpuDevelop.openSession()
+        assertTrue("the develop session did not open", session > 0)
+        try {
+            val lines = ArrayList<String>()
+            var worst = 0
+            val failures = ArrayList<String>()
+            for ((i, caseIndex) in intArrayOf(4, 8).withIndex()) {
+                val base = cases[caseIndex]
+                val f = fixture(320, 180, base.bits, 0x5151 + 17 * i)
+                val reduce = 2
+                val small = reduceFrame(f, reduce)
+                val spec = EncodedColorSpec(
+                    profile = SourceProfile(
+                        primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                        range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                        primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                        rangeProvenance = null, bitDepthProvenance = null,
+                    ),
+                    declaredBitDepth = base.bits,
+                )
+                val grade = GradeK().copy(lutStrength = 100f)
+                val frame = YuvFrameK(small.w, small.h, true, small.y, small.c, ByteArray(0), small.stride, small.uvStride, base.bits)
+                val cpu = NativeEncodedDeveloper.develop(frame, spec, 0, grade, cube.path, null)
+                assertNotNull("case $caseIndex: the CPU oracle returned null", cpu)
+                val gpu = NativeSource.jniDevelopSessionRenderYuvParcel(
+                    session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                    spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, reduce,
+                    GradeParcel.encode(grade), cube.path, 1.0f,
+                )
+                assertNotNull("case $caseIndex: the chain returned null (${NativeSource.previewLastError()})", gpu)
+                val n = small.w * small.h
+                val stats = GradeParitySweep.compare(gpu!!, GradeParitySweep.argbBytes(cpu!!.copyOfRange(2, 2 + n)))
+                val line = String.format(java.util.Locale.ROOT, "lut case %d (%dx%d): maxDiffLsb=%d mismatch=%.4f%% over1=%.4f%%",
+                    caseIndex, small.w, small.h, stats.maxDiffLsb, stats.mismatchPct, stats.over1Pct)
+                Log.i("ritim-parity", "e0b-lut $line")
+                lines += line
+                if (stats.maxDiffLsb > worst) worst = stats.maxDiffLsb
+                if (stats.mismatchPct > STRICT_MISMATCH_BOUND_PCT) failures += "case $caseIndex: ${stats.mismatchPct}%"
+            }
+            assertTrue(
+                "encoded LUT GPU vs CPU oracle: worst maxDiffLsb=$worst, over-bound=$failures\n" + lines.joinToString("\n"),
+                worst <= 1 && failures.isEmpty(),
+            )
+        } finally {
+            NativeSource.jniDevelopSessionClose(session)
+        }
+    }
 }

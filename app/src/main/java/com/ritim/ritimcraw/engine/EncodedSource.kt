@@ -446,7 +446,8 @@ object EncodedYuv {
  */
 interface EncodedGpuDeveloper {
     fun available(): Boolean
-    fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int): IntArray?
+    /** [lutPath] = the selected .cube (null = no LUT); the LUT binding rides in [grade] (strength, interpretation). */
+    fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int, lutPath: String? = null): IntArray?
     fun close()
 }
 
@@ -465,13 +466,21 @@ internal class NativeEncodedGpuDeveloper : EncodedGpuDeveloper {
         return session > 0
     }
 
-    override fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int): IntArray? {
+    override fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int, lutPath: String?): IntArray? {
         if (!ensure()) return null
         val rgb = try {
             NativeSource.jniDevelopSessionRenderYuvParcel(
                 session, frame.y, frame.u, frame.width, frame.height, frame.stride, frame.uvStride,
                 frame.bitDepth, color.fullRange, color.nativeMatrix, color.nativeTransfer, color.nativePrimaries,
                 reduce, GradeParcel.encode(grade),
+                // The LUT binding, exactly as NativeEncodedDeveloper hands it to the CPU door (strength 0..1,
+                // the managed interpretation by value, -1 = the legacy shape).
+                lutPath, grade.lutStrength / 100f,
+                grade.lutInterp?.role?.value ?: -1,
+                grade.lutInterp?.input?.gamut?.value ?: -1,
+                grade.lutInterp?.input?.transfer?.value ?: -1,
+                grade.lutInterp?.output?.gamut?.value ?: -1,
+                grade.lutInterp?.output?.transfer?.value ?: -1,
             )
         } catch (_: Throwable) { null } ?: return null
         val w = (frame.width + reduce - 1) / reduce
@@ -744,10 +753,11 @@ class EncodedSource(
         val fmt = requireOpen()
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
         val gpu = gpuDeveloper
-        // The GPU door covers the preview's common shape; nodes, a LUT, a rotated clip and a manual
-        // orientation go to the CPU oracle (honest fallback, noted in the trace).
-        val gpuEligible = gpu != null && maxDim >= 0 && chainWire == null && lutPath == null &&
-            upright && fmt.orientationDeg == 0 && grade.lutInterp == null && gpu.available()
+        // The GPU door covers the preview's common shape, including a LUT (the develop session's own 3D LUT
+        // texture, the same stage the MCRAW chain uses); nodes, a rotated clip and a manual orientation still
+        // go to the CPU oracle (honest fallback, noted in the trace).
+        val gpuEligible = gpu != null && maxDim >= 0 && chainWire == null &&
+            upright && fmt.orientationDeg == 0 && gpu.available()
         val tDecode = System.nanoTime()
         val planes = if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex)
         val decodeWallNs = System.nanoTime() - tDecode
@@ -761,7 +771,7 @@ class EncodedSource(
             val budget = if (maxDim == 0) GPU_MAX_EDGE else minOf(maxDim, GPU_MAX_EDGE)
             val reduce = maxOf(1, (maxOf(planes.width, planes.height) + budget - 1) / budget).coerceAtMost(8)
             val tDev = System.nanoTime()
-            val out = if (g != null) gpu!!.develop(g, color, grade, reduce) else null
+            val out = if (g != null) gpu!!.develop(g, color, grade, reduce, lutPath) else null
             val now = System.nanoTime()
             EncodedFrameTrace.logPath(
                 if (out != null) "gpu" else "cpu-fallback", planes.width, planes.height, planes.bitDepth, reduce,
