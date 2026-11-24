@@ -602,7 +602,7 @@ private fun SubPage(
             }
         }
         ExportPage.BITRATE -> PageFrame(stringResource(R.string.export_bitrate), stringResource(R.string.export_help_bitrate), onBack) {
-            for (l in BitrateLevel.entries) {
+            for (l in plan?.let { ExportSheetModel.offeredBitrateLevels(it, facts, settings.bitrateLevel) } ?: BitrateLevel.entries) {
                 val hint = if (l == BitrateLevel.CUSTOM) null else {
                     planFor(settings.copy(bitrateLevel = l, customMbps = null, uncapped = false))?.let {
                         listOfNotNull(ExportSheetState.bitrateValue(it), sizeOf(it)).joinToString(" · ")
@@ -791,6 +791,8 @@ private fun levelName(l: BitrateLevel): Int = when (l) {
     BitrateLevel.STANDARD -> R.string.export_level_standard
     BitrateLevel.HIGH -> R.string.export_level_high
     BitrateLevel.MAX -> R.string.export_level_max
+    BitrateLevel.HIGHER -> R.string.export_level_higher
+    BitrateLevel.CEILING -> R.string.export_level_ceiling
     BitrateLevel.CUSTOM -> R.string.export_level_custom
 }
 

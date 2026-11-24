@@ -636,4 +636,6 @@
     <string name="export_rate_cbr_hint">Hızı sabit tutar</string>
     <string name="export_keyframe_all_intra_hint">En büyük dosya, düzenlemesi en kolay</string>
     <string name="export_read_only_note">Klibi izler</string>
+    <string name="export_level_higher">Daha yüksek</string>
+    <string name="export_level_ceiling">Kodlayıcı azami</string>
 </resources>

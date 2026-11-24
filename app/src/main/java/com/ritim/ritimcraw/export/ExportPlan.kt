@@ -334,7 +334,10 @@ object ExportPlanner {
             (eff.customMbps ?: BitrateTable.mbps(BitrateLevel.STANDARD, input.width, input.height, input.fps, eff.codec))
                 .coerceAtLeast(BitrateTable.MIN_MBPS)
         } else {
-            BitrateTable.mbps(eff.bitrateLevel, input.width, input.height, input.fps, eff.codec)
+            BitrateTable.mbps(
+                eff.bitrateLevel, input.width, input.height, input.fps, eff.codec,
+                ceilingMbps = encoder?.bitrateRangeBps?.last?.let { it / 1_000_000.0 },
+            )
         }
         val range = encoder?.bitrateRangeBps
         if (range != null) {

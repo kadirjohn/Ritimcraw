@@ -647,4 +647,6 @@
     <string name="export_rate_cbr_hint">Keeps the rate steady</string>
     <string name="export_keyframe_all_intra_hint">Largest files, easiest to edit</string>
     <string name="export_read_only_note">Follows the clip</string>
+    <string name="export_level_higher">Higher</string>
+    <string name="export_level_ceiling">Encoder maximum</string>
 </resources>
