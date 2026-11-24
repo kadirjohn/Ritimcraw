@@ -29,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -433,17 +434,55 @@ fun ThemeSlider(
         ) {
             // The three slots, from x = 3dp.
             Row(Modifier.padding(start = TrackInset)) {
-                SlotIcons.forEach { icon ->
+                SlotIcons.forEachIndexed { slot, icon ->
                     Box(
                         modifier = Modifier.size(SlotWidth, TrackHeight),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(SlotIconSize),
-                        )
+                        // Alive slot icon: pose is a pure function of the
+                        // thumb position, read in the graphicsLayer
+                        // (draw phase) so nothing recomposes per frame.
+                        Box(
+                            Modifier
+                                .size(SlotIconSize)
+                                .graphicsLayer {
+                                    val st = ThemeIconMorph.slotState(
+                                        slot,
+                                        ThemeIconMorph.positionFromThumb(
+                                            thumbX, trackInsetPx, slotWidthPx,
+                                        ),
+                                    )
+                                    alpha = st.alpha
+                                    scaleX = st.scale
+                                    scaleY = st.scale * st.stretchY
+                                    translationX = st.translateXFrac * size.width
+                                    translationY = st.translateYFrac * size.height
+                                    rotationZ = st.rotationDeg
+                                },
+                        ) {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            // Brightened copy, faded in by proximity.
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        alpha = ThemeIconMorph.slotState(
+                                            slot,
+                                            ThemeIconMorph.positionFromThumb(
+                                                thumbX, trackInsetPx, slotWidthPx,
+                                            ),
+                                        ).brighten
+                                    },
+                            )
+                        }
                     }
                 }
             }
@@ -467,9 +506,9 @@ fun ThemeSlider(
             ) {
                 // Morphs with the thumb position (drag, settle, reverse).
                 ThemeThumbIcon(
-                    position = ThemeIconMorph.positionFromThumb(
-                        thumbX, trackInsetPx, slotWidthPx,
-                    ),
+                    position = {
+                        ThemeIconMorph.positionFromThumb(thumbX, trackInsetPx, slotWidthPx)
+                    },
                     tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(SlotIconSize),
                 )

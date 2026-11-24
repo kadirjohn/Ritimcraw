@@ -2,7 +2,6 @@ package com.ritim.ritimcraw.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -37,7 +36,68 @@ internal data class ThemeIconMorphState(
     val moonRotationDeg: Float,
 )
 
+/**
+ * Pose of one inactive TRACK-slot icon for a thumb position. Rest
+ * (thumb on another slot, distance >= 1) is the plain inactive icon:
+ * alpha 1, scale 1, no translate/rotate/stretch, brighten 0.
+ */
+internal data class ThemeSlotIconState(
+    val alpha: Float,
+    val scale: Float,
+    /** Horizontal shift as a fraction of the icon size, + = toward the right. */
+    val translateXFrac: Float,
+    /** Vertical shift as a fraction of the icon size, - = up. */
+    val translateYFrac: Float,
+    val rotationDeg: Float,
+    /** Extra vertical stretch multiplier (the "A" leans/stretches in). */
+    val stretchY: Float,
+    /** 0 = dim inactive tint, 1 = full (onSurface) tint. */
+    val brighten: Float,
+)
+
 internal object ThemeIconMorph {
+
+    /** Distance (slots) at which the anticipation is fully developed. */
+    const val NEAR = 0.3f
+
+    /** Distance at which the slot icon is fully handed off (hidden behind the thumb). */
+    const val HANDOFF = 0.1f
+
+    /**
+     * Pose of the track icon of [slot] for thumb [position] (0..2). A pure
+     * function of the distance d = |position - slot| (clamped to 0..1):
+     * - d >= 1: rest, exactly today's inactive icon,
+     * - d from 1 down to [NEAR]: anticipation ramps 0..1 (smoothstep):
+     *   rises, scales up, leans toward the thumb, brightens, and the
+     *   per-icon gesture develops (sun spins, A stretches, moon tilts),
+     * - d from [NEAR] to 0: the pose relaxes into place while the icon
+     *   fades out between d = NEAR and [HANDOFF], so under the thumb it
+     *   is gone (alpha 0) and never doubles the thumb glyph.
+     * Leaving a slot is the same function read the other way (symmetric).
+     */
+    fun slotState(slot: Int, position: Float): ThemeSlotIconState {
+        val s = slot.coerceIn(0, 2)
+        val signed = (position.coerceIn(0f, 2f) - s).coerceIn(-1f, 1f)
+        val d = kotlin.math.abs(signed)
+        val q = 1f - smoothstep(NEAR, 1f, d)
+        val g = q * smoothstep(0f, NEAR, d) // anticipation, relaxed under the thumb
+        val lean = (signed / NEAR).coerceIn(-1f, 1f)
+        val alpha = smoothstep(HANDOFF, NEAR, d)
+        return when (s) {
+            0 -> ThemeSlotIconState( // sun: spins in toward the thumb
+                alpha, 1f + 0.12f * g, lean * g * 0.12f, -0.10f * g,
+                lean * g * 45f, 1f, g,
+            )
+            1 -> ThemeSlotIconState( // A: leans and stretches
+                alpha, 1f + 0.08f * g, lean * g * 0.12f, -0.10f * g,
+                lean * g * 9f, 1f + 0.16f * g, g,
+            )
+            else -> ThemeSlotIconState( // moon: tilts as if rising
+                alpha, 1f + 0.10f * g, lean * g * 0.08f, -0.18f * g,
+                -lean * g * 24f, 1f, g,
+            )
+        }
+    }
 
     fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
         val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
@@ -113,9 +173,10 @@ private const val RAY_OUTER = 9.5f
  * works while dragging and reverses cleanly.
  */
 @Composable
-internal fun ThemeThumbIcon(position: Float, tint: Color, modifier: Modifier) {
-    val st = remember(position) { ThemeIconMorph.stateAt(position) }
+internal fun ThemeThumbIcon(position: () -> Float, tint: Color, modifier: Modifier) {
     Canvas(modifier) {
+        // Read in the draw phase: no recomposition per frame.
+        val st = ThemeIconMorph.stateAt(position())
         val k = size.minDimension / 24f
         val c = Offset(12f, 12f)
         val stroke = Stroke(width = STROKE_W, cap = StrokeCap.Round, join = StrokeJoin.Round)

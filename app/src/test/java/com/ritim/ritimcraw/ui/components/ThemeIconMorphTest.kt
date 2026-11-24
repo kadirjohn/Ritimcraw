@@ -68,4 +68,90 @@ class ThemeIconMorphTest {
         assertEquals(0f, ThemeIconMorph.positionFromThumb(-10f, 3f, 54f), eps)
         assertEquals(2f, ThemeIconMorph.positionFromThumb(500f, 3f, 54f), eps)
     }
+
+    // ---- track slot icons ----
+
+    private fun assertRest(s: ThemeSlotIconState) {
+        assertEquals(1f, s.alpha, eps)
+        assertEquals(1f, s.scale, eps)
+        assertEquals(0f, s.translateXFrac, eps)
+        assertEquals(0f, s.translateYFrac, eps)
+        assertEquals(0f, s.rotationDeg, eps)
+        assertEquals(1f, s.stretchY, eps)
+        assertEquals(0f, s.brighten, eps)
+    }
+
+    @Test fun slotInactiveRest_isTodaysPlainIcon() {
+        for (slot in 0..2) for (pos in 0..2) {
+            if (pos != slot) assertRest(ThemeIconMorph.slotState(slot, pos.toFloat()))
+        }
+    }
+
+    @Test fun slotActiveRest_isHiddenUnderThumb() {
+        for (slot in 0..2) {
+            val s = ThemeIconMorph.slotState(slot, slot.toFloat())
+            assertEquals(0f, s.alpha, eps)
+            assertEquals(1f, s.scale, eps)
+            assertEquals(0f, s.rotationDeg, eps)
+        }
+    }
+
+    @Test fun slotApproachRamps_areMonotonic() {
+        for (slot in 0..2) {
+            val dir = if (slot == 2) -1f else 1f
+            var prev = ThemeIconMorph.slotState(slot, slot + dir)
+            for (i in 1..50) {
+                val d = 1f - (1f - ThemeIconMorph.NEAR) * i / 50f
+                val s = ThemeIconMorph.slotState(slot, slot + dir * d)
+                assertTrue(s.brighten >= prev.brighten - eps)
+                assertTrue(s.scale >= prev.scale - eps)
+                assertTrue(s.translateYFrac <= prev.translateYFrac + eps)
+                assertTrue(s.stretchY >= prev.stretchY - eps)
+                prev = s
+            }
+            assertEquals(1f, prev.brighten, eps)
+        }
+    }
+
+    @Test fun slotState_isSymmetricAroundSlot() {
+        for (x in listOf(0.1f, 0.25f, 0.5f, 0.8f)) {
+            val a = ThemeIconMorph.slotState(1, 1f + x)
+            val b = ThemeIconMorph.slotState(1, 1f - x)
+            assertEquals(a.alpha, b.alpha, eps)
+            assertEquals(a.scale, b.scale, eps)
+            assertEquals(a.translateYFrac, b.translateYFrac, eps)
+            assertEquals(a.stretchY, b.stretchY, eps)
+            assertEquals(a.brighten, b.brighten, eps)
+            assertEquals(a.translateXFrac, -b.translateXFrac, eps)
+            assertEquals(a.rotationDeg, -b.rotationDeg, eps)
+        }
+    }
+
+    @Test fun slotState_clamps() {
+        for (slot in 0..2) {
+            assertEquals(ThemeIconMorph.slotState(slot, 0f), ThemeIconMorph.slotState(slot, -4f))
+            assertEquals(ThemeIconMorph.slotState(slot, 2f), ThemeIconMorph.slotState(slot, 7f))
+        }
+        assertEquals(ThemeIconMorph.slotState(0, 0.5f), ThemeIconMorph.slotState(-3, 0.5f))
+    }
+
+    @Test fun slotHandOff_noDoubleImage() {
+        for (slot in 0..2) {
+            for (d in listOf(0f, 0.05f, ThemeIconMorph.HANDOFF)) {
+                for (sign in listOf(-1f, 1f)) {
+                    val p = (slot + sign * d).coerceIn(0f, 2f)
+                    assertEquals(0f, ThemeIconMorph.slotState(slot, p).alpha, eps)
+                }
+            }
+        }
+        // The thumb glyph is (nearly) fully in by the time the slot icon is gone.
+        assertTrue(ThemeIconMorph.stateAt(0.1f).sunAlpha > 0.9f)
+        assertTrue(ThemeIconMorph.stateAt(0.9f).aAlpha > 0.9f)
+        assertTrue(ThemeIconMorph.stateAt(1.1f).aAlpha > 0.9f)
+        assertTrue(ThemeIconMorph.stateAt(1.9f).moonAlpha > 0.9f)
+    }
+
+    @Test fun slotState_isPure() {
+        assertEquals(ThemeIconMorph.slotState(2, 1.37f), ThemeIconMorph.slotState(2, 1.37f))
+    }
 }
