@@ -736,16 +736,17 @@ class EncodedSource(
         chainWire: FloatArray? = null,
         /**
          * E0b-4b: the preview's long-edge budget. > 0 lets the GPU path reduce first and develop the
-         * REDUCED frame (the CPU path always develops full resolution); 0 = full resolution (CPU).
+         * REDUCED frame (the CPU path always develops full resolution); 0 = SOURCE_MAX_DIM, also taken by the GPU
+         * path but capped at GPU_MAX_EDGE; a negative value (the export, default -1) keeps the CPU path.
          */
-        maxDim: Int = 0,
+        maxDim: Int = -1,
     ): IntArray {
         val fmt = requireOpen()
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
         val gpu = gpuDeveloper
         // The GPU door covers the preview's common shape; nodes, a LUT, a rotated clip and a manual
         // orientation go to the CPU oracle (honest fallback, noted in the trace).
-        val gpuEligible = gpu != null && maxDim > 0 && chainWire == null && lutPath == null &&
+        val gpuEligible = gpu != null && maxDim >= 0 && chainWire == null && lutPath == null &&
             upright && fmt.orientationDeg == 0 && grade.lutInterp == null && gpu.available()
         val tDecode = System.nanoTime()
         val planes = if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex)
@@ -754,7 +755,11 @@ class EncodedSource(
             val color = fmt.color.withDecodedBitDepth(planes.bitDepth)
             val tGpu = System.nanoTime()
             val g = EncodedYuv.toGpuFrame(planes)
-            val reduce = maxOf(1, (maxOf(planes.width, planes.height) + maxDim - 1) / maxDim).coerceAtMost(8)
+            // The tier can ask for the source size (a paused 8K frame: 7680x4320 = 132 MB of ARGB, which OOMs
+            // the 256 MB heap): the encoded GPU path never outputs more than GPU_MAX_EDGE on its long edge.
+            // maxDim 0 = SOURCE_MAX_DIM (the paused full-res follow-up), also capped here.
+            val budget = if (maxDim == 0) GPU_MAX_EDGE else minOf(maxDim, GPU_MAX_EDGE)
+            val reduce = maxOf(1, (maxOf(planes.width, planes.height) + budget - 1) / budget).coerceAtMost(8)
             val tDev = System.nanoTime()
             val out = if (g != null) gpu!!.develop(g, color, grade, reduce) else null
             val now = System.nanoTime()
@@ -1297,6 +1302,8 @@ class EncodedSource(
         private const val SAMPLE_SLACK = 32
         private const val AHEAD_TIMEOUT_NS = 30_000_000_000L
         private const val AHEAD_JOIN_MS = 3_000L
+        /** Longest edge the encoded GPU preview develops to (8K reduces by 2 to 3840x2160 = 33 MB ARGB). */
+        private const val GPU_MAX_EDGE = 3840
         /** A decoded frame above this many plane bytes (8K) is only queued one deep: heap limit 256 MB. */
         private const val AHEAD_BIG_FRAME_BYTES = 40L * 1024 * 1024
         /**
