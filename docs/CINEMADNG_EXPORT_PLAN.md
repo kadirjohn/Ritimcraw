@@ -11,8 +11,9 @@ CinemaDNG çıktısıyla uyumlu olmalı ve **DaVinci Resolve'da açılabilmeli**
   CFA/BlackLevel/WhiteLevel/ColorMatrix1/ActiveArea var. **TimeCodes / FrameRate / CinemaDNG'ye özgü etiket yazılmıyor**
   (dosyada `TimeCode`, `FrameRate` araması boş; yalnızca `ctime` include'u var).
 - `engine/DngSequence.kt` (843 satır) DNG dizisini **kaynak olarak okur** (`docs/DNG_SOURCE_PLAN.md`); yazan taraf yok.
-- WAV: kodda timeline sesi için PCM çıkarma var (`AudioRenders`, `TIMELINE_AUDIO_PLAN.md`); sürekli WAV dosyası olarak dışa
-  yazan bir yol doğrulanmadı.
+- WAV: **yazan bir yol yok.** `grep` ile `.wav`/`RIFF` yalnızca `engine/DngSequence.kt`'de (CinemaDNG kaynağının sesini okurken)
+  çıkıyor; `export/` altında ses/WAV dosyası yok. Oynatma tarafında `engine/EditorAudio.kt` ve MCRAW'ın tüm-klip PCM okuması
+  (ClipEditorScreen yorumunda anılıyor) var; WAV dışa yazımı bunlardan türetilir ama kodda henüz yok.
 
 ## Boyut ve süre tahmini (depolama uyarısı bu rakamlardan gelir)
 Varsayım (doğrulanacak): kare başına dosya ≈ genişlik × yükseklik × 2 bayt (16-bit sıkıştırmasız). Fikstür kaynağı 3840×2160
