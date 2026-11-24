@@ -578,4 +578,71 @@ class EncodedYuvPassParityTest {
             door.close()
         }
     }
+
+    // ---- the ENCODED frame through the PREVIEW session's window door (GPU window path) ----
+
+    @Test
+    fun an_encoded_frame_presents_through_the_preview_window_door() {
+        val session = NativeSource.jniPreviewSessionOpen(
+            GlesShaderSources.FULLSCREEN_VERTEX, GlesShaderSources.FULLSCREEN_VERTEX_310,
+            GlesShaderSources.DEVELOP_FRAGMENT_PRE, GlesShaderSources.DEVELOP_FRAGMENT_POST,
+            GlesShaderSources.DEVELOP_FRAGMENT_TAIL, GlesShaderSources.SHARPNESS_H, GlesShaderSources.SHARPNESS_V,
+            GlesShaderSources.DETAIL_H, GlesShaderSources.DETAIL_V, GlesShaderSources.WARP,
+            GlesShaderSources.NR_CHROMA_H, GlesShaderSources.NR_CHROMA_V, GlesShaderSources.NR_LUMA,
+            GlesShaderSources.STORE_FRAGMENT, GlesShaderSources.WINDOW_FRAGMENT,
+        )
+        assertTrue("preview session did not open (${NativeSource.previewLastError()})", session != 0L)
+        val readerThread = android.os.HandlerThread("window-door-reader").apply { start() }
+        val reader = android.media.ImageReader.newInstance(640, 360, android.graphics.PixelFormat.RGBA_8888, 3)
+        reader.setOnImageAvailableListener({ r -> r.acquireLatestImage()?.close() }, android.os.Handler(readerThread.looper))
+        try {
+            assertTrue("surface attach failed (${NativeSource.previewLastError()})",
+                NativeSource.jniPreviewSessionSetSurface(session, reader.surface))
+            val failures = ArrayList<String>()
+            for ((i, caseIndex) in intArrayOf(4, 8).withIndex()) {
+                val base = cases[caseIndex]
+                val f = fixture(640, 360, base.bits, 0x8181 + i)
+                val spec = EncodedColorSpec(
+                    profile = SourceProfile(
+                        primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                        range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                        primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                        rangeProvenance = null, bitDepthProvenance = null,
+                    ),
+                    declaredBitDepth = base.bits,
+                )
+                fun render(grade: GradeK): IntArray? = NativeSource.jniPreviewSessionRenderYuvParcel(
+                    session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                    spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, 1,
+                    GradeParcel.encode(grade), null, 0f, -1, -1, -1, -1, -1,
+                    PreviewStatsMode.SYNC.native, false, floatArrayOf(0f, 0f, 1f, 1f, 0f), false, 253, 12, 200f / 255f,
+                )
+                fun meanLuma(pack: IntArray): Double {
+                    val n = pack[0] * pack[1]
+                    var sum = 0.0
+                    for (k in 0 until n) { val a = pack[2 + k]; sum += 0.299 * ((a shr 16) and 255) + 0.587 * ((a shr 8) and 255) + 0.114 * (a and 255) }
+                    return sum / n
+                }
+                val neutral = render(GradeK())
+                val bright = render(GradeK(exposureEv = 1f))
+                if (neutral == null || bright == null) { failures += "case $caseIndex: window door null (${NativeSource.previewLastError()})"; continue }
+                val ln = meanLuma(neutral); val lb = meanLuma(bright)
+                // The CPU oracle's frame for the same grade (full size, then its own mean).
+                val frame = YuvFrameK(f.w, f.h, true, f.y, f.c, ByteArray(0), f.stride, f.uvStride, base.bits)
+                val cpu = NativeEncodedDeveloper.develop(frame, spec, 0, GradeK(), null, null)!!
+                var sum = 0.0
+                for (k in 2 until cpu.size) { val a = cpu[k]; sum += 0.299 * ((a shr 16) and 255) + 0.587 * ((a shr 8) and 255) + 0.114 * (a and 255) }
+                val lc = sum / (cpu.size - 2)
+                Log.i("ritim-parity", String.format(java.util.Locale.ROOT,
+                    "e0b-window case %d: pack %dx%d meanLuma neutral=%.2f +1EV=%.2f | CPU oracle neutral=%.2f", caseIndex, neutral[0], neutral[1], ln, lb, lc))
+                if (!(lb > ln + 5)) failures += "case $caseIndex: +1 EV did not brighten the window door (neutral=$ln, +1EV=$lb)"
+                if (Math.abs(ln - lc) > 3.0) failures += "case $caseIndex: window door luma $ln vs CPU oracle $lc"
+            }
+            assertTrue("window door: $failures", failures.isEmpty())
+        } finally {
+            NativeSource.jniPreviewSessionClose(session)
+            reader.close()
+            readerThread.quitSafely()
+        }
+    }
 }

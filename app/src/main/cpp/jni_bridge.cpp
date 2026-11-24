@@ -4933,6 +4933,177 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
     }
 }
 
+// E0b-4b follow-up: the ENCODED twin of nativePreviewSessionRenderFrameParcel (see the comment inside).
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderYuvParcel(
+        JNIEnv* env, jclass, jlong sessionHandle,
+        jbyteArray yPlane, jbyteArray cPlane,
+        jint width, jint height, jint stride, jint uvStride, jint bitDepth, jboolean fullRange,
+        jint matrix, jint transfer, jint primaries, jint reduce,
+        jfloatArray gradeParcel,
+        jstring lutPath, jfloat lutStrength,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer,
+        jboolean warpActive, jfloatArray warpM, jint statsMode,
+        jboolean cropActive, jfloatArray cropParams,
+        jboolean zebraOn, jint zebraThreshold, jint zebraPeriod,
+        jfloat zebraAlpha) {
+    gles::DevelopGrade grade;
+    std::string parcelError;
+    if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 parcelError);
+        return nullptr;
+    }
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (sessionHandle <= 0 || sessionHandle > kMaxPreviewSessions) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "preview session: invalid session handle "
+                 "(recovery: reopen the preview)");
+        return nullptr;
+    }
+    gles::PreviewSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        session = gPreviewSessions[sessionHandle - 1].get();
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "preview session: session is closed "
+                 "(recovery: reopen the preview)");
+        return nullptr;
+    }
+    if (yPlane == nullptr || cPlane == nullptr || width <= 0 || height <= 0 || reduce < 1) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 "preview session (encoded): the decoded planes are missing "
+                 "(recovery: the preview falls back to the CPU develop)");
+        return nullptr;
+    }
+    // E0b-4b follow-up (2026-11-25): the ENCODED frame's door into the PREVIEW session, so an encoded clip can
+    // present through the GPU window (SurfaceView) like MCRAW does instead of reading the frame back into a
+    // bitmap. Same chain, same window/stats/crop/zebra passes (the session's runJob is source-agnostic: it calls
+    // pipeline.draw(req)); only the input differs: the YUV planes replace the CFA. Exposure/temp/tint ride the
+    // YUV pass and the tone-band fields are zeroed exactly like nativeDevelopSessionRenderYuvParcel (the encoded
+    // chain ignores stages 9-20; EncodedToneBridge drives highlights/shadows through the node chain instead).
+    const jsize yLen = env->GetArrayLength(yPlane);
+    const jsize cLen = env->GetArrayLength(cPlane);
+    std::string lutPathStr;
+    if (lutPath != nullptr) {
+        const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
+        if (lutChars != nullptr) { lutPathStr.assign(lutChars); env->ReleaseStringUTFChars(lutPath, lutChars); }
+    }
+    jfloat warpCopy[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    if (warpM != nullptr) env->GetFloatArrayRegion(warpM, 0, 9, warpCopy);
+    jfloat cropCopy[5] = {0, 0, 1, 1, 0};
+    if (cropParams != nullptr) env->GetFloatArrayRegion(cropParams, 0, 5, cropCopy);
+    jbyte* y = static_cast<jbyte*>(env->GetPrimitiveArrayCritical(yPlane, nullptr));
+    if (y == nullptr) return nullptr;
+    jbyte* c = static_cast<jbyte*>(env->GetPrimitiveArrayCritical(cPlane, nullptr));
+    if (c == nullptr) {
+        env->ReleasePrimitiveArrayCritical(yPlane, y, JNI_ABORT);
+        return nullptr;
+    }
+    gles::PreviewFrameResult res;
+    std::string errDetail;
+    int errCode = 0;
+    gles::PreviewFrameRequest req;
+    try {
+        static const rawedit::RawMeta kNoMeta{};
+        gles::EncodedYuvInput in;
+        in.y = reinterpret_cast<const uint8_t*>(y);
+        in.yLen = static_cast<size_t>(yLen);
+        in.c = reinterpret_cast<const uint8_t*>(c);
+        in.cLen = static_cast<size_t>(cLen);
+        in.params.width = width; in.params.height = height;
+        in.params.stride = stride; in.params.uvStride = uvStride;
+        in.params.bitDepth = bitDepth; in.params.fullRange = fullRange != JNI_FALSE;
+        in.params.matrix = matrix; in.params.transfer = transfer; in.params.primaries = primaries;
+        in.params.reduce = reduce;
+        in.params.exposureEv = grade.exposureEv;
+        in.params.tempK = grade.tempK;
+        in.params.tint = grade.tint;
+        gles::DevelopGrade g = grade;
+        g.exposureEv = 0.0f; g.tempK = 5600.0f; g.tint = 0.0f; g.asShot = true;
+        g.highlights = 0.0f; g.blackPoint = 0.0f; g.whitePoint = 0.0f; g.shadows = 0.0f;
+        g.midtones = 0.0f; g.contrast = 0.0f; g.saturation = 0.0f;
+        g.wheelShadowX = 0.0f; g.wheelShadowY = 0.0f; g.wheelMidX = 0.0f; g.wheelMidY = 0.0f;
+        g.wheelHighX = 0.0f; g.wheelHighY = 0.0f;
+        g.splitShadowHue = -1.0f; g.splitHighlightHue = -1.0f; g.splitBalance = 0.0f;
+        g.temporalNr = false; g.temporalStrength = 0.0f;
+        req.yuv = &in;
+        req.meta = &kNoMeta;
+        req.info.width = static_cast<uint32_t>((width + reduce - 1) / reduce);
+        req.info.height = static_cast<uint32_t>((height + reduce - 1) / reduce);
+        req.lutStrength = lutStrength;
+        req.lutPath = lutPathStr;
+        req.lutRole = lutRole;
+        req.lutInGamut = lutInGamut;
+        req.lutInTransfer = lutInTransfer;
+        req.lutOutGamut = lutOutGamut;
+        req.lutOutTransfer = lutOutTransfer;
+        req.warpActive = false;  // an encoded clip has no gyro warp
+        req.statsMode = gPreviewStatsEnabled.load(std::memory_order_relaxed)
+            ? gles::clampStatsMode(statsMode)
+            : gles::StatsReadbackMode::Off;
+        req.cropActive = cropActive == JNI_TRUE;
+        for (int i = 0; i < 5; ++i) req.cropParams[i] = cropCopy[i];
+        req.zebraOn = zebraOn == JNI_TRUE;
+        req.zebraThreshold = zebraThreshold;
+        req.zebraPeriod = zebraPeriod;
+        req.zebraAlpha = zebraAlpha;
+        res = session->renderFrame(req, g);
+    } catch (const std::bad_alloc&) {
+        errCode = 2;
+        errDetail = "preview session render (encoded): out of memory (recovery: free memory and retry)";
+    } catch (const std::exception& e) {
+        errCode = 2;
+        errDetail = std::string("preview session render (encoded): ") + e.what() + " (recovery: reopen the preview)";
+    }
+    env->ReleasePrimitiveArrayCritical(cPlane, c, JNI_ABORT);
+    env->ReleasePrimitiveArrayCritical(yPlane, y, JNI_ABORT);
+    if (errCode != 0) {
+        setError(errCode == 2 ? static_cast<int>(rawedit::ErrorCode::IoError) : static_cast<int>(rawedit::ErrorCode::Unsupported),
+                 kStageDevelop, errDetail);
+        return nullptr;
+    }
+    if (!res.ok || !res.presented) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "preview session render (encoded): " + res.detail +
+                     " (recovery: the preview falls back to the CPU develop)");
+        return nullptr;
+    }
+    const jsize n = static_cast<jsize>(res.argb8888.size());
+    if (res.width == 0 || res.height == 0 || n <= 0 || static_cast<size_t>(n) != res.argb8888.size()) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "preview session render (encoded): empty output (recovery: reopen the preview)");
+        return nullptr;
+    }
+    auto spanToJint = [](double us) -> jint {
+        if (!(us > 0.0)) return 0;
+        constexpr double kMaxJint = 2147483647.0;
+        if (us > kMaxJint) return static_cast<jint>(kMaxJint);
+        return static_cast<jint>(us);
+    };
+    jint tail[13] = {
+        static_cast<jint>(width), static_cast<jint>(height),
+        static_cast<jint>(res.developW), static_cast<jint>(res.developH),
+        static_cast<jint>(res.surfaceW), static_cast<jint>(res.surfaceH),
+        req.statsMode,
+        0, 0,  // decode / CFA spans: the encoded decode happens on the Kotlin side
+        spanToJint(res.uploadUs), spanToJint(res.developUs),
+        spanToJint(res.presentUs), spanToJint(res.statsUs),
+    };
+    constexpr jsize kTailLen = 13;
+    jintArray arr = env->NewIntArray(n + 2 + kTailLen);
+    if (arr == nullptr) return nullptr;
+    jint head[2] = {static_cast<jint>(res.width), static_cast<jint>(res.height)};
+    env->SetIntArrayRegion(arr, 0, 2, head);
+    env->SetIntArrayRegion(arr, 2, n, reinterpret_cast<const jint*>(res.argb8888.data()));
+    env->SetIntArrayRegion(arr, 2 + n, kTailLen, tail);
+    return arr;
+}
+
 JNIEXPORT void JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionClose(
         JNIEnv*, jclass, jlong sessionHandle) {

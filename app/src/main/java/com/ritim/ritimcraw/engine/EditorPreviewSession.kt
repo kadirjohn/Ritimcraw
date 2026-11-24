@@ -388,6 +388,38 @@ class EncodedPreviewSession private constructor(
     }
 
     /**
+     * E0b-4b follow-up: the decoded frame for the GPU window door ([EncodedSource.gpuInput]) on the engine thread;
+     * null = take the bitmap path. The caller returns it through [releaseGpuInput] after the render.
+     */
+    suspend fun gpuInput(frameIndex: Int, grade: GradeK, chainWire: FloatArray?, maxDim: Int): EncodedSource.EncodedGpuInput? {
+        if (closed.get() || frameIndex !in 0 until frames) return null
+        return suspendCoroutine { cont ->
+            try {
+                engine.execute {
+                    cont.resume(
+                        try {
+                            if (closed.get()) null else source.gpuInput(frameIndex, grade, chainWire, maxDim)
+                        } catch (t: Throwable) {
+                            null
+                        },
+                    )
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(null)
+            }
+        }
+    }
+
+    /** Hands a [gpuInput] result back (its planes return to the decoder's pool); safe from any thread. */
+    fun releaseGpuInput(input: EncodedSource.EncodedGpuInput) {
+        try {
+            engine.execute { runCatching { source.releaseGpuInput(input) } }
+        } catch (e: RejectedExecutionException) {
+            // Engine down: the arrays are left to the GC.
+        }
+    }
+
+    /**
      * ptsUs of frame [index] (presentation order). Runs on the engine
      * thread; -1 on any failure (throw-free, like the MCRAW session's
      * framePtsUs contract).

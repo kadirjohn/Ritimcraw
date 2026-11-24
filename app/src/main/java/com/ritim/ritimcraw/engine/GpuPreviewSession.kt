@@ -135,6 +135,33 @@ interface GpuPreviewDevelop {
     ): PreviewFrame?
 
     /**
+     * E0b-4b follow-up: the ENCODED frame's door (the decoded YUV planes replace the clip handle + frame index);
+     * same grade/LUT/stats/crop/zebra parameters, same published PreviewFrame. Null = not available (the default
+     * keeps every fake implementation of this interface valid): the caller keeps its bitmap path.
+     */
+    suspend fun renderYuvFrame(
+        sessionHandle: Long,
+        yuv: YuvFrameK,
+        color: EncodedColorSpec,
+        reduce: Int,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
+    ): PreviewFrame? = null
+
+    /**
      * The gyro warp resolver (the GPU warp port's commit b): the per-frame
      * plan verdict the render consumes — a 10-element array ([0] active
      * flag, [1..9] the composite M) or null = no verdict (the caller folds
@@ -303,6 +330,51 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
      * A3): the zebra quad passes through verbatim, LAST after the crop
      * pair.
      */
+    override suspend fun renderYuvFrame(
+        sessionHandle: Long,
+        yuv: YuvFrameK,
+        color: EncodedColorSpec,
+        reduce: Int,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
+    ): PreviewFrame? = suspendCoroutine { cont ->
+        try {
+            PreviewRenderer.previewEngine.execute {
+                cont.resume(
+                    try {
+                        renderArrayBlocking(
+                            NativeSource.jniPreviewSessionRenderYuvParcel(
+                                sessionHandle, yuv.y, yuv.u, yuv.width, yuv.height, yuv.stride, yuv.uvStride,
+                                yuv.bitDepth, color.fullRange, color.nativeMatrix, color.nativeTransfer,
+                                color.nativePrimaries, reduce, gradeParcel,
+                                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+                                statsMode.native, cropActive, cropParams,
+                                zebraOn, zebraThreshold, zebraPeriod, zebraAlpha,
+                            )
+                        )
+                    } catch (t: Throwable) {
+                        null
+                    }
+                )
+            }
+        } catch (e: RejectedExecutionException) {
+            cont.resume(null)
+        }
+    }
+
     override suspend fun renderFrame(
         sessionHandle: Long,
         clipHandle: Long,
@@ -618,6 +690,40 @@ class GpuPreviewSession(
                 warpActive, warpM, statsMode,
                 cropActive, cropParams,
                 zebraOn, zebraThreshold, zebraPeriod, zebraAlpha,
+            )
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** The ENCODED twin of [render]: the decoded planes instead of a clip handle + frame index. Null = fall back. */
+    suspend fun renderEncoded(
+        yuv: YuvFrameK,
+        color: EncodedColorSpec,
+        reduce: Int,
+        gradeParcel: FloatArray,
+        lutPath: String?,
+        lutStrength: Float,
+        lutRole: Int,
+        lutInGamut: Int,
+        lutInTransfer: Int,
+        lutOutGamut: Int,
+        lutOutTransfer: Int,
+        statsMode: PreviewStatsMode,
+        cropActive: Boolean,
+        cropParams: FloatArray,
+        zebraOn: Boolean,
+        zebraThreshold: Int,
+        zebraPeriod: Int,
+        zebraAlpha: Float,
+    ): PreviewFrame? {
+        val h = handle
+        if (h == 0L || closed.get()) return null
+        return try {
+            develop.renderYuvFrame(
+                h, yuv, color, reduce, gradeParcel,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+                statsMode, cropActive, cropParams, zebraOn, zebraThreshold, zebraPeriod, zebraAlpha,
             )
         } catch (t: Throwable) {
             null
