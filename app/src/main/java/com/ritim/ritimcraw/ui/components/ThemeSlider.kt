@@ -465,9 +465,11 @@ fun ThemeSlider(
                 Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    imageVector = SlotIcons[displayIndex.coerceIn(0, ThemeSliderMath.MAX_INDEX)],
-                    contentDescription = null,
+                // Morphs with the thumb position (drag, settle, reverse).
+                ThemeThumbIcon(
+                    position = ThemeIconMorph.positionFromThumb(
+                        thumbX, trackInsetPx, slotWidthPx,
+                    ),
                     tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(SlotIconSize),
                 )
