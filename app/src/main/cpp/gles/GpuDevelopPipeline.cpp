@@ -379,17 +379,18 @@ inline uint16_t floatToHalfBits(float f) {
 inline void bindLutDummyTex(GLuint tex) {
     glActiveTexture(GL_TEXTURE5);
     glBindTexture(GL_TEXTURE_3D, tex);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // RGBA32F + NEAREST: the shader fetches texels and blends them itself (lutSample), so no float filtering
+    // extension is needed and the table keeps full precision.
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    const uint16_t dummy[16] = {0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u,
-                                0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u,
-                                0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u,
-                                0x3c00u, 0x3c00u, 0x3c00u, 0x3c00u};
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F, 2, 2, 2, 0,
-                 GL_RGBA, GL_HALF_FLOAT, dummy);
+    const float dummy[32] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                             1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                             1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA32F, 2, 2, 2, 0,
+                 GL_RGBA, GL_FLOAT, dummy);
 }
 
 // The stage-24 neutral pins (the LUT port, commit (a)): the values the TAIL
@@ -1716,30 +1717,29 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
             if (lutParsedPath == path && lutParsed != nullptr) {
                 const rawedit::Lut& lut = *lutParsed;
                 const size_t n = static_cast<size_t>(lut.n);
-                // rgb -> rgba interleave through the half converter, in the
-                // table's own s/r/t order (no reordering).
-                std::vector<uint16_t> rgba(n * n * n * 4);
+                // rgb -> rgba32f interleave, in the table's own s/r/t order (no reordering).
+                std::vector<float> rgba(n * n * n * 4);
                 const size_t count = n * n * n;
                 for (size_t e = 0; e < count; ++e) {
-                    rgba[e * 4 + 0] = floatToHalfBits(lut.rgb[e * 3 + 0]);
-                    rgba[e * 4 + 1] = floatToHalfBits(lut.rgb[e * 3 + 1]);
-                    rgba[e * 4 + 2] = floatToHalfBits(lut.rgb[e * 3 + 2]);
-                    rgba[e * 4 + 3] = 0x3c00u;  // alpha unused, pinned 1.0
+                    rgba[e * 4 + 0] = lut.rgb[e * 3 + 0];
+                    rgba[e * 4 + 1] = lut.rgb[e * 3 + 1];
+                    rgba[e * 4 + 2] = lut.rgb[e * 3 + 2];
+                    rgba[e * 4 + 3] = 1.0f;  // alpha unused, pinned 1.0
                 }
                 if (lutTex == 0) glGenTextures(1, &lutTex);
                 glActiveTexture(GL_TEXTURE5);
                 glBindTexture(GL_TEXTURE_3D, lutTex);
-                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-                glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F,
+                glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA32F,
                              static_cast<GLsizei>(lut.n),
                              static_cast<GLsizei>(lut.n),
                              static_cast<GLsizei>(lut.n), 0,
-                             GL_RGBA, GL_HALF_FLOAT, rgba.data());
-                if (glErrorAfter("glTexImage3D(RGBA16F lut)", &r.detail) != GL_NO_ERROR) return r;
+                             GL_RGBA, GL_FLOAT, rgba.data());
+                if (glErrorAfter("glTexImage3D(RGBA32F lut)", &r.detail) != GL_NO_ERROR) return r;
                 lutUploadedPath = path;
             }
         }

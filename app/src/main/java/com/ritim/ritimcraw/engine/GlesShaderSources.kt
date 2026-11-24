@@ -471,7 +471,7 @@ uniform float uSaturation;     // raw grade.saturation (stage 20); 0.0 = the CPU
     private const val kDevelopTailUniforms: String = """uniform int uTonemap;           // grade.tonemap (stage 23): 0 off, 1 ACES, 2-5 AgX Punchy/Golden/Greyscale/Base
 uniform int uOetf;              // 1 = apply linearToRec709 (export shape); 0 = linear endpoint (parity)
 uniform float uLutStrength;      // raw grade.lutStrength (stage 24), ALREADY [0,1] (GradeK percent / 100, mapped Kotlin-side); 0.0 = the CPU's own skip
-uniform highp sampler3D uLut;    // the parsed .cube as RGBA16F (hardware trilinear); unit 5; a dummy 2x2x2 table when no LUT is bound
+uniform highp sampler3D uLut;    // the parsed .cube as RGBA32F (texelFetch, trilinear by hand in lutSample); unit 5; a dummy 2x2x2 table when no LUT is bound
 uniform int uLutSize;            // the table's LUT_3D_SIZE N (2..128); 0 = no table uploaded (the strength gate keeps the sampler unread)
 uniform vec3 uLutDomainMin;      // the .cube DOMAIN_MIN per axis (default 0,0,0)
 uniform vec3 uLutDomainMax;      // the .cube DOMAIN_MAX per axis (default 1,1,1)
@@ -948,8 +948,29 @@ vec3 lutSample(vec3 enc) {
     vec3 span = uLutDomainMax - uLutDomainMin;
     vec3 scale = (n - 1.0) / max(span, vec3(1e-20));
     vec3 fx = clamp((enc - uLutDomainMin) * scale, vec3(0.0), vec3(n - 1.0));
-    vec3 t = (fx + 0.5) / n;
-    return texture(uLut, t).rgb;
+    // Trilinear BY HAND over a float32 table (2026-11-24): the old RGBA16F table through the hardware filter
+    // differed from the CPU lattice by 1 LSB on 3-5% of samples (half-float table values plus the filter's
+    // 8-bit fractional weights); fetching the eight lattice neighbours at full float precision and blending
+    // them here is the CPU's own arithmetic. Texel (x,y,z) = table entry (r,g,b), the layout glTexImage3D
+    // already gets, so no index reordering.
+    vec3 f0 = floor(fx);
+    vec3 w = fx - f0;
+    ivec3 i0 = ivec3(f0);
+    ivec3 hi = ivec3(int(n) - 1);
+    ivec3 i1 = min(i0 + ivec3(1), hi);
+    vec3 c000 = texelFetch(uLut, ivec3(i0.x, i0.y, i0.z), 0).rgb;
+    vec3 c100 = texelFetch(uLut, ivec3(i1.x, i0.y, i0.z), 0).rgb;
+    vec3 c010 = texelFetch(uLut, ivec3(i0.x, i1.y, i0.z), 0).rgb;
+    vec3 c110 = texelFetch(uLut, ivec3(i1.x, i1.y, i0.z), 0).rgb;
+    vec3 c001 = texelFetch(uLut, ivec3(i0.x, i0.y, i1.z), 0).rgb;
+    vec3 c101 = texelFetch(uLut, ivec3(i1.x, i0.y, i1.z), 0).rgb;
+    vec3 c011 = texelFetch(uLut, ivec3(i0.x, i1.y, i1.z), 0).rgb;
+    vec3 c111 = texelFetch(uLut, ivec3(i1.x, i1.y, i1.z), 0).rgb;
+    vec3 c00 = mix(c000, c100, w.x);
+    vec3 c10 = mix(c010, c110, w.x);
+    vec3 c01 = mix(c001, c101, w.x);
+    vec3 c11 = mix(c011, c111, w.x);
+    return mix(mix(c00, c10, w.y), mix(c01, c11, w.y), w.z);
 }
 
 // The CPU rawedit::evaluateManagedLutPixel (core/src/Color.cpp), verbatim:

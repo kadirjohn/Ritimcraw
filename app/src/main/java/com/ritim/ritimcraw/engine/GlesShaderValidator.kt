@@ -1005,12 +1005,10 @@ object GlesShaderValidator {
         // The CPU reference is rawedit::applyManagedLutStage +
         // evaluateManagedLutPixel + sampleLutPixel + compileLutBinding
         // (core/src/Color.cpp). The table lives in the session's 3D
-        // texture (RGBA16F, one mip, GL_LINEAR + CLAMP_TO_EDGE on all
-        // three axes — hardware trilinear), so the shader's contract is
-        // the EXACT texel-center mapping plus the role/strength order;
-        // every line below is load-bearing. Half-float table quantization
-        // makes the match bounded-error, not bit-exact — the JVM parity
-        // harness measures and pins the max LSB honestly.
+        // texture (RGBA32F, one mip, GL_NEAREST, read with texelFetch and
+        // blended by hand), so the shader's contract is the domain mapping,
+        // the lattice split plus the role/strength order; every line below
+        // is load-bearing. Device parity against the CPU lattice: 0 LSB.
         if (!s.contains("return x < 0.0 ? -pow(-x, e) : pow(x, e);")) {
             out += "missing the LUT signed pow " +
                 "(`return x < 0.0 ? -pow(-x, e) : pow(x, e);` — " +
@@ -1042,11 +1040,24 @@ object GlesShaderValidator {
                 "[0, n-1], which also keeps t inside the texel range so " +
                 "CLAMP_TO_EDGE never distorts an edge sample)"
         }
-        if (!s.contains("vec3 t = (fx + 0.5) / n;")) {
-            out += "missing the LUT texel-center map " +
-                "(`vec3 t = (fx + 0.5) / n;` — texel i's center is " +
-                "(i + 0.5)/n; this is what makes hardware trilinear equal " +
-                "the CPU's 8-corner lattice sum)"
+        // The lattice read (2026-11-24): the table is a float32 3D texture read with texelFetch and blended
+        // by hand, the CPU's own 8-corner trilinear arithmetic (the half-float table + hardware filter it
+        // replaced differed by 1 LSB on 3-5% of samples). The floor/fraction split, the index clamp at the
+        // table edge, the eight corner fetches and the nested mix are all required.
+        if (!s.contains("vec3 f0 = floor(fx);") || !s.contains("vec3 w = fx - f0;")) {
+            out += "missing the LUT lattice split " +
+                "(`vec3 f0 = floor(fx); vec3 w = fx - f0;` — sampleLutPixel's i0 and fractional weights)"
+        }
+        if (!s.contains("ivec3 i1 = min(i0 + ivec3(1), hi);")) {
+            out += "missing the LUT upper-corner clamp " +
+                "(`ivec3 i1 = min(i0 + ivec3(1), hi);` — the last lattice cell reads itself, as the CPU does)"
+        }
+        if (s.split("texelFetch(uLut, ").size - 1 < 8) {
+            out += "missing the eight LUT corner fetches (`texelFetch(uLut, ...)` x8)"
+        }
+        if (!s.contains("return mix(mix(c00, c10, w.y), mix(c01, c11, w.y), w.z);")) {
+            out += "missing the LUT trilinear blend " +
+                "(`return mix(mix(c00, c10, w.y), mix(c01, c11, w.y), w.z);` — x, then y, then z)"
         }
         // The managed chain: working -> input gamut -> encode -> sample ->
         // decode -> output gamut (evaluateManagedLutPixel, verbatim).
