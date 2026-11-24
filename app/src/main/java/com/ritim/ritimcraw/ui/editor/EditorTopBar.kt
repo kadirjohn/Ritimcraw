@@ -40,7 +40,11 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.activity.compose.BackHandler
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -406,10 +410,25 @@ private fun ExportSheet(
         ExportSheetState.Tab.entries.toList()
     }
     // P2: the sheet opens full height (no half-way stop) so the default list fits without scrolling.
+    // The sub-page lives here so the system back can close it first. The
+    // sheet's own back-dismiss is switched off (it ran before any handler
+    // inside the content and sent the owner straight to the timeline); the
+    // one handler below closes a sub-page, and only from the list hides the sheet.
+    var page by remember { mutableStateOf<ExportPage?>(null) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetScope = rememberCoroutineScope()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = sheetState,
+        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false),
     ) {
+        BackHandler {
+            if (page != null) {
+                page = null
+            } else {
+                sheetScope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() }
+            }
+        }
         Column(Modifier.fillMaxWidth()) {
             // The scrolling part; the action below it stays put (sticky). The
             // settings list (P2) owns the target choice too: it is the Format row.
@@ -443,6 +462,8 @@ private fun ExportSheet(
                         customWidthText = w.toString()
                         customHeightText = h.toString()
                     },
+                    page = page,
+                    onPage = { page = it },
                     targetDetail = {
                         // The non-MP4 targets' descriptions (also the Format sub-page's hints).
                         when (tab) {

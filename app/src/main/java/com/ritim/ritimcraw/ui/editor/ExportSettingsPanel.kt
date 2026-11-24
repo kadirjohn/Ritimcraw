@@ -1,6 +1,5 @@
 package com.ritim.ritimcraw.ui.editor
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -115,11 +114,10 @@ internal fun ExportBody(
     onCustomResolution: () -> Unit,
     onUseResolution: (Int, Int) -> Unit,
     targetDetail: @Composable () -> Unit,
+    page: ExportPage?,
+    onPage: (ExportPage?) -> Unit,
 ) {
-    var page by remember { mutableStateOf<ExportPage?>(null) }
     var advanced by remember { mutableStateOf(false) }
-    // The system back closes a sub-page first; only from the list does it dismiss the sheet.
-    BackHandler(enabled = page != null) { page = null }
 
     AnimatedContent(
         targetState = page,
@@ -148,7 +146,7 @@ internal fun ExportBody(
                 onUseResolution = onUseResolution,
                 advanced = advanced,
                 onAdvanced = { advanced = it },
-                onOpen = { page = it },
+                onOpen = { onPage(it) },
                 targetDetail = targetDetail,
             )
         } else {
@@ -156,7 +154,7 @@ internal fun ExportBody(
                 page = p,
                 tab = tab,
                 tabs = tabs,
-                onTab = { onTab(it); page = null },
+                onTab = { onTab(it); onPage(null) },
                 settings = settings,
                 onSettings = onSettings,
                 plan = plan,
@@ -164,10 +162,10 @@ internal fun ExportBody(
                 facts = facts,
                 tenBitAvailable = tenBitAvailable,
                 resolution = resolution,
-                onPickResolution = { onPickResolution(it); page = null },
+                onPickResolution = { onPickResolution(it); onPage(null) },
                 onCustomResolution = onCustomResolution,
-                onBack = { page = null },
-                onDone = { page = null },
+                onBack = { onPage(null) },
+                onDone = { onPage(null) },
             )
         }
     }
