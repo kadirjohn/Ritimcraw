@@ -73,4 +73,35 @@ class NodeListOpsTest {
         assertSame(l, NodeListOps.move(l, 1, 1))
         assertSame(l, NodeListOps.move(l, 0, 3))
     }
+
+    @Test
+    fun names_are_trimmed_cut_at_40_characters_and_blank_means_default() {
+        assertNull(NodeListOps.normalizeName(null))
+        assertNull(NodeListOps.normalizeName("   "))
+        assertEquals("Sky", NodeListOps.normalizeName("  Sky "))
+        val long = "a".repeat(55)
+        assertEquals(40, NodeListOps.normalizeName(long)!!.length)
+        // 40 CHARACTERS, not 40 UTF-16 units: an emoji pair counts once.
+        val emoji = "\uD83D\uDE00".repeat(45)
+        assertEquals(40, NodeListOps.normalizeName(emoji)!!.codePointCount(0, NodeListOps.normalizeName(emoji)!!.length))
+        val l = listOf(node(1f))
+        assertEquals("Sky", NodeListOps.rename(l, 0, " Sky ")[0].name)
+        assertSame(l, NodeListOps.rename(l, 0, null))
+        assertSame(l, NodeListOps.rename(l, 4, "x"))
+    }
+
+    @Test
+    fun a_name_survives_the_v2_json_round_trip_and_an_absent_name_writes_no_key() {
+        val g = ClipGradeV2(nodes = listOf(GradeNodeV2(name = "Sky \"A\""), GradeNodeV2()))
+        val json = GradeV2Fiber.render(g)
+        @Suppress("UNCHECKED_CAST")
+        val back = ClipGradeV2.parse(com.ritim.ritimcraw.data.JsonParser(json).parseValue() as Map<String, Any?>)
+        assertEquals("Sky \"A\"", back.nodes[0].name)
+        assertNull(back.nodes[1].name)
+        // The second node has no name: exactly one "name" key in the whole record.
+        assertEquals(1, Regex("\"name\":").findAll(json).count())
+        // An unnamed grade renders byte-identically to a grade built before the field existed.
+        val plain = ClipGradeV2(nodes = listOf(GradeNodeV2()))
+        assertEquals(false, GradeV2Fiber.render(plain).contains("\"name\""))
+    }
 }

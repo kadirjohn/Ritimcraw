@@ -135,6 +135,13 @@ data class GradeNodeV2(
     val lutId: String? = null,
     /** The LUT result's mix into the node's DI value (rawedit GradeNode.lutMix). */
     val lutMix: Float = 1.0f,
+    /**
+     * F1-8a: the node's display name (free text, at most [NodeListOps.NAME_MAX] characters), or null = the
+     * strip's default "Node N". OPTIONAL in the JSON: an absent key reads as null and a null name writes NO
+     * key, so every file written before this field stays byte-identical on a round trip and the schema
+     * version does not change (owner decision 2026-11-24).
+     */
+    val name: String? = null,
 )
 
 /**
@@ -331,6 +338,7 @@ data class ClipGradeV2(
                         mix = (m["mix"] as? Double)?.toFloat() ?: 1.0f,
                         lutId = m["lutId"] as? String,
                         lutMix = (m["lutMix"] as? Double)?.toFloat() ?: 1.0f,
+                        name = NodeListOps.normalizeName(m["name"] as? String),
                     ),
                 )
             }
@@ -567,6 +575,7 @@ object GradeV2Fiber {
             .append(",\"lutId\":")
             .append(if (n.lutId == null) "null" else ProjectJson.quote(n.lutId))
             .append(",\"lutMix\":").append(num(n.lutMix))
+        if (n.name != null) sb.append(",\"name\":").append(ProjectJson.quote(n.name))
         sb.append('}')
     }
 

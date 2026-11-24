@@ -13,6 +13,24 @@ object NodeListOps {
     /** rawedit::kMaxNodes. */
     const val MAX_NODES = 8
 
+    /** Longest node name, in characters (Unicode code points); owner decision 2026-11-24. */
+    const val NAME_MAX = 40
+
+    /** Blank -> null (the default "Node N"); otherwise trimmed and cut to [NAME_MAX] code points. */
+    fun normalizeName(raw: String?): String? {
+        val t = raw?.trim().orEmpty()
+        if (t.isEmpty()) return null
+        val cps = t.codePointCount(0, t.length)
+        return if (cps <= NAME_MAX) t else t.substring(0, t.offsetByCodePoints(0, NAME_MAX)).trimEnd()
+    }
+
+    fun rename(nodes: List<GradeNodeV2>, index: Int, name: String?): List<GradeNodeV2> {
+        if (index !in nodes.indices) return nodes
+        val n = normalizeName(name)
+        if (n == nodes[index].name) return nodes
+        return nodes.toMutableList().also { it[index] = nodes[index].copy(name = n) }
+    }
+
     fun canAdd(nodes: List<GradeNodeV2>): Boolean = nodes.size < MAX_NODES
 
     /** Why "+" is hidden/disabled: the limit, or null when adding is allowed (the strip shows the reason, design section 21). */
