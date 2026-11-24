@@ -46,6 +46,12 @@ import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.engine.CodecNames
 import com.ritim.ritimcraw.engine.CodecReport
+import com.ritim.ritimcraw.export.CodecMeasurePlanner
+import com.ritim.ritimcraw.export.CodecMeasureReport
+import com.ritim.ritimcraw.export.CodecMeasureWire
+import com.ritim.ritimcraw.export.ExportText
+import com.ritim.ritimcraw.export.MeasureResult
+import com.ritim.ritimcraw.export.MeasureSummary
 import com.ritim.ritimcraw.ui.components.ArrowBack
 import com.ritim.ritimcraw.ui.components.Copy
 import com.ritim.ritimcraw.ui.components.Cpu
@@ -149,6 +155,13 @@ fun DeviceReportScreen(
     onBack: () -> Unit,
     onCopyReport: (String) -> Unit,
     modifier: Modifier = Modifier,
+    // The codec measurement's report (E1e): null = never run on this
+    // build (the section renders the honest "not measured" hint).
+    // AppNav owns the store + report state; the screen only renders.
+    measureReport: CodecMeasureReport? = null,
+    // Copies the measurement JSON (the shell's existing clipboard +
+    // snackbar path, the same seam as the codec report copy).
+    onCopyMeasureJson: (String) -> Unit = {},
 ) {
     BackHandler { onBack() }
     // The pager (C5): 3 pages — 0 = all, 1 = decoders, 2 = encoders.
@@ -282,6 +295,14 @@ fun DeviceReportScreen(
                         modifier = Modifier.alignByBaseline(),
                     )
                 }
+            }
+            // ---- Codec measurement (E1e, plan §5: DeviceReportScreen'de
+            // tablo olarak gösterilir). The section renders only when a
+            // report exists on THIS build (AppNav reads the store); null
+            // keeps the whole section out — the run entry point is the
+            // Settings debug block, not here.
+            if (measureReport != null) {
+                CodecMeasureSection(report = measureReport, onCopyJson = onCopyMeasureJson)
             }
             // ---- Tabs (C5): PrimaryTabRow under the summary card.
             // containerColor transparent — the screen's surface shows
@@ -682,4 +703,164 @@ private fun CodecCapabilityLines(report: CodecReport) {
             line(R.string.settings_device_report_cap_max_bitrate, upper)
         }
     }
+}
+
+/**
+ * The codec measurement section (E1e, plan §5): the summary the pure
+ * [CodecMeasurePlanner.summarize] computes, then one row per run —
+ * requested vs realized bitrate with the drift in percent, refused runs
+ * in the error color. The row format strings come from the localized
+ * resources via [CodecMeasureRows]; the section lives above the codec
+ * tabs, inside the same scroll, the summary card's tonal shape.
+ */
+@Composable
+private fun CodecMeasureSection(
+    report: CodecMeasureReport,
+    onCopyJson: (String) -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 12.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.settings_codec_measure_section),
+                    style = TextStyle(
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.08.em,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { onCopyJson(CodecMeasureWire.render(report)) }) {
+                    Icon(
+                        imageVector = Copy,
+                        contentDescription = stringResource(R.string.settings_codec_measure_copy),
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
+            val summary = remember(report) { CodecMeasurePlanner.summarize(report.rows) }
+            val driftFormat = stringResource(R.string.settings_codec_measure_summary_drift)
+            val uncappedFormat = stringResource(R.string.settings_codec_measure_summary_uncapped)
+            val rejectedFormat = stringResource(R.string.settings_codec_measure_summary_rejected)
+            CodecMeasureRows.summaryLines(summary, driftFormat, uncappedFormat, rejectedFormat).forEach { line ->
+                Text(
+                    text = line,
+                    style = TextStyle(
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        fontWeight = FontWeight.Normal,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            if (report.rows.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.settings_codec_measure_empty),
+                    style = TextStyle(
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        fontWeight = FontWeight.Normal,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            // The run rows: shaped by the pure helper. The formats resolve
+            // ONCE (not per row); Android's auto %1$s ordering keeps the
+            // translated word order free.
+            val rowFormat = stringResource(R.string.settings_codec_measure_row)
+            val failedFormat = stringResource(R.string.settings_codec_measure_row_failed)
+            report.rows.forEach { r ->
+                val row = CodecMeasureRows.rowText(r, rowFormat, failedFormat)
+                Text(
+                    text = row.text,
+                    style = TextStyle(
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        fontWeight = FontWeight.Normal,
+                        fontFamily = FontFamily.Monospace,
+                    ),
+                    color = if (row.failed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The measurement section's pure row/summary shaping (JVM-testable): the
+ * localized format strings arrive as parameters; the number shaping —
+ * Mb/s with one decimal, drift as a signed offset percent, the case tag
+ * (codec · WxH@fps · MODE · depth) — is here. The defaults are the
+ * English resources' literals so the JVM tests run without Android.
+ */
+internal object CodecMeasureRows {
+
+    /** One row's shaped text plus whether the run was refused (error color). */
+    data class Row(val text: String, val failed: Boolean)
+
+    fun rowText(
+        r: MeasureResult,
+        rowFormat: String = "%1\$s · %2\$s → %3\$s (%4\$s%%)",
+        failedFormat: String = "%1\$s · refused (%2\$s)",
+    ): Row =
+        if (r.configureOk && r.measuredBps != null && r.ratio != null) {
+            Row(
+                rowFormat.format(
+                    r.c.tag(),
+                    mbps(r.c.requestedBps),
+                    mbps(r.measuredBps!!),
+                    pct(r.ratio!!),
+                ),
+                failed = false,
+            )
+        } else {
+            Row(
+                failedFormat.format(r.c.tag(), r.errorCode ?: "no output"),
+                failed = true,
+            )
+        }
+
+    /** The summary lines, each only when its group has data. */
+    fun summaryLines(
+        s: MeasureSummary,
+        driftFormat: String = "VBR drift: median %1\$s%% · max %2\$s%%",
+        uncappedFormat: String = "Above-ceiling bitrates accepted: %1\$d of %2\$d",
+        rejectedFormat: String = "Configure refusals: %1\$d of %2\$d",
+    ): List<String> = buildList {
+        if (s.vbrDriftMedian != null && s.vbrDriftMax != null) {
+            add(driftFormat.format(pct(s.vbrDriftMedian), pct(s.vbrDriftMax)))
+        }
+        if (s.uncappedTried > 0) {
+            add(uncappedFormat.format(s.uncappedAccepted, s.uncappedTried))
+        }
+        if (s.configureRejections > 0) {
+            add(rejectedFormat.format(s.configureRejections, s.runs))
+        }
+    }
+
+    /** Ratio 1.24 -> "+24", 0.85 -> "-15": one token reads both directions. */
+    fun pct(ratio: Double): String =
+        "offset " + String.format(java.util.Locale.ROOT, "%+.0f", (ratio - 1.0) * 100.0)
+
+    /** Bits per second -> Mb/s with one decimal (ExportText's own shape). */
+    fun mbps(bps: Long): String = ExportText.mbps(bps)
 }

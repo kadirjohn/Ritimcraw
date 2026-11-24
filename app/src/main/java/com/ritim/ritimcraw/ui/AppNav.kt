@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.ui
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.widget.Toast
@@ -42,6 +43,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -89,6 +91,7 @@ import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailStore
 import com.ritim.ritimcraw.engine.StabilizationGate
 import com.ritim.ritimcraw.engine.ClipThumbnails
+import com.ritim.ritimcraw.engine.CodecMeasurer
 import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.FolderThumbnails
 import com.ritim.ritimcraw.engine.NativeSource
@@ -102,6 +105,7 @@ import com.ritim.ritimcraw.ui.components.NavLibrary
 import com.ritim.ritimcraw.ui.components.NavProjects
 import com.ritim.ritimcraw.ui.components.NavSettings
 import com.ritim.ritimcraw.export.BitmapPngWriter
+import com.ritim.ritimcraw.export.CodecMeasureStore
 import com.ritim.ritimcraw.export.DngExporter
 import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
@@ -569,6 +573,39 @@ fun AppNav(
     // request 2026-11-23): the same one-at-a-time rule and the same
     // `measuring` flag — the two harnesses never run concurrently.
     var exportAbKick by remember { mutableStateOf(0) }
+    // Debug-only codec measurement (E1e, docs/E1E_CODEC_MEASURE_PLAN):
+    // the uncapped-ceiling + VBR-drift run. The store's home is
+    // files/codec-measure (debug data, never project.json); the report
+    // state re-reads after each run so the Device report section and the
+    // Settings row stay in sync. Progress rides `codecMeasureProgress`
+    // (runs done of total) for the row's live label.
+    val codecMeasureStore = remember {
+        CodecMeasureStore(File(context.filesDir, "codec-measure").apply { mkdirs() })
+    }
+    // The runner's live flows, collected as Compose state: progress for the
+    // Settings row's live label, the last persisted report for the Device
+    // report section. The disk copy backfills the session start (a report
+    // from a PREVIOUS run of this build shows before any new run starts).
+    val codecMeasureProgress by CodecMeasurer.progress.collectAsState()
+    var codecMeasureReport by remember {
+        mutableStateOf(codecMeasureStore.latest(Build.FINGERPRINT ?: ""))
+    }
+    // A finished session swaps the persisted report in (the flow write
+    // happens on the runner thread; the COLLECT here is the main-thread
+    // seam) and releases the shared measuring flag.
+    LaunchedEffect(Unit) {
+        CodecMeasurer.lastReport.collect { report ->
+            if (report != null) {
+                codecMeasureReport = report
+                measuring = false
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.settings_codec_measure_done),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+    }
     // Collection refresh (spec IN-12): the rotating cursor for the bounded
     // per-open pass — every Library open probes ALL degraded rows plus
     // CollectionRefresh.OK_BATCH healthy ones starting at this position,
@@ -719,6 +756,8 @@ fun AppNav(
     // the same shell snackbar, the same SHORT duration — the clipboard
     // write itself happens in the report screen's callback below.
     val reportCopiedText = stringResource(R.string.settings_device_report_copied)
+    // The measurement JSON copy confirmation (E1e): the same seam.
+    val measureJsonCopiedText = stringResource(R.string.settings_codec_measure_copied)
     // The system clipboard (the report's Copy button): LocalClipboardManager
     // is the plain Compose way — the app had no prior system-clipboard use
     // (GradeClipboard is an in-memory grade slot, not the system clipboard).
@@ -1133,6 +1172,27 @@ fun AppNav(
         }
     }
 
+    // The codec measurement session (E1e, debug): started directly from
+    // the Settings row (CodecMeasurer owns its single background thread
+    // and its own one-at-a-time flag; a rejected start = the toast).
+    // Progress and the report land through the runner's own flows (the
+    // collection above); the shared `measuring` flag holds the other
+    // debug harnesses off for the whole session — the matrix is minutes
+    // of real encodes, not a tap.
+    val measureRunningText = stringResource(R.string.settings_codec_measure_already_running)
+    val onCodecMeasureRun = remember(measureRunningText) {
+        {
+            val started = CodecMeasurer.start(
+                identity = CodecMeasurer.BuildIdentity.read(),
+                store = codecMeasureStore,
+            )
+            if (!started) {
+                measuring = false
+                Toast.makeText(context, measureRunningText, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     // Editors — the timeline — and the Device report — are full screen
     // without nav; the browse destinations show it (bottom bar on phones,
     // rail on wide windows).
@@ -1247,6 +1307,20 @@ fun AppNav(
                         scope.launch {
                             exportSnackbar.showSnackbar(
                                 reportCopiedText,
+                                duration = SnackbarDuration.Short,
+                            )
+                        }
+                    },
+                    // Codec measurement (E1e): the last persisted report on
+                    // THIS build (null before the first run — the section
+                    // then never renders). The JSON copy rides the SAME
+                    // clipboard + snackbar seam as the codec report copy.
+                    measureReport = codecMeasureReport,
+                    onCopyMeasureJson = { text ->
+                        clipboardManager.setText(AnnotatedString(text))
+                        scope.launch {
+                            exportSnackbar.showSnackbar(
+                                measureJsonCopiedText,
                                 duration = SnackbarDuration.Short,
                             )
                         }
@@ -2325,6 +2399,21 @@ fun AppNav(
                             } else {
                                 null
                             },
+                            // Codec measurement (E1e): the same debug gate;
+                            // the runner checks its own one-at-a-time flag
+                            // too, so a double tap degrades to the toast,
+                            // never a second concurrent session.
+                            onCodecMeasure = if (BuildConfig.DEBUG) {
+                                {
+                                    if (!measuring) {
+                                        measuring = true
+                                        onCodecMeasureRun()
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                            codecMeasureProgress = codecMeasureProgress,
                             measuring = measuring,
                             // The quality row persists immediately; the
                             // editor picks the new level up on its next

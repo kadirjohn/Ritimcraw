@@ -520,6 +520,26 @@
          taramanın yanında yalnızca hata ayıklama düğmesi. -->
     <string name="settings_export_ab">Dışa aktarım A/B (hata ayıklama)</string>
     <string name="settings_export_ab_no_gyro">İçe aktarılan klibin bağlı bir gyro kaydı yok</string>
+    <!-- Codec ölçümü (E1e, docs/E1E_CODEC_MEASURE_PLAN): yalnızca hata
+         ayıklama; listelenen tavanın üstündeki bitrate'lerin configure
+         tarafından kabul edilip edilmediğini ve VBR'de gerçekleşen
+         bitrate'in ne kadar saptığını ölçen kısa sentetik kodlamalar;
+         sonuç tablosu ve JSON cihaz raporunda. -->
+    <string name="settings_codec_measure">Codec ölçümü (hata ayıklama)</string>
+    <string name="settings_codec_measure_running">Codec\'ler ölçülüyor %1$d/%2$d</string>
+    <string name="settings_codec_measure_done">Codec ölçümü tamam — Cihaz raporu</string>
+    <string name="settings_codec_measure_empty">Bu cihazda ölçülebilir kodlayıcı yok</string>
+    <string name="settings_codec_measure_already_running">Bir ölçüm zaten çalışıyor</string>
+    <string name="settings_codec_measure_section">Codec ölçümü</string>
+    <string name="settings_codec_measure_summary_drift">VBR sapması: ortanca %1$s%% · en yüksek %2$s%%</string>
+    <string name="settings_codec_measure_summary_uncapped">Tavan üstü bitrate kabulü: %2$d denemeden %1$d</string>
+    <string name="settings_codec_measure_summary_rejected">Configure redleri: %1$d / %2$d</string>
+    <string name="settings_codec_measure_none">Henüz ölçülmedi — Ayarlar\'dan codec ölçümünü çalıştırın</string>
+    <string name="settings_codec_measure_copy">Ölçüm JSON\'unu kopyala</string>
+    <string name="settings_codec_measure_copied">Ölçüm JSON\'u panoya kopyalandı</string>
+    <string name="settings_codec_measure_share">Ölçümü paylaş</string>
+    <string name="settings_codec_measure_row">%1$s · %2$s → %3$s (%4$s%%)</string>
+    <string name="settings_codec_measure_row_failed">%1$s · reddedildi (%2$s)</string>
     <string name="settings_preview_stats">Önizleme istatistik geri okuması</string>
     <string name="settings_preview_stats_body">Hata ayıklama: GPU önizlemesinin istatistik paketini her karede geri okur. Kapalıyken geri okuma atlanır — maliyetini görmek için izdeki istatistik süresini ve toplamı karşılaştırın.</string>
     <string name="settings_version">Sürüm %1$s</string>

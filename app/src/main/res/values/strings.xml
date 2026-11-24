@@ -518,6 +518,26 @@
          button beside the sweep. -->
     <string name="settings_export_ab">Export A/B (debug)</string>
     <string name="settings_export_ab_no_gyro">No imported clip has a gyro log attached</string>
+    <!-- Codec measurement (E1e, docs/E1E_CODEC_MEASURE_PLAN): debug-only
+         short synthetic encodes that answer whether configure accepts
+         bitrates above the listed ceiling and how far VBR realized
+         bitrate drifts; the results table and the JSON live in the
+         Device report. -->
+    <string name="settings_codec_measure">Codec measurement (debug)</string>
+    <string name="settings_codec_measure_running">Measuring codecs %1$d/%2$d</string>
+    <string name="settings_codec_measure_done">Codec measurement done — Device report</string>
+    <string name="settings_codec_measure_empty">No measurable encoder on this device</string>
+    <string name="settings_codec_measure_already_running">A measurement is already running</string>
+    <string name="settings_codec_measure_section">Codec measurement</string>
+    <string name="settings_codec_measure_summary_drift">VBR drift: median %1$s%% · max %2$s%%</string>
+    <string name="settings_codec_measure_summary_uncapped">Above-ceiling bitrates accepted: %1$d of %2$d</string>
+    <string name="settings_codec_measure_summary_rejected">Configure refusals: %1$d of %2$d</string>
+    <string name="settings_codec_measure_none">Not measured yet — run the codec measurement from Settings</string>
+    <string name="settings_codec_measure_copy">Copy measurement JSON</string>
+    <string name="settings_codec_measure_copied">Measurement JSON copied to clipboard</string>
+    <string name="settings_codec_measure_share">Share measurement</string>
+    <string name="settings_codec_measure_row">%1$s · %2$s → %3$s (%4$s%%)</string>
+    <string name="settings_codec_measure_row_failed">%1$s · refused (%2$s)</string>
     <string name="settings_preview_stats">Preview stats readback</string>
     <string name="settings_preview_stats_body">Debug: read the GPU preview\'s stats pack back each frame. Off skips the readback — compare the trace\'s stats span and total to see what it costs.</string>
     <string name="settings_version">Version %1$s</string>
