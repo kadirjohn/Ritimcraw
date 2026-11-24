@@ -56,7 +56,9 @@ aynı shader'da range/matrix/transfer/gamut, (c) CPU oracle'a karşı parity (bu
 `developEncoded` + P010 testleri oracle'ı hazır). Ayrı paket (E0b / F2'nin ön koşulu);
 bu paketin `EncodedColorSpec` değeri GPU shader uniform'larının tek kaynağıdır.
 Gerekçe: GLES session ve ChainSlots başka kollarla çakışır; CPU yolu doğruluğu
-kanıtlıyor ve export'u bugün mümkün kılıyor. Hız cihazda ölçüldü (rapor).
+kanıtlıyor ve export'u bugün mümkün kılıyor. Hız (cihaz, 4K30 P010 fikstür, debug build): kare başına
+~1.05 s decode+develop (CPU), toplam ~1.07 s/kare -> 623 karelik klip ~11 dk; gerçek zamanın
+~65 katı yavaş. Bu, GPU yolunun gerekçesidir.
 
 ## 5. Kapsam dışı / açık
 - Stabilizasyon (S6), HDR decode (HLG/PQ), 10-bit encoded export, GPU decode yolu,
