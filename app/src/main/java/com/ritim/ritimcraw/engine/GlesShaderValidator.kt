@@ -86,6 +86,25 @@ object GlesShaderValidator {
 
         /** WINDOW_FRAGMENT — GLSL ES 3.00 fragment, the preview window/stats draw. */
         WINDOW_FRAGMENT("#version 300 es"),
+
+        /**
+         * NODES — GLSL ES 3.00 fragment, the color model v2 grade node
+         * chain (F1-5): 709 -> DWG -> DI at the head, the in-shader node
+         * loop, the output mode's matrix at the tail. Reads the chain's
+         * live RGBA32F intermediate (unit 1) + the curve atlas (unit 6,
+         * R32F texelFetch) + up to 4 node-LUT samplers (units 7..10).
+         */
+        NODES("#version 300 es"),
+
+        /**
+         * DEVELOP_FRAGMENT_TAIL_DRT — GLSL ES 3.00 fragment, the TAIL's
+         * OpenDRT variant (color model v2 F1-5): reads the NODES pass's
+         * DWG-LINEAR output and applies OpenDRT v1.1.0 per pixel (the C++
+         * reference's own operation order), emitting display code values
+         * directly — the OETF is NOT applied (the DRT output is display
+         * coded already; plan §3.4).
+         */
+        DEVELOP_FRAGMENT_TAIL_DRT("#version 300 es"),
     }
 
     /**
@@ -147,6 +166,8 @@ object GlesShaderValidator {
             Kind.STORE_FRAGMENT -> storeFragmentProblems(stripped, out)
             Kind.BLIT_FRAGMENT -> blitFragmentProblems(stripped, out)
             Kind.WINDOW_FRAGMENT -> windowFragmentProblems(stripped, out)
+            Kind.NODES -> nodesProblems(stripped, out)
+            Kind.DEVELOP_FRAGMENT_TAIL_DRT -> tailDrtProblems(stripped, out)
         }
         return out
     }
@@ -2557,6 +2578,221 @@ object GlesShaderValidator {
             out += "missing the zebra gate (`uZebraOn == 1` — without " +
                 "the gate the zebra uniforms are dead text and the stats " +
                 "draw's clean-scope pin has nothing to pin)"
+        }
+    }
+
+    // ---- NODES's contract (color model v2 F1-5). Every check names the
+    // ---- C++ line it mirrors (core/src/ColorModel.cpp: applyCompiled /
+    //     nodeCurveSample) or the pipeline uniform it depends on, so a
+    //     rename breaks HERE, on the host, not silently on the device.
+
+    /** The NODES pass's uniform set (gles/NodeParcel.h's pack). */
+    private val kNodesUniformDecls = listOf(
+        "uniform highp sampler2D uSrc;",
+        "uniform ivec2 uSize;",
+        "uniform int uNodesCount;",
+        "uniform int uNodesOutputMode;",
+        "uniform mat3 uM709ToDwg;",
+        "uniform mat3 uMDwgTo709;",
+        "uniform highp sampler2D uNodeCurves;",
+        "uniform vec4 uNodePrimary[8];",
+        "uniform vec4 uNodeGain[8];",
+        "uniform vec4 uNodeOffset[8];",
+        "uniform vec4 uNodeGammaExp[8];",
+        "uniform vec4 uNodeYSide[8];",
+        "uniform vec4 uNodeContrastPivot[8];",
+        "uniform vec4 uNodeWb[8];",
+        "uniform mat3 uNodeHueMat[8];",
+        "uniform vec4 uNodeFlags[8];",
+        "uniform highp sampler3D uNodeLut[4];",
+    )
+
+    private fun nodesProblems(s: String, out: MutableList<String>) {
+        for (u in kNodesUniformDecls) {
+            if (!s.contains(u)) {
+                out += "missing `$u` (the C++ pipeline resolves it at init — the NODES pass's own contract)"
+            }
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        // The chain head/tail order: the conversions cannot be dropped.
+        if (!s.contains("vec3 dwg = uM709ToDwg * lin;")) {
+            out += "missing the chain head `vec3 dwg = uM709ToDwg * lin;` (rawedit::linear709ToDi's matrix step — transpose=GL_TRUE uploads make this the CPU's row-major multiply)"
+        }
+        if (!s.contains("diEncode(dwg.r)")) {
+            out += "missing the DI encode at the chain head (diEncode — the CPU encodeTransfer's DaVinciIntermediate curve, verbatim constants)"
+        }
+        if (!s.contains("diDecode(di.r)")) {
+            out += "missing the DI decode at the chain tail (diDecode — decodeTransfer's DaVinciIntermediate curve)"
+        }
+        // The node loop must exist and iterate uNodesCount.
+        if (!s.contains("for (int i = 0; i < uNodesCount; ++i)")) {
+            out += "missing the node loop `for (int i = 0; i < uNodesCount; ++i)` (applyNodes' per-pixel chain; the loop bound is the parcel's nodeCount)"
+        }
+        // The per-node math order (applyCompiled): primaries -> y side ->
+        // contrast*wb -> hue -> sat -> curves -> LUT -> mix.
+        val order = listOf(
+            "void applyNode(inout vec3 di, int i)",
+            "uNodePrimary[i].xyz + uNodeGain[i].xyz * di + uNodeOffset[i].xyz",
+            "pow(max(yv, 0.0), uNodeYSide[i].z)",
+            "((di - pivot) * contrast + pivot) * uNodeWb[i].xyz",
+            "uNodeHueMat[i] * di",
+            "luma + (h - luma) * sat",
+            "nodeCurveAtlas(i * 3 + 0, di.r)",
+            "uNodeFlags[i].y == 1.0",
+            "c0 + (di - c0) * mixv",
+        )
+        var last = -1
+        for (token in order) {
+            val at = s.indexOf(token)
+            if (at < 0) {
+                out += "missing the node-math token `$token` (applyCompiled's own order — the element is the parity target)"
+            } else if (at < last) {
+                out += "the node-math order broke at `$token` (applyCompiled's sequence: primaries, the y side, contrast*wb, hue, sat, curves, LUT, mix)"
+            } else {
+                last = at
+            }
+        }
+        // The curve atlas sampling: nodeCurveSample's manual lerp on the
+        // DELTAS — texelFetch (R32F is not filterable; Adreno's NEAREST-only
+        // 32F rule) with the CPU's own bracket + clamp.
+        if (!s.contains("texelFetch(uNodeCurves, ivec2(i, row), 0).r - x0")) {
+            out += "missing the atlas DELTA read (`texelFetch(uNodeCurves, ivec2(i, row), 0).r - x0` — nodeCurveSample reads the table's value MINUS x_i; the R32F atlas is texelFetch-only per Adreno's 32F NEAREST rule)"
+        }
+        if (!s.contains("return x + d0 + (d1 - d0) * (p - float(i));")) {
+            out += "missing the atlas lerp (`return x + d0 + (d1 - d0) * (p - float(i));` — nodeCurveSample's exact delta form, NOT a plain table lerp)"
+        }
+        // The kNodeCurveN/range constants must match ColorModel.h.
+        if (!s.contains("const float kCurveLo = -0.5;") ||
+            !s.contains("const float kCurveHi = 1.5;") ||
+            !s.contains("const float kCurveN = 512.0;")) {
+            out += "missing the curve-range constants (kNodeCurveLo -0.5 / kNodeCurveHi 1.5 / kNodeCurveN 512 — ColorModel.h's own values)"
+        }
+        // The DI encode/decode constants must be the pinned Color.cpp set.
+        if (!s.contains("lin <= 0.00262409 ? 10.44426855 * lin") ||
+            !s.contains("0.07329248 * (log2(lin + 0.0075) + 7.0)")) {
+            out += "missing the DI encode constants (kDiLinCut 0.00262409 / kDiM 10.44426855 / kDiC 0.07329248 / kDiA 0.0075 / kDiB 7 — Color.cpp's pinned set)"
+        }
+        if (!s.contains("enc <= 0.02740668 ? enc / 10.44426855") ||
+            !s.contains("pow(2.0, enc / 0.07329248 - 7.0) - 0.0075")) {
+            out += "missing the DI decode constants (kDiLogCut 0.02740668 — Color.cpp's pinned set)"
+        }
+        // The output mode branch.
+        if (!s.contains("if (uNodesOutputMode == 1)")) {
+            out += "missing the output-mode branch (`if (uNodesOutputMode == 1)` — NodesOutput::DwgLinear vs the 709 matrix back, the plan §3.2 tail)"
+        }
+        // The node LUT branch must sample through the managed-binding shape.
+        if (!s.contains("uNodeLut[s], t)")) {
+            out += "missing the node-LUT sample (`texture(uNodeLut[s], t)` — the stage-24 LUT port's own texel-center mapping, per slot)"
+        }
+        // No develop-stage uniform may leak into NODES: the pass is a pure
+        // chain transform, not a re-run of POST.
+        // uSize is the one honest exception (every chain pass shares the
+        // dims uniform); the REST of the develop sets may not appear.
+        for (u in kDevelopPointwiseUniformDecls +
+            kDevelopPreUniformDecls.filter { it != "uniform ivec2 uSize;" } +
+            kDevelopTailUniformDecls) {
+            if (s.contains(u)) {
+                out += "a develop-stage uniform leaked into NODES (`$u` — the pass transforms the chain's linear-709 input; any stage uniform means a stage re-ran)"
+            }
+        }
+    }
+
+    // ---- the DRT TAIL variant's contract (F1-5). The checks pin the
+    // ---- OpenDrt.cpp operation order + the resolved-preset uniform
+    // ---- vocabulary (the binding uploads the Impl constructor's outputs).
+
+    /** The DRT TAIL's resolved-preset uniform set. */
+    private val kTailDrtUniformDecls = listOf(
+        "uniform highp sampler2D uSrc;",
+        "uniform ivec2 uSize;",
+        "uniform int uDrtEotf;",
+        "uniform float uDrtHdr;",
+        "uniform vec4 uDrtTn;",
+        "uniform vec4 uDrtRs;",
+        "uniform float uDrtCwp;",
+        "uniform vec4 uDrtToe;",
+        "uniform vec4 uDrtLcon;",
+        "uniform vec4 uDrtHcon;",
+        "uniform vec4 uDrtTs;",
+        "uniform vec4 uDrtConf0;",
+        "uniform vec4 uDrtConf1;",
+        "uniform vec4 uDrtConf2;",
+        "uniform float uNormScalar;",
+        "uniform float uNormScalarHdr;",
+    )
+
+    private fun tailDrtProblems(s: String, out: MutableList<String>) {
+        for (u in kTailDrtUniformDecls) {
+            if (!s.contains(u)) {
+                out += "missing `$u` (the DRT binding uploads OpenDrt::Impl's resolved preset — the uniform IS the constructor's output)"
+            }
+        }
+        if (!s.contains("out vec4 oCol;")) {
+            out += "missing `out vec4 oCol;` (the single color attachment output)"
+        }
+        // The entry: DWG linear -> XYZ -> the DRT (applyDwgLinear).
+        if (!s.contains("rgb = kDWG_TO_XYZ * rgb;")) {
+            out += "missing the DWG->XYZ entry (`rgb = kDWG_TO_XYZ * rgb;` — OpenDRT's own constant, NOT Color.cpp's pinned matrix)"
+        }
+        // Helper fidelity: the C++ helpers must exist with the same shape.
+        for (token in listOf(
+            "float spowf(float a, float b) { return a <= 0.0 ? a : pow(a, b); }",
+            "float sdivf(float a, float b) { return b == 0.0 ? 0.0 : a / b; }",
+        )) {
+            if (!s.contains(token)) {
+                out += "missing the helper `$token` (OpenDrt.cpp's own spowf/sdivf — substitutes change the parity target)"
+            }
+        }
+        // The applyXyz order: rendering space -> normalize -> opponent ->
+        // hue windows -> brl/lcon/hcon -> the hyperbolic triple -> hc/hs ->
+        // purity -> the rendering-space return -> displayWhite -> brlp ->
+        // ptl -> the tail (tsM2 * toe * tsDsc -> the display encoding).
+        val order = listOf(
+            "rgb = kXYZ_TO_P3D65 * rgb;",
+            "rgb = satL * uDrtRs.x + rgb * (1.0 - uDrtRs.x) + uDrtTn.w;",
+            "float tsn = sqrt(max(0.0, dot(rgb, rgb))) / kSqrt3;",
+            "achD = 1.25 * compressToeQuadratic(achD, 0.25, false);",
+            "float hue = mod(atan(oppX, oppY) + kPi + 1.10714931, 2.0 * kPi);",
+            "float tsnPt = compressHyperbolicPower(tsn, uDrtTs.x, tsP);",
+            "float tsnConst = compressHyperbolicPower(tsn, uDrtTs.y, tsP);",
+            "tsn = compressHyperbolicPower(tsn, uDrtHcon.z, tsP);",
+            "rgb = rgb * ptf + 1.0 - ptf;",
+            "rgb = (satL * uDrtRs.x - rgb) / (uDrtRs.x - 1.0);",
+            "rgb = kP3D65_TO_XYZ * rgb;",
+            "tsn *= uDrtHcon.y;",
+            "tsn = compressToeQuadratic(tsn, uDrtTn.z, false);",
+            "if (uDrtHdr > 0.5)",
+        )
+        var last = -1
+        for (token in order) {
+            val at = s.indexOf(token)
+            if (at < 0) {
+                out += "missing the OpenDRT step `$token` (Impl::applyXyz's own order — the C++ is the parity reference)"
+            } else if (at < last) {
+                out += "the OpenDRT order broke at `$token` (applyXyz's sequence)"
+            } else {
+                last = at
+            }
+        }
+        // The HLG branch must carry the Rec.2020 matrix + the inverse EOTF.
+        if (!s.contains("kP3_TO_REC2020 * rgb")) {
+            out += "missing the HLG Rec.2020 matrix (`kP3_TO_REC2020 * rgb` — the HLG path's own gamut step)"
+        }
+        if (!s.contains("0.17883277 * log(12.0 * xs.r - 0.28466892) + 0.55991073")) {
+            out += "missing the inverse HLG EOTF constants (0.17883277 / 0.28466892 / 0.55991073 — Impl::hlgInverseEotf's own)"
+        }
+        // The SDR exit: ep = 2 + (displayId + 1) * 0.2 — the C++ ep mapping.
+        if (!s.contains("float ep = 2.0 + float(uDrtEotf + 1) * 0.2;")) {
+            out += "missing the SDR exit `float ep = 2.0 + float(uDrtEotf + 1) * 0.2;` (the C++ ep = 2.0 + eotf * 0.2 with eotf = displayId + 1)"
+        }
+        // The v1 TAIL's uniforms must NOT leak (the variant is a separate
+        // program; tonemap/OETF/LUT are the v1 TAIL's own contract).
+        for (u in kDevelopTailUniformDecls) {
+            if (s.contains(u)) {
+                out += "a v1 TAIL uniform leaked into the DRT variant (`$u` — the DRT is its own program; the stage-23/24 pair stays with the frozen v1 TAIL text)"
+            }
         }
     }
 

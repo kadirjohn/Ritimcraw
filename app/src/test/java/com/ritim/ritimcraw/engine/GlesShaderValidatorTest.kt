@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.engine
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -4167,5 +4168,98 @@ class GlesShaderValidatorTest {
                 )
             }
         }
+    }
+
+    // ---- color model v2 F1-5: the NODES pass and the DRT TAIL variant ----
+
+    @Test
+    fun shipped_nodes_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.NODES,
+                GlesShaderValidator.Kind.NODES,
+            ),
+        )
+    }
+
+    @Test
+    fun shipped_tail_drt_passes_every_check() {
+        assertEquals(
+            emptyList<String>(),
+            GlesShaderValidator.problems(
+                GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+                GlesShaderValidator.Kind.DEVELOP_FRAGMENT_TAIL_DRT,
+            ),
+        )
+    }
+
+    @Test
+    fun nodes_shader_carries_the_curve_atlas_contract() {
+        // The atlas is the inventory SS2.4's decision: NEVER uniforms, ONE
+        // R32F texture, texelFetch + a MANUAL lerp on the deltas (the
+        // CPU nodeCurveSample's exact form). A plain table lerp or a
+        // texture() sample would break the parity pin.
+        val src = GlesShaderSources.NODES
+        assertTrue("atlas sampler missing", src.contains("uniform highp sampler2D uNodeCurves;"))
+        assertTrue(
+            "the manual delta lerp missing",
+            src.contains("return x + d0 + (d1 - d0) * (p - float(i));"),
+        )
+        // texelFetch, never texture(): R32F is not filterable in ES 3.0.
+        assertFalse(src.contains("texture(uNodeCurves"))
+    }
+
+    @Test
+    fun nodes_shader_carries_the_di_constants_and_output_mode() {
+        val src = GlesShaderSources.NODES
+        assertTrue(
+            "the DI encode constants drifted",
+            src.contains("0.07329248 * (log2(lin + 0.0075) + 7.0)"),
+        )
+        assertTrue(
+            "the DI decode constants drifted",
+            src.contains("pow(2.0, enc / 0.07329248 - 7.0) - 0.0075"),
+        )
+        // The output mode: legacy 709 back vs DwgLinear for the DRT TAIL.
+        assertTrue(src.contains("if (uNodesOutputMode == 1)"))
+        assertTrue(src.contains("uMDwgTo709 * dwg"))
+    }
+
+    @Test
+    fun tail_drt_shader_never_applies_the_rec709_oetf() {
+        // K7/the plan SS3.4: the DRT output IS display code values - the
+        // linearToRec709 helper must NOT appear in the variant (the v1
+        // TAIL keeps it; this one must not carry it at all).
+        val src = GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT
+        assertFalse(
+            "the DRT variant must not carry the Rec.709 OETF",
+            src.contains("linearToRec709"),
+        )
+        // The HLG constants (the inventory SS3.1: the HLG branch rides a
+        // run-time uniform, shader TEXT stays one program).
+        assertTrue(
+            "the inverse HLG EOTF missing",
+            src.contains("0.17883277 * log(12.0 * xs.r - 0.28466892) + 0.55991073"),
+        )
+    }
+
+    @Test
+    fun tail_drt_shader_carries_the_opendrt_constant_matrices() {
+        // The OpenDRT-owned matrices, verbatim from core/src/OpenDrt.cpp
+        // (NOT Color.cpp's pinned DWG matrix - the DRT brings its own).
+        val src = GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT
+        assertTrue(
+            "kDWG_TO_XYZ constant missing",
+            src.contains("0.700622392093671609, 0.148774815123196763, 0.101058719834803246"),
+        )
+        assertTrue(
+            "kXYZ_TO_P3D65 constant missing",
+            src.contains("2.49349691194142542, -0.93138361791912383, -0.402710784450716841"),
+        )
+        assertTrue(
+            "kP3_TO_REC2020 constant missing",
+            src.contains("0.753833034361722221, 0.198597369052616435, 0.0475695965856618441"),
+        )
     }
 }

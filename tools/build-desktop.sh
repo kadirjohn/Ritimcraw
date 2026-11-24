@@ -224,6 +224,13 @@ echo "== building tests =="
 # reference vectors in core/tests/data (runs from the repo root).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_opendrt.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_opendrt"
+# test_gpu_nodes_logic: color model v2 F1-5's headless parity proofs - the
+# NodeParcel decode, the shader-order node math on the parcel's packs, the
+# curve-atlas sampling contract and the DI encode/decode pair, all against
+# the CPU reference (the GPU pass itself is Android-only).
+"$CXX" "${FLAGS[@]}" -I"$ROOT/app/src/main/cpp/gles" "${INCLUDES[@]}" \
+  "$ROOT/core/tests/test_gpu_nodes_logic.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gpu_nodes_logic"
 # test_resample: E5-B streaming resampler + stereo/mono downmix core
 # (unwired filmcraft audio-dsp port) — synthetic only, no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_resample.cpp" \
@@ -300,6 +307,8 @@ echo "== running test_color_model =="
 "$BUILD/test_color_model"
 echo "== running test_opendrt =="
 (cd "$ROOT" && "$BUILD/test_opendrt")
+echo "== running test_gpu_nodes_logic =="
+"$BUILD/test_gpu_nodes_logic"
 echo "== running test_loudness =="
 "$BUILD/test_loudness"
 echo "== running test_resample =="
