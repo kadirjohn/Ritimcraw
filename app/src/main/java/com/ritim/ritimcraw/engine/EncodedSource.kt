@@ -788,8 +788,6 @@ class EncodedSource(
         format = null
     }
 
-    // ---- decode state machine ----
-
     /**
      * Presentation-ordered index: the container stores B-frame video in
      * decode order; a stable sort by pts gives the order the decoder emits
@@ -810,23 +808,29 @@ class EncodedSource(
     // ---- E0b-4b: decode-ahead (readAhead = true) ----
     //
     // ONE helper thread owns the reader, the decoder and every decode-state field (decodePlanes and what it
-    // touches); the render thread only talks to it through [aheadLock]. The helper decodes the frame the
-    // render thread asked for (frames before it are dequeued WITHOUT a pixel copy), then keeps decoding the
-    // following frames into a small queue so a sequential playback finds its next frame already waiting
-    // and the decode overlaps the GPU develop of the previous one. A request that is not in the queue
-    // clears it and is decoded from the current position (same-GOP skip, or a seek: decodePlanes decides).
-    // The queue depth is bounded by memory (a 4K P010 frame is 25 MB, an 8K one 50 MB, heap limit 256 MB).
+    // touches); the render thread only talks to it through [aheadLock]. The helper runs a FREE-RUNNING pump
+    // (2026-11-24): it feeds compressed samples into the decoder continuously — bounded by [IN_FLIGHT_CAP],
+    // never by the render thread's requests — and produces decoded frames into a small bounded queue while
+    // there is room. Production is consumption-driven (queue space), so the codec pipeline stays warm (the
+    // 2026-11-25 night S5 measurement: the request-driven loop drained it between frames; single-frame
+    // production varied 3-174 ms while raw hardware decode is 7.4-9 ms/frame). When the queue is full the
+    // pump parks WITHOUT dequeuing — the codec's own (pre-allocated) output pool holds the extra frames,
+    // so the next dequeue after a take is a near-instant copy, not a pipeline restart. A request not in
+    // the queue repositions (same-GOP forward skip or seek, the sameGopForward rule mirrored below).
+    // The queue depth is bounded by memory, three tiers by frame size (a 4K P010 frame is 25 MB, an 8K
+    // one 50 MB, heap limit 256 MB).
 
     private val aheadLock = Object()
     private var aheadThread: Thread? = null
-    private var aheadStop = false
+    @Volatile private var aheadStop = false
     private var aheadWant = -1            // newest requested frame (render thread writes)
     private var aheadServed = -1          // the request the render thread already took from the queue
-    private var aheadNext = -1            // next frame the helper will produce ahead of the request
     private var aheadFailure: Throwable? = null
     private var aheadFailedFor = -1
     private val aheadReady = ArrayList<Pair<Int, YuvPlanes>>()
     private var aheadDepth = 2
+    /** Samples fed since the last reposition minus outputs dequeued since (the codec's in-flight lead; helper thread only). */
+    private var aheadInFlight = 0
 
     private fun fetchAhead(target: Int): YuvPlanes {
         synchronized(aheadLock) {
@@ -861,60 +865,252 @@ class EncodedSource(
         }
     }
 
+    /**
+     * 261124-tmp: the free-running pump. One iteration = DECIDE under the lock, WORK (FEED then DRAIN)
+     * outside it, then PARK-check. The loop order IS the priority — there is no separate priority
+     * mechanism: each iteration runs FEED before DRAIN, so feeding is the first work of every wake; when
+     * only storing is possible (in-flight at the cap) FEED is a no-op and DRAIN stores; when only
+     * feeding is possible (queue below the want, ahead frames owed) DRAIN has nothing to store and FEED
+     * feeds. The DRAIN is bounded at ONE dequeued output per iteration so FEED re-tops the in-flight
+     * lead before every DECIDE checkpoint (the only place aheadStop parks the loop): a stop flag lands
+     * at most one dequeue past a top-up — that documented minus-one window is why the lead test asserts
+     * [IN_FLIGHT_CAP] - 1 as its lower bound.
+     */
     private fun aheadLoop() {
         // The helper competes with the render thread and the UI for the big cores; a late decoded frame is
         // a dropped frame, so it runs at display priority (best effort: the JVM tests have no Process).
         try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) } catch (_: Throwable) {}
+        var runWant = -2 // the unserved want the current position-run decodes toward (-2 = no run)
         while (true) {
-            val goal: Int
+            var want = -1        // the request this iteration serves
+            var repositionTo = -1 // >= 0: this iteration starts with a seek + flush
+
+            // 1. DECIDE (under the lock): read the want, drop what a forward playback cannot use, and
+            //    start a position-run only for a NEWLY owed want. The run's reposition decision is made
+            //    ONCE, when the run starts — re-owing it while the same want is still being decoded
+            //    toward would re-seek and flush in a loop the moment FEED queues EOS mid-run
+            //    (sameGopForward can never hold once EOS is queued). The render thread only ever
+            //    touches want/served/queue/failure under this lock, so this is the only shared-state read.
             synchronized(aheadLock) {
                 while (true) {
                     if (aheadStop) return
                     val w = aheadWant
-                    if (w >= 0 && aheadFailedFor != w) {
-                        // Frames older than the request are useless to a forward playback.
-                        while (aheadReady.isNotEmpty() && aheadReady[0].first < w) decoder.recycle(aheadReady.removeAt(0).second)
-                        if (aheadServed != w && aheadReady.none { it.first == w }) {
-                            // Not queued: stale newer frames (a backward jump) go too, then decode the request.
-                            if (aheadReady.isNotEmpty() && aheadReady[0].first > w) {
-                                for (e in aheadReady) decoder.recycle(e.second)
-                                aheadReady.clear()
-                            }
-                            goal = w; break
+                    if (w < 0) { aheadLock.wait(); continue }                 // nothing requested yet
+                    if (aheadFailedFor == w) { aheadLock.wait(); continue }    // parked on a failure for this want
+                    // Frames older than the request are useless to a forward playback.
+                    while (aheadReady.isNotEmpty() && aheadReady[0].first < w) decoder.recycle(aheadReady.removeAt(0).second)
+                    // A new position-run is owed only when the want is neither served (already taken)
+                    // nor queued (produced, waiting for its take). Once served, the pump continues its
+                    // free run from the decode position — a re-upload of the want onto a mono clip would
+                    // otherwise re-seek and flush on every take, and the fed/produced lead would never
+                    // assemble (the fake registers every queueSample, at any cursor). The same once-only
+                    // rule holds WHILE the run is decoding toward the want: runWant pins it.
+                    val owed = aheadServed != w && aheadReady.none { it.first == w }
+                    if (owed && runWant != w) {
+                        // Not queued: stale newer frames (a backward jump) cannot serve it either.
+                        if (aheadReady.isNotEmpty() && aheadReady[0].first > w) {
+                            for (e in aheadReady) decoder.recycle(e.second)
+                            aheadReady.clear()
                         }
-                        if (aheadReady.size < aheadDepth && aheadNext in 0 until pts.size && aheadNext > w) {
-                            goal = aheadNext; break
-                        }
+                        // The reposition rule mirrors decodePlanes's sameGopForward condition VERBATIM
+                        // (cross-reference: decodePlanes, "sameGopForward"). A forward jump inside the
+                        // current GOP continues the decode position; anything else — the first request
+                        // after thread start (positioned is false), a backward jump, a dead end of
+                        // stream — repositions to the keyframe at-or-before the want. This is a COPY,
+                        // deliberately not a shared helper: the export path (decodePlanes) must stay
+                        // byte-identical, so the pump duplicates the condition instead of refactoring it.
+                        val sameGopForward = positioned && !eosQueued && landed >= 0 && nextOutput <= w &&
+                            syncIndexAtOrBefore(w) <= nextOutput
+                        if (!sameGopForward) repositionTo = w
+                        runWant = w
                     }
-                    aheadLock.wait()
+                    if (!owed) runWant = -2 // queued or served: the run is complete
+                    want = w
+                    break
                 }
             }
+
+            // 2. WORK (helper thread, no lock — the reader/decoder/decode state are helper-owned).
             try {
-                val tP = System.nanoTime()
-                val planes = decodePlanes(goal)
-                EncodedFrameTrace.logAhead(goal, aheadWant, lastDecodedCount, System.nanoTime() - tP)
-                synchronized(aheadLock) {
-                    if (aheadStop) { decoder.recycle(planes); return }
-                    if (aheadWant > goal) {
-                        decoder.recycle(planes) // the request moved past this frame while it decoded
-                    } else {
-                        aheadReady.add(goal to planes)
-                        aheadReady.sortBy { it.first }
+                if (repositionTo >= 0) {
+                    // A pending reposition, performed like decodePlanes.reposition: the queued frames are
+                    // recycled UNDER the lock (the render thread may be inspecting the queue), then the
+                    // seek + flush happen outside it. A flush also discards fed-but-undecoded input, so
+                    // the in-flight lead resets to 0 with it.
+                    // The production-cost mark for the produced frame's trace line starts here.
+                    tMark()
+                    // A pending reposition, performed like decodePlanes.reposition: the queued frames are
+                    // recycled UNDER the lock (the render thread may be inspecting the queue), then the
+                    // seek + flush happen outside it. A flush also discards fed-but-undecoded input, so
+                    // the in-flight lead resets to 0 with it.
+                    synchronized(aheadLock) {
+                        for (e in aheadReady) decoder.recycle(e.second)
+                        aheadReady.clear()
                     }
-                    aheadNext = goal + 1
-                    aheadDepth = aheadDepthFor(planes)
-                    aheadLock.notifyAll()
+                    val keyframe = syncIndexAtOrBefore(repositionTo)
+                    val seekPts = pts[if (keyframe >= 0) keyframe else 0]
+                    reader.seekTo(seekPts)
+                    decoder.flush()
+                    eosQueued = false
+                    landed = -1
+                    nextOutput = if (keyframe >= 0) keyframe else 0
+                    positioned = true
+                    aheadInFlight = 0
                 }
+
+                // FEED: keep the codec's input topped up — bounded only by the in-flight cap and the
+                // stream's length, never by the render thread's requests. This is what keeps the codec
+                // pipeline warm; queueSample's 10 s input-timeout path never fires on this steady path
+                // because the cap keeps the codec's input from filling.
+                while (!eosQueued && aheadInFlight < IN_FLIGHT_CAP) {
+                    val sample = readNext()
+                    if (sample == null) { queueEos(); eosQueued = true; break }
+                    if (landed < 0) {
+                        // Infer the decode position from the first sample after the seek — the same
+                        // ritual as decodePlanes: the extractor lands on the keyframe; a sample off the
+                        // index or past the request fails with the exact same messages.
+                        landed = indexOfPts(sample.ptsUs)
+                        if (landed < 0) {
+                            throw decodeFailure(
+                                "the clip index does not match the video track",
+                                "sample pts ${sample.ptsUs}",
+                            )
+                        }
+                        if (landed > want) {
+                            throw decodeFailure(
+                                "the decoder is positioned after frame $want",
+                                "sample pts ${sample.ptsUs}",
+                            )
+                        }
+                        nextOutput = landed
+                    }
+                    queue(sample)
+                    aheadInFlight++
+                }
+
+                // DRAIN: at most ONE dequeued output this iteration (the load-bearing bound — FEED
+                // re-tops the lead before the next DECIDE checkpoint).
+                drainOneAhead(want)
+                if (aheadStop) continue // the next DECIDE returns; the park block skips a stopped pump
+
+                // 3. PARK (under the lock): a CONJUNCTION, never an OR. The pump waits only when ALL
+                //    three hold: the want is settled (served or already queued) AND feeding is
+                //    impossible (in-flight at the cap, EOS queued - FEED just ran, so a false clause
+                //    would mean it loops back into work instead) AND storing is impossible (the ready
+                //    queue is full, or the codec owes nothing more to store — a dry end of stream, or
+                //    the output cursor is past the clip). The stop flag also breaks the park: a parked
+                //    stop would sleep past its own notification. Parking with the codec holding
+                //    in-flight work is the point - the codec decodes while the helper sleeps, so the
+                //    post-take dequeue is a copy, not a pipeline restart; and the conjunction makes
+                //    every park a topped-up park (never un-topped with queue room, never at-cap with
+                //    room: those states still have work, so the loop does it first).
+                val park: Boolean = synchronized(aheadLock) {
+                    if (aheadStop) {
+                        false // the next DECIDE returns; a park here would miss the stop's notify
+                    } else {
+                        val w = aheadWant
+                        val wantSettled = w < 0 || aheadServed == w || aheadReady.any { it.first == w }
+                        val cannotFeed = eosQueued || aheadInFlight >= IN_FLIGHT_CAP
+                        val cannotStore = aheadReady.size >= aheadDepth ||
+                            (aheadInFlight <= 0 && (eosQueued || nextOutput !in 0 until pts.size))
+                        if (wantSettled && cannotFeed && cannotStore) {
+                            aheadLock.wait() // woken by fetchAhead's take/notify or stopAhead, as before
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+                if (park) continue // re-run DECIDE after the wake
             } catch (t: Throwable) {
                 synchronized(aheadLock) {
                     aheadFailure = t
-                    aheadFailedFor = goal
-                    aheadNext = -1
+                    aheadFailedFor = want
                     aheadLock.notifyAll()
-                    // Park until the render thread asks for something else.
+                    // Park until the render thread asks for something else (the failure protocol is
+                    // unchanged: fetchAhead RETHROWS this failure on the request it belongs to, and a
+                    // new want clears it and resumes the pump).
                     while (!aheadStop && aheadWant == aheadFailedFor) aheadLock.wait()
                     aheadFailedFor = -1
                 }
+            }
+        }
+    }
+
+    /**
+     * One bounded drain step (helper thread): short polls toward at most ONE dequeued output, then back
+     * to the loop (FEED re-tops the lead before the next DECIDE checkpoint). A below-want output is
+     * consumed WITHOUT a pixel copy (the codec keeps flowing toward the want); a want-or-ahead output
+     * is copied and stored when the queue has room; a want-or-ahead output with the queue FULL is left
+     * in the codec — the codec's own pre-allocated output pool is the second slack stage, so a future
+     * backward-scrub request does not pay a full GOP re-decode for it. Every output goes through
+     * decodePlanes's exact per-output pts verification, so the failure strings stay byte-identical to
+     * the export path's.
+     */
+    private fun drainOneAhead(want: Int) {
+        var eosPolls = 0
+        var stuckPolls = 0
+        while (true) {
+            if (aheadStop) return
+            synchronized(aheadLock) {
+                // Leave-in-codec rule: an output at-or-ahead of the want with no room to store it stays
+                // in the codec. (Below-want outputs never see this: the queue holds only at-or-ahead
+                // frames, so a full queue implies nextOutput >= want — those must keep flowing either way.)
+                if (aheadReady.size >= aheadDepth && nextOutput >= want) return
+            }
+            // A frame known to precede the want is decoded and discarded: skip its pixel copy (the
+            // position is only known once the first sample after a seek has landed) — decodePlanes's idiom.
+            val copy = landed < 0 || nextOutput >= want
+            val out = dequeue(if (eosQueued) EOS_POLL_TIMEOUT_US else PUMP_POLL_US, copyPixels = copy)
+            if (out != null) {
+                eosPolls = 0
+                stuckPolls = 0
+                lastDecodedCount++
+                aheadInFlight-- // the dequeued output consumed one of the fed samples (helper thread)
+                if (landed < 0 || nextOutput >= pts.size || out.ptsUs != pts[nextOutput]) {
+                    throw decodeFailure(
+                        "the decoder produced an unexpected frame",
+                        "decoder pts ${out.ptsUs}",
+                    )
+                }
+                val index = nextOutput
+                nextOutput++
+                if (index < want) {
+                    if (out.y.buffer.isNotEmpty()) decoder.recycle(out) // discard, keep the codec flowing
+                    return
+                }
+                synchronized(aheadLock) {
+                    if (aheadStop) { decoder.recycle(out); return }
+                    if (aheadWant > index) {
+                        decoder.recycle(out) // the request moved past this frame while it decoded
+                    } else {
+                        aheadReady.add(index to out)
+                        aheadReady.sortBy { it.first }
+                        EncodedFrameTrace.logAhead(index, aheadWant, lastDecodedCount, System.nanoTime() - tMark())
+                        aheadDepth = aheadDepthFor(out)
+                        aheadLock.notifyAll()
+                    }
+                }
+                return
+            }
+            // Nothing ready this poll. The stuck guard covers decode silence (fed-without-output bounded
+            // far below the export path's SAMPLE_SLACK, so that guard is unaffected). While EOS is queued
+            // the bounded polls keep decodePlanes's "clip ended" failure — but only while the want is
+            // actually owed (a served want must not accrue toward the bound); a dry stream that owes
+            // nothing hands over to the park instead of spinning.
+            if (eosQueued) {
+                val owed = want in 0 until pts.size && synchronized(aheadLock) {
+                    aheadServed != want && aheadReady.none { it.first == want }
+                }
+                if (!owed) return
+                if (++eosPolls > EOS_POLLS) throw decodeFailure("the clip ended before frame $want")
+                if (aheadInFlight <= 0) return // the codec owes nothing more; the park decision takes over
+            } else {
+                if (++stuckPolls > PUMP_STUCK_POLLS) {
+                    // Fed the whole in-flight lead and still no output: the decoder is stuck.
+                    throw decodeFailure("the decoder made no progress on frame $want")
+                }
+                if (aheadInFlight < IN_FLIGHT_CAP) return // samples remain feedable: let FEED un-hold the codec
             }
         }
     }
@@ -925,9 +1121,17 @@ class EncodedSource(
         return queueDepthForPlaneBytes(bytes)
     }
 
+    /** Production-cost mark for the produced-frame trace line (helper thread only). */
+    private var aheadMarkNanos = 0L
+
+    private fun tMark(): Long = System.nanoTime().also { aheadMarkNanos = it }
+
     private fun stopAhead() {
         val t: Thread?
         synchronized(aheadLock) {
+            // 261124-tmp: the flag goes out BENEATH aheadLock as well (the pump reads it at every DECIDE
+            // and PARK checkpoint): a stop that races the pump's work phase cannot strand the loop in a
+            // bare wait() — the work phase's next lock acquisition sees the flag even if notify fired mid-drain.
             aheadStop = true
             t = aheadThread
             aheadLock.notifyAll()
@@ -936,6 +1140,8 @@ class EncodedSource(
             try { t.join(AHEAD_JOIN_MS) } catch (_: InterruptedException) {}
         }
     }
+
+    // ---- decode state machine ----
 
     /** Frames the decoder emitted for the LAST render (the skipped ones plus the target), for the trace. */
     @Volatile private var lastDecodedCount = 0
@@ -1112,6 +1318,33 @@ class EncodedSource(
             bytes > AHEAD_HALF_FRAME_BYTES -> 2
             else -> 3
         }
+
+        /**
+         * 261124-tmp: compressed samples kept in flight (fed since the last reposition minus outputs dequeued
+         * since): the free-running pump's feed bound (2026-11-25 night S5: single-frame production varied
+         * 3-174 ms while raw hardware decode is 7.4-9 ms/frame — the request-driven loop drained the codec
+         * pipeline between frames). Six is ~2 MB of compressed samples — marginal new memory — and it keeps
+         * queueSample off its 10 s input-timeout path (the codec input is never full for long).
+         */
+        internal const val IN_FLIGHT_CAP = 6
+
+        /**
+         * 261124-tmp: per-poll codec wait on the pump's steady path (the drain toward one output). A short
+         * poll — never a spin, never the 10 s input-timeout path — so stopAhead's 3 s join cannot miss it.
+         */
+        private const val PUMP_POLL_US = 15_000L
+
+        /**
+         * 261124-tmp: consecutive empty drain polls with the whole in-flight lead fed and no output before
+         * "the decoder made no progress": ~1.9 s at [PUMP_POLL_US]. The export path's own guard
+         * (SAMPLE_SLACK, shared) is unaffected — the cap bounds fed-without-output far below it.
+         */
+        /**
+         * 261124-tmp: consecutive empty drain polls with the whole in-flight lead fed and no output before
+         * "the decoder made no progress": ~1.9 s at [PUMP_POLL_US]. The export path's own guard
+         * (SAMPLE_SLACK, shared) is unaffected — the cap bounds fed-without-output far below it.
+         */
+        private const val PUMP_STUCK_POLLS = 128
 
         /** Empty dequeue polls tolerated after end-of-stream before "truncated". */
         private const val EOS_POLLS = 64

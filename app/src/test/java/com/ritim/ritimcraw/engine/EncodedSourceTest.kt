@@ -277,6 +277,105 @@ class EncodedSourceTest {
     }
 
     @Test
+    fun read_ahead_feeds_the_codec_beyond_the_produced_queue() {
+        // 261124-tmp Task 2: the pump keeps compressed samples in flight up to IN_FLIGHT_CAP while frames
+        // remain — production is consumption-driven, not request-driven. Render three frames of a 40-sample
+        // clip, close (joins the helper), then read the FROZEN counters: fed minus produced within
+        // [IN_FLIGHT_CAP - 1, IN_FLIGHT_CAP] (the one-step window: the thread may be a step from parked when
+        // stop lands), and fed strictly below the total. The old request-driven loop parks at a lead of 0-1.
+        val pts = LongArray(40) { it * 10000L }
+        val reader = FakeReader(samples(pts))
+        val decoder = FakeDecoder()
+        val developer = FakeDeveloper()
+        val source = EncodedSource(reader, decoder, developer, gpuDeveloper = null, readAhead = true)
+        source.open(3)
+        try {
+            source.renderFrame(0, GradeK())
+            source.renderFrame(1, GradeK())
+            source.renderFrame(2, GradeK())
+        } finally {
+            source.close()
+        }
+        val lead = decoder.fedSamples - decoder.producedOutputs
+        assertTrue("lead $lead must be at least IN_FLIGHT_CAP-1", lead >= EncodedSource.IN_FLIGHT_CAP - 1)
+        assertTrue("lead $lead must be at most IN_FLIGHT_CAP", lead <= EncodedSource.IN_FLIGHT_CAP)
+        assertTrue("fed ${decoder.fedSamples} must stay below the total", decoder.fedSamples < 40)
+    }
+
+    @Test
+    fun read_ahead_skipped_frames_arrive_without_a_pixel_copy() {
+        // Frame 5 is the FIRST request of the run (the readAhead=true analog of jump_seeks_to_keyframe_at_or-
+        // keyframe_at_or_before). The reposition lands on keyframe 0, outputs 0-4 are all below want 5 —
+        // each a guaranteed no-copy discard, deterministically 5, so at-least-4 is race-free. NOT render-0-then-5:
+        // with the free-running pump frames 1-3 legitimately fill the ready queue while frame 0 develops.
+        val pts = LongArray(12) { it * 10000L }
+        val reader = FakeReader(samples(pts, syncAt = intArrayOf(0, 6)))
+        val decoder = FakeDecoder()
+        val developer = FakeDeveloper()
+        val source = EncodedSource(reader, decoder, developer, gpuDeveloper = null, readAhead = true)
+        source.open(3)
+        try {
+            source.renderFrame(5, GradeK())
+            assertEquals(marker(pts[5]).toByte(), developer.frames.single().y[0])
+            assertTrue(
+                "no-copy dequeues ${decoder.noCopyDequeues} must be at least 4",
+                decoder.noCopyDequeues >= 4,
+            )
+        } finally {
+            source.close()
+        }
+    }
+
+    @Test
+    fun read_ahead_backward_jump_flushes_and_repositions() {
+        // 0 -> 1 -> 2 -> 0: the backward jump cannot use the decode position (nextOutput 3 > want 0), so it
+        // flushes and re-seeks; every want comes back as exactly its own frame's marker.
+        val pts = LongArray(12) { it * 10000L }
+        val reader = FakeReader(samples(pts))
+        val decoder = FakeDecoder()
+        val developer = FakeDeveloper()
+        val source = EncodedSource(reader, decoder, developer, gpuDeveloper = null, readAhead = true)
+        source.open(3)
+        try {
+            val before = decoder.flushes
+            source.renderFrame(0, GradeK())
+            source.renderFrame(1, GradeK())
+            source.renderFrame(2, GradeK())
+            source.renderFrame(0, GradeK())
+            assertTrue(
+                "backward jump must flush (flushes ${decoder.flushes}, was $before)",
+                decoder.flushes >= before + 1,
+            )
+            assertEquals(4, developer.frames.size)
+            for ((n, f) in intArrayOf(0, 1, 2, 0).withIndex()) {
+                assertEquals("frame $f", marker(pts[f]).toByte(), developer.frames[n].y[0])
+            }
+        } finally {
+            source.close()
+        }
+    }
+
+    @Test
+    fun read_ahead_queues_eos_at_most_once_per_position_run() {
+        // 6 samples; rendering the last frame walks the stream to its end. With the queued frames possibly
+        // already developed (the free run), eos may burn zero OR one poll on this request — but queueEos
+        // itself fires exactly once for the run, so close-then-count is exact regardless of timing.
+        val pts = LongArray(6) { it * 10000L }
+        val reader = FakeReader(samples(pts))
+        val decoder = FakeDecoder()
+        val developer = FakeDeveloper()
+        val source = EncodedSource(reader, decoder, developer, gpuDeveloper = null, readAhead = true)
+        source.open(3)
+        try {
+            source.renderFrame(5, GradeK())
+            assertEquals(marker(pts[5]).toByte(), developer.frames.single().y[0])
+        } finally {
+            source.close()
+        }
+        assertEquals(1, decoder.eosCalls)
+    }
+
+    @Test
     fun forward_jump_inside_the_same_gop_does_not_reseek() {
         // E0b-4b: keyframes at 0 and 6; a playback that skips frames 1 -> 4 stays in GOP 0 and just
         // decodes forward (frames 2 and 3 are discarded), no seek and no flush.
@@ -904,6 +1003,13 @@ class EncodedSourceTest {
      * paths: [staleAfterFlush] (a frame left over after flush), [ptsOffset]
      * (output off the index), [maxOutputs] (a decoder that stops early or
      * never emits), [queueThrows] (a codec crash).
+     *
+     * 261124-tmp: the pump's counters measure the free run — samples fed,
+     * outputs produced (copied and no-copy), no-copy dequeues, eos calls.
+     * The body lives in the TWO-ARG [dequeueFrame] because the pipeline's
+     * dequeue wrapper always calls the 2-arg form; the fake keeps returning
+     * full planes even for copyPixels=false (the counters are the test's
+     * assertion surface, the pipeline keeps its own recycle idiom).
      */
     private class FakeDecoder(
         var configureError: String? = null,
@@ -917,6 +1023,14 @@ class EncodedSourceTest {
         val emittedPts = ArrayList<Long>()
         var flushes = 0
         var released = false
+        var fedSamples = 0
+            private set // queueSample calls (frozen after close's join)
+        var producedOutputs = 0
+            private set // non-null dequeueFrame returns, copied and no-copy
+        var noCopyDequeues = 0
+            private set // dequeueFrame invocations asked to skip the pixel copy
+        var eosCalls = 0
+            private set // queueEos calls (at most once per position run)
         private val pending = ArrayList<EncodedSample>()
         private var eos = false
         private var outputs = 0
@@ -936,18 +1050,25 @@ class EncodedSourceTest {
 
         override fun queueSample(sample: EncodedSample) {
             queueThrows?.let { throw it }
+            fedSamples++
             pending.add(sample)
         }
 
         override fun queueEos() {
+            eosCalls++
             eos = true
         }
 
-        override fun dequeueFrame(timeoutUs: Long): YuvPlanes? {
+        override fun dequeueFrame(timeoutUs: Long): YuvPlanes? = dequeueFrame(timeoutUs, copyPixels = true)
+
+        override fun dequeueFrame(timeoutUs: Long, copyPixels: Boolean): YuvPlanes? {
+            if (!copyPixels) noCopyDequeues++
             if (stalePending) {
                 stalePending = false
                 emittedPts.add(12345L)
-                return planes(12345)
+                val stale = planes(12345)
+                producedOutputs++
+                return stale
             }
             if (outputs >= maxOutputs || pending.isEmpty()) return null
             // Hold the max-pts frame (reorder buffer) unless draining EOS.
@@ -966,6 +1087,7 @@ class EncodedSourceTest {
             if (pick < 0) return null
             val s = pending.removeAt(pick)
             outputs++
+            producedOutputs++
             val pts = s.ptsUs + ptsOffset
             emittedPts.add(pts)
             return planes(pts)
