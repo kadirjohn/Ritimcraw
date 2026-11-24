@@ -48,6 +48,16 @@ enum class BitrateLevel(val factor: Double) {
     HIGH(1.2),
     MAX(2.4),
     /**
+     * The Quality preset's own level (owner decision 2026-11-25: Quality is
+     * 160 Mb/s for HEVC): the table's pixel-rate scaling with a factor that
+     * lands on 160 Mb/s for 4K30 HEVC (5.13 x the 4K30 base of 31.19), about
+     * 49 Mb/s at 1080p30, capped at the chosen encoder's listed ceiling (so
+     * 4K60 reads 160 too, never above what the encoder lists). It is only
+     * ever set by the preset; the bitrate sub-page lists it only while it is
+     * the current choice. MAX and the ladder keep their old values.
+     */
+    QUALITY(5.13),
+    /**
      * Ladder steps above MAX, up to the chosen encoder's listed ceiling
      * (P2, 2026-11-25). They have no fixed factor: their value is a function
      * of MAX's table value and the ceiling ([BitrateTable.extraSteps]); an
@@ -102,8 +112,10 @@ enum class ExportPreset {
     SMALLER,
 
     /**
-     * HEVC, the MAX level; 10-bit (Main10) where the device and the render
-     * path allow it (E1d: the GPU encoder-surface path only), else 8-bit.
+     * HEVC, the QUALITY level (160 Mb/s at 4K30, owner decision 2026-11-25;
+     * MAX when the device has no HEVC encoder and the preset falls back to
+     * AVC); 10-bit (Main10) where the device and the render path allow it
+     * (E1d: the GPU encoder-surface path only), else 8-bit.
      */
     QUALITY,
 
@@ -130,7 +142,7 @@ enum class ExportPreset {
             QUALITY -> base.copy(
                 codec = hevc,
                 bitDepth = if (tenBitAvailable && hevcAvailable) 10 else 8,
-                bitrateLevel = BitrateLevel.MAX,
+                bitrateLevel = if (hevcAvailable) BitrateLevel.QUALITY else BitrateLevel.MAX,
                 audioKbps = 320,
             )
             CUSTOM -> s

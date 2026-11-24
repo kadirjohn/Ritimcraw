@@ -67,6 +67,10 @@ object DisplayRate {
         return sqrt(f * dUp * dUp + (1 - f) * dLo * dLo)
     }
 
+    /** Whether to ask the display for the clip's rate: the default or the debug enable flag, unless disabled. */
+    fun shouldRequest(enabledByDefault: Boolean, enableFlag: Boolean, disableFlag: Boolean): Boolean =
+        (enabledByDefault || enableFlag) && !disableFlag
+
     /** The mode id to ask for among [modes] at the current resolution, or 0 = the system's choice. */
     fun modeIdFor(modes: List<Mode>, currentWidth: Int, currentHeight: Int, fps: Double): Int {
         val same = modes.filter { it.width == currentWidth && it.height == currentHeight }
@@ -79,15 +83,27 @@ object DisplayRate {
 object DisplayRateApply {
     private const val TAG = "ritim-trace"
 
+    /**
+     * Off by default (owner decision 2026-11-25). Device A/B on one 4K30 MCRAW clip at the
+     * 1280 tier, four interleaved runs each: request on 8.9% dropped frames / p95 frame gap
+     * 61.0 ms, request off 6.8% / 59.4 ms, i.e. no measurable benefit; the stutter there is
+     * render time against the frame budget, not the vsync pattern. The code stays for other clips.
+     */
+    const val ENABLED_BY_DEFAULT = false
+
     /** Asks for [fps] while playing: the Surface when there is one (API 30+), else the window's mode. */
     fun begin(activity: Activity?, surface: Surface?, fps: Double) {
         if (fps < 1.0) return
-        // Debug A/B switch (debug builds only): `run-as <pkg> touch files/debug-no-display-rate`
-        // turns the request off so playback smoothness can be compared with and without it.
-        if (BuildConfig.DEBUG && activity != null &&
+        // OFF by default (owner decision 2026-11-25: the device A/B showed no benefit, see
+        // ENABLED_BY_DEFAULT). Debug builds can still switch it for an experiment:
+        //   run-as <pkg> touch files/debug-display-rate      -> on
+        //   run-as <pkg> touch files/debug-no-display-rate   -> off (wins)
+        val enableFlag = BuildConfig.DEBUG && activity != null &&
+            java.io.File(activity.filesDir, "debug-display-rate").exists()
+        val disableFlag = BuildConfig.DEBUG && activity != null &&
             java.io.File(activity.filesDir, "debug-no-display-rate").exists()
-        ) {
-            Log.i(TAG, "display-rate disabled by the debug flag file")
+        if (!DisplayRate.shouldRequest(ENABLED_BY_DEFAULT, enableFlag, disableFlag)) {
+            if (BuildConfig.DEBUG) Log.i(TAG, "display-rate not requested (default off, flags enable=$enableFlag disable=$disableFlag)")
             return
         }
         if (surface != null && surface.isValid && Build.VERSION.SDK_INT >= 30) {

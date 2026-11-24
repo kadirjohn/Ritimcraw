@@ -33,7 +33,9 @@ object BitrateTable {
             return extraSteps(max, ceilingMbps).firstOrNull { it.first == level }?.second ?: max
         }
         val px = width.toDouble() * height * fps / REFERENCE_PIXEL_RATE
-        val v = REFERENCE_MBPS * px.pow(0.85) * level.factor * codec.relativeBitrate
+        var v = REFERENCE_MBPS * px.pow(0.85) * level.factor * codec.relativeBitrate
+        // QUALITY never asks for more than the encoder lists (4K60 would scale past it).
+        if (level == BitrateLevel.QUALITY && ceilingMbps != null) v = minOf(v, kotlin.math.floor(ceilingMbps * 2) / 2.0)
         return ((v * 2).roundToLong() / 2.0).coerceIn(MIN_MBPS, MAX_MBPS)
     }
 

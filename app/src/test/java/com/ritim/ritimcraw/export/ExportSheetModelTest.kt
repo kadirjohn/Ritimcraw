@@ -205,4 +205,11 @@ class ExportSheetModelTest {
         assertEquals(200_000_000, over.bitrateBps)
         assertTrue(over.issues.any { it.kind == ExportIssue.Kind.BITRATE_UNCAPPED_RISK })
     }
+
+    @Test
+    fun the_quality_level_is_listed_only_while_it_is_the_current_choice() {
+        val plan = hevcUhd(BitrateLevel.QUALITY)
+        assertTrue(BitrateLevel.QUALITY in ExportSheetModel.offeredBitrateLevels(plan, hevcFacts, BitrateLevel.QUALITY))
+        assertTrue(BitrateLevel.QUALITY !in ExportSheetModel.offeredBitrateLevels(plan, hevcFacts, BitrateLevel.STANDARD))
+    }
 }
