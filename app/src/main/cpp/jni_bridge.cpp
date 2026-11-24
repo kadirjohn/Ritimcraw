@@ -2105,9 +2105,11 @@ CfaBuffer temporalMergedCfa(
     // the window assembly below and any same-frame retry read it from there.
     centerCfa = ensureRingFrame(e, frameIndex, std::move(centerCfa));
     TemporalWindow w;
+    const std::chrono::steady_clock::time_point tSplit0 = std::chrono::steady_clock::now();
     if (!assembleTemporalWindow(s, e, frameIndex, centerInfo, w)) {
         return nullptr;
     }
+    const std::chrono::steady_clock::time_point tSplit1 = std::chrono::steady_clock::now();
     if (w.prev == nullptr && w.next == nullptr) {
         // No eligible neighbor: both-rejected/edge frame. Output is the
         // center bit for bit (the shared pristine buffer itself — no copy);
@@ -2136,6 +2138,28 @@ CfaBuffer temporalMergedCfa(
                               w.prev ? w.prev->data() : nullptr,
                               w.next ? w.next->data() : nullptr,
                               s.rawMeta(), ts, merged->data(), &rep);
+    if (gStabDebugLog.load(std::memory_order_relaxed)) {
+        // Debug-only split of the temporal stage (export CPU bottleneck, 2026-11-25): assembling the
+        // window (neighbor decode through the ring + the noise profiles) vs the merge itself.
+        static std::atomic<long long> sumAssemble{0}, sumMerge{0}, sumProxy{0}, sumMatch{0}, sumMergeLoop{0};
+        static std::atomic<int> n{0};
+        const std::chrono::steady_clock::time_point tSplit2 = std::chrono::steady_clock::now();
+        sumAssemble += static_cast<long long>(elapsedUs(tSplit0, tSplit1));
+        sumMerge += static_cast<long long>(elapsedUs(tSplit1, tSplit2));
+        // temporalMergeCfa's own phase clocks (core/Temporal.h TemporalReport), ms -> us.
+        sumProxy += static_cast<long long>(rep.proxyMs * 1000.0);
+        sumMatch += static_cast<long long>(rep.matchMs * 1000.0);
+        sumMergeLoop += static_cast<long long>(rep.mergeMs * 1000.0);
+        const int k = ++n;
+        if (k % 100 == 0) {
+            __android_log_print(
+                ANDROID_LOG_INFO, "ritim-export",
+                "export temporal split over %d frames: assemble-window=%.1fms (neighbor decode + noise profiles) "
+                "merge=%.1fms (temporalMergeCfa) = proxies %.1fms + block matching/gates %.1fms + full-res merge loop %.1fms",
+                k, sumAssemble.load() / 1000.0 / k, sumMerge.load() / 1000.0 / k,
+                sumProxy.load() / 1000.0 / k, sumMatch.load() / 1000.0 / k, sumMergeLoop.load() / 1000.0 / k);
+        }
+    }
     storePairMafds(e, frameIndex, rep);
     e.mergedFrameIndex = frameIndex;
     e.mergedStrength = strength;
