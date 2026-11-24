@@ -10,6 +10,7 @@ import com.ritim.ritimcraw.export.CodecMeasureReport
 import com.ritim.ritimcraw.export.CodecMeasureStore
 import com.ritim.ritimcraw.export.DeviceEncoderFacts
 import com.ritim.ritimcraw.export.MeasureOptions
+import com.ritim.ritimcraw.export.imageInputSize
 import com.ritim.ritimcraw.export.MeasureResult
 import com.ritim.ritimcraw.export.CodecMeasurePlanner
 import java.util.concurrent.ExecutorService
@@ -50,6 +51,13 @@ object CodecMeasurer {
 
     /** The plan §4.6 log tag — the device protocol greps this. */
     const val TAG = "ritim-codec-measure"
+
+    /**
+     * How long the tail may take after EOS (the writer's EOS_DEADLINE
+     * shape): 4K60 10-bit hardware encoders drain in well under a second;
+     * a codec stuck past this ends the run with what it produced.
+     */
+    private const val DRAIN_DEADLINE_NS = 10_000_000_000L
 
     /** Debug builds only — nothing here runs or logs in release. */
     val enabled: Boolean get() = BuildConfig.DEBUG
@@ -232,8 +240,12 @@ object CodecMeasurer {
             var fed = 0
             var eosSent = false
             var eosSeen = false
+            // Drain deadline (the writer's EOS_DEADLINE: a codec that
+            // never returns EOS ends the run honestly at the deadline with
+            // what it produced — the row keeps its bytes, the series moves).
+            val drainDeadline = System.nanoTime() + DRAIN_DEADLINE_NS
             val info = MediaCodec.BufferInfo()
-            while (!eosSeen) {
+            while (!eosSeen && System.nanoTime() < drainDeadline) {
                 // Feed first: the encoder turns frames into output while
                 // the loop below drains them.
                 if (fed < frames) {
@@ -242,12 +254,7 @@ object CodecMeasurer {
                         val image = codec.getInputImage(idx)
                         if (image != null) {
                             synth.write(fed, image)
-                            val size = com.ritim.ritimcraw.export.imageInputSize(
-                                c.width, c.height,
-                                image.planes[0].rowStride,
-                                image.planes[1].rowStride, image.planes[1].pixelStride,
-                                image.planes[2].rowStride, image.planes[2].pixelStride,
-                            )
+                            val size = filledSize(c, image)
                             codec.queueInputBuffer(idx, 0, size, fed * 1_000_000L / c.fps, 0)
                             framesIn++
                         } else {
@@ -320,6 +327,36 @@ object CodecMeasurer {
         else MediaCodec.createEncoderByType(c.mime)
 
     /**
+     * The queued byte count of one filled input Image ("size must carry
+     * the frame's filled extent — the codec does NOT infer it"; the
+     * writer's imageInputSize rule). 8-bit YUV420 Images have THREE
+     * planes (Y, U, V — the pure helper takes all their strides); P010
+     * Images have TWO (Y, one interleaved CbCr), so the 10-bit row
+     * computes the filled extent from its two-plane geometry directly —
+     * the same maximum-of-plane-ends rule, never a threePlane assumption
+     * that would throw on the Main10 rows.
+     */
+    internal fun filledSize(c: CodecMeasureCase, image: Image): Int =
+        if (image.planes.size >= 3) {
+            imageInputSize(
+                c.width, c.height,
+                image.planes[0].rowStride,
+                image.planes[1].rowStride, image.planes[1].pixelStride,
+                image.planes[2].rowStride, image.planes[2].pixelStride,
+            )
+        } else {
+            // P010: luma shorts (w per row at the Y row stride in BYTES) +
+            // the chroma block (cw interleaved CbCr pairs per row).
+            val yEnd = 2 * c.width + (c.height - 1) * image.planes[0].rowStride
+            val cRow = image.planes[1].rowStride
+            val cw = (c.width + 1) / 2
+            val ch = (c.height + 1) / 2
+            val chromaBase = image.planes[0].rowStride * c.height
+            val cEnd = chromaBase + 4 * cw + (ch - 1) * cRow
+            maxOf(yEnd, cEnd)
+        }
+
+    /**
      * The case's real MediaFormat, from the planner's pure VALUES (the
      * writer's own toMediaFormat rule: Int keys setInteger, Float keys
      * setFloat — one format authority, no second rule to drift).
@@ -366,34 +403,50 @@ object CodecMeasurer {
             }
         }
 
-        /** 8-bit 4:2:0: one byte per sample at the plane's own strides. */
+        /**
+         * 8-bit 4:2:0: one byte per sample at the plane's own strides.
+         * Row-based (the writer's copyI420ToImage shape): one buffer
+         * position per ROW, a reused row array — the per-sample
+         * position() calls at 4K would dominate the run's wall time.
+         */
         private fun writeYuv420(i: Int, image: Image) {
             val w = c.width
             val h = c.height
             val cw = (w + 1) / 2
             val ch = (h + 1) / 2
+            val step = rampStep(i)
             val yPlane = image.planes[0]
             val yBuf = yPlane.buffer
             val yRow = yPlane.rowStride
-            val step = rampStep(i)
+            val rowBytes = ByteArray(w)
             for (row in 0 until h) {
-                yBuf.position(row * yRow)
                 for (col in 0 until w) {
-                    yBuf.put(luma(row, col, step).toByte())
+                    rowBytes[col] = luma(row, col, step).toByte()
                 }
+                yBuf.position(row * yRow)
+                yBuf.put(rowBytes)
             }
             for (p in 1..2) {
                 val plane = image.planes[p]
                 val buf = plane.buffer
                 val rowStride = plane.rowStride
                 val pixelStride = plane.pixelStride
-                val center = CHROMA_CENTER + step / 8
-                for (row in 0 until ch) {
-                    var dst = row * rowStride
-                    for (col in 0 until cw) {
-                        buf.position(dst)
-                        buf.put(center.toByte())
-                        dst += pixelStride
+                val center = (CHROMA_CENTER + step / 8).toByte()
+                if (pixelStride == 1 && cw == rowStride) {
+                    // Tight planar row: one bulk fill.
+                    val chromaRow = ByteArray(cw) { center }
+                    for (row in 0 until ch) {
+                        buf.position(row * rowStride)
+                        buf.put(chromaRow)
+                    }
+                } else {
+                    for (row in 0 until ch) {
+                        var dst = row * rowStride
+                        for (col in 0 until cw) {
+                            buf.position(dst)
+                            buf.put(center)
+                            dst += pixelStride
+                        }
                     }
                 }
             }
@@ -413,28 +466,26 @@ object CodecMeasurer {
             val yPlane = image.planes[0]
             val yBuf = yPlane.buffer
             val yRow = yPlane.rowStride
+            val rowShorts = ShortArray(w)
             for (row in 0 until h) {
-                yBuf.position(row * yRow)
                 for (col in 0 until w) {
-                    yBuf.putShort((luma(row, col, step) * 4).toShort())
+                    rowShorts[col] = (luma(row, col, step) * 4).toShort()
                 }
+                yBuf.position(row * yRow)
+                yBuf.asShortBuffer().put(rowShorts)
             }
             // P010 chroma: ONE semiplanar 16-bit plane, Cb/Cr interleaved
-            // (pixelStride = 2 words); the value writes Cb then Cr of each
-            // sample pair at dst and dst+2.
+            // (pixelStride = 2 words). The bulk row buffer writes each pair
+            // as Cb,Cr adjacent shorts — the row-based shape the 8-bit path
+            // uses, adapted to the 16-bit word.
             val cPlane = image.planes[1]
             val cBuf = cPlane.buffer
             val cRow = cPlane.rowStride
             val center = ((CHROMA_CENTER + step / 8) * 4).toShort()
+            val chromaRow = ShortArray(cw * 2) { center } // Cb,Cr interleaved
             for (row in 0 until ch) {
-                var dst = row * cRow
-                for (col in 0 until cw) {
-                    cBuf.position(dst)
-                    cBuf.putShort(center) // Cb
-                    cBuf.position(dst + 2)
-                    cBuf.putShort(center) // Cr
-                    dst += 4
-                }
+                cBuf.position(row * cRow)
+                cBuf.asShortBuffer().put(chromaRow)
             }
         }
 
