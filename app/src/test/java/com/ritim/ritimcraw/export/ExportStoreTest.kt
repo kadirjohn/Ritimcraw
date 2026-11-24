@@ -12,6 +12,7 @@ import com.ritim.ritimcraw.data.SourceRepository
 import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.engine.RenderBackend
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -405,6 +406,44 @@ class ExportStoreTest {
         assertEquals(1.3f, reloaded.stabilizationZoomLimit, 0f)
         assertEquals(-30f, reloaded.stabilizationTrimMs, 0f)
         assertEquals(23.5f, reloaded.stabilizationFocalMm, 0f)
+    }
+
+    @Test
+    fun stab_engine_snapshot_writes_only_for_image_and_old_rows_read_gyro() {
+        // S4: the snapshot's stabilizationEngine key rides the same
+        // omit-when-0 rule as GradeStore — a gyro grade's snapshot row is
+        // byte-identical to the pre-engine format, an image grade carries
+        // the key, and an old row (no key) parses as 0 = gyro.
+        val file = projectFile()
+        val image = GradeK(stabilization = true, stabilizationEngine = 1)
+        ExportStore(file).add(
+            ExportJob(
+                id = "image-job",
+                sourceId = "clip-a",
+                snapshot = image,
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+        val text = file.readText(Charsets.UTF_8)
+        assertTrue(text, text.contains("\"stabilizationEngine\":1"))
+        assertEquals(1, ExportStore(file).all().single().snapshot.stabilizationEngine)
+
+        // A gyro grade writes NO engine key and reloads as engine 0.
+        file.delete()
+        val gyro = GradeK(stabilization = true)
+        ExportStore(file).add(
+            ExportJob(
+                id = "gyro-job",
+                sourceId = "clip-a",
+                snapshot = gyro,
+                target = Target.MP4,
+                state = State.QUEUED,
+            )
+        )
+        val gyroText = file.readText(Charsets.UTF_8)
+        assertFalse(gyroText, gyroText.contains("stabilizationEngine"))
+        assertEquals(0, ExportStore(file).all().single().snapshot.stabilizationEngine)
     }
 
     @Test

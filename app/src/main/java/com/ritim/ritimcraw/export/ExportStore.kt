@@ -254,6 +254,13 @@ class ExportStore(private val file: File) {
                     .append(",\"stabilizationZoomLimit\":").append(num(g.stabilizationZoomLimit))
                     .append(",\"stabilizationTrimMs\":").append(num(g.stabilizationTrimMs))
                     .append(",\"stabilizationFocalMm\":").append(num(g.stabilizationFocalMm))
+                // Image engine (S4): written ONLY when 1 — the same
+                // omit rule as GradeStore.renderGrade, so a gyro/off
+                // snapshot stays byte-identical to the pre-engine format
+                // and an absent key parses as 0 = gyro.
+                if (g.stabilizationEngine == 1) {
+                    sb.append(",\"stabilizationEngine\":").append(g.stabilizationEngine)
+                }
             }
             // Managed LUT interpretation (owner request 2026-11-13):
             // omit-when-null — a queued job with no managed interpretation
@@ -418,6 +425,10 @@ class ExportStore(private val file: File) {
                 stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.25f,
                 stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
                 stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
+                // Absent = 0 = gyro (the "no key means gyro" rule — a
+                // snapshot queued before the image engine resolves as it
+                // always did).
+                stabilizationEngine = (m["stabilizationEngine"] as? Double)?.toInt() ?: 0,
                 // Managed LUT interpretation postdates older snapshots:
                 // absent or JSON-null parses as null (the legacy stage-24
                 // path keyed on lutId alone) — the old look is preserved

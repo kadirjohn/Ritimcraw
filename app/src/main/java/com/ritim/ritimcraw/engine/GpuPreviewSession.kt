@@ -156,6 +156,29 @@ interface GpuPreviewDevelop {
     ): FloatArray? = null
 
     /**
+     * The image engine's twin of [resolveWarp] (S4): the SAME
+     * `[active, M x 9]` answer from the clip's loaded analysis, on the
+     * engine thread. Default null: a fake never fabricates a warp.
+     */
+    suspend fun resolveImageWarp(
+        clipHandle: Long,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        rangeStart: Int,
+        rangeEnd: Int,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = null
+
+    /**
+     * Loads the image-stabilization analysis file into the clip's handle on
+     * the engine thread (S4). 0 = loaded; see NativeSource.jniImageStabLoad.
+     * Default 1 (not loaded) for fakes.
+     */
+    suspend fun loadImageStab(clipHandle: Long, analysisPath: String): Int = 1
+
+    /**
      * Closes the session (idempotent; absorbs the unavailable guard and a
      * rejected engine at teardown). Fire-and-forget like
      * [PreviewSession.close]: the close is SUBMITTED to the engine thread
@@ -357,6 +380,51 @@ internal object NativeGpuPreviewDevelop : GpuPreviewDevelop {
             cont.resume(null)
         }
     }
+
+    override suspend fun resolveImageWarp(
+        clipHandle: Long,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        rangeStart: Int,
+        rangeEnd: Int,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = suspendCoroutine { cont ->
+        try {
+            PreviewRenderer.previewEngine.execute {
+                cont.resume(
+                    try {
+                        NativeSource.jniImageStabWarpResolve(
+                            clipHandle, stabMode, stabStrength, stabZoomLimit,
+                            rangeStart, rangeEnd, frameIndex, maxDim,
+                        )
+                    } catch (t: Throwable) {
+                        null // unavailable guard: no verdict, the render skips draw 10
+                    }
+                )
+            }
+        } catch (e: RejectedExecutionException) {
+            cont.resume(null)
+        }
+    }
+
+    override suspend fun loadImageStab(clipHandle: Long, analysisPath: String): Int =
+        suspendCoroutine { cont ->
+            try {
+                PreviewRenderer.previewEngine.execute {
+                    cont.resume(
+                        try {
+                            NativeSource.jniImageStabLoad(clipHandle, analysisPath)
+                        } catch (t: Throwable) {
+                            1
+                        }
+                    )
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(1)
+            }
+        }
 
     override fun closeSession(sessionHandle: Long) {
         if (sessionHandle == 0L) return
@@ -581,6 +649,32 @@ class GpuPreviewSession(
         )
     } catch (t: Throwable) {
         null
+    }
+
+    /** Image-engine twin of [resolveWarp] (S4); null = no verdict. Never throws. */
+    suspend fun resolveImageWarp(
+        clipHandle: Long,
+        stabMode: Int,
+        stabStrength: Float,
+        stabZoomLimit: Float,
+        rangeStart: Int,
+        rangeEnd: Int,
+        frameIndex: Int,
+        maxDim: Int,
+    ): FloatArray? = try {
+        develop.resolveImageWarp(
+            clipHandle, stabMode, stabStrength, stabZoomLimit,
+            rangeStart, rangeEnd, frameIndex, maxDim,
+        )
+    } catch (t: Throwable) {
+        null
+    }
+
+    /** Loads the image-stab analysis into the clip handle (engine thread); 0 = loaded. Never throws. */
+    suspend fun loadImageStab(clipHandle: Long, analysisPath: String): Int = try {
+        develop.loadImageStab(clipHandle, analysisPath)
+    } catch (t: Throwable) {
+        1
     }
 
     /** The bridge's last-error detail, read on the engine thread (thread-local). */
