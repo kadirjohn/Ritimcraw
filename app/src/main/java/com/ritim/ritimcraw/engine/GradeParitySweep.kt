@@ -543,6 +543,32 @@ object GradeParitySweep {
         return total to inBand
     }
 
+    /** Writes gpu / cpu / amplified-diff PNGs for one diagnostic case (best effort, debug builds). */
+    private fun dumpCropDiag(c: CropCase, w: Int, h: Int, gpu: IntArray, cpu: IntArray) {
+        try {
+            // Debug-only diagnostic: the process's Application via ActivityThread (the sweep runs
+            // on an engine thread with no Context in hand).
+            val app = Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null) as android.app.Application
+            val dir = java.io.File(app.filesDir, "crop-diag").apply { mkdirs() }
+            val diff = IntArray(w * h) { i ->
+                var worst = 0
+                for (sh in intArrayOf(16, 8, 0)) {
+                    val d = Math.abs(((gpu[i] shr sh) and 0xFF) - ((cpu[i] shr sh) and 0xFF))
+                    if (d > worst) worst = d
+                }
+                val v = (worst * 16).coerceAtMost(255) // x16: 1 LSB = 16, 16 LSB = white
+                (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+            }
+            val tag = "d${c.deg}_${(c.x * 1000).toInt()}_${w}x$h"
+            for ((name, px) in listOf("gpu" to gpu, "cpu" to cpu, "diff" to diff)) {
+                val bmp = android.graphics.Bitmap.createBitmap(px.map { it or (0xFF shl 24) }.toIntArray(), w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                java.io.FileOutputStream(java.io.File(dir, "$tag-$name.png")).use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "crop-diag dump failed: ${e.message}")
+        }
+    }
+
     /** ARGB int pack (0xFFRRGGBB) -> RGB bytes (the compare's format). */
     fun argbBytes(argb: IntArray): ByteArray {
         val out = ByteArray(argb.size * 3)
@@ -765,6 +791,9 @@ object GradeParitySweep {
                     )
                     Log.i(TAG, cropLine(c.x, c.y, c.w, c.h, c.deg, stats).replaceFirst("crop-sweep", "crop-diag") +
                         " out=${gw}x${gh} over2=$outliers inBand=$inBand")
+                    // Debug only: the spatial pattern of the disagreement (GPU, CPU and an
+                    // amplified |diff| as PNGs under files/crop-diag/), for the rotated cases.
+                    if (c.deg != 0f) dumpCropDiag(c, gw, gh, gpuArgb, cpuCropped.argb)
                 } else {
                     rows += c to stats
                     Log.i(TAG, cropLine(c.x, c.y, c.w, c.h, c.deg, stats))
