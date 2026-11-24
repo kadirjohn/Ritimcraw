@@ -108,6 +108,7 @@ class ClipThumbnails(
     private val exportEngine: ExecutorService = ExportEngine.thread,
     private val jpegWriter: JpegWriter = BitmapJpegWriter(),
     private val iconExtractor: IconExtractor = BitmapIconExtractor(pngWriter),
+    private val scaledFrames: ScaledFrameGrabber = RetrieverFrameGrabber,
 ) {
 
     /**
@@ -150,8 +151,20 @@ class ClipThumbnails(
             // Neutral develop of frame 0 (owner accepts the dark look —
             // no auto-brighten). Small long edge: fast load, still above
             // the row's ~200px physical display need at 420dpi.
-            val frame = s.render(frameIndex = 0, grade = GradeK(), maxDim = maxDim)
-                .getOrNull()
+            //
+            // The CPU encoded develop has no maxDim: it develops the FULL
+            // frame and scales afterwards. Above 4K (an 8K clip: a 133 MB
+            // ARGB array, twice) that runs out of JVM heap and the clip
+            // never got an icon (owner finding 2026-11-24). Such clips, and
+            // any clip whose develop fails, take the platform's scaled
+            // frame instead: the decoder's own display frame, not the
+            // neutral develop — an icon rather than a placeholder.
+            val developed = if (ThumbnailRules.encodedDevelopFits(s.width, s.height)) {
+                s.render(frameIndex = 0, grade = GradeK(), maxDim = maxDim).getOrNull()
+            } else {
+                null
+            }
+            val frame = developed ?: scaledFrames.grab(clip.fdProvider, maxDim)
             if (frame != null) {
                 // Manual rotation (owner request 2026-11-14: the thumbnail
                 // must match the rotated look the user chose in the
@@ -314,4 +327,47 @@ class ClipThumbnails(
         val fdProvider: () -> Int,
         val onStats: (width: Int, height: Int, frameCount: Int, durationUs: Long) -> Unit,
     )
+}
+
+/**
+ * A small upright first frame straight from the platform decoder, scaled
+ * on the way out — the fallback icon for encoded clips the CPU develop
+ * cannot handle. Returns null on any failure (the row keeps its
+ * placeholder and the next Library open retries).
+ */
+fun interface ScaledFrameGrabber {
+    fun grab(fdProvider: () -> Int, maxDim: Int): PreviewFrame?
+}
+
+/** [ScaledFrameGrabber] through MediaMetadataRetriever.getScaledFrameAtTime (API 27+). */
+object RetrieverFrameGrabber : ScaledFrameGrabber {
+    override fun grab(fdProvider: () -> Int, maxDim: Int): PreviewFrame? {
+        val fd = fdProvider()
+        if (fd < 0) return null
+        val pfd = android.os.ParcelFileDescriptor.adoptFd(fd)
+        val mmr = android.media.MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(pfd.fileDescriptor)
+            val bmp = mmr.getScaledFrameAtTime(
+                0L,
+                android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                maxDim,
+                maxDim,
+            ) ?: return null
+            try {
+                val w = bmp.width
+                val h = bmp.height
+                val argb = IntArray(w * h)
+                bmp.getPixels(argb, 0, w, 0, 0, w, h)
+                PreviewFrame(width = w, height = h, argb = argb)
+            } finally {
+                bmp.recycle()
+            }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            try { mmr.release() } catch (_: Throwable) {}
+            try { pfd.close() } catch (_: Throwable) {}
+        }
+    }
 }

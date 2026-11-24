@@ -12,6 +12,18 @@ import java.security.MessageDigest
  */
 object ThumbnailRules {
 
+    /** Pixel ceiling for the CPU encoded develop of an icon: DCI 4K (4096x2160). */
+    const val ENCODED_DEVELOP_MAX_PIXELS: Long = 4096L * 2160L
+
+    /**
+     * True when an encoded clip of [width]x[height] can take the full-frame
+     * CPU develop for its icon. Above 4K (5K, 8K) the full-size ARGB
+     * arrays exhaust the JVM heap, so the icon comes from the platform's
+     * scaled frame instead. Unknown dimensions (0) try the develop.
+     */
+    fun encodedDevelopFits(width: Int, height: Int): Boolean =
+        width.toLong() * height.toLong() <= ENCODED_DEVELOP_MAX_PIXELS
+
     /**
      * True when [source] still needs a thumbnail generated: no persisted
      * file ([hasFile]) and access to the clip is OK (a LOST or GONE row
