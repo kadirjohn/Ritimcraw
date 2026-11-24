@@ -35,9 +35,15 @@ class EncodedImageReaderProbeTest {
         val file = File(ctx.filesDir, "probe/$name")
         assumeTrue("copy the clip to ${file.path} first", file.exists())
         val frames = (InstrumentationRegistry.getArguments().getString("frames") ?: "40").toInt()
-        probe(file, frames, "bytebuffer", null)
-        probe(file, frames, "imagereader-yuv420", ImageFormat.YUV_420_888)
-        probe(file, frames, "imagereader-p010", ImageFormat.YCBCR_P010)
+        // `-e variants imagereader-p010` runs one variant: the YUV_420_888 reader aborts the process on a
+        // 10-bit stream and on 8K (2026-11-25), which would otherwise end the run before the next variant.
+        val wanted = (InstrumentationRegistry.getArguments().getString("variants")
+            ?: "bytebuffer,imagereader-yuv420,imagereader-p010").split(',')
+        if ("bytebuffer" in wanted) probe(file, frames, "bytebuffer", null)
+        if ("imagereader-yuv420" in wanted) probe(file, frames, "imagereader-yuv420", ImageFormat.YUV_420_888)
+        if ("imagereader-p010" in wanted) probe(file, frames, "imagereader-p010", ImageFormat.YCBCR_P010)
+        // The production path: MediaCodec ByteBuffer output with P010 requested, planes via getOutputImage.
+        if ("bytebuffer-p010" in wanted) probe(file, frames, "bytebuffer-p010", null)
     }
 
     private fun describe(img: Image, withHardwareBuffer: Boolean = false): String {
@@ -46,6 +52,32 @@ class EncodedImageReaderProbeTest {
         // 10-bit stream and 8K), so it is only asked for on the P010 reader.
         val hb = if (!withHardwareBuffer) null else runCatching { img.hardwareBuffer?.let { "hb.format=0x${Integer.toHexString(it.format)} hb.usage=0x${java.lang.Long.toHexString(it.usage)}" } }.getOrNull()
         return "format=${img.format} ${img.width}x${img.height} planes=${img.planes.size} $p ${hb ?: "hb=n/a"}"
+    }
+
+    /**
+     * One frame's plane copy, pooled arrays vs freshly allocated ones, for the P010 reader images.
+     * Copies the frame's real extent, NOT buffer.remaining(): the Y plane reports 7680x2176 bytes of
+     * capacity for a 2160-row frame and reading all of it faulted (SIGSEGV, SEGV_ACCERR) because the
+     * last rows are not mapped.
+     */
+    private fun measureCopy(
+        img: Image, pool: com.ritim.ritimcraw.engine.PlaneBufferPool,
+        pooledNs: MutableList<Long>, freshNs: MutableList<Long>,
+    ) {
+        val w = img.width
+        val h = img.height
+        val yPlane = img.planes[0]
+        val cPlane = img.planes[1]
+        val yNeed = (h - 1) * yPlane.rowStride + w * yPlane.pixelStride
+        val cNeed = ((h + 1) / 2 - 1) * cPlane.rowStride + ((w + 1) / 2) * cPlane.pixelStride - 2 // the Cb view lacks the last Cr word
+        val src = listOf(yPlane.buffer to yNeed, cPlane.buffer to cNeed)
+        val t0 = System.nanoTime()
+        val got = src.map { (b, n) -> val d = b.duplicate(); val a = pool.acquire(n); d.get(a, 0, n); a }
+        pooledNs.add(System.nanoTime() - t0)
+        got.forEach { pool.release(it) }
+        val t1 = System.nanoTime()
+        src.forEach { (b, n) -> val d = b.duplicate(); val a = ByteArray(n); d.get(a, 0, n) }
+        freshNs.add(System.nanoTime() - t1)
     }
 
     private fun probe(file: File, frames: Int, label: String, readerFormat: Int?) {
@@ -61,6 +93,9 @@ class EncodedImageReaderProbeTest {
         var reader: ImageReader? = null
         val thread = HandlerThread("probe-reader").apply { start() }
         val ready = LinkedBlockingQueue<Long>()
+        val pool = com.ritim.ritimcraw.engine.PlaneBufferPool()
+        val copyPooledNs = ArrayList<Long>()
+        val copyFreshNs = ArrayList<Long>()
         try {
             if (readerFormat != null) {
                 reader = try {
@@ -73,6 +108,7 @@ class EncodedImageReaderProbeTest {
                     val t = System.nanoTime()
                     r.acquireNextImage()?.let { img ->
                         if (ready.size < 2) Log.i(tag, "$label first image: ${describe(img, readerFormat == ImageFormat.YCBCR_P010)}")
+                        if (readerFormat == ImageFormat.YCBCR_P010) measureCopy(img, pool, copyPooledNs, copyFreshNs)
                         img.close()
                         ready.add(t)
                     }
@@ -80,6 +116,9 @@ class EncodedImageReaderProbeTest {
             }
             val codec = MediaCodec.createDecoderByType(mime)
             try {
+                if (label == "bytebuffer-p010") {
+                    fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010)
+                }
                 codec.configure(fmt, reader?.surface, null, 0)
             } catch (e: Exception) {
                 Log.w(tag, "$label: configure failed: ${e.message}")
@@ -108,6 +147,7 @@ class EncodedImageReaderProbeTest {
                         codec.getOutputImage(o)?.let { Log.i(tag, "$label first image: ${describe(it)}"); firstLogged = true }
                         Log.i(tag, "$label output format: ${codec.outputFormat}")
                     }
+                    if (label == "bytebuffer-p010") codec.getOutputImage(o)?.let { measureCopy(it, pool, copyPooledNs, copyFreshNs) }
                     codec.releaseOutputBuffer(o, reader != null)
                     out++
                 } else if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED && reader != null) {
@@ -117,6 +157,12 @@ class EncodedImageReaderProbeTest {
             val ms = (System.nanoTime() - t0) / 1e6
             Log.i(tag, String.format(java.util.Locale.ROOT, "%s %s %dx%d: %d frames in %.0f ms = %.1f ms/frame (%.1f fps) images=%d",
                 label, mime, w, h, out, ms, ms / out.coerceAtLeast(1), 1000.0 * out / ms, ready.size))
+            if (copyPooledNs.isNotEmpty()) {
+                fun med(l: List<Long>) = l.sorted()[l.size / 2] / 1e6
+                Log.i(tag, String.format(java.util.Locale.ROOT,
+                    "%s plane copy (Y + CbCr into arrays): pooled median %.1f ms (n=%d, pool allocations=%d) vs fresh arrays median %.1f ms (n=%d)",
+                    label, med(copyPooledNs), copyPooledNs.size, pool.allocations, med(copyFreshNs), copyFreshNs.size))
+            }
             codec.stop(); codec.release()
         } finally {
             reader?.close(); thread.quitSafely(); ex.release()
