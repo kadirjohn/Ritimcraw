@@ -84,6 +84,8 @@ interface EditorPreviewSession : AutoCloseable {
         lutPath: String? = null,
         gyroPath: String? = null,
         renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
+        /** F1-6: the v2 node chain's wire (null = the legacy fast path, bit-identical — K2). */
+        chainWire: FloatArray? = null,
     ): Result<PreviewFrame>
 
     /**
@@ -101,6 +103,8 @@ interface EditorPreviewSession : AutoCloseable {
         lutPath: String? = null,
         gyroPath: String? = null,
         renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
+        /** F1-6: as [render]'s [chainWire]. */
+        chainWire: FloatArray? = null,
     ): Result<PreviewFrame>
 
     /**
@@ -313,7 +317,8 @@ class EncodedPreviewSession private constructor(
         lutPath: String?,
         gyroPath: String?,
         renderClass: PreviewTiers.RenderClass,
-    ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
+        chainWire: FloatArray?,
+    ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath, chainWire = chainWire)
 
     /**
      * The encoded engine has no cached re-develop stage: its decode
@@ -329,13 +334,15 @@ class EncodedPreviewSession private constructor(
         lutPath: String?,
         gyroPath: String?,
         renderClass: PreviewTiers.RenderClass,
-    ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath)
+        chainWire: FloatArray?,
+    ): Result<PreviewFrame> = renderOnEngine(frameIndex, grade, maxDim, lutPath, chainWire = chainWire)
 
     private suspend fun renderOnEngine(
         frameIndex: Int,
         grade: GradeK,
         maxDim: Int,
         lutPath: String? = null,
+        chainWire: FloatArray? = null,
     ): Result<PreviewFrame> {
         if (closed.get()) {
             return Result.failure(sessionClosed())
@@ -355,7 +362,7 @@ class EncodedPreviewSession private constructor(
                             // Closed while queued: never touch the dead source.
                             Result.failure(sessionClosed())
                         } else {
-                            frameOf(source.renderFrame(frameIndex, grade, lutPath), maxDim)
+                            frameOf(source.renderFrame(frameIndex, grade, lutPath, chainWire = chainWire), maxDim)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)

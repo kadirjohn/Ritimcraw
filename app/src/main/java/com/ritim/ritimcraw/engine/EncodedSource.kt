@@ -303,6 +303,8 @@ interface EncodedDeveloper {
         orientationDeg: Int,
         grade: GradeK,
         lutPath: String? = null,
+        /** F1-6 (plan §8/K11): the v2 node chain's wire; null = the legacy fast path. */
+        chainWire: FloatArray? = null,
     ): IntArray?
 
     /** rawedit::ErrorCode of the last failed develop (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
@@ -389,6 +391,7 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
         orientationDeg: Int,
         grade: GradeK,
         lutPath: String?,
+        chainWire: FloatArray?,
     ): IntArray? {
         if (!NativeSource.nativeAvailable) {
             // No NDK build: fail cleanly with the unavailable message instead
@@ -432,6 +435,8 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             grade.lutInterp?.input?.transfer?.value ?: -1,
             grade.lutInterp?.output?.gamut?.value ?: -1,
             grade.lutInterp?.output?.transfer?.value ?: -1,
+            // F1-6 (K11): the v2 chain's wire; null = the legacy fast path.
+            chainWire,
         )
     }
 
@@ -603,6 +608,8 @@ class EncodedSource(
          * manual delta, exactly like the MCRAW session.
          */
         upright: Boolean = true,
+        /** F1-6 (plan §8/K11): the v2 node chain's wire; null = the legacy fast path. */
+        chainWire: FloatArray? = null,
     ): IntArray {
         val fmt = requireOpen()
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
@@ -611,7 +618,7 @@ class EncodedSource(
         // decoder that returned 8-bit for a 10-bit track is developed (and
         // reported) as 8-bit, never mis-read as 10.
         val color = fmt.color.withDecodedBitDepth(frame.bitDepth)
-        val argb = developer.develop(frame, color, if (upright) fmt.orientationDeg else 0, grade, lutPath)
+        val argb = developer.develop(frame, color, if (upright) fmt.orientationDeg else 0, grade, lutPath, chainWire)
             ?: throw IllegalStateException(
                 EncodedErrors.message(developer.code(), developer.stage(), developer.detail())
             )

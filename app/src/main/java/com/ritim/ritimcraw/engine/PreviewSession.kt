@@ -86,6 +86,7 @@ class PreviewSession private constructor(
         lutPath: String?,
         gyroPath: String?,
         renderClass: PreviewTiers.RenderClass,
+        chainWire: FloatArray?,
     ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
@@ -114,7 +115,7 @@ class PreviewSession private constructor(
                                 )
                             )
                         } else {
-                            renderBlocking(frameIndex, grade, maxDim, lutPath, gyroPath, renderClass)
+                            renderBlocking(frameIndex, grade, maxDim, lutPath, gyroPath, renderClass, chainWire)
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)
@@ -142,6 +143,7 @@ class PreviewSession private constructor(
         lutPath: String? = null,
         gyroPath: String? = null,
         renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
+        chainWire: FloatArray? = null,
     ): Result<PreviewFrame> {
         val args = GradeMapping.toNative(grade)
         // DN-08 render-class policy (choppy-preview fix 2026-11-13):
@@ -183,6 +185,9 @@ class PreviewSession private constructor(
                 interp?.input?.transfer?.value ?: -1,
                 interp?.output?.gamut?.value ?: -1,
                 interp?.output?.transfer?.value ?: -1,
+                // F1-6: the v2 node chain's wire (null = the legacy fast
+                // path, byte-identical — the K2 lock).
+                chainWire,
             )
         )
     }
@@ -202,6 +207,7 @@ class PreviewSession private constructor(
         lutPath: String?,
         gyroPath: String?,
         renderClass: PreviewTiers.RenderClass,
+        chainWire: FloatArray?,
     ): Result<PreviewFrame> {
         if (!SessionRules.isActive(opened = true, closed = closed.get())) {
             return Result.failure(
@@ -270,6 +276,9 @@ class PreviewSession private constructor(
                                     interp?.input?.transfer?.value ?: -1,
                                     interp?.output?.gamut?.value ?: -1,
                                     interp?.output?.transfer?.value ?: -1,
+                                    // F1-6: the v2 chain's wire (null = the
+                                    // legacy fast path).
+                                    chainWire,
                                 )
                             )
                         }

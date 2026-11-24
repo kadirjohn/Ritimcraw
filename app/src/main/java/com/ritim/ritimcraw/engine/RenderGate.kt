@@ -88,4 +88,14 @@ data class RenderRequest(
      * requests carry [followUpMaxDim] today).
      */
     val renderClass: PreviewTiers.RenderClass = PreviewTiers.RenderClass.SETTLE,
+    /**
+     * F1-6 (color model v2): the v2 node chain's wire for THIS request's
+     * grade — null = the LEGACY fast path (the K2 bit-identical render,
+     * every v1-grade clip and every all-neutral chain). Built by the
+     * request site from the clip's ClipGradeV2 through
+     * [com.ritim.ritimcraw.engine.GradeV2Usage] +
+     * [com.ritim.ritimcraw.engine.NodeChainWire.encode]; the pump threads
+     * it to the session seam and the GPU arm's setColorModelChain.
+     */
+    val chainWire: FloatArray? = null,
 )

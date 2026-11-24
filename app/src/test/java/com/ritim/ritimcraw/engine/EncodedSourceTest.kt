@@ -928,6 +928,7 @@ class EncodedSourceTest {
             orientationDeg: Int,
             grade: GradeK,
             lutPath: String?,
+            chainWire: FloatArray?,
         ): IntArray? {
             frames.add(frame)
             grades.add(grade)

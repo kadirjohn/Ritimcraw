@@ -34,6 +34,7 @@
 #include <rawedit/Gyro.h>
 #include <rawedit/ImageStab.h>
 #include <rawedit/Lut.h>
+#include <rawedit/OpenDrt.h>
 #include <rawedit/Orientation.h>
 #include <rawedit/OrientationEstimate.h>
 #include <rawedit/OpticalSync.h>
@@ -1690,6 +1691,97 @@ inline uint8_t toByte(float rec709) {
     return static_cast<uint8_t>(v * 255.0f + 0.5f);
 }
 
+// ---- color model v2 F1-6: the CPU legs' shared pieces ----------------------
+// (Outside the extern "C" block: these are C++ statics. The chain-wire
+// decode, the applyNodes/applyOpenDrt consume the four CPU doors ride
+// below; the preview session nodes doors reuse the decode.)
+
+// The shared chain-wire decode: reads the FloatArray ONCE into the
+// rawedit::GradeNode values. Returns false with the honest message in
+// [error] (setError at the caller); never misreads.
+static bool readNodeChainWire(JNIEnv* env, jfloatArray wire,
+                              gles::NodeChainDecoded* out, std::string* error) {
+    const jsize len = wire == nullptr ? 0 : env->GetArrayLength(wire);
+    if (len <= 0 || len > 8 * 1024) {
+        *error = "node chain wire: empty or oversize (recovery: re-encode the chain with NodeChainWire.encode)";
+        return false;
+    }
+    std::vector<float> buf(static_cast<size_t>(len));
+    env->GetFloatArrayRegion(wire, 0, len, buf.data());
+    if (!gles::decodeNodeChainWire(buf.data(), len, out)) {
+        *error = out->error;
+        return false;
+    }
+    for (const rawedit::GradeNode& n : out->nodes) {
+        if (n.lut != nullptr || (n.lutMix > 0.0001f && out->nodeCount > 0 && n.hasLut())) {
+            *error = std::string("node chain wire: node LUTs are not wired on this path "
+                                 "(recovery: render this clip on the CPU path)");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The CPU legs' shared v2 consume (F1-6): rawedit::applyNodes (the CPU
+// reference, NodesOutput selected by the wire's mode) and, for the
+// OpenDRT output, rawedit::applyOpenDrt. PLACEMENT: the caller runs this
+// AFTER the warp (plan §3.2 stage 6 — the NODES pass sits between the
+// warp and the TAIL on the GPU; the CPU reference composes the same
+// order against the warp the bridge already applied). K2: [chain] ==
+// nullptr is the LEGACY fast path — nothing here runs, the frame is
+// bit-identical to the pre-F1-6 develop.
+//
+// [drt] receives the display-code verdict: true when the wire declares
+// the OpenDRT output — the caller then SKIPS the bridge's Rec.709 OETF +
+// clamp (the plan §3.4 note: the DRT output is display-coded already),
+// quantizing the code values directly.
+static bool applyV2ChainCpu(const gles::NodeChainDecoded* chain, rawedit::ImageF& img,
+                            bool* drt) {
+    *drt = false;
+    if (chain == nullptr || (chain->nodeCount == 0 && chain->outputMode == 0)) {
+        return true;  // legacy: no work, bit-identical
+    }
+    const rawedit::NodesOutput out = chain->outputMode == 1
+        ? rawedit::NodesOutput::DwgLinear
+        : rawedit::NodesOutput::Rec709Linear;
+    if (!rawedit::applyNodes(img,
+                             chain->nodes.empty() ? nullptr : chain->nodes.data(),
+                             static_cast<size_t>(chain->nodeCount), out)) {
+        return false;  // the N1 caps (the wire re-checks; the honest refusal)
+    }
+    if (chain->outputMode == 1) {
+        rawedit::OpenDrtSpec spec;
+        spec.look = chain->drtLook;
+        spec.tonescale = chain->drtTonescale;
+        spec.cwp = chain->drtCwp;
+        spec.cwpLimit = chain->drtCwpLimit;
+        spec.grey = chain->drtGrey;
+        spec.display = chain->drtDisplay == 2 ? rawedit::OpenDrtDisplay::Hlg1000
+            : chain->drtDisplay == 1 ? rawedit::OpenDrtDisplay::SdrRec1886
+            : rawedit::OpenDrtDisplay::SdrSrgb22;
+        rawedit::applyOpenDrt(img, spec);
+        *drt = true;
+    }
+    return true;
+}
+
+// One CPU door's [chainWire] decode: null (the legacy default) stays a
+// null chain; a decode failure returns false with the error set.
+static bool v2ChainFor(JNIEnv* env, jfloatArray wire,
+                       std::unique_ptr<gles::NodeChainDecoded>* out) {
+    if (wire == nullptr) {
+        out->reset();
+        return true;
+    }
+    out->reset(new gles::NodeChainDecoded());
+    std::string err;
+    if (!readNodeChainWire(env, wire, out->get(), &err)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop, err);
+        return false;
+    }
+    return true;
+}
+
 // Develop a decoded CFA into the preview's ARGB_8888 jint array
 // ([width, height, pixels...], rotated upright per FrameInfo.orientationDeg).
 // Shared by the plain preview render and the cached interactive render so the
@@ -1702,11 +1794,17 @@ inline uint8_t toByte(float rec709) {
 // develop failure; a NewIntArray failure propagates as nullptr with a
 // pending JNI exception, which the Kotlin wrapper already maps to a render
 // failure.
+// F1-6: [chain] is the decoded v2 node chain — null = the LEGACY fast
+// path, bit-identical (the K2 lock); a NODES/DRT chain runs
+// applyV2ChainCpu after the warp and, for the OpenDRT output, the ARGB
+// tail quantizes the display code values (the bridge OETF SKIPPED,
+// plan §3.4).
 jintArray developToArgb(JNIEnv* env,
                          const std::vector<uint16_t>& cfa,
                          const rawedit::FrameInfo& info,
                          const rawedit::RawMeta& meta,
                          const rawedit::Grade& grade,
+                         const gles::NodeChainDecoded* chain,
                          const rawedit::Lut* lut,
                          const rawedit::CompiledLutBinding* binding,
                          const StabInput& stab,
@@ -1726,6 +1824,17 @@ jintArray developToArgb(JNIEnv* env,
     // along only for the debug log's settle-tier gate (audit fix
     // 2026-11-12): the warp itself applies at every tier.
     applyStabilization(stab, img, maxDim);
+
+    // F1-6: the v2 chain after the warp (plan §3.2 stage 6); null = the
+    // legacy fast path, nothing runs (K2). The DRT flag gates the OETF
+    // below (the plan §3.4 bridge skip).
+    bool drtOutput = false;
+    if (!applyV2ChainCpu(chain, img, &drtOutput)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: the v2 node chain exceeds the N1 limits "
+                 "(recovery: cap the chain at 8 nodes)");
+        return nullptr;
+    }
 
     const jsize w = static_cast<jsize>(img.w);
     const jsize h = static_cast<jsize>(img.h);
@@ -1752,9 +1861,12 @@ jintArray developToArgb(JNIEnv* env,
                 case 270: si = x * w + (w - 1 - y); break;
                 default:  si = y * w + x; break;
             }
-            const float r = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 0]);
-            const float g = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 1]);
-            const float b = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 2]);
+            const float r = drtOutput ? img.rgb[static_cast<size_t>(si) * 3 + 0]
+                : rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 0]);
+            const float g = drtOutput ? img.rgb[static_cast<size_t>(si) * 3 + 1]
+                : rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 1]);
+            const float b = drtOutput ? img.rgb[static_cast<size_t>(si) * 3 + 2]
+                : rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 2]);
             px[static_cast<size_t>(y) * outW + x] =
                 0xFF000000 |
                 (static_cast<jint>(toByte(r)) << 16) |
@@ -2368,7 +2480,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint maxDim,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer) {
+        jint lutOutGamut, jint lutOutTransfer,
+        jfloatArray chainWire) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2417,6 +2530,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
 
         // 3-4. Develop with CFA decimation + warp + ARGB (shared preview
         //      tail; the warp is a no-op without a resolved log).
+        std::unique_ptr<gles::NodeChainDecoded> chain;
+        if (!v2ChainFor(env, chainWire, &chain)) return nullptr;
         return developToArgb(env, *cfa, info, meta,
                              gradeFromKotlin(exposureEv, highlights, tempK, tint,
                                              saturation, blackPoint, whitePoint,
@@ -2432,7 +2547,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
                                              splitBalance),
-                             lut, binding, stab.input, maxDim);
+                             chain.get(), lut, binding, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -2473,7 +2588,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint maxDim,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer) {
+        jint lutOutGamut, jint lutOutTransfer,
+        jfloatArray chainWire) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2533,6 +2649,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
 
         // 3-4. Develop the (possibly merged) CFA + warp + ARGB (shared
         //      preview tail; the warp is a no-op without a resolved log).
+        std::unique_ptr<gles::NodeChainDecoded> chain;
+        if (!v2ChainFor(env, chainWire, &chain)) return nullptr;
         return developToArgb(env, *cfa, e.cachedInfo, meta,
                              gradeFromKotlin(exposureEv, highlights, tempK, tint,
                                              saturation, blackPoint, whitePoint,
@@ -2548,7 +2666,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
                                              splitBalance),
-                             lut, binding, stab.input, maxDim);
+                             chain.get(), lut, binding, stab.input, maxDim);
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -3238,9 +3356,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGlesFragmentParityDiag(
 // The shared export body: everything except the grade's arrival shape.
 // grade is the job's grade snapshot (lutStrength already folded in);
 // the LUT binding and stabilization params are per-job/plan data that
-// stay flat. Returns nullptr (error state set) on any failure.
+// stay flat. [chain] (F1-6) is the decoded v2 node chain — null = the
+// LEGACY fast path, bit-identical; a NODES/DRT grade's chain runs
+// applyV2ChainCpu after the warp. Returns nullptr (error state set) on
+// any failure.
 jbyteArray exportFrameBody(JNIEnv* env, jlong handle, jint frameIndex,
                            const rawedit::Grade& grade,
+                           const gles::NodeChainDecoded* chain,
                            jstring lutPath,
                            jstring gyroPath, jint stabMode, jfloat stabStrength,
                            jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
@@ -3344,22 +3466,39 @@ jbyteArray exportFrameBody(JNIEnv* env, jlong handle, jint frameIndex,
             gExportFrameTiming.warpMs = elapsedMs(tWarp0, tOetf0);
         }
 
+        // 3a. Color model v2 (F1-6): the node chain + the OpenDRT output,
+        //     AFTER the warp (plan §3.2 stage 6 — the GPU chain's slot
+        //     order composed against the CPU's own warp). Null chain = the
+        //     legacy fast path, nothing runs (K2: bit-identical).
+        bool drtOutput = false;
+        if (!applyV2ChainCpu(chain, img, &drtOutput)) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop: the v2 node chain exceeds the N1 limits "
+                     "(recovery: cap the chain at 8 nodes)");
+            return nullptr;
+        }
+
         // 3. linearToRec709 -> clamp -> 8-bit RGB888, row-major, 3 bytes
         //    per pixel, NOT rotated here: the Kotlin exporter rotates the
         //    pixels upright (RotationState.rotateRgb888) before crop/YUV,
         //    so the muxer's orientation hint stays 0 — the pixels are
-        //    already upright.
+        //    already upright. (F1-6: the OpenDRT output is display-CODED
+        //    already — the bridge SKIPS the OETF there, plan §3.4; the
+        //    clamp stays, it is the 8-bit quantization's own.)
         const jsize w = static_cast<jsize>(img.w);
         const jsize h = static_cast<jsize>(img.h);
         const jsize n = w * h * 3;
         std::vector<jbyte> out(static_cast<size_t>(n));
         for (jsize i = 0; i < w * h; ++i) {
-            out[static_cast<size_t>(i) * 3 + 0] = static_cast<jbyte>(
-                toByte(rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 0])));
-            out[static_cast<size_t>(i) * 3 + 1] = static_cast<jbyte>(
-                toByte(rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 1])));
-            out[static_cast<size_t>(i) * 3 + 2] = static_cast<jbyte>(
-                toByte(rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 2])));
+            const float r = drtOutput ? img.rgb[static_cast<size_t>(i) * 3 + 0]
+                                      : rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 0]);
+            const float g = drtOutput ? img.rgb[static_cast<size_t>(i) * 3 + 1]
+                                      : rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 1]);
+            const float b = drtOutput ? img.rgb[static_cast<size_t>(i) * 3 + 2]
+                                      : rawedit::linearToRec709(img.rgb[static_cast<size_t>(i) * 3 + 2]);
+            out[static_cast<size_t>(i) * 3 + 0] = static_cast<jbyte>(toByte(r));
+            out[static_cast<size_t>(i) * 3 + 1] = static_cast<jbyte>(toByte(g));
+            out[static_cast<size_t>(i) * 3 + 2] = static_cast<jbyte>(toByte(b));
         }
         if (timing) {
             tCopy0 = SteadyClock::now();
@@ -3405,6 +3544,9 @@ bool readGradeParcel(JNIEnv* env, jfloatArray parcel, gles::DevelopGrade* out,
 // call; a refusal fails the frame honestly (setError + nullptr), never a
 // silent misread. Commit (b): the CPU export rides THIS door — the flat
 // nativeExportFrame died with its Kotlin decl.
+// F1-6 APPENDS the chain wire: [chainWire] (null = the legacy fast path,
+// bit-identical; the v2 nodes/DRT grade's wire) — the same append-only
+// widening A1/A2/A3 rode on the preview render door.
 JNIEXPORT jbyteArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrameParcel(
         JNIEnv* env, jclass, jlong handle, jint frameIndex,
@@ -3413,7 +3555,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrameParcel(
         jstring gyroPath, jint stabMode, jfloat stabStrength,
         jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer) {
+        jint lutOutGamut, jint lutOutTransfer,
+        jfloatArray chainWire) {
     gles::DevelopGrade decoded;
     std::string parcelError;
     if (!readGradeParcel(env, gradeParcel, &decoded, &parcelError)) {
@@ -3421,10 +3564,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrameParcel(
                  parcelError);
         return nullptr;
     }
+    std::unique_ptr<gles::NodeChainDecoded> chain;
+    if (!v2ChainFor(env, chainWire, &chain)) return nullptr;
     rawedit::Grade grade;
     gles::applyGradeToRawedit(decoded, &grade);
     grade.lutStrength = lutStrength;
-    return exportFrameBody(env, handle, frameIndex, grade,
+    return exportFrameBody(env, handle, frameIndex, grade, chain.get(),
                            lutPath, gyroPath, stabMode, stabStrength,
                            stabZoomLimit, stabFocalMm, stabTrimMs,
                            lutRole, lutInGamut, lutInTransfer,
@@ -4655,32 +4800,6 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionClose(
 // refuses it Kotlin-side first, and this second lock keeps a fabricated
 // call from smuggling a LUT-bearing chain into the borrowed-pointer
 // contract (the Lut objects stay the caller's; none were resolved).
-
-// The shared chain-wire decode: reads the FloatArray ONCE into the
-// rawedit::GradeNode values. Returns false with the honest message in
-// [error] (setError at the caller); never misreads.
-static bool readNodeChainWire(JNIEnv* env, jfloatArray wire,
-                              gles::NodeChainDecoded* out, std::string* error) {
-    const jsize len = wire == nullptr ? 0 : env->GetArrayLength(wire);
-    if (len <= 0 || len > 8 * 1024) {
-        *error = "node chain wire: empty or oversize (recovery: re-encode the chain with NodeChainWire.encode)";
-        return false;
-    }
-    std::vector<float> buf(static_cast<size_t>(len));
-    env->GetFloatArrayRegion(wire, 0, len, buf.data());
-    if (!gles::decodeNodeChainWire(buf.data(), len, out)) {
-        *error = out->error;
-        return false;
-    }
-    for (const rawedit::GradeNode& n : out->nodes) {
-        if (n.lut != nullptr || (n.lutMix > 0.0001f && out->nodeCount > 0 && n.hasLut())) {
-            *error = std::string("node chain wire: node LUTs are not wired on this path "
-                                 "(recovery: render this clip on the CPU path)");
-            return false;
-        }
-    }
-    return true;
-}
 
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionInitNodes(
@@ -5978,9 +6097,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat splitShadowHue, jfloat splitHighlightHue,
         jfloat splitBalance,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer) {
+        jint lutOutGamut, jint lutOutTransfer,
+        jfloatArray chainWire) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageDevelop;
+    // F1-6 (plan §8, K11: nodes open for encoded too — the CPU side): the
+    // appended chain wire; null = the legacy fast path, byte-identical.
+    std::unique_ptr<gles::NodeChainDecoded> chain;
+    if (!v2ChainFor(env, chainWire, &chain)) return nullptr;
     // Resolve the stage-24 LUT first (COL-07): a parse failure fails the
     // develop with the lut error.
     const rawedit::Lut* lut = nullptr;
@@ -6107,9 +6231,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
             return nullptr;
         }
 
+        // 1b. The v2 node chain (F1-6, plan §8/K11): the encoded path has
+        //     no warp, so the chain composes directly after developEncoded
+        //     (the plan's "nodes are a new feature for encoded" — the same
+        //     CPU reference). Null chain = the legacy fast path.
+        bool drtOutput = false;
+        if (!applyV2ChainCpu(chain.get(), img, &drtOutput)) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop: the v2 node chain exceeds the N1 limits "
+                     "(recovery: cap the chain at 8 nodes)");
+            return nullptr;
+        }
+
         // 2. linearToRec709 -> clamp -> 8-bit ARGB, rotated upright (the
         //    same rotation math as developToArgb, so an encoded clip and an
         //    MCRAW clip of the same scene show identical orientation).
+        //    (F1-6: the OpenDRT output is display-CODED — the OETF is
+        //    skipped there, plan §3.4.)
         const jsize w = static_cast<jsize>(img.w);
         const jsize h = static_cast<jsize>(img.h);
         const int orient = ((orientationDeg % 360) + 360) % 360;
@@ -6133,9 +6271,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                     case 270: si = x * w + (w - 1 - y); break;
                     default:  si = y * w + x; break;
                 }
-                const float r = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 0]);
-                const float g = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 1]);
-                const float b = rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 2]);
+                const float r = drtOutput ? img.rgb[static_cast<size_t>(si) * 3 + 0]
+                    : rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 0]);
+                const float g = drtOutput ? img.rgb[static_cast<size_t>(si) * 3 + 1]
+                    : rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 1]);
+                const float b = drtOutput ? img.rgb[static_cast<size_t>(si) * 3 + 2]
+                    : rawedit::linearToRec709(img.rgb[static_cast<size_t>(si) * 3 + 2]);
                 px[static_cast<size_t>(y) * outW + x] =
                     0xFF000000 |
                     (static_cast<jint>(toByte(r)) << 16) |

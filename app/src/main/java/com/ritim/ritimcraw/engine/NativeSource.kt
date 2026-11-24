@@ -377,6 +377,7 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            chainWire: FloatArray?,
         ): IntArray?
 
         /**
@@ -438,6 +439,7 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            chainWire: FloatArray?,
         ): IntArray?
 
         /** rawedit::ErrorCode of the last failed preview call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
@@ -573,6 +575,7 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            chainWire: FloatArray?,
         ): ByteArray?
 
         /** ptsUs of frame [index] (frameInfo is throw-free; -1 on a bad handle). */
@@ -737,6 +740,7 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            chainWire: FloatArray?,
         ): IntArray?
 
         /**
@@ -1220,6 +1224,25 @@ class NativeSource private constructor(
             zebraAlpha: Float,
         ): IntArray?
 
+        /**
+         * F1-6 (color model v2): the preview session's ADDITIVE nodes doors
+         * around the F1-5 session seam (see jni_bridge.cpp's block). The
+         * chain door clears with the empty wire — the K2 fast path.
+         */
+        @JvmStatic private external fun nativePreviewSessionInitNodes(
+            sessionHandle: Long,
+            nodesSource: String,
+            vertexSource: String,
+            tailDrtSource: String,
+        ): IntArray?
+
+        /** See [nativePreviewSessionInitNodes]. [drtUniforms] is required when the wire declares the OpenDRT output. */
+        @JvmStatic private external fun nativePreviewSessionSetColorModelChain(
+            sessionHandle: Long,
+            chainWire: FloatArray,
+            drtUniforms: FloatArray?,
+        ): Boolean
+
         @JvmStatic private external fun nativePreviewSessionClose(sessionHandle: Long)
 
         // ---- Cross-module wrappers (external decls stay private; see the
@@ -1275,6 +1298,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            /** F1-6: the v2 node chain's wire (null = the legacy fast path, byte-identical). */
+            chainWire: FloatArray? = null,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -1289,6 +1314,7 @@ class NativeSource private constructor(
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+            chainWire,
         )
 
         /** JNI bridge: cached interactive render; see nativePreviewSessionRenderCached. */
@@ -1338,6 +1364,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            /** F1-6: the v2 node chain's wire (null = the legacy fast path, byte-identical). */
+            chainWire: FloatArray? = null,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -1352,6 +1380,7 @@ class NativeSource private constructor(
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             maxDim,
             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+            chainWire,
         )
 
         /** JNI bridge: rawedit::ErrorCode of the last failed preview call. */
@@ -1414,11 +1443,14 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            /** F1-6: the v2 node chain's wire (null = the legacy fast path, byte-identical). */
+            chainWire: FloatArray? = null,
         ): ByteArray? = nativeExportFrameParcel(
             handle, frameIndex, gradeParcel,
             lutPath, lutStrength,
             gyroPath, stabMode, stabStrength, stabZoomLimit, stabFocalMm, stabTrimMs,
             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+            chainWire,
         )
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
@@ -1536,6 +1568,8 @@ class NativeSource private constructor(
             lutInTransfer: Int,
             lutOutGamut: Int,
             lutOutTransfer: Int,
+            /** F1-6 (plan §8/K11): the v2 node chain's wire; null = the legacy fast path. */
+            chainWire: FloatArray? = null,
         ): IntArray? = nativeEncodedDevelop(
             yPlane, uPlane, vPlane,
             width, height, stride, uvStride,
@@ -1551,6 +1585,7 @@ class NativeSource private constructor(
             wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
             wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+            chainWire,
         )
 
         /** JNI bridge: readAudio for export sessions. */
@@ -2146,6 +2181,45 @@ class NativeSource private constructor(
                 throw IllegalStateException(nativeUnavailableMessage)
             }
             nativePreviewSessionClose(sessionHandle)
+        }
+
+        /**
+         * JNI bridge: the F1-6 nodes doors. See nativePreviewSessionInitNodes.
+         * Returns [ok(0/1), fragmentUniformVectors, textureImageUnits] —
+         * the two device limits the F1-5 init queried (the honest zeros
+         * when the compile failed; the limits ride the answer either way).
+         */
+        internal fun jniPreviewSessionInitNodes(
+            sessionHandle: Long,
+            nodesSource: String,
+            vertexSource: String,
+            tailDrtSource: String,
+        ): IntArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativePreviewSessionInitNodes(
+                sessionHandle, nodesSource, vertexSource, tailDrtSource,
+            )
+        }
+
+        /**
+         * JNI bridge: hands the session the grade's node chain (the wire)
+         * and, for the OpenDRT output, the pre-resolved 77-float uniform
+         * pack. False names the step in [previewLastError]. The EMPTY
+         * wire clears the state — the plain v1 chain again (the K2 lock).
+         */
+        internal fun jniPreviewSessionSetColorModelChain(
+            sessionHandle: Long,
+            chainWire: FloatArray,
+            drtUniforms: FloatArray?,
+        ): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativePreviewSessionSetColorModelChain(
+                sessionHandle, chainWire, drtUniforms,
+            )
         }
 
         /** Last-error detail from the engine thread (thread-local in the bridge). */
