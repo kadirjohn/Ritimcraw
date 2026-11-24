@@ -118,4 +118,36 @@ inline void focusConfidence(const FocusFitQuad& q, double tolFrac,
     kHi = k + d;
 }
 
+// ---------------------------------------------------------------------------
+// Per-pair sync jitter probe (the residual decomposition's (b) leg).
+//
+// For ONE pair: the frame instant of its second frame (ptsUs of frame i),
+// the pair's previous-frame instant derived as ptsUs - frameIntervalUs
+// (the caller passes the constant interval; irregular PTS only shifts
+// both brackets equally, the probe is about the OFFSET), the measured
+// motion, and the orientation series. Sweeps delta in
+// [baseDelta - windowMs, baseDelta + windowMs] by stepMs and returns the
+// best delta AND its residual SSE. Pure; shared with test_residual_analysis.
+// ---------------------------------------------------------------------------
+inline double fitPairOffset(const OrientationSeries& series, int64_t ptsUs,
+                            int64_t frameIntervalUs, const PairMotion& meas,
+                            double workH, double fpx, int64_t baseDelta,
+                            double windowMs, double stepMs, int64_t* bestDeltaOut) {
+    int64_t best = baseDelta;
+    double bestSs = 1e300;
+    for (double dMs = -windowMs; dMs <= windowMs + 1e-9; dMs += stepMs) {
+        const int64_t offs = baseDelta + int64_t(std::llround(dMs * 1e6));
+        double qPrev[4], qCur[4];
+        series.orientationAt(ptsUs * 1000 - frameIntervalUs * 1000 + offs, qPrev);
+        series.orientationAt(ptsUs * 1000 + offs, qCur);
+        const GyroPairImage pr = gyroPairImageMotion(qPrev, qCur, fpx);
+        const double dx = pr.tx - meas.tx * workH;
+        const double dy = pr.ty - meas.ty * workH;
+        const double ss = dx * dx + dy * dy;
+        if (ss < bestSs) { bestSs = ss; best = offs; }
+    }
+    if (bestDeltaOut) *bestDeltaOut = best;
+    return bestSs;
+}
+
 }  // namespace rawedit

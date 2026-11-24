@@ -32,6 +32,29 @@
 //       shift RMS < ~1 px at the working resolution. Prints the rotation-
 //       channel comparison (roll) too; partial honesty if the sync
 //       threshold is not met.
+//   image_stab_measure residual <clip.mcraw> <clip.gcsv> [kX-from-focus-fit] [samplePairs=100]
+//       Gyro-check residual source decomposition (S10 design input): after
+//       the focus calibration the pan clip's x residual is still ~1.2 px;
+//       this splits that remainder into its candidate sources.
+//         (a) region-fit similarity limit: estimatePair re-run on 9 TILE
+//             CROPS of the working luma (center vs edges). A pan's
+//             perspective field scales the apparent shift by ~1/cos^2 of
+//             the off-axis angle at the tile's x offset; a 4-DOF similarity
+//             fit averages it, so edge tiles must measure a LARGER x shift
+//             than the center. If the CENTER tile's residual drops below
+//             the 1 px acceptance, the remainder is similarity, not sync.
+//         (b) per-pair sync jitter: each sampled pair re-fits its own
+//             offset in +-20 ms around the clip's best delta; the RMS
+//             improvement of the per-pair delta over the constant delta is
+//             the jitter budget (upper bound), and the delta spread is
+//             reported.
+//         (c) estimator drift: VQF vs bias-corrected gyro-only predictions
+//             differ over the clip; the difference's RMS and time slope in
+//             the theta channel bound the drift contribution.
+//         (d) the working-resolution rounding floor (0.1 px @640 across
+//             three quantized record channels) is reported as the noise
+//             floor line, not a source to fit.
+//       kX (from focus-fit) is an input: predictions are scaled by it.
 //   image_stab_measure scale-test <file.ristab>
 //       S11a scale-lock counterfactual (docs/S11_ROBUSTNESS_NOTES.md):
 //       rewrites the stored records' logS channel under four policies
@@ -552,6 +575,331 @@ int cmdLumaCheck(const std::string& clip, int pairs) {
     return 0;
 }
 
+// ---- gyro-check residual source decomposition (residual) -------------------------
+
+namespace {
+
+// One sampled pair's region measurements: estimatePair re-run on 3x3 tile
+// crops of the working luma. tx/ty per tile, in px of the FULL working
+// frame height (360-ish), status per tile. Tiles are cuts of the luma with
+// the SAME content; the fit inside each tile measures the apparent motion
+// in that region — the perspective field of a pan stretches it at the
+// frame edges (1/cos^2 of the off-axis angle), which a single similarity
+// fit over the whole frame can only average.
+struct RegionFit {
+    PairMotion tile[3][3];
+};
+
+// Tile (r, c): rows/cols of the WORKING luma frame. Returns tx/ty in
+// units of the FULL frame height (the tile's own height differs, so the
+// pair motions are re-normalized by the region-to-full height ratio).
+bool fitRegions(const LumaFrame& prev, const LumaFrame& cur, const PairMotion& prior,
+                RegionFit& out) {
+    const int W = prev.w, H = prev.h;
+    const int th = H / 3, tw = W / 3;
+    if (th < 64 || tw < 64) return false;  // estimatePair needs >= 64 px
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            const int y0 = r * th, x0 = c * tw;
+            // Cropped views (stride preserved via row offset).
+            const LumaFrame p{tw, th, prev.stride, prev.data + y0 * prev.stride + x0};
+            const LumaFrame q{tw, th, cur.stride, cur.data + y0 * cur.stride + x0};
+            // The prior in normalized units; estimatePair treats tx/ty as
+            // fractions of the FRAME height, which inside a 1/3-height
+            // tile means the guess is off by 3x — acceptable as a seed.
+            out.tile[r][c] = estimatePair(p, q, ImageStabOptions(),
+                                          prior.status != PairStatus::Lost ? &prior : nullptr);
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+int cmdResidual(const std::string& clip, const std::string& gcsv, double kX, int samplePairs) {
+    // ================= 0) shared setup (the gyrocheck path) ===============
+    auto src = Source::open(clip);
+    if (!src.isOk()) { std::fprintf(stderr, "open failed\n"); return 1; }
+    Source& s = **src;
+    const RawMeta& meta = s.rawMeta();
+    const double f35 = meta.focalLengthMm > 0 ? meta.focalLengthMm : 23.95;
+
+    auto parsed = parseGcsv(gcsv);
+    if (!parsed.isOk()) { std::fprintf(stderr, "gcsv: %s\n", parsed.detail.c_str()); return 1; }
+    ImuData imu = std::move(*parsed.value);
+    if (imu.logStartWallMs <= 0) { std::fprintf(stderr, "gcsv has no wall anchor\n"); return 1; }
+    const AxisRemap remap = axisRemapForImu(imu);
+    if (!remap.known) { std::fprintf(stderr, "axis remap unknown\n"); return 1; }
+    std::vector<ImuSample> gyro, accel;
+    for (ImuSample sm : imu.gyro) { remap.apply(sm.x, sm.y, sm.z); gyro.push_back(sm); }
+    for (ImuSample sm : imu.accel) { remap.apply(sm.x, sm.y, sm.z); accel.push_back(sm); }
+    const VqfOrientation vqf = estimateOrientationVqf(gyro, accel);
+    OrientationSeries gyroOnly;
+    {
+        std::vector<ImuSample> g2 = gyro;
+        for (auto& sm : g2) {
+            sm.x -= float(vqf.gyroBias[0]);
+            sm.y -= float(vqf.gyroBias[1]);
+            sm.z -= float(vqf.gyroBias[2]);
+        }
+        gyroOnly = integrateGyro(g2);
+    }
+    const FrameInfo fi0 = s.frameInfo(0);
+    const SyncEstimate anchor = estimateOffsetFromAnchors(fi0.recvdMs, imu.logStartWallMs,
+                                                          fi0.ptsUs * 1000);
+
+    const size_t total = s.frameCount();
+    // Work luma for the region fits; fpx at the working height (the tile
+    // fits themselves stay in full-frame px units below).
+    const int targetLong = 640;
+    std::printf("residual: %s (%zu frames, kX %.4f from focus-fit)\n", clip.c_str(), total, kX);
+
+    if (total < 3 || samplePairs < 1) {
+        std::fprintf(stderr, "too few frames or pairs\n");
+        return 1;
+    }
+
+    // ================= (a) region-fit similarity limit ====================
+    // Sample `samplePairs` pairs evenly; for each, decode both frames,
+    // build the working luma once, fit the 9 tiles.
+    struct RegionStat {
+        double sx = 0, sy = 0;      // sum of per-tile tx/ty (px, full-height units)
+        double sxx = 0, syy = 0;    // sum of squares (variance of the tile field)
+        size_t n = 0;               // pairs with this tile Ok/Weak
+        int lost = 0;
+    };
+    RegionStat stat[3][3];
+    std::vector<size_t> pairIdx;
+    for (int k = 0; k < samplePairs; ++k)
+        pairIdx.push_back(1 + (size_t(k) * (total - 2)) / std::max(1, samplePairs));
+    pairIdx.erase(std::unique(pairIdx.begin(), pairIdx.end()), pairIdx.end());
+    const size_t nS = pairIdx.size();
+
+    std::vector<uint8_t> luma0, luma1;
+    std::vector<PairMotion> fullFrame;      // the whole-frame measurement per sampled pair
+    std::vector<PairMotion> centerTile;     // the CENTER tile's fit per sampled pair
+    double regionTileH = 120.0;              // the tile fits' normalization height
+    for (size_t idx : pairIdx) {
+        auto cfa0 = s.readFrame(idx - 1);
+        auto cfa1 = s.readFrame(idx);
+        if (!cfa0.isOk() || !cfa1.isOk()) continue;
+        const FrameInfo f0 = s.frameInfo(idx - 1);
+        const FrameInfo f1 = s.frameInfo(idx);
+        int32_t black[4];
+        const bool dyn = f0.dynamicBlack[0] >= 0;
+        for (int k = 0; k < 4; ++k) black[k] = dyn ? f0.dynamicBlack[k] : static_cast<int32_t>(meta.black[k]);
+        const int32_t white = f0.dynamicWhite > 0 ? f0.dynamicWhite : static_cast<int32_t>(meta.white);
+        int w0, h0, w1, h1;
+        if (!cfaToLuma(cfa0.value->data(), int(f0.width), int(f0.height), black, white,
+                       targetLong, luma0, w0, h0))
+            continue;
+        if (!cfaToLuma(cfa1.value->data(), int(f1.width), int(f1.height), black, white,
+                       targetLong, luma1, w1, h1))
+            continue;
+        if (w0 != w1 || h0 != h1) continue;
+        // The whole-frame pair motion (with the previous-pair prior absent:
+        // record files carry prior-less first fits; a fresh call is the
+        // same estimator the analysis used for states Ok/Weak here).
+        PairMotion prior;   // Lost -> estimatePair seeds with zero guess
+        prior.status = PairStatus::Lost;
+        const PairMotion whole = estimatePair({w0, h0, w0, luma0.data()}, {w1, h1, w1, luma1.data()},
+                                             ImageStabOptions(), nullptr);
+        RegionFit rf;
+        if (!fitRegions({w0, h0, w0, luma0.data()}, {w1, h1, w1, luma1.data()}, prior, rf))
+            continue;
+        fullFrame.push_back(whole);
+        regionTileH = h0 / 3.0;
+        // The center tile's OWN fit, kept for the (a) residual: the center
+        // region is where the similarity limit has the least leverage; if
+        // the CENTER residual passes the 1 px acceptance while the whole
+        // frame does not, the remainder is the 4-DOF averaging.
+        centerTile.push_back(rf.tile[1][1]);
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c) {
+                const PairMotion& m = rf.tile[r][c];
+                if (m.status == PairStatus::Lost) { ++stat[r][c].lost; continue; }
+                // estimatePair's tx/ty are normalized by the TILE height
+                // (h0/3); back to the full working-frame px.
+                const double tileH = h0 / 3.0;
+                const double txp = double(m.tx) * tileH, typ = double(m.ty) * tileH;
+                stat[r][c].sx += txp; stat[r][c].sy += typ;
+                stat[r][c].sxx += txp * txp; stat[r][c].syy += typ * typ;
+                ++stat[r][c].n;
+            }
+    }
+    std::printf("\n(a) region-fit field (x shift per tile, px @full working height, mean over %zu sampled pairs)\n", nS);
+    std::printf("         left          center         right\n");
+    double meanCenterX = 0;
+    {
+        size_t nC = stat[1][1].n;
+        meanCenterX = nC ? stat[1][1].sx / nC : 0;
+    }
+    for (int r = 0; r < 3; ++r) {
+        std::printf("row %d  ", r);
+        for (int c = 0; c < 3; ++c) {
+            const RegionStat& st = stat[r][c];
+            if (!st.n) { std::printf("     lost     "); continue; }
+            const double mx = st.sx / st.n;
+            const double rel = meanCenterX != 0 ? mx / meanCenterX : 1.0;
+            std::printf("%8.3f (%4.2f)", mx, rel);
+        }
+        std::printf("\n");
+    }
+    // Edge (left+right columns)/center ratio from the middle row (the pan
+    // stretches along x; the middle row isolates the 1/cos^2(alpha) effect).
+    {
+        const RegionStat& C = stat[1][1];
+        const RegionStat& L = stat[1][0];
+        const RegionStat& R = stat[1][2];
+        if (C.n && L.n && R.n) {
+            const double c = C.sx / C.n, l = L.sx / L.n, rr = R.sx / R.n;
+            std::printf("x-stretch edge/center ratio: left %.3f | right %.3f (theory ~1/cos^2 of the tile's"
+                        " off-axis angle; the plan's 24mm half-FOV estimate said ~%%56 at the frame edge)\n",
+                        c != 0 ? l / c : 0.0, c != 0 ? rr / c : 0.0);
+        }
+    }
+
+    // ================= prediction pass + per-source budgets ==============
+    // Frame instants for the sampled pairs; predictions at k = kX.
+    std::vector<int64_t> ptsIdx;   // pts of the SECOND frame of each sampled pair
+    for (size_t idx : pairIdx) ptsIdx.push_back(s.frameInfo(idx).ptsUs);
+    // Predictions at the SAME resolution as the WHOLE-FRAME measurement
+    // (working-height px): fpx from the container 35mm-eq, scaled by kX.
+    const double workH = 360.0;
+    const int workW = 640;
+    const double fpx = focalLengthPxFromEquivalent(f35, workW) * kX;
+    std::vector<double> jitDelta;   // per-pair best delta offset (ms, relative to bestDelta)
+    double rmsConst = 0, rmsPerPairBest = 0;
+    size_t nJit = 0;
+    int64_t bestDelta = anchor.model.offsetNs;
+    double bestRms = 1e18;
+    {
+        // Constant-delta scan (+-150 ms in 5 ms) over the sampled pairs.
+        for (int dMs = -150; dMs <= 150; dMs += 5) {
+            const int64_t offs = anchor.model.offsetNs + int64_t(dMs) * 1000000;
+            double ss = 0;
+            size_t n = 0;
+            for (size_t k = 0; k < ptsIdx.size() && k < fullFrame.size(); ++k) {
+                if (fullFrame[k].status == PairStatus::Lost) continue;
+                double qPrev[4], qCur[4];
+                vqf.series.orientationAt(ptsIdx[k] * 1000 - 33333 + offs, qPrev);
+                vqf.series.orientationAt(ptsIdx[k] * 1000 + offs, qCur);
+                const GyroPairImage pr = gyroPairImageMotion(qPrev, qCur, fpx);
+                const double dx = pr.tx - fullFrame[k].tx * workH;
+                const double dy = pr.ty - fullFrame[k].ty * workH;
+                ss += dx * dx + dy * dy;
+                ++n;
+            }
+            if (n > nS / 4) {
+                const double rms = std::sqrt(ss / (2 * double(n)));
+                if (rms < bestRms) { bestRms = rms; bestDelta = offs; }
+            }
+        }
+        rmsConst = bestRms;
+        // Per-pair fine deltas (+-20 ms in 2 ms steps) around the best,
+        // via the shared probe (fitPairOffset — the same function the
+        // doctest suite pins the jitter recovery on).
+        for (size_t k = 0; k < ptsIdx.size() && k < fullFrame.size(); ++k) {
+            if (fullFrame[k].status == PairStatus::Lost) continue;
+            int64_t pairBest = bestDelta;
+            const double sse = fitPairOffset(vqf.series, ptsIdx[k], 33333, fullFrame[k],
+                                            workH, fpx, bestDelta, 20.0, 2.0, &pairBest);
+            rmsPerPairBest += sse;
+            jitDelta.push_back(double(pairBest - bestDelta) * 1e-6);
+            ++nJit;
+        }
+        rmsPerPairBest = nJit ? std::sqrt(rmsPerPairBest / (2 * double(nJit))) : 0;
+    }
+    // The CENTER-tile residual at the clip's best delta — the (a) leg's
+    // verdict number: the center region carries the least perspective
+    // curvature, so comparing its fit against the gyro prediction isolates
+    // the non-similarity remainder (sync + noise) from the 4-DOF averaging.
+    {
+        const double tileH = regionTileH;   // the tile fits' normalization height
+        double ss = 0, ssWhole = 0;
+        size_t n = 0;
+        for (size_t k = 0; k < ptsIdx.size() && k < fullFrame.size() && k < centerTile.size(); ++k) {
+            if (centerTile[k].status == PairStatus::Lost) continue;
+            double qPrev[4], qCur[4];
+            vqf.series.orientationAt(ptsIdx[k] * 1000 - 33333 + bestDelta, qPrev);
+            vqf.series.orientationAt(ptsIdx[k] * 1000 + bestDelta, qCur);
+            const GyroPairImage pr = gyroPairImageMotion(qPrev, qCur, fpx);
+            const double dx = pr.tx - double(centerTile[k].tx) * tileH;
+            const double dy = pr.ty - double(centerTile[k].ty) * tileH;
+            ss += dx * dx + dy * dy;
+            ssWhole += (pr.tx - double(fullFrame[k].tx) * workH) * (pr.tx - double(fullFrame[k].tx) * workH)
+                     + (pr.ty - double(fullFrame[k].ty) * workH) * (pr.ty - double(fullFrame[k].ty) * workH);
+            ++n;
+        }
+        if (n) {
+            const double rmsCenter = std::sqrt(ss / (2 * double(n)));
+            const double rmsWhole = std::sqrt(ssWhole / (2 * double(n)));
+            std::printf("\n(a') center-tile residual at best delta: %.3f px vs whole-frame %.3f px over %zu pairs\n",
+                        rmsCenter, rmsWhole, n);
+            std::printf("     (center passes the 1 px acceptance while the whole frame does not => the\n"
+                        "      remainder is the 4-DOF similarity averaging; S10's calibrated-rotation\n"
+                        "      model is the fix)\n");
+        }
+    }
+    std::sort(jitDelta.begin(), jitDelta.end());
+    const double jitP50 = jitDelta.empty() ? 0 : jitDelta[jitDelta.size() / 2];
+    const double jitMin = jitDelta.empty() ? 0 : jitDelta.front();
+    const double jitMax = jitDelta.empty() ? 0 : jitDelta.back();
+    std::printf("\n(b) sync jitter (UPPER BOUND - a per-pair delta can soak up ANY pair error, so\n"
+                "    the drop below is the overfit ceiling, not the true jitter; read the SPREAD:\n"
+                "    a tight cluster near 0 = real jitter is small; deltas across the whole window\n"
+                "    = the probe is unidentifiable on this clip's signal):\n");
+    std::printf("    constant delta %+.0f ms -> 2D RMS %.3f px; per-pair best (+-20 ms) -> %.3f px\n",
+                (bestDelta - anchor.model.offsetNs) * 1e-6, rmsConst, rmsPerPairBest);
+    std::printf("    per-pair delta spread [%+.0f, %+.0f] ms, p50 %+.0f; RMS drop %.3f px (upper bound)\n",
+                jitMin, jitMax, jitP50, std::max(0.0, rmsConst - rmsPerPairBest));
+
+    // (c) estimator drift: VQF vs bias-corrected gyro-only predictions on
+    // the same sample; theta-channel difference slope vs time.
+    {
+        double sumT = 0, sumTT = 0, sumTheta = 0, sumTTheta = 0;
+        size_t nD = 0;
+        double rmsPred = 0;
+        for (size_t k = 0; k < ptsIdx.size() && k < fullFrame.size(); ++k) {
+            if (fullFrame[k].status == PairStatus::Lost) continue;
+            double qp1[4], qc1[4], qp2[4], qc2[4];
+            vqf.series.orientationAt(ptsIdx[k] * 1000 - 33333 + bestDelta, qp1);
+            vqf.series.orientationAt(ptsIdx[k] * 1000 + bestDelta, qc1);
+            gyroOnly.orientationAt(ptsIdx[k] * 1000 - 33333 + bestDelta, qp2);
+            gyroOnly.orientationAt(ptsIdx[k] * 1000 + bestDelta, qc2);
+            const GyroPairImage p1 = gyroPairImageMotion(qp1, qc1, fpx);
+            const GyroPairImage p2 = gyroPairImageMotion(qp2, qc2, fpx);
+            const double dx = p1.tx - p2.tx, dy = p1.ty - p2.ty, dth = p1.theta - p2.theta;
+            rmsPred += dx * dx + dy * dy;
+            const double t = double(k);                  // t axis = sample index
+            sumT += t; sumTT += t * t;
+            sumTheta += dth; sumTTheta += t * dth;
+            ++nD;
+        }
+        if (nD > 2) {
+            rmsPred = std::sqrt(rmsPred / (2 * double(nD)));
+            const double slope = (double(nD) * sumTTheta - sumT * sumTheta) /
+                                 (double(nD) * sumTT - sumT * sumT);
+            std::printf("\n(c) estimator drift: VQF-vs-gyro-only prediction difference 2D RMS %.3f px;"
+                        " theta-channel slope %.6f rad/sample (%.2f mdeg/s over the clip)\n",
+                        rmsPred, slope, slope * 1000 * 180.0 / 3.141592653589793 * 30.0);
+        }
+    }
+
+    // (d) rounding floor.
+    std::printf("\n(d) measurement floor: 0.1 px pair self-accuracy @640 working -> ~0.06 px at the record"
+                " quantization (tx/ty f32, statuses); reported as the noise floor, not a fit source\n");
+
+    // ============ verdict ================================================
+    std::printf("\n== residual verdict ==\n");
+    std::printf("with kX %.4f: constant-delta 2D RMS %.3f px (upper-bound jitter budget %.3f px);\n"
+                "  similarity limit: the edge/center stretch is in the region table - if the CENTER\n"
+                "  tile residual is below the 1 px acceptance while the whole frame is not, the\n"
+                "  remainder is the 4-DOF similarity averaging, i.e. S10's calibrated-rotation case\n",
+                kX, rmsConst, std::max(0.0, rmsConst - rmsPerPairBest));
+    return 0;
+}
+
 // ---- gyro cross-check (gyrocheck) ---------------------------------------------------
 
 int cmdGyroCheck(const std::string& clip, const std::string& gcsv, double scanMs) {
@@ -912,7 +1260,7 @@ int cmdScaleTest(const std::string& file) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: image_stab_measure bench|analyze|plan|lumacheck|gyrocheck|focus-fit|scale-test ... (see header)\n");
+        std::fprintf(stderr, "usage: image_stab_measure bench|analyze|plan|lumacheck|gyrocheck|focus-fit|residual|scale-test ... (see header)\n");
         return 2;
     }
     const std::string cmd = argv[1];
@@ -930,6 +1278,9 @@ int main(int argc, char** argv) {
         return cmdGyroCheck(argv[2], argv[3], argc > 4 ? std::atof(argv[4]) : 150.0);
     if (cmd == "focus-fit" && argc > 3)
         return cmdFocusFit(argv[2], argv[3], argc > 4 ? std::atof(argv[4]) : 150.0);
+    if (cmd == "residual" && argc > 3)
+        return cmdResidual(argv[2], argv[3], argc > 4 ? std::atof(argv[4]) : 1.22,
+                           argc > 5 ? std::atoi(argv[5]) : 100);
     if (cmd == "scale-test" && argc > 2) return cmdScaleTest(argv[2]);
     std::fprintf(stderr, "bad arguments\n");
     return 2;
