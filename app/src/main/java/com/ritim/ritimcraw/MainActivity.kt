@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.ritim.ritimcraw.data.ProjectFile
 import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.data.ThemeStore
 import com.ritim.ritimcraw.ui.AppNav
@@ -41,6 +42,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // The single entry gate (color model v2 plan §6.4, F1-2): project.json
+        // is read ONCE here, before any store touches it. Newer-than-build =>
+        // the process goes read-only (every store write becomes an observable
+        // no-op); older => a timestamped backup is taken and the migration
+        // chain runs in this one place. Today the chain is empty, so this is
+        // a version check that keeps v1 files exactly as they were.
+        ProjectFile.open(File(filesDir, "project.json"))
         setContent {
             // Read once per composition; the Settings row's callback
             // updates this state, recomposes RitimTheme, and the whole

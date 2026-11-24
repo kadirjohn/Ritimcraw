@@ -39,12 +39,25 @@ internal object ProjectJson {
      * Renders the whole project.json with [section] set to [renderedSection],
      * preserving every other section already present in [existingText].
      * Unknown sections (future schema) are kept raw rather than dropped.
+     *
+     * VERSION STAMP POLICY (color model v2 plan §6.5, F1-2): [version] is
+     * IGNORED. The stamp is `max(what the file on disk already declares,
+     * [ProjectMigrations.CURRENT_VERSION])`, so no store can ever drag the
+     * file's version down by writing its own constant — the silent
+     * corruption the plan flags: on a v2 file, a v2-unaware store writing
+     * `version:1` would make the NEXT open run the v1->v2 migration a
+     * second time, over v2 data. A v1 (or unversioned) file stamps
+     * CURRENT_VERSION, exactly what every caller passed (all constants are
+     * 1 and CURRENT_VERSION is 1), so files this build writes are
+     * byte-identical to before. The ONLY sanctioned version changes are
+     * [ProjectMigrations.migrate] (a migration step bumps the stamp) and
+     * [ProjectFile.open], the single entry gate that runs the chain.
      */
     fun withSection(
         existingText: String?,
         section: String,
         renderedSection: String,
-        version: Int,
+        @Suppress("UNUSED_PARAMETER") version: Int,
     ): String {
         val root = existingText?.let {
             runCatching { JsonParser(it).parseValue() as? Map<*, *> }.getOrNull()
@@ -60,13 +73,21 @@ internal object ProjectJson {
         val ordered = SECTION_ORDER.filter { it in sections } +
             sections.keys.filterNot { it in SECTION_ORDER }
         val sb = StringBuilder()
-        sb.append("{\"version\":").append(version)
+        sb.append("{\"version\":").append(stampFor(root))
         for (name in ordered) {
             sb.append(',').append(quote(name)).append(':').append(sections[name])
         }
         sb.append('}')
         return sb.toString()
     }
+
+    /**
+     * The version a rendered file is stamped with: the file's own version
+     * when it is NEWER than this build ([ProjectMigrations.versionOf]:
+     * missing/invalid = 1), else CURRENT_VERSION. Never lower than either.
+     */
+    private fun stampFor(root: Map<*, *>?): Int =
+        maxOf(ProjectMigrations.versionOf(root ?: emptyMap<Any?, Any?>()), ProjectMigrations.CURRENT_VERSION)
 
     /** Re-renders a parsed JSON value without interpreting it. */
     fun renderRaw(value: Any?): String {
