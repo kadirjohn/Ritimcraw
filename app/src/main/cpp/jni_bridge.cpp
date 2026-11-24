@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -31,6 +32,7 @@
 #include <rawedit/Develop.h>
 #include <rawedit/DngWriter.h>
 #include <rawedit/Gyro.h>
+#include <rawedit/ImageStab.h>
 #include <rawedit/Lut.h>
 #include <rawedit/Orientation.h>
 #include <rawedit/OrientationEstimate.h>
@@ -1117,6 +1119,103 @@ void stabilizationFrameFor(const StabRequest& req,
     }
 }
 
+// ---- Image-based stabilization (package S4, docs/IMAGE_STAB_PLAN.md) ----
+//
+// The per-handle state of the image engine: the clip's raw pair records
+// (loaded once from the analysis file) and a tiny cache of built plans. The
+// plan is a pure function of (records, mode, strength, zoomLimit, range,
+// aspect); it is NORMALIZED (heights), so the preview tiers and the export
+// share one plan and only the final matrix is composed per buffer size
+// (ImageStabPlan::frame -> frameWarpM). Same threading contract as
+// StabPlanCache: the owner session's engine thread only.
+struct ImageStabRequest {
+    int mode = 0;            // 0 Smooth, 1 Lock (anything else = Smooth)
+    double strength = 0.5;   // 0..1
+    double zoomLimit = 1.15;
+    long rangeStart = 0;
+    long rangeEnd = -1;      // < 0 = through the last frame
+};
+
+struct ImagePlanSlot {
+    bool valid = false;
+    ImageStabRequest req;
+    size_t rs = 0, re = 0;
+    uint64_t aspectBits = 0;
+    std::shared_ptr<const rawedit::ImageStabPlan> plan;
+};
+
+struct ImageStabEntry {
+    std::shared_ptr<const rawedit::ImagePath> path;
+    ImagePlanSlot slots[2];
+    int next = 0;
+};
+
+// The CPU render calls carry the image engine through the existing
+// gyroPath string argument as "ristab-image:<rangeStart>:<rangeEnd>" (the
+// ten CPU JNI entries keep their signatures; mode/strength/zoomLimit ride
+// the ordinary stab args). A real gyro path never starts with this prefix.
+constexpr const char kImageStabPrefix[] = "ristab-image:";
+
+bool parseImageStabArg(const std::string& arg, ImageStabRequest* out) {
+    const size_t plen = sizeof(kImageStabPrefix) - 1;
+    if (arg.compare(0, plen, kImageStabPrefix) != 0) return false;
+    long a = 0, b = -1;
+    if (std::sscanf(arg.c_str() + plen, "%ld:%ld", &a, &b) < 1) return false;
+    out->rangeStart = a;
+    out->rangeEnd = b;
+    return true;
+}
+
+// The plan for [r] on this handle, or nullptr when no analysis is loaded.
+const rawedit::ImageStabPlan* imagePlanFor(ImageStabEntry& e,
+                                           const ImageStabRequest& r,
+                                           double aspect) {
+    if (!e.path || e.path->recs.empty()) return nullptr;
+    const size_t n = e.path->recs.size();
+    size_t rs = r.rangeStart < 0 ? 0 : static_cast<size_t>(r.rangeStart);
+    size_t re = (r.rangeEnd < 0 || static_cast<size_t>(r.rangeEnd) >= n)
+        ? n - 1 : static_cast<size_t>(r.rangeEnd);
+    if (rs >= n) rs = n - 1;
+    if (re < rs) re = rs;
+    uint64_t ab;
+    std::memcpy(&ab, &aspect, sizeof ab);
+    for (const ImagePlanSlot& c : e.slots) {
+        if (c.valid && c.req.mode == r.mode && c.req.strength == r.strength &&
+            c.req.zoomLimit == r.zoomLimit && c.rs == rs && c.re == re &&
+            c.aspectBits == ab)
+            return c.plan.get();
+    }
+    rawedit::ImageStabParams p;
+    p.mode = r.mode;
+    p.strength = std::isfinite(r.strength) ? std::min(1.0, std::max(0.0, r.strength)) : 0.5;
+    p.zoomLimit = std::isfinite(r.zoomLimit) ? std::min(1.5, std::max(1.0, r.zoomLimit)) : 1.15;
+    ImagePlanSlot& slot = e.slots[e.next];
+    e.next = (e.next + 1) % 2;
+    slot.plan = std::make_shared<const rawedit::ImageStabPlan>(
+        rawedit::ImageStabPlan::build(e.path->recs, p, rs, re, aspect));
+    slot.req = r;
+    slot.rs = rs;
+    slot.re = re;
+    slot.aspectBits = ab;
+    slot.valid = true;
+    return slot.plan.get();
+}
+
+// One frame's verdict: the correction frame, or false when there is no
+// plan / the frame is out of range.
+bool imageFrameFor(ImageStabEntry& e, const ImageStabRequest& r,
+                   rawedit::Source& src, int frameIndex,
+                   const rawedit::ImageStabFrame** out) {
+    if (frameIndex < 0) return false;
+    const rawedit::FrameInfo info = src.frameInfo(static_cast<size_t>(frameIndex));
+    if (info.width == 0 || info.height == 0) return false;
+    const double aspect = static_cast<double>(info.width) / static_cast<double>(info.height);
+    const rawedit::ImageStabPlan* plan = imagePlanFor(e, r, aspect);
+    if (plan == nullptr || static_cast<size_t>(frameIndex) >= plan->size()) return false;
+    *out = &plan->frame(static_cast<size_t>(frameIndex));
+    return true;
+}
+
 // The warp input for one render (gyro Phase 5). gyro == nullptr is the
 // no-warp default: the Kotlin layer already gated off / no-attachment down
 // to a null gyroPath (the tier gate passes at every tier since the
@@ -1132,6 +1231,9 @@ struct StabInput {
     int frameIndex = -1;
     const GyroArtifacts* gyro = nullptr;
     StabPlanCache* planCache = nullptr;
+    // Image engine (S4): non-null = warp from the handle's analysis.
+    ImageStabEntry* image = nullptr;
+    ImageStabRequest imageReq;
 };
 
 // resolveStabilization's result: ok=false is a .gcsv parse failure (error
@@ -1156,8 +1258,28 @@ StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
                                     jfloat stabTrimMs,
                                     rawedit::Source* src, int frameIndex,
                                     StabPlanCache* planCache = nullptr,
-                                    bool asyncRefine = false) {
+                                    bool asyncRefine = false,
+                                    ImageStabEntry* image = nullptr) {
     StabResolution r;
+    if (gyroPath != nullptr && image != nullptr) {
+        // The image-engine sentinel (see kImageStabPrefix): no gyro log.
+        const char* chars = env->GetStringUTFChars(gyroPath, nullptr);
+        if (chars != nullptr) {
+            const std::string arg(chars);
+            env->ReleaseStringUTFChars(gyroPath, chars);
+            ImageStabRequest ir;
+            if (parseImageStabArg(arg, &ir)) {
+                ir.mode = static_cast<int>(stabMode);
+                ir.strength = static_cast<double>(stabStrength);
+                ir.zoomLimit = static_cast<double>(stabZoomLimit);
+                r.input.source = src;
+                r.input.frameIndex = frameIndex;
+                r.input.image = image;
+                r.input.imageReq = ir;
+                return r;
+            }
+        }
+    }
     const GyroArtifacts* gyro = nullptr;
     if (!resolveGyro(env, gyroPath, &gyro)) {
         r.ok = false;
@@ -1195,6 +1317,24 @@ StabResolution resolveStabilization(JNIEnv* env, jstring gyroPath,
 // comparison happens during playback, not at the settle.
 void applyStabilization(const StabInput& in, rawedit::ImageF& img,
                         int maxDim = 0) {
+    if (in.image != nullptr && in.source != nullptr) {
+        // Image engine (S4): the CPU reference of the GPU draw 10 — the
+        // same plan frame, the same H/zoom composition, warpFrame resamples.
+        if (img.w == 0 || img.h == 0) return;
+        const rawedit::ImageStabFrame* f = nullptr;
+        if (!imageFrameFor(*in.image, in.imageReq, *in.source, in.frameIndex, &f)) return;
+        double m[9];
+        bool active = false;
+        if (!rawedit::frameWarpM(*f, static_cast<int>(img.w), static_cast<int>(img.h), m, &active) ||
+            !active)
+            return;
+        double h[9];
+        rawedit::simToHomographyPx(f->corr, static_cast<int>(img.w), static_cast<int>(img.h), h);
+        img = rawedit::warpFrame(img, h, f->zoom,
+                                 static_cast<double>(img.w) / 2.0,
+                                 static_cast<double>(img.h) / 2.0);
+        return;
+    }
     if (in.gyro == nullptr || in.source == nullptr) return;
     if (img.w == 0 || img.h == 0) return;
     const bool debug = gStabDebugLog.load(std::memory_order_relaxed);
@@ -1377,6 +1517,8 @@ struct Entry {
     // as the caches above: owner session's engine thread only. See
     // StabPlanCache for the key/invalidation rules.
     StabPlanCache stabPlan;
+    // Image-based stabilization (S4): the loaded analysis + plan cache.
+    ImageStabEntry imageStab;
 };
 
 Entry gEntries[kMaxSources];
@@ -1397,6 +1539,7 @@ void clearEntryCaches(Entry& e) {
     e.mergedStrength = -1.0f;
     e.mergedCfa = nullptr;
     e.stabPlan = StabPlanCache{}; // a reopened handle starts planless
+    e.imageStab = ImageStabEntry{};
 }
 
 int64_t insertSource(std::unique_ptr<rawedit::Source> src) {
@@ -2253,7 +2396,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
             resolveStabilization(env, gyroPath, stabMode, stabStrength,
                                  stabZoomLimit, stabFocalMm, stabTrimMs,
                                  s, frameIndex, &e.stabPlan,
-                                 /*asyncRefine=*/true);
+                                 /*asyncRefine=*/true, &e.imageStab);
         if (!stab.ok) return nullptr;
 
         // 1. Frame read — through the ring, so with temporal NR on the
@@ -2362,7 +2505,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
             resolveStabilization(env, gyroPath, stabMode, stabStrength,
                                  stabZoomLimit, stabFocalMm, stabTrimMs,
                                  s, frameIndex, &e.stabPlan,
-                                 /*asyncRefine=*/true);
+                                 /*asyncRefine=*/true, &e.imageStab);
         if (!stab.ok) return nullptr;
 
         // 1. Decode only when the requested frame is not the cached one —
@@ -3132,7 +3275,8 @@ jbyteArray exportFrameBody(JNIEnv* env, jlong handle, jint frameIndex,
         const StabResolution stab =
             resolveStabilization(env, gyroPath, stabMode, stabStrength,
                                  stabZoomLimit, stabFocalMm, stabTrimMs,
-                                 s, frameIndex, &e.stabPlan);
+                                 s, frameIndex, &e.stabPlan,
+                                 /*asyncRefine=*/false, &e.imageStab);
         if (!stab.ok) return nullptr;
 
         // Sub-stage timing (commit (d)): one steady_clock read at each of
@@ -4754,6 +4898,233 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeStabWarpResolve(
     if (result == nullptr) return nullptr;
     env->SetFloatArrayRegion(result, 0, 10, out);
     return result;
+}
+
+// ---- Image-based stabilization (package S4) ---------------------------------
+//
+// nativeImageStabLoad loads a COMPLETE analysis file into the handle's Entry
+// (once; every later resolve/render reads it). nativeImageStabWarpResolve is
+// the image twin of nativeStabWarpResolve: the SAME [active, M x 9] layout
+// (M = H^-1 * S(zoom), row-major, float-narrowed from double), so the Kotlin
+// consumers and the GPU warp pass are unchanged. nativeImageStabProbe feeds
+// the UI. nativeImageStabAnalyze runs the whole analysis on the CALLER's
+// thread (the Kotlin service owns the coroutine), cancellable and
+// resumable through a job slot; see ImageStabAnalysisService.kt.
+
+namespace {
+
+constexpr int kMaxImageJobs = 4;
+struct ImageStabJob {
+    std::atomic<bool> inUse{false};
+    std::atomic<bool> cancel{false};
+    std::atomic<int64_t> done{0};
+    std::atomic<int64_t> total{0};
+};
+ImageStabJob gImageJobs[kMaxImageJobs];
+
+}  // namespace
+
+// Returns 0 = loaded; 1 = bad handle; 2 = file missing/unreadable/stale
+// (BadMagic/BadVersion/Truncated/BadCrc/Mismatch); 3 = incomplete analysis;
+// 4 = the analysis does not match this clip (frame count).
+JNIEXPORT jint JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeImageStabLoad(
+        JNIEnv* env, jclass, jlong handle, jstring analysisPath) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    rawedit::Source* s = sourceFor(handle);
+    if (!s || analysisPath == nullptr) return 1;
+    const char* chars = env->GetStringUTFChars(analysisPath, nullptr);
+    if (chars == nullptr) return 2;
+    const std::string file(chars);
+    env->ReleaseStringUTFChars(analysisPath, chars);
+    auto path = std::make_shared<rawedit::ImagePath>();
+    if (rawedit::readImagePathFile(file, *path) != rawedit::PathParse::Ok) return 2;
+    if (!path->complete) return 3;
+    if (path->frameCount != s->frameCount() || path->recs.size() != s->frameCount()) return 4;
+    ImageStabEntry& e = gEntries[handle - 1].imageStab;
+    e = ImageStabEntry{};
+    e.path = std::move(path);
+    return 0;
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeImageStabWarpResolve(
+        JNIEnv* env, jclass, jlong handle, jint mode, jfloat strength,
+        jfloat zoomLimit, jint rangeStart, jint rangeEnd, jint frameIndex,
+        jint maxDim) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) return nullptr;  // dead session: no verdict, silently
+    ImageStabRequest req;
+    req.mode = mode;
+    req.strength = strength;
+    req.zoomLimit = zoomLimit;
+    req.rangeStart = rangeStart;
+    req.rangeEnd = rangeEnd;
+    const rawedit::ImageStabFrame* f = nullptr;
+    if (!imageFrameFor(gEntries[handle - 1].imageStab, req, *s, frameIndex, &f))
+        return nullptr;  // no analysis loaded / out of range: no verdict
+    // The dims the session will warp (the gyro resolver's own reduction).
+    const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
+    const int strideN = strideFor(info, maxDim);
+    int bufW = static_cast<int>(info.width);
+    int bufH = static_cast<int>(info.height);
+    if (strideN > 1) {
+        const int cellCols = static_cast<int>(info.width) / 2;
+        const int cellRows = static_cast<int>(info.height) / 2;
+        bufW = 2 * ((cellCols + strideN - 1) / strideN);
+        bufH = 2 * ((cellRows + strideN - 1) / strideN);
+    }
+    if (bufW <= 0 || bufH <= 0) return nullptr;
+    double m[9];
+    bool active = false;
+    if (!rawedit::frameWarpM(*f, bufW, bufH, m, &active)) active = false;  // singular: honest no-op
+    if (!active) {
+        for (int i = 0; i < 9; ++i) m[i] = (i % 4 == 0) ? 1.0 : 0.0;
+    }
+    const float out[10] = {
+        active ? 1.0f : 0.0f,
+        static_cast<float>(m[0]), static_cast<float>(m[1]), static_cast<float>(m[2]),
+        static_cast<float>(m[3]), static_cast<float>(m[4]), static_cast<float>(m[5]),
+        static_cast<float>(m[6]), static_cast<float>(m[7]), static_cast<float>(m[8]),
+    };
+    jfloatArray result = env->NewFloatArray(10);
+    if (result == nullptr) return nullptr;
+    env->SetFloatArrayRegion(result, 0, 10, out);
+    return result;
+}
+
+// [frames, meanZoom, maxZoom, meanA, limitedFraction, maxZoomRate,
+//  invalidSampleFrames, hardFallbackFrames, okFraction, weakFraction,
+//  lostFraction, medianInlierRatio]; null when no analysis is loaded.
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeImageStabProbe(
+        JNIEnv* env, jclass, jlong handle, jint mode, jfloat strength,
+        jfloat zoomLimit, jint rangeStart, jint rangeEnd) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) return nullptr;
+    ImageStabEntry& e = gEntries[handle - 1].imageStab;
+    if (!e.path || e.path->recs.empty()) return nullptr;
+    ImageStabRequest req;
+    req.mode = mode;
+    req.strength = strength;
+    req.zoomLimit = zoomLimit;
+    req.rangeStart = rangeStart;
+    req.rangeEnd = rangeEnd;
+    const rawedit::FrameInfo info = s->frameInfo(0);
+    if (info.width == 0 || info.height == 0) return nullptr;
+    const rawedit::ImageStabPlan* plan = imagePlanFor(
+        e, req, static_cast<double>(info.width) / static_cast<double>(info.height));
+    if (plan == nullptr) return nullptr;
+    const rawedit::ImageStabPlanStats& st = plan->stats();
+    const std::vector<rawedit::PairRecord>& recs = e.path->recs;
+    double ok = 0, weak = 0, lost = 0;
+    std::vector<uint8_t> ratios;
+    for (size_t i = 1; i < recs.size(); ++i) {
+        const uint8_t c = recs[i].status;
+        if (c == 0) ++ok; else if (c == 1) ++weak; else ++lost;
+        ratios.push_back(recs[i].inlierRatio8);
+    }
+    const double pairs = std::max<double>(1.0, static_cast<double>(recs.size() - 1));
+    double med = 0.0;
+    if (!ratios.empty()) {
+        std::nth_element(ratios.begin(), ratios.begin() + ratios.size() / 2, ratios.end());
+        med = ratios[ratios.size() / 2] / 255.0;
+    }
+    const double out[12] = {
+        static_cast<double>(recs.size()), st.meanZoom, st.maxZoom, st.meanA,
+        st.limitedFraction, st.maxZoomRate,
+        static_cast<double>(st.invalidSampleFrames),
+        static_cast<double>(st.hardFallbackFrames),
+        ok / pairs, weak / pairs, lost / pairs, med,
+    };
+    jdoubleArray result = env->NewDoubleArray(12);
+    if (result == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(result, 0, 12, out);
+    return result;
+}
+
+// Job slots: a slot carries the cancel flag in and the progress out.
+// Returns the slot (>= 0) or -1 when all are busy.
+JNIEXPORT jint JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeImageStabJobNew(JNIEnv*, jclass) {
+    for (int i = 0; i < kMaxImageJobs; ++i) {
+        bool expect = false;
+        if (gImageJobs[i].inUse.compare_exchange_strong(expect, true)) {
+            gImageJobs[i].cancel.store(false);
+            gImageJobs[i].done.store(0);
+            gImageJobs[i].total.store(0);
+            return i;
+        }
+    }
+    return -1;
+}
+
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeImageStabJobCancel(JNIEnv*, jclass, jint job) {
+    if (job >= 0 && job < kMaxImageJobs) gImageJobs[job].cancel.store(true);
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeImageStabJobProgress(JNIEnv* env, jclass, jint job) {
+    if (job < 0 || job >= kMaxImageJobs) return nullptr;
+    const jlong v[2] = {static_cast<jlong>(gImageJobs[job].done.load()),
+                        static_cast<jlong>(gImageJobs[job].total.load())};
+    jlongArray r = env->NewLongArray(2);
+    if (r == nullptr) return nullptr;
+    env->SetLongArrayRegion(r, 0, 2, v);
+    return r;
+}
+
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeImageStabJobFree(JNIEnv*, jclass, jint job) {
+    if (job >= 0 && job < kMaxImageJobs) gImageJobs[job].inUse.store(false);
+}
+
+// Analyzes the clip behind [fd] (dup'ed; the caller closes its own) into
+// [finalFile]. Progress checkpoints go to "<finalFile>.part" and a later call
+// resumes from it bit-exactly. Blocking: runs on the caller's thread plus
+// one decode thread when [threads] >= 2. Returns 0 = Done (final file
+// written atomically, partial removed), 1 = Cancelled (partial kept),
+// 2 = Failed (decode/open), 3 = I/O failure writing the result.
+JNIEXPORT jint JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeImageStabAnalyze(
+        JNIEnv* env, jclass, jint fd, jstring finalFile, jint job, jint threads) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    if (finalFile == nullptr || job < 0 || job >= kMaxImageJobs) return 2;
+    const char* chars = env->GetStringUTFChars(finalFile, nullptr);
+    if (chars == nullptr) return 2;
+    const std::string file(chars);
+    env->ReleaseStringUTFChars(finalFile, chars);
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(std::string("imageStabAnalyze: open: ") + rawedit::errorName(opened.code) +
+                 " — " + opened.detail);
+        return 2;
+    }
+    rawedit::Source& src = **opened.value;
+    ImageStabJob& j = gImageJobs[job];
+    rawedit::AnalyzeControl ctl;
+    ctl.cancelled = [&j]() { return j.cancel.load(std::memory_order_relaxed); };
+    ctl.progress = [&j](size_t done, size_t total) {
+        j.done.store(static_cast<int64_t>(done), std::memory_order_relaxed);
+        j.total.store(static_cast<int64_t>(total), std::memory_order_relaxed);
+    };
+    ctl.checkpointFile = file + ".part";
+    ctl.threads = threads >= 2 ? 2 : 1;
+    rawedit::ImagePath path;
+    const rawedit::AnalyzeResult r =
+        rawedit::analyzeSource(src, rawedit::ImageStabOptions(), ctl, path, nullptr);
+    if (r == rawedit::AnalyzeResult::Cancelled) return 1;
+    if (r != rawedit::AnalyzeResult::Done || !path.complete) return 2;
+    if (!rawedit::writeImagePathFile(file, path)) return 3;
+    std::remove(ctl.checkpointFile.c_str());
+    return 0;
 }
 
 JNIEXPORT jintArray JNICALL
