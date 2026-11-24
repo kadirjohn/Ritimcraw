@@ -919,10 +919,10 @@ class EncodedSource(
         }
     }
 
-    /** Queue depth for the frame size just produced: 2 for 4K-class frames, 1 when a frame is huge (8K). */
+    /** Queue depth for the frame size just produced: the three memory tiers, decided by the plane bytes. */
     private fun aheadDepthFor(p: YuvPlanes): Int {
         val bytes = p.y.buffer.size.toLong() + p.u.buffer.size + (if (p.v.buffer === p.u.buffer) 0 else p.v.buffer.size)
-        return if (bytes > AHEAD_BIG_FRAME_BYTES) 1 else 2
+        return queueDepthForPlaneBytes(bytes)
     }
 
     private fun stopAhead() {
@@ -1093,6 +1093,25 @@ class EncodedSource(
         private const val AHEAD_JOIN_MS = 3_000L
         /** A decoded frame above this many plane bytes (8K) is only queued one deep: heap limit 256 MB. */
         private const val AHEAD_BIG_FRAME_BYTES = 40L * 1024 * 1024
+        /**
+         * 261124-tmp: a decoded frame above this many plane bytes but at-or-below [AHEAD_BIG_FRAME_BYTES]
+         * (4K 10-bit P010, measured 31.6 MB/frame on the Mi-Log clip) is queued TWO deep; at-or-below it
+         * (4K 8-bit ~12.7 MB, small frames) THREE. Eight-K-class frames stay one deep. Heap limit is 256 MB,
+         * so the tiers are 50 / 63 / <54 MB of queued planes.
+         */
+        private const val AHEAD_HALF_FRAME_BYTES = 18L * 1024 * 1024
+
+        /**
+         * 261124-tmp: the ready-queue depth per frame size, a pure companion function (no instance state)
+         * so tests pin the admission policy directly. Boundaries are strictly-greater, mirroring the
+         * big-frame rule: above 40 MB (8K, ~50 MB measured) -> 1; above 18 MB (4K P010 31.6 MB) -> 2;
+         * otherwise (4K 8-bit 12.7 MB, small) -> 3.
+         */
+        internal fun queueDepthForPlaneBytes(bytes: Long): Int = when {
+            bytes > AHEAD_BIG_FRAME_BYTES -> 1
+            bytes > AHEAD_HALF_FRAME_BYTES -> 2
+            else -> 3
+        }
 
         /** Empty dequeue polls tolerated after end-of-stream before "truncated". */
         private const val EOS_POLLS = 64

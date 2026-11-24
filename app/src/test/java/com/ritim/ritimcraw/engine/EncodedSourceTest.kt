@@ -191,6 +191,23 @@ class EncodedSourceTest {
         assertSame(developer.result, source.renderFrame(0, GradeK()))
     }
 
+    // ---- E0b-4b: decode-ahead queue admission ----
+
+    @Test
+    fun queue_depth_admission_is_three_tier_by_frame_bytes() {
+        // The three-tier depth (261124-tmp Task 1): an 8K-class frame (~50 MB planes) is
+        // queued one deep, a 4K P010 frame (~31.6 MB) two deep, 4K 8-bit (~12.7 MB) three deep —
+        // bounded by the 256 MB heap. Boundaries are strictly-greater, mirroring the big-frame rule.
+        val mb = 1024L * 1024
+        assertEquals(1, EncodedSource.queueDepthForPlaneBytes(41 * mb)) // above 40 MB: 8K
+        assertEquals(1, EncodedSource.queueDepthForPlaneBytes(50 * mb))
+        assertEquals(2, EncodedSource.queueDepthForPlaneBytes(40 * mb)) // exactly 40 MB: not "above"
+        assertEquals(2, EncodedSource.queueDepthForPlaneBytes(19 * mb)) // 18..40 MB: 4K 10-bit
+        assertEquals(3, EncodedSource.queueDepthForPlaneBytes(18 * mb)) // exactly 18 MB: not "above"
+        assertEquals(3, EncodedSource.queueDepthForPlaneBytes(13 * mb)) // 4K 8-bit
+        assertEquals(3, EncodedSource.queueDepthForPlaneBytes(1024L)) // small frames
+    }
+
     // ---- decode: frame ordering and seeking ----
 
     @Test
