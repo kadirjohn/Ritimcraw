@@ -616,4 +616,24 @@
     <string name="settings_device_report_group_decoders">%1$s · Çözücüler</string>
     <string name="settings_device_report_group_encoders">%1$s · Kodlayıcılar</string>
     <string name="settings_device_report_pill_low_latency">Düşük gecikme</string>
+
+    <!-- Export sheet settings list (P2, 2026-11-25) -->
+    <string name="export_row_format">Biçim</string>
+    <string name="export_row_preset">Hazır ayar</string>
+    <string name="export_back">Geri</string>
+    <string name="export_format_mp4_hint">Her yerde oynayan video dosyası</string>
+    <string name="export_preset_compatible_hint">H.264, hemen her cihazda oynar</string>
+    <string name="export_preset_smaller_hint">Düşük bit hızında HEVC</string>
+    <string name="export_preset_quality_hint">En yüksek bit hızı seviyesinde HEVC</string>
+    <string name="export_preset_custom_hint">Ayarlar hiçbir hazır ayara uymuyor</string>
+    <string name="export_option_unavailable">Bu telefonda yok</string>
+    <string name="export_codec_avc_hint">Hemen her cihazda oynar</string>
+    <string name="export_codec_hevc_hint">Daha küçük dosya, yeni oynatıcı ister</string>
+    <string name="export_bit_depth_8_hint">Her yerde çalışır</string>
+    <string name="export_bit_depth_10_hint">Yumuşak geçişler, yalnızca GPU yolunda</string>
+    <string name="export_bit_depth_encoded_reason">Kodlanmış klipler 8-bit dışa aktarılır</string>
+    <string name="export_rate_vbr_hint">Bitleri görüntünün ihtiyacı olan yere harcar</string>
+    <string name="export_rate_cbr_hint">Hızı sabit tutar</string>
+    <string name="export_keyframe_all_intra_hint">En büyük dosya, düzenlemesi en kolay</string>
+    <string name="export_read_only_note">Klibi izler</string>
 </resources>

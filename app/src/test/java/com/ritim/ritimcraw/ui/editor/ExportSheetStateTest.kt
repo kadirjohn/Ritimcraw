@@ -70,4 +70,64 @@ class ExportSheetStateTest {
         assertEquals(ExportPreset.COMPATIBLE, ExportPreset.of(s))
         assertEquals(ExportPreset.CUSTOM, ExportPreset.of(s.copy(rateMode = ExportRateMode.CBR)))
     }
+
+    @Test
+    fun the_compact_summary_leads_with_the_format_and_reads_the_plan() {
+        val subject = ExportSheetModel.Subject(3840, 2160, 29.826, 60.0)
+        val plan = ExportSheetModel.plan(ExportSheetModel.defaultSettings(), subject, emptyList())
+        assertEquals(
+            "MP4 · 3840×2160 · 29.97 fps · H.264 8-bit · ≈ 420 MB",
+            ExportSheetState.compactSummaryLine(plan, "420 MB"),
+        )
+        // Unknown length: the size part drops, nothing is guessed.
+        assertEquals(
+            "MP4 · 3840×2160 · 29.97 fps · H.264 8-bit",
+            ExportSheetState.compactSummaryLine(plan, null),
+        )
+    }
+
+    @Test
+    fun the_bitrate_value_is_the_plans_not_the_requests() {
+        val subject = ExportSheetModel.Subject(1920, 1080, 30.0, 10.0)
+        val plan = ExportSheetModel.plan(ExportSheetModel.defaultSettings(), subject, emptyList())
+        assertEquals(
+            com.ritim.ritimcraw.export.ExportText.mbps(plan.bitrateBps.toLong()) + " Mb/s",
+            ExportSheetState.bitrateValue(plan),
+        )
+    }
+
+    @Test
+    fun an_encoded_clip_has_no_format_row_and_keeps_every_other_row() {
+        val raw = ExportSheetState.mainRows(encodedSource = false)
+        val enc = ExportSheetState.mainRows(encodedSource = true)
+        assertEquals(ExportSheetState.Row.FORMAT, raw.first())
+        assertFalse(ExportSheetState.Row.FORMAT in enc)
+        assertEquals(raw.drop(1), enc)
+        // Bit depth stays visible (disabled in the UI, with its reason).
+        assertTrue(ExportSheetState.Row.BIT_DEPTH in enc)
+    }
+
+    @Test
+    fun the_main_and_advanced_rows_cover_every_option_once_in_the_spec_order() {
+        assertEquals(
+            listOf("FORMAT", "PRESET", "RESOLUTION", "FRAME_RATE", "CODEC", "BIT_DEPTH"),
+            ExportSheetState.mainRows(false).map { it.name },
+        )
+        assertEquals(
+            listOf("BITRATE", "RATE_MODE", "KEYFRAME", "PROFILE", "AUDIO", "AUDIO_FORMAT"),
+            ExportSheetState.advancedRows().map { it.name },
+        )
+        val all = ExportSheetState.mainRows(false) + ExportSheetState.advancedRows()
+        assertEquals(ExportSheetState.Row.entries.toSet(), all.toSet())
+        assertEquals(all.size, all.toSet().size)
+    }
+
+    @Test
+    fun only_the_clip_derived_rows_are_read_only() {
+        val ro = ExportSheetState.Row.entries.filter { ExportSheetState.isReadOnly(it) }
+        assertEquals(
+            setOf(ExportSheetState.Row.FRAME_RATE, ExportSheetState.Row.AUDIO_FORMAT),
+            ro.toSet(),
+        )
+    }
 }

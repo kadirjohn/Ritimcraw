@@ -1,0 +1,18 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <!-- OFFICIAL Material Symbols glyph "check", OUTLINED style, weight 300,
+         24px — pathdata verbatim from Google Fonts:
+         https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsoutlined/check/wght300/24px.svg
+         (viewBox="0 -960 960 960"; the group's translateY remaps the
+         font's negative-Y coordinates onto Android's downward viewport).
+         The thin export-sheet icon set (replaces the heavy filled
+         material-icons-core glyphs). Tinted by Compose's Icon. -->
+    <group android:translateY="960">
+        <path
+            android:fillColor="@android:color/white"
+            android:pathData="M382-253.85 168.62-467.23 211.38-510 382-339.38 748.62-706l42.76 42.77L382-253.85Z" />
+    </group>
+</vector>

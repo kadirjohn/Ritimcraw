@@ -1,0 +1,18 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <!-- OFFICIAL Material Symbols glyph "warning", OUTLINED style, weight 300,
+         24px — pathdata verbatim from Google Fonts:
+         https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsoutlined/warning/wght300/24px.svg
+         (viewBox="0 -960 960 960"; the group's translateY remaps the
+         font's negative-Y coordinates onto Android's downward viewport).
+         The thin export-sheet icon set (replaces the heavy filled
+         material-icons-core glyphs). Tinted by Compose's Icon. -->
+    <group android:translateY="960">
+        <path
+            android:fillColor="@android:color/white"
+            android:pathData="M74.62-140 480-840l405.38 700H74.62ZM178-200h604L480-720 178-200Zm324.92-57.08q9.39-9.38 9.39-22.92 0-13.54-9.39-22.92-9.38-9.39-22.92-9.39-13.54 0-22.92 9.39-9.39 9.38-9.39 22.92 0 13.54 9.39 22.92 9.38 9.39 22.92 9.39 13.54 0 22.92-9.39ZM450-352.31h60v-200h-60v200ZM480-460Z" />
+    </group>
+</vector>
