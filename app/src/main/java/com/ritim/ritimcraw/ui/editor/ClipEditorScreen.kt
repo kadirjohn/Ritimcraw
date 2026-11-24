@@ -93,6 +93,7 @@ import com.ritim.ritimcraw.data.audio.AudioLinkState
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.engine.DisplayRateApply
 import com.ritim.ritimcraw.engine.PlaybackTrace
+import com.ritim.ritimcraw.engine.PreviewErrors
 import com.ritim.ritimcraw.engine.ImageStabActivity
 import com.ritim.ritimcraw.engine.ImageStabLoads
 import com.ritim.ritimcraw.engine.StabilizationGate
@@ -1482,6 +1483,8 @@ fun ClipEditorScreen(
         // P3: shared between the playback loop and the render publish site (a
         // plain array, not state: it must never recompose anything).
         val playbackTraceHolder = remember(sourceId) { arrayOfNulls<PlaybackTrace>(1) }
+        // The short message shown instead of the raw allocator text when a frame is too large to preview.
+        val previewTooLargeText = androidx.compose.ui.res.stringResource(R.string.preview_error_too_large)
         // P3: the live preview Surface (GPU path only), for the display-rate request.
         var displaySurface by remember { mutableStateOf<android.view.Surface?>(null) }
         var positionFrame by remember(sourceId) { mutableStateOf(0) }
@@ -2984,7 +2987,7 @@ fun ClipEditorScreen(
                                 },
                                 onFailure = { e ->
                                     lastRenderFailed = true
-                                    errorText = e.message
+                                    errorText = if (PreviewErrors.isOutOfMemory(e)) previewTooLargeText else e.message
                                 },
                             )
                             if (BuildConfig.DEBUG && req.renderClass == RenderClass.PLAYBACK && !lastRenderFailed) {

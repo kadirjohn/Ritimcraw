@@ -62,4 +62,20 @@ object PreviewErrors {
         val base = "Preview render failed (stage: ${stageName(stage)}): $cause — recovery: $recovery"
         return if (detail.isNullOrBlank()) base else "$base [$detail]"
     }
+
+    /**
+     * True when [t] (or anything in its cause chain) is an out-of-memory error. The encoded
+     * preview of a very large frame (8K: a 132 MB ARGB array) used to put the raw allocator text
+     * on screen; the screen shows a short message with the recovery instead.
+     */
+    fun isOutOfMemory(t: Throwable?): Boolean {
+        var cur = t
+        var depth = 0
+        while (cur != null && depth < 8) {
+            if (cur is OutOfMemoryError) return true
+            cur = cur.cause
+            depth++
+        }
+        return false
+    }
 }
