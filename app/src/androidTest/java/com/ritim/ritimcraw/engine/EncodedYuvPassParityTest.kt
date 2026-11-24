@@ -100,7 +100,7 @@ class EncodedYuvPassParityTest {
             assertNotNull("${k.name}: the CPU oracle returned null", cpu)
             val gpu = NativeSource.jniEncodedYuvPassHeadless(
                 f.y, f.c, f.w, f.h, f.stride, f.uvStride, k.bits, k.full,
-                spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, k.ev, k.tempK, k.tint,
+                spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, k.ev, k.tempK, k.tint, 1,
             )
             assertNotNull("${k.name}: the GPU pass returned null (${NativeSource.jniEncodedYuvPassLastDetail()})", gpu)
             val n = f.w * f.h
@@ -121,5 +121,134 @@ class EncodedYuvPassParityTest {
             "GPU YUV pass vs CPU oracle: worst maxDiffLsb=$worst mismatch=$worstPct%\n" + lines.joinToString("\n"),
             worst <= 1 && worstPct <= 0.01,
         )
+    }
+
+    // ---- E0b-4a: reduce first, then process ----
+
+    /** The code value (8-bit byte, or the top ten bits of a little-endian P010 word) at a byte offset. */
+    private fun code(buf: ByteArray, at: Int, bits: Int): Int =
+        if (bits > 8) (((buf[at].toInt() and 0xFF) or ((buf[at + 1].toInt() and 0xFF) shl 8)) ushr (16 - bits))
+        else buf[at].toInt() and 0xFF
+
+    private fun putCode(buf: ByteArray, at: Int, code: Int, bits: Int) {
+        if (bits > 8) {
+            val word = code shl (16 - bits)
+            buf[at] = (word and 0xFF).toByte(); buf[at + 1] = ((word ushr 8) and 0xFF).toByte()
+        } else buf[at] = code.toByte()
+    }
+
+    /**
+     * The CPU reference of the reduce stage: Y = rounded mean (half up) of each N x N luma block, CbCr =
+     * rounded mean of each N x N chroma block of the 2x2 pixel group, edge blocks over what exists. It
+     * returns a legal 4:2:0 frame of ceil(w/N) x ceil(h/N), the CPU oracle's input shape, with natural strides.
+     */
+    private fun reduceFrame(f: Fixture, n: Int): Fixture {
+        val bps = if (f.bits > 8) 2 else 1
+        val cw = (f.w + 1) / 2
+        val ch = (f.h + 1) / 2
+        val ow = (f.w + n - 1) / n
+        val oh = (f.h + n - 1) / n
+        val ocw = (ow + 1) / 2
+        val och = (oh + 1) / 2
+        val y = ByteArray(ow * bps * oh)
+        val c = ByteArray(ocw * 2 * bps * och)
+        fun mean(sum: Long, cnt: Int) = ((2 * sum + cnt) / (2 * cnt)).toInt()
+        for (oy in 0 until oh) for (ox in 0 until ow) {
+            var sum = 0L; var cnt = 0
+            for (j in 0 until n) for (i in 0 until n) {
+                val sx = ox * n + i; val sy = oy * n + j
+                if (sx < f.w && sy < f.h) { sum += code(f.y, sy * f.stride + sx * bps, f.bits); cnt++ }
+            }
+            putCode(y, (oy * ow + ox) * bps, mean(sum, cnt), f.bits)
+        }
+        for (cy in 0 until och) for (cx in 0 until ocw) {
+            var su = 0L; var sv = 0L; var cnt = 0
+            for (j in 0 until n) for (i in 0 until n) {
+                val sx = cx * n + i; val sy = cy * n + j
+                if (sx < cw && sy < ch) {
+                    val at = sy * f.uvStride + sx * 2 * bps
+                    su += code(f.c, at, f.bits); sv += code(f.c, at + bps, f.bits); cnt++
+                }
+            }
+            val at = (cy * ocw + cx) * 2 * bps
+            putCode(c, at, mean(su, cnt), f.bits); putCode(c, at + bps, mean(sv, cnt), f.bits)
+        }
+        return Fixture(ow, oh, f.bits, y, c, ow * bps, ocw * 2 * bps)
+    }
+
+    @Test
+    fun the_reduce_first_pass_matches_the_cpu_oracle_on_the_reduced_frame() {
+        val picks = listOf(
+            cases[2] to 2, cases[2] to 3,   // 8-bit limited 709 MiLog
+            cases[4] to 2, cases[4] to 3,   // the owner's Mi-Log profile, 10-bit P010
+            cases[5] to 5,                  // 10-bit limited, a larger factor with partial edge blocks
+        )
+        val lines = ArrayList<String>()
+        var worst = 0
+        var worstPct = 0.0
+        for ((k, n) in picks) {
+            val f = fixture(321, 181, k.bits, 0x5151 + 31 * n)   // odd sizes: partial blocks and a half chroma column/row
+            val small = reduceFrame(f, n)
+            val spec = EncodedColorSpec(
+                profile = SourceProfile(
+                    primaries = k.primaries, transfer = k.transfer, matrix = k.matrix,
+                    range = if (k.full) SourceRange.Full else SourceRange.Limited, bitDepth = k.bits,
+                    primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                    rangeProvenance = null, bitDepthProvenance = null,
+                ),
+                declaredBitDepth = k.bits,
+            )
+            val frame = YuvFrameK(small.w, small.h, true, small.y, small.c, ByteArray(0), small.stride, small.uvStride, k.bits)
+            val cpu = NativeEncodedDeveloper.develop(frame, spec, 0, GradeK(), null, null)
+            assertNotNull("${k.name} N=$n: the CPU oracle returned null", cpu)
+            val gpu = NativeSource.jniEncodedYuvPassHeadless(
+                f.y, f.c, f.w, f.h, f.stride, f.uvStride, k.bits, k.full,
+                spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, 0f, 5600f, 0f, n,
+            )
+            assertNotNull("${k.name} N=$n: the GPU pass returned null (${NativeSource.jniEncodedYuvPassLastDetail()})", gpu)
+            assertTrue("${k.name} N=$n: dims ${gpu!![0]}x${gpu[1]} vs ${small.w}x${small.h}", gpu[0] == small.w && gpu[1] == small.h)
+            val cnt = small.w * small.h
+            val stats = GradeParitySweep.compare(
+                GradeParitySweep.argbBytes(gpu.copyOfRange(2, 2 + cnt)),
+                GradeParitySweep.argbBytes(cpu!!.copyOfRange(2, 2 + cnt)),
+            )
+            val line = String.format(java.util.Locale.ROOT, "%s reduce=%d -> %dx%d: maxDiffLsb=%d mismatch=%.4f%%",
+                k.name, n, small.w, small.h, stats.maxDiffLsb, stats.mismatchPct)
+            Log.i("ritim-parity", "e0b-yuv-reduce $line")
+            lines += line
+            if (stats.maxDiffLsb > worst) worst = stats.maxDiffLsb
+            if (stats.mismatchPct > worstPct) worstPct = stats.mismatchPct
+        }
+        assertTrue(
+            "reduce-first GPU pass vs CPU oracle: worst maxDiffLsb=$worst mismatch=$worstPct%\n" + lines.joinToString("\n"),
+            worst <= 1 && worstPct <= 0.01,
+        )
+    }
+
+    /** Per-frame GPU-side cost of the reduce-first pass on real-sized frames (diagnostic, logs only). */
+    @Test
+    fun bench_the_reduce_first_pass_at_4k_and_8k() {
+        fun planes(w: Int, h: Int, bits: Int): Triple<ByteArray, ByteArray, IntArray> {
+            val bps = if (bits > 8) 2 else 1
+            val stride = w * bps
+            val uvStride = ((w + 1) / 2) * 2 * bps
+            val rnd = java.util.Random(7)
+            val y = ByteArray(stride * h).also { rnd.nextBytes(it) }
+            val c = ByteArray(uvStride * ((h + 1) / 2)).also { rnd.nextBytes(it) }
+            return Triple(y, c, intArrayOf(stride, uvStride))
+        }
+        val runs = listOf(
+            Triple("4K P010 10-bit (Mi-Log 60p clip)", Triple(3840, 2160, 10), 3),
+            Triple("8K NV12 8-bit", Triple(7680, 4320, 8), 6),
+        )
+        for ((name, dims, n) in runs) {
+            val (w, h, bits) = dims
+            val (y, c, st) = planes(w, h, bits)
+            val r = NativeSource.jniEncodedYuvPassBench(y, c, w, h, st[0], st[1], bits, bits == 10, if (bits == 10) 2 else 1, if (bits == 10) 0 else 1, if (bits == 10) 1 else 0, n, 60)
+            assertNotNull("$name: bench returned null (${NativeSource.jniEncodedYuvPassLastDetail()})", r)
+            Log.i("ritim-parity", String.format(java.util.Locale.ROOT,
+                "e0b-yuv-bench %s %dx%d reduce=%d -> %dx%d: upload %.2f ms + draw %.2f ms per frame",
+                name, w, h, n, (w + n - 1) / n, (h + n - 1) / n, r!![0], r[1]))
+        }
     }
 }

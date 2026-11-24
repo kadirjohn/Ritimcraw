@@ -697,21 +697,41 @@ class NativeSource private constructor(
             yPlane: ByteArray, cPlane: ByteArray,
             width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
             matrix: Int, transfer: Int, primaries: Int,
-            exposureEv: Float, tempK: Float, tint: Float,
+            exposureEv: Float, tempK: Float, tint: Float, reduce: Int,
         ): IntArray?
+
+        @JvmStatic private external fun nativeEncodedYuvPassBench(
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int, reduce: Int, frames: Int,
+        ): DoubleArray?
 
         @JvmStatic private external fun nativeEncodedYuvPassLastDetail(): String
 
+        /** [reduce] N > 1 reduces first (see gles/EncodedYuvPass.h); the result is [outW, outH, ARGB...]. */
         internal fun jniEncodedYuvPassHeadless(
             yPlane: ByteArray, cPlane: ByteArray,
             width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
             matrix: Int, transfer: Int, primaries: Int,
-            exposureEv: Float, tempK: Float, tint: Float,
+            exposureEv: Float, tempK: Float, tint: Float, reduce: Int = 1,
         ): IntArray? {
             if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
             return nativeEncodedYuvPassHeadless(
                 yPlane, cPlane, width, height, stride, uvStride, bitDepth, fullRange,
-                matrix, transfer, primaries, exposureEv, tempK, tint,
+                matrix, transfer, primaries, exposureEv, tempK, tint, reduce,
+            )
+        }
+
+        /** Mean [upload ms, draw ms] per frame over [frames] frames (reduced target, no readback). */
+        internal fun jniEncodedYuvPassBench(
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int, reduce: Int, frames: Int,
+        ): DoubleArray? {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeEncodedYuvPassBench(
+                yPlane, cPlane, width, height, stride, uvStride, bitDepth, fullRange,
+                matrix, transfer, primaries, reduce, frames,
             )
         }
 

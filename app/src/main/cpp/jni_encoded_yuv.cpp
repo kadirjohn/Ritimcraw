@@ -30,7 +30,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedYuvPassHeadless(
         JNIEnv* env, jclass, jbyteArray yPlane, jbyteArray cPlane,
         jint width, jint height, jint stride, jint uvStride, jint bitDepth, jboolean fullRange,
         jint matrix, jint transfer, jint primaries,
-        jfloat exposureEv, jfloat tempK, jfloat tint) {
+        jfloat exposureEv, jfloat tempK, jfloat tint, jint reduce) {
     gLastDetail.clear();
     if (yPlane == nullptr || cPlane == nullptr) { gLastDetail = "null plane"; return nullptr; }
     const jsize yLen = env->GetArrayLength(yPlane);
@@ -47,7 +47,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedYuvPassHeadless(
     p.width = width; p.height = height; p.stride = stride; p.uvStride = uvStride;
     p.bitDepth = bitDepth; p.fullRange = fullRange != JNI_FALSE;
     p.matrix = matrix; p.transfer = transfer; p.primaries = primaries;
-    p.exposureEv = exposureEv; p.tempK = tempK; p.tint = tint;
+    p.exposureEv = exposureEv; p.tempK = tempK; p.tint = tint; p.reduce = reduce;
     std::vector<float> linear;
     const bool ok = gles::runEncodedYuvPassHeadless(
         reinterpret_cast<const uint8_t*>(y), static_cast<size_t>(yLen),
@@ -56,10 +56,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedYuvPassHeadless(
     env->ReleaseByteArrayElements(cPlane, c, JNI_ABORT);
     if (!ok) return nullptr;
 
-    const jsize n = static_cast<jsize>(width) * height;
+    // Output dims follow the reduction (ceil(width/N) x ceil(height/N)); N = 1 is the full size.
+    const jint outW = (width + reduce - 1) / reduce;
+    const jint outH = (height + reduce - 1) / reduce;
+    const jsize n = static_cast<jsize>(outW) * outH;
     std::vector<jint> out(static_cast<size_t>(n) + 2);
-    out[0] = width;
-    out[1] = height;
+    out[0] = outW;
+    out[1] = outH;
     for (jsize i = 0; i < n; ++i) {
         const float r = rawedit::linearToRec709(linear[static_cast<size_t>(i) * 3 + 0]);
         const float g = rawedit::linearToRec709(linear[static_cast<size_t>(i) * 3 + 1]);
@@ -72,6 +75,42 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedYuvPassHeadless(
     jintArray arr = env->NewIntArray(n + 2);
     if (arr == nullptr) return nullptr;
     env->SetIntArrayRegion(arr, 0, n + 2, out.data());
+    return arr;
+}
+
+// Timing bench: [mean upload ms, mean draw ms] over [frames] frames, or null (detail names why).
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedYuvPassBench(
+        JNIEnv* env, jclass, jbyteArray yPlane, jbyteArray cPlane,
+        jint width, jint height, jint stride, jint uvStride, jint bitDepth, jboolean fullRange,
+        jint matrix, jint transfer, jint primaries, jint reduce, jint frames) {
+    gLastDetail.clear();
+    if (yPlane == nullptr || cPlane == nullptr) { gLastDetail = "null plane"; return nullptr; }
+    const jsize yLen = env->GetArrayLength(yPlane);
+    const jsize cLen = env->GetArrayLength(cPlane);
+    jbyte* y = env->GetByteArrayElements(yPlane, nullptr);
+    jbyte* c = env->GetByteArrayElements(cPlane, nullptr);
+    if (y == nullptr || c == nullptr) {
+        if (y) env->ReleaseByteArrayElements(yPlane, y, JNI_ABORT);
+        if (c) env->ReleaseByteArrayElements(cPlane, c, JNI_ABORT);
+        gLastDetail = "could not pin the planes";
+        return nullptr;
+    }
+    gles::EncodedYuvPassParams p;
+    p.width = width; p.height = height; p.stride = stride; p.uvStride = uvStride;
+    p.bitDepth = bitDepth; p.fullRange = fullRange != JNI_FALSE;
+    p.matrix = matrix; p.transfer = transfer; p.primaries = primaries; p.reduce = reduce;
+    double upMs = 0.0, drMs = 0.0;
+    const bool ok = gles::benchEncodedYuvPassHeadless(
+        reinterpret_cast<const uint8_t*>(y), static_cast<size_t>(yLen),
+        reinterpret_cast<const uint8_t*>(c), static_cast<size_t>(cLen), p, frames, &upMs, &drMs, &gLastDetail);
+    env->ReleaseByteArrayElements(yPlane, y, JNI_ABORT);
+    env->ReleaseByteArrayElements(cPlane, c, JNI_ABORT);
+    if (!ok) return nullptr;
+    jdoubleArray arr = env->NewDoubleArray(2);
+    if (arr == nullptr) return nullptr;
+    const jdouble v[2] = {upMs, drMs};
+    env->SetDoubleArrayRegion(arr, 0, 2, v);
     return arr;
 }
 

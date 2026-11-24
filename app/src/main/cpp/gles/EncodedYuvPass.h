@@ -31,13 +31,28 @@ struct EncodedYuvPassParams {
     float exposureEv = 0.0f;
     float tempK = 5600.0f;
     float tint = 0.0f;
+    // E0b-4a "reduce first, then process": 1 = full size. N > 1 makes the output ceil(width/N) x
+    // ceil(height/N); each output pixel's Y is the integer-rounded mean of its N x N luma block and
+    // each 2x2 pixel group's CbCr the rounded mean of the N x N chroma block over the same area
+    // (blocks cut by the right/bottom edge average the samples that exist). The reduced planes are
+    // therefore a legal 4:2:0 frame of the smaller size, which is the CPU oracle's input shape.
+    int reduce = 1;
 };
 
 // Opens a throwaway EGL pbuffer context, runs the pass over the semi-planar planes and reads the linear
-// RGB back (width*height*3 floats, row 0 = the top row). Returns false with a reason in *detail.
+// RGB back (outW*outH*3 floats, row 0 = the top row; outW/outH per [EncodedYuvPassParams::reduce]).
+// Returns false with a reason in *detail.
 bool runEncodedYuvPassHeadless(const uint8_t* yPlane, size_t yLen,
                                const uint8_t* cPlane, size_t cLen,
                                const EncodedYuvPassParams& params,
                                std::vector<float>* outLinearRgb, std::string* detail);
+
+// Timing bench (device): uploads the planes and runs the pass [frames] times into a reduced
+// target without reading anything back, glFinish after each frame, and reports the mean
+// milliseconds of the upload and of the draw. What the preview would pay per frame on the GPU side.
+bool benchEncodedYuvPassHeadless(const uint8_t* yPlane, size_t yLen,
+                                 const uint8_t* cPlane, size_t cLen,
+                                 const EncodedYuvPassParams& params, int frames,
+                                 double* uploadMs, double* drawMs, std::string* detail);
 
 }  // namespace gles
