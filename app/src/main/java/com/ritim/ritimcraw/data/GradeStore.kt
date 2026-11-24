@@ -1,5 +1,9 @@
 package com.ritim.ritimcraw.data
 
+import com.ritim.ritimcraw.data.grade2.ClipGradeV2
+import com.ritim.ritimcraw.data.grade2.GradeV2Fiber
+import com.ritim.ritimcraw.data.grade2.toClipGradeV2
+import com.ritim.ritimcraw.data.grade2.toGradeK
 import java.io.File
 import java.nio.charset.StandardCharsets
 
@@ -246,19 +250,115 @@ class GradeStore(private val file: File) {
     /** Persists immediately. */
     fun put(sourceId: String, grade: GradeK) {
         synchronized(lock) {
-            val all = load().toMutableMap()
+            load()
             if (rejectedNewerVersion != null) return // never overwrite a newer file
-            all[sourceId] = grade
-            write(all)
+            // Raw carry: re-render the section from the FILE's records,
+            // keeping every sibling this build cannot express through
+            // GradeK (a node chain, an opendrt record) verbatim; only the
+            // target clip's record becomes the new grade's v2 twin.
+            val grades = rawGradesSection().toMutableMap()
+            grades[sourceId] = renderedV2Record(grade.toClipGradeV2())
+            writeRaw(grades)
         }
+    }
+
+    /**
+     * The parsed grades section RAW (records as parsed), or an empty map;
+     * the raw-carry read counterpart of [writeRaw].
+     */
+    private fun rawGradesSection(): Map<String, Any?> {
+        @Suppress("UNCHECKED_CAST")
+        val root = loadRoot() ?: return emptyMap()
+        @Suppress("UNCHECKED_CAST")
+        return (root["grades"] as? Map<String, Any?>) ?: LinkedHashMap()
+    }
+
+    /**
+     * The schema-2 write path (F1-3): replaces ONE clip's record with the
+     * v2 model, carrying every sibling record RAW (a v2 node chain on clip
+     * B survives a plain GradeK save on clip A — the section is re-rendered
+     * from the parsed file, only the target record swapped). The v1 [put]
+     * stays the current editor's API; the F1-6 binding and the node editor
+     * use this one so node chains and opendrt records cross the store
+     * untouched.
+     */
+    fun put(sourceId: String, grade: com.ritim.ritimcraw.data.grade2.ClipGradeV2) {
+        synchronized(lock) {
+            // Same write gate the v1 put holds: never touch a newer file.
+            load()
+            if (rejectedNewerVersion != null) return
+            @Suppress("UNCHECKED_CAST")
+            val root = loadRoot() ?: LinkedHashMap<String, Any?>()
+            val grades = (root["grades"] as? Map<String, Any?>)?.toMutableMap()
+                ?: LinkedHashMap<String, Any?>()
+            grades[sourceId] = renderedV2Record(grade)
+            writeRaw(grades)
+        }
+    }
+
+    /**
+     * The raw-carry section write (F1-3's sibling-preservation rule): the
+     * grades section renders from the parsed FILE records — records this
+     * build can re-render through the GradeK path render through it, and
+     * records it cannot (a v2 node chain, an opendrt output — [mapOfGrade]
+     * refuses them) ride VERBATIM. Without this, a plain [put] on clip A
+     * would DROP clip B's node record from the section (the old path
+     * re-rendered from the adaptable subset alone — a data-loss bug the
+     * golden raw-carry test catches).
+     */
+    private fun writeRaw(grades: Map<String, Any?>) {
+        ProjectFile.writeTextIfWritable(
+            file,
+            ProjectJson.withSection(
+                existingText = file.takeIf { it.exists() }
+                    ?.readText(StandardCharsets.UTF_8),
+                section = "grades",
+                renderedSection = ProjectJson.renderRaw(grades),
+                version = ProjectMigrations.CURRENT_VERSION,
+            ),
+        )
+    }
+
+    /** The clip's v2 record (or null when absent/not-a-record). */
+    fun getV2(sourceId: String): com.ritim.ritimcraw.data.grade2.ClipGradeV2? {
+        return synchronized(lock) {
+            load()
+            @Suppress("UNCHECKED_CAST")
+            val m = loadRoot()?.get("grades")
+                ?.let { it as? Map<String, Any?> }
+                ?.get(sourceId) as? Map<String, Any?>
+            m?.let { com.ritim.ritimcraw.data.grade2.ClipGradeV2.parse(it) }
+        }
+    }
+
+    /** The parsed whole file (the raw carry), or null on IO/parse failure. */
+    private fun loadRoot(): Map<String, Any?>? {
+        if (!file.exists()) return null
+        return try {
+            val root = JsonParser(file.readText(StandardCharsets.UTF_8)).parseValue()
+            @Suppress("UNCHECKED_CAST")
+            root as? Map<String, Any?>
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+    }
+
+    /** One ClipGradeV2's record as a parsed map (via the wire: render then parse). */
+    private fun renderedV2Record(
+        grade: com.ritim.ritimcraw.data.grade2.ClipGradeV2,
+    ): Map<String, Any?> {
+        @Suppress("UNCHECKED_CAST")
+        return JsonParser(com.ritim.ritimcraw.data.grade2.GradeV2Fiber.render(grade))
+            .parseValue() as Map<String, Any?>
     }
 
     fun remove(sourceId: String) {
         synchronized(lock) {
-            val all = load()
+            load()
             if (rejectedNewerVersion != null) return // never overwrite a newer file
-            if (sourceId in all) {
-                write(all - sourceId)
+            val grades = rawGradesSection()
+            if (sourceId in grades) {
+                writeRaw(grades - sourceId)
             }
         }
     }
@@ -288,14 +388,6 @@ class GradeStore(private val file: File) {
         }
     }
 
-    /** Crash-safe: temp -> fsync -> atomic rename (see [AtomicFiles]). */
-    private fun write(grades: Map<String, GradeK>) {
-        val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
-        // The single write gate (plan §6.5/F1-2): same atomic write when
-        // writable, an observable no-op when the process is read-only.
-        ProjectFile.writeTextIfWritable(file, mergeInto(text, grades))
-    }
-
     companion object {
         // ---- writer ----
 
@@ -308,9 +400,64 @@ class GradeStore(private val file: File) {
             return ProjectJson.withSection(
                 existingText = existingText,
                 section = "grades",
-                renderedSection = renderGrades(grades),
+                // The wire render is the v2 twin of each grade (F1-3: the
+                // file speech is schema 2); parse stays version-aware.
+                renderedSection = renderGradesWire(grades),
                 version = ProjectMigrations.CURRENT_VERSION,
             )
+        }
+
+        /** The grades section, one v2 record per grade (the wire shape). */
+        internal fun renderGradesWire(grades: Map<String, GradeK>): String {
+            val sb = StringBuilder()
+            sb.append('{')
+            var first = true
+            for ((id, g) in grades) {
+                if (!first) sb.append(',')
+                first = false
+                sb.append(quote(id)).append(':').append(renderGradeWire(g))
+            }
+            sb.append('}')
+            return sb.toString()
+        }
+
+        /**
+         * The wire record for one v2 grade (per-clip, preset or snapshot):
+         * THE renderer every grade-carrying row goes through (the v1
+         * [renderGrade]'s discipline — one schema, one render path).
+         */
+        internal fun renderGradeV2(g: com.ritim.ritimcraw.data.grade2.ClipGradeV2): String =
+            com.ritim.ritimcraw.data.grade2.GradeV2Fiber.render(g)
+
+        /**
+         * The wire record for a v1 in-memory [GradeK] as this build now
+         * writes it: the GRADE's v2 twin ([ClipGradeV2]'s nesting), the
+         * render every grades/preset/snapshot row renders through so the
+         * on-disk file speech is one schema (v2). [renderGrade] (the flat
+         * v1 renderer) stays for the byte-identity tests and as the
+         * migration's input format.
+         */
+        internal fun renderGradeWire(g: GradeK): String =
+            renderGradeV2(g.toClipGradeV2())
+
+        /**
+         * The one grade-object parser every grade-carrying row calls: the
+         * record's own schema marker decides the branch —
+         *   - `v2` present (the schema-2 record marker): the v2 parse +
+         *     [com.ritim.ritimcraw.data.grade2.toGradeK] adapter, or null
+         *     when the record declares something only F1-6 can honour
+         *     (opendrt output, a node chain — the honest refusal, callers
+         *     surface it);
+         *   - v1 (no `v2` key): the flat per-field fallbacks, exactly as
+         *     before — the v1 parse path is the v1 parse path.
+         */
+        internal fun mapOfGrade(m: Map<*, *>): GradeK? {
+            if (m.containsKey("v2")) {
+                @Suppress("UNCHECKED_CAST")
+                val v2 = com.ritim.ritimcraw.data.grade2.ClipGradeV2.parse(m as Map<String, Any?>)
+                return v2.toGradeK()
+            }
+            return gradeKOf(m)
         }
 
         internal fun renderGrades(grades: Map<String, GradeK>): String {
@@ -337,6 +484,8 @@ class GradeStore(private val file: File) {
             val sb = StringBuilder()
             sb.append('{')
                 .append("\"version\":").append(g.version).append(',')
+                // Empty addition keeps `version:` first; the field rendering
+                // below owns the comma chain.
                 .append("\"exposureEv\":").append(num(g.exposureEv)).append(',')
                 .append("\"highlights\":").append(num(g.highlights)).append(',')
                 .append("\"tempK\":").append(num(g.tempK)).append(',')
@@ -564,16 +713,26 @@ class GradeStore(private val file: File) {
             for ((k, v) in grades) {
                 val id = k as? String ?: continue
                 val m = v as? Map<*, *> ?: continue
-                // Old schema-1 files written before the tone controls carry
-                // none of the six float fields: each falls back to its GradeK
-                // default (neutral), which the C++ pipeline treats as a no-op.
-                // Old files also predate the RAW toggles: the two stage
-                // toggles fall back to true (the pre-toggle behavior), and
-                // asShot is DERIVED from temp/tint neutrality so a manually
-                // white-balanced old grade keeps its exact old look.
-                val parsedTempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f
-                val parsedTint = (m["tint"] as? Double)?.toFloat() ?: 0f
-                out[id] = GradeK(
+                mapOfGrade(m)?.let { out[id] = it }
+            }
+            return out
+        }
+
+        /**
+         * The flat v1 record -> GradeK parse (per-field fallbacks; see
+         * [mapOfGrade] for the v2 branch). Kept private to the one router.
+         */
+        private fun gradeKOf(m: Map<*, *>): GradeK {
+            // Old schema-1 files written before the tone controls carry
+            // none of the six float fields: each falls back to its GradeK
+            // default (neutral), which the C++ pipeline treats as a no-op.
+            // Old files also predate the RAW toggles: the two stage toggles
+            // fall back to true (the pre-toggle behavior), and asShot is
+            // DERIVED from temp/tint neutrality so a manually white-balanced
+            // old grade keeps its exact old look.
+            val parsedTempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f
+            val parsedTint = (m["tint"] as? Double)?.toFloat() ?: 0f
+            return GradeK(
                     version = (m["version"] as? Double)?.toInt() ?: GradeK.SCHEMA_VERSION,
                     exposureEv = (m["exposureEv"] as? Double)?.toFloat() ?: 0f,
                     highlights = (m["highlights"] as? Double)?.toFloat() ?: 0f,
@@ -655,8 +814,6 @@ class GradeStore(private val file: File) {
                     // is preserved exactly.
                     lutInterp = LutInterpK.parse(m["lutInterp"]),
                 )
-            }
-            return out
         }
     }
 }

@@ -1,8 +1,8 @@
 package com.ritim.ritimcraw.export
 
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.JsonParser
-import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.ProjectFile
 import com.ritim.ritimcraw.data.ProjectJson
 import com.ritim.ritimcraw.data.audio.AudioLinkState
@@ -212,71 +212,14 @@ class ExportStore(private val file: File) {
             "{\"name\":" + ProjectJson.quote(t.name) +
                 ",\"projectJson\":" + ProjectJson.quote(t.projectJson) + "}"
 
-        private fun renderSnapshot(g: GradeK): String {
-            val sb = StringBuilder()
-            sb.append('{')
-                .append("\"version\":").append(g.version)
-                .append(",\"exposureEv\":").append(num(g.exposureEv))
-                .append(",\"highlights\":").append(num(g.highlights))
-                .append(",\"tempK\":").append(num(g.tempK))
-                .append(",\"tint\":").append(num(g.tint))
-                .append(",\"saturation\":").append(num(g.saturation))
-                .append(",\"blackPoint\":").append(num(g.blackPoint))
-                .append(",\"whitePoint\":").append(num(g.whitePoint))
-                .append(",\"shadows\":").append(num(g.shadows))
-                .append(",\"midtones\":").append(num(g.midtones))
-                .append(",\"contrast\":").append(num(g.contrast))
-                .append(",\"asShot\":").append(g.asShot)
-                .append(",\"highlightReconstruction\":").append(g.highlightReconstruction)
-                .append(",\"keepVignetting\":").append(g.keepVignetting)
-                .append(",\"sharpness\":").append(num(g.sharpness))
-                .append(",\"detail\":").append(num(g.detail))
-                .append(",\"tonemap\":").append(g.tonemap)
-                // COL-07: the export snapshot carries the LUT choice and
-                // Strength too, so a queued job exports what the user saw.
-                .append(",\"lutId\":").append(if (g.lutId == null) "null" else ProjectJson.quote(g.lutId))
-                .append(",\"lutStrength\":").append(num(g.lutStrength))
-                // DN-01..08: the denoise percents travel with the snapshot
-                // for the same reason — the job exports what the user saw.
-                .append(",\"noiseReduction\":").append(num(g.noiseReduction))
-                .append(",\"chromaDenoise\":").append(num(g.chromaDenoise))
-                .append(",\"temporalNr\":").append(g.temporalNr)
-                .append(",\"temporalStrength\":").append(num(g.temporalStrength))
-            // Stabilization (gyro Phase 5): omit-when-off, matching
-            // GradeStore.renderGrade — a queued job with stabilization off
-            // writes none of the keys, so old rows stay byte-identical and
-            // parse with the off defaults (the job exports what the user
-            // saw: no warp).
-            if (g.stabilization) {
-                sb.append(",\"stabilization\":").append(g.stabilization)
-                    .append(",\"stabilizationMode\":").append(g.stabilizationMode)
-                    .append(",\"stabilizationStrength\":").append(num(g.stabilizationStrength))
-                    .append(",\"stabilizationZoomLimit\":").append(num(g.stabilizationZoomLimit))
-                    .append(",\"stabilizationTrimMs\":").append(num(g.stabilizationTrimMs))
-                    .append(",\"stabilizationFocalMm\":").append(num(g.stabilizationFocalMm))
-                // Image engine (S4): written ONLY when 1 — the same
-                // omit rule as GradeStore.renderGrade, so a gyro/off
-                // snapshot stays byte-identical to the pre-engine format
-                // and an absent key parses as 0 = gyro.
-                if (g.stabilizationEngine == 1) {
-                    sb.append(",\"stabilizationEngine\":").append(g.stabilizationEngine)
-                }
-            }
-            // Managed LUT interpretation (owner request 2026-11-13):
-            // omit-when-null — a queued job with no managed interpretation
-            // writes none of the keys, so old rows stay byte-identical and
-            // parse as the legacy path. A non-null interpretation is written
-            // BY VALUE at enqueue: the job then exports with exactly the
-            // interpretation the user saw, and a retry (requeued() keeps
-            // the same snapshot) is invariant even if the library record
-            // is later removed or edited (records are immutable; an edit
-            // creates a new revision).
-            if (g.lutInterp != null) {
-                sb.append(",\"lutInterp\":").append(g.lutInterp.render())
-            }
-            sb.append('}')
-            return sb.toString()
-        }
+        /**
+         * The export snapshot's grade record: THE GradeStore WIRE renderer
+         * (F1-3), never a local copy — the snapshot's wire format IS the
+         * per-clip grade's wire format (the v2 twin; one render, one parse,
+         * no drift). Old v1 rows already on disk parse unchanged through
+         * the shared version-aware reader.
+         */
+        private fun renderSnapshot(g: GradeK): String = GradeStore.renderGradeWire(g)
 
         private fun num(v: Float): String = v.toString()
 
@@ -367,74 +310,18 @@ class ExportStore(private val file: File) {
             }
         }
 
+        /**
+         * The snapshot's grade record: the shared version-aware parser
+         * ([GradeStore.mapOfGrade] — a v2 record through the F1-3 adapter,
+         * a flat v1 record through the per-field fallbacks). NULL never
+         * happens for a queued row this build understands; a record that
+         * declares node/DRT usage decode refusal falls back to the neutral
+         * grade honestly (the exporter's run-time gates pick it up row by
+         * row, the settings-unreadable precedent).
+         */
         private fun parseSnapshot(v: Any?): GradeK {
             val m = v as? Map<*, *> ?: return GradeK()
-            // Snapshots written before the tone controls lack the six float
-            // fields; the neutral fallbacks keep the old look. Snapshots
-            // written before the RAW toggles lack the three booleans: the two
-            // stage toggles fall back to true (pre-toggle behavior), and
-            // asShot is DERIVED from temp/tint neutrality so a manually
-            // white-balanced old snapshot keeps its exact old look.
-            val parsedTempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f
-            val parsedTint = (m["tint"] as? Double)?.toFloat() ?: 0f
-            return GradeK(
-                version = (m["version"] as? Double)?.toInt() ?: GradeK.SCHEMA_VERSION,
-                exposureEv = (m["exposureEv"] as? Double)?.toFloat() ?: 0f,
-                highlights = (m["highlights"] as? Double)?.toFloat() ?: 0f,
-                tempK = parsedTempK,
-                tint = parsedTint,
-                saturation = (m["saturation"] as? Double)?.toFloat() ?: 0f,
-                blackPoint = (m["blackPoint"] as? Double)?.toFloat() ?: 0f,
-                whitePoint = (m["whitePoint"] as? Double)?.toFloat() ?: 0f,
-                shadows = (m["shadows"] as? Double)?.toFloat() ?: 0f,
-                midtones = (m["midtones"] as? Double)?.toFloat() ?: 0f,
-                contrast = (m["contrast"] as? Double)?.toFloat() ?: 0f,
-                asShot = (m["asShot"] as? Boolean)
-                    ?: (parsedTempK == 5600f && parsedTint == 0f),
-                highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
-                keepVignetting = m["keepVignetting"] as? Boolean ?: true,
-                // Detail/tonemap (COL-15/COL-16) postdate older snapshots:
-                // fall back to neutral (0), which the native pipeline
-                // treats as a no-op — the old look is preserved exactly.
-                sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
-                detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
-                tonemap = (m["tonemap"] as? Double)?.toInt() ?: 0,
-                // LUT fields (COL-07) postdate older snapshots: absent or
-                // JSON-null lutId parses as null (no LUT = stage 24
-                // bypassed), absent lutStrength as 100 — the old look is
-                // preserved exactly.
-                lutId = m["lutId"] as? String,
-                lutStrength = (m["lutStrength"] as? Double)?.toFloat() ?: 100f,
-                // Denoise fields (DN-01..08) postdate older snapshots:
-                // absent parses as 0 (both stages skipped) — the old look
-                // is preserved exactly.
-                noiseReduction = (m["noiseReduction"] as? Double)?.toFloat() ?: 0f,
-                chromaDenoise = (m["chromaDenoise"] as? Double)?.toFloat() ?: 0f,
-                // Temporal NR (DN-05..DN-09) postdates older snapshots: fall
-                // back to off/0 so a queued job never gains temporal NR
-                // behind the user's back; the old look is preserved exactly.
-                temporalNr = m["temporalNr"] as? Boolean ?: false,
-                temporalStrength = (m["temporalStrength"] as? Double)?.toFloat() ?: 0f,
-                // Stabilization (gyro Phase 5) postdates older snapshots:
-                // absent parses as the off defaults — a queued job never
-                // gains a warp behind the user's back; the old look is
-                // preserved exactly.
-                stabilization = m["stabilization"] as? Boolean ?: false,
-                stabilizationMode = (m["stabilizationMode"] as? Double)?.toInt() ?: 0,
-                stabilizationStrength = (m["stabilizationStrength"] as? Double)?.toFloat() ?: 50f,
-                stabilizationZoomLimit = (m["stabilizationZoomLimit"] as? Double)?.toFloat() ?: 1.25f,
-                stabilizationTrimMs = (m["stabilizationTrimMs"] as? Double)?.toFloat() ?: 0f,
-                stabilizationFocalMm = (m["stabilizationFocalMm"] as? Double)?.toFloat() ?: 0f,
-                // Absent = 0 = gyro (the "no key means gyro" rule — a
-                // snapshot queued before the image engine resolves as it
-                // always did).
-                stabilizationEngine = (m["stabilizationEngine"] as? Double)?.toInt() ?: 0,
-                // Managed LUT interpretation postdates older snapshots:
-                // absent or JSON-null parses as null (the legacy stage-24
-                // path keyed on lutId alone) — the old look is preserved
-                // exactly.
-                lutInterp = LutInterpK.parse(m["lutInterp"]),
-            )
+            return GradeStore.mapOfGrade(m) ?: GradeK()
         }
 
         private inline fun <reified E : Enum<E>> enumOrNullOr(

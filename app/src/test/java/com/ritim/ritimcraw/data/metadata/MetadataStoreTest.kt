@@ -220,6 +220,9 @@ class MetadataStoreTest {
         val merged = MetadataStore.mergeInto(existing, emptyMap())
         val parsed = com.ritim.ritimcraw.data.JsonParser(merged).parseValue() as Map<*, *>
         assertEquals(mapOf("x" to 1.0), parsed["future"])
+        // The stamp policy (F1-2, completed by F1-3): a store write keeps the
+        // FILE'S OWN stamp on an older file — the gate (ProjectFile.open)
+        // is the only version mover, so a v1 file stays v1 until it runs.
         assertEquals(1.0, parsed["version"])
     }
 

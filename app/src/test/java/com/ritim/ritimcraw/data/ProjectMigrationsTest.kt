@@ -17,9 +17,18 @@ class ProjectMigrationsTest {
     }
 
     @Test
-    fun shippedChainIsEmptyAndCurrentIsOne() {
-        assertTrue(ProjectMigrations.MIGRATIONS.isEmpty())
-        assertEquals(1, ProjectMigrations.CURRENT_VERSION)
+    fun shippedChainIsTheV2StepAndCurrentIsTwo() {
+        // F1-3: MIGRATIONS[0] is the color model v2 schema fold, so the
+        // supported version is 2. The step itself is proven in
+        // GradeV2MigrationTest; here the chain shape is the contract.
+        assertEquals(1, ProjectMigrations.MIGRATIONS.size)
+        assertEquals(2, ProjectMigrations.CURRENT_VERSION)
+        // The shipped step converts a v1 root (exercised end-to-end in
+        // GradeV2MigrationTest and ProjectSafetyTest's gate cases).
+        val out = ProjectMigrations.migrate(
+            mapOf("version" to 1.0, "grades" to mapOf("a" to mapOf("exposureEv" to 1.0))),
+        ) as ProjectMigrations.Result.Ok
+        assertEquals(2.0, out.root["version"])
     }
 
     @Test

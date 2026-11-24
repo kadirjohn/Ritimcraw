@@ -40,19 +40,46 @@ internal object ProjectJson {
      * preserving every other section already present in [existingText].
      * Unknown sections (future schema) are kept raw rather than dropped.
      *
-     * VERSION STAMP POLICY (color model v2 plan §6.5, F1-2): [version] is
-     * IGNORED. The stamp is `max(what the file on disk already declares,
-     * [ProjectMigrations.CURRENT_VERSION])`, so no store can ever drag the
-     * file's version down by writing its own constant — the silent
-     * corruption the plan flags: on a v2 file, a v2-unaware store writing
-     * `version:1` would make the NEXT open run the v1->v2 migration a
-     * second time, over v2 data. A v1 (or unversioned) file stamps
-     * CURRENT_VERSION, exactly what every caller passed (all constants are
-     * 1 and CURRENT_VERSION is 1), so files this build writes are
-     * byte-identical to before. The ONLY sanctioned version changes are
-     * [ProjectMigrations.migrate] (a migration step bumps the stamp) and
+     * VERSION STAMP POLICY (color model v2 plan §6.5, F1-2; completed for
+     * the real v1->v2 step by F1-3): [version] is IGNORED. The stamp is
+     * the FILE'S OWN version, so no store can drag it down by writing its
+     * own constant AND no store can leap a v1 file to v2 over still-flat
+     * sections (that would make the next [ProjectFile.open] skip the
+     * migration — the gate is the only version mover). A FRESH file (no
+     * readable root on disk) stamps [ProjectMigrations.CURRENT_VERSION]:
+     * its sections are this build's own, nothing needs migrating. The ONLY
+     * sanctioned version changes of an existing file are
+     * [ProjectMigrations.migrate] (a step bumps the stamp) and
      * [ProjectFile.open], the single entry gate that runs the chain.
      */
+    /**
+     * Renders a whole ROOT with the canonical section order (version
+     * first, then [SECTION_ORDER], then unknowns in encounter order) —
+     * the shape a migrated file takes when the gate writes it back, the
+     * same ordering [withSection] produces, so a gate-written project.json
+     * is byte-stable against a store-written one.
+     */
+    fun renderRoot(root: Map<String, Any?>): String {
+        val sections = LinkedHashMap<String, Any?>()
+        root.forEach { (k, v) ->
+            if (k.toString() != "version" && v != null) sections[k.toString()] = v
+        }
+        val ordered = SECTION_ORDER.filter { it in sections } +
+            sections.keys.filterNot { it in SECTION_ORDER }
+        val sb = StringBuilder()
+        // The version renders through the same integral-double rule the
+        // writer applies (a parsed 2.0 renders as `2`, the wire's own
+        // shape — the chain's re-stamp carries a Double).
+        sb.append("{\"version\":")
+        renderRawTo(root["version"] ?: ProjectMigrations.CURRENT_VERSION.toDouble(), sb)
+        for (name in ordered) {
+            sb.append(',').append(quote(name)).append(':')
+            renderRawTo(sections[name], sb)
+        }
+        sb.append('}')
+        return sb.toString()
+    }
+
     fun withSection(
         existingText: String?,
         section: String,
@@ -82,12 +109,24 @@ internal object ProjectJson {
     }
 
     /**
-     * The version a rendered file is stamped with: the file's own version
-     * when it is NEWER than this build ([ProjectMigrations.versionOf]:
-     * missing/invalid = 1), else CURRENT_VERSION. Never lower than either.
+     * The version a rendered file is stamped with, the §6.5 rule completed
+     * for the real v1->v2 step (F1-3):
+     *   - a file at/above CURRENT_VERSION stamps its OWN version (never
+     *     dragged down — a newer build's file survives this build's
+     *     section writes byte-stamped);
+     *   - a file BELOW CURRENT stamps its OWN version too: the v1 file on
+     *     disk is still v1 until [ProjectFile.open] — the single sanctioned
+     *     migrator — runs the chain. A store write must not leap the stamp
+     *     to 2 over still-flat-v1 sections (that would make the NEXT open
+     *     skip the migration: the §6.4 gate is the only version mover).
+     * Unversioned/invalid files stamp 1 (the pre-version legacy shape).
      */
     private fun stampFor(root: Map<*, *>?): Int =
-        maxOf(ProjectMigrations.versionOf(root ?: emptyMap<Any?, Any?>()), ProjectMigrations.CURRENT_VERSION)
+        if (root == null) {
+            ProjectMigrations.CURRENT_VERSION // a fresh file: this build's own sections
+        } else {
+            ProjectMigrations.versionOf(root) // the file's own, whatever it is
+        }
 
     /** Re-renders a parsed JSON value without interpreting it. */
     fun renderRaw(value: Any?): String {

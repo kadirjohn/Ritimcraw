@@ -159,10 +159,10 @@ class PresetStore(private val file: File) {
          * Renders the "presets" section:
          * [ { "id": ..., "name": ..., "grade": { ... } }, ... ].
          *
-         * The grade object is rendered by GradeStore's own renderer on a
-         * single-entry map, so preset grades and per-clip grades share one
-         * wire format and one parse path (a preset saved from a clip's
-         * grade round-trips through GradeStore.parseGrades identically).
+         * The grade object is rendered by GradeStore's own WIRE renderer
+         * (F1-3: the v2 twin through GradeStore.renderGradeWire), so preset
+         * grades and per-clip grades share one wire format and one parse
+         * path (a preset saved from a clip's grade round-trips identically).
          */
         internal fun renderPresetsArray(presets: List<GradePreset>): String {
             val sb = StringBuilder()
@@ -172,7 +172,7 @@ class PresetStore(private val file: File) {
                 sb.append("{\"id\":").append(ProjectJson.quote(p.id))
                     .append(",\"name\":").append(ProjectJson.quote(p.name))
                     .append(",\"grade\":")
-                    .append(GradeStore.renderGrade(p.grade))
+                    .append(GradeStore.renderGradeWire(p.grade))
                     .append('}')
             }
             sb.append(']')
@@ -182,10 +182,10 @@ class PresetStore(private val file: File) {
         /**
          * Parses the "presets" section. Entries with a missing id, name,
          * or grade object are skipped (never crash the app over one bad
-         * row); the grade itself parses through GradeStore's per-field
-         * fallbacks, so a preset saved by an older build (fewer grade
-         * fields) loads with the missing fields neutral — the same
-         * contract per-clip grades have.
+         * row); the grade itself parses through the SHARED version-aware
+         * parser ([GradeStore.mapOfGrade]), so a preset saved by an older
+         * build (fewer grade fields, or the flat v1 shape) loads with the
+         * missing fields neutral — the same contract per-clip grades have.
          */
         internal fun parsePresets(text: String): List<GradePreset> {
             val p = JsonParser(text)
@@ -199,19 +199,12 @@ class PresetStore(private val file: File) {
                 val m = item as? Map<*, *> ?: continue
                 val id = m["id"] as? String ?: continue
                 val name = m["name"] as? String ?: continue
-                @Suppress("UNCHECKED_CAST")
-                val gradeMap = m["grade"] as? Map<String, Any?> ?: continue
-                val grades = GradeStore.parseGrades(
-                    "{\"grades\":{\"entry\":${renderRawGrade(gradeMap)}}}"
-                )
-                val grade = grades["entry"] ?: continue
+                val gradeMap = m["grade"] as? Map<*, *> ?: continue
+                val grade = GradeStore.mapOfGrade(gradeMap) ?: continue
                 out.add(GradePreset(id = id, name = name, grade = grade))
             }
             return out
         }
 
-        /** Re-renders a parsed grade object without re-interpreting it. */
-        private fun renderRawGrade(map: Map<String, Any?>): String =
-            ProjectJson.renderRaw(map)
     }
 }

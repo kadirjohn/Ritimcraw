@@ -410,10 +410,11 @@ class ExportStoreTest {
 
     @Test
     fun stab_engine_snapshot_writes_only_for_image_and_old_rows_read_gyro() {
-        // S4: the snapshot's stabilizationEngine key rides the same
-        // omit-when-0 rule as GradeStore — a gyro grade's snapshot row is
-        // byte-identical to the pre-engine format, an image grade carries
-        // the key, and an old row (no key) parses as 0 = gyro.
+        // S4 + F1-3: the snapshot grade rides the v2 wire (the folded
+        // transform.stab group with engine explicit), an image grade's
+        // snapshot carries engine 1, and an old flat row (no stab group)
+        // parses as engine 0 = gyro. The K10 wire shape replaces the flat
+        // stabilizationEngine key; the parse-side contract is unchanged.
         val file = projectFile()
         val image = GradeK(stabilization = true, stabilizationEngine = 1)
         ExportStore(file).add(
@@ -426,10 +427,11 @@ class ExportStoreTest {
             )
         )
         val text = file.readText(Charsets.UTF_8)
-        assertTrue(text, text.contains("\"stabilizationEngine\":1"))
+        assertTrue(text, text.contains("\"stab\":{\"engine\":1"))
         assertEquals(1, ExportStore(file).all().single().snapshot.stabilizationEngine)
 
-        // A gyro grade writes NO engine key and reloads as engine 0.
+        // A gyro grade writes engine 0 EXPLICIT (the K10 rule: the group
+        // always names the engine) and reloads as engine 0.
         file.delete()
         val gyro = GradeK(stabilization = true)
         ExportStore(file).add(
@@ -442,7 +444,7 @@ class ExportStoreTest {
             )
         )
         val gyroText = file.readText(Charsets.UTF_8)
-        assertFalse(gyroText, gyroText.contains("stabilizationEngine"))
+        assertTrue(gyroText, gyroText.contains("\"stab\":{\"engine\":0"))
         assertEquals(0, ExportStore(file).all().single().snapshot.stabilizationEngine)
     }
 
