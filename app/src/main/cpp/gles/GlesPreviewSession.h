@@ -288,6 +288,42 @@ public:
     // back).
     bool setSurface(ANativeWindow* window, std::string* detail);
 
+    // ---- color model v2 F1-5: the NODES/DRT additive doors ------------------
+    //
+    // initNodes: compiles the two F1-5 programs through the pipeline's
+    // ADDITIVE init door (the session's open() and every existing door stay
+    // untouched — a session that never calls this keeps the exact pre-F1-5
+    // behavior, and a nodes-bearing request folds to a refusal in
+    // pipeline.draw's honest "not initialized" path). Runs on the CALLING
+    // thread (the caller's contract is the same as open: the session's GL
+    // thread is the owner, but init() itself was called THROUGH
+    // open's job handoff — this door is likewise posted to the GL thread
+    // internally, blocking until done). [limits] receives the two device
+    // values the pipeline queried at the same time
+    // (GL_MAX_FRAGMENT_UNIFORM_VECTORS / GL_MAX_TEXTURE_IMAGE_UNITS).
+    bool initNodes(const std::string& nodesSource, const std::string& vertexSource,
+                   const std::string& tailDrtSource,
+                   GpuDevelopPipeline::NodesLimits* limits, std::string* detail);
+
+    // setColorModelChain: the NODES chain's F1-5 seam — the C++-level door
+    // the JNI binding (F1-6) wraps. BORROWED rawedit::GradeNode values (the
+    // caller keeps them and any node Lut alive until the blocking render
+    // returns; the session DEEP-COPIES the knobs for the fold), the output
+    // mode, the 77-float DRT uniform block (REQUIRED for mode 1) and the
+    // caller's chain hash. The state is LIVE for the session's NEXT
+    // renderFrame call(s) until replaced or cleared; nodeCount 0 + mode 0
+    // CLEARS it (the plain v1 chain — nodesActive false, the regression
+    // lock's shape). Validated here (the N1 caps + the same
+    // validateNodeChain the pipeline enforces) with the honest refusal
+    // channel.
+    //
+    // THREADING: called from the caller's engine thread (the same profile
+    // as every other non-GL-thread setter); the buffers swap under the
+    // session's own mutex so a render in flight never sees them change.
+    bool setColorModelChain(const rawedit::GradeNode* nodes, int nodeCount,
+                            int outputMode, const float* drtUniforms,
+                            uint64_t chainHash, std::string* detail);
+
     // See the destructor. Callable from the owning thread.
     void close();
 

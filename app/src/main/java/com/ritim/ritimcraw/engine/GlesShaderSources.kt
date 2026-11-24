@@ -2823,8 +2823,6 @@ uniform highp sampler2D uSrc;     // the chain's RGBA32F intermediate (unit 1): 
 uniform ivec2 uSize;              // width/height in pixels
 uniform int uNodesCount;          // 0..8; 0 = the conversion-only shape
 uniform int uNodesOutputMode;     // 0: decode -> uMDwgTo709 (TAIL's v1 variant); 1: emit DWG linear (DRT variant)
-uniform int uNodesHasAnyCurve;    // 1 = any node has curves (skips the atlas fetch when 0)
-uniform int uNodesHasAnyLut;      // 1 = any node has a LUT (skips the sampler prep when 0)
 uniform mat3 uM709ToDwg;          // row-major, uploaded transpose=GL_TRUE (the uCam2rgb idiom)
 uniform mat3 uMDwgTo709;          // row-major, same idiom; the legacy output only
 // The curve atlas: unit 6, GL_R32F, w=512 (the kNodeCurveN columns), h=24
