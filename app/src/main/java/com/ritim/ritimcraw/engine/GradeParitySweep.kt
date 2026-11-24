@@ -585,7 +585,31 @@ object GradeParitySweep {
         val parcel = GradeParcel.encode(neutral)
         val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
         val maxDim = 256 // stays under kStatsLongEdge: no rescale between the legs
+        // The crop parameters switch the window pass on, and since 2b1e2ff a
+        // window draw with no attached surface is a failed present (the JNI
+        // seam routes it to the CPU fallback and returns null): before this
+        // the leg skipped all 21 cases ("no attached surface"). A throwaway
+        // ImageReader surface gives the session a real window; a listener
+        // drains every frame so eglSwapBuffers never blocks on a full queue.
+        val readerThread = android.os.HandlerThread("crop-sweep-reader").apply { start() }
+        val reader = android.media.ImageReader.newInstance(
+            maxDim, maxDim, android.graphics.PixelFormat.RGBA_8888, 3,
+        )
+        reader.setOnImageAvailableListener(
+            { r -> r.acquireLatestImage()?.close() },
+            android.os.Handler(readerThread.looper),
+        )
+        val attached = try {
+            NativeSource.jniPreviewSessionSetSurface(session, reader.surface)
+        } catch (t: Throwable) {
+            false
+        }
+        if (!attached) {
+            Log.w(TAG, "crop-sweep aborted: could not attach the reader surface " +
+                "(${NativeSource.previewLastError()})")
+        }
         try {
+            if (!attached) return null
             // The CPU reference ONCE (neutral grade, same frame + maxDim):
             // the uncropped render cropCases crop through CropState below.
             val args = GradeMapping.toNative(neutral)
@@ -678,8 +702,15 @@ object GradeParitySweep {
             Log.i(TAG, summary)
             return summary
         } finally {
+            try {
+                NativeSource.jniPreviewSessionSetSurface(session, null)
+            } catch (t: Throwable) {
+                // closing anyway
+            }
             NativeSource.jniPreviewSessionClose(session)
             NativeSource.jniCloseSource(clip)
+            reader.close()
+            readerThread.quitSafely()
         }
     }
 
