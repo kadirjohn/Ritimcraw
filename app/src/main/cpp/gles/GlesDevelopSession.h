@@ -323,4 +323,9 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Cumulative GPU nanoseconds of the export develop session's frames (GL_TIME_ELAPSED queries read
+// back without blocking), or -1 when no timer-capable session is live. Any thread. The system
+// monitor adds it to the preview counter so an export shows GPU work too.
+int64_t exportGpuNanosTotal();
+
 } // namespace gles
