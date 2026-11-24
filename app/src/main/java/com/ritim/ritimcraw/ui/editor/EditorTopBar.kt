@@ -36,6 +36,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -334,6 +335,7 @@ private fun ExportSheet(
     var selectedKind by remember { mutableStateOf(ExportResolution.Kind.ORIGINAL) }
     var customWidthText by remember { mutableStateOf("") }
     var customHeightText by remember { mutableStateOf("") }
+    var customDialog by remember { mutableStateOf(false) }
     // (E1c) The MP4 settings start from the LAST ones the user exported with
     // (a per-viewer convenience, SharedPreferences); the job snapshots its
     // own copy at queue time.
@@ -403,108 +405,78 @@ private fun ExportSheet(
     } else {
         ExportSheetState.Tab.entries.toList()
     }
-    // One target left = a one-segment control is chrome with nothing to
-    // choose (the Frame row's own single-tab rule): the segment hides.
-    val showTabs = tabs.size > 1
-    val tabLabels = tabs.map {
-        stringResource(
-            when (it) {
-                ExportSheetState.Tab.MP4 -> R.string.export_tab_mp4
-                ExportSheetState.Tab.DNG -> R.string.export_tab_dng
-                ExportSheetState.Tab.LINEAR -> R.string.export_tab_linear
-                ExportSheetState.Tab.PHOTO -> R.string.export_tab_photo
-            }
-        )
-    }
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // P2: the sheet opens full height (no half-way stop) so the default list fits without scrolling.
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
         Column(Modifier.fillMaxWidth()) {
-            // The target, one segmented control at the top: only the chosen
-            // target's settings show below (E1c-polish). (E0) An encoded
-            // clip's MP4-only sheet skips the control entirely — one
-            // segment is nothing to choose.
-            if (showTabs) {
-                AppSegmentedControl(
-                    options = tabLabels,
-                    selectedIndex = tabs.indexOf(tab),
-                    onSelect = { tab = tabs[it] },
-                    minHeight = 48.dp,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
-            }
-            // The scrolling part; the action below it stays put (sticky).
+            // The scrolling part; the action below it stays put (sticky). The
+            // settings list (P2) owns the target choice too: it is the Format row.
             Column(
                 Modifier
                     .weight(1f, fill = false)
                     .verticalScroll(rememberScrollState()),
             ) {
-                Spacer(Modifier.height(16.dp))
-                when (tab) {
-                    ExportSheetState.Tab.MP4 -> {
-                        // The resolution picker (MP4-only). The ladder needs a usable
-                        // source size; 0 dims (unknown) hide it entirely - the honest
-                        // degrade, never a fake ladder.
-                        if (dimsKnown) {
-                            ResolutionPicker(
-                                clipInfo = clipInfo,
-                                grade = grade,
-                                manualRotationDeg = manualRotationDeg,
-                                selectedKind = selectedKind,
-                                customWidthText = customWidthText,
-                                customHeightText = customHeightText,
-                                bound = bound,
-                                onSelect = { kind -> selectedKind = kind },
-                                onCustom = { w, h ->
-                                    selectedKind = ExportResolution.Kind.CUSTOM
-                                    customWidthText = w
-                                    customHeightText = h
-                                },
+                val resolutionUi = if (dimsKnown) {
+                    rememberResolutionUi(clipInfo, grade, manualRotationDeg, selectedKind, bound)
+                } else {
+                    null
+                }
+                ExportBody(
+                    tab = tab,
+                    tabs = tabs,
+                    onTab = { tab = it },
+                    encodedSource = encodedSource,
+                    settings = settings,
+                    onSettings = { settings = it },
+                    plan = plan,
+                    subject = subject,
+                    facts = facts,
+                    rate = exportRate,
+                    tenBitAvailable = exportContext.tenBitPathAvailable,
+                    resolution = resolutionUi,
+                    onPickResolution = { kind -> selectedKind = kind },
+                    onCustomResolution = { customDialog = true },
+                    onUseResolution = { w, h ->
+                        selectedKind = ExportResolution.Kind.CUSTOM
+                        customWidthText = w.toString()
+                        customHeightText = h.toString()
+                    },
+                    targetDetail = {
+                        // The non-MP4 targets' descriptions (also the Format sub-page's hints).
+                        when (tab) {
+                            ExportSheetState.Tab.MP4 -> {}
+                            ExportSheetState.Tab.DNG -> TargetDetail(
+                                R.string.editor_export_choice_dng,
+                                stringResource(R.string.exports_format_dng) + " · " +
+                                    stringResource(R.string.exports_format_dng_detail),
+                            )
+                            ExportSheetState.Tab.LINEAR -> TargetDetail(
+                                R.string.editor_export_choice_dng_linear,
+                                stringResource(R.string.exports_format_dng_linear) + " · " +
+                                    stringResource(R.string.exports_format_dng_linear_detail),
+                            )
+                            ExportSheetState.Tab.PHOTO -> TargetDetail(
+                                R.string.exports_format_photo,
+                                stringResource(R.string.export_photo_detail),
                             )
                         }
-                        // The MP4 settings (E1c): presets, the produced summary, issues, Advanced.
-                        if (subject != null && plan != null) {
-                            ExportSettingsPanel(
-                                settings = settings,
-                                onSettings = { settings = it },
-                                plan = plan,
-                                subject = subject,
-                                facts = facts,
-                                rate = exportRate,
-                                tenBitAvailable = exportContext.tenBitPathAvailable,
-                                onUseResolution = { w, h ->
-                                    selectedKind = ExportResolution.Kind.CUSTOM
-                                    customWidthText = w.toString()
-                                    customHeightText = h.toString()
-                                },
-                            )
-                        }
-                    }
-                    // The DNG write format, separate from the RAW source info
-                    // (owner request 2026-11-11 section 2): the export always
-                    // writes 16-bit uncompressed CFA - that is the writer's
-                    // contract, not the sensor's bit depth. No resolution
-                    // seam: the DNG develops pixels, it does not encode a
-                    // frame size - the nulls are honest, not a fallback.
-                    ExportSheetState.Tab.DNG -> TargetDetail(
-                        R.string.editor_export_choice_dng,
-                        stringResource(R.string.exports_format_dng) + " · " +
-                            stringResource(R.string.exports_format_dng_detail),
-                    )
-                    // RAW-13: the second DNG file contract - the demosaiced,
-                    // scene-referred linear deliverable, next to the raw mosaic.
-                    ExportSheetState.Tab.LINEAR -> TargetDetail(
-                        R.string.editor_export_choice_dng_linear,
-                        stringResource(R.string.exports_format_dng_linear) + " · " +
-                            stringResource(R.string.exports_format_dng_linear_detail),
-                    )
-                    // RAW-11: a photo needs a frame; the screen's frame picker
-                    // (unchanged) chooses it and queues the PNG.
-                    ExportSheetState.Tab.PHOTO -> TargetDetail(
-                        R.string.exports_format_photo,
-                        stringResource(R.string.export_photo_detail),
+                    },
+                )
+                if (customDialog) {
+                    CustomResolutionDialog(
+                        initialWidth = customWidthText,
+                        initialHeight = customHeightText,
+                        onDismiss = { customDialog = false },
+                        onUse = { w, h ->
+                            customDialog = false
+                            selectedKind = ExportResolution.Kind.CUSTOM
+                            customWidthText = w
+                            customHeightText = h
+                        },
                     )
                 }
-                Spacer(Modifier.height(8.dp))
             }
             HorizontalDivider()
             // The one action of the chosen target, always visible. MP4 queues
@@ -560,31 +532,23 @@ private fun TargetDetail(title: Int, detail: String) {
 }
 
 /**
- * The resolution picker: ONE field, "Resolution", with a dropdown menu. A
- * dropdown rather than a chip row because the ladder has up to four entries
- * plus Custom and each carries a flag (star, upscale, not supported) which a
- * one-line chip row would scroll away or truncate; the field shows the
- * chosen size in one stable place and the menu lists the rest with their
- * flags in 48dp rows. Entries that resolve to the same size as an earlier
- * one are merged ([ExportSheetState.resolutionOptions]: a UHD source shows
- * Original only). Custom is the LAST item and opens a dialog with the two
- * number fields; the typed pair is a BOUND, not a forcing - the resolve
- * preserves the source aspect. Blank/invalid input keeps the dialog's Use
- * button disabled, never a guessed bound.
+ * The resolution choices for the export sheet's settings list (P2): the row's
+ * value ("Original 3840×2160") and the sub-page's entries with their flags
+ * (recommended, upscale/downscale, not supported). Entries that resolve to
+ * the same size as an earlier one are merged
+ * ([ExportSheetState.resolutionOptions]: a UHD source shows Original only).
+ * Custom is appended by the page and opens [CustomResolutionDialog]; the
+ * typed pair is a BOUND, not a forcing - the resolve preserves the source
+ * aspect.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ResolutionPicker(
+private fun rememberResolutionUi(
     clipInfo: ClipInfo,
     grade: GradeK,
     manualRotationDeg: Int,
     selectedKind: ExportResolution.Kind,
-    customWidthText: String,
-    customHeightText: String,
     bound: Pair<Int, Int>?,
-    onSelect: (ExportResolution.Kind) -> Unit,
-    onCustom: (String, String) -> Unit,
-) {
+): ResolutionUi {
     // The effective size: the recorded dims composed with manual rotation and
     // the grade's crop - the exporter's own chain, so the entries show the
     // size the encode will really produce. The container orientation gap is
@@ -608,7 +572,6 @@ private fun ResolutionPicker(
     val recommendedLabel = stringResource(R.string.editor_export_recommended)
     val upscaleLabel = stringResource(R.string.editor_export_upscale)
     val downscaleLabel = stringResource(R.string.editor_export_downscale)
-    val unsupportedLabel = stringResource(R.string.editor_export_unsupported)
     fun nameOf(kind: ExportResolution.Kind) = when (kind) {
         ExportResolution.Kind.ORIGINAL -> originalName
         ExportResolution.Kind.UHD -> "UHD"
@@ -616,147 +579,86 @@ private fun ResolutionPicker(
         ExportResolution.Kind.HD -> "HD"
         ExportResolution.Kind.CUSTOM -> customName
     }
-    // The field's value: the chosen name and size (a kind merged away shows Original).
-    val fieldText = when {
+    // The row's value: the chosen name and size (a kind merged away shows Original).
+    val valueText = when {
         selectedKind == ExportResolution.Kind.CUSTOM ->
             bound?.let { "$customName ${ExportSheetState.size(it.first, it.second)}" } ?: customName
         else -> options.firstOrNull { it.kind == selectedKind }
             ?.let { "${nameOf(it.kind)} ${ExportSheetState.size(it.width, it.height)}" }
             ?: "$originalName ${ExportSheetState.size(source.width, source.height)}"
     }
-    var expanded by remember { mutableStateOf(false) }
-    var customDialog by remember { mutableStateOf(false) }
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-    ) {
-        OutlinedTextField(
-            value = fieldText,
-            onValueChange = {},
-            readOnly = true,
-            singleLine = true,
-            label = { Text(stringResource(R.string.export_resolution_field)) },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier
-                .menuAnchor()
-                .fillMaxWidth(),
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { choice ->
-                val label = "${nameOf(choice.kind)} ${ExportSheetState.size(choice.width, choice.height)}"
-                val flags = buildList {
-                    if (choice.recommended) add(recommendedLabel)
-                    when (choice.scale) {
-                        ExportResolution.Scale.UPSCALE -> add(upscaleLabel)
-                        ExportResolution.Scale.DOWNSCALE -> add(downscaleLabel)
-                        ExportResolution.Scale.EQUAL -> {}
-                    }
-                    if (!choice.supported) add(unsupportedLabel)
-                }
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(label)
-                            if (flags.isNotEmpty()) {
-                                Text(
-                                    flags.joinToString(" · "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    },
-                    leadingIcon = if (choice.recommended) {
-                        { Icon(Icons.Filled.Star, contentDescription = null) }
-                    } else {
-                        null
-                    },
-                    trailingIcon = if (selectedKind == choice.kind) {
-                        { Icon(Icons.Filled.Check, contentDescription = null) }
-                    } else {
-                        null
-                    },
-                    enabled = choice.supported,
-                    onClick = {
-                        expanded = false
-                        onSelect(choice.kind)
-                    },
-                )
+    val choices = options.map { choice ->
+        val flags = buildList {
+            if (choice.recommended) add(recommendedLabel)
+            when (choice.scale) {
+                ExportResolution.Scale.UPSCALE -> add(upscaleLabel)
+                ExportResolution.Scale.DOWNSCALE -> add(downscaleLabel)
+                ExportResolution.Scale.EQUAL -> {}
             }
-            // Custom: always the LAST item; it opens the dialog.
-            DropdownMenuItem(
-                text = { Text(customName) },
-                trailingIcon = if (selectedKind == ExportResolution.Kind.CUSTOM) {
-                    { Icon(Icons.Filled.Check, contentDescription = null) }
-                } else {
-                    null
-                },
-                onClick = {
-                    expanded = false
-                    customDialog = true
-                },
-            )
         }
-    }
-    if (customDialog) {
-        var w by remember { mutableStateOf(customWidthText) }
-        var h by remember { mutableStateOf(customHeightText) }
-        val valid = (w.toIntOrNull() ?: 0) > 0 && (h.toIntOrNull() ?: 0) > 0
-        AlertDialog(
-            onDismissRequest = { customDialog = false },
-            title = { Text(stringResource(R.string.export_custom_dialog_title)) },
-            text = {
-                Column {
-                    Text(
-                        stringResource(R.string.export_custom_hint),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = w,
-                            onValueChange = { w = it.filter { c -> c.isDigit() }.take(5) },
-                            label = { Text(stringResource(R.string.editor_export_custom_width)) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = h,
-                            onValueChange = { h = it.filter { c -> c.isDigit() }.take(5) },
-                            label = { Text(stringResource(R.string.editor_export_custom_height)) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        customDialog = false
-                        onCustom(w, h)
-                    },
-                    enabled = valid,
-                ) { Text(stringResource(R.string.export_custom_ok)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { customDialog = false }) {
-                    Text(stringResource(R.string.export_custom_cancel))
-                }
-            },
+        ResolutionChoiceUi(
+            kind = choice.kind,
+            title = "${nameOf(choice.kind)} ${ExportSheetState.size(choice.width, choice.height)}",
+            hint = flags.joinToString(" · ").ifEmpty { null },
+            supported = choice.supported,
         )
     }
+    return ResolutionUi(valueText, selectedKind, choices)
+}
+
+/** The Custom resolution dialog: two number fields; blank/invalid keeps Use disabled (never a guessed bound). */
+@Composable
+private fun CustomResolutionDialog(
+    initialWidth: String,
+    initialHeight: String,
+    onDismiss: () -> Unit,
+    onUse: (String, String) -> Unit,
+) {
+    var w by remember { mutableStateOf(initialWidth) }
+    var h by remember { mutableStateOf(initialHeight) }
+    val valid = (w.toIntOrNull() ?: 0) > 0 && (h.toIntOrNull() ?: 0) > 0
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.export_custom_dialog_title)) },
+        text = {
+            Column {
+                Text(
+                    stringResource(R.string.export_custom_hint),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = w,
+                        onValueChange = { w = it.filter { c -> c.isDigit() }.take(5) },
+                        label = { Text(stringResource(R.string.editor_export_custom_width)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = h,
+                        onValueChange = { h = it.filter { c -> c.isDigit() }.take(5) },
+                        label = { Text(stringResource(R.string.editor_export_custom_height)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onUse(w, h) }, enabled = valid) { Text(stringResource(R.string.export_custom_ok)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.export_custom_cancel)) }
+        },
+    )
 }
 
 /**

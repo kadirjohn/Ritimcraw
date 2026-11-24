@@ -73,4 +73,45 @@ internal object ExportSheetState {
         append(" · ").append(String.format(Locale.ROOT, "%s Mb/s", ExportText.mbps(plan.bitrateBps.toLong())))
         if (sizeText != null) append(" · ~").append(sizeText)
     }
+
+    // ---- the settings list (P2) ----
+
+    /** The settings-list rows; each is one 56dp line, the tappable ones open a sub-page. */
+    enum class Row { FORMAT, PRESET, RESOLUTION, FRAME_RATE, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, AUDIO_FORMAT }
+
+    /**
+     * The always-visible rows, in order. An encoded clip offers MP4 only, so
+     * its Format row is gone (not disabled): one choice is nothing to choose.
+     * Bit depth stays (disabled, with its reason) so the owner sees why.
+     */
+    fun mainRows(encodedSource: Boolean): List<Row> = buildList {
+        if (!encodedSource) add(Row.FORMAT)
+        add(Row.PRESET)
+        add(Row.RESOLUTION)
+        add(Row.FRAME_RATE)
+        add(Row.CODEC)
+        add(Row.BIT_DEPTH)
+    }
+
+    /** The rows under the collapsed Advanced section, in order. */
+    fun advancedRows(): List<Row> =
+        listOf(Row.BITRATE, Row.RATE_MODE, Row.KEYFRAME, Row.PROFILE, Row.AUDIO, Row.AUDIO_FORMAT)
+
+    /** Read-only rows show a value but have no chevron and open nothing. */
+    fun isReadOnly(row: Row): Boolean = row == Row.FRAME_RATE || row == Row.AUDIO_FORMAT
+
+    /**
+     * The summary's first line: "MP4 · 3840×2160 · 30 fps · HEVC 10-bit · ≈ 420 MB".
+     * [sizeText] null (unknown clip length) drops the size part, never a guess.
+     * The numbers come from the plan, not from the request.
+     */
+    fun compactSummaryLine(plan: ExportPlan, sizeText: String?): String = buildString {
+        append("MP4 · ").append(size(plan.width, plan.height))
+        append(" · ").append(fpsText(plan.fps)).append(" fps")
+        append(" · ").append(ExportText.codec(plan.mime)).append(' ').append(plan.bitDepth).append("-bit")
+        if (sizeText != null) append(" · ≈ ").append(sizeText)
+    }
+
+    /** The bitrate row's value: "75 Mb/s" from the plan (what will really be used). */
+    fun bitrateValue(plan: ExportPlan): String = ExportText.mbps(plan.bitrateBps.toLong()) + " Mb/s"
 }

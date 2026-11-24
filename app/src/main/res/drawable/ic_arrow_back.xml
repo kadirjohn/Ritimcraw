@@ -1,0 +1,18 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <!-- OFFICIAL Material Symbols glyph "arrow_back", OUTLINED style, weight 300,
+         24px — pathdata verbatim from Google Fonts:
+         https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsoutlined/arrow_back/wght300/24px.svg
+         (viewBox="0 -960 960 960"; the group's translateY remaps the
+         font's negative-Y coordinates onto Android's downward viewport).
+         The thin export-sheet icon set (replaces the heavy filled
+         material-icons-core glyphs). Tinted by Compose's Icon. -->
+    <group android:translateY="960">
+        <path
+            android:fillColor="@android:color/white"
+            android:pathData="m294.92-450 227.85 227.85L480-180 180-480l300-300 42.77 42.15L294.92-510H780v60H294.92Z" />
+    </group>
+</vector>

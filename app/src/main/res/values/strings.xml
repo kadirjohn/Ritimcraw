@@ -627,4 +627,24 @@
     <string name="settings_system_monitor_hint_off">Hidden</string>
     <string name="settings_preview_quality_full">Full</string>
     <string name="settings_preview_quality_hint_full">Recorded resolution · GPU only (High otherwise)</string>
+
+    <!-- Export sheet settings list (P2, 2026-11-25) -->
+    <string name="export_row_format">Format</string>
+    <string name="export_row_preset">Preset</string>
+    <string name="export_back">Back</string>
+    <string name="export_format_mp4_hint">Video file, plays anywhere</string>
+    <string name="export_preset_compatible_hint">H.264, plays on almost every device</string>
+    <string name="export_preset_smaller_hint">HEVC at a low bitrate</string>
+    <string name="export_preset_quality_hint">HEVC at the highest bitrate level</string>
+    <string name="export_preset_custom_hint">Your own settings match no preset</string>
+    <string name="export_option_unavailable">Not available on this phone</string>
+    <string name="export_codec_avc_hint">Plays on almost every device</string>
+    <string name="export_codec_hevc_hint">Smaller files, needs a newer player</string>
+    <string name="export_bit_depth_8_hint">Works everywhere</string>
+    <string name="export_bit_depth_10_hint">Smooth gradients, GPU path only</string>
+    <string name="export_bit_depth_encoded_reason">Encoded clips export as 8-bit</string>
+    <string name="export_rate_vbr_hint">Spends bits where the picture needs them</string>
+    <string name="export_rate_cbr_hint">Keeps the rate steady</string>
+    <string name="export_keyframe_all_intra_hint">Largest files, easiest to edit</string>
+    <string name="export_read_only_note">Follows the clip</string>
 </resources>
