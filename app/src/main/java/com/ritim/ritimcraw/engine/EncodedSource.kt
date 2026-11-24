@@ -100,15 +100,22 @@ data class EncodedVideoFormat(
     val height: Int,
     /** Rotation hint in degrees (KEY_ROTATION); the develop tail rotates upright. */
     val orientationDeg: Int,
-    /** True when the track tags BT.709 (or tags nothing — SDR default). False = BT.601 matrix. */
-    val isBt709: Boolean,
+    /**
+     * What the track's pixels are (E0): bit depth, range, matrix, transfer,
+     * primaries - the one value preview AND export hand to the develop.
+     * Defaults to the pre-E0 assumption for fakes and legacy call sites.
+     */
+    val color: EncodedColorSpec = EncodedColorSpec.legacy8bit(),
     /**
      * The track's codec-specific data (avcC/hvcC → SPS/PPS/... buffers, in
      * container order). A decoder cannot start without it; the pipeline
      * never inspects it — it travels from the reader to the decoder adapter.
      */
     val codecConfig: List<ByteArray> = emptyList(),
-)
+) {
+    /** True unless the track is BT.601 (kept for the UI's format line). */
+    val isBt709: Boolean get() = color.profile.matrix != com.ritim.ritimcraw.data.color.SourceMatrix.BT601
+}
 
 /**
  * The video track's sample index, in the order the container stores samples
@@ -176,6 +183,13 @@ class YuvPlanes(
     val y: YuvPlane,
     val u: YuvPlane,
     val v: YuvPlane,
+    /**
+     * Bits per sample the decoder produced: 8 (one byte per sample) or 10
+     * (P010: one 16-bit little-endian word per sample, value in the high
+     * bits; the planes' pixelStride is 2/4/4). The decoder adapter derives
+     * it from the Image itself, never from the container's claim.
+     */
+    val bitDepth: Int = 8,
 )
 
 /**
@@ -194,6 +208,8 @@ class YuvFrameK(
     val v: ByteArray,
     val stride: Int,
     val uvStride: Int,
+    /** 8, or 10 = 16-bit little-endian MSB-aligned words (strides are then still BYTES per row). */
+    val bitDepth: Int = 8,
 )
 
 /**
@@ -277,11 +293,13 @@ interface EncodedDeveloper {
      * optional stage-22 LUT, COL-07) -> Rec.709 -> ARGB, rotated upright by
      * [orientationDeg]. [lutPath] is the selected .cube's path (null = no
      * LUT, the old look). Returns [width, height, then w*h ARGB_8888 ints]
-     * (the preview contract) or null on failure.
+     * (the preview contract) or null on failure. [color] is the clip's
+     * declared color (E0): range expansion, matrix, transfer decode and the
+     * gamut step all follow it, at the frame's own bit depth.
      */
     fun develop(
         frame: YuvFrameK,
-        isBt709: Boolean,
+        color: EncodedColorSpec,
         orientationDeg: Int,
         grade: GradeK,
         lutPath: String? = null,
@@ -322,22 +340,43 @@ object EncodedYuv {
         require(p.u.buffer.size >= needRow(p.u, ch, cw)) { "u plane too small for ${w}x$h" }
         require(p.v.buffer.size >= needRow(p.v, ch, cw)) { "v plane too small for ${w}x$h" }
 
-        val y = ByteArray(w * h)
+        // E0: 10-bit planes carry a 16-bit little-endian word per sample (P010);
+        // the pack keeps both bytes of every sample, the develop reads the
+        // high bits. 8-bit is the old one-byte copy, bit-identical.
+        val bps = if (p.bitDepth > 8) 2 else 1
+        if (bps == 2) {
+            require(p.y.buffer.size >= needRow(p.y, h, w) + 1) { "y plane too small for ${w}x$h (16-bit)" }
+            require(p.u.buffer.size >= needRow(p.u, ch, cw) + 1) { "u plane too small for ${w}x$h (16-bit)" }
+            require(p.v.buffer.size >= needRow(p.v, ch, cw) + 1) { "v plane too small for ${w}x$h (16-bit)" }
+        }
+        val y = ByteArray(w * h * bps)
         for (r in 0 until h) {
             for (c in 0 until w) {
-                y[r * w + c] = p.y.buffer[p.y.offset + r * p.y.rowStride + c * p.y.pixelStride]
+                val src = p.y.offset + r * p.y.rowStride + c * p.y.pixelStride
+                val dst = (r * w + c) * bps
+                y[dst] = p.y.buffer[src]
+                if (bps == 2) y[dst + 1] = p.y.buffer[src + 1]
             }
         }
-        val uv = ByteArray(2 * cw * ch)
+        val uv = ByteArray(2 * cw * ch * bps)
         for (r in 0 until ch) {
             for (c in 0 until cw) {
-                val dst = (r * cw + c) * 2
-                uv[dst] = p.u.buffer[p.u.offset + r * p.u.rowStride + c * p.u.pixelStride]
-                uv[dst + 1] = p.v.buffer[p.v.offset + r * p.v.rowStride + c * p.v.pixelStride]
+                val dst = (r * cw + c) * 2 * bps
+                val su = p.u.offset + r * p.u.rowStride + c * p.u.pixelStride
+                val sv = p.v.offset + r * p.v.rowStride + c * p.v.pixelStride
+                uv[dst] = p.u.buffer[su]
+                uv[dst + bps] = p.v.buffer[sv]
+                if (bps == 2) {
+                    uv[dst + 1] = p.u.buffer[su + 1]
+                    uv[dst + bps + 1] = p.v.buffer[sv + 1]
+                }
             }
         }
-        // Packed NV12: one luma row = w bytes, one chroma row = 2*cw bytes.
-        return YuvFrameK(w, h, semiPlanar = true, y, uv, ByteArray(0), stride = w, uvStride = 2 * cw)
+        // Packed NV12/P010: one luma row = w*bps bytes, one chroma row = 2*cw*bps bytes.
+        return YuvFrameK(
+            w, h, semiPlanar = true, y, uv, ByteArray(0),
+            stride = w * bps, uvStride = 2 * cw * bps, bitDepth = if (bps == 2) 10 else 8,
+        )
     }
 }
 
@@ -346,7 +385,7 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
 
     override fun develop(
         frame: YuvFrameK,
-        isBt709: Boolean,
+        color: EncodedColorSpec,
         orientationDeg: Int,
         grade: GradeK,
         lutPath: String?,
@@ -359,7 +398,9 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
         return NativeSource.jniEncodedDevelop(
             frame.y, frame.u, frame.v,
             frame.width, frame.height, frame.stride, frame.uvStride,
-            frame.semiPlanar, isBt709, orientationDeg,
+            frame.semiPlanar, color.nativeMatrix != 0, orientationDeg,
+            frame.bitDepth, color.fullRange, color.nativeMatrix, color.nativeTransfer,
+            color.nativePrimaries,
             grade.exposureEv, grade.highlights, grade.tempK, grade.tint,
             grade.saturation, grade.blackPoint, grade.whitePoint,
             grade.shadows, grade.midtones, grade.contrast,
@@ -409,6 +450,8 @@ data class EncodedClipInfo(
     val frameCount: Int,
     val orientationDeg: Int,
     val isBt709: Boolean,
+    /** The track's declared color (E0); the same value preview and export develop with. */
+    val color: EncodedColorSpec = EncodedColorSpec.legacy8bit(),
     /** 0 when the clip has no audio track. */
     val sampleRate: Int,
     /** 0 when the clip has no audio track. */
@@ -527,6 +570,7 @@ class EncodedSource(
                 frameCount = pts.size,
                 orientationDeg = opened.format.orientationDeg,
                 isBt709 = opened.format.isBt709,
+                color = opened.format.color,
                 sampleRate = sampleRate,
                 channels = channels,
             )
@@ -548,11 +592,26 @@ class EncodedSource(
      * complete message on any failure. Sequential requests never re-seek;
      * a jump seeks to the keyframe at-or-before the target.
      */
-    fun renderFrame(frameIndex: Int, grade: GradeK, lutPath: String? = null): IntArray {
+    fun renderFrame(
+        frameIndex: Int,
+        grade: GradeK,
+        lutPath: String? = null,
+        /**
+         * true (the preview) = rotated upright by the container hint; false
+         * (the export) = the coded orientation - the export pipeline rotates
+         * pixels itself from [EncodedClipInfo.orientationDeg] and the
+         * manual delta, exactly like the MCRAW session.
+         */
+        upright: Boolean = true,
+    ): IntArray {
         val fmt = requireOpen()
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
         val frame = decode(frameIndex)
-        val argb = developer.develop(frame, fmt.isBt709, fmt.orientationDeg, grade, lutPath)
+        // The frame's decoded depth wins over the container's claim: a
+        // decoder that returned 8-bit for a 10-bit track is developed (and
+        // reported) as 8-bit, never mis-read as 10.
+        val color = fmt.color.withDecodedBitDepth(frame.bitDepth)
+        val argb = developer.develop(frame, color, if (upright) fmt.orientationDeg else 0, grade, lutPath)
             ?: throw IllegalStateException(
                 EncodedErrors.message(developer.code(), developer.stage(), developer.detail())
             )

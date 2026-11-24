@@ -659,12 +659,16 @@ class NativeSource private constructor(
         /**
          * Develops one decoded encoded-frame (NV12 when [semiPlanar] is
          * true: [yPlane] + interleaved UV in [uPlane]; I420 otherwise) with
-         * the grade: developEncoded (limited-range YUV -> RGB -> Mi-Log
-         * decode -> WB/temp/tint/exposure -> denoise stages 7/8 (DN-01..08,
+         * the grade: developEncoded (range expansion -> YUV -> RGB -> transfer
+         * decode (Mi-Log unless [transfer] says otherwise) -> primaries -> WB/temp/tint/exposure -> denoise stages 7/8 (DN-01..08,
          * the same kernels as the RAW path; 0 = skipped) ->
          * sharpness/detail/tonemap, the shared COL-15/COL-16 stages, then
          * the optional stage-24 LUT, COL-07) -> linearToRec709 -> clamp ->
-         * 8-bit ARGB, rotated upright by [orientationDeg]. Returns
+         * 8-bit ARGB, rotated upright by [orientationDeg]. E0: [bitDepth]
+         * 8 = byte samples, 10 = 16-bit little-endian MSB-aligned words
+         * (P010; strides stay in BYTES); [fullRange]; [matrix] 0 BT601 / 1
+         * BT709 / 2 BT2020; [transfer] 0 MiLog / 1 Rec709 / 2 sRGB / 3
+         * Linear; [primaries] 0 BT709 (the working space) / 1 BT2020. Returns
          * [width, height, then w*h ARGB_8888 ints] (the preview contract) or
          * null on failure (read the error accessors from the same thread).
          * Uses tempK/tint/exposureEv plus the detail/tonemap fields of the
@@ -692,6 +696,11 @@ class NativeSource private constructor(
             semiPlanar: Boolean,
             isBt709: Boolean,
             orientationDeg: Int,
+            bitDepth: Int,
+            fullRange: Boolean,
+            matrix: Int,
+            transfer: Int,
+            primaries: Int,
             exposureEv: Float,
             highlights: Float,
             tempK: Float,
@@ -1486,6 +1495,11 @@ class NativeSource private constructor(
             semiPlanar: Boolean,
             isBt709: Boolean,
             orientationDeg: Int,
+            bitDepth: Int,
+            fullRange: Boolean,
+            matrix: Int,
+            transfer: Int,
+            primaries: Int,
             exposureEv: Float,
             highlights: Float,
             tempK: Float,
@@ -1526,6 +1540,7 @@ class NativeSource private constructor(
             yPlane, uPlane, vPlane,
             width, height, stride, uvStride,
             semiPlanar, isBt709, orientationDeg,
+            bitDepth, fullRange, matrix, transfer, primaries,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
             asShot, highlightReconstruction, keepVignetting,

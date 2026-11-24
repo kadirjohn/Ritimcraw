@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <rawedit/Color.h>
 #include <rawedit/Lut.h>
 
 namespace rawedit {
@@ -34,27 +35,58 @@ float linearToRec709(float lin) {
     return 1.099f * std::pow(lin, 0.45f) - 0.099f;
 }
 
-// BT.601 limited-range YUV -> full-range RGB (JFIF-style coefficients).
+// YCbCr -> RGB. The coefficients are the matrix's (Kr, Kb) standard forms:
+//   BT.601 (JFIF-style) Kr .299  Kb .114   -> 1.402 / .344136 / .714136 / 1.772
+//   BT.709            Kr .2126 Kb .0722  -> 1.5748 / .187324 / .468124 / 1.8556
+//   BT.2020 NCL       Kr .2627 Kb .0593  -> 1.4746 / .164553 / .571353 / 1.8814
+// y/u/v arrive as raw CODE values (8..16-bit); offsets and ranges are the
+// frame's own (limited: 16/128 with 219/224 scaled to the depth; full: 0/
+// 2^(bd-1) with 2^bd-1). With limited 8-bit the float arithmetic is the
+// pre-E0 expression exactly, so legacy frames stay bit-identical.
 namespace {
-void yuv601ToRgb(float y, float u, float v, float& r, float& g, float& b) {
-    const float yc = (y - 16.0f) / 219.0f;
-    const float cb = (u - 128.0f) / 224.0f;
-    const float cr = (v - 128.0f) / 224.0f;
-    r = yc                + 1.402f  * cr;
-    g = yc - 0.344136f * cb - 0.714136f * cr;
-    b = yc + 1.772f   * cb;
-}
-} // namespace
+struct YuvCoeffs { float rV, gU, gV, bU; };
+const YuvCoeffs kCoeff601  = {1.402f,  0.344136f, 0.714136f, 1.772f};
+const YuvCoeffs kCoeff709  = {1.5748f, 0.187324f, 0.468124f, 1.8556f};
+const YuvCoeffs kCoeff2020 = {1.4746f, 0.164553f, 0.571353f, 1.8814f};
 
-// BT.709 limited-range YUV -> full-range RGB.
-namespace {
-void yuv709ToRgb(float y, float u, float v, float& r, float& g, float& b) {
-    const float yc = (y - 16.0f) / 219.0f;
-    const float cb = (u - 128.0f) / 224.0f;
-    const float cr = (v - 128.0f) / 224.0f;
-    r = yc                + 1.5748f  * cr;
-    g = yc - 0.187324f * cb - 0.468124f * cr;
-    b = yc + 1.8556f   * cb;
+struct YuvRange { float offY, rangeY, offC, rangeC; };
+
+YuvRange rangeFor(int bitDepth, bool fullRange) {
+    const float scale = static_cast<float>(1 << (bitDepth - 8));
+    if (fullRange) {
+        const float maxCode = static_cast<float>((1 << bitDepth) - 1);
+        return {0.0f, maxCode, 128.0f * scale, maxCode};
+    }
+    return {16.0f * scale, 219.0f * scale, 128.0f * scale, 224.0f * scale};
+}
+
+void yuvToRgb(const YuvCoeffs& k, const YuvRange& rg, float y, float u, float v,
+              float& r, float& g, float& b) {
+    const float yc = (y - rg.offY) / rg.rangeY;
+    const float cb = (u - rg.offC) / rg.rangeC;
+    const float cr = (v - rg.offC) / rg.rangeC;
+    r = yc                + k.rV * cr;
+    g = yc - k.gU * cb - k.gV * cr;
+    b = yc + k.bU * cb;
+}
+
+// One sample's CODE value: a byte (8-bit) or the high bits of a 16-bit LE
+// word (P010-style MSB alignment).
+inline float sampleAt(const std::vector<uint8_t>& buf, size_t byteIndex, bool wide, int shift) {
+    if (!wide) return static_cast<float>(buf[byteIndex]);
+    const unsigned word = static_cast<unsigned>(buf[byteIndex]) |
+                          (static_cast<unsigned>(buf[byteIndex + 1]) << 8);
+    return static_cast<float>(word >> shift);
+}
+
+float decodeEncodedTransfer(float x, EncodedTransfer t) {
+    switch (t) {
+        case EncodedTransfer::MiLog:  return miLogToLinear(x);
+        case EncodedTransfer::Rec709: return decodeTransfer(x, TransferId::Rec709OETF);
+        case EncodedTransfer::Srgb:   return decodeTransfer(x, TransferId::Srgb);
+        case EncodedTransfer::Linear: return x;
+    }
+    return miLogToLinear(x);
 }
 } // namespace
 
@@ -109,9 +141,30 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, c
     out.rgb.assign(static_cast<size_t>(out.w) * out.h * 3, 0.0f);
     if (frame.width == 0 || frame.height == 0) return out;
 
-    const int stride = frame.stride > 0 ? frame.stride : static_cast<int>(frame.width);
-    const int uvStride = frame.uvStride > 0 ? frame.uvStride
-                                            : static_cast<int>(frame.width / 2);
+    const bool wide = frame.bitDepth > 8;
+    const int bps = wide ? 2 : 1;                       // bytes per sample
+    const int shift = wide ? (16 - frame.bitDepth) : 0; // MSB-aligned words
+    const size_t cw = (static_cast<size_t>(frame.width) + 1) / 2;
+    const int stride = frame.stride > 0 ? frame.stride
+                                        : static_cast<int>(frame.width) * bps;
+    const int uvStride = frame.uvStride > 0
+        ? frame.uvStride
+        : static_cast<int>(cw) * (frame.semiPlanar ? 2 : 1) * bps;
+
+    const YuvRange range = rangeFor(wide ? frame.bitDepth : 8, frame.fullRange);
+    const YuvCoeffs* coeffs = &kCoeff709;
+    switch (frame.matrix) {
+        case YuvMatrix::BT601:  coeffs = &kCoeff601; break;
+        case YuvMatrix::BT709:  coeffs = &kCoeff709; break;
+        case YuvMatrix::BT2020: coeffs = &kCoeff2020; break;
+        case YuvMatrix::FromFlag: coeffs = isBt709 ? &kCoeff709 : &kCoeff601; break;
+    }
+
+    // BT.2020 -> Rec.709 working space, in linear light after the transfer
+    // decode (the plan order YcbcrToRgb -> DecodeTransfer -> GamutToWorking).
+    const bool gamut = frame.primaries == EncodedPrimaries::BT2020;
+    float gm[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    if (gamut) gamutToGamut(GamutId::Rec2020, GamutId::Rec709, gm);
 
     // WB/temp/tint gains: as-shot neutral gains plus the temp/tint offsets,
     // matching the Grade semantics of the MCRAW path (gains >= 1 scale the
@@ -130,24 +183,29 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, c
         const size_t uvRow = row / 2;
         for (size_t col = 0; col < out.w; ++col) {
             const size_t uvCol = col / 2;
-            const float yv = frame.y[row * stride + col];
-            float u = 128.0f, v = 128.0f;
+            const float yv = sampleAt(frame.y, row * stride + col * bps, wide, shift);
+            float u = range.offC, v = range.offC;
             if (frame.semiPlanar) {
-                u = frame.u[uvRow * uvStride + uvCol * 2];
-                v = frame.u[uvRow * uvStride + uvCol * 2 + 1];
+                const size_t at = uvRow * uvStride + uvCol * 2 * bps;
+                u = sampleAt(frame.u, at, wide, shift);
+                v = sampleAt(frame.u, at + bps, wide, shift);
             } else {
-                u = frame.u[uvRow * uvStride + uvCol];
-                v = frame.v[uvRow * uvStride + uvCol];
+                const size_t at = uvRow * uvStride + uvCol * bps;
+                u = sampleAt(frame.u, at, wide, shift);
+                v = sampleAt(frame.v, at, wide, shift);
             }
             float r, g, b;
-            if (isBt709)
-                yuv709ToRgb(yv, u, v, r, g, b);
-            else
-                yuv601ToRgb(yv, u, v, r, g, b);
-            // Mi-Log decode per channel.
-            r = miLogToLinear(r);
-            g = miLogToLinear(g);
-            b = miLogToLinear(b);
+            yuvToRgb(*coeffs, range, yv, u, v, r, g, b);
+            // Transfer decode per channel (Mi-Log unless the frame says otherwise).
+            r = decodeEncodedTransfer(r, frame.transfer);
+            g = decodeEncodedTransfer(g, frame.transfer);
+            b = decodeEncodedTransfer(b, frame.transfer);
+            if (gamut) {
+                const float rr = gm[0] * r + gm[1] * g + gm[2] * b;
+                const float gg = gm[3] * r + gm[4] * g + gm[5] * b;
+                const float bb = gm[6] * r + gm[7] * g + gm[8] * b;
+                r = rr; g = gg; b = bb;
+            }
             // Grade: WB/temp/tint gains then exposure.
             r = r * gains[0] * exposure;
             g = g * gains[1] * exposure;
