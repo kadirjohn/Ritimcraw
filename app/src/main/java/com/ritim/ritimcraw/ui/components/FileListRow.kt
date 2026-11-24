@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,25 +39,21 @@ import kotlinx.coroutines.withContext
 
 /**
  * Thumbnail-first media row for the main screens (owner request
- * 2026-11-11d §4.3; the 2026-11-14 uniform-slot extension): rounded
- * thumbnail in ONE FIXED 76dp square slot ([ThumbnailRow]) for every
- * frame ratio — a vertical, a horizontal and an open-gate clip all
- * render rows of the same height, the icon fitted INSIDE the slot at
- * its own ratio (ContentScale.Fit — letterboxed on the slot's
- * surfaceContainerHighest background, never cropped, never
- * distorted), filename
- * to the right limited to two lines with ellipsis, supporting metadata
- * line beneath it. A plain Row (not ListItem) so the thumbnail and text
- * block size themselves; the caller supplies the supporting line
- * through the pure LibraryRowModel (existing metadata only — nothing
- * is invented).
+ * 2026-11-11d §4.3): rounded thumbnail whose slot has the clip's OWN
+ * aspect ratio ([ThumbnailRow.slotSize] — fitted into at most 96dp wide
+ * x 76dp tall, no background, no bands), filename to the right limited
+ * to two lines with ellipsis, supporting metadata line beneath it. The
+ * row is as tall as max(thumbnail, text block) plus the 8dp top/bottom
+ * padding. A plain Row (not ListItem) so the thumbnail and text block
+ * size themselves; the caller supplies the supporting line through the
+ * pure LibraryRowModel (existing metadata only — nothing is invented).
  *
- * Manual rotation (owner request 2026-11-14: the icon must match the
- * rotated look the user chose in the editor) lives in the ICON FILE,
- * not the row: the icon is re-developed on every rotation change (the
- * da763c9 contract), so the upright pixels display correctly inside
- * the uniform slot as-is — the row passes no dims and no rotation, and
- * the box never swaps its ratio.
+ * Manual rotation (owner request 2026-11-14) lives in the ICON FILE: the
+ * icon is re-developed on every rotation change (the da763c9 contract),
+ * so the loaded bitmap's own size gives the slot's ratio. Only the
+ * placeholder, shown until the bitmap loads, derives its ratio from the
+ * record's [frameWidth]/[frameHeight] and [manualRotationDeg] so rows
+ * do not jump when the icon arrives.
  *
  * Selection (E2) keeps its exact behavior: long-press enters selection
  * with this row checked, taps toggle while selecting (never open), and
@@ -87,6 +82,9 @@ fun FileListRow(
     trailingContent: (@Composable () -> Unit)? = null,
     onLongClick: () -> Unit = {},
     showDivider: Boolean = false,
+    frameWidth: Int = 0,
+    frameHeight: Int = 0,
+    manualRotationDeg: Int = 0,
 ) {
     Column(modifier.fillMaxWidth()) {
         Row(
@@ -109,6 +107,9 @@ fun FileListRow(
             ClipThumbnail(
                 path = thumbnailPath,
                 accessLost = accessLost,
+                placeholderAspect = ThumbnailRow.placeholderAspect(
+                    frameWidth, frameHeight, manualRotationDeg,
+                ),
                 // The thumbnail carries the screen's 16dp gutter (owner
                 // request 2026-11-14: the icons sat flush against the left
                 // edge — "sadece thumbnail'ler için" margin, ONLY the
@@ -193,56 +194,63 @@ fun FileListRow(
 
 /**
  * Pure thumbnail-slot arithmetic (unit-tested in ThumbnailRowTest, the
- * [ChipWidths] precedent): the row's thumbnail slot is ONE FIXED 76x76dp
- * SQUARE for every frame ratio (owner finding 2026-11-14: the ratio-true
- * 40..120dp band made a 9:16 row 120dp tall while a 16:9 row sat at
- * 43dp — the list's rhythm broke between vertical, horizontal and
- * open-gate clips, and the vertical rows ate the screen).
- *
- * The uniform slot is the standard gallery pattern over a tighter clamp
- * band: only a fixed height makes the rhythm literally identical between
- * ratios (a band still leaves every row a different height), and 76dp is
- * the square the list shipped with — inside the 76-96dp band the finding
- * allowed, and it keeps the divider/text geometry stable. The icon stays
- * RATIO-TRUE inside the slot (ContentScale.Fit: a 9:16 icon letterboxes
- * on the surfaceContainerHighest background, a 16:9 one letterboxes top
- * and bottom, neither crops or distorts), so the clip's look survives —
- * only the box stops announcing the ratio.
+ * [ChipWidths] precedent): the slot has the frame's own aspect ratio,
+ * fitted into a [MAX_WIDTH_DP] x [MAX_HEIGHT_DP] box (16:9 -> 96x54,
+ * 4:3 -> 96x72, 9:16 -> ~43x76), so landscape rows stay compact and a
+ * portrait clip cannot take over the screen (decided 2026-11-14).
  */
 internal object ThumbnailRow {
 
-    /** The fixed thumbnail slot's width (the shipped 76dp square's width). */
-    const val WIDTH_DP = 76f
+    /** The widest a thumbnail slot gets. */
+    const val MAX_WIDTH_DP = 96f
 
-    /** The fixed thumbnail slot's height: the square, for every ratio. */
-    const val HEIGHT_DP = 76f
+    /** The tallest a thumbnail slot gets. */
+    const val MAX_HEIGHT_DP = 76f
+
+    /** The ratio assumed when the frame size is unknown (16:9). */
+    const val DEFAULT_ASPECT = 16f / 9f
 
     /** The screen's 16dp gutter the slot (and the divider) starts at. */
     const val GUTTER_DP = 16f
+
+    /** A slot size in dp. */
+    data class Slot(val widthDp: Float, val heightDp: Float)
+
+    /** The slot for a width/height [aspect] (<= 0 or NaN -> 16:9). */
+    fun slotSize(aspect: Float): Slot {
+        val a = if (aspect > 0f && aspect.isFinite()) aspect else DEFAULT_ASPECT
+        val widthByHeight = MAX_HEIGHT_DP * a
+        return if (widthByHeight <= MAX_WIDTH_DP) {
+            Slot(widthByHeight, MAX_HEIGHT_DP)
+        } else {
+            Slot(MAX_WIDTH_DP, MAX_WIDTH_DP / a)
+        }
+    }
+
+    /**
+     * The placeholder's aspect from the record's frame size and manual
+     * rotation (a quarter turn swaps the axes); unknown size -> 16:9.
+     */
+    fun placeholderAspect(width: Int, height: Int, manualRotationDeg: Int): Float {
+        if (width <= 0 || height <= 0) return DEFAULT_ASPECT
+        val swapped = Math.floorMod(manualRotationDeg / 90, 2) == 1
+        return if (swapped) height.toFloat() / width else width.toFloat() / height
+    }
 }
 
 /**
- * The row's leading thumbnail (owner request 2026-11-11d §4.3; the
- * 2026-11-14 uniform-slot extension): rounded FIXED 76x76dp square slot
- * ([ThumbnailRow] — the gallery pattern: one row height for every frame
- * ratio), the persisted first-frame PNG fitted INSIDE at its own ratio
- * (ContentScale.Fit — the icon letterboxes on the slot's
- * surfaceContainerHighest background, never cropped, never distorted),
- * or the same square placeholder while missing — decoded off the UI
- * thread (produceState cancels the load when the row leaves
- * composition). The box keeps the extraSmall shape and the
- * surfaceContainerHighest background: the rounded
- * square thumbnail IS the modern look, no added chrome.
- *
- * The icon's own pixels carry the manual rotation (the da763c9
- * contract: the icon is re-developed on every rotation change), so the
- * row passes no dims and no rotation — the upright icon displays
- * correctly inside the uniform slot as-is.
+ * The row's leading thumbnail: a rounded slot with the loaded icon's own
+ * aspect ratio ([ThumbnailRow.slotSize]), no background, the persisted
+ * first-frame PNG filling it; until it loads, a plain placeholder of the
+ * [placeholderAspect] size (same size, so rows do not jump), decoded off
+ * the UI thread (produceState cancels the load when the row leaves
+ * composition). The icon's pixels carry the manual rotation.
  */
 @Composable
 private fun ClipThumbnail(
     path: String?,
     accessLost: Boolean,
+    placeholderAspect: Float,
     modifier: Modifier = Modifier,
 ) {
     val bitmap by path?.let { p ->
@@ -256,33 +264,21 @@ private fun ClipThumbnail(
             }
         }
     } ?: remember { mutableStateOf<Bitmap?>(null) }
+    val b = bitmap
+    val slot = ThumbnailRow.slotSize(
+        if (b != null) b.width.toFloat() / b.height.coerceAtLeast(1) else placeholderAspect,
+    )
     Box(
         modifier = modifier
-            .size(
-                width = ThumbnailRow.WIDTH_DP.dp,
-                height = ThumbnailRow.HEIGHT_DP.dp,
-            )
-            .clip(MaterialTheme.shapes.extraSmall)
-            // Owner request 2026-11-14: the letterbox area behind the
-            // ratio-true icon reads as a PLAIN GRAY, not the Monet tone.
-            // surfaceVariant rides the NeutralVariant palette, which
-            // carries the wallpaper's hue (dynamic color) — the slot
-            // tinted itself with whatever the wallpaper was.
-            // surfaceContainerHighest rides the NEUTRAL palette (the
-            // container family the editor scheme already proves gray:
-            // 0xFF3b3b3b): light mode keeps the exact tone surfaceVariant
-            // had (NeutralVariant90 -> Neutral90), dark mode drops from
-            // NV30 to N22 — still clearly a step above the dark surface,
-            // now chroma-free in BOTH modes.
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            .size(width = slot.widthDp.dp, height = slot.heightDp.dp)
+            .clip(MaterialTheme.shapes.extraSmall),
     ) {
-        val b = bitmap
         if (b != null) {
             Image(
                 bitmap = b.asImageBitmap(),
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit,
+                contentScale = ContentScale.FillBounds,
             )
         } else if (accessLost) {
             // The access-lost marker rides the placeholder while the clip
