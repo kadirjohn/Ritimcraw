@@ -1159,12 +1159,11 @@ private fun LibraryRow(
             LibraryRowModel.durationText(source),
         ),
         thumbnailPath = thumbnailPath,
-        // The uniform 76dp slot needs no dims and no rotation (owner
-        // finding 2026-11-14: the ratio-true heights broke the list's
-        // rhythm between vertical, horizontal and open-gate rows): the
-        // icon FILE carries the ratio and the manual rotation (it is
-        // re-developed on every rotation change), and the slot fits it
-        // letterboxed at its own ratio.
+        // The slot takes the icon's own ratio once loaded; the record's
+        // frame size + manual rotation size the placeholder until then.
+        frameWidth = source.width,
+        frameHeight = source.height,
+        manualRotationDeg = source.manualRotationDeg,
         accessLost = accessLost,
         accessLostLine = when (status) {
             LibraryRowModel.RowStatus.LOST -> stringResource(R.string.library_row_access_lost)
