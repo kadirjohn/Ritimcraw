@@ -3541,7 +3541,11 @@ fun ClipEditorScreen(
                     // DEBUG path badge (2026-11-23): reuses the served
                     // verdict the trace's backend= field reads.
                     debugPathBadge = if (RenderTrace.enabled) {
-                        if (gpuWindowLive) "GPU" else "CPU"
+                        // "GPU" = presented through the GPU window; "GPU+bmp" = developed on the GPU
+                        // (encoded clips) and presented as a bitmap; "CPU" = developed on the CPU.
+                        if (gpuWindowLive) "GPU"
+                        else if (com.ritim.ritimcraw.engine.EncodedFrameTrace.gpuDeveloped) "GPU+bmp"
+                        else "CPU"
                     } else {
                         null
                     },

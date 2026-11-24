@@ -768,7 +768,10 @@ class EncodedSource(
                 now - tGpu, decodeWallNs, EncodedFrameTrace.copyNanos.getAndSet(0), tDev - tGpu, now - tDev,
                 lastDecodedCount,
             )
+            EncodedFrameTrace.gpuDeveloped = out != null
             if (out != null) { decoder.recycle(planes); return out }
+        } else {
+            EncodedFrameTrace.gpuDeveloped = false
         }
         val frame = EncodedYuv.toNv12(planes)
         decoder.recycle(planes)
@@ -786,6 +789,7 @@ class EncodedSource(
     override fun close() {
         if (closed) return
         closed = true
+        EncodedFrameTrace.gpuDeveloped = false
         stopAhead()
         try { gpuDeveloper?.close() } catch (_: Throwable) {}
         decoder.release()
@@ -1394,6 +1398,12 @@ object SourcePathDecision {
  * moved. One line per developed frame; release builds do nothing.
  */
 internal object EncodedFrameTrace {
+    /**
+     * True while the last encoded preview frame was DEVELOPED on the GPU (the frame still reaches the screen as
+     * a bitmap, so the editor's debug path badge, which only knows the surface path, read "CPU" for it).
+     */
+    @Volatile var gpuDeveloped = false
+
     val decodeNanos = java.util.concurrent.atomic.AtomicLong(0)
     val copyNanos = java.util.concurrent.atomic.AtomicLong(0)
     val planeBytes = java.util.concurrent.atomic.AtomicLong(0)
