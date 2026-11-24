@@ -45,8 +45,25 @@
 
 #include "GlesPipeline.h"
 
+// GL_EXT_disjoint_timer_query tokens (ES 3.0 lets the extension's TIME_ELAPSED target ride the core
+// glBeginQuery/glEndQuery/glGetQueryObjectuiv entry points).
+#ifndef GL_TIME_ELAPSED_EXT
+#define GL_TIME_ELAPSED_EXT 0x88BF
+#endif
+#ifndef GL_GPU_DISJOINT_EXT
+#define GL_GPU_DISJOINT_EXT 0x8FBB
+#endif
+
 namespace gles {
 namespace {
+
+// The app's cumulative GPU time in the EXPORT develop session (system monitor strip, 2026-11-25): the
+// strip's GPU figure used to count only the PREVIEW session's GL_TIME_ELAPSED queries, so an export,
+// which runs entirely in this session, showed "-" although it was GPU-bound work. Same recipe as the
+// preview counter: one query per frame in a small ring, read back without blocking a few frames later,
+// the delta over wall time is the share (the Kotlin sampler adds this to the preview counter).
+std::atomic<uint64_t> gExportGpuNanos{0};
+std::atomic<bool> gExportGpuTimerOk{false};
 
 // The chain's own documented copies (parseGlesVersion, cellFor, the Mat3
 // helpers + buildCameraToRec709, floatToHalfBits, bindLutDummyTex, the LUT
@@ -164,6 +181,48 @@ struct DevelopSession::Impl {
     // PRE -> [NR] -> POST -> [unsharp] -> [WARP] -> TAIL draw sequence —
     // the chain body lives there and nowhere else.
     GpuDevelopPipeline pipeline;
+    // GPU-time scope (see gExportGpuNanos).
+    static constexpr int kGpuQueryCount = 4;
+    bool timerQueryOk = false;
+    GLuint gpuQueries[kGpuQueryCount] = {};
+    bool gpuQueryPending[kGpuQueryCount] = {};
+    int gpuQueryNext = 0;
+    void harvestGpuQueries() {
+        for (int i = 0; i < kGpuQueryCount; ++i) {
+            if (!gpuQueryPending[i]) continue;
+            GLuint available = 0;
+            glGetQueryObjectuiv(gpuQueries[i], GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available == 0) continue;
+            GLuint ns = 0;
+            glGetQueryObjectuiv(gpuQueries[i], GL_QUERY_RESULT, &ns);
+            gpuQueryPending[i] = false;
+            GLint disjoint = 0;
+            glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+            if (disjoint == 0) gExportGpuNanos.fetch_add(ns, std::memory_order_relaxed);
+        }
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+    // Begins this frame's query (when its ring slot is free) and ends it on every exit path.
+    struct FrameGpuTimer {
+        Impl& s;
+        bool active = false;
+        explicit FrameGpuTimer(Impl& self) : s(self) {
+            if (!s.timerQueryOk) return;
+            s.harvestGpuQueries();
+            const int slot = s.gpuQueryNext;
+            if (s.gpuQueryPending[slot]) return;  // GPU more than a ring behind: skip this frame
+            glBeginQuery(GL_TIME_ELAPSED_EXT, s.gpuQueries[slot]);
+            if (glGetError() != GL_NO_ERROR) return;
+            active = true;
+        }
+        ~FrameGpuTimer() {
+            if (!active) return;
+            glEndQuery(GL_TIME_ELAPSED_EXT);
+            while (glGetError() != GL_NO_ERROR) {}
+            s.gpuQueryPending[s.gpuQueryNext] = true;
+            s.gpuQueryNext = (s.gpuQueryNext + 1) % kGpuQueryCount;
+        }
+    };
     // The session's own blit program (M5): the SAME BLIT_FRAGMENT the
     // Surface-mode writer proved, linked against the session's OWN plain
     // 300es vertex compile (the pipeline's vertex shader is
@@ -480,6 +539,17 @@ bool DevelopSession::Impl::initOnGlThread(
                                          // own texel fetches are exact
     config.withStoreScratch = true;      // the readback path's scratch FBO +
                                          // SSBO pair
+    {
+        // GPU-time queries for the system monitor (see gExportGpuNanos); optional, never a failure.
+        const GLubyte* ext = glGetString(GL_EXTENSIONS);
+        timerQueryOk = ext != nullptr &&
+            std::string(reinterpret_cast<const char*>(ext)).find("GL_EXT_disjoint_timer_query") != std::string::npos;
+        if (timerQueryOk) {
+            glGenQueries(kGpuQueryCount, gpuQueries);
+            if (glGetError() != GL_NO_ERROR) timerQueryOk = false;
+        }
+        gExportGpuTimerOk.store(timerQueryOk, std::memory_order_relaxed);
+    }
     if (!pipeline.init(vertexSource,
                        vertex310Source,
                        preFragmentSource,
@@ -570,6 +640,7 @@ bool DevelopSession::Impl::developPass(const DevelopFrameRequest& req,
 
 void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
                                   DevelopFrameResult& out) {
+    FrameGpuTimer frameGpuTimer(*this);
     const uint32_t w = req.info.width;
     const uint32_t h = req.info.height;
 
@@ -719,6 +790,7 @@ void DevelopSession::Impl::runEncoderJob(const DevelopFrameRequest& req,
                                          int64_t ptsUs,
                                          int rotationDeg,
                                          DevelopFrameResult& out) {
+    FrameGpuTimer frameGpuTimer(*this);
     const uint32_t w = req.info.width;
     const uint32_t h = req.info.height;
 
@@ -983,6 +1055,11 @@ void DevelopSession::Impl::teardownOnGlThread() {
     // creation. Safe on a partially-initialized session: every handle
     // starts at 0/NO_*.
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (timerQueryOk) {
+        glDeleteQueries(kGpuQueryCount, gpuQueries);
+        timerQueryOk = false;
+        gExportGpuTimerOk.store(false, std::memory_order_relaxed);
+    }
     // The chain's own teardown (the pipeline's established order: the
     // scratch/chain/develop FBOs, then the scratch/chain/develop/shading/
     // LUT/CFA textures, the readback SSBO, then the chain+store programs)
@@ -998,6 +1075,12 @@ void DevelopSession::Impl::teardownOnGlThread() {
         encoderSurface = EGL_NO_SURFACE;
     }
     egl.release();
+}
+
+int64_t exportGpuNanosTotal() {
+    return gExportGpuTimerOk.load(std::memory_order_relaxed)
+        ? static_cast<int64_t>(gExportGpuNanos.load(std::memory_order_relaxed))
+        : -1;
 }
 
 } // namespace gles

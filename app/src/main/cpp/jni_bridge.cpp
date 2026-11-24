@@ -2410,7 +2410,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetPreviewWindowProbe(
 // timer-capable preview session is live. Any thread.
 JNIEXPORT jlong JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewGpuNanos(JNIEnv*, jclass) {
-    return static_cast<jlong>(gles::previewGpuNanosTotal());
+    // The app's GPU time is the preview session's plus the export session's (2026-11-25: the strip
+    // showed "-" during an export because only the preview counter was read). Unknown (-1) only when
+    // neither session has a working timer.
+    const int64_t preview = gles::previewGpuNanosTotal();
+    const int64_t exportNs = gles::exportGpuNanosTotal();
+    if (preview < 0 && exportNs < 0) return static_cast<jlong>(-1);
+    return static_cast<jlong>((preview > 0 ? preview : 0) + (exportNs > 0 ? exportNs : 0));
 }
 
 // The six sub-stage slots of the frame nativeExportFrameParcel just
