@@ -4149,8 +4149,13 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
     if (!s) return JNI_FALSE;
     try {
         Entry& e = gEntries[clipHandle - 1];
+        // Stage timing (debug-only log, 2026-11-25 export CPU bottleneck measurement): decode of
+        // the centre frame, the temporal merge, the GPU session call, per frame, accumulated in
+        // file-static counters (one export thread) and logged every 100 frames.
+        const std::chrono::steady_clock::time_point tStage0 = std::chrono::steady_clock::now();
         const CfaBuffer center = loadRingFrame(*s, e, frameIndex);
         if (center == nullptr) return JNI_FALSE; // decode failed (error set)
+        const std::chrono::steady_clock::time_point tStage1 = std::chrono::steady_clock::now();
         const rawedit::FrameInfo info = s->frameInfo(static_cast<size_t>(frameIndex));
         const rawedit::RawMeta& meta = s->rawMeta();
 
@@ -4160,6 +4165,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
             *s, e, frameIndex, center, info,
             grade.temporalNr, grade.temporalStrength);
         if (cfa == nullptr) return JNI_FALSE; // neighbor decode failed
+        const std::chrono::steady_clock::time_point tStage2 = std::chrono::steady_clock::now();
 
         gles::DevelopFrameRequest req;
         req.cfa = cfa.get();
@@ -4193,6 +4199,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameToEn
                      "develop session encoder render: " + res.detail +
                          " (recovery: the export falls back to the CPU develop)");
             return JNI_FALSE;
+        }
+        if (gStabDebugLog.load(std::memory_order_relaxed)) {
+            static std::atomic<long long> sumDec{0}, sumMerge{0}, sumGpu{0};
+            static std::atomic<int> frames{0};
+            const std::chrono::steady_clock::time_point tStage3 = std::chrono::steady_clock::now();
+            sumDec += static_cast<long long>(elapsedUs(tStage0, tStage1));
+            sumMerge += static_cast<long long>(elapsedUs(tStage1, tStage2));
+            sumGpu += static_cast<long long>(elapsedUs(tStage2, tStage3));
+            const int n = ++frames;
+            if (n % 100 == 0) {
+                __android_log_print(
+                    ANDROID_LOG_INFO, "ritim-export",
+                    "export native stages avg over %d frames: decode=%.1fms temporal=%.1fms gpu-session=%.1fms "
+                    "(decode = MCRAW read + ring cache, temporal = CFA merge, gpu-session = upload+draws+blit+swap, "
+                    "synchronous on the export thread)",
+                    n, sumDec.load() / 1000.0 / n, sumMerge.load() / 1000.0 / n, sumGpu.load() / 1000.0 / n);
+            }
         }
         return JNI_TRUE;
     } catch (const std::bad_alloc&) {
