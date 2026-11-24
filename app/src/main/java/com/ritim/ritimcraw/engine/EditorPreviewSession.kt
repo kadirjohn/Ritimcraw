@@ -187,7 +187,7 @@ object PreviewSessions {
         path: SourcePath,
         fdProvider: () -> Int,
         engine: ExecutorService,
-        newEncodedSource: () -> EncodedSource = { EncodedSource() },
+        newEncodedSource: () -> EncodedSource = { EncodedSource(readAhead = true) },
     ): Result<EditorPreviewSession> {
         val fd = fdProvider()
         if (fd < 0) {
@@ -354,6 +354,7 @@ class EncodedPreviewSession private constructor(
                 )
             )
         }
+        val tQ = System.nanoTime()
         return suspendCoroutine { cont ->
             try {
                 engine.execute {
@@ -362,7 +363,18 @@ class EncodedPreviewSession private constructor(
                             // Closed while queued: never touch the dead source.
                             Result.failure(sessionClosed())
                         } else {
-                            frameOf(source.renderFrame(frameIndex, grade, lutPath, chainWire = chainWire, maxDim = maxDim), maxDim)
+                            val tR = System.nanoTime()
+                            val raw = source.renderFrame(frameIndex, grade, lutPath, chainWire = chainWire, maxDim = maxDim)
+                            val tF = System.nanoTime()
+                            val framed = frameOf(raw, maxDim)
+                            if (com.ritim.ritimcraw.BuildConfig.DEBUG) runCatching {
+                                android.util.Log.i(
+                                    "ritim-trace",
+                                    String.format(java.util.Locale.ROOT, "encoded-render frame=%d source=%.1fms frameOf=%.1fms queued=%.1fms",
+                                        frameIndex, (tF - tR) / 1e6, (System.nanoTime() - tF) / 1e6, (tR - tQ) / 1e6),
+                                )
+                            }
+                            framed
                         }
                     } catch (t: Throwable) {
                         Result.failure(t)
@@ -456,7 +468,7 @@ class EncodedPreviewSession private constructor(
         suspend fun open(
             fd: Int,
             engine: ExecutorService,
-            newSource: () -> EncodedSource = { EncodedSource() },
+            newSource: () -> EncodedSource = { EncodedSource(readAhead = true) },
             newAudioSource: (Int, Int, Int) -> ClipAudioSource =
                 { fd, rate, ch -> MediaExtractorAudioSource(fd, rate, ch) },
         ): Result<EncodedPreviewSession> = suspendCoroutine { cont ->

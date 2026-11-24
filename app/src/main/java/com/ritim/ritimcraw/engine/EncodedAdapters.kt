@@ -213,7 +213,8 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
     private val pool = PlaneBufferPool(maxFree = 9)
 
     override fun recycle(planes: YuvPlanes) {
-        pool.release(planes.y.buffer); pool.release(planes.u.buffer); pool.release(planes.v.buffer)
+        pool.release(planes.y.buffer); pool.release(planes.u.buffer)
+        if (planes.v.buffer !== planes.u.buffer) pool.release(planes.v.buffer)
     }
 
     override fun configure(format: EncodedVideoFormat): String? {
@@ -325,6 +326,36 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
         codec = null
     }
 
+    /**
+     * NV12/P010 frames carry Cb and Cr in ONE interleaved plane, which the Image API exposes as two
+     * overlapping planes (V is U shifted by one component, and each ends one component short of the full
+     * plane). Copying both costs a second chroma-sized array per frame (16 MB at 8K). When the layout is
+     * that shape, copy the U plane once, append the V plane's final component, and return the complete
+     * interleaved array (U and V then view the SAME array, V at offset bps). Null = take the generic copy.
+     */
+    private fun interleavedChroma(image: Image, depth: Int): Pair<YuvPlane, ByteArray>? {
+        val bps = if (depth > 8) 2 else 1
+        val y = image.planes[0]; val u = image.planes[1]; val v = image.planes[2]
+        if (y.pixelStride != bps || u.pixelStride != 2 * bps || v.pixelStride != 2 * bps || u.rowStride != v.rowStride) return null
+        val w = image.width; val h = image.height
+        val cw = (w + 1) / 2; val ch = (h + 1) / 2
+        val cNeed = (ch - 1) * u.rowStride + cw * 2 * bps
+        val ub = u.buffer; val vb = v.buffer
+        val un = ub.remaining(); val vn = vb.remaining()
+        if (un < bps + 1 || vn < bps || un > cNeed || un < cNeed - bps) return null
+        // V must be U shifted by one component (NV12/P010), not NV21.
+        if (ub.get(ub.position() + bps) != vb.get(vb.position())) return null
+        val yb = y.buffer
+        val yn = yb.remaining()
+        val yArr = pool.acquire(yn)
+        yb.get(yArr, 0, yn)
+        val c = pool.acquire(cNeed)
+        ub.get(c, 0, un)
+        vb.position(vb.limit() - bps)
+        vb.get(c, cNeed - bps, bps)
+        return YuvPlane(yArr, 0, y.rowStride, y.pixelStride) to c
+    }
+
     /** Copies the codec's Image planes into JVM arrays (the Image dies with its buffer). */
     private fun imageToPlanes(image: Image, ptsUs: Long): YuvPlanes {
         fun plane(p: Image.Plane): YuvPlane {
@@ -337,6 +368,15 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
         // Depth from the delivered layout: P010 is a 16-bit word per sample
         // (luma pixelStride 2); 8-bit YUV420 is one byte (pixelStride 1).
         val depth = if (image.format == ImageFormat.YCBCR_P010 || image.planes[0].pixelStride == 2) 10 else 8
+        interleavedChroma(image, depth)?.let { (yPlane, c) ->
+            val bps = if (depth > 8) 2 else 1
+            return YuvPlanes(
+                ptsUs = ptsUs, width = image.width, height = image.height, y = yPlane,
+                u = YuvPlane(c, 0, image.planes[1].rowStride, 2 * bps),
+                v = YuvPlane(c, bps, image.planes[1].rowStride, 2 * bps),
+                bitDepth = depth,
+            )
+        }
         return YuvPlanes(
             ptsUs = ptsUs,
             width = image.width,

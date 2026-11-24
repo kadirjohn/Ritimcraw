@@ -4116,13 +4116,24 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvParcel
     }
     const jsize yLen = env->GetArrayLength(yPlane);
     const jsize cLen = env->GetArrayLength(cPlane);
-    jbyte* y = env->GetByteArrayElements(yPlane, nullptr);
-    jbyte* c = env->GetByteArrayElements(cPlane, nullptr);
-    if (y == nullptr || c == nullptr) {
-        if (y) env->ReleaseByteArrayElements(yPlane, y, JNI_ABORT);
-        if (c) env->ReleaseByteArrayElements(cPlane, c, JNI_ABORT);
+    std::string lutPathStr;
+    if (lutPath != nullptr) {
+        const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
+        if (lutChars != nullptr) { lutPathStr.assign(lutChars); env->ReleaseStringUTFChars(lutPath, lutChars); }
+    }
+    // GetPrimitiveArrayCritical: the planes are tens of MB (8K: 50 MB) and a copying Get was ~10 ms of the
+    // call. No JNI call may happen between the two Critical calls, so the RGB result is built in a vector
+    // and turned into a Java array after the planes are released.
+    jbyte* y = static_cast<jbyte*>(env->GetPrimitiveArrayCritical(yPlane, nullptr));
+    if (y == nullptr) return nullptr;
+    jbyte* c = static_cast<jbyte*>(env->GetPrimitiveArrayCritical(cPlane, nullptr));
+    if (c == nullptr) {
+        env->ReleasePrimitiveArrayCritical(yPlane, y, JNI_ABORT);
         return nullptr;
     }
+    std::vector<uint8_t> rgbOut;
+    std::string errDetail;
+    int errCode = 0;
     jbyteArray result = nullptr;
     try {
         static const rawedit::RawMeta kNoMeta{};
@@ -4155,13 +4166,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvParcel
         req.info.width = static_cast<uint32_t>((width + reduce - 1) / reduce);
         req.info.height = static_cast<uint32_t>((height + reduce - 1) / reduce);
         req.lutStrength = lutStrength;
-        if (lutPath != nullptr) {
-            const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
-            if (lutChars != nullptr) {
-                req.lutPath.assign(lutChars);
-                env->ReleaseStringUTFChars(lutPath, lutChars);
-            }
-        }
+        req.lutPath = lutPathStr;
         req.lutRole = lutRole;
         req.lutInGamut = lutInGamut;
         req.lutInTransfer = lutInTransfer;
@@ -4169,28 +4174,32 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvParcel
         req.lutOutTransfer = lutOutTransfer;
         const gles::DevelopFrameResult res = session->renderFrame(req, g);
         if (!res.ok) {
-            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
-                     "develop session render (encoded): " + res.detail +
-                         " (recovery: the CPU develop takes the frame)");
+            errCode = 1;
+            errDetail = "develop session render (encoded): " + res.detail +
+                        " (recovery: the CPU develop takes the frame)";
         } else if (res.rgb888.empty()) {
-            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
-                     "develop session render (encoded): empty output (recovery: reopen the clip)");
+            errCode = 1;
+            errDetail = "develop session render (encoded): empty output (recovery: reopen the clip)";
         } else {
-            const jsize n = static_cast<jsize>(res.rgb888.size());
-            result = env->NewByteArray(n);
-            if (result != nullptr) {
-                env->SetByteArrayRegion(result, 0, n, reinterpret_cast<const jbyte*>(res.rgb888.data()));
-            }
+            rgbOut.assign(res.rgb888.begin(), res.rgb888.end());
         }
     } catch (const std::bad_alloc&) {
-        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
-                 "develop session render (encoded): out of memory (recovery: free memory and retry)");
+        errCode = 2;
+        errDetail = "develop session render (encoded): out of memory (recovery: free memory and retry)";
     } catch (const std::exception& e) {
-        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
-                 std::string("develop session render (encoded): ") + e.what() + " (recovery: reopen the clip)");
+        errCode = 2;
+        errDetail = std::string("develop session render (encoded): ") + e.what() + " (recovery: reopen the clip)";
     }
-    env->ReleaseByteArrayElements(yPlane, y, JNI_ABORT);
-    env->ReleaseByteArrayElements(cPlane, c, JNI_ABORT);
+    env->ReleasePrimitiveArrayCritical(cPlane, c, JNI_ABORT);
+    env->ReleasePrimitiveArrayCritical(yPlane, y, JNI_ABORT);
+    if (errCode != 0) {
+        setError(errCode == 2 ? static_cast<int>(rawedit::ErrorCode::IoError) : static_cast<int>(rawedit::ErrorCode::Unsupported),
+                 kStageDevelop, errDetail);
+    } else if (!rgbOut.empty()) {
+        const jsize n = static_cast<jsize>(rgbOut.size());
+        result = env->NewByteArray(n);
+        if (result != nullptr) env->SetByteArrayRegion(result, 0, n, reinterpret_cast<const jbyte*>(rgbOut.data()));
+    }
     return result;
 }
 
