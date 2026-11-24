@@ -1,7 +1,10 @@
 package com.ritim.ritimcraw.ui.exports
 
 import com.ritim.ritimcraw.export.ExportJob
+import com.ritim.ritimcraw.export.ExportReport
+import com.ritim.ritimcraw.export.ExportText
 import com.ritim.ritimcraw.export.State
+import com.ritim.ritimcraw.export.Target
 
 /**
  * Pure row-display decisions for the Exports screen (owner request
@@ -49,4 +52,42 @@ object ExportRowModel {
      */
     fun isCancellable(state: State): Boolean =
         state == State.QUEUED || state == State.RUNNING
+
+    /** Where a DONE card's thumbnail comes from. */
+    enum class ThumbSource { OUTPUT_VIDEO, SOURCE_STORE }
+
+    /**
+     * A finished MP4 shows its own output's frame; every other target
+     * (DNG, linear DNG, photo) reuses the library's per-clip thumbnail.
+     */
+    fun thumbSource(job: ExportJob): ThumbSource =
+        if (job.target == Target.MP4) ThumbSource.OUTPUT_VIDEO else ThumbSource.SOURCE_STORE
+
+    /**
+     * The codec name for a card's MP4 subtitle ("HEVC", "H.264", ...),
+     * from the report's mime (the same data the "HEVC · 10-bit" line
+     * uses); null when there is no report or the mime is not one the app
+     * knows — the caller then falls back to the generic format text.
+     */
+    fun codecLabel(job: ExportJob): String? {
+        if (job.target != Target.MP4) return null
+        val mime = job.report?.mime ?: return null
+        val label = ExportText.codec(mime)
+        return if (label == mime) null else label
+    }
+
+    /** Technical report notes that live behind the details control. */
+    enum class DetailLine { ENCODER, FIXED, CPU }
+
+    /**
+     * Details-only lines of a report (not resolution/fps/codec/bitrate/size,
+     * which stay visible): the encoder, plus the retry and CPU-fallback
+     * notes. The 10-bit-dropped warning is NOT here: it changes what the
+     * file is, so it stays visible.
+     */
+    fun detailLines(r: ExportReport): List<DetailLine> = buildList {
+        add(DetailLine.ENCODER)
+        if (ExportText.wasFixed(r)) add(DetailLine.FIXED)
+        if (ExportText.fellBackToCpu(r)) add(DetailLine.CPU)
+    }
 }

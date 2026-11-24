@@ -112,4 +112,45 @@ class ExportRowModelTest {
         assertFalse(ExportRowModel.isCancellable(State.FAILED))
         assertFalse(ExportRowModel.isCancellable(State.CANCELLED))
     }
+
+    private fun report(mime: String, steps: List<String> = emptyList()) =
+        com.ritim.ritimcraw.export.ExportReport(
+            "enc", true, mime, 1920, 1080, 30.0, 10, "VBR", null, 1f, 1, 128, 1, 10.0,
+            steps, emptyList(),
+        )
+
+    private fun mp4(report: com.ritim.ritimcraw.export.ExportReport?) =
+        job(State.DONE, Target.MP4).copy(report = report)
+
+    @Test
+    fun codec_label_names_the_real_codec() {
+        assertEquals("HEVC", ExportRowModel.codecLabel(mp4(report("video/hevc"))))
+        assertEquals("H.264", ExportRowModel.codecLabel(mp4(report("video/avc"))))
+        assertEquals("AV1", ExportRowModel.codecLabel(mp4(report("video/av01"))))
+    }
+
+    @Test
+    fun codec_label_is_null_when_unknown() {
+        assertEquals(null, ExportRowModel.codecLabel(mp4(null)))
+        assertEquals(null, ExportRowModel.codecLabel(mp4(report("video/x-weird"))))
+        // Non-MP4 targets never name a video codec.
+        assertEquals(null, ExportRowModel.codecLabel(job(State.DONE, Target.DNG).copy(report = report("video/hevc"))))
+    }
+
+    @Test
+    fun thumb_source_follows_the_target() {
+        assertEquals(ExportRowModel.ThumbSource.OUTPUT_VIDEO, ExportRowModel.thumbSource(job(target = Target.MP4)))
+        assertEquals(ExportRowModel.ThumbSource.SOURCE_STORE, ExportRowModel.thumbSource(job(target = Target.DNG)))
+        assertEquals(ExportRowModel.ThumbSource.SOURCE_STORE, ExportRowModel.thumbSource(job(target = Target.PHOTO)))
+        assertEquals(ExportRowModel.ThumbSource.SOURCE_STORE, ExportRowModel.thumbSource(job(target = Target.LINEAR)))
+    }
+
+    @Test
+    fun detail_lines_hold_encoder_and_notes_only() {
+        assertEquals(listOf(ExportRowModel.DetailLine.ENCODER), ExportRowModel.detailLines(report("video/hevc")))
+        assertEquals(
+            listOf(ExportRowModel.DetailLine.ENCODER, ExportRowModel.DetailLine.FIXED, ExportRowModel.DetailLine.CPU),
+            ExportRowModel.detailLines(report("video/hevc", listOf("fix:x", "surface->cpu"))),
+        )
+    }
 }

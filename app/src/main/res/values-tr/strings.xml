@@ -344,7 +344,9 @@
     <string name="exports_job_running_frames">Dışa aktarılıyor… %1$d/%2$d kare</string>
     <string name="exports_job_finalizing">Dosya tamamlanıyor…</string>
     <string name="exports_job_eta">~%1$s kaldı</string>
-    <string name="exports_job_done_named">Tamamlandı — %1$s</string>
+    <string name="exports_job_done">Tamamlandı</string>
+    <string name="exports_format_codec_mp4">%1$s MP4</string>
+    <string name="exports_job_details">Ayrıntılar</string>
     <string name="exports_report_format">%1$s × %2$s · %3$s kare/sn · %4$s · %5$d-bit</string>
     <string name="exports_report_encoder_hw">Kodlayıcı: %1$s (donanım)</string>
     <string name="exports_report_encoder_sw">Kodlayıcı: %1$s (yazılım)</string>

@@ -347,7 +347,9 @@
     <string name="exports_job_running_frames">Exporting… %1$d/%2$d frames</string>
     <string name="exports_job_finalizing">Finishing file…</string>
     <string name="exports_job_eta">~%1$s left</string>
-    <string name="exports_job_done_named">Done — %1$s</string>
+    <string name="exports_job_done">Done</string>
+    <string name="exports_format_codec_mp4">%1$s MP4</string>
+    <string name="exports_job_details">Details</string>
     <string name="exports_report_format">%1$s × %2$s · %3$s fps · %4$s · %5$d-bit</string>
     <string name="exports_report_encoder_hw">Encoder: %1$s (hardware)</string>
     <string name="exports_report_encoder_sw">Encoder: %1$s (software)</string>

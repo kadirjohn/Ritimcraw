@@ -2337,6 +2337,8 @@ fun AppNav(
                             // timeline's name, not the marker id.
                             sourceNames = sources.associate { it.id to it.displayOrId } +
                                 ("timeline" to timelineTitleText),
+                            exportDir = exportDir,
+                            thumbnailStore = thumbnailStore,
                             onRetry = { job ->
                                 // Retry re-queues with the same snapshot.
                                 stores.exports.retry(job.id)
