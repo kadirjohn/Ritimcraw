@@ -54,6 +54,7 @@
 #include "gles/GradeParcel.h"
 #include "gles/GlesPipeline.h"
 #include "gles/GlesPreviewSession.h"
+#include "gles/NodeChainWire.h"
 // Pure planner (A1 async stats, 2026-11-23): the statsMode clamp the
 // render door's kill-switch fold uses — header-only, no GL.
 #include "gles/StatsRing.h"
@@ -4622,6 +4623,196 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionClose(
     if (sessionHandle <= 0 || sessionHandle > kMaxPreviewSessions) return;
     std::lock_guard<std::mutex> lock(gRegistryMutex);
     gPreviewSessions[sessionHandle - 1].reset();
+}
+
+// ---- color model v2 F1-6: the NODES/DRT doors (preview session) ---------------
+//
+// The JNI wrappers around the F1-5 session doors (GlesPreviewSession.h):
+//   nativePreviewSessionInitNodes(handle, nodesSource, vertexSource,
+//                                 tailDrtSource) -> [ok(0/1),
+//     fragmentUniformVectors, textureImageUnits]
+//   nativePreviewSessionSetColorModelChain(handle, chainWire, drtUniforms)
+//       -> boolean
+//
+// InitNodes compiles the two F1-5 programs (the Kotlin single-source-of-
+// truth texts, host-validated BEFORE the session ever opens) and answers
+// the two device limits F1-5 queried (GL_MAX_FRAGMENT_UNIFORM_VECTORS /
+// GL_MAX_TEXTURE_IMAGE_UNITS — the inventory §1.3's finding was that no
+// existing pass queried them). The limits ride the answer even on
+// failure (zeros then — NodesLimits' own shape), so one call is the
+// whole capability verdict.
+//
+// SetColorModelChain carries the grade's node chain on the WIRE (the flat
+// FloatArray NodeChainWire.kt encodes: raw knobs + curve control points
+// + the output block header) plus, for the OpenDRT output, the
+// pre-resolved 77-float uniform block (the Kotlin OpenDrtPacks resolver —
+// the same pre-compiled-packs rule the compiled node packs ride; the
+// ".so does not resolve presets" seam the F1-5 header documents). The
+// wire decodes into rawedit::GradeNode values HERE (one decode, the
+// GradeParcel rule) and the session deep-copies them; nodeCount 0 +
+// mode 0 CLEARS the chain state — the legacy fast path, the K2 lock.
+// A node-LUT-carrying chain is refused HERE honestly as well: the wire
+// refuses it Kotlin-side first, and this second lock keeps a fabricated
+// call from smuggling a LUT-bearing chain into the borrowed-pointer
+// contract (the Lut objects stay the caller's; none were resolved).
+
+// The shared chain-wire decode: reads the FloatArray ONCE into the
+// rawedit::GradeNode values. Returns false with the honest message in
+// [error] (setError at the caller); never misreads.
+static bool readNodeChainWire(JNIEnv* env, jfloatArray wire,
+                              gles::NodeChainDecoded* out, std::string* error) {
+    const jsize len = wire == nullptr ? 0 : env->GetArrayLength(wire);
+    if (len <= 0 || len > 8 * 1024) {
+        *error = "node chain wire: empty or oversize (recovery: re-encode the chain with NodeChainWire.encode)";
+        return false;
+    }
+    std::vector<float> buf(static_cast<size_t>(len));
+    env->GetFloatArrayRegion(wire, 0, len, buf.data());
+    if (!gles::decodeNodeChainWire(buf.data(), len, out)) {
+        *error = out->error;
+        return false;
+    }
+    for (const rawedit::GradeNode& n : out->nodes) {
+        if (n.lut != nullptr || (n.lutMix > 0.0001f && out->nodeCount > 0 && n.hasLut())) {
+            *error = std::string("node chain wire: node LUTs are not wired on this path "
+                                 "(recovery: render this clip on the CPU path)");
+            return false;
+        }
+    }
+    return true;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionInitNodes(
+        JNIEnv* env, jclass, jlong sessionHandle,
+        jstring nodesSource, jstring vertexSource, jstring tailDrtSource) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    gles::PreviewSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        if (sessionHandle > 0 && sessionHandle <= kMaxPreviewSessions) {
+            session = gPreviewSessions[sessionHandle - 1].get();
+        }
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session nodes init: session is closed "
+                 "(recovery: reopen the preview)");
+        return nullptr;
+    }
+    // The three sources, the nativePreviewSessionOpen pattern (copy then
+    // release; null chars = JNI OOM).
+    const char* chars[3] = {nullptr, nullptr, nullptr};
+    std::string texts[3];
+    jstring sources[3] = {nodesSource, vertexSource, tailDrtSource};
+    const char* names[3] = {"nodes", "vertex", "tail-drt"};
+    for (int i = 0; i < 3; ++i) {
+        chars[i] = env->GetStringUTFChars(sources[i], nullptr);
+        if (chars[i] == nullptr) {
+            setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                     std::string("preview session nodes init: out of memory reading the ") +
+                         names[i] + " source (recovery: free memory and retry)");
+            // Release the ones acquired before the OOM (chars[i] failed —
+            // nothing acquired there).
+            for (int j = 0; j < i; ++j) env->ReleaseStringUTFChars(sources[j], chars[j]);
+            return nullptr;
+        }
+        texts[i] = chars[i];
+    }
+    for (int i = 0; i < 3; ++i) {
+        env->ReleaseStringUTFChars(sources[i], chars[i]);
+    }
+    gles::GpuDevelopPipeline::NodesLimits limits;
+    std::string detail;
+    const bool ok = session->initNodes(texts[0], texts[1], texts[2], &limits, &detail);
+    if (!ok) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "preview session nodes init: " + (detail.empty() ? std::string("compile failed") : detail) +
+                     " (recovery: the preview falls back to the CPU path)");
+    }
+    jint out[3] = {ok ? 1 : 0, limits.fragmentUniformVectors, limits.textureImageUnits};
+    jintArray arr = env->NewIntArray(3);
+    if (arr == nullptr) return nullptr;
+    env->SetIntArrayRegion(arr, 0, 3, out);
+    return arr;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetColorModelChain(
+        JNIEnv* env, jclass, jlong sessionHandle, jfloatArray chainWire,
+        jfloatArray drtUniforms) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    gles::PreviewSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        if (sessionHandle > 0 && sessionHandle <= kMaxPreviewSessions) {
+            session = gPreviewSessions[sessionHandle - 1].get();
+        }
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageOpen,
+                 "preview session color chain: session is closed "
+                 "(recovery: reopen the preview)");
+        return JNI_FALSE;
+    }
+    gles::NodeChainDecoded decoded;
+    std::string wireError;
+    if (!readNodeChainWire(env, chainWire, &decoded, &wireError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "preview session color chain: " + wireError);
+        return JNI_FALSE;
+    }
+    // The DRT uniform block: required for outputMode 1 (the pipeline's
+    // own contract; the session re-checks), ignored for legacy.
+    std::vector<float> drt;
+    if (decoded.outputMode == 1) {
+        if (drtUniforms == nullptr) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                     "preview session color chain: the OpenDRT output needs "
+                     "its uniform pack (recovery: resolve it with OpenDrtPacks.resolve)");
+            return JNI_FALSE;
+        }
+        const jsize drtLen = env->GetArrayLength(drtUniforms);
+        if (drtLen != gles::GpuDevelopPipeline::kDrtUniformSlots) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                     "preview session color chain: the DRT uniform pack has " +
+                         std::to_string(drtLen) + " floats, needs " +
+                         std::to_string(gles::GpuDevelopPipeline::kDrtUniformSlots));
+            return JNI_FALSE;
+        }
+        drt.assign(static_cast<size_t>(drtLen), 0.0f);
+        env->GetFloatArrayRegion(drtUniforms, 0, drtLen, drt.data());
+    }
+    // The chain hash: the DECODED values' content key (the session's
+    // revision cache key; matching setColorModelChain's contract — "the
+    // same values in the same order hash the same"). Computed from the
+    // canonical wire floats so it agrees with the Kotlin-side
+    // NodeChainWire.chainHash (both hash the SAME bytes).
+    const jsize wireLen = env->GetArrayLength(chainWire);
+    std::vector<float> wireBuf(static_cast<size_t>(wireLen));
+    env->GetFloatArrayRegion(chainWire, 0, wireLen, wireBuf.data());
+    uint64_t h = 1469598103934665603ull;
+    for (float f : wireBuf) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof(bits));
+        for (int i = 0; i < 4; ++i) {
+            h ^= (bits >> (8 * i)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    }
+    std::string detail;
+    const bool ok = session->setColorModelChain(
+        decoded.nodes.empty() ? nullptr : decoded.nodes.data(),
+        decoded.nodeCount, decoded.outputMode,
+        drt.empty() ? nullptr : drt.data(), h, &detail);
+    if (!ok) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
+                 "preview session color chain: " + detail);
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
 }
 
 // Stabilization zoom probe (audit fix 2026-11-12, Fix 5) -----------------------

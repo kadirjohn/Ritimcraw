@@ -236,6 +236,13 @@ echo "== building tests =="
 "$CXX" "${FLAGS[@]}" -I"$ROOT/app/src/main/cpp/gles" "${INCLUDES[@]}" \
   "$ROOT/core/tests/test_gpu_nodes_logic.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gpu_nodes_logic"
+# test_node_chain_wire: color model v2 F1-6's wire decode - the NodeChainWire
+# mirror pair's C++ half (record-by-record fidelity, the honest refusals,
+# and decode -> compileNode equality so the wire cannot change what the
+# chain computes).
+"$CXX" "${FLAGS[@]}" -I"$ROOT/app/src/main/cpp/gles" "${INCLUDES[@]}" \
+  "$ROOT/core/tests/test_node_chain_wire.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_node_chain_wire"
 # test_resample: E5-B streaming resampler + stereo/mono downmix core
 # (unwired filmcraft audio-dsp port) — synthetic only, no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_resample.cpp" \
@@ -316,6 +323,8 @@ echo "== running test_opendrt =="
 (cd "$ROOT" && "$BUILD/test_opendrt")
 echo "== running test_gpu_nodes_logic =="
 "$BUILD/test_gpu_nodes_logic"
+echo "== running test_node_chain_wire =="
+"$BUILD/test_node_chain_wire"
 echo "== running test_loudness =="
 "$BUILD/test_loudness"
 echo "== running test_resample =="
