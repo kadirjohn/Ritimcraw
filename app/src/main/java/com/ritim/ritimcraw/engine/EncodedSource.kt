@@ -810,6 +810,10 @@ class EncodedSource(
     ): IntArray {
         val fmt = requireOpen()
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
+        // Highlights/Shadows on an encoded clip drive the node chain's log wheels (EncodedToneBridge, owner decision
+        // 2026-11-25); the same wire feeds the CPU oracle and the GPU door below, preview and export alike.
+        @Suppress("NAME_SHADOWING")
+        val chainWire = EncodedToneBridge.apply(grade.highlights, grade.shadows, chainWire)
         val gpu = gpuDeveloper
         // The GPU door covers the preview's common shape, including a LUT (the develop session's own 3D LUT
         // texture, the same stage the MCRAW chain uses) and the v2 node chain (its NODES programs; a chain the GPU
@@ -843,7 +847,7 @@ class EncodedSource(
             EncodedFrameTrace.logPath(
                 if (out != null) "gpu" else "cpu-fallback", planes.width, planes.height, planes.bitDepth, reduce,
                 now - tGpu, decodeWallNs, EncodedFrameTrace.copyNanos.getAndSet(0), tDev - tGpu, now - tDev,
-                lastDecodedCount,
+                lastDecodedCount, chainWire?.get(0)?.toInt() ?: 0, grade.highlights,
             )
             EncodedFrameTrace.gpuDeveloped = out != null
             if (out != null) { decoder.recycle(planes); return out }
@@ -1494,12 +1498,12 @@ internal object EncodedFrameTrace {
 
     /** Which develop path took the frame (E0b-4b): "gpu" or "cpu-fallback"; the CPU-only case logs via [logFrame]. */
     fun logPath(path: String, w: Int, h: Int, bits: Int, reduce: Int, nanos: Long,
-                decodeWallNs: Long = 0, adapterCopyNs: Long = 0, packNs: Long = 0, gpuNs: Long = 0, decoded: Int = 0) {
+                decodeWallNs: Long = 0, adapterCopyNs: Long = 0, packNs: Long = 0, gpuNs: Long = 0, decoded: Int = 0, nodes: Int = 0, hi: Float = 0f) {
         if (!com.ritim.ritimcraw.BuildConfig.DEBUG) return
         runCatching {
         android.util.Log.i(
             "ritim-trace",
-            String.format(java.util.Locale.ROOT, "encoded-path %s src=%dx%d bits=%d reduce=%d develop=%.1fms decodeWait=%.1fms (adapterCopy=%.1fms) pack=%.1fms gpuJni=%.1fms decoded=%d", path, w, h, bits, reduce, nanos / 1e6, decodeWallNs / 1e6, adapterCopyNs / 1e6, packNs / 1e6, gpuNs / 1e6, decoded),
+            String.format(java.util.Locale.ROOT, "encoded-path %s src=%dx%d bits=%d reduce=%d develop=%.1fms decodeWait=%.1fms (adapterCopy=%.1fms) pack=%.1fms gpuJni=%.1fms decoded=%d nodes=%d hi=%.0f", path, w, h, bits, reduce, nanos / 1e6, decodeWallNs / 1e6, adapterCopyNs / 1e6, packNs / 1e6, gpuNs / 1e6, decoded, nodes, hi),
         )
         }
     }

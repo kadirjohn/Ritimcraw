@@ -482,4 +482,100 @@ class EncodedYuvPassParityTest {
             NativeSource.jniDevelopSessionClose(session)
         }
     }
+
+    // ---- the Highlights/Shadows -> log wheel bridge (owner decision 2026-11-25) ----
+
+    @Test
+    fun the_tone_bridge_moves_the_image_and_gpu_matches_the_cpu_oracle() {
+        val session = com.ritim.ritimcraw.export.NativeGpuDevelop.openSession()
+        assertTrue("the develop session did not open", session > 0)
+        try {
+            val init = NativeSource.jniDevelopSessionInitNodes(
+                session, GlesShaderSources.NODES, GlesShaderSources.FULLSCREEN_VERTEX,
+                GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+            )
+            assertTrue("NODES programs did not compile", init != null && init.isNotEmpty() && init[0] == 1)
+            val lines = ArrayList<String>()
+            val failures = ArrayList<String>()
+            for ((i, caseIndex) in intArrayOf(4, 8).withIndex()) {
+                val base = cases[caseIndex]
+                val f = fixture(320, 180, base.bits, 0x7171 + 5 * i)
+                val reduce = 2
+                val small = reduceFrame(f, reduce)
+                val spec = EncodedColorSpec(
+                    profile = SourceProfile(
+                        primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                        range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                        primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                        rangeProvenance = null, bitDepthProvenance = null,
+                    ),
+                    declaredBitDepth = base.bits,
+                )
+                val frame = YuvFrameK(small.w, small.h, true, small.y, small.c, ByteArray(0), small.stride, small.uvStride, base.bits)
+                val n = small.w * small.h
+                val plain = NativeEncodedDeveloper.develop(frame, spec, 0, GradeK(), null, null)!!
+                for ((name, hi, sh) in listOf(Triple("highlights -100", -100f, 0f), Triple("highlights +100", 100f, 0f), Triple("shadows +100", 0f, 100f), Triple("both", -60f, 60f))) {
+                    val wire = EncodedToneBridge.apply(hi, sh, null)!!
+                    val cpu = NativeEncodedDeveloper.develop(frame, spec, 0, GradeK(highlights = hi, shadows = sh), null, wire)
+                    assertNotNull("$name: CPU null (${NativeSource.previewLastError()})", cpu)
+                    val moved = GradeParitySweep.compare(GradeParitySweep.argbBytes(cpu!!.copyOfRange(2, 2 + n)), GradeParitySweep.argbBytes(plain.copyOfRange(2, 2 + n)))
+                    assertTrue("set chain", NativeSource.jniDevelopSessionSetColorModelChain(session, wire, null))
+                    val gpu = NativeSource.jniDevelopSessionRenderYuvParcel(
+                        session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                        spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, reduce,
+                        GradeParcel.encode(GradeK(highlights = hi, shadows = sh)),
+                    )
+                    assertNotNull("$name: GPU null (${NativeSource.previewLastError()})", gpu)
+                    val par = GradeParitySweep.compare(gpu!!, GradeParitySweep.argbBytes(cpu.copyOfRange(2, 2 + n)))
+                    val line = String.format(java.util.Locale.ROOT,
+                        "tone case %d [%s]: moved maxDiffLsb=%d mismatch=%.2f%% | gpu-vs-cpu maxDiffLsb=%d mismatch=%.4f%%",
+                        caseIndex, name, moved.maxDiffLsb, moved.mismatchPct, par.maxDiffLsb, par.mismatchPct)
+                    Log.i("ritim-parity", "e0b-tone $line")
+                    lines += line
+                    if (moved.maxDiffLsb == 0) failures += "case $caseIndex [$name]: the bridge did not move the image"
+                    if (par.maxDiffLsb > 1 || par.mismatchPct > STRICT_MISMATCH_BOUND_PCT) failures += "case $caseIndex [$name]: parity ${par.maxDiffLsb} LSB ${par.mismatchPct}%"
+                }
+            }
+            assertTrue("tone bridge: $failures\n" + lines.joinToString("\n"), failures.isEmpty())
+        } finally {
+            NativeSource.jniDevelopSessionClose(session)
+        }
+    }
+
+    @Test
+    fun the_app_door_applies_the_tone_bridge_node() {
+        val door = NativeEncodedGpuDeveloper()
+        try {
+            val base = cases[4]
+            val spec = EncodedColorSpec(
+                profile = SourceProfile(
+                    primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                    range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                    primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                    rangeProvenance = null, bitDepthProvenance = null,
+                ),
+                declaredBitDepth = base.bits,
+            )
+            val failures = ArrayList<String>()
+            // The app's real shapes: the preview reduces a 4K source by 3 (1280x720), a paused frame by 2.
+            for ((w, h, reduce) in listOf(Triple(320, 180, 1), Triple(1280, 720, 1), Triple(3840, 2160, 3), Triple(3840, 2160, 2), Triple(320, 180, 1))) {
+                val f = fixture(w, h, base.bits, 0x7272 + w)
+                val frame = YuvFrameK(f.w, f.h, true, f.y, f.c, ByteArray(0), f.stride, f.uvStride, base.bits)
+                val plain = door.develop(frame, spec, GradeK(), reduce, null, null)
+                val wire = EncodedToneBridge.apply(-100f, 0f, null)
+                val toned = door.develop(frame, spec, GradeK(highlights = -100f), reduce, null, wire)
+                if (plain == null || toned == null) { failures += "${w}x$h/$reduce: null (plain=${plain != null} toned=${toned != null})"; continue }
+                var diff = 0
+                for (i in 2 until plain.size) {
+                    val a = plain[i]; val b = toned[i]
+                    diff = maxOf(diff, Math.abs(((a shr 16) and 255) - ((b shr 16) and 255)), Math.abs(((a shr 8) and 255) - ((b shr 8) and 255)), Math.abs((a and 255) - (b and 255)))
+                }
+                Log.i("ritim-parity", "e0b-door tone ${w}x$h/$reduce max channel diff = $diff")
+                if (diff <= 8) failures += "${w}x$h/$reduce: diff=$diff"
+            }
+            assertTrue("the app door left the image unchanged with a highlights node: $failures", failures.isEmpty())
+        } finally {
+            door.close()
+        }
+    }
 }
