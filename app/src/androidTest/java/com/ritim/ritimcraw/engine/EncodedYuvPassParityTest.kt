@@ -64,6 +64,20 @@ class EncodedYuvPassParityTest {
         val ev: Float = 0f, val tempK: Float = 5600f, val tint: Float = 0f,
     )
 
+    private companion object {
+        /**
+         * The mismatch bound for the AgX chain cases ONLY (owner decision 2026-11-25), every other case
+         * keeps 0.01%. Both bounds are at most 1 LSB. Why it exists: the AgX GPU shader is a verbatim
+         * transcription of the CPU stage, but each channel runs log2 and two pow() calls, and the
+         * hardware and std:: implementations of those differ in the last bit, so a rare sample lands on
+         * the other side of an 8-bit rounding boundary. Measured on the noise fixture: AgX alone 0.0255%,
+         * AgX with exposure and tint 0.0301% (all exactly 1 LSB); ACES, which has no transcendental, is
+         * 0. The owner accepted about 0.03%; 0.035% leaves room for the 0.0301% observed here.
+         */
+        const val AGX_MISMATCH_BOUND_PCT = 0.035
+        const val STRICT_MISMATCH_BOUND_PCT = 0.01
+    }
+
     private val cases = listOf(
         Case("8-bit limited 709 Rec709 709", 8, false, SourceMatrix.BT709, SourceTransfer.Rec709OETF, SourcePrimaries.BT709),
         Case("8-bit full 601 sRGB 709", 8, true, SourceMatrix.BT601, SourceTransfer.Srgb, SourcePrimaries.BT709),
@@ -254,7 +268,10 @@ class EncodedYuvPassParityTest {
 
     // ---- E0b-4b: the whole develop chain on an encoded frame, through the develop session ----
 
-    private class ChainCase(val name: String, val caseIndex: Int, val reduce: Int, val grade: GradeK)
+    private class ChainCase(val name: String, val caseIndex: Int, val reduce: Int, val grade: GradeK) {
+        /** The AgX looks (tonemap 2-5) carry their own, separate, owner-accepted bound: see [AGX_MISMATCH_BOUND_PCT]. */
+        val isAgx: Boolean get() = grade.tonemap in 2..5
+    }
 
     @Test
     fun the_whole_chain_on_an_encoded_frame_matches_the_cpu_oracle() {
@@ -277,7 +294,7 @@ class EncodedYuvPassParityTest {
         try {
             val lines = ArrayList<String>()
             var worst = 0
-            var worstPct = 0.0
+            val failures = ArrayList<String>()
             for ((i, k) in chain.withIndex()) {
                 val base = cases[k.caseIndex]
                 val f = fixture(320, 180, base.bits, 0x7A7A + 13 * i)
@@ -308,11 +325,12 @@ class EncodedYuvPassParityTest {
                 Log.i("ritim-parity", "e0b-chain $line")
                 lines += line
                 if (stats.maxDiffLsb > worst) worst = stats.maxDiffLsb
-                if (stats.mismatchPct > worstPct) worstPct = stats.mismatchPct
+                val bound = if (k.isAgx) AGX_MISMATCH_BOUND_PCT else STRICT_MISMATCH_BOUND_PCT
+                if (stats.mismatchPct > bound) failures += "${k.name}: ${stats.mismatchPct}% > $bound%"
             }
             assertTrue(
-                "encoded chain GPU vs CPU oracle: worst maxDiffLsb=$worst mismatch=$worstPct%\n" + lines.joinToString("\n"),
-                worst <= 1 && worstPct <= 0.01,
+                "encoded chain GPU vs CPU oracle: worst maxDiffLsb=$worst, over-bound cases=$failures\n" + lines.joinToString("\n"),
+                worst <= 1 && failures.isEmpty(),
             )
         } finally {
             NativeSource.jniDevelopSessionClose(session)

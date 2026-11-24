@@ -128,6 +128,12 @@ object GradeParitySweep {
                 asShot = false, tempK = 7100f, tint = 30f, sharpness = 50f, detail = 50f,
             ),
         )
+        // Tonemap cases (2026-11-25): the sweep had none, so the AgX GPU/CPU twins were only compared
+        // through the encoded-chain test, where AgX alone read 1 LSB on 0.0255% of samples. ACES is
+        // rational; the AgX looks add log2 and two pow() per channel.
+        add("tonemap", "ACES", GradeK(tonemap = 1))
+        add("tonemap", "AgX Punchy", GradeK(tonemap = 2))
+        add("tonemap", "AgX Base", GradeK(tonemap = 5))
         // Warp cases (grade non-neutral so an un-graded TAIL input is visible):
         // identity must equal the CPU render; a small rotation+translation
         // must still follow the grade.
