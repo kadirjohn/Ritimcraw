@@ -39,6 +39,23 @@ struct EncodedYuvPassParams {
     int reduce = 1;
 };
 
+// The planes of one decoded frame plus the colour decisions, as the develop pipeline's request carries
+// them (E0b-4b): borrowed for the call, never owned. [params] holds the SOURCE dims, strides and the
+// reduction; the request's own FrameInfo dims are the reduced (output) dims.
+struct EncodedYuvInput {
+    const uint8_t* y = nullptr;
+    size_t yLen = 0;
+    const uint8_t* c = nullptr;
+    size_t cLen = 0;
+    EncodedYuvPassParams params;
+};
+
+// The pass's fragment source (GLSL ES 3.00) and its uniform setter, shared with the develop pipeline so
+// the headless parity pass and the chain's pass 1 are the SAME code. The setter needs the program
+// current; it binds samplers uY/uC to units 0/1 (the planes' textures are the caller's to bind there).
+const char* encodedYuvFragmentSource();
+void setEncodedYuvUniforms(unsigned int program, const EncodedYuvPassParams& params);
+
 // Opens a throwaway EGL pbuffer context, runs the pass over the semi-planar planes and reads the linear
 // RGB back (outW*outH*3 floats, row 0 = the top row; outW/outH per [EncodedYuvPassParams::reduce]).
 // Returns false with a reason in *detail.

@@ -1091,6 +1091,38 @@ class NativeSource private constructor(
          * refuses the frame honestly (setError + null). The LUT binding
          * group and the caller-resolved warp pair stay flat parameters.
          */
+        /**
+         * E0b-4b: the develop session's encoded-frame door (see jni_bridge.cpp). Planes: Y + interleaved
+         * CbCr, 8-bit or P010 words; [reduce] N > 1 reduces first. Returns the RGB888 of the reduced frame.
+         */
+        @JvmStatic private external fun nativeDevelopSessionRenderYuvParcel(
+            sessionHandle: Long,
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int, reduce: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?, lutStrength: Float,
+            lutRole: Int, lutInGamut: Int, lutInTransfer: Int, lutOutGamut: Int, lutOutTransfer: Int,
+        ): ByteArray?
+
+        internal fun jniDevelopSessionRenderYuvParcel(
+            sessionHandle: Long,
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int, reduce: Int,
+            gradeParcel: FloatArray,
+            lutPath: String? = null, lutStrength: Float = 0f,
+            lutRole: Int = -1, lutInGamut: Int = -1, lutInTransfer: Int = -1,
+            lutOutGamut: Int = -1, lutOutTransfer: Int = -1,
+        ): ByteArray? {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeDevelopSessionRenderYuvParcel(
+                sessionHandle, yPlane, cPlane, width, height, stride, uvStride, bitDepth, fullRange,
+                matrix, transfer, primaries, reduce, gradeParcel, lutPath, lutStrength,
+                lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+            )
+        }
+
         @JvmStatic private external fun nativeDevelopSessionRenderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,

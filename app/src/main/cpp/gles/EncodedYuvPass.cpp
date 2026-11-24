@@ -139,6 +139,49 @@ GLuint compile(GLenum type, const char* src, std::string* detail) {
 
 }  // namespace
 
+const char* encodedYuvFragmentSource() { return kFragment; }
+
+void setEncodedYuvUniforms(unsigned int program, const EncodedYuvPassParams& pr) {
+    const GLuint prog = program;
+    const bool wide = pr.bitDepth > 8;
+    const int cw = (pr.width + 1) / 2;
+    const int ch = (pr.height + 1) / 2;
+        // The oracle's constants (core/src/Transfer.cpp rangeFor / kCoeff*, the WB gain formula).
+        const float scale = static_cast<float>(1 << (pr.bitDepth - 8));
+        float offY, rangeY, offC, rangeC;
+        if (pr.fullRange) {
+            const float maxCode = static_cast<float>((1 << pr.bitDepth) - 1);
+            offY = 0.0f; rangeY = maxCode; offC = 128.0f * scale; rangeC = maxCode;
+        } else {
+            offY = 16.0f * scale; rangeY = 219.0f * scale; offC = 128.0f * scale; rangeC = 224.0f * scale;
+        }
+        float coef[4] = {1.5748f, 0.187324f, 0.468124f, 1.8556f};  // BT.709
+        if (pr.matrix == 0) { coef[0] = 1.402f;  coef[1] = 0.344136f; coef[2] = 0.714136f; coef[3] = 1.772f; }
+        if (pr.matrix == 2) { coef[0] = 1.4746f; coef[1] = 0.164553f; coef[2] = 0.571353f; coef[3] = 1.8814f; }
+        float gm[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        const bool gamut = pr.primaries == 1;
+        if (gamut) rawedit::gamutToGamut(rawedit::GamutId::Rec2020, rawedit::GamutId::Rec709, gm);
+        const float t = pr.tempK - 5600.0f;
+        const float gains[3] = {1.0f + t * 0.002f + pr.tint * 0.002f,
+                                1.0f - pr.tint * 0.002f,
+                                1.0f - t * 0.002f + pr.tint * 0.002f};
+        const float exposure = std::pow(2.0f, pr.exposureEv);
+
+        glUniform1i(glGetUniformLocation(prog, "uY"), 0);
+        glUniform1i(glGetUniformLocation(prog, "uC"), 1);
+        glUniform1i(glGetUniformLocation(prog, "uShift"), wide ? 16 - pr.bitDepth : 0);
+        glUniform1i(glGetUniformLocation(prog, "uReduce"), pr.reduce);
+        glUniform2i(glGetUniformLocation(prog, "uSrcSize"), pr.width, pr.height);
+        glUniform2i(glGetUniformLocation(prog, "uChromaSize"), cw, ch);
+        glUniform4f(glGetUniformLocation(prog, "uRange"), offY, rangeY, offC, rangeC);
+        glUniform4f(glGetUniformLocation(prog, "uCoef"), coef[0], coef[1], coef[2], coef[3]);
+        glUniform1i(glGetUniformLocation(prog, "uTransfer"), pr.transfer);
+        glUniform1i(glGetUniformLocation(prog, "uGamut"), gamut ? 1 : 0);
+        glUniformMatrix3fv(glGetUniformLocation(prog, "uGm"), 1, GL_TRUE, gm);
+        glUniform3f(glGetUniformLocation(prog, "uGain"), gains[0], gains[1], gains[2]);
+        glUniform1f(glGetUniformLocation(prog, "uExposure"), exposure);
+}
+
 namespace {
 
 // One headless pass: EGL context, program, plane textures, a reduced RGBA32F target. Built once;
@@ -234,45 +277,12 @@ struct Pass {
     }
 
     void draw() {
-        // The oracle's constants (core/src/Transfer.cpp rangeFor / kCoeff*, the WB gain formula).
-        const float scale = static_cast<float>(1 << (pr.bitDepth - 8));
-        float offY, rangeY, offC, rangeC;
-        if (pr.fullRange) {
-            const float maxCode = static_cast<float>((1 << pr.bitDepth) - 1);
-            offY = 0.0f; rangeY = maxCode; offC = 128.0f * scale; rangeC = maxCode;
-        } else {
-            offY = 16.0f * scale; rangeY = 219.0f * scale; offC = 128.0f * scale; rangeC = 224.0f * scale;
-        }
-        float coef[4] = {1.5748f, 0.187324f, 0.468124f, 1.8556f};  // BT.709
-        if (pr.matrix == 0) { coef[0] = 1.402f;  coef[1] = 0.344136f; coef[2] = 0.714136f; coef[3] = 1.772f; }
-        if (pr.matrix == 2) { coef[0] = 1.4746f; coef[1] = 0.164553f; coef[2] = 0.571353f; coef[3] = 1.8814f; }
-        float gm[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        const bool gamut = pr.primaries == 1;
-        if (gamut) rawedit::gamutToGamut(rawedit::GamutId::Rec2020, rawedit::GamutId::Rec709, gm);
-        const float t = pr.tempK - 5600.0f;
-        const float gains[3] = {1.0f + t * 0.002f + pr.tint * 0.002f,
-                                1.0f - pr.tint * 0.002f,
-                                1.0f - t * 0.002f + pr.tint * 0.002f};
-        const float exposure = std::pow(2.0f, pr.exposureEv);
-
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, outW, outH);
         glUseProgram(prog);
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[0]);
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tex[1]);
-        glUniform1i(glGetUniformLocation(prog, "uY"), 0);
-        glUniform1i(glGetUniformLocation(prog, "uC"), 1);
-        glUniform1i(glGetUniformLocation(prog, "uShift"), wide ? 16 - pr.bitDepth : 0);
-        glUniform1i(glGetUniformLocation(prog, "uReduce"), pr.reduce);
-        glUniform2i(glGetUniformLocation(prog, "uSrcSize"), pr.width, pr.height);
-        glUniform2i(glGetUniformLocation(prog, "uChromaSize"), cw, ch);
-        glUniform4f(glGetUniformLocation(prog, "uRange"), offY, rangeY, offC, rangeC);
-        glUniform4f(glGetUniformLocation(prog, "uCoef"), coef[0], coef[1], coef[2], coef[3]);
-        glUniform1i(glGetUniformLocation(prog, "uTransfer"), pr.transfer);
-        glUniform1i(glGetUniformLocation(prog, "uGamut"), gamut ? 1 : 0);
-        glUniformMatrix3fv(glGetUniformLocation(prog, "uGm"), 1, GL_TRUE, gm);
-        glUniform3f(glGetUniformLocation(prog, "uGain"), gains[0], gains[1], gains[2]);
-        glUniform1f(glGetUniformLocation(prog, "uExposure"), exposure);
+        setEncodedYuvUniforms(prog, pr);
         glDisable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);
         glDrawArrays(GL_TRIANGLES, 0, 3);

@@ -64,6 +64,20 @@ class EncodedYuvPassParityTest {
         val ev: Float = 0f, val tempK: Float = 5600f, val tint: Float = 0f,
     )
 
+    private companion object {
+        /**
+         * The mismatch bound for the AgX chain cases ONLY (owner decision 2026-11-25), every other case
+         * keeps 0.01%. Both bounds are at most 1 LSB. Why it exists: the AgX GPU shader is a verbatim
+         * transcription of the CPU stage, but each channel runs log2 and two pow() calls, and the
+         * hardware and std:: implementations of those differ in the last bit, so a rare sample lands on
+         * the other side of an 8-bit rounding boundary. Measured on the noise fixture: AgX alone 0.0255%,
+         * AgX with exposure and tint 0.0301% (all exactly 1 LSB); ACES, which has no transcendental, is
+         * 0. The owner accepted about 0.03%; 0.035% leaves room for the 0.0301% observed here.
+         */
+        const val AGX_MISMATCH_BOUND_PCT = 0.035
+        const val STRICT_MISMATCH_BOUND_PCT = 0.01
+    }
+
     private val cases = listOf(
         Case("8-bit limited 709 Rec709 709", 8, false, SourceMatrix.BT709, SourceTransfer.Rec709OETF, SourcePrimaries.BT709),
         Case("8-bit full 601 sRGB 709", 8, true, SourceMatrix.BT601, SourceTransfer.Srgb, SourcePrimaries.BT709),
@@ -249,6 +263,77 @@ class EncodedYuvPassParityTest {
             Log.i("ritim-parity", String.format(java.util.Locale.ROOT,
                 "e0b-yuv-bench %s %dx%d reduce=%d -> %dx%d: upload %.2f ms + draw %.2f ms per frame",
                 name, w, h, n, (w + n - 1) / n, (h + n - 1) / n, r!![0], r[1]))
+        }
+    }
+
+    // ---- E0b-4b: the whole develop chain on an encoded frame, through the develop session ----
+
+    private class ChainCase(val name: String, val caseIndex: Int, val reduce: Int, val grade: GradeK) {
+        /** The AgX looks (tonemap 2-5) carry their own, separate, owner-accepted bound: see [AGX_MISMATCH_BOUND_PCT]. */
+        val isAgx: Boolean get() = grade.tonemap in 2..5
+    }
+
+    @Test
+    fun the_whole_chain_on_an_encoded_frame_matches_the_cpu_oracle() {
+        val chain = listOf(
+            ChainCase("Mi-Log P010, neutral chain", 4, 2, GradeK()),
+            ChainCase("Mi-Log P010, sharpness + detail", 4, 2, GradeK().copy(sharpness = 40f, detail = 30f)),
+            ChainCase("Mi-Log P010, luma + chroma denoise", 4, 2, GradeK().copy(noiseReduction = 40f, chromaDenoise = 50f)),
+            ChainCase("8-bit sRGB, AgX tonemap + exposure + warm tint", 8, 2,
+                GradeK().copy(tonemap = 2, exposureEv = 0.5f, tempK = 6200f, tint = 8f)),
+            // Single-variable splits of the case above (which sat at 0.030% against the 0.01% bound):
+            ChainCase("8-bit sRGB, AgX tonemap only", 8, 2, GradeK().copy(tonemap = 2)),
+            ChainCase("8-bit sRGB, ACES tonemap only", 8, 2, GradeK().copy(tonemap = 1)),
+            ChainCase("8-bit sRGB, exposure + warm tint only", 8, 2, GradeK().copy(exposureEv = 0.5f, tempK = 6200f, tint = 8f)),
+            ChainCase("Mi-Log P010, everything at once", 4, 3,
+                GradeK().copy(noiseReduction = 30f, chromaDenoise = 40f, sharpness = 25f, detail = 20f,
+                    tonemap = 1, exposureEv = -0.3f, tempK = 5200f, tint = -6f)),
+        )
+        val session = com.ritim.ritimcraw.export.NativeGpuDevelop.openSession()
+        assertTrue("the develop session did not open", session > 0)
+        try {
+            val lines = ArrayList<String>()
+            var worst = 0
+            val failures = ArrayList<String>()
+            for ((i, k) in chain.withIndex()) {
+                val base = cases[k.caseIndex]
+                val f = fixture(320, 180, base.bits, 0x7A7A + 13 * i)
+                val small = reduceFrame(f, k.reduce)
+                val spec = EncodedColorSpec(
+                    profile = SourceProfile(
+                        primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                        range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                        primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                        rangeProvenance = null, bitDepthProvenance = null,
+                    ),
+                    declaredBitDepth = base.bits,
+                )
+                val frame = YuvFrameK(small.w, small.h, true, small.y, small.c, ByteArray(0), small.stride, small.uvStride, base.bits)
+                val cpu = NativeEncodedDeveloper.develop(frame, spec, 0, k.grade, null, null)
+                assertNotNull("${k.name}: the CPU oracle returned null", cpu)
+                val gpu = NativeSource.jniDevelopSessionRenderYuvParcel(
+                    session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                    spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, k.reduce,
+                    GradeParcel.encode(k.grade),
+                )
+                assertNotNull("${k.name}: the chain returned null (${NativeSource.previewLastError()})", gpu)
+                val n = small.w * small.h
+                assertTrue("${k.name}: ${gpu!!.size} bytes for ${small.w}x${small.h}", gpu.size == n * 3)
+                val stats = GradeParitySweep.compare(gpu, GradeParitySweep.argbBytes(cpu!!.copyOfRange(2, 2 + n)))
+                val line = String.format(java.util.Locale.ROOT, "%s (%dx%d): maxDiffLsb=%d mismatch=%.4f%% over1=%.4f%%",
+                    k.name, small.w, small.h, stats.maxDiffLsb, stats.mismatchPct, stats.over1Pct)
+                Log.i("ritim-parity", "e0b-chain $line")
+                lines += line
+                if (stats.maxDiffLsb > worst) worst = stats.maxDiffLsb
+                val bound = if (k.isAgx) AGX_MISMATCH_BOUND_PCT else STRICT_MISMATCH_BOUND_PCT
+                if (stats.mismatchPct > bound) failures += "${k.name}: ${stats.mismatchPct}% > $bound%"
+            }
+            assertTrue(
+                "encoded chain GPU vs CPU oracle: worst maxDiffLsb=$worst, over-bound cases=$failures\n" + lines.joinToString("\n"),
+                worst <= 1 && failures.isEmpty(),
+            )
+        } finally {
+            NativeSource.jniDevelopSessionClose(session)
         }
     }
 }

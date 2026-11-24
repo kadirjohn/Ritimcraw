@@ -437,6 +437,11 @@ struct GpuDevelopPipeline::Impl {
     // drift. Store (the readback/stats pass) is the twelfth program;
     // the sessions' own tail programs (the develop session's encoder
     // blit, the preview session's window pass) stay session-side.
+    // E0b-4b: the encoded-frame pass 1 (compiled in init with the shared vertex shader) and its two
+    // integer plane textures (re-created when the source dims or depth change).
+    GLuint yuvProgram = 0;
+    GLuint yuvYTex = 0, yuvCTex = 0;
+    int yuvSrcW = 0, yuvSrcH = 0, yuvBits = 0;
     GLuint preProgram = 0;
     GLuint postProgram = 0;
     GLuint tailProgram = 0;
@@ -726,6 +731,14 @@ bool GpuDevelopPipeline::Impl::init(
     if (preFragShader.id == 0) return false;
     preProgram = linkProgram(vertShader.id, preFragShader.id, "develop-pre", detail);
     if (preProgram == 0) return false;
+    {
+        GlShader yuvFragShader;
+        yuvFragShader.id = compileShader(GL_FRAGMENT_SHADER, encodedYuvFragmentSource(),
+                                         "encoded-yuv-fragment", detail);
+        if (yuvFragShader.id == 0) return false;
+        yuvProgram = linkProgram(vertShader.id, yuvFragShader.id, "encoded-yuv", detail);
+        if (yuvProgram == 0) return false;
+    }
     GlShader postFragShader;
     postFragShader.id = compileShader(GL_FRAGMENT_SHADER, postFragmentSource,
                                       "develop-post-fragment", detail);
@@ -1246,10 +1259,11 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     DrawResult r;
     const uint32_t w = req.info.width;
     const uint32_t h = req.info.height;
-    if (req.cfa == nullptr || req.meta == nullptr ||
-        w == 0 || h == 0 ||
-        req.cfa->size() != static_cast<size_t>(w) * h) {
-        r.detail = "input: cfa size != w*h";
+    const bool yuvIn = req.yuv != nullptr;
+    if (req.meta == nullptr || w == 0 || h == 0 ||
+        (yuvIn ? (req.yuv->y == nullptr || req.yuv->c == nullptr || yuvProgram == 0)
+               : (req.cfa == nullptr || req.cfa->size() != static_cast<size_t>(w) * h))) {
+        r.detail = yuvIn ? "input: yuv planes missing" : "input: cfa size != w*h";
         return r;
     }
     r.width = w;
@@ -1742,12 +1756,62 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // tUpload0 before the unit bind, tUpload1 after the error check.
     using SteadyClock = std::chrono::steady_clock;
     const SteadyClock::time_point tUpload0 = SteadyClock::now();
+    if (yuvIn) {
+        // E0b-4b: the decoded planes as integer textures (raw code words; the pass converts).
+        const EncodedYuvPassParams& yp = req.yuv->params;
+        const bool wide = yp.bitDepth > 8;
+        const int bps = wide ? 2 : 1;
+        const int cw = (yp.width + 1) / 2;
+        const int ch = (yp.height + 1) / 2;
+        const int ystride = yp.stride > 0 ? yp.stride : yp.width * bps;
+        const int cstride = yp.uvStride > 0 ? yp.uvStride : cw * 2 * bps;
+        const long long yNeed = static_cast<long long>(yp.height - 1) * ystride + static_cast<long long>(yp.width) * bps;
+        const long long cNeed = static_cast<long long>(ch - 1) * cstride + static_cast<long long>(cw) * 2 * bps;
+        if (ystride % bps != 0 || cstride % (2 * bps) != 0 ||
+            static_cast<long long>(req.yuv->yLen) < yNeed || static_cast<long long>(req.yuv->cLen) < cNeed ||
+            (yp.bitDepth != 8 && yp.bitDepth != 10) || yp.reduce < 1 ||
+            static_cast<uint32_t>((yp.width + yp.reduce - 1) / yp.reduce) != w ||
+            static_cast<uint32_t>((yp.height + yp.reduce - 1) / yp.reduce) != h) {
+            r.detail = "input: yuv planes/dims do not match the request";
+            return r;
+        }
+        if (yuvSrcW != yp.width || yuvSrcH != yp.height || yuvBits != yp.bitDepth) {
+            if (yuvYTex != 0) { glDeleteTextures(1, &yuvYTex); yuvYTex = 0; }
+            if (yuvCTex != 0) { glDeleteTextures(1, &yuvCTex); yuvCTex = 0; }
+            glGenTextures(1, &yuvYTex);
+            glBindTexture(GL_TEXTURE_2D, yuvYTex);
+            glTexStorage2D(GL_TEXTURE_2D, 1, wide ? GL_R16UI : GL_R8UI, yp.width, yp.height);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glGenTextures(1, &yuvCTex);
+            glBindTexture(GL_TEXTURE_2D, yuvCTex);
+            glTexStorage2D(GL_TEXTURE_2D, 1, wide ? GL_RG16UI : GL_RG8UI, cw, ch);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            yuvSrcW = yp.width; yuvSrcH = yp.height; yuvBits = yp.bitDepth;
+            if (glErrorAfter("glTexStorage2D(yuv planes)", &r.detail) != GL_NO_ERROR) return r;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, yuvYTex);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, ystride / bps);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, yp.width, yp.height, GL_RED_INTEGER,
+                        wide ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, req.yuv->y);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, yuvCTex);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, cstride / (2 * bps));
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, cw, ch, GL_RG_INTEGER,
+                        wide ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, req.yuv->c);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        if (glErrorAfter("glTexSubImage2D(yuv planes)", &r.detail) != GL_NO_ERROR) return r;
+    } else {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, cfaTex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                     static_cast<GLsizei>(w), static_cast<GLsizei>(h),
                     GL_RED_INTEGER, GL_UNSIGNED_SHORT, req.cfa->data());
     if (glErrorAfter("glTexSubImage2D(R16UI)", &r.detail) != GL_NO_ERROR) return r;
+    }
     const SteadyClock::time_point tUpload1 = SteadyClock::now();
     r.uploadUs = elapsedUs(tUpload0, tUpload1);
 
@@ -1766,6 +1830,17 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // chain honestly (the preview's rule: it always covered the one fused
     // draw; the chain is the new one draw).
     const SteadyClock::time_point tDevelop0 = SteadyClock::now();
+    if (yuvIn) {
+        // E0b-4b: pass 1 is the YUV pass, into the same texA the PRE pass fills (reduced dims).
+        glUseProgram(yuvProgram);
+        glBindFramebuffer(GL_FRAMEBUFFER, fboA);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, yuvYTex);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, yuvCTex);
+        setEncodedYuvUniforms(yuvProgram, req.yuv->params);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(encoded-yuv)", &r.detail) != GL_NO_ERROR) return r;
+    } else {
     glUseProgram(preProgram);
     glBindFramebuffer(GL_FRAMEBUFFER, fboA);
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
@@ -1785,6 +1860,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     glUniform1i(hasProfileLoc, hasProfile ? 1 : 0);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(pre)", &r.detail) != GL_NO_ERROR) return r;
+    }
     auto probePass = [&](const char* tag, GLuint tex) {
         probePassFbo(tag, tex == texA ? fboA : (tex == texB ? fboB : fboC));
     };
@@ -2358,6 +2434,10 @@ void GpuDevelopPipeline::Impl::teardown() {
     if (lutTex != 0) { glDeleteTextures(1, &lutTex); lutTex = 0; }
     if (cfaTex != 0) { glDeleteTextures(1, &cfaTex); cfaTex = 0; }
     if (outBuf != 0) { glDeleteBuffers(1, &outBuf); outBuf = 0; }
+    if (yuvYTex != 0) { glDeleteTextures(1, &yuvYTex); yuvYTex = 0; }
+    if (yuvCTex != 0) { glDeleteTextures(1, &yuvCTex); yuvCTex = 0; }
+    yuvSrcW = yuvSrcH = yuvBits = 0;
+    if (yuvProgram != 0) { glDeleteProgram(yuvProgram); yuvProgram = 0; }
     if (preProgram != 0) { glDeleteProgram(preProgram); preProgram = 0; }
     if (postProgram != 0) { glDeleteProgram(postProgram); postProgram = 0; }
     if (tailProgram != 0) { glDeleteProgram(tailProgram); tailProgram = 0; }
