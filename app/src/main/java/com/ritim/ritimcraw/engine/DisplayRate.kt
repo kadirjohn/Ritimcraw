@@ -7,64 +7,74 @@ import android.view.Surface
 import com.ritim.ritimcraw.BuildConfig
 import kotlin.math.abs
 import kotlin.math.floor
-import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * Matches the display refresh rate to the clip's frame rate while it PLAYS
- * (P3, 2026-11-25). 24p on a 60 Hz panel shows unevenly (3:2: every other
- * frame stays longer); with an exact multiple (24p -> 120 Hz, 30p -> 60 or
- * 120 Hz) every frame stays equally long. Without an exact multiple (25p on
- * 60/90/120/144 Hz) the rate whose frames come out most evenly is chosen
- * ([unevenness]). Only modes with the SAME resolution are candidates (the
- * switch must not blink the screen on the Snapdragon phones). Released when
- * playback stops: the system chooses again.
+ * Matches the display refresh rate to the clip's frame rate while it PLAYS (P3, 2026-11-25).
  *
- * The pure math ([pick], [unevenness], [modeIdFor]) is ported from Klipp's
- * engine/DisplayRate.kt (same owner's own code; licence is not an issue,
- * plan K6 - see NOTICE). The Android side differs: on API 30+ the preview's
- * Surface asks for the rate itself (Surface.setFrameRate, fixed-source
- * compatibility, seamless-only on 31+), which is what the framework
- * documents for video; only when there is no Surface to ask on (the CPU
- * preview path) or the API is older does the window's
- * preferredDisplayModeId carry the pick.
+ * The problem is arithmetic: a frame can only stay on screen for a whole number of refresh
+ * intervals. When the refresh rate is a whole multiple of the frame rate (24p on 120 Hz = 5,
+ * 30p on 60 Hz = 2) every frame is held equally long; otherwise some frames are held one
+ * interval longer than others (24p on 60 Hz alternates 2 and 3: the 3:2 judder). [pick] takes the
+ * highest whole multiple among the rates the screen offers, and when there is none the rate whose
+ * hold times deviate least from the true frame period ([unevenness]). Only modes at the CURRENT
+ * resolution are candidates (a resolution switch can blink the screen). The request is released
+ * when playback stops.
+ *
+ * Written from the arithmetic above, not copied from another code base (Klipp is GPL-3.0-only;
+ * this project is Apache-2.0): the structure and names here are this project's own.
+ *
+ * On API 30+ the preview's Surface asks for the rate itself (Surface.setFrameRate, fixed-source
+ * compatibility, seamless-only on 31+); only when there is no Surface (the CPU preview path) or the
+ * API is older does the window's preferredDisplayModeId carry the pick. OFF by default, see
+ * [DisplayRateApply.ENABLED_BY_DEFAULT].
  */
 object DisplayRate {
     /** One display mode, as much as the pick needs. */
     data class Mode(val modeId: Int, val width: Int, val height: Int, val refreshRate: Float)
 
+    /** How close to a whole number the rate/fps ratio must be to count as a whole multiple. */
+    private const val WHOLE_MULTIPLE_SLACK = 0.01
+
+    /** A rate below this ratio to the frame rate cannot show every frame at all. */
+    private const val MIN_USEFUL_RATIO = 0.99
+
+    /** True when [refreshHz] is (within [WHOLE_MULTIPLE_SLACK]) a whole multiple, at least 1x, of [fps]. */
+    private fun isWholeMultiple(refreshHz: Float, fps: Double): Boolean {
+        val ratio = refreshHz / fps
+        return ratio >= MIN_USEFUL_RATIO && abs(ratio - Math.rint(ratio)) < WHOLE_MULTIPLE_SLACK
+    }
+
     /**
-     * The one of [rates] (Hz) to show [fps] at: the highest exact multiple;
-     * without one, the rate with the most even frames (the higher of two
-     * alike); null when there is nothing to choose from.
+     * The refresh rate (Hz) to play [fps] at, or null when there is nothing to choose from: the
+     * highest whole multiple; without one, the rate with the least [unevenness] (the higher of two
+     * equally even rates).
      */
     fun pick(rates: List<Float>, fps: Double): Float? {
         if (fps < 1.0 || rates.isEmpty()) return null
-        rates.filter { r ->
-            val k = r / fps
-            k >= 0.99 && abs(k - k.roundToInt()) < 0.01
-        }.maxOrNull()?.let { return it }
+        val whole = rates.filter { isWholeMultiple(it, fps) }
+        if (whole.isNotEmpty()) return whole.max()
+        // Highest first, so minBy keeps the higher rate when two are equally even.
         return rates.sortedDescending().minByOrNull { unevenness(it, fps) }
     }
 
     /**
-     * How unevenly [fps] shows at refresh [rate] (seconds): a frame stays a
-     * whole number of refreshes, the one below or the one above its own
-     * length; the root mean square of those two errors weighted by how
-     * often each occurs. A rate below the frame rate cannot show every
-     * frame and counts as one whole frame off.
+     * How far (in seconds, root-mean-square) the hold times of [fps] on a [refreshHz] screen sit
+     * from the true frame period. A frame is held for the whole number of refresh intervals just
+     * below or just above its length: the share of frames held longer is the fractional part of
+     * (period / interval), and each hold is early or late by the gap to the true period. 0 for a
+     * whole multiple. A rate too low to show every frame costs one whole frame period.
      */
-    fun unevenness(rate: Float, fps: Double): Double {
-        val p = 1.0 / fps
-        val t = 1.0 / rate
-        val k = p / t
-        if (k < 0.99) return p
-        val lo = floor(k + 1e-9)
-        val up = lo + 1
-        val f = (k - lo).coerceIn(0.0, 1.0) // share of frames that stay the longer time
-        val dLo = p - lo * t
-        val dUp = up * t - p
-        return sqrt(f * dUp * dUp + (1 - f) * dLo * dLo)
+    fun unevenness(refreshHz: Float, fps: Double): Double {
+        val framePeriod = 1.0 / fps
+        val interval = 1.0 / refreshHz
+        val intervalsPerFrame = framePeriod / interval
+        if (intervalsPerFrame < MIN_USEFUL_RATIO) return framePeriod
+        val shortHold = floor(intervalsPerFrame + 1e-9)
+        val longShare = (intervalsPerFrame - shortHold).coerceIn(0.0, 1.0)
+        val earlyBy = framePeriod - shortHold * interval
+        val lateBy = (shortHold + 1.0) * interval - framePeriod
+        return sqrt(longShare * lateBy * lateBy + (1.0 - longShare) * earlyBy * earlyBy)
     }
 
     /** Whether to ask the display for the clip's rate: the default or the debug enable flag, unless disabled. */
