@@ -54,6 +54,9 @@ target_sources(rawedit_jni PRIVATE gles/GlesPreviewSession.cpp)
 # instance of and delegate to — the chain body lives there and nowhere
 # else. Same Android-only rule as GlesPipeline.cpp.
 target_sources(rawedit_jni PRIVATE gles/GpuDevelopPipeline.cpp)
+# gles/EncodedYuvPass.cpp (+ jni_encoded_yuv.cpp) is E0b-2: the GPU twin of developEncoded's first stage,
+# headless, proven against the CPU oracle by an instrumentation test. Android-only like the rest of gles/.
+target_sources(rawedit_jni PRIVATE gles/EncodedYuvPass.cpp jni_encoded_yuv.cpp)
 # log is the Android log library: the bridge's debug-gated "ritim-stab"
 # stabilization measurement line (__android_log_print, audit fix
 # 2026-11-12) needs it. Release builds never call it (the flag stays
