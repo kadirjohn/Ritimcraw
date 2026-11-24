@@ -116,6 +116,16 @@ internal class MediaExtractorTrackReader : EncodedTrackReader {
                 codecProfile = intOrNull(MediaFormat.KEY_PROFILE),
             )
 
+            if (com.ritim.ritimcraw.BuildConfig.DEBUG) {
+                android.util.Log.i(
+                    "ritim-trace",
+                    "encoded open: mime=$mime ${format.getInteger(MediaFormat.KEY_WIDTH)}x${format.getInteger(MediaFormat.KEY_HEIGHT)} " +
+                        "raw[standard=${intOrNull(MediaFormat.KEY_COLOR_STANDARD)} range=${intOrNull(MediaFormat.KEY_COLOR_RANGE)} " +
+                        "transfer=${intOrNull(MediaFormat.KEY_COLOR_TRANSFER)} profile=${intOrNull(MediaFormat.KEY_PROFILE)}] -> " +
+                        "spec[matrix=${color.profile.matrix} primaries=${color.profile.primaries} transfer=${color.profile.transfer} " +
+                        "range=${color.profile.range} declaredBits=${color.declaredBitDepth}] notes=${color.approximations}",
+                )
+            }
             // Rotation hint (absent = 0): the develop tail rotates upright.
             val orientation = if (format.containsKey(MediaFormat.KEY_ROTATION)) {
                 format.getInteger(MediaFormat.KEY_ROTATION)
@@ -271,13 +281,19 @@ internal class MediaCodecFrameDecoder : EncodedFrameDecoder {
     override fun dequeueFrame(timeoutUs: Long): YuvPlanes? {
         val c = codec ?: throw IllegalStateException("configure the decoder first")
         val info = MediaCodec.BufferInfo()
+        val tWait = System.nanoTime()
         val index = c.dequeueOutputBuffer(info, timeoutUs)
+        EncodedFrameTrace.decodeNanos.addAndGet(System.nanoTime() - tWait)
         if (index < 0) return null // try again later / format change: nothing ready
         try {
             if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return null
             val image = c.getOutputImage(index)
                 ?: throw IllegalStateException("decoder gave no output Image")
-            return imageToPlanes(image, info.presentationTimeUs)
+            val tCopy = System.nanoTime()
+            val planes = imageToPlanes(image, info.presentationTimeUs)
+            EncodedFrameTrace.copyNanos.addAndGet(System.nanoTime() - tCopy)
+            EncodedFrameTrace.planeBytes.set(planes.y.buffer.size.toLong() + planes.u.buffer.size + planes.v.buffer.size)
+            return planes
         } finally {
             // Every path releases the buffer back to the codec (a leaked
             // output buffer would stall the decoder after a few frames).

@@ -398,7 +398,8 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             // of UnsatisfiedLinkError (same behavior as the MCRAW paths).
             throw IllegalStateException(NativeSource.nativeUnavailableMessage)
         }
-        return NativeSource.jniEncodedDevelop(
+        val tDev = System.nanoTime()
+        val result = NativeSource.jniEncodedDevelop(
             frame.y, frame.u, frame.v,
             frame.width, frame.height, frame.stride, frame.uvStride,
             frame.semiPlanar, color.nativeMatrix != 0, orientationDeg,
@@ -438,6 +439,10 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             // F1-6 (K11): the v2 chain's wire; null = the legacy fast path.
             chainWire,
         )
+        EncodedFrameTrace.logFrame(
+            frame.width, frame.height, frame.bitDepth, System.nanoTime() - tDev, result != null,
+        )
+        return result
     }
 
     override fun code(): Int = NativeSource.jniPreviewErrorCode()
@@ -818,5 +823,32 @@ object SourcePathDecision {
         mime == null -> SourcePath.MCRAW
         mime.trim().equals(MP4_MIME, ignoreCase = true) -> SourcePath.ENCODED
         else -> SourcePath.MCRAW
+    }
+}
+
+
+/**
+ * Debug-only (ritim-trace) per-frame breakdown of the encoded CPU preview: the time the
+ * decoder wait took (includes seek/GOP catch-up decodes since the last developed frame),
+ * the plane copy (Image -> JVM arrays), and the native developEncoded call, plus the bytes
+ * moved. One line per developed frame; release builds do nothing.
+ */
+internal object EncodedFrameTrace {
+    val decodeNanos = java.util.concurrent.atomic.AtomicLong(0)
+    val copyNanos = java.util.concurrent.atomic.AtomicLong(0)
+    val planeBytes = java.util.concurrent.atomic.AtomicLong(0)
+
+    fun logFrame(w: Int, h: Int, bits: Int, developNanos: Long, ok: Boolean) {
+        if (!com.ritim.ritimcraw.BuildConfig.DEBUG) return
+        val dec = decodeNanos.getAndSet(0)
+        val cp = copyNanos.getAndSet(0)
+        android.util.Log.i(
+            "ritim-trace",
+            String.format(
+                java.util.Locale.ROOT,
+                "encoded-frame %dx%d %d-bit decode=%.1fms copy=%.1fms develop=%.1fms planes=%.1fMB ok=%b",
+                w, h, bits, dec / 1e6, cp / 1e6, developNanos / 1e6, planeBytes.get() / 1048576.0, ok,
+            ),
+        )
     }
 }
