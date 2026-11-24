@@ -87,23 +87,27 @@ class GoldenV1MigrationParityTest {
         val twin = goldenFileOrNull("golden_v2_project.json")
         if (twin == null) {
             val out = locateResourcesDir().resolve("golden_v2_project.json")
-            val tmpProject = File.createTempFile("f13-gate", ".json")
+            // Own fresh dir: the gate's backups/ lands beside the project
+            // file, never in the shared system temp dir.
+            val gateDir = createTempDir("f13-gate")
             try {
+                val tmpProject = File(gateDir, "project.json")
                 tmpProject.writeText(v1)
                 ProjectFile.open(tmpProject, nowMillis = 1_758_000_000_000L)
                 java.nio.file.Files.write(out, tmpProject.readText().toByteArray())
             } finally {
-                tmpProject.delete()
+                gateDir.deleteRecursively()
             }
             return // first run: the twin was just (re)committed
         }
-        val tmpProject = File.createTempFile("f13-gate", ".json")
+        val gateDir = createTempDir("f13-gate")
         try {
+            val tmpProject = File(gateDir, "project.json")
             tmpProject.writeText(v1)
             ProjectFile.open(tmpProject, nowMillis = 1_758_000_000_000L)
             assertEquals(twin.readText(), tmpProject.readText())
         } finally {
-            tmpProject.delete()
+            gateDir.deleteRecursively()
         }
     }
 
