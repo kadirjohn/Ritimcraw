@@ -3,7 +3,9 @@ package com.ritim.ritimcraw.ui.settings
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
@@ -11,6 +13,7 @@ import androidx.compose.ui.test.swipeLeft
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ritim.ritimcraw.engine.CodecReport
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -139,7 +142,7 @@ class DeviceReportScreenTest {
         // Page 2 shows the encoder only — the page content follows the tab.
         composeRule.onNodeWithText("c2.qti.avc.encoder").assertIsDisplayed()
         // And the decoder (page 1's content) is not on this page.
-        composeRule.onNodeWithText("c2.qti.avc.decoder").assertDoesNotExist()
+        assertNothingDisplayed("c2.qti.avc.decoder")
     }
 
     @Test
@@ -148,6 +151,17 @@ class DeviceReportScreenTest {
         composeRule.onNodeWithText("Decoders").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("c2.qti.avc.decoder").assertIsDisplayed()
-        composeRule.onNodeWithText("c2.qti.avc.encoder").assertDoesNotExist()
+        assertNothingDisplayed("c2.qti.avc.encoder")
+    }
+
+    // The pager keeps the neighbouring page (page 0, "All", lists both
+    // codecs) composed just off-screen after a tab-driven scroll, so
+    // assertDoesNotExist() trips on a node nobody can see. What the tabs
+    // promise is what is DISPLAYED, so that is what we assert.
+    private fun assertNothingDisplayed(text: String) {
+        val all = composeRule.onAllNodesWithText(text)
+        for (i in 0 until all.fetchSemanticsNodes().size) {
+            assertFalse("'$text' is displayed", all[i].isDisplayed())
+        }
     }
 }
