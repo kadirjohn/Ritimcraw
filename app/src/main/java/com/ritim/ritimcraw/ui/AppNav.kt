@@ -587,6 +587,9 @@ fun AppNav(
     // report section. The disk copy backfills the session start (a report
     // from a PREVIOUS run of this build shows before any new run starts).
     val codecMeasureProgress by CodecMeasurer.progress.collectAsState()
+    // The runner's own busy flag, not the UI-local `measuring`: it survives an
+    // Activity recreate (see CodecMeasurer.runningFlow).
+    val codecMeasureRunning by CodecMeasurer.runningFlow.collectAsState()
     var codecMeasureReport by remember {
         mutableStateOf(codecMeasureStore.latest(Build.FINGERPRINT ?: ""))
     }
@@ -2420,6 +2423,7 @@ fun AppNav(
                                 null
                             },
                             codecMeasureProgress = codecMeasureProgress,
+                            codecMeasuring = codecMeasureRunning,
                             measuring = measuring,
                             // The quality row persists immediately; the
                             // editor picks the new level up on its next
