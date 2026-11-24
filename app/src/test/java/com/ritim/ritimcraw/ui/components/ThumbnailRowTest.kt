@@ -42,4 +42,21 @@ class ThumbnailRowTest {
     fun gutter_is_the_16dp_screen_padding() {
         assertEquals(16f, ThumbnailRow.GUTTER_DP, 0f)
     }
+
+    @Test
+    fun grid_tile_keeps_the_ratio_and_fits_tall_clips_into_4_by_3_portrait() {
+        val wide = ThumbnailRow.gridTile(16f / 9f)
+        assertEquals(16f / 9f, wide.boxAspect, 0.001f)
+        assertEquals(1f, wide.imageWidthFraction, 0f)
+        val classic = ThumbnailRow.gridTile(4f / 3f)
+        assertEquals(4f / 3f, classic.boxAspect, 0.001f)
+        // 9:16 is more vertical than 3:4: box capped at 3:4, image 0.75 of the width.
+        val tall = ThumbnailRow.gridTile(9f / 16f)
+        assertEquals(0.75f, tall.boxAspect, 0.001f)
+        assertEquals(0.75f, tall.imageWidthFraction, 0.001f)
+        assertEquals(16f / 9f, ThumbnailRow.gridTile(0f).boxAspect, 0.001f)
+        // A 90-degree rotated 16:9 record places as portrait.
+        val rotated = ThumbnailRow.gridTile(ThumbnailRow.placeholderAspect(1920, 1080, 90))
+        assertEquals(0.75f, rotated.boxAspect, 0.001f)
+    }
 }

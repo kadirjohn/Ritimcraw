@@ -227,6 +227,24 @@ internal object ThumbnailRow {
         }
     }
 
+    /** The tallest a grid tile gets, as a multiple of its column width. */
+    const val GRID_MAX_HEIGHT_RATIO = 4f / 3f
+
+    /**
+     * A Library grid tile: the cell box has the frame's own aspect
+     * ([boxAspect] = width / height, never taller than 4:3 portrait) and
+     * the image is fitted and centred in it, filling [imageWidthFraction]
+     * of the column width (1 unless the clip is more vertical than 3:4).
+     */
+    data class GridTile(val boxAspect: Float, val imageWidthFraction: Float)
+
+    /** The grid tile for a width/height [aspect] (<= 0 or NaN -> 16:9). */
+    fun gridTile(aspect: Float): GridTile {
+        val a = if (aspect > 0f && aspect.isFinite()) aspect else DEFAULT_ASPECT
+        val minAspect = 1f / GRID_MAX_HEIGHT_RATIO
+        return if (a >= minAspect) GridTile(a, 1f) else GridTile(minAspect, a / minAspect)
+    }
+
     /**
      * The placeholder's aspect from the record's frame size and manual
      * rotation (a quarter turn swaps the axes); unknown size -> 16:9.
