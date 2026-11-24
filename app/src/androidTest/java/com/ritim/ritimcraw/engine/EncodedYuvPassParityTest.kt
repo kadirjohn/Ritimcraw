@@ -251,4 +251,71 @@ class EncodedYuvPassParityTest {
                 name, w, h, n, (w + n - 1) / n, (h + n - 1) / n, r!![0], r[1]))
         }
     }
+
+    // ---- E0b-4b: the whole develop chain on an encoded frame, through the develop session ----
+
+    private class ChainCase(val name: String, val caseIndex: Int, val reduce: Int, val grade: GradeK)
+
+    @Test
+    fun the_whole_chain_on_an_encoded_frame_matches_the_cpu_oracle() {
+        val chain = listOf(
+            ChainCase("Mi-Log P010, neutral chain", 4, 2, GradeK()),
+            ChainCase("Mi-Log P010, sharpness + detail", 4, 2, GradeK().copy(sharpness = 40f, detail = 30f)),
+            ChainCase("Mi-Log P010, luma + chroma denoise", 4, 2, GradeK().copy(noiseReduction = 40f, chromaDenoise = 50f)),
+            ChainCase("8-bit sRGB, AgX tonemap + exposure + warm tint", 8, 2,
+                GradeK().copy(tonemap = 2, exposureEv = 0.5f, tempK = 6200f, tint = 8f)),
+            // Single-variable splits of the case above (which sat at 0.030% against the 0.01% bound):
+            ChainCase("8-bit sRGB, AgX tonemap only", 8, 2, GradeK().copy(tonemap = 2)),
+            ChainCase("8-bit sRGB, ACES tonemap only", 8, 2, GradeK().copy(tonemap = 1)),
+            ChainCase("8-bit sRGB, exposure + warm tint only", 8, 2, GradeK().copy(exposureEv = 0.5f, tempK = 6200f, tint = 8f)),
+            ChainCase("Mi-Log P010, everything at once", 4, 3,
+                GradeK().copy(noiseReduction = 30f, chromaDenoise = 40f, sharpness = 25f, detail = 20f,
+                    tonemap = 1, exposureEv = -0.3f, tempK = 5200f, tint = -6f)),
+        )
+        val session = com.ritim.ritimcraw.export.NativeGpuDevelop.openSession()
+        assertTrue("the develop session did not open", session > 0)
+        try {
+            val lines = ArrayList<String>()
+            var worst = 0
+            var worstPct = 0.0
+            for ((i, k) in chain.withIndex()) {
+                val base = cases[k.caseIndex]
+                val f = fixture(320, 180, base.bits, 0x7A7A + 13 * i)
+                val small = reduceFrame(f, k.reduce)
+                val spec = EncodedColorSpec(
+                    profile = SourceProfile(
+                        primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                        range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                        primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                        rangeProvenance = null, bitDepthProvenance = null,
+                    ),
+                    declaredBitDepth = base.bits,
+                )
+                val frame = YuvFrameK(small.w, small.h, true, small.y, small.c, ByteArray(0), small.stride, small.uvStride, base.bits)
+                val cpu = NativeEncodedDeveloper.develop(frame, spec, 0, k.grade, null, null)
+                assertNotNull("${k.name}: the CPU oracle returned null", cpu)
+                val gpu = NativeSource.jniDevelopSessionRenderYuvParcel(
+                    session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                    spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, k.reduce,
+                    GradeParcel.encode(k.grade),
+                )
+                assertNotNull("${k.name}: the chain returned null (${NativeSource.previewLastError()})", gpu)
+                val n = small.w * small.h
+                assertTrue("${k.name}: ${gpu!!.size} bytes for ${small.w}x${small.h}", gpu.size == n * 3)
+                val stats = GradeParitySweep.compare(gpu, GradeParitySweep.argbBytes(cpu!!.copyOfRange(2, 2 + n)))
+                val line = String.format(java.util.Locale.ROOT, "%s (%dx%d): maxDiffLsb=%d mismatch=%.4f%% over1=%.4f%%",
+                    k.name, small.w, small.h, stats.maxDiffLsb, stats.mismatchPct, stats.over1Pct)
+                Log.i("ritim-parity", "e0b-chain $line")
+                lines += line
+                if (stats.maxDiffLsb > worst) worst = stats.maxDiffLsb
+                if (stats.mismatchPct > worstPct) worstPct = stats.mismatchPct
+            }
+            assertTrue(
+                "encoded chain GPU vs CPU oracle: worst maxDiffLsb=$worst mismatch=$worstPct%\n" + lines.joinToString("\n"),
+                worst <= 1 && worstPct <= 0.01,
+            )
+        } finally {
+            NativeSource.jniDevelopSessionClose(session)
+        }
+    }
 }

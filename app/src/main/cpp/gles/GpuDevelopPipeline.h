@@ -61,6 +61,8 @@
 
 #include <GLES3/gl3.h>
 
+#include "EncodedYuvPass.h"
+
 #include <rawedit/ColorModel.h>
 #include <rawedit/Source.h>
 
@@ -91,6 +93,14 @@ uint64_t gradeProbeHash(const DevelopFrameRequest& req);
 
 struct DevelopFrameRequest {
     const std::vector<uint16_t>* cfa = nullptr;  // w*h row-major
+    // E0b-4b: an ENCODED frame instead of a CFA. When set, [cfa] stays null, pass 1 is the YUV pass
+    // (gles/EncodedYuvPass: YCbCr -> RGB, transfer decode, primaries, WB gains x exposure, optionally
+    // reduced first) writing the same RGBA32F texture the PRE pass would, and the chain runs on
+    // unchanged. [info].width/height are the REDUCED output dims (ceil(source/reduce)); [meta] must
+    // still be non-null (a default RawMeta is fine, it is not read for the pixels). The WB/exposure
+    // are the YUV pass's own, so the request's exposureEv/tempK/tint and the tone-band fields must
+    // be neutral (the CPU encoded path ignores stages 9-20; see the plan, section 8).
+    const EncodedYuvInput* yuv = nullptr;
     rawedit::FrameInfo info{};
     const rawedit::RawMeta* meta = nullptr;
     float exposureEv = 0.0f;

@@ -4068,6 +4068,132 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameParc
     }
 }
 
+// E0b-4b: the develop session's ENCODED-frame door. The decoded Y plane and the interleaved CbCr plane
+// (8-bit or P010 words) go straight to the shared chain's pass 1 (gles/EncodedYuvPass, optionally
+// reduced first); everything after it is the unchanged develop chain. The grade parcel is the same
+// wire as every other door. The encoded CPU path applies exposure/temp/tint with ITS OWN gains and
+// ignores the tone-band stages (9-20), the wheels and the split tone, so this door hands exposure/temp/
+// tint to the YUV pass and ZEROES those fields (and the temporal NR pair, which has no frame to merge)
+// before the chain sees the grade: the two paths then run the same stages, the parity contract.
+// Returns the RGB888 of the reduced frame (ceil(width/reduce) x ceil(height/reduce)), like the CFA door.
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvParcel(
+        JNIEnv* env, jclass, jlong sessionHandle,
+        jbyteArray yPlane, jbyteArray cPlane,
+        jint width, jint height, jint stride, jint uvStride, jint bitDepth, jboolean fullRange,
+        jint matrix, jint transfer, jint primaries, jint reduce,
+        jfloatArray gradeParcel,
+        jstring lutPath, jfloat lutStrength,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
+    gles::DevelopGrade grade;
+    std::string parcelError;
+    if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead, parcelError);
+        return nullptr;
+    }
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (sessionHandle <= 0 || sessionHandle > kMaxDevelopSessions) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "develop session: invalid session handle (recovery: reopen the export)");
+        return nullptr;
+    }
+    gles::DevelopSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        session = gDevelopSessions[sessionHandle - 1].get();
+    }
+    if (session == nullptr) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "develop session: session is closed (recovery: reopen the export)");
+        return nullptr;
+    }
+    if (yPlane == nullptr || cPlane == nullptr || width <= 0 || height <= 0 || reduce < 1) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 "develop session: the decoded planes are missing (recovery: reopen the clip)");
+        return nullptr;
+    }
+    const jsize yLen = env->GetArrayLength(yPlane);
+    const jsize cLen = env->GetArrayLength(cPlane);
+    jbyte* y = env->GetByteArrayElements(yPlane, nullptr);
+    jbyte* c = env->GetByteArrayElements(cPlane, nullptr);
+    if (y == nullptr || c == nullptr) {
+        if (y) env->ReleaseByteArrayElements(yPlane, y, JNI_ABORT);
+        if (c) env->ReleaseByteArrayElements(cPlane, c, JNI_ABORT);
+        return nullptr;
+    }
+    jbyteArray result = nullptr;
+    try {
+        static const rawedit::RawMeta kNoMeta{};
+        gles::EncodedYuvInput in;
+        in.y = reinterpret_cast<const uint8_t*>(y);
+        in.yLen = static_cast<size_t>(yLen);
+        in.c = reinterpret_cast<const uint8_t*>(c);
+        in.cLen = static_cast<size_t>(cLen);
+        in.params.width = width; in.params.height = height;
+        in.params.stride = stride; in.params.uvStride = uvStride;
+        in.params.bitDepth = bitDepth; in.params.fullRange = fullRange != JNI_FALSE;
+        in.params.matrix = matrix; in.params.transfer = transfer; in.params.primaries = primaries;
+        in.params.reduce = reduce;
+        // The YUV pass owns WB + exposure; the chain must not apply them again.
+        in.params.exposureEv = grade.exposureEv;
+        in.params.tempK = grade.tempK;
+        in.params.tint = grade.tint;
+        gles::DevelopGrade g = grade;
+        g.exposureEv = 0.0f; g.tempK = 5600.0f; g.tint = 0.0f; g.asShot = true;
+        g.highlights = 0.0f; g.blackPoint = 0.0f; g.whitePoint = 0.0f; g.shadows = 0.0f;
+        g.midtones = 0.0f; g.contrast = 0.0f; g.saturation = 0.0f;
+        g.wheelShadowX = 0.0f; g.wheelShadowY = 0.0f; g.wheelMidX = 0.0f; g.wheelMidY = 0.0f;
+        g.wheelHighX = 0.0f; g.wheelHighY = 0.0f;
+        g.splitShadowHue = -1.0f; g.splitHighlightHue = -1.0f; g.splitBalance = 0.0f;
+        g.temporalNr = false; g.temporalStrength = 0.0f;
+
+        gles::DevelopFrameRequest req;
+        req.yuv = &in;
+        req.meta = &kNoMeta;
+        req.info.width = static_cast<uint32_t>((width + reduce - 1) / reduce);
+        req.info.height = static_cast<uint32_t>((height + reduce - 1) / reduce);
+        req.lutStrength = lutStrength;
+        if (lutPath != nullptr) {
+            const char* lutChars = env->GetStringUTFChars(lutPath, nullptr);
+            if (lutChars != nullptr) {
+                req.lutPath.assign(lutChars);
+                env->ReleaseStringUTFChars(lutPath, lutChars);
+            }
+        }
+        req.lutRole = lutRole;
+        req.lutInGamut = lutInGamut;
+        req.lutInTransfer = lutInTransfer;
+        req.lutOutGamut = lutOutGamut;
+        req.lutOutTransfer = lutOutTransfer;
+        const gles::DevelopFrameResult res = session->renderFrame(req, g);
+        if (!res.ok) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop session render (encoded): " + res.detail +
+                         " (recovery: the CPU develop takes the frame)");
+        } else if (res.rgb888.empty()) {
+            setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                     "develop session render (encoded): empty output (recovery: reopen the clip)");
+        } else {
+            const jsize n = static_cast<jsize>(res.rgb888.size());
+            result = env->NewByteArray(n);
+            if (result != nullptr) {
+                env->SetByteArrayRegion(result, 0, n, reinterpret_cast<const jbyte*>(res.rgb888.data()));
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "develop session render (encoded): out of memory (recovery: free memory and retry)");
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("develop session render (encoded): ") + e.what() + " (recovery: reopen the clip)");
+    }
+    env->ReleaseByteArrayElements(yPlane, y, JNI_ABORT);
+    env->ReleaseByteArrayElements(cPlane, c, JNI_ABORT);
+    return result;
+}
+
 // ENCODER SURFACE (M5). The MediaCodec input Surface reaches the session
 // through the same ownership shape as nativePreviewSessionSetSurface: the
 // ANativeWindow_fromSurface reference transfers to the session at call
