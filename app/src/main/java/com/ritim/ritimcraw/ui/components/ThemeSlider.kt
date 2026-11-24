@@ -29,7 +29,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -442,6 +445,10 @@ fun ThemeSlider(
                         // Alive slot icon: pose is a pure function of the
                         // thumb position, read in the graphicsLayer
                         // (draw phase) so nothing recomposes per frame.
+                        val painter = rememberVectorPainter(icon)
+                        val inactiveTint = MaterialTheme.colorScheme.onSurfaceVariant
+                        val accentTint = MaterialTheme.colorScheme.primary
+                        val arrivalTint = MaterialTheme.colorScheme.onPrimary
                         Box(
                             Modifier
                                 .size(SlotIconSize)
@@ -458,31 +465,22 @@ fun ThemeSlider(
                                     translationX = st.translateXFrac * size.width
                                     translationY = st.translateYFrac * size.height
                                     rotationZ = st.rotationDeg
+                                }
+                                // Colour journey (inactive -> accent -> thumb
+                                // glyph colour) by proximity, in the draw phase.
+                                .drawBehind {
+                                    val pos = ThemeIconMorph.positionFromThumb(
+                                        thumbX, trackInsetPx, slotWidthPx,
+                                    )
+                                    val c = SlotColorJourney.colorAt(
+                                        kotlin.math.abs(pos - slot),
+                                        inactiveTint, accentTint, arrivalTint,
+                                    )
+                                    with(painter) {
+                                        draw(size, colorFilter = ColorFilter.tint(c))
+                                    }
                                 },
-                        ) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                            // Brightened copy, faded in by proximity.
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .graphicsLayer {
-                                        alpha = ThemeIconMorph.slotState(
-                                            slot,
-                                            ThemeIconMorph.positionFromThumb(
-                                                thumbX, trackInsetPx, slotWidthPx,
-                                            ),
-                                        ).brighten
-                                    },
-                            )
-                        }
+                        )
                     }
                 }
             }
