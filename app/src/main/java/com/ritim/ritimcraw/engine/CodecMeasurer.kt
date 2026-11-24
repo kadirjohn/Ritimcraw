@@ -95,6 +95,17 @@ object CodecMeasurer {
     fun isRunning(): Boolean = running.get()
 
     /**
+     * [isRunning] as an observable flow. The runner outlives the Activity (a
+     * background-and-return, a rotation or a recreate rebuilds every
+     * `remember`ed UI flag but not this object), so the Settings row derives
+     * its busy state from HERE and not from a UI-local flag; otherwise a
+     * re-opened app shows an idle button for a session that is still running
+     * and the tap answers "already running" with no progress on screen.
+     */
+    private val runningState = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val runningFlow: kotlinx.coroutines.flow.StateFlow<Boolean> = runningState
+
+    /**
      * THE ROM BUILD IDENTITY (plan §5) — the report's primary key.
      * Build.FINGERPRINT carries the HyperOS identity; the INCREMENTAL
      * carries the eng.dino-style build tag the fingerprint hides, so
@@ -129,6 +140,7 @@ object CodecMeasurer {
         opts: MeasureOptions = MeasureOptions(),
     ): Boolean {
         if (!enabled || !running.compareAndSet(false, true)) return false
+        runningState.value = true
         progressState.value = 0 to 0
         engine.execute {
             val report = try {
@@ -140,6 +152,7 @@ object CodecMeasurer {
                 null
             } finally {
                 running.set(false)
+                runningState.value = false
             }
             lastReportState.value = report
             progressState.value = 0 to 0

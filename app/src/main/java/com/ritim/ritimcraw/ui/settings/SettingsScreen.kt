@@ -145,6 +145,9 @@ fun SettingsScreen(
     // The codec measurement's live progress: runs done of total (0/0 when
     // idle); the button label shows the count while a run is in flight.
     codecMeasureProgress: Pair<Int, Int> = 0 to 0,
+    // True while the codec measurement runs, whatever the UI's own `measuring`
+    // flag says (that one is lost on an Activity recreate; the runner is not).
+    codecMeasuring: Boolean = false,
     measuring: Boolean = false,
     // ---- Preview quality (owner request 2026-11-11b section 3) ----
     // The persisted level (AppNav reads PreviewQualityStore) and the
@@ -428,14 +431,14 @@ fun SettingsScreen(
             if (onCodecMeasure != null) {
                 OutlinedButton(
                     onClick = onCodecMeasure,
-                    enabled = !measuring,
+                    enabled = !measuring && !codecMeasuring,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(start = 16.dp, top = 12.dp, end = 16.dp),
                 ) {
                     val (done, total) = codecMeasureProgress
                     Text(
-                        text = if (measuring && total > 0) {
+                        text = if ((measuring || codecMeasuring) && total > 0) {
                             stringResource(R.string.settings_codec_measure_running, done, total)
                         } else {
                             stringResource(R.string.settings_codec_measure)
