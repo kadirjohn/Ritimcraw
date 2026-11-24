@@ -138,6 +138,9 @@ echo "== building tests =="
 #     real fixtures; run by hand from the repo root, not a test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/bp_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/bp_measure"
+# p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/p5_compare.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/p5_compare"
 # image_stab_measure: image-stab numbers (S1..S3): stage timings, analysis of
 # a real clip, acceleration/jerk + zoom-rate A/B plan sweep (with pan-speed
 # percentiles and the section 3.10 confidence components), raw-vs-developed

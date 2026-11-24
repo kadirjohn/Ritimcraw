@@ -188,3 +188,124 @@ TEST_CASE("invalid_inputs_return_empty_image") {
     tiny.height = 1;
     CHECK(developThumbnail(s.cfa.data(), tiny, s.meta, Grade{}, 8).w == 0);
 }
+
+// ---- P5 (2026-11-25): the reduction is a same-colour N x N BINNING --------
+
+namespace {
+
+// Brute-force reference of the documented math (the header's block mean,
+// round-half-up, cells that exist only).
+uint16_t refBin(const std::vector<uint16_t>& cfa, uint32_t w, uint32_t h, uint32_t n,
+                uint32_t ocx, uint32_t ocy, uint32_t dx, uint32_t dy) {
+    const uint32_t cellCols = w / 2, cellRows = h / 2;
+    uint64_t sum = 0, cnt = 0;
+    for (uint32_t j = 0; j < n; ++j) {
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t cx = ocx * n + i, cy = ocy * n + j;
+            if (cx >= cellCols || cy >= cellRows) continue;
+            sum += cfa[static_cast<size_t>(2 * cy + dy) * w + (2 * cx + dx)];
+            ++cnt;
+        }
+    }
+    return static_cast<uint16_t>((sum + cnt / 2) / cnt);
+}
+
+std::vector<uint16_t> noisyCfa(uint32_t w, uint32_t h, int amp, uint32_t seed) {
+    std::vector<uint16_t> v(static_cast<size_t>(w) * h);
+    uint32_t x = seed;
+    for (auto& s : v) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        s = static_cast<uint16_t>(500 + static_cast<int>(x % (2 * amp + 1)) - amp);
+    }
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("binned_reduction_matches_the_documented_block_mean_site_by_site") {
+    for (uint32_t n : {2u, 3u, 5u}) {
+        const uint32_t w = 66, h = 50; // cells 33 x 25: partial blocks at the right/bottom edges
+        auto src = noisyCfa(w, h, 200, 12345u + n);
+        std::vector<uint16_t> out;
+        REQUIRE(reduceCfaBinned(src.data(), w, h, static_cast<int>(n), out));
+        const uint32_t outW = thumbnailWidth(w, static_cast<int>(n));
+        const uint32_t outH = thumbnailHeight(h, static_cast<int>(n));
+        REQUIRE(out.size() == static_cast<size_t>(outW) * outH);
+        for (uint32_t ocy = 0; ocy < outH / 2; ++ocy)
+            for (uint32_t ocx = 0; ocx < outW / 2; ++ocx)
+                for (uint32_t dy = 0; dy < 2; ++dy)
+                    for (uint32_t dx = 0; dx < 2; ++dx)
+                        CHECK(out[static_cast<size_t>(2 * ocy + dy) * outW + 2 * ocx + dx] ==
+                              refBin(src, w, h, n, ocx, ocy, dx, dy));
+    }
+}
+
+TEST_CASE("binning_keeps_the_2x2_pattern_and_never_mixes_colours") {
+    // Four distinct per-site levels (RGGB-like): every output cell must keep them exactly.
+    const uint32_t w = 90, h = 60;
+    std::vector<uint16_t> src(static_cast<size_t>(w) * h);
+    const uint16_t lv[2][2] = {{100, 400}, {700, 1000}};
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) src[static_cast<size_t>(y) * w + x] = lv[y & 1][x & 1];
+    for (int n : {2, 3, 4, 7}) {
+        std::vector<uint16_t> out;
+        REQUIRE(reduceCfaBinned(src.data(), w, h, n, out));
+        const uint32_t outW = thumbnailWidth(w, n);
+        for (size_t i = 0; i < out.size(); ++i) {
+            const uint32_t x = static_cast<uint32_t>(i % outW), y = static_cast<uint32_t>(i / outW);
+            CHECK(out[i] == lv[y & 1][x & 1]);
+        }
+    }
+}
+
+TEST_CASE("binning_averages_what_decimation_used_to_alias") {
+    // Alternate cells 0 / 1000 along x (a period-2-cell stripe). The old
+    // one-cell-per-block copy at N=2 returned 0 or 1000 depending on phase;
+    // the binned mean is the honest 500 everywhere.
+    const uint32_t w = 64, h = 32;
+    std::vector<uint16_t> src(static_cast<size_t>(w) * h);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) src[static_cast<size_t>(y) * w + x] = ((x / 2) & 1) ? 1000 : 0;
+    std::vector<uint16_t> out;
+    REQUIRE(reduceCfaBinned(src.data(), w, h, 2, out));
+    for (uint16_t v : out) CHECK(v == 500);
+}
+
+TEST_CASE("binning_cuts_sensor_noise_by_about_n") {
+    const uint32_t w = 384, h = 216;
+    auto src = noisyCfa(w, h, 60, 987654321u);
+    auto stddev = [](const std::vector<uint16_t>& v) {
+        double m = 0; for (auto s : v) m += s; m /= v.size();
+        double q = 0; for (auto s : v) q += (s - m) * (s - m);
+        return std::sqrt(q / v.size());
+    };
+    std::vector<uint16_t> out;
+    REQUIRE(reduceCfaBinned(src.data(), w, h, 3, out));
+    // N=3 averages 9 independent samples: sigma / 3 (the old decimation kept sigma).
+    CHECK(stddev(out) < stddev(src) * 0.45);
+    CHECK(stddev(out) > stddev(src) * 0.25);
+}
+
+TEST_CASE("export_stride_one_is_the_source_bit_for_bit") {
+    // The export guarantee: N = 1 is an identity, so nothing about the
+    // export path changed with the preview fix. Even and odd frame sizes.
+    for (auto dims : {std::pair<uint32_t, uint32_t>{64, 48}, {65, 49}}) {
+        auto src = noisyCfa(dims.first, dims.second, 300, 42u);
+        std::vector<uint16_t> out;
+        REQUIRE(reduceCfaBinned(src.data(), dims.first, dims.second, 1, out));
+        const uint32_t outW = thumbnailWidth(dims.first, 1), outH = thumbnailHeight(dims.second, 1);
+        REQUIRE(out.size() == static_cast<size_t>(outW) * outH);
+        for (uint32_t y = 0; y < outH; ++y)
+            for (uint32_t x = 0; x < outW; ++x)
+                CHECK(out[static_cast<size_t>(y) * outW + x] == src[static_cast<size_t>(y) * dims.first + x]);
+    }
+}
+
+TEST_CASE("binning_rejects_invalid_input_without_throwing") {
+    std::vector<uint16_t> out{1, 2, 3};
+    CHECK_FALSE(reduceCfaBinned(nullptr, 64, 64, 2, out));
+    CHECK(out.empty());
+    std::vector<uint16_t> src(64 * 64, 100);
+    CHECK_FALSE(reduceCfaBinned(src.data(), 1, 64, 2, out));
+    CHECK_FALSE(reduceCfaBinned(src.data(), 64, 64, 0, out));
+}
