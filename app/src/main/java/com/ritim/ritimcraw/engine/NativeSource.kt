@@ -688,6 +688,38 @@ class NativeSource private constructor(
          * the binding ordinals as in nativePreviewRender; all five -1 =
          * the legacy stage-24 path, byte-identical.
          */
+        /**
+         * E0b-2: the GPU twin of developEncoded's first stage (gles/EncodedYuvPass), headless. Returns
+         * [w, h, ARGB...] like nativeEncodedDevelop, or null with [jniEncodedYuvPassLastDetail] naming why.
+         * Semi-planar only (Y plane + interleaved CbCr plane), 8-bit or P010 words.
+         */
+        @JvmStatic private external fun nativeEncodedYuvPassHeadless(
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int,
+            exposureEv: Float, tempK: Float, tint: Float,
+        ): IntArray?
+
+        @JvmStatic private external fun nativeEncodedYuvPassLastDetail(): String
+
+        internal fun jniEncodedYuvPassHeadless(
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int,
+            exposureEv: Float, tempK: Float, tint: Float,
+        ): IntArray? {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeEncodedYuvPassHeadless(
+                yPlane, cPlane, width, height, stride, uvStride, bitDepth, fullRange,
+                matrix, transfer, primaries, exposureEv, tempK, tint,
+            )
+        }
+
+        internal fun jniEncodedYuvPassLastDetail(): String {
+            if (!nativeAvailable) return nativeUnavailableMessage
+            return nativeEncodedYuvPassLastDetail()
+        }
+
         @JvmStatic private external fun nativeEncodedDevelop(
             yPlane: ByteArray,
             uPlane: ByteArray,
