@@ -4595,8 +4595,11 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         const SteadyClock::time_point tDecode1 = SteadyClock::now();
         const double decodeUs = elapsedUs(tDecode0, tDecode1);
 
-        // The preview CFA reduction — Thumbnail.h's cell-aligned math,
-        // copied per the documented-copy rule (core/ is READ-ONLY).
+        // The preview CFA reduction: the SAME function developThumbnail uses
+        // (rawedit::reduceCfaBinned, Thumbnail.h; P5 2026-11-25 replaced the
+        // old verbatim-cell copy that lived here with the shared binning, so
+        // the CPU and GPU previews cannot drift apart). N = 1 hands the
+        // decoded frame through untouched (the export guarantee).
         const SteadyClock::time_point tCfa0 = SteadyClock::now();
         const int strideN = strideFor(info, maxDim);
         uint32_t reducedW = 0;
@@ -4607,34 +4610,14 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
             reducedW = info.width;
             reducedH = info.height;
         } else {
-            const uint32_t cellCols = info.width / 2;
-            const uint32_t cellRows = info.height / 2;
-            const uint32_t sampledCols = (cellCols + strideN - 1) / strideN;
-            const uint32_t sampledRows = (cellRows + strideN - 1) / strideN;
-            reducedW = 2 * sampledCols;
-            reducedH = 2 * sampledRows;
+            reducedW = rawedit::thumbnailWidth(info.width, strideN);
+            reducedH = rawedit::thumbnailHeight(info.height, strideN);
             thread_local std::vector<uint16_t> scratch;
-            scratch.assign(static_cast<size_t>(reducedW) * reducedH, 0);
-            const uint32_t srcW = info.width;
-            const uint32_t srcH = info.height;
-            for (uint32_t ocy = 0; ocy < sampledRows; ++ocy) {
-                for (uint32_t ocx = 0; ocx < sampledCols; ++ocx) {
-                    // Source cell (ocx*N, ocy*N), verbatim 2x2 copy.
-                    const uint32_t scx = ocx * static_cast<uint32_t>(strideN);
-                    const uint32_t scy = ocy * static_cast<uint32_t>(strideN);
-                    for (uint32_t dy = 0; dy < 2; ++dy) {
-                        for (uint32_t dx = 0; dx < 2; ++dx) {
-                            const uint32_t sx = 2 * scx + dx;
-                            const uint32_t sy = 2 * scy + dy;
-                            const uint16_t sample =
-                                (sx < srcW && sy < srcH)
-                                    ? (*cfa)[static_cast<size_t>(sy) * srcW + sx]
-                                    : 0;
-                            scratch[static_cast<size_t>(2 * ocy + dy) * reducedW +
-                                    (2 * ocx + dx)] = sample;
-                        }
-                    }
-                }
+            if (!rawedit::reduceCfaBinned(cfa->data(), info.width, info.height, strideN, scratch)) {
+                setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                         "develop: unsupported — the frame is too small to reduce "
+                         "(recovery: re-import the clip)");
+                return nullptr;
             }
             reducedCfa = &scratch;
         }
