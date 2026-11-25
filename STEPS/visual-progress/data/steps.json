@@ -14942,6 +14942,53 @@
    "screenshot": "assets/p11-highlight-recovery-gpu.png"
   },
   {
+   "id": "p12-f1-8b-wheels",
+   "title": "add the node wheels page",
+   "date": "2026-11-26",
+   "status": "in-progress",
+   "commit": null,
+   "tests": ":app:assembleDebug :app:testDebugUnitTest --rerun: 3066 tests, 0 failed (12 new in NodeWheelOpsTest); device verification pending",
+   "description": "F1-8b: Wheels | Adjust tabs on the selected node; the Wheels page edits lift/gamma/gain/offset and the log shadow/mid/high wheels (puck pad + master) through the node undo history. Branch feat-f1-8b-wheels, not merged until verified on the device.",
+   "added": [
+    "NodeWheelsPage: Primary|Log switch, wheel chips, wheelRgb-shaded pad, master slider, reset button",
+    "NodeWheelOps: pure get/set/clamp/snap/reset/y-flip/disc colour, JVM tested incl. undo coverage",
+    "ic_restart_alt thin vector, en+tr strings"
+   ],
+   "removed": [],
+   "changed": [
+    "ColorWheelPad takes an optional discColorAt (default unchanged)",
+    "NodesBody gets the tab row (Wheels default, Adjust keeps the F1-8a page)"
+   ],
+   "files": [
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/NodeWheelOps.kt",
+     "change": "A"
+    },
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/NodeWheelsPage.kt",
+     "change": "A"
+    },
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/NodesBody.kt",
+     "change": "M"
+    },
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ColorWheel.kt",
+     "change": "M"
+    },
+    {
+     "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/NodeWheelOpsTest.kt",
+     "change": "A"
+    }
+   ],
+   "sources": [
+    {
+     "name": "docs/F1_8_COLOR_UI_DESIGN.md",
+     "note": "slice F1-8b definition"
+    }
+   ]
+  },
+  {
    "id": "r1-hr-measure",
    "title": "hr_measure tool for highlight clip stats",
    "date": "2026-11-25",
