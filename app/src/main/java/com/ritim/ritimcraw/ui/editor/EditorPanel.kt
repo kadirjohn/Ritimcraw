@@ -2,7 +2,12 @@
 
 package com.ritim.ritimcraw.ui.editor
 
+import androidx.compose.animation.core.AnimationVector
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.TwoWayConverter
+import androidx.compose.animation.core.VectorizedFiniteAnimationSpec
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.rememberSplineBasedDecay
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -48,6 +53,34 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 
 /**
+ * The panel settle: critically damped spring, slow stiffness, and only [PanelSheet.SETTLE_VELOCITY_SHARE] of the
+ * release velocity. A short flick has almost no finger travel, so a full-velocity spring finished in a few frames
+ * and read as no animation (owner report 2026-11-25); a share keeps the fling direction and a little momentum but
+ * leaves a visible ease.
+ */
+internal fun PanelSheet.settleSpec(): FiniteAnimationSpec<Float> {
+    val inner = spring<Float>(dampingRatio = 1f, stiffness = Spring.StiffnessLow)
+    return object : FiniteAnimationSpec<Float> {
+        override fun <V : AnimationVector> vectorize(
+            converter: TwoWayConverter<Float, V>,
+        ): VectorizedFiniteAnimationSpec<V> {
+            val v = inner.vectorize(converter)
+            @Suppress("UNCHECKED_CAST")
+            fun scaled(iv: V): V = AnimationVector1D((iv as AnimationVector1D).value * SETTLE_VELOCITY_SHARE) as V
+            return object : VectorizedFiniteAnimationSpec<V> {
+                override val isInfinite = false
+                override fun getValueFromNanos(playTimeNanos: Long, initialValue: V, targetValue: V, initialVelocity: V): V =
+                    v.getValueFromNanos(playTimeNanos, initialValue, targetValue, scaled(initialVelocity))
+                override fun getVelocityFromNanos(playTimeNanos: Long, initialValue: V, targetValue: V, initialVelocity: V): V =
+                    v.getVelocityFromNanos(playTimeNanos, initialValue, targetValue, scaled(initialVelocity))
+                override fun getDurationNanos(initialValue: V, targetValue: V, initialVelocity: V): Long =
+                    v.getDurationNanos(initialValue, targetValue, scaled(initialVelocity))
+            }
+        }
+    }
+}
+
+/**
  * The drag state for the adjustment panel, wired to the pure constants
  * in [PanelSheet]: release settles to the nearest anchor past
  * [PanelSheet.positionalThreshold] or on a fling above
@@ -69,7 +102,7 @@ fun rememberPanelDragState(initial: PanelState): AnchoredDraggableState<PanelSta
             positionalThreshold = { distance -> PanelSheet.positionalThreshold(distance) },
             velocityThreshold = { with(density) { PanelSheet.VELOCITY_THRESHOLD.toPx() } },
             // Critically damped spring: no overshoot, and the release/fling velocity carries into the settle.
-            snapAnimationSpec = spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow),
+            snapAnimationSpec = PanelSheet.settleSpec(),
             decayAnimationSpec = decay,
         )
     }
