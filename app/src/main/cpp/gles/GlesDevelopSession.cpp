@@ -559,6 +559,7 @@ bool DevelopSession::Impl::initOnGlThread(
     config.developLinearFilter = false;  // NEAREST: the store draw + blit
                                          // are 1:1, and the develop pass's
                                          // own texel fetches are exact
+    config.deferStoreScratch = true;     // allocated by the first readback render only (runJob)
     config.withStoreScratch = true;      // the readback path's scratch FBO +
                                          // SSBO pair
     {
@@ -667,6 +668,7 @@ void DevelopSession::Impl::runJob(const DevelopFrameRequest& req,
     const uint32_t h = req.info.height;
 
     if (!developPass(req, out)) return;
+    if (!pipeline.ensureStoreScratch(&out.detail)) return;
 
     // --- draw 2: the store pass into the SSBO (never glReadPixels) ---------
     // The store program + its locations + the scratch FBO + the SSBO are

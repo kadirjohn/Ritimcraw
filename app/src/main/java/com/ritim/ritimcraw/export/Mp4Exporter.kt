@@ -155,6 +155,26 @@ interface Mp4Session {
         chainWire: FloatArray? = null,
     ): ByteArray?
 
+    /**
+     * E0b-5 (encoded sources): can this session put the developed frame straight onto the encoder's input Surface
+     * (GPU -> encoder, no full-frame RGB on the CPU side)? [oneToOne] = the job needs no crop/straighten/scale (the
+     * blit is a 1:1 copy; rotation is taught). The session decides with its own pure planner and logs the verdict;
+     * the default false keeps every MCRAW session and fake exactly as before (their GPU path is the exporter's own).
+     */
+    fun encoderSurfaceCapable(handle: Long, grade: GradeK, chainWire: FloatArray?, oneToOne: Boolean): Boolean = false
+
+    /** E0b-5: attach (or, with null, detach) the codec input Surface on the session's develop session. */
+    fun attachEncoderSurface(handle: Long, surface: Any?): Boolean = false
+
+    /**
+     * E0b-5: develops frame [frameIndex] at full size and draws it onto the attached encoder Surface, stamped
+     * [ptsUs]; [rotationDeg] is the blit's 0/90/180/270 fold. False = refused ([detail] says why).
+     */
+    fun renderFrameToEncoder(
+        handle: Long, frameIndex: Int, ptsUs: Long, grade: GradeK, lutPath: String?, chainWire: FloatArray?,
+        rotationDeg: Int,
+    ): Boolean = false
+
     /** ptsUs of frame [frameIndex] (-1 on a bad handle). */
     fun framePts(handle: Long, frameIndex: Int): Long
 
@@ -1367,6 +1387,12 @@ class ExportPipeline(
      * writer's legacy configuration, byte-identical to before.
      */
     private val planRun: ExportPlanRun? = null,
+    /**
+     * E0b-5: false = never use the source session's own GPU -> encoder-surface door (the exporter's clean restart
+     * after the writer could not bring the Surface mode up). Default true: only sessions that claim the door
+     * ([Mp4Session.encoderSurfaceCapable]) are affected at all.
+     */
+    private val allowSessionSurface: Boolean = true,
 ) {
 
     private fun stabPathFor(info: Mp4SessionInfo, grade: GradeK, attachedGyroPath: String?): String? {
@@ -1697,6 +1723,21 @@ class ExportPipeline(
                 writer.requestEncoderSurfaceInput()
             }
         }
+        // E0b-5 (encoded sources): the SOURCE session owns the develop session and draws the developed frame onto
+        // the codec input Surface itself (no RGB frame, so 8K fits). Same geometry gate as above: no crop, no
+        // straighten, no scale (rotation rides the blit fold); the session's own planner adds texture/GPU/chain
+        // limits. A CPU-requested job asks the same: encoded sources are always CPU-requested, this is their GPU door.
+        val sessionDrawEligible = !encoderDrawEligible &&
+            allowSessionSurface &&
+            effectiveDeg % 90 == 0 &&
+            CropState.isFull(cropRect) &&
+            grade.straightenDeg == 0f &&
+            encodeDims.width == outDims.width &&
+            encodeDims.height == outDims.height &&
+            session.encoderSurfaceCapable(info.handle, grade, chainWire, true)
+        if (sessionDrawEligible) {
+            writer.requestSessionEncoderSurface()
+        }
         // E1d: true when the resolved plan is a 10-bit one (GPU encoder-surface only).
         var tenBit = false
         try {
@@ -1759,6 +1800,7 @@ class ExportPipeline(
         // the export NEVER dies on this seam.
         var encoderSurfaceRequested = encoderDrawEligible
         var encoderSurfaceAttached = false
+        var sessionSurfaceAttached = false
         try {
             if (gpuDevelopActive) {
                 try {
@@ -1862,6 +1904,28 @@ class ExportPipeline(
                     "encoder surface fallback: requested=surface-gpu effective=surface " +
                         "reason=develop-session-unavailable (writer adopted the input surface)"
                 )
+            }
+            // E0b-5: attach the codec input Surface to the SOURCE session's develop session, ONCE. A refusal adopts the
+            // surface into the writer's own EGL (the CPU-RGB Surface mode); for a frame too large for any CPU path
+            // the session's own refusal then reads as a short message, never an OOM.
+            if (sessionDrawEligible) {
+                val inputSurface = writer.encoderInputSurface()
+                val attached = inputSurface != null && try {
+                    session.attachEncoderSurface(info.handle, inputSurface)
+                } catch (e: IllegalStateException) {
+                    false
+                }
+                if (attached) {
+                    sessionSurfaceAttached = true
+                } else {
+                    writer.adoptEncoderSurface()
+                    stageLog?.invoke(
+                        "encoder surface fallback: requested=surface-gpu effective=surface " +
+                            "reason=" + (if (inputSurface == null) "writer-had-no-input-surface"
+                            else (session.detail() ?: "session refused the encoder surface")) +
+                            " (writer adopted the input surface)"
+                    )
+                }
             }
             // 4. Encode loop, in presentation order across both tracks.
             // Progress counts VIDEO frames only (the frame counter the user
@@ -1971,6 +2035,37 @@ class ExportPipeline(
                         // export NEVER dies on this seam. Later frames
                         // stay silent (the same one-line rule the develop
                         // latch rides).
+                        // E0b-5: the encoded source's own GPU -> encoder frame (no RGB buffer exists).
+                        if (sessionSurfaceAttached) {
+                            val drewSession = try {
+                                session.renderFrameToEncoder(
+                                    info.handle, s.frameIndex, s.ptsUs, grade, lutPath, chainWire, effectiveDeg,
+                                )
+                            } catch (e: IllegalStateException) {
+                                false
+                            }
+                            if (drewSession) {
+                                writer.drainEncoderInput()
+                                timing?.endFrame()
+                                done++
+                                onProgress?.invoke(done, videoPts.size)
+                                continue
+                            }
+                            // A refused frame: detach the session's surface (single-producer rule) and let the writer
+                            // adopt it; the rest of the export flows through the RGB path (whose own guard refuses a
+                            // frame no CPU path can hold, with a short message).
+                            sessionSurfaceAttached = false
+                            try {
+                                session.attachEncoderSurface(info.handle, null)
+                            } catch (e: IllegalStateException) {
+                            }
+                            writer.adoptEncoderSurface()
+                            stageLog?.invoke(
+                                "encoder surface fallback: requested=surface-gpu effective=surface reason=" +
+                                    (session.detail() ?: "encoded gpu encoder render failed") +
+                                    " (writer adopted the input surface after the encoder render failure)"
+                            )
+                        }
                         if (encoderSurfaceAttached) {
                             val drew = try {
                                 gpuDevelop.renderFrameToEncoderParcel(
@@ -2160,7 +2255,7 @@ class ExportPipeline(
                         // stays 0, honestly: no conversion ran). False (a
                         // writer without the mode) falls through to the
                         // byte-identical I420 path.
-                        if (renderBackend == RenderBackend.GPU_EXPERIMENTAL &&
+                        if ((renderBackend == RenderBackend.GPU_EXPERIMENTAL || sessionDrawEligible) &&
                             writer.writeVideoFrameRgb(s.ptsUs, scaled, frameW, frameH)
                         ) {
                             timing?.endFrame()
@@ -2291,7 +2386,7 @@ class ExportPipeline(
                         // every frame blitted; a mid-stream refusal
                         // already logged its own fallback line.
                         "encoder-input=" + when {
-                            encoderSurfaceAttached -> "surface-gpu"
+                            encoderSurfaceAttached || sessionSurfaceAttached -> "surface-gpu"
                             writer.surfaceInputActive() -> "surface"
                             else -> "bytes"
                         }
@@ -2334,6 +2429,15 @@ class ExportPipeline(
                     // No .so at teardown: nothing to close.
                 }
                 gpuSessionHandle = 0L
+            }
+            // E0b-5: the source session's EGL window on the codec input surface dies BEFORE the writer
+            // releases the codec (the session itself is closed by run()).
+            if (sessionSurfaceAttached) {
+                try {
+                    session.attachEncoderSurface(info.handle, null)
+                } catch (e: IllegalStateException) {
+                }
+                sessionSurfaceAttached = false
             }
             writer.release()
         }
@@ -2571,6 +2675,9 @@ class Mp4Exporter(
                             run?.note("gpu->cpu: v2-node-chain")
                             backend = RenderBackend.CPU
                         }
+                        // E0b-5: an encoded source tries its own GPU -> encoder-surface door first; the
+                        // first Surface bring-up failure restarts once without it (clean, from frame 0).
+                        var sessionSurface = true
                         while (true) {
                             try {
                                 exportOnce(
@@ -2580,9 +2687,20 @@ class Mp4Exporter(
                                     job.manualRotationDeg, audioAttached, onProgress,
                                     job.resolutionW, job.resolutionH, run,
                                     imageAnalysisPath, job.snapshotChainWire,
+                                    sessionSurface,
                                 )
                                 break
                             } catch (e: SurfaceInputUnavailable) {
+                                if (backend == RenderBackend.CPU && encoded && sessionSurface) {
+                                    ExportStaging.discard(partial)
+                                    sessionSurface = false
+                                    val why = SurfaceInputUnavailable.reason(e.step)
+                                    stageLog?.invoke(
+                                        "encoded export fallback: requested=surface-gpu effective=cpu reason=$why"
+                                    )
+                                    run?.note("encoded surface->cpu: $why")
+                                    continue
+                                }
                                 if (backend == RenderBackend.CPU) throw e
                                 // §10: the writer could not bring its
                                 // encoder-Surface mode up (no EGL display, no
@@ -2704,6 +2822,7 @@ class Mp4Exporter(
         planRun: ExportPlanRun? = null,
         imageAnalysisPath: String? = null,
         chainWire: FloatArray? = null,
+        allowSessionSurface: Boolean = true,
     ) {
         ExportPipeline(
             session,
@@ -2717,6 +2836,7 @@ class Mp4Exporter(
             planRun = planRun,
             imageAnalysisPath = imageAnalysisPath,
             chainWire = chainWire,
+            allowSessionSurface = allowSessionSurface,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )

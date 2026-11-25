@@ -4098,16 +4098,21 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderFrameParc
 // tint to the YUV pass and ZEROES those fields (and the temporal NR pair, which has no frame to merge)
 // before the chain sees the grade: the two paths then run the same stages, the parity contract.
 // Returns the RGB888 of the reduced frame (ceil(width/reduce) x ceil(height/reduce)), like the CFA door.
-JNIEXPORT jbyteArray JNICALL
-Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvParcel(
-        JNIEnv* env, jclass, jlong sessionHandle,
+// Shared body of the two encoded-YUV doors. [toEncoder] false = the RGB888 readback of the reduced frame
+// (returned as a byte array); true = develop AND blit to the encoder surface (E0b-5: no readback, no RGB
+// buffer ever exists; reduce is forced to 1 by the caller, ptsUs/rotationDeg ride to the session's encoder
+// door) and the return is always nullptr with *encoderOk telling the outcome.
+static jbyteArray developEncodedYuv(
+        JNIEnv* env, jlong sessionHandle,
         jbyteArray yPlane, jbyteArray cPlane,
         jint width, jint height, jint stride, jint uvStride, jint bitDepth, jboolean fullRange,
         jint matrix, jint transfer, jint primaries, jint reduce,
         jfloatArray gradeParcel,
         jstring lutPath, jfloat lutStrength,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
-        jint lutOutGamut, jint lutOutTransfer) {
+        jint lutOutGamut, jint lutOutTransfer,
+        bool toEncoder, jlong ptsUs, jint rotationDeg, bool* encoderOk) {
+    if (encoderOk != nullptr) *encoderOk = false;
     gles::DevelopGrade grade;
     std::string parcelError;
     if (!readGradeParcel(env, gradeParcel, &grade, &parcelError)) {
@@ -4194,11 +4199,15 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvParcel
         req.lutInTransfer = lutInTransfer;
         req.lutOutGamut = lutOutGamut;
         req.lutOutTransfer = lutOutTransfer;
-        const gles::DevelopFrameResult res = session->renderFrame(req, g);
+        const gles::DevelopFrameResult res = toEncoder
+            ? session->renderFrameToEncoder(req, g, static_cast<int64_t>(ptsUs), static_cast<int>(rotationDeg))
+            : session->renderFrame(req, g);
         if (!res.ok) {
             errCode = 1;
-            errDetail = "develop session render (encoded): " + res.detail +
+            errDetail = (toEncoder ? "develop session encoder render (encoded): " : "develop session render (encoded): ") + res.detail +
                         " (recovery: the CPU develop takes the frame)";
+        } else if (toEncoder) {
+            if (encoderOk != nullptr) *encoderOk = true;
         } else if (res.rgb888.empty()) {
             errCode = 1;
             errDetail = "develop session render (encoded): empty output (recovery: reopen the clip)";
@@ -4223,6 +4232,47 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvParcel
         if (result != nullptr) env->SetByteArrayRegion(result, 0, n, reinterpret_cast<const jbyte*>(rgbOut.data()));
     }
     return result;
+}
+
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvParcel(
+        JNIEnv* env, jclass, jlong sessionHandle,
+        jbyteArray yPlane, jbyteArray cPlane,
+        jint width, jint height, jint stride, jint uvStride, jint bitDepth, jboolean fullRange,
+        jint matrix, jint transfer, jint primaries, jint reduce,
+        jfloatArray gradeParcel,
+        jstring lutPath, jfloat lutStrength,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer) {
+    return developEncodedYuv(env, sessionHandle, yPlane, cPlane, width, height, stride, uvStride, bitDepth,
+                             fullRange, matrix, transfer, primaries, reduce, gradeParcel, lutPath, lutStrength,
+                             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+                             false, 0, 0, nullptr);
+}
+
+// E0b-5 (encoded 8K export): the same encoded YUV pass at FULL size (reduce 1), but the developed texture is
+// blitted straight onto the encoder's input Surface (setEncoderSurface first); no RGB buffer, no readback.
+// [ptsUs] is the frame's normalized encoder pts, [rotationDeg] the blit's 0/90/180/270 fold. True = the frame
+// was queued to the encoder; false = refused (the error slot names the step; the session latches unhealthy on a
+// GL failure, exactly like the MCRAW encoder door).
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionRenderYuvToEncoderParcel(
+        JNIEnv* env, jclass, jlong sessionHandle,
+        jbyteArray yPlane, jbyteArray cPlane,
+        jint width, jint height, jint stride, jint uvStride, jint bitDepth, jboolean fullRange,
+        jint matrix, jint transfer, jint primaries,
+        jfloatArray gradeParcel,
+        jstring lutPath, jfloat lutStrength,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer,
+        jlong ptsUs, jint rotationDeg) {
+    bool ok = false;
+    developEncodedYuv(env, sessionHandle, yPlane, cPlane, width, height, stride, uvStride, bitDepth,
+                      fullRange, matrix, transfer, primaries, 1, gradeParcel, lutPath, lutStrength,
+                      lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+                      true, ptsUs, rotationDeg, &ok);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 // ENCODER SURFACE (M5). The MediaCodec input Surface reaches the session

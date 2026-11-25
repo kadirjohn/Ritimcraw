@@ -312,6 +312,11 @@ public:
         // its own small scratch + SSBO sized to the published dims,
         // session-side, unchanged.
         bool withStoreScratch = false;
+        // true = withStoreScratch's pair is NOT allocated with the frame storage but on the first
+        // ensureStoreScratch() (the readback render). The develop session sets it: an encoder-surface
+        // export (no readback) then never pays the SSBO + RGBA8 scratch (531 MB at 8K). Default false
+        // = the original allocation, byte-identical for every other caller.
+        bool deferStoreScratch = false;
         // F1-8e: the OpenDRT table bake runs on a background thread (latest spec wins, the previous table
         // keeps drawing until the new one is swapped in on the GL thread, one redraw is requested through
         // setDrtReadyCallback). ONLY the interactive preview sets this. The develop (export) session leaves
@@ -504,6 +509,8 @@ public:
     GLint storeSizeLoc() const;
     // The develop-config store-scratch pair (0 / 0 when the config did
     // not request it).
+    // Allocates the deferred store-scratch pair for the CURRENT frame size (idempotent; GL thread).
+    bool ensureStoreScratch(std::string* detail);
     GLuint scratchFbo() const;
     GLuint outBuf() const;
     uint64_t outBytes() const;
