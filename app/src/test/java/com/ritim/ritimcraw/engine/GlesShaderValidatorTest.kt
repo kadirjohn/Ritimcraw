@@ -4236,30 +4236,17 @@ class GlesShaderValidatorTest {
             "the DRT variant must not carry the Rec.709 OETF",
             src.contains("linearToRec709"),
         )
-        // The HLG constants (the inventory SS3.1: the HLG branch rides a
-        // run-time uniform, shader TEXT stays one program).
-        assertTrue(
-            "the inverse HLG EOTF missing",
-            src.contains("0.17883277 * log(12.0 * xs.r - 0.28466892) + 0.55991073"),
-        )
     }
 
     @Test
-    fun tail_drt_shader_carries_the_opendrt_constant_matrices() {
-        // The OpenDRT-owned matrices, verbatim from core/src/OpenDrt.cpp
-        // (NOT Color.cpp's pinned DWG matrix - the DRT brings its own).
+    fun tail_drt_shader_is_the_baked_table_sample() {
+        // Baked route (owner decision 2026-11-25): the matrices and the per-pixel transform live in core's
+        // bake; the variant is DI encode + eight texelFetch lattice reads blended by hand.
         val src = GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT
-        assertTrue(
-            "kDWG_TO_XYZ constant missing",
-            src.contains("0.700622392093671609, 0.148774815123196763, 0.101058719834803246"),
-        )
-        assertTrue(
-            "kXYZ_TO_P3D65 constant missing",
-            src.contains("2.49349691194142542, -0.93138361791912383, -0.402710784450716841"),
-        )
-        assertTrue(
-            "kP3_TO_REC2020 constant missing",
-            src.contains("0.753833034361722221, 0.198597369052616435, 0.0475695965856618441"),
-        )
+        assertTrue(src.contains("uniform highp sampler3D uDrtLut;"))
+        assertTrue(src.contains("0.07329248 * (log2(lin + 0.0075) + 7.0)"))
+        assertEquals(8, src.split("texelFetch(uDrtLut, ").size - 1)
+        assertFalse("hardware-filtered table read", src.contains("texture(uDrtLut"))
+        assertFalse("per-pixel OpenDRT leaked back", src.contains("kXYZ_TO_P3D65") || src.contains("uDrtTn"))
     }
 }

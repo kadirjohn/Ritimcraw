@@ -2710,100 +2710,30 @@ object GlesShaderValidator {
         }
     }
 
-    // ---- the DRT TAIL variant's contract (F1-5). The checks pin the
-    // ---- OpenDrt.cpp operation order + the resolved-preset uniform
-    // ---- vocabulary (the binding uploads the Impl constructor's outputs).
-
-    /** The DRT TAIL's resolved-preset uniform set. */
-    private val kTailDrtUniformDecls = listOf(
-        "uniform highp sampler2D uSrc;",
-        "uniform ivec2 uSize;",
-        "uniform int uDrtEotf;",
-        "uniform float uDrtHdr;",
-        "uniform vec4 uDrtTn;",
-        "uniform vec4 uDrtRs;",
-        "uniform float uDrtCwp;",
-        "uniform vec4 uDrtToe;",
-        "uniform vec4 uDrtLcon;",
-        "uniform vec4 uDrtHcon;",
-        "uniform vec4 uDrtTs;",
-        "uniform vec4 uDrtConf0;",
-        "uniform vec4 uDrtConf1;",
-        "uniform vec4 uDrtConf2;",
-        "uniform float uNormScalar;",
-        "uniform float uNormScalarHdr;",
-    )
+    // ---- the DRT TAIL variant's contract (baked route): the sampler/uniform vocabulary and the
+    // ---- DI-encode + by-hand trilinear shape, nothing per-pixel OpenDRT.
 
     private fun tailDrtProblems(s: String, out: MutableList<String>) {
-        for (u in kTailDrtUniformDecls) {
-            if (!s.contains(u)) {
-                out += "missing `$u` (the DRT binding uploads OpenDrt::Impl's resolved preset — the uniform IS the constructor's output)"
-            }
-        }
-        if (!s.contains("out vec4 oCol;")) {
-            out += "missing `out vec4 oCol;` (the single color attachment output)"
-        }
-        // The entry: DWG linear -> XYZ -> the DRT (applyDwgLinear).
-        if (!s.contains("rgb = kDWG_TO_XYZ * rgb;")) {
-            out += "missing the DWG->XYZ entry (`rgb = kDWG_TO_XYZ * rgb;` — OpenDRT's own constant, NOT Color.cpp's pinned matrix)"
-        }
-        // Helper fidelity: the C++ helpers must exist with the same shape.
-        for (token in listOf(
-            "float spowf(float a, float b) { return a <= 0.0 ? a : pow(a, b); }",
-            "float sdivf(float a, float b) { return b == 0.0 ? 0.0 : a / b; }",
+        for (u in listOf(
+            "uniform highp sampler2D uSrc;",
+            "uniform ivec2 uSize;",
+            "uniform highp sampler3D uDrtLut;",
+            "uniform float uDrtLutN;",
         )) {
-            if (!s.contains(token)) {
-                out += "missing the helper `$token` (OpenDrt.cpp's own spowf/sdivf — substitutes change the parity target)"
-            }
+            if (!s.contains(u)) out += "missing the DRT TAIL uniform `$u`"
         }
-        // The applyXyz order: rendering space -> normalize -> opponent ->
-        // hue windows -> brl/lcon/hcon -> the hyperbolic triple -> hc/hs ->
-        // purity -> the rendering-space return -> displayWhite -> brlp ->
-        // ptl -> the tail (tsM2 * toe * tsDsc -> the display encoding).
-        val order = listOf(
-            "rgb = kXYZ_TO_P3D65 * rgb;",
-            "rgb = satL * uDrtRs.x + rgb * (1.0 - uDrtRs.x) + uDrtTn.w;",
-            "float tsn = sqrt(max(0.0, dot(rgb, rgb))) / kSqrt3;",
-            "achD = 1.25 * compressToeQuadratic(achD, 0.25, false);",
-            "float hue = mod(atan(oppX, oppY) + kPi + 1.10714931, 2.0 * kPi);",
-            "float tsnPt = compressHyperbolicPower(tsn, uDrtTs.x, tsP);",
-            "float tsnConst = compressHyperbolicPower(tsn, uDrtTs.y, tsP);",
-            "tsn = compressHyperbolicPower(tsn, uDrtHcon.z, tsP);",
-            "rgb = rgb * ptf + 1.0 - ptf;",
-            "rgb = (satL * uDrtRs.x - rgb) / (uDrtRs.x - 1.0);",
-            "rgb = kP3D65_TO_XYZ * rgb;",
-            "tsn *= uDrtHcon.y;",
-            "tsn = compressToeQuadratic(tsn, uDrtTn.z, false);",
-            "if (uDrtHdr > 0.5)",
-        )
-        var last = -1
-        for (token in order) {
-            val at = s.indexOf(token)
-            if (at < 0) {
-                out += "missing the OpenDRT step `$token` (Impl::applyXyz's own order — the C++ is the parity reference)"
-            } else if (at < last) {
-                out += "the OpenDRT order broke at `$token` (applyXyz's sequence)"
-            } else {
-                last = at
-            }
+        if (!s.contains("0.07329248 * (log2(lin + 0.0075) + 7.0)") || !s.contains("10.44426855 * lin")) {
+            out += "missing the DI encode (Color.cpp's pinned constants; the table's input axis is the DI code)"
         }
-        // The HLG branch must carry the Rec.2020 matrix + the inverse EOTF.
-        if (!s.contains("kP3_TO_REC2020 * rgb")) {
-            out += "missing the HLG Rec.2020 matrix (`kP3_TO_REC2020 * rgb` — the HLG path's own gamut step)"
+        if (s.split("texelFetch(uDrtLut, ").size - 1 != 8) {
+            out += "the by-hand trilinear needs exactly eight lattice fetches (texelFetch(uDrtLut, ...)); a hardware-filtered texture() would break the CPU parity"
         }
-        if (!s.contains("0.17883277 * log(12.0 * xs.r - 0.28466892) + 0.55991073")) {
-            out += "missing the inverse HLG EOTF constants (0.17883277 / 0.28466892 / 0.55991073 — Impl::hlgInverseEotf's own)"
+        if (s.contains("texture(uDrtLut")) {
+            out += "the DRT table must not be sampled through the hardware filter (use texelFetch + mix)"
         }
-        // The SDR exit: ep = 2 + (displayId + 1) * 0.2 — the C++ ep mapping.
-        if (!s.contains("float ep = 2.0 + float(uDrtEotf + 1) * 0.2;")) {
-            out += "missing the SDR exit `float ep = 2.0 + float(uDrtEotf + 1) * 0.2;` (the C++ ep = 2.0 + eotf * 0.2 with eotf = displayId + 1)"
-        }
-        // The v1 TAIL's uniforms must NOT leak (the variant is a separate
-        // program; tonemap/OETF/LUT are the v1 TAIL's own contract).
-        for (u in kDevelopTailUniformDecls) {
-            if (s.contains(u)) {
-                out += "a v1 TAIL uniform leaked into the DRT variant (`$u` — the DRT is its own program; the stage-23/24 pair stays with the frozen v1 TAIL text)"
-            }
+        if (!s.contains("isnan(rgb.r)")) out += "missing the NaN -> 0 rule (the bake's own)"
+        for (leaked in listOf("uDrtTn", "uDrtRs", "kXYZ_TO_P3D65", "uDrtEotf")) {
+            if (s.contains(leaked)) out += "the per-pixel OpenDRT leaked back into the baked variant (`$leaked`)"
         }
     }
 

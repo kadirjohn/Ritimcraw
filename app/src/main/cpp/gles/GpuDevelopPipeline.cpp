@@ -42,6 +42,8 @@
 // it runs is the math Measure already proved on device.
 
 #include "GpuDevelopPipeline.h"
+#include <rawedit/OpenDrt.h>
+#include <memory>
 #include "ChainSlots.h"
 #include "NodeParcel.h"
 
@@ -597,18 +599,11 @@ struct GpuDevelopPipeline::Impl {
     // binding uniforms (the stage-24 LUT port's own contract, per slot).
     GLint nodesLutLoc = -1, nodesLutShapeLoc = -1, nodesLutShapeHiLoc = -1,
           nodesLutWorkingLoc = -1, nodesLutOutputLoc = -1;
-    // The DRT TAIL's own uSrc/uSize (the variant reads the NODES pass's
-    // DWG-linear output) + the resolved-preset uniform block's locations,
-    // all resolved at initNodes on tailDrtProgram.
-    GLint drtSrcLoc = -1, drtSizeLoc = -1;
-    GLint drtEotfLoc = -1, drtHdrLoc = -1, drtCwpLoc = -1,
-          drtNormLoc = -1, drtNormHdrLoc = -1;
-    GLint drtTnLoc = -1, drtRsLoc = -1, drtToeLoc = -1, drtBrlRgbLoc = -1,
-          drtBrlpRgbLoc = -1, drtLconLoc = -1, drtHconLoc = -1, drtTsLoc = -1,
-          drtHueRLoc = -1, drtHueGLoc = -1, drtHueBLoc = -1, drtHueCLoc = -1,
-          drtHueMLoc = -1, drtHueYLoc = -1, drtConf0Loc = -1, drtConf1Loc = -1,
-          drtConf2Loc = -1, drtPtLoc = -1, drtPt2Loc = -1, drtPt3Loc = -1,
-          drtPt4Loc = -1;
+    // The DRT TAIL variant (baked route): uSrc/uSize plus the baked 65^3 RGBA32F table on unit 11.
+    GLint drtSrcLoc = -1, drtSizeLoc = -1, drtLutLoc = -1, drtLutNLoc = -1;
+    GLuint drtLutTex = 0;
+    const void* drtLutSource = nullptr;  // the shared_ptr'd table last uploaded (identity key)
+    std::shared_ptr<const rawedit::OpenDrtLut> drtLutHold;
     // initNodes' recorded limits (the inventory §1.3's missing-query fix).
     NodesLimits limits;
     // The curve atlas (unit 6): 512 x 24 GL_R32F, texelFetch-only (no
@@ -1141,41 +1136,10 @@ bool GpuDevelopPipeline::Impl::initNodes(const std::string& nodesSource,
     }
     drtSrcLoc = resolve(tailDrtProgram, "uSrc");
     drtSizeLoc = resolve(tailDrtProgram, "uSize");
-    drtEotfLoc = resolve(tailDrtProgram, "uDrtEotf");
-    drtHdrLoc = resolve(tailDrtProgram, "uDrtHdr");
-    drtCwpLoc = resolve(tailDrtProgram, "uDrtCwp");
-    drtNormLoc = resolve(tailDrtProgram, "uNormScalar");
-    drtNormHdrLoc = resolve(tailDrtProgram, "uNormScalarHdr");
-    drtTnLoc = resolve(tailDrtProgram, "uDrtTn");
-    drtRsLoc = resolve(tailDrtProgram, "uDrtRs");
-    drtToeLoc = resolve(tailDrtProgram, "uDrtToe");
-    drtBrlRgbLoc = resolve(tailDrtProgram, "uDrtBrlRgb");
-    drtBrlpRgbLoc = resolve(tailDrtProgram, "uDrtBrlpRgb");
-    drtLconLoc = resolve(tailDrtProgram, "uDrtLcon");
-    drtHconLoc = resolve(tailDrtProgram, "uDrtHcon");
-    drtTsLoc = resolve(tailDrtProgram, "uDrtTs");
-    drtHueRLoc = resolve(tailDrtProgram, "uDrtHueR");
-    drtHueGLoc = resolve(tailDrtProgram, "uDrtHueG");
-    drtHueBLoc = resolve(tailDrtProgram, "uDrtHueB");
-    drtHueCLoc = resolve(tailDrtProgram, "uDrtHueC");
-    drtHueMLoc = resolve(tailDrtProgram, "uDrtHueM");
-    drtHueYLoc = resolve(tailDrtProgram, "uDrtHueY");
-    drtConf0Loc = resolve(tailDrtProgram, "uDrtConf0");
-    drtConf1Loc = resolve(tailDrtProgram, "uDrtConf1");
-    drtConf2Loc = resolve(tailDrtProgram, "uDrtConf2");
-    drtPtLoc = resolve(tailDrtProgram, "uDrtPt");
-    drtPt2Loc = resolve(tailDrtProgram, "uDrtPt2");
-    drtPt3Loc = resolve(tailDrtProgram, "uDrtPt3");
-    drtPt4Loc = resolve(tailDrtProgram, "uDrtPt4");
-    if (drtSrcLoc < 0 || drtSizeLoc < 0 || drtEotfLoc < 0 || drtHdrLoc < 0 ||
-        drtCwpLoc < 0 || drtNormLoc < 0 || drtNormHdrLoc < 0 || drtTnLoc < 0 ||
-        drtRsLoc < 0 || drtToeLoc < 0 || drtBrlRgbLoc < 0 ||
-        drtBrlpRgbLoc < 0 || drtLconLoc < 0 || drtHconLoc < 0 ||
-        drtTsLoc < 0 || drtHueRLoc < 0 || drtHueGLoc < 0 || drtHueBLoc < 0 ||
-        drtHueCLoc < 0 || drtHueMLoc < 0 || drtHueYLoc < 0 ||
-        drtConf0Loc < 0 || drtConf1Loc < 0 || drtConf2Loc < 0 ||
-        drtPtLoc < 0 || drtPt2Loc < 0 || drtPt3Loc < 0 || drtPt4Loc < 0) {
-        *detail = "shader-contract: missing a tail-drt uniform";
+    drtLutLoc = resolve(tailDrtProgram, "uDrtLut");
+    drtLutNLoc = resolve(tailDrtProgram, "uDrtLutN");
+    if (drtSrcLoc < 0 || drtSizeLoc < 0 || drtLutLoc < 0 || drtLutNLoc < 0) {
+        *detail = "shader-contract: missing a tail-drt uniform (uSrc/uSize/uDrtLut/uDrtLutN)";
         return false;
     }
 
@@ -1189,6 +1153,7 @@ bool GpuDevelopPipeline::Impl::initNodes(const std::string& nodesSource,
         glUniform1i(nodesLutLoc + s, 7 + s);
     glUseProgram(tailDrtProgram);
     glUniform1i(drtSrcLoc, 1);
+    glUniform1i(drtLutLoc, 11);
     glUseProgram(0);
 
     // The atlas: 512 x 24 GL_R32F, texelFetch-only (NEAREST pinned — the
@@ -2475,6 +2440,9 @@ void GpuDevelopPipeline::Impl::teardown() {
         if (nodeLutTex[s] != 0) { glDeleteTextures(1, &nodeLutTex[s]); nodeLutTex[s] = 0; }
     }
     if (nodesAtlasTex != 0) { glDeleteTextures(1, &nodesAtlasTex); nodesAtlasTex = 0; }
+    if (drtLutTex != 0) { glDeleteTextures(1, &drtLutTex); drtLutTex = 0; }
+    drtLutSource = nullptr;
+    drtLutHold.reset();
     nodesInitialized = false;
     nodesChainValid = false;
     nodesChainKey = 0;
@@ -2487,35 +2455,43 @@ void GpuDevelopPipeline::Impl::teardown() {
 // the per-draw cost is the live-knob profile (uniforms update, never a
 // recompile).
 
-// The hue pairs are declared `vec4` in the tail-drt shader (x,y used): a glUniform2f on a vec4 is a type mismatch
-// and raised GL_INVALID_OPERATION (0x0502) at the draw on this device, the OpenDRT failure the first v2-sweep run found.
+// The baked route's per-draw step: the spec floats the JNI appended after the Kotlin pack (b[77..82]) name the
+// table; core bakes it once per spec (cached) and the texture re-uploads only when the table object changes.
 void GpuDevelopPipeline::Impl::drtFoldUniforms(const float* b) {
-    glUniform1i(drtEotfLoc, static_cast<int>(b[0]));
-    glUniform1f(drtHdrLoc, b[1]);
-    glUniform1f(drtCwpLoc, b[2]);
-    glUniform1f(drtNormLoc, b[3]);
-    glUniform1f(drtNormHdrLoc, b[4]);
-    glUniform4fv(drtTnLoc, 1, &b[5]);
-    glUniform4fv(drtRsLoc, 1, &b[9]);
-    glUniform4fv(drtToeLoc, 1, &b[13]);
-    glUniform4fv(drtBrlRgbLoc, 1, &b[17]);
-    glUniform4fv(drtBrlpRgbLoc, 1, &b[21]);
-    glUniform4fv(drtLconLoc, 1, &b[25]);
-    glUniform4fv(drtHconLoc, 1, &b[29]);
-    glUniform4fv(drtTsLoc, 1, &b[33]);
-    glUniform4f(drtHueRLoc, b[37], b[38], 0.0f, 0.0f);
-    glUniform4f(drtHueGLoc, b[39], b[40], 0.0f, 0.0f);
-    glUniform4f(drtHueBLoc, b[41], b[42], 0.0f, 0.0f);
-    glUniform4f(drtHueCLoc, b[43], b[44], 0.0f, 0.0f);
-    glUniform4f(drtHueMLoc, b[45], b[46], 0.0f, 0.0f);
-    glUniform4f(drtHueYLoc, b[47], b[48], 0.0f, 0.0f);
-    glUniform4fv(drtConf0Loc, 1, &b[49]);
-    glUniform4fv(drtConf1Loc, 1, &b[53]);
-    glUniform4fv(drtConf2Loc, 1, &b[57]);
-    glUniform4fv(drtPtLoc, 1, &b[61]);
-    glUniform4fv(drtPt2Loc, 1, &b[65]);
-    glUniform4fv(drtPt3Loc, 1, &b[69]);
-    glUniform4fv(drtPt4Loc, 1, &b[73]);
+    const float* sp = b + GpuDevelopPipeline::kDrtPackSlots;
+    rawedit::OpenDrtSpec spec;
+    spec.look = static_cast<int>(sp[0]);
+    spec.tonescale = static_cast<int>(sp[1]);
+    spec.cwp = static_cast<int>(sp[2]);
+    spec.cwpLimit = sp[3];
+    spec.grey = sp[4];
+    spec.display = static_cast<int>(sp[5]) == 2 ? rawedit::OpenDrtDisplay::Hlg1000
+        : static_cast<int>(sp[5]) == 1 ? rawedit::OpenDrtDisplay::SdrRec1886
+        : rawedit::OpenDrtDisplay::SdrSrgb22;
+    std::shared_ptr<const rawedit::OpenDrtLut> lut = rawedit::bakedOpenDrtLut(spec);
+    glActiveTexture(GL_TEXTURE11);
+    if (drtLutTex == 0) glGenTextures(1, &drtLutTex);
+    glBindTexture(GL_TEXTURE_3D, drtLutTex);
+    if (drtLutSource != lut.get()) {
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        const int n = lut->n;
+        std::vector<float> rgba(static_cast<size_t>(n) * n * n * 4);
+        for (size_t i = 0; i < static_cast<size_t>(n) * n * n; ++i) {
+            rgba[i * 4 + 0] = lut->rgb[i * 3 + 0];
+            rgba[i * 4 + 1] = lut->rgb[i * 3 + 1];
+            rgba[i * 4 + 2] = lut->rgb[i * 3 + 2];
+            rgba[i * 4 + 3] = 1.0f;
+        }
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA32F, n, n, n, 0, GL_RGBA, GL_FLOAT, rgba.data());
+        drtLutSource = lut.get();
+        drtLutHold = lut;
+    }
+    glUniform1f(drtLutNLoc, static_cast<float>(lut->n));
+    glActiveTexture(GL_TEXTURE1);
 }
 
 // ---- public surface ---------------------------------------------------------

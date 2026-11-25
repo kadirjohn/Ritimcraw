@@ -709,4 +709,81 @@ class EncodedYuvPassParityTest {
             readerThread.quitSafely()
         }
     }
+
+    // ---- OpenDRT (baked 3D table) on an encoded frame; appended LAST so earlier cases keep their fixtures ----
+
+    @Test
+    fun an_opendrt_output_on_an_encoded_frame_matches_the_cpu_oracle() {
+        val session = com.ritim.ritimcraw.export.NativeGpuDevelop.openSession()
+        assertTrue("the develop session did not open", session > 0)
+        try {
+            val init = NativeSource.jniDevelopSessionInitNodes(
+                session, GlesShaderSources.NODES, GlesShaderSources.FULLSCREEN_VERTEX,
+                GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+            )
+            assertTrue("the NODES/DRT programs did not compile (${NativeSource.previewLastError()})",
+                init != null && init.isNotEmpty() && init[0] == 1)
+            val lines = ArrayList<String>()
+            var worst = 0
+            val failures = ArrayList<String>()
+            val outputs = listOf(
+                "sdr standard" to com.ritim.ritimcraw.data.grade2.OpenDrtParamsV2(),
+                "hlg" to com.ritim.ritimcraw.data.grade2.OpenDrtParamsV2(display = 2),
+            )
+            for ((i, caseIndex) in intArrayOf(4, 8).withIndex()) {
+                val base = cases[caseIndex]
+                val f = fixture(320, 180, base.bits, 0x7171 + 13 * i)
+                val reduce = 2
+                val small = reduceFrame(f, reduce)
+                val spec = EncodedColorSpec(
+                    profile = SourceProfile(
+                        primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                        range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                        primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                        rangeProvenance = null, bitDepthProvenance = null,
+                    ),
+                    declaredBitDepth = base.bits,
+                )
+                val frame = YuvFrameK(small.w, small.h, true, small.y, small.c, ByteArray(0), small.stride, small.uvStride, base.bits)
+                for ((name, drt) in outputs) {
+                    val grade2 = com.ritim.ritimcraw.data.grade2.ClipGradeV2(
+                        output = com.ritim.ritimcraw.data.grade2.OutputTransformV2(
+                            mode = com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT, opendrt = drt,
+                        ),
+                    )
+                    val wire = NodeChainWire.encode(grade2, listOf(com.ritim.ritimcraw.data.grade2.GradeNodeV2(sat = 1.2f)))
+                    val pack = OpenDrtPacks.resolve(
+                        OpenDrtPacks.Spec(
+                            look = drt.look, tonescale = drt.tonescale, cwp = drt.cwp, cwpLimit = drt.cwpLimit,
+                            grey = drt.grey, display = drt.display,
+                        ),
+                    )
+                    val cpu = NativeEncodedDeveloper.develop(frame, spec, 0, GradeK(), null, wire)
+                    assertNotNull("$name: the CPU oracle returned null (${NativeSource.previewLastError()})", cpu)
+                    assertTrue("$name: chain door refused (${NativeSource.previewLastError()})",
+                        NativeSource.jniDevelopSessionSetColorModelChain(session, wire, pack))
+                    val gpu = NativeSource.jniDevelopSessionRenderYuvParcel(
+                        session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                        spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, reduce,
+                        GradeParcel.encode(GradeK()),
+                    )
+                    assertNotNull("$name: the render returned null (${NativeSource.previewLastError()})", gpu)
+                    val n = small.w * small.h
+                    val stats = GradeParitySweep.compare(gpu!!, GradeParitySweep.argbBytes(cpu!!.copyOfRange(2, 2 + n)))
+                    val line = String.format(java.util.Locale.ROOT, "opendrt case %d [%s] (%dx%d): maxDiffLsb=%d mismatch=%.4f%% over1=%.4f%%",
+                        caseIndex, name, small.w, small.h, stats.maxDiffLsb, stats.mismatchPct, stats.over1Pct)
+                    Log.i("ritim-parity", "e0b-drt $line")
+                    lines += line
+                    if (stats.maxDiffLsb > worst) worst = stats.maxDiffLsb
+                    if (stats.mismatchPct > STRICT_MISMATCH_BOUND_PCT) failures += "case $caseIndex [$name]: ${stats.mismatchPct}%"
+                }
+            }
+            assertTrue(
+                "encoded OpenDRT GPU vs CPU oracle: worst maxDiffLsb=$worst, over-bound=$failures\n" + lines.joinToString("\n"),
+                worst <= 1 && failures.isEmpty(),
+            )
+        } finally {
+            NativeSource.jniDevelopSessionClose(session)
+        }
+    }
 }

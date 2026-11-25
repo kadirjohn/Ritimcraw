@@ -502,10 +502,6 @@ internal class NativeEncodedGpuDeveloper : EncodedGpuDeveloper {
         // null so the frame takes the CPU oracle; a chainless frame clears a chain the session still holds.
         if (chainWire != null) {
             if (!nodesReady) return null
-            // The OpenDRT output stays on the CPU oracle for now: the tail-drt draw fails on this device
-            // (glDrawArrays(tail-drt): gl error 0x0502, found by the first v2-sweep run, 2026-11-25) and a render
-            // failure latches the session unhealthy, which would take every later frame to the CPU as well.
-            if (chainWire.size >= 2 && chainWire[1] == 1.0f) return null
             val drtPack = if (chainWire.size >= 7 && chainWire[1] == 1.0f) {
                 val o = chainWire.size - 6
                 runCatching {
@@ -941,8 +937,6 @@ class EncodedSource(
         require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
         if (maxDim < 0 || !upright || fmt.orientationDeg != 0) return null
         val wire = EncodedToneBridge.apply(grade.highlights, grade.shadows, chainWire)
-        // OpenDRT stays on the CPU oracle (its tail draw fails on this device, see NativeEncodedGpuDeveloper).
-        if (wire != null && wire.size >= 2 && wire[1] == 1.0f) return null
         val planes = if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex)
         val g = EncodedYuv.toGpuFrame(planes)
         if (g == null) {
