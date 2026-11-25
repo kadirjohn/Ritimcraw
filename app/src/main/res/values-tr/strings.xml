@@ -658,6 +658,4 @@
     <string name="node_adjust_contrast">Kontrast</string>
     <string name="node_adjust_hue">Ton</string>
     <string name="node_adjust_mix">Karışım</string>
-    <string name="editor_highlight_recovery">Parlak alanları kurtar</string>
-    <string name="editor_highlight_recovery_on">Parlak alanlar kurtarıldı (kaldırmak için dokun)</string>
 </resources>

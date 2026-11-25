@@ -175,17 +175,6 @@ object SliderSteps {
     fun resetAll(current: GradeK): GradeK =
         Axis.values().fold(current) { g, axis -> resetToDefault(axis, g) }
 
-    /** One-tap highlight recovery: strong pull-down plus RAW reconstruction. */
-    const val RECOVERY_HIGHLIGHTS = -70f
-    const val RECOVERY_ACTIVE_AT = -60f
-
-    fun isHighlightRecovered(grade: GradeK): Boolean = grade.highlights <= RECOVERY_ACTIVE_AT
-
-    /** Toggle: off -> recovery preset, on -> highlights back to neutral. */
-    fun toggleHighlightRecovery(grade: GradeK): GradeK =
-        if (isHighlightRecovered(grade)) grade.copy(highlights = GradeK().highlights)
-        else grade.copy(highlights = RECOVERY_HIGHLIGHTS, highlightReconstruction = true)
-
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
         Axis.EXPOSURE -> current.copy(exposureEv = GradeK().exposureEv)
         Axis.HIGHLIGHTS -> current.copy(highlights = GradeK().highlights)
