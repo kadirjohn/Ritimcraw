@@ -154,4 +154,20 @@ class ThemeIconMorphTest {
     @Test fun slotState_isPure() {
         assertEquals(ThemeIconMorph.slotState(2, 1.37f), ThemeIconMorph.slotState(2, 1.37f))
     }
+
+    @Test fun textGlyph_restNearAndHandoff() {
+        val rest = ThemeIconMorph.textGlyphState(1f)
+        assertEquals(1f, rest.alpha, eps)
+        assertEquals(1f, rest.scale, eps)
+        assertEquals(0f, rest.brighten, eps)
+        assertEquals(0f, ThemeIconMorph.textGlyphState(0f).alpha, eps)
+        val near = ThemeIconMorph.textGlyphState(ThemeIconMorph.NEAR)
+        assertEquals(1f, near.alpha, eps)
+        assertEquals(1f, near.brighten, eps)
+        assertEquals(0f, near.rotationDeg, eps)
+        assertEquals(
+            ThemeIconMorph.textGlyphState(-0.5f).scale,
+            ThemeIconMorph.textGlyphState(0.5f).scale, eps,
+        )
+    }
 }

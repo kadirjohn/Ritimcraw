@@ -18,7 +18,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -477,19 +480,35 @@ fun ThemeSlider(
                         contentAlignment = Alignment.Center,
                     ) {
 if (icon == null) {
-                            // Custom slot: the text glyph "C" (no morph).
+                            // Custom slot: the text glyph "C" gets the same
+                            // proximity pose and colour charge as the icons
+                            // (pure curves, read in the draw phase).
+                            val inactiveTint = MaterialTheme.colorScheme.onSurfaceVariant
+                            val accentTint = MaterialTheme.colorScheme.primary
+                            val arrivalTint = MaterialTheme.colorScheme.onPrimary
                             Box(
                                 Modifier.graphicsLayer {
-                                    alpha = ThemeIconMorph.smoothstep(
-                                        ThemeIconMorph.HANDOFF,
-                                        ThemeIconMorph.NEAR,
-                                        kotlin.math.abs(
-                                            ((thumbX - trackInsetPx) / slotWidthPx)
-                                                .coerceIn(0f, SLOT_MAX.toFloat())
+                                    val signed = (thumbX - trackInsetPx) / slotWidthPx - slot
+                                    val st = ThemeIconMorph.textGlyphState(signed)
+                                    alpha = st.alpha
+                                    scaleX = st.scale
+                                    scaleY = st.scale
+                                    translationX = st.translateXFrac * size.width
+                                    translationY = st.translateYFrac * size.height
+                                    compositingStrategy = CompositingStrategy.Offscreen
+                                }.drawWithContent {
+                                    // SrcIn recolours the letter's pixels, keeping coverage.
+                                    drawContent()
+                                    val signed = (thumbX - trackInsetPx) / slotWidthPx - slot
+                                    drawRect(
+                                        SlotColorJourney.colorAt(
+                                            kotlin.math.abs(signed),
+                                            inactiveTint, accentTint, arrivalTint,
                                         ),
+                                        blendMode = BlendMode.SrcIn,
                                     )
                                 },
-                            ) { SlotGlyph(null, MaterialTheme.colorScheme.onSurfaceVariant) }
+                            ) { SlotGlyph(null, Color.White) }
                         } else {
                         // The morph is three-slot (sun/A/moon): slots 1..3 of
                         // this control map to its slots 0..2, one slot shifted.
