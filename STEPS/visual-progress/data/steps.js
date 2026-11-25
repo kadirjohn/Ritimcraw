@@ -15204,6 +15204,34 @@ window.STEPS_DATA = {
     }
    ],
    "sources": []
+  },
+  {
+   "id": "tr-strings-sync",
+   "title": "fix: sync turkish string resources",
+   "date": "2026-11-26",
+   "status": "in-progress",
+   "commit": null,
+   "tests": "gate EXIT=0: :app:assembleDebug :app:testDebugUnitTest --rerun (offline), BUILD SUCCESSFUL in 19s, 3068 tests, 0 failures",
+   "description": "Mechanical en/tr strings audit: added the two missing Turkish <one> plural items to mirror the en quantity sets. Key parity verified both directions (609 strings + 2 plurals, identical key sets), placeholder parity verified including plural items and %%, no translatable=false attrs, no duplicate keys, apostrophes only inside comments. English side unchanged: its <one> items already existed. Note: the interrupted session's WIP also held 7 orphan node_curve_* strings; they were deliberately NOT committed here because night-b9 (F1-8c) owns those keys with different pending values (Red/Green/Blue vs the orphan copies' Y/R/G/B) and nothing in this branch references them.",
+   "added": [
+    "tr library_delete_message <one>: 1 klip kitaplıktan kaldırılacak. Özgün dosya cihazınızda kalır.",
+    "tr settings_device_report_codec_count <one>: %1$d codec"
+   ],
+   "removed": [],
+   "changed": [],
+   "files": [
+    {
+     "path": "app/src/main/res/values-tr/strings.xml",
+     "change": "M"
+    }
+   ],
+   "sources": [
+    {
+     "name": "values-tr/strings.xml vs values/strings.xml",
+     "url": "",
+     "note": "full bidirectional audit: keys, plural quantities, placeholders, %% escapes"
+    }
+   ]
   }
  ]
 };
