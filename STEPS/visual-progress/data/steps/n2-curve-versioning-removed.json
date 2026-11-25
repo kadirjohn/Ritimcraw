@@ -1,0 +1,18 @@
+{
+ "id": "n2-curve-versioning-removed",
+ "title": "fix: remove the highlights curve versioning",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "5f51f56",
+  "date": "2026-11-25",
+  "merge_subject": "merge: fix: remove the highlights curve versioning"
+ },
+ "tests": "gradle 3050 tests, 0 failures; build-desktop.sh 35 suites SUCCESS; device sweep 59 cases worst 1 LSB; goldens re-pinned to the 0.40 values (documented in the commit).",
+ "description": "The stage-15 knee is one constant for every record; a stored highlightsCurve key is ignored on read and never written.",
+ "added": [],
+ "removed": [],
+ "changed": [],
+ "files": [],
+ "sources": []
+}

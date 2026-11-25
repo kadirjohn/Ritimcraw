@@ -667,4 +667,19 @@
     <string name="node_adjust_contrast">Kontrast</string>
     <string name="node_adjust_hue">Ton</string>
     <string name="node_adjust_mix">Karışım</string>
+    <!-- F1-8b: node tekerlekler sayfası (Türkçe metinler sahibin gözden geçirmesine açık) -->
+    <string name="node_tab_wheels">Tekerlekler</string>
+    <string name="node_tab_adjust">Ayar</string>
+    <string name="node_wheels_primary">Birincil</string>
+    <string name="node_wheels_log">Log</string>
+    <string name="node_wheel_lift">Lift</string>
+    <string name="node_wheel_gamma">Gamma</string>
+    <string name="node_wheel_gain">Gain</string>
+    <string name="node_wheel_offset">Ofset</string>
+    <string name="node_wheel_log_shadow">Gölgeler</string>
+    <string name="node_wheel_log_mid">Orta tonlar</string>
+    <string name="node_wheel_log_high">Parlaklar</string>
+    <string name="node_wheel_master">Ana seviye</string>
+    <string name="node_wheel_reset">Tekerleği sıfırla</string>
+    <string name="node_wheel_pad_desc">%1$s tekerleği, renk için sürükleyin, ortalamak için çift dokunun</string>
 </resources>

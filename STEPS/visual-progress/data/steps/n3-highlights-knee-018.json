@@ -1,0 +1,14 @@
+{
+ "id": "n3-highlights-knee-018",
+ "title": "fix: highlights knee 0.40 to 0.18 (mid gray)",
+ "date": "2026-11-26",
+ "status": "in-progress",
+ "commit": null,
+ "tests": "gradle 3050 tests, 0 failures; build-desktop.sh 35 suites SUCCESS; device sweep 59 cases worst 1 LSB, Highlights 0.001%. NOT MERGED: awaiting the owner's approval of the golden changes (listed in the commit).",
+ "description": "On a night frame (+2.7 EV, AgX Punchy) Highlights -100 moved the brightest 5% by 1.42/255 at knee 0.40 and 8.60/255 at 0.18.",
+ "added": [],
+ "removed": [],
+ "changed": [],
+ "files": [],
+ "sources": []
+}

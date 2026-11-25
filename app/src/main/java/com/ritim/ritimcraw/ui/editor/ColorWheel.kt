@@ -209,6 +209,8 @@ fun ColorWheelPad(
     onDragActiveChange: (Boolean) -> Unit = {},
     onDoubleTapReset: () -> Unit = {},
     contentDescription: String = "",
+    // F1-8b: the disc shading; the legacy stage-18 gain field by default, the node wheels pass their own.
+    discColorAt: (Float, Float) -> Color = ColorWheelMath::discColor,
 ) {
     var padSize by remember { mutableStateOf(IntSize.Zero) }
     val density = LocalDensity.current
@@ -274,7 +276,7 @@ fun ColorWheelPad(
         ) {
             val r = size.minDimension / 2f
             val c = Offset(size.width / 2f, size.height / 2f)
-            val neutral = ColorWheelMath.discColor(0f, 0f)
+            val neutral = discColorAt(0f, 0f)
             // 72 sectors: each sector's gradient runs from the neutral
             // center to the rim color at the sector's mid-angle — the
             // stage-18 gain field in polar form.
@@ -285,7 +287,7 @@ fun ColorWheelPad(
                 val midRad = s * sweepRad - PI.toFloat() / 2f
                 val rimX = cos(midRad)
                 val rimY = sin(midRad)
-                val rim = ColorWheelMath.discColor(rimX, rimY)
+                val rim = discColorAt(rimX, rimY)
                 drawArc(
                     brush = Brush.linearGradient(
                         colors = listOf(neutral, rim),
