@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <map>
 #include <string>
@@ -51,6 +52,7 @@ struct ChanStats {
     uint64_t missed = 0;                // raw >= white but stage 3 would not flag
     uint64_t overFlag = 0;              // raw < white but stage 3 flags
     std::map<uint32_t, uint64_t> top;   // raw code -> count, for raw >= 0.9 * white
+    std::map<uint32_t, uint64_t> all;   // raw code -> count (every site)
 };
 
 const float kThr[5] = {1.00f, 0.99f, 0.98f, 0.97f, 0.95f};
@@ -69,6 +71,13 @@ void report(const char* title, const ChanStats (&cs)[3], float white) {
         std::printf("   stage3 flags (norm*shading>=1): %.3f%%  missed(raw>=white, not flagged): %.3f%%  "
                     "over-flagged(raw<white, flagged): %.3f%%\n",
                     s.stage3Flag * d, s.missed * d, s.overFlag * d);
+        std::printf("   top raw codes (code:count) from the maximum down:");
+        {
+            int shown = 0;
+            for (auto it = s.all.rbegin(); it != s.all.rend() && shown < 10; ++it, ++shown)
+                std::printf(" %u:%llu", it->first, (unsigned long long)it->second);
+            std::printf("\n");
+        }
         std::vector<std::pair<uint64_t, uint32_t>> v;
         for (const auto& kv : s.top) v.push_back({kv.second, kv.first});
         std::sort(v.rbegin(), v.rend());
@@ -126,6 +135,10 @@ int main(int argc, char** argv) {
                 meta.shadingW && meta.shadingH ? meta.lensShading.size() / (size_t(meta.shadingW) * meta.shadingH) : 0,
                 meta.shadingW, meta.shadingH);
 
+    std::printf("asShotNeutral = %.4f %.4f %.4f  -> 1/neutral = %.4f %.4f %.4f  (stage 5 divides by neutral; "
+                "stage 3 uses wbGains above: a mismatch makes stage 3's 'neutral' cap tinted)\n",
+                meta.asShotNeutral[0], meta.asShotNeutral[1], meta.asShotNeutral[2],
+                1.0f / meta.asShotNeutral[0], 1.0f / meta.asShotNeutral[1], 1.0f / meta.asShotNeutral[2]);
     const uint32_t w = info.width, h = info.height;
     // Bright tiles: top 1% of 64x64 tiles by mean normalized G.
     const uint32_t T = 64, tw = (w + T - 1) / T, th = (h + T - 1) / T;
@@ -174,6 +187,74 @@ int main(int argc, char** argv) {
                 if (atW && !flag) s.missed++;
                 if (!atW && flag) s.overFlag++;
                 if (norm >= 0.9f) s.top[raw]++;
+                s.all[raw]++;
+            }
+        }
+    }
+    {
+        const RecoveryClipLevels lv = recoveryClipLevels(cfa.data(), info, meta);
+        std::printf("recoveryClipLevels (normalized raw, >1 = none): R=%.5f G=%.5f B=%.5f\n", lv.threshold[0],
+                    lv.threshold[1], lv.threshold[2]);
+        Grade a; a.highlightReconstruction = true;
+        Grade b = a; b.highlightRecovery = true;
+        const ImageF ia = developCpu(cfa.data(), info, meta, a), ib = developCpu(cfa.data(), info, meta, b);
+        size_t changed = 0, above1 = 0, lowered = 0;
+        float maxA = 0, maxB = 0;
+        size_t maxAt = 0;
+        double sumGain = 0;
+        for (size_t i = 0; i < ia.rgb.size(); i += 3) {
+            bool ch = false;
+            for (int c = 0; c < 3; ++c) {
+                maxA = std::max(maxA, ia.rgb[i + c]);
+                if (ib.rgb[i + c] > maxB) maxAt = i;
+                maxB = std::max(maxB, ib.rgb[i + c]);
+                if (ib.rgb[i + c] != ia.rgb[i + c]) ch = true;
+                if (ib.rgb[i + c] < ia.rgb[i + c] - 1e-6f) ++lowered;  // matrix cross-terms: a raised G lowers R/B (negative off-diagonals)
+            }
+            if (ch) {
+                ++changed;
+                sumGain += double(ib.rgb[i] + ib.rgb[i + 1] + ib.rgb[i + 2]) / std::max(1e-6f, ia.rgb[i] + ia.rgb[i + 1] + ia.rgb[i + 2]);
+            }
+            if (ib.rgb[i] > 1.0f || ib.rgb[i + 1] > 1.0f || ib.rgb[i + 2] > 1.0f) ++above1;
+        }
+        if (const char* crop = std::getenv("HR_CROP")) {  // x,y,w,h: writes hr_neutral.ppm / hr_recovery.ppm (+ _2ev = exposure -2 EV)
+            long cx = 0, cy = 0, cw = 0, ch = 0;
+            if (std::sscanf(crop, "%ld,%ld,%ld,%ld", &cx, &cy, &cw, &ch) == 4) {
+                const struct { const ImageF* im; const char* name; } outs[2] = {{&ia, "hr_neutral"}, {&ib, "hr_recovery"}};
+                for (const auto& o : outs)
+                    for (int ev = 0; ev < 2; ++ev) {
+                        const std::string fn = std::string(o.name) + (ev ? "_2ev.ppm" : ".ppm");
+                        std::FILE* f = std::fopen(fn.c_str(), "wb");
+                        if (!f) continue;
+                        std::fprintf(f, "P6\n%ld %ld\n255\n", cw, ch);
+                        const float gain = ev ? 0.25f : 1.0f;
+                        for (long y = cy; y < cy + ch; ++y)
+                            for (long x = cx; x < cx + cw; ++x)
+                                for (int c = 0; c < 3; ++c) {
+                                    const float v = std::min(std::max(o.im->rgb[(size_t(y) * o.im->w + size_t(x)) * 3 + c] * gain, 0.0f), 1.0f);
+                                    std::fputc(int(std::pow(v, 1.0f / 2.2f) * 255.0f + 0.5f), f);
+                                }
+                        std::fclose(f);
+                    }
+            }
+        }
+        const double npx = double(ia.rgb.size() / 3);
+        std::printf("M2 Neutral vs Recovery (full-res develop, neutral grade otherwise): pixels changed=%zu (%.4f%%), "
+                    "mean sum(RGB) ratio on changed=%.3f, channel-values lower than Neutral (matrix cross-terms)=%zu, pixels with a channel >1.0: recovery=%zu\n"
+                    "   max linear value: neutral=%.3f recovery=%.3f\n",
+                    changed, 100.0 * changed / npx, changed ? sumGain / changed : 0.0, lowered, above1, maxA, maxB);
+        const size_t px = maxAt / 3;
+        std::printf("   recovery max at (%zu,%zu): neutral=(%.3f %.3f %.3f) recovery=(%.3f %.3f %.3f)\n", px % ia.w, px / ia.w,
+                    ia.rgb[maxAt], ia.rgb[maxAt + 1], ia.rgb[maxAt + 2], ib.rgb[maxAt], ib.rgb[maxAt + 1], ib.rgb[maxAt + 2]);
+        {   // the 5x5 neighbourhood of the maximum: recovered G (and R/B) next to what the neutral render has
+            const long cx = long(px % ia.w), cy = long(px / ia.w);
+            for (long dy = -2; dy <= 2; dy += 2) {
+                std::printf("   row y=%ld:", cy + dy);
+                for (long dx = -4; dx <= 4; dx += 2) {
+                    const size_t q = (size_t(cy + dy) * ia.w + size_t(cx + dx)) * 3;
+                    std::printf(" [%.2f %.2f %.2f|%.2f %.2f %.2f]", ia.rgb[q], ia.rgb[q + 1], ia.rgb[q + 2], ib.rgb[q], ib.rgb[q + 1], ib.rgb[q + 2]);
+                }
+                std::printf("\n");
             }
         }
     }
