@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.ui.components
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Density
@@ -52,6 +53,25 @@ class AdaptiveMinGridCells(private val minSize: Dp = AdaptiveLayout.GRID_CELL_MI
     override fun hashCode(): Int = minSize.hashCode()
     override fun equals(other: Any?): Boolean =
         other is AdaptiveMinGridCells && other.minSize == minSize
+}
+
+/**
+ * [AdaptiveMinGridCells] for the staggered grid: the SAME column rule and
+ * even-split arithmetic, so a staggered Library grid has exactly the
+ * columns the fixed grid had (3 on the phone, more on a tablet).
+ */
+class AdaptiveMinStaggeredCells(private val minSize: Dp = AdaptiveLayout.GRID_CELL_MIN) : StaggeredGridCells {
+    override fun Density.calculateCrossAxisCellSizes(availableSize: Int, spacing: Int): IntArray {
+        val count = AdaptiveLayout.gridColumns(availableSize, spacing, minSize.roundToPx())
+        val totalCells = availableSize - spacing * (count - 1)
+        val base = totalCells / count
+        val remainder = totalCells % count
+        return IntArray(count) { i -> base + if (i < remainder) 1 else 0 }
+    }
+
+    override fun hashCode(): Int = minSize.hashCode()
+    override fun equals(other: Any?): Boolean =
+        other is AdaptiveMinStaggeredCells && other.minSize == minSize
 }
 
 /** Centers the content and caps it at a readable width on large screens. */
