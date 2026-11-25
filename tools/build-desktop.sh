@@ -103,6 +103,11 @@ echo "== building tests =="
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_lut"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_highlight_recovery.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_highlight_recovery"
+# test_recovery_clip_levels: recoveryClipLevels unit contracts (night A2,
+# 2026-11-26) — the sharp-peak/saturation gates on DCG-style synthetic
+# frames. Pure logic, no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_recovery_clip_levels.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_recovery_clip_levels"
 # test_gyro runs from the repo root so it finds the STEPS/media/test fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gyro"
@@ -300,6 +305,8 @@ echo "== running test_lut =="
 (cd "$ROOT" && "$BUILD/test_lut")
 echo "== running test_highlight_recovery =="
 "$BUILD/test_highlight_recovery"
+echo "== running test_recovery_clip_levels =="
+"$BUILD/test_recovery_clip_levels"
 echo "== running test_gyro =="
 (cd "$ROOT" && "$BUILD/test_gyro")
 echo "== running test_orientation =="
