@@ -1449,6 +1449,9 @@ fun ClipEditorScreen(
         // back to the Image exactly when the window stops serving.
         var gpuSession by remember(sourceId) { mutableStateOf<GpuPreviewSession?>(null) }
         var gpuActive by remember(sourceId) { mutableStateOf(false) }
+        // F1-8e: bumped (on the main thread) once per OpenDRT table the native async bake published; the
+        // effect below turns each bump into exactly ONE redraw (the old table kept showing until then).
+        var drtSwapTick by remember(sourceId) { mutableIntStateOf(0) }
         // FULL preview quality is GPU-only (PreviewQuality.effectiveFor): it
         // renders at the recorded resolution only while the GPU preview is
         // the renderer; CPU/AUTO or a session not up yet fall back to HIGH.
@@ -2182,6 +2185,13 @@ fun ClipEditorScreen(
                         GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
                     )
                 }
+                runCatching {
+                    val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+                    NativeSource.jniPreviewSessionSetDrtReadyListener(
+                        gpu.handle,
+                        Runnable { mainHandler.post { drtSwapTick += 1 } },
+                    )
+                }
                 // The open SUCCEEDED but the window is not done: the first
                 // pump render (or its failure latch) clears the flag —
                 // until then the placeholder keeps saying PREPARING.
@@ -2193,11 +2203,21 @@ fun ClipEditorScreen(
             }
         }
 
+        // F1-8e: one redraw per published OpenDRT table (a tick of 0 is the initial state, not a swap).
+        LaunchedEffect(drtSwapTick) {
+            if (drtSwapTick > 0 && gpuSession != null && session != null) {
+                requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
+            }
+        }
+
         // Session close: exactly once, when the editor leaves composition
         // (route change / dispose). Drained: the close is submitted to the
         // same single engine thread, so it runs after all pending renders.
         DisposableEffect(sourceId) {
             onDispose {
+                gpuSession?.handle?.let { h ->
+                    if (h != 0L) runCatching { NativeSource.jniPreviewSessionSetDrtReadyListener(h, null) }
+                }
                 session?.close()
                 gpuSession?.close()
                 audio.release()

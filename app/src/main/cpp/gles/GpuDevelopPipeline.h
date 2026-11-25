@@ -55,6 +55,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -305,6 +306,11 @@ public:
         // its own small scratch + SSBO sized to the published dims,
         // session-side, unchanged.
         bool withStoreScratch = false;
+        // F1-8e: the OpenDRT table bake runs on a background thread (latest spec wins, the previous table
+        // keeps drawing until the new one is swapped in on the GL thread, one redraw is requested through
+        // setDrtReadyCallback). ONLY the interactive preview sets this. The develop (export) session leaves
+        // it false: its bake is fully synchronous, so an exported frame never uses a stale table.
+        bool asyncDrtBake = false;
     };
 
     // One draw's outcome. ok=false means the step named in [detail]
@@ -473,6 +479,11 @@ public:
     // that whitens the wide clips. The arm clears itself after one draw.
     // The preview session arms it only on window-probe frames.
     void armPassProbe();
+
+    // F1-8e: called (from the bake thread, outside every pipeline lock) once per table the async bake
+    // published; the owner asks for ONE redraw. Only meaningful with Config::asyncDrtBake. Thread-safe;
+    // an empty function clears it. The callback must only post work (never draw, never call back in).
+    void setDrtReadyCallback(std::function<void()> cb);
 
     // --- accessors (GL-thread use; the handles belong to this
     // pipeline's one context) ---

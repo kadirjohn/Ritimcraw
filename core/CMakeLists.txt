@@ -52,6 +52,7 @@ add_library(rawedit STATIC
     src/Color.cpp
     src/ColorModel.cpp
     src/OpenDrt.cpp
+    src/OpenDrtAsync.cpp
     src/DngWriter.cpp
     src/Gyro.cpp
     src/Orientation.cpp
@@ -174,6 +175,9 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_opendrt tests/test_opendrt.cpp)
     target_include_directories(test_opendrt PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_opendrt PRIVATE rawedit)
+    add_executable(test_opendrt_async tests/test_opendrt_async.cpp)
+    target_include_directories(test_opendrt_async PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_opendrt_async PRIVATE rawedit)
     # test_loudness: BS.1770-4 meter + true-peak port (E5-A first half);
     # filmcraft audio-dsp test vectors, synthetic signals only, no cwd needs.
     add_executable(test_loudness tests/test_loudness.cpp)
@@ -210,6 +214,7 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME color COMMAND test_color)
     add_test(NAME color_model COMMAND test_color_model)
     add_test(NAME opendrt COMMAND test_opendrt WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    add_test(NAME opendrt_async COMMAND test_opendrt_async)
     add_test(NAME loudness COMMAND test_loudness)
     add_test(NAME resample COMMAND test_resample)
     add_test(NAME bench_develop COMMAND bench_develop)

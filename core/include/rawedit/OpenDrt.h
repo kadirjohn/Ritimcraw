@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 
 #include <memory>
@@ -83,10 +84,18 @@ struct OpenDrtLut {
 };
 
 // Bakes [spec] (NaN -> 0, clamped to 0..1 like Klipp's bake). Deterministic; ~0.3 s for n = 65.
-OpenDrtLut bakeOpenDrtLut(const OpenDrtSpec& spec, int n = kOpenDrtLutSize);
+// [cancel] (optional, polled per row): when it turns true the bake stops early and returns an EMPTY table
+// (n = 0); a bake that was not cancelled is bit-identical to the one without the pointer.
+OpenDrtLut bakeOpenDrtLut(const OpenDrtSpec& spec, int n = kOpenDrtLutSize,
+                          const std::atomic<bool>* cancel = nullptr);
 
 // Cached bake (last 4 specs, thread-safe): the editor drags knobs, the table is rebuilt only for a new spec.
 std::shared_ptr<const OpenDrtLut> bakedOpenDrtLut(const OpenDrtSpec& spec);
+// Cache lookup only (refreshes recency, never bakes): null on a miss.
+std::shared_ptr<const OpenDrtLut> peekBakedOpenDrtLut(const OpenDrtSpec& spec);
+// The cached bake with a cancel flag: null when cancelled (a cancelled bake is never cached).
+std::shared_ptr<const OpenDrtLut> bakedOpenDrtLutCancellable(const OpenDrtSpec& spec,
+                                                             const std::atomic<bool>& cancel);
 
 // Whole image, DWG linear in, display code values out, through [lut] (DI-encode, trilinear).
 void applyOpenDrtBaked(ImageF& img, const OpenDrtLut& lut);
