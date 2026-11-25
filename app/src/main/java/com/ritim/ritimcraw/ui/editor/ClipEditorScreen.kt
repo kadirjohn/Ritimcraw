@@ -100,6 +100,7 @@ import com.ritim.ritimcraw.engine.StabilizationGate
 import com.ritim.ritimcraw.engine.WarpResolver
 import com.ritim.ritimcraw.engine.EditorAudioPlayback
 import com.ritim.ritimcraw.engine.EditorPreviewSession
+import com.ritim.ritimcraw.engine.EncodedPreviewSession
 import com.ritim.ritimcraw.engine.BackendGates
 import com.ritim.ritimcraw.engine.BackendRules
 import com.ritim.ritimcraw.engine.GlesParityResult
@@ -2002,7 +2003,11 @@ fun ClipEditorScreen(
                 }
                 return@LaunchedEffect
             }
-            if (s == null || s.nativeClipHandle == 0L) return@LaunchedEffect
+            // E0b-4b follow-up (2026-11-25): an ENCODED clip reports no native clip handle but takes the GPU
+            // window path through the preview session's YUV door (EncodedPreviewSession.gpuInput); only a clip
+            // with neither stays CPU.
+            val encodedSession = s as? EncodedPreviewSession
+            if (s == null || (s.nativeClipHandle == 0L && encodedSession == null)) return@LaunchedEffect
             // One session per editor open: a renderBackend toggle away and
             // back re-runs this effect, and a second open would leak the
             // first session's bridge slot until process exit.
@@ -2052,7 +2057,7 @@ fun ClipEditorScreen(
                 // The parity leg is paid only when the probe's verdicts
                 // justify it AND the clip's fd opened — a doomed run is
                 // waste; the honest null keeps parityOk false either way.
-                val parityFdOpened = parityFd >= 0
+                val parityFdOpened = parityFd >= 0 && encodedSession == null
                 val parityPaid = parityFdOpened &&
                     EditorPreviewLogic.probePaysParity(probeRaw)
                 val parityRaw = if (parityPaid) {
@@ -2066,6 +2071,19 @@ fun ClipEditorScreen(
                     parityRaw = parityRaw,
                     parityDetail = parityDetail,
                 )
+                if (encodedSession != null) {
+                    // The case-0 fragment parity leg decodes an MCRAW clip's CFA through its fd; the encoded
+                    // door's parity against the CPU oracle is covered by the device parity suite
+                    // (EncodedYuvPassParityTest: chain, LUT, nodes, tone bridge, window door), so the gates
+                    // come from the capability probe alone (context + float FBO) and parity counts as met.
+                    gates = runCatching {
+                        val pr = GlesProbeResult.fromArray(probeRaw!!)
+                        BackendGates(
+                            contextOk = pr.contextOk, computeOk = pr.computeOk,
+                            floatFboOk = pr.floatFboOk, parityOk = true,
+                        )
+                    }.getOrDefault(BackendGates())
+                }
                 // The parity verdict's own detail (the parity-fix
                 // observability): previewCapabilityGates keeps ONLY .pass
                 // (its JVM-pinned shape stays untouched), so the harness's
@@ -2436,7 +2454,71 @@ fun ClipEditorScreen(
                         // death (the destroy signal processes; surfaceCreated
                         // re-hands it on resume), so the GPU path returns
                         // without re-opening.
-                        if (gpuActive && gpu != null && s != null && gpuSurfaceLive &&
+                        // E0b-4b follow-up: the ENCODED GPU window arm. The decoded planes go through the preview
+                        // session's YUV door (chain, LUT, node chain with the Highlights/Shadows bridge, crop, zebra,
+                        // stats) and present on the SurfaceView; the frame is never read back into a bitmap. Any
+                        // refusal (no GPU-eligible plane layout, an OpenDRT chain, a refused chain door, a failed
+                        // render) leaves `result` null and the CPU/bitmap dispatch below serves the request.
+                        // A manual rotation stays on the bitmap path: the window pass does not fold it for an
+                        // encoded frame (device check 2026-11-25: the landscape frame showed as a thin letterboxed
+                        // strip inside the rotated, portrait-shaped box), while the bitmap path rotates correctly.
+                        if (s is EncodedPreviewSession && gpuActive && gpu != null && gpuSurfaceLive &&
+                            currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
+                            ((currentManualRotationDeg % 360) + 360) % 360 == 0
+                        ) {
+                            val encIn = s.gpuInput(req.frameIndex, req.grade, req.chainWire, req.maxDim)
+                            if (encIn != null) {
+                                try {
+                                    gpuCropParams = GpuCropMap.requestCrop(req.grade, currentManualRotationDeg)
+                                    gpuCropActive = gpuCropParams != null
+                                    val chainOk = runCatching {
+                                        NativeSource.jniPreviewSessionSetColorModelChain(
+                                            gpu.handle,
+                                            encIn.chainWire ?: NodeChainWire.encode(ClipGradeV2(), emptyList()),
+                                            null,
+                                        )
+                                    }.getOrDefault(false)
+                                    if (chainOk) {
+                                        val encStats = statsModeFor(
+                                            scopeVisible = scopePresentation != ScopePresentation.OFF,
+                                            renderClass = req.renderClass,
+                                            toggle = previewStatsEnabled,
+                                        )
+                                        val encFrame = gpu.renderEncoded(
+                                            yuv = encIn.frame,
+                                            color = encIn.color,
+                                            reduce = encIn.reduce,
+                                            gradeParcel = GradeParcel.encode(req.grade),
+                                            lutPath = lutPath,
+                                            lutStrength = req.grade.lutStrength / 100f,
+                                            lutRole = req.grade.lutInterp?.role?.value ?: -1,
+                                            lutInGamut = req.grade.lutInterp?.input?.gamut?.value ?: -1,
+                                            lutInTransfer = req.grade.lutInterp?.input?.transfer?.value ?: -1,
+                                            lutOutGamut = req.grade.lutInterp?.output?.gamut?.value ?: -1,
+                                            lutOutTransfer = req.grade.lutInterp?.output?.transfer?.value ?: -1,
+                                            statsMode = encStats,
+                                            cropActive = gpuCropParams != null,
+                                            cropParams = gpuCropParams ?: GpuCropMap.NEUTRAL_CROP_PARAMS,
+                                            zebraOn = currentZebraOn,
+                                            zebraThreshold = FrameHistogram.WHITE_CLIP_VALUE,
+                                            zebraPeriod = ZebraOverlay.STRIPE_PERIOD,
+                                            zebraAlpha = ZebraOverlay.STRIPE_ALPHA / 255f,
+                                        )
+                                        if (encFrame != null) {
+                                            result = Result.success(encFrame)
+                                            gpuServed = true
+                                        }
+                                    }
+                                } finally {
+                                    s.releaseGpuInput(encIn)
+                                }
+                                if (!gpuServed) {
+                                    gpuCropParams = null
+                                    gpuCropActive = false
+                                }
+                            }
+                        }
+                        if (gpuActive && gpu != null && s != null && s !is EncodedPreviewSession && gpuSurfaceLive &&
                             currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
                             EditorPreviewLogic.gpuPreviewEligible(
                                 grade = req.grade,

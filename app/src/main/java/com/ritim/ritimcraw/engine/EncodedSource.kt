@@ -867,6 +867,44 @@ class EncodedSource(
         return argb
     }
 
+    /**
+     * E0b-4b follow-up: the decoded frame for the PREVIEW session's GPU window door (the editor presents through the
+     * SurfaceView instead of reading the frame back into a bitmap). The same preconditions as the GPU door of
+     * [renderFrame] (upright, no container rotation, preview tier, no OpenDRT chain) plus a plane layout the door can
+     * take; null means "render through [renderFrame]" (bitmap path). On a non-null result the caller MUST hand the
+     * input back through [releaseGpuInput] once the render returned (the planes return to the decoder's pool).
+     * Highlights/Shadows ride the returned [EncodedGpuInput.chainWire] exactly like in [renderFrame].
+     */
+    class EncodedGpuInput internal constructor(
+        val frame: YuvFrameK,
+        val color: EncodedColorSpec,
+        val reduce: Int,
+        val chainWire: FloatArray?,
+        internal val planes: YuvPlanes,
+    )
+
+    fun gpuInput(frameIndex: Int, grade: GradeK, chainWire: FloatArray?, maxDim: Int, upright: Boolean = true): EncodedGpuInput? {
+        val fmt = requireOpen()
+        require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
+        if (maxDim < 0 || !upright || fmt.orientationDeg != 0) return null
+        val wire = EncodedToneBridge.apply(grade.highlights, grade.shadows, chainWire)
+        // OpenDRT stays on the CPU oracle (its tail draw fails on this device, see NativeEncodedGpuDeveloper).
+        if (wire != null && wire.size >= 2 && wire[1] == 1.0f) return null
+        val planes = if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex)
+        val g = EncodedYuv.toGpuFrame(planes)
+        if (g == null) {
+            decoder.recycle(planes)
+            return null
+        }
+        val budget = if (maxDim == 0) GPU_MAX_EDGE else minOf(maxDim, GPU_MAX_EDGE)
+        val reduce = maxOf(1, (maxOf(planes.width, planes.height) + budget - 1) / budget).coerceAtMost(8)
+        return EncodedGpuInput(g, fmt.color.withDecodedBitDepth(planes.bitDepth), reduce, wire, planes)
+    }
+
+    fun releaseGpuInput(input: EncodedGpuInput) {
+        decoder.recycle(input.planes)
+    }
+
     override fun close() {
         if (closed) return
         closed = true

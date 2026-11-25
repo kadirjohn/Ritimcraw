@@ -1284,6 +1284,31 @@ class NativeSource private constructor(
          * / 255f — the caller supplies them; no default hides the values
          * from the signature lock).
          */
+        /** E0b-4b follow-up: the ENCODED twin of [nativePreviewSessionRenderFrameParcel] (see jni_bridge.cpp). */
+        @JvmStatic private external fun nativePreviewSessionRenderYuvParcel(
+            sessionHandle: Long,
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int, reduce: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            warpActive: Boolean,
+            warpM: FloatArray,
+            statsMode: Int,
+            cropActive: Boolean,
+            cropParams: FloatArray,
+            zebraOn: Boolean,
+            zebraThreshold: Int,
+            zebraPeriod: Int,
+            zebraAlpha: Float,
+        ): IntArray?
+
         @JvmStatic private external fun nativePreviewSessionRenderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,
@@ -2240,6 +2265,38 @@ class NativeSource private constructor(
          * after the crop pair — the single-sourced knob values
          * (ZebraOverlay/FrameHistogram), verbatim.
          */
+        /** The encoded frame's door into the PREVIEW session (window/stats/crop/zebra like the MCRAW door). */
+        internal fun jniPreviewSessionRenderYuvParcel(
+            sessionHandle: Long,
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int, reduce: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            statsMode: Int,
+            cropActive: Boolean,
+            cropParams: FloatArray,
+            zebraOn: Boolean,
+            zebraThreshold: Int,
+            zebraPeriod: Int,
+            zebraAlpha: Float,
+        ): IntArray? {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativePreviewSessionRenderYuvParcel(
+                sessionHandle, yPlane, cPlane, width, height, stride, uvStride, bitDepth, fullRange,
+                matrix, transfer, primaries, reduce, gradeParcel,
+                lutPath, lutStrength, lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+                false, floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f), statsMode,
+                cropActive, cropParams, zebraOn, zebraThreshold, zebraPeriod, zebraAlpha,
+            )
+        }
+
         internal fun jniPreviewSessionRenderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,
