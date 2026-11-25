@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -5444,6 +5445,24 @@ private fun LightPanel(
             },
             onDragActiveChange = onDragActiveChange,
         )
+        val recovered = SliderSteps.isHighlightRecovered(grade)
+        TextButton(
+            onClick = { onReset(SliderSteps.toggleHighlightRecovery(grade)) },
+            modifier = Modifier.heightIn(min = 48.dp),
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_highlight_recover),
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                stringResource(
+                    if (recovered) R.string.editor_highlight_recovery_on
+                    else R.string.editor_highlight_recovery,
+                ),
+            )
+        }
         GradeSlider(
             label = stringResource(R.string.editor_slider_black_point),
             value = grade.blackPoint,

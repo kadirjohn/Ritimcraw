@@ -669,4 +669,6 @@
     <string name="node_adjust_contrast">Contrast</string>
     <string name="node_adjust_hue">Hue</string>
     <string name="node_adjust_mix">Mix</string>
+    <string name="editor_highlight_recovery">Recover highlights</string>
+    <string name="editor_highlight_recovery_on">Highlights recovered (tap to undo)</string>
 </resources>
