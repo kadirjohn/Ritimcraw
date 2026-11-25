@@ -1360,6 +1360,9 @@ class NativeSource private constructor(
             tailDrtSource: String,
         ): IntArray?
 
+        /** F1-8e: the Runnable the OpenDRT bake thread runs once per published table (null clears); see jni_bridge.cpp. */
+        @JvmStatic private external fun nativePreviewSessionSetDrtReadyListener(sessionHandle: Long, listener: Runnable?)
+
         /** See [nativePreviewSessionInitNodes]. [drtUniforms] is required when the wire declares the OpenDRT output. */
         @JvmStatic private external fun nativePreviewSessionSetColorModelChain(
             sessionHandle: Long,
@@ -2396,6 +2399,15 @@ class NativeSource private constructor(
             return nativePreviewSessionSetColorModelChain(
                 sessionHandle, chainWire, drtUniforms,
             )
+        }
+
+        /**
+         * F1-8e: registers [listener] to run (on the native bake thread, once per published OpenDRT table) so
+         * the editor can post ONE redraw; the old table keeps showing until then. Null clears it.
+         */
+        internal fun jniPreviewSessionSetDrtReadyListener(sessionHandle: Long, listener: Runnable?) {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            nativePreviewSessionSetDrtReadyListener(sessionHandle, listener)
         }
 
         /** The develop session's NODES programs (see [jniPreviewSessionInitNodes]); [ok, uniformVectors, textureUnits]. */

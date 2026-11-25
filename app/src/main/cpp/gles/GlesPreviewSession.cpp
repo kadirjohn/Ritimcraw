@@ -838,6 +838,7 @@ bool PreviewSession::Impl::initOnGlThread(
                                          // 2026-11-15), NEAREST is the blit's
                                          // proven shape
     config.withStoreScratch = false;  // the stats pack is session-owned
+    config.asyncDrtBake = true;       // F1-8e: the interactive preview bakes the OpenDRT table off the GL thread
     if (!pipeline.init(vertexSource, vertex310Source, preFragmentSource,
                       postFragmentSource, tailFragmentSource, sharpnessHSource,
                       sharpnessVSource, detailHSource, detailVSource,
@@ -2101,6 +2102,12 @@ PreviewFrameResult PreviewSession::renderFrame(
     // [res] was filled by the GL thread while we held the wait; the
     // unique_lock releases on return.
     return res;
+}
+
+// F1-8e: the redraw hook for the async OpenDRT bake (forwarded to the pipeline; thread-safe).
+void PreviewSession::setDrtReadyCallback(std::function<void()> cb) {
+    if (impl_ == nullptr) return;
+    impl_->pipeline.setDrtReadyCallback(std::move(cb));
 }
 
 // F1-5: the additive initNodes door (the GL-thread compile through the

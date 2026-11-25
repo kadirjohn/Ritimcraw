@@ -121,6 +121,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -323,6 +324,10 @@ public:
     bool setColorModelChain(const rawedit::GradeNode* nodes, int nodeCount,
                             int outputMode, const float* drtUniforms,
                             uint64_t chainHash, std::string* detail);
+
+    // F1-8e: [cb] runs on the OpenDRT bake thread once per table the async bake published (the owner asks
+    // for ONE redraw; it must only post work). Empty clears it. Thread-safe.
+    void setDrtReadyCallback(std::function<void()> cb);
 
     // See the destructor. Callable from the owning thread.
     void close();

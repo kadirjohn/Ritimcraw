@@ -43,6 +43,8 @@
 
 #include "GpuDevelopPipeline.h"
 #include <rawedit/OpenDrt.h>
+#include <rawedit/OpenDrtAsync.h>
+#include <mutex>
 #include <memory>
 #include "ChainSlots.h"
 #include "NodeParcel.h"
@@ -649,6 +651,17 @@ struct GpuDevelopPipeline::Impl {
     GLuint drtLutTex = 0;
     const void* drtLutSource = nullptr;  // the shared_ptr'd table last uploaded (identity key)
     std::shared_ptr<const rawedit::OpenDrtLut> drtLutHold;
+    // F1-8e: the async bake (preview only; created lazily on the first DRT draw) and its measurement hook.
+    // [drtReadyMu]/[drtReadyCb] are declared BEFORE [drtBaker] so the baker (whose thread calls the callback)
+    // is destroyed first.
+    std::mutex drtReadyMu;
+    std::function<void()> drtReadyCb;
+    std::unique_ptr<rawedit::OpenDrtAsyncBaker> drtBaker;
+    bool drtFrameStale = false;               // the last fold drew with an older spec's table
+    std::vector<double> drtFrameUs;           // GL-thread chain time per DRT frame (window of kDrtStatWindow)
+    uint64_t drtStaleInWindow = 0;
+    static constexpr size_t kDrtStatWindow = 120;
+    void recordDrtFrame(double us);
     // initNodes' recorded limits (the inventory §1.3's missing-query fix).
     NodesLimits limits;
     // The curve atlas (unit 6): 512 x 24 GL_R32F, texelFetch-only (no
@@ -2400,6 +2413,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         probePassFbo("tail-drt", developFbo);
         const SteadyClock::time_point tDevelop1 = SteadyClock::now();
         r.developUs = elapsedUs(tDevelop0, tDevelop1);
+        recordDrtFrame(r.developUs);
         r.ok = true;
         return r;
     }
@@ -2773,6 +2787,7 @@ void GpuDevelopPipeline::Impl::teardown() {
     if (drtLutTex != 0) { glDeleteTextures(1, &drtLutTex); drtLutTex = 0; }
     drtLutSource = nullptr;
     drtLutHold.reset();
+    drtBaker.reset();  // joins the bake thread (cancels an in-flight bake)
     nodesInitialized = false;
     nodesChainValid = false;
     nodesChainKey = 0;
@@ -2799,7 +2814,25 @@ void GpuDevelopPipeline::Impl::drtFoldUniforms(const float* b) {
         : static_cast<int>(sp[5]) == 1 ? rawedit::OpenDrtDisplay::SdrRec1886
         : rawedit::OpenDrtDisplay::SdrSrgb22;
     const auto tBake0 = std::chrono::steady_clock::now();
-    std::shared_ptr<const rawedit::OpenDrtLut> lut = rawedit::bakedOpenDrtLut(spec);
+    std::shared_ptr<const rawedit::OpenDrtLut> lut;
+    drtFrameStale = false;
+    if (config.asyncDrtBake) {
+        if (!drtBaker) {
+            drtBaker = std::make_unique<rawedit::OpenDrtAsyncBaker>([this]() {
+                std::function<void()> cb;
+                {
+                    std::lock_guard<std::mutex> lock(drtReadyMu);
+                    cb = drtReadyCb;
+                }
+                if (cb) cb();
+            });
+        }
+        const rawedit::OpenDrtAsyncBaker::Frame f = drtBaker->acquire(spec);
+        lut = f.lut;
+        drtFrameStale = f.stale;
+    } else {
+        lut = rawedit::bakedOpenDrtLut(spec);
+    }
     const double bakeUs = elapsedUs(tBake0, std::chrono::steady_clock::now());
     if (bakeUs > 2000) {  // a cache miss (a hit costs microseconds): ritim-trace, debug diagnostics only
         __android_log_print(ANDROID_LOG_INFO, "ritim-trace", "opendrt bake: %.1f ms (n=%d, look=%d display=%d)",
@@ -2828,6 +2861,29 @@ void GpuDevelopPipeline::Impl::drtFoldUniforms(const float* b) {
     }
     glUniform1f(drtLutNLoc, static_cast<float>(lut->n));
     glActiveTexture(GL_TEXTURE1);
+}
+
+// F1-8e measurement hook: every kDrtStatWindow DRT frames one ritim-trace line with the GL-thread chain time
+// (p50/p95/max, ms; includes the table upload on the swap frame) and how many of those frames drew with a
+// stale table. Collected always (a vector push + a flag), printed only when the window fills.
+void GpuDevelopPipeline::Impl::recordDrtFrame(double us) {
+    drtFrameUs.push_back(us);
+    if (drtFrameStale) ++drtStaleInWindow;
+    if (drtFrameUs.size() < kDrtStatWindow) return;
+    std::vector<double> sorted = drtFrameUs;
+    std::sort(sorted.begin(), sorted.end());
+    const auto at = [&](double q) { return sorted[static_cast<size_t>(q * (sorted.size() - 1))] / 1000.0; };
+    __android_log_print(ANDROID_LOG_INFO, "ritim-trace",
+                        "opendrt frames: n=%zu stale=%llu gl_ms p50=%.2f p95=%.2f max=%.2f async=%d",
+                        sorted.size(), static_cast<unsigned long long>(drtStaleInWindow), at(0.5), at(0.95),
+                        sorted.back() / 1000.0, config.asyncDrtBake ? 1 : 0);
+    drtFrameUs.clear();
+    drtStaleInWindow = 0;
+}
+
+void GpuDevelopPipeline::setDrtReadyCallback(std::function<void()> cb) {
+    std::lock_guard<std::mutex> lock(impl_->drtReadyMu);
+    impl_->drtReadyCb = std::move(cb);
 }
 
 // ---- public surface ---------------------------------------------------------

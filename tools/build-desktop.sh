@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp OpenDrtAsync.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -247,6 +247,9 @@ echo "== building tests =="
 # reference vectors in core/tests/data (runs from the repo root).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_opendrt.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_opendrt"
+# test_opendrt_async: the async bake manager (F1-8e), synthetic only.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_opendrt_async.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_opendrt_async" -pthread
 # test_gpu_nodes_logic: color model v2 F1-5's headless parity proofs - the
 # NodeParcel decode, the shader-order node math on the parcel's packs, the
 # curve-atlas sampling contract and the DI encode/decode pair, all against
@@ -341,6 +344,8 @@ echo "== running test_color_model =="
 "$BUILD/test_color_model"
 echo "== running test_opendrt =="
 (cd "$ROOT" && "$BUILD/test_opendrt")
+echo "== running test_opendrt_async =="
+"$BUILD/test_opendrt_async"
 echo "== running test_gpu_nodes_logic =="
 "$BUILD/test_gpu_nodes_logic"
 echo "== running test_node_chain_wire =="
