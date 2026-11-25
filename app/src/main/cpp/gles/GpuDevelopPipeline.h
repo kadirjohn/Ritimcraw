@@ -421,7 +421,11 @@ public:
     // 77 floats total. The binding (F1-6) resolves OpenDrtSpec into this
     // block EXACTLY ONCE per output revision — the values pinned against
     // core's own Impl outputs by the JVM parity tests in F1-7.
-    static constexpr int kDrtUniformSlots = 77;
+    // The Kotlin OpenDrtPacks block (legacy layout, still produced and sent) ...
+    static constexpr int kDrtPackSlots = 77;
+    // ... plus the six spec floats the JNI appends (look, tonescale, cwp, cwpLimit, grey, display): the
+    // OpenDRT is BAKED into a 3D table from these (rawedit::bakedOpenDrtLut) and the TAIL variant samples it.
+    static constexpr int kDrtUniformSlots = kDrtPackSlots + 6;
     // Checks the capability gates FIRST (ES 3.1+ — STORE_FRAGMENT is
     // 310 es — and GL_EXT_color_buffer_float, re-read in THIS context),
     // then compiles the thirteen programs (the twelve chain passes +

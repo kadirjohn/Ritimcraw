@@ -3003,320 +3003,61 @@ void main() {
 """
 
     /**
-     * The TAIL pass's OpenDRT VARIANT (color model v2 F1-5, plan §4.3 /
-     * K7: ALTERNATIVE program, not an #define of the v1 TAIL — the source
-     * TAIL text stays frozen byte-identical, the F1-7 parity keeps riding
-     * it). Reads the NODES pass's DWG-LINEAR output, runs OpenDRT v1.1.0
-     * PER-PIXEL in GLSL (no 33^3 bake — K7's decision; the C++ reference
-     * core/src/OpenDrt.cpp is the parity target and this shader mirrors
-     * its Impl::applyXyz operation order line by line), and writes the
-     * DISPLAY-CODED frame the pipeline's post-chain passes consume (the
-     * Rec.709 OETF is NOT applied on top: the DRT output is already
-     * display code values — plan §3.4's "DRT kipinde köprü OETF'yi atlar").
-     *
-     * Everything the C++ computes in Impl's CONSTRUCTOR (the tonescale
-     * constants tsS/tsM2/tsP/tsS1/tsDsc/lconM/lconW/lconSc/hconP/tnLp,
-     * the preset's P struct) arrives as uniforms — the preset tables are
-     * NOT re-derived in-shader (the inventory §3: "impl kurucusunun
-     * hesapladığı ... hepsi uniform"). The GLSL body below is one pass of
-     * OpenDrt::Impl::applyXyz in the same statement order; the NaN -> 0
-     * rule (the bake's, applyOpenDrt's own) pins the output.
-     *
-     * PRESETS: uDrtLook/uDrtTonescale/uDrtCwp/uDrtEotf select the same
-     * tables the C++ P::preset does; the JVM-side DRT uniform pack
-     * (F1-6's binding) uploads the resolved preset floats, so the shader
-     * never re-encodes the tables.
+     * The TAIL pass's OpenDRT VARIANT, BAKED ROUTE (owner decision 2026-11-25; replaces the per-pixel GLSL
+     * port, whose numerics never matched core). Reads the NODES pass's DWG-LINEAR output, DaVinci-Intermediate
+     * encodes it, and samples the 65^3 table core bakes from its own OpenDrt (rawedit::bakedOpenDrtLut) with
+     * the same by-hand trilinear every LUT stage uses; the CPU reference applies the SAME table
+     * (applyOpenDrtBaked), so the two agree to the usual 1 LSB. Output is display code values (no OETF).
      */
     const val DEVELOP_FRAGMENT_TAIL_DRT: String = """#version 300 es
 
-// The OpenDRT TAIL variant - core/src/OpenDrt.cpp's applyDwgLinear, per
-// pixel, in the SAME operation order (the C++ is the parity reference; the
-// layout of this body follows Impl::applyXyz line by line).
+// The OpenDRT TAIL variant, baked route: DWG linear -> DI code -> 3D table -> display code.
 
 precision highp float;
 precision highp int;
 
-uniform highp sampler2D uSrc;   // the NODES pass's DWG-LINEAR RGBA32F output
-uniform ivec2 uSize;            // width/height in pixels
-
-// OpenDRT's constants (the C++ file's own constexprs, verbatim).
-const mat3 kDWG_TO_XYZ = mat3(
-    0.700622392093671609, 0.148774815123196763, 0.101058719834803246,
-    0.274118510906649016, 0.873631895940436665, -0.147750406847085763,
-    -0.0989629128832311411, -0.137895325075543307, 1.32591598871865268);
-const mat3 kXYZ_TO_P3D65 = mat3(
-    2.49349691194142542, -0.93138361791912383, -0.402710784450716841,
-    -0.829488969561574696, 1.76266406031834655, 0.0236246858419435941,
-    0.0358458302437844531, -0.0761723892680418041, 0.956884524007687309);
-const mat3 kP3D65_TO_XYZ = mat3(
-    0.486570948648216151, 0.265667693169093, 0.198217285234362467,
-    0.228974564069748754, 0.691738521836506193, 0.079286914093744984,
-    -4.00000000000000029e-17, 0.0451133818589026167, 1.04394436890097575);
-const mat3 kXYZ_TO_REC709 = mat3(
-    3.24096994190452348, -1.53738317757009435, -0.498610760293003552,
-    -0.969243636280879506, 1.87596750150771996, 0.0415550574071755843,
-    0.0556300796969936354, -0.20397695888897649, 1.05697151424287816);
-const mat3 kCatD65[6] = mat3[6](
-    mat3(0.95703423023223877, -0.0247171502560377121, 0.0624028593301773071,
-         -0.0179296955466270447, 0.990019857883453369, 0.0248119533061981201,
-         0.00127589143812656403, 0.00427919067442417058, 1.29345715045928955),
-    mat3(0.981001079082489014, -0.0116619253531098366, 0.0265614092350006104,
-         -0.00843488052487373352, 0.996506094932556152, 0.0105696544051170349,
-         0.000552809564396739006, 0.00179840810596942902, 1.12374722957611084),
-    mat3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-    mat3(1.01182246208190918, 0.00778879318386316299, -0.0157783031463623047,
-         0.00561682833358645439, 1.00150644779205322, -0.00628517568111419678,
-         -0.000335735734552145004, -0.0010509500280022619, 0.927366673946380615),
-    mat3(1.02585089206695557, 0.0179439820349216461, -0.0332137793302536011,
-         0.0129133854061365128, 1.00214779376983643, -0.0132421031594276428,
-         -0.000719940289855003032, -0.00218106806278228803, 0.84868013858795166),
-    mat3(1.04257404804229736, 0.030891176313161951, -0.052812620997428894,
-         0.0221935361623764038, 1.00185668468475342, -0.0210737623274326324,
-         -0.00116488314233720303, -0.00342052709311246915, 0.761789083480834961));
-const mat3 kP3_TO_REC2020 = mat3(
-    0.753833034361722221, 0.198597369052616435, 0.0475695965856618441,
-    0.0457438489653532137, 0.9417772198116936, 0.0124789312229481135,
-    -0.0012103403545183941, 0.0176017173010899926, 0.983608623053428777);
-
-// ---- the resolved preset uniforms (OpenDrtSpec + Impl's constructor outputs) ----
-uniform int uDrtEotf;         // OpenDrtDisplay ordinal: 0 sRGB 2.2, 1 Rec.1886, 2 HLG 1000 (ep = 2 + (displayId + 1) * 0.2 when SDR)
-uniform float uDrtHdr;        // 1.0 = the HLG path (display == Hlg1000)
-uniform vec4 uDrtTn;          // x: tn_con, y: tn_sh, z: tn_toe, w: tn_off
-uniform vec4 uDrtRs;          // x: rs_sa, y: rs_rw, z: rs_bw, w: cwp_lm
-uniform float uDrtCwp;        // the RESOLVED INTERNAL cwp: the P struct's own value
-                               // (the look's default, or spec.cwp - 1 when a white point is
-                               // selected; 2 = the D65 slot = the CAT is SKIPPED, exactly the
-                               // C++'s kCatD65[2] = identity + skip condition)
-uniform vec4 uDrtToe;         // x: brl, y: brl_rng, z: brl_st, w: tsDsc
-uniform vec4 uDrtBrlRgb;      // x: brl_r, y: brl_g, z: brl_b, w: brlp
-uniform vec4 uDrtBrlpRgb;     // x: brlp_r, y: brlp_g, z: brlp_b, w: lconSc
-uniform vec4 uDrtLcon;        // x: lconM, y: lconW, z: hconP, w: tn_hcon_pv
-uniform vec4 uDrtHcon;        // x: tn_hcon_st, y: tsM2, z: tsS, w: tsP
-uniform vec4 uDrtTs;          // x: tsS1, y: sLp100 (tsS/tsP live in uDrtHcon.zw)
-uniform vec4 uDrtHueR;        // x: hs_r, y: hs_r_rng
-uniform vec4 uDrtHueG;        // x: hs_g, y: hs_g_rng
-uniform vec4 uDrtHueB;        // x: hs_b, y: hs_b_rng
-uniform vec4 uDrtHueC;        // x: hs_c, y: hs_c_rng
-uniform vec4 uDrtHueM;        // x: hs_m, y: hs_m_rng
-uniform vec4 uDrtHueY;        // x: hs_y, y: hs_y_rng
-uniform vec4 uDrtConf0;       // the enable bits: x brl_enable, y brlp_enable, z hc_enable, w ptl_enable
-uniform vec4 uDrtConf1;       // x: ptm_enable, y: hs_rgb_enable, z: hs_cmy_enable, w: lcon_enable
-uniform vec4 uDrtConf2;       // x: hcon_enable, y: reserved, z: hc_r, w: hc_r_rng
-uniform vec4 uDrtPt;          // x: pt_lml, y: pt_lml_r, z: pt_lml_g, w: pt_lml_b
-uniform vec4 uDrtPt2;         // x: pt_lmh, y: pt_lmh_r, z: pt_lmh_b, w: ptl_c
-uniform vec4 uDrtPt3;         // x: ptl_m, y: ptl_y, z: ptm_low, w: ptm_low_rng
-uniform vec4 uDrtPt4;         // x: ptm_low_st, y: ptm_high, z: ptm_high_rng, w: ptm_high_st
-// The CWP normalization scalar pair (the CPU's normTab[cwp]: the table's
-// GREEN entry per display, one float each, resolved by the binding from
-// the same constants the C++ carries; the normTab need not ride).
-uniform float uNormScalar;
-uniform float uNormScalarHdr;
+uniform highp sampler2D uSrc;      // the NODES pass's DWG-LINEAR RGBA32F output
+uniform ivec2 uSize;               // width/height in pixels
+uniform highp sampler3D uDrtLut;   // RGBA32F, texel (x,y,z) = table entry (r,g,b), red fastest
+uniform float uDrtLutN;            // table edge length
 
 out vec4 oCol;
 
-// The C++ helpers, verbatim (float spowf / sdivf / exp2f_).
-float spowf(float a, float b) { return a <= 0.0 ? a : pow(a, b); }
-float sdivf(float a, float b) { return b == 0.0 ? 0.0 : a / b; }
-float exp2f_(float x) { return pow(2.0, x); }
+// DI encode (Color.cpp's pinned constants)
+float diEncode(float lin) {
+    return lin <= 0.00262409 ? 10.44426855 * lin
+         : 0.07329248 * (log2(lin + 0.0075) + 7.0);
+}
 
-float compressHyperbolicPower(float x, float s, float p) {
-    return spowf(x / (x + s), p);
+vec3 drtLutSample(vec3 enc) {
+    float n = uDrtLutN;
+    vec3 fx = clamp(enc * (n - 1.0), vec3(0.0), vec3(n - 1.0));
+    vec3 f0 = floor(fx);
+    vec3 w = fx - f0;
+    ivec3 i0 = ivec3(f0);
+    ivec3 hi = ivec3(int(n) - 1);
+    ivec3 i1 = min(i0 + ivec3(1), hi);
+    vec3 c000 = texelFetch(uDrtLut, ivec3(i0.x, i0.y, i0.z), 0).rgb;
+    vec3 c100 = texelFetch(uDrtLut, ivec3(i1.x, i0.y, i0.z), 0).rgb;
+    vec3 c010 = texelFetch(uDrtLut, ivec3(i0.x, i1.y, i0.z), 0).rgb;
+    vec3 c110 = texelFetch(uDrtLut, ivec3(i1.x, i1.y, i0.z), 0).rgb;
+    vec3 c001 = texelFetch(uDrtLut, ivec3(i0.x, i0.y, i1.z), 0).rgb;
+    vec3 c101 = texelFetch(uDrtLut, ivec3(i1.x, i0.y, i1.z), 0).rgb;
+    vec3 c011 = texelFetch(uDrtLut, ivec3(i0.x, i1.y, i1.z), 0).rgb;
+    vec3 c111 = texelFetch(uDrtLut, ivec3(i1.x, i1.y, i1.z), 0).rgb;
+    vec3 c00 = mix(c000, c100, w.x);
+    vec3 c10 = mix(c010, c110, w.x);
+    vec3 c01 = mix(c001, c101, w.x);
+    vec3 c11 = mix(c011, c111, w.x);
+    return mix(mix(c00, c10, w.y), mix(c01, c11, w.y), w.z);
 }
-float compressToeQuadratic(float x, float toe, bool inv) {
-    if (toe == 0.0) return x;
-    return !inv ? spowf(x, 2.0) / (x + toe)
-                : (x + sqrt(x * (4.0 * toe + x))) / 2.0;
-}
-float compressToeCubic(float x, float m, float w, bool inv) {
-    if (m == 1.0) return x;
-    float x2 = x * x;
-    if (!inv) return x * (x2 + m * w) / (x2 + w);
-    float p0 = x2 - 3.0 * m * w;
-    float p1 = 2.0 * x2 + 27.0 * w - 9.0 * m * w;
-    float p2 = pow(sqrt(x2 * p1 * p1 - 4.0 * p0 * p0 * p0) / 2.0 + x * p1 / 2.0, 1.0 / 3.0);
-    return p0 / (3.0 * p2) + p2 / 3.0 + x / 3.0;
-}
-float contrastHigh(float x, float p, float pv, float pvLx) {
-    float x0 = 0.18 * exp2f_(pv);
-    if (x < x0 || p == 1.0) return x;
-    float o = x0 - x0 / p;
-    float s0 = pow(x0, 1.0 - p) / p;
-    float x1 = x0 * exp2f_(pvLx);
-    float k1 = p * s0 * pow(x1, p) / x1;
-    float y1 = s0 * pow(x1, p) + o;
-    return x > x1 ? k1 * (x - x1) + y1 : s0 * pow(x, p) + o;
-}
-float softplus(float x, float s) {
-    if (x > 10.0 * s || s < 1e-4) return x;
-    return s * log(max(0.0, 1.0 + exp(x / s)));
-}
-float gaussWindow(float x, float w) { return exp(-x * x / w); }
-const float kPi = 3.14159265358979323846;  // core/src/ColorModel.cpp's kPi (the shader used it without declaring it)
-const float kSqrt3 = 1.7320508;  // core/src/OpenDrt.cpp's kSqrt3 (also used undeclared)
-float hueOffset(float h, float o) { return mod(h - o + kPi, 2.0 * kPi) - kPi; }
 
 void main() {
     ivec2 g = ivec2(gl_FragCoord.xy);
     if (g.x >= uSize.x || g.y >= uSize.y) discard;
-    vec3 rgb = texelFetch(uSrc, g, 0).rgb;
-    // DWG linear -> XYZ (applyDwgLinear's head) -> the DRT
-    rgb = kDWG_TO_XYZ * rgb;
-    // ---- Impl::applyXyz, verbatim order ----
-    rgb = kXYZ_TO_P3D65 * rgb;
-
-    float rsW0 = uDrtRs.y;
-    float rsW1 = 1.0 - uDrtRs.y - uDrtRs.z;
-    float rsW2 = uDrtRs.z;
-    float satL = dot(rgb, vec3(rsW0, rsW1, rsW2));
-    rgb = satL * uDrtRs.x + rgb * (1.0 - uDrtRs.x) + uDrtTn.w;
-
-    float tsn = sqrt(max(0.0, dot(rgb, rgb))) / kSqrt3;
-    rgb = vec3(sdivf(rgb.r, tsn), sdivf(rgb.g, tsn), sdivf(rgb.b, tsn));
-
-    float oppX = rgb.r - rgb.b;
-    float oppY = rgb.g - (rgb.r + rgb.b) / 2.0;
-    float achD = sqrt(max(0.0, oppX * oppX + oppY * oppY)) / 2.0;
-    achD = 1.25 * compressToeQuadratic(achD, 0.25, false);
-    float hue = mod(atan(oppX, oppY) + kPi + 1.10714931, 2.0 * kPi);
-
-    float haR = gaussWindow(hueOffset(hue, 0.1), 0.66);
-    float haG = gaussWindow(hueOffset(hue, 4.3), 0.66);
-    float haB = gaussWindow(hueOffset(hue, 2.3), 0.66);
-    float hsR = gaussWindow(hueOffset(hue, -0.4), 0.66);
-    float hsG = haG;
-    float hsB = gaussWindow(hueOffset(hue, 2.5), 0.66);
-    float cmyC = gaussWindow(hueOffset(hue, 3.3), 0.5);
-    float cmyM = gaussWindow(hueOffset(hue, 1.3), 0.5);
-    float cmyY = gaussWindow(hueOffset(hue, -1.15), 0.5);
-
-    if (uDrtConf0.x == 1.0) {  // brl_enable
-        float tsf = pow(tsn / (tsn + 1.0), 1.0 - uDrtToe.y);
-        float exf = (uDrtToe.x + uDrtBrlRgb.x * haR + uDrtBrlRgb.y * haG +
-                     uDrtBrlRgb.z * haB) * pow(achD, 1.0 / uDrtToe.z);
-        tsn *= exp2f_(exf * (exf < 0.0 ? tsf : 1.0 - tsf));
-    }
-    if (uDrtConf1.w == 1.0) {  // lcon_enable
-        tsn *= uDrtBrlpRgb.w;
-        tsn = compressToeCubic(tsn, uDrtLcon.x, uDrtLcon.y, false);
-    }
-    if (uDrtConf2.x == 1.0) {  // hcon_enable
-        tsn = contrastHigh(tsn, uDrtLcon.z, uDrtLcon.w, uDrtHcon.x);
-    }
-
-    // tsS/tsS1/sLp100/tsP: the constructor's resolved constants (uDrtHcon.z
-    // = tsS, uDrtHcon.w = tsP; uDrtTs.x = tsS1, uDrtTs.y = sLp100).
-    float tsP = uDrtHcon.w;
-    float tsnPt = compressHyperbolicPower(tsn, uDrtTs.x, tsP);
-    float tsnConst = compressHyperbolicPower(tsn, uDrtTs.y, tsP);
-    tsn = compressHyperbolicPower(tsn, uDrtHcon.z, tsP);
-
-    if (uDrtConf0.z == 1.0) {  // hc_enable: hue compress green/blue (hc_r, hc_r_rng)
-        float hcTs = 1.0 - tsnConst;
-        float hcC = hcTs * (1.0 - achD) + achD * (1.0 - hcTs);
-        hcC *= achD * haR;
-        hcTs = pow(hcTs, 1.0 / uDrtConf2.w);
-        float hcF = uDrtConf2.z * (hcC - 2.0 * hcC * hcTs) + 1.0;
-        rgb.g *= hcF;
-        rgb.b *= hcF;
-    }
-    if (uDrtConf1.y == 1.0) {  // hs_rgb_enable
-        float xh = hsR * achD * pow(tsnPt, 1.0 / uDrtHueR.y) * uDrtHueR.x;
-        float yh = hsG * achD * pow(tsnPt, 1.0 / uDrtHueG.y) * -uDrtHueG.x;
-        float zh = hsB * achD * pow(tsnPt, 1.0 / uDrtHueB.y) * -uDrtHueB.x;
-        rgb.r += zh - yh; rgb.g += xh - zh; rgb.b += yh - xh;
-    }
-    if (uDrtConf1.z == 1.0) {  // hs_cmy_enable
-        float c = 1.0 - tsnPt;
-        float xc = cmyC * achD * pow(c, 1.0 / uDrtHueC.y) * -uDrtHueC.x;
-        float yc = cmyM * achD * pow(c, 1.0 / uDrtHueM.y) * uDrtHueM.x;
-        float zc = cmyY * achD * pow(c, 1.0 / uDrtHueY.y) * uDrtHueY.x;
-        rgb.r += zc - yc; rgb.g += xc - zc; rgb.b += yc - xc;
-    }
-
-    // purity compression
-    float ptLmlP = 1.0 + 4.0 * (1.0 - tsnPt) *
-        (uDrtPt.x + uDrtPt.y * hsR + uDrtPt.z * hsG + uDrtPt.w * hsB);
-    float ptf = 1.0 - pow(tsnPt, ptLmlP);
-    float ptLmhP = (1.0 - achD * (uDrtPt2.y * hsR + uDrtPt2.z * hsB)) *
-        (1.0 - uDrtPt2.x * achD);
-    ptf = pow(ptf, ptLmhP);
-    if (uDrtConf1.x == 1.0) {  // ptm_enable
-        float low = (uDrtPt4.x == 0.0 || uDrtPt3.w == 0.0) ? 1.0
-            : 1.0 + uDrtPt3.z * exp(-2.0 * achD * achD / uDrtPt4.x) *
-                  pow(1.0 - tsnConst, 1.0 / uDrtPt3.w);
-        float high = (uDrtPt4.w == 0.0 || uDrtPt4.z == 0.0) ? 1.0
-            : 1.0 + uDrtPt4.y * exp(-2.0 * achD * achD / uDrtPt4.w) *
-                  pow(tsnPt, 1.0 / (4.0 * uDrtPt4.z));
-        ptf *= low * high;
-    }
-    rgb = rgb * ptf + 1.0 - ptf;
-
-    // back from the rendering space
-    satL = dot(rgb, vec3(rsW0, rsW1, rsW2));
-    rgb = (satL * uDrtRs.x - rgb) / (uDrtRs.x - 1.0);
-
-    // displayWhite: the same sequence, with uNormScalar carrying the
-    // normTab lookup (the binding resolves it per display + cwp).
-    {
-        rgb = kP3D65_TO_XYZ * rgb;
-        vec3 n = rgb;
-        float f = pow(tsnConst, 2.0 * uDrtRs.w);
-        int cwp = int(uDrtCwp);
-        if (cwp >= 0 && cwp < 6 && cwp != 2) rgb = kCatD65[cwp] * rgb;
-        rgb = rgb * f + n * (1.0 - f);
-        rgb = (uDrtHdr > 0.5 ? kXYZ_TO_P3D65 : kXYZ_TO_REC709) * rgb;
-        float norm = (cwp >= 0 && cwp < 6)
-            ? (uDrtHdr > 0.5 ? uNormScalarHdr : uNormScalar)
-            : 1.0;
-        float k = norm * f + 1.0 - f;
-        rgb *= k;
-    }
-
-    if (uDrtConf0.y == 1.0) {  // brlp_enable
-        float bx = rgb.r - rgb.b;
-        float by = rgb.g - (rgb.r + rgb.b) / 2.0;
-        float bAch = sqrt(max(0.0, bx * bx + by * by)) / 4.0;
-        bAch = 1.1 * (bAch * bAch / (bAch + 0.1));
-        float m = uDrtBrlRgb.w + uDrtBrlpRgb.x * achD * haR +
-                  uDrtBrlpRgb.y * achD * haG + uDrtBrlpRgb.z * achD * haB;
-        float ex = exp2f_(m * bAch * tsn);
-        rgb *= ex;
-    }
-    if (uDrtConf0.w == 1.0) {  // ptl_enable
-        rgb.r = softplus(rgb.r, uDrtPt2.w);
-        rgb.g = softplus(rgb.g, uDrtPt3.x);
-        rgb.b = softplus(rgb.b, uDrtPt3.y);
-    }
-
-    tsn *= uDrtHcon.y;  // tsM2
-    tsn = compressToeQuadratic(tsn, uDrtTn.z, false);
-    tsn *= uDrtToe.w;   // tsDsc
-    if (uDrtHdr > 0.5) {
-        rgb = max(rgb * tsn, 0.0);
-        rgb = kP3_TO_REC2020 * rgb;
-        rgb = clamp(rgb, 0.0, 1.0);
-        // the inverse HLG EOTF (Impl::hlgInverseEotf)
-        float yd = 0.2627 * rgb.r + 0.6780 * rgb.g + 0.0593 * rgb.b;
-        float k = spowf(yd, (1.0 - 1.2) / 1.2);
-        vec3 xs = rgb * k;
-        rgb = vec3(
-            xs.r <= 1.0 / 12.0 ? sqrt(3.0 * xs.r)
-                : 0.17883277 * log(12.0 * xs.r - 0.28466892) + 0.55991073,
-            xs.g <= 1.0 / 12.0 ? sqrt(3.0 * xs.g)
-                : 0.17883277 * log(12.0 * xs.g - 0.28466892) + 0.55991073,
-            xs.b <= 1.0 / 12.0 ? sqrt(3.0 * xs.b)
-                : 0.17883277 * log(12.0 * xs.b - 0.28466892) + 0.55991073);
-    } else {
-        // The C++ ep: eotf 1 (sRGB 2.2 display) or 2 (Rec.1886) -> 2.2/2.4.
-        // uDrtEotf carries the OpenDrtDisplay ordinals 0/1, so the mapping
-        // is the display id + 1 exactly like the Impl constructor's.
-        float ep = 2.0 + float(uDrtEotf + 1) * 0.2;
-        rgb = vec3(
-            spowf(clamp(rgb.r * tsn, 0.0, 1.0), 1.0 / ep),
-            spowf(clamp(rgb.g * tsn, 0.0, 1.0), 1.0 / ep),
-            spowf(clamp(rgb.b * tsn, 0.0, 1.0), 1.0 / ep));
-    }
-    // the bake's own NaN rule: a non-finite channel reads as 0
+    vec3 dwg = texelFetch(uSrc, g, 0).rgb;
+    vec3 enc = vec3(diEncode(dwg.r), diEncode(dwg.g), diEncode(dwg.b));
+    vec3 rgb = drtLutSample(enc);
     if (isnan(rgb.r)) rgb.r = 0.0;
     if (isnan(rgb.g)) rgb.g = 0.0;
     if (isnan(rgb.b)) rgb.b = 0.0;

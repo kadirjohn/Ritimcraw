@@ -321,3 +321,38 @@ TEST_CASE("OpenDRT: whole-image entry (nodes DWG output -> OpenDRT) end to end")
     for (float v : nan.rgb)
         CHECK(std::isfinite(v));
 }
+
+TEST_CASE("OpenDRT baked LUT: lattice error against the direct transform (reported), cache and determinism") {
+    OpenDrtSpec spec;
+    const OpenDrtLut a = bakeOpenDrtLut(spec);
+    const OpenDrtLut b = bakeOpenDrtLut(spec);
+    CHECK(a.n == kOpenDrtLutSize);
+    CHECK(a.rgb == b.rgb); // deterministic across the parallel row split
+    CHECK(bakedOpenDrtLut(spec).get() == bakedOpenDrtLut(spec).get()); // cached
+    OpenDrtSpec other = spec;
+    other.look = 3;
+    CHECK(bakedOpenDrtLut(other).get() != bakedOpenDrtLut(spec).get());
+
+    // A realistic frame: DWG linear from deep shadow (0.002) to 40x grey, plus coloured ramps.
+    ImageF img;
+    img.w = 4096; img.h = 1; img.rgb.resize(static_cast<size_t>(img.w) * 3);
+    for (int i = 0; i < img.w; ++i) {
+        const float t = static_cast<float>(i) / (img.w - 1);
+        const float lum = 0.002f * std::pow(7.2f * 1000.0f / 1.0f, t); // 0.002 .. ~14 (about +6.3 stops over grey)
+        img.rgb[i * 3 + 0] = lum * (0.6f + 0.8f * t);
+        img.rgb[i * 3 + 1] = lum;
+        img.rgb[i * 3 + 2] = lum * (1.4f - 0.9f * t);
+    }
+    ImageF direct = img, baked = img;
+    applyOpenDrt(direct, spec);
+    applyOpenDrtBaked(baked, a);
+    double worst = 0.0, sum = 0.0;
+    for (size_t i = 0; i < direct.rgb.size(); ++i) {
+        const double d = std::fabs(direct.rgb[i] - baked.rgb[i]) * 255.0;
+        worst = std::max(worst, d);
+        sum += d;
+    }
+    const double mean = sum / direct.rgb.size();
+    MESSAGE("baked vs direct (n=" << a.n << "): worst " << worst << " LSB (8-bit), mean " << mean << " LSB");
+    CHECK(worst < 1.0);
+}

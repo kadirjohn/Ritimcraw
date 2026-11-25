@@ -1759,7 +1759,8 @@ static bool applyV2ChainCpu(const gles::NodeChainDecoded* chain, rawedit::ImageF
         spec.display = chain->drtDisplay == 2 ? rawedit::OpenDrtDisplay::Hlg1000
             : chain->drtDisplay == 1 ? rawedit::OpenDrtDisplay::SdrRec1886
             : rawedit::OpenDrtDisplay::SdrSrgb22;
-        rawedit::applyOpenDrt(img, spec);
+        // The baked route: the SAME table the GPU's DRT TAIL samples (cached per spec).
+        rawedit::applyOpenDrtBaked(img, *rawedit::bakedOpenDrtLut(spec));
         *drt = true;
     }
     return true;
@@ -5236,15 +5237,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetColorModelCh
             return JNI_FALSE;
         }
         const jsize drtLen = env->GetArrayLength(drtUniforms);
-        if (drtLen != gles::GpuDevelopPipeline::kDrtUniformSlots) {
+        if (drtLen != gles::GpuDevelopPipeline::kDrtPackSlots) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                      "preview session color chain: the DRT uniform pack has " +
                          std::to_string(drtLen) + " floats, needs " +
-                         std::to_string(gles::GpuDevelopPipeline::kDrtUniformSlots));
+                         std::to_string(gles::GpuDevelopPipeline::kDrtPackSlots));
             return JNI_FALSE;
         }
         drt.assign(static_cast<size_t>(drtLen), 0.0f);
         env->GetFloatArrayRegion(drtUniforms, 0, drtLen, drt.data());
+        // The baked route: the pack carries the OpenDRT spec after the Kotlin floats (look, tonescale, cwp,
+        // cwpLimit, grey, display) so the pipeline can bake its table from core's own transform.
+        drt.push_back(static_cast<float>(decoded.drtLook));
+        drt.push_back(static_cast<float>(decoded.drtTonescale));
+        drt.push_back(static_cast<float>(decoded.drtCwp));
+        drt.push_back(decoded.drtCwpLimit);
+        drt.push_back(decoded.drtGrey);
+        drt.push_back(static_cast<float>(decoded.drtDisplay));
     }
     // The chain hash: the DECODED values' content key (the session's
     // revision cache key; matching setColorModelChain's contract — "the
@@ -5373,15 +5382,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeDevelopSessionSetColorModelCh
             return JNI_FALSE;
         }
         const jsize drtLen = env->GetArrayLength(drtUniforms);
-        if (drtLen != gles::GpuDevelopPipeline::kDrtUniformSlots) {
+        if (drtLen != gles::GpuDevelopPipeline::kDrtPackSlots) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageOpen,
                      "develop session color chain: the DRT uniform pack has " +
                          std::to_string(drtLen) + " floats, needs " +
-                         std::to_string(gles::GpuDevelopPipeline::kDrtUniformSlots));
+                         std::to_string(gles::GpuDevelopPipeline::kDrtPackSlots));
             return JNI_FALSE;
         }
         drt.assign(static_cast<size_t>(drtLen), 0.0f);
         env->GetFloatArrayRegion(drtUniforms, 0, drtLen, drt.data());
+        // The baked route: the pack carries the OpenDRT spec after the Kotlin floats (look, tonescale, cwp,
+        // cwpLimit, grey, display) so the pipeline can bake its table from core's own transform.
+        drt.push_back(static_cast<float>(decoded.drtLook));
+        drt.push_back(static_cast<float>(decoded.drtTonescale));
+        drt.push_back(static_cast<float>(decoded.drtCwp));
+        drt.push_back(decoded.drtCwpLimit);
+        drt.push_back(decoded.drtGrey);
+        drt.push_back(static_cast<float>(decoded.drtDisplay));
     }
     // The chain hash: the DECODED values' content key (the session's
     // revision cache key; matching setColorModelChain's contract — "the

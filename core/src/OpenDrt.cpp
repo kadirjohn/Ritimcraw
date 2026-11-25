@@ -12,6 +12,11 @@
 // what they do and do not prove).
 
 #include <rawedit/OpenDrt.h>
+#include <rawedit/Color.h>
+#include <rawedit/Parallel.h>
+#include <vector>
+#include <memory>
+#include <mutex>
 
 #include <algorithm>
 #include <cmath>
@@ -443,6 +448,97 @@ void applyOpenDrt(ImageF& img, const OpenDrtSpec& spec) {
         for (int c = 0; c < 3; ++c)
             if (std::isnan(px[c]))
                 px[c] = 0.0f;
+    }
+}
+
+
+// ---- baked route -----------------------------------------------------------
+
+OpenDrtLut bakeOpenDrtLut(const OpenDrtSpec& spec, int n) {
+    OpenDrtLut lut;
+    if (n < 2) return lut;
+    lut.n = n;
+    lut.rgb.assign(static_cast<size_t>(n) * n * n * 3, 0.0f);
+    const OpenDrt t(spec);
+    const float inv = 1.0f / static_cast<float>(n - 1);
+    // Rows = (g, b) pairs; each row owns its own output, so the split is deterministic.
+    parallelForRows(static_cast<size_t>(n) * n, [&](size_t rowBegin, size_t rowEnd) {
+        for (size_t row = rowBegin; row < rowEnd; ++row) {
+            const int b = static_cast<int>(row / n);
+            const int g = static_cast<int>(row % n);
+            for (int r = 0; r < n; ++r) {
+                float px[3] = {
+                    decodeTransfer(r * inv, TransferId::DaVinciIntermediate),
+                    decodeTransfer(g * inv, TransferId::DaVinciIntermediate),
+                    decodeTransfer(b * inv, TransferId::DaVinciIntermediate),
+                };
+                t.applyDwgLinear(px);
+                float* o = &lut.rgb[((static_cast<size_t>(b) * n + g) * n + r) * 3];
+                for (int c = 0; c < 3; ++c)
+                    o[c] = std::isnan(px[c]) ? 0.0f : std::min(std::max(px[c], 0.0f), 1.0f);
+            }
+        }
+    });
+    return lut;
+}
+
+std::shared_ptr<const OpenDrtLut> bakedOpenDrtLut(const OpenDrtSpec& spec) {
+    struct Entry { OpenDrtSpec spec; std::shared_ptr<const OpenDrtLut> lut; };
+    static std::mutex mu;
+    static std::vector<Entry> cache;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        for (size_t i = 0; i < cache.size(); ++i) {
+            const OpenDrtSpec& c = cache[i].spec;
+            if (c.look == spec.look && c.tonescale == spec.tonescale && c.cwp == spec.cwp &&
+                c.cwpLimit == spec.cwpLimit && c.grey == spec.grey && c.display == spec.display) {
+                Entry hit = cache[i];
+                cache.erase(cache.begin() + static_cast<long>(i));
+                cache.push_back(hit); // most recent last
+                return hit.lut;
+            }
+        }
+    }
+    auto baked = std::make_shared<const OpenDrtLut>(bakeOpenDrtLut(spec));
+    std::lock_guard<std::mutex> lock(mu);
+    cache.push_back({spec, baked});
+    if (cache.size() > 4) cache.erase(cache.begin());
+    return baked;
+}
+
+void applyOpenDrtBaked(ImageF& img, const OpenDrtLut& lut) {
+    const size_t pixels = static_cast<size_t>(img.w) * img.h;
+    if (img.rgb.size() != pixels * 3 || lut.n < 2) return;
+    const int n = lut.n;
+    const float top = static_cast<float>(n - 1);
+    auto at = [&](int r, int g, int b, int c) {
+        return lut.rgb[((static_cast<size_t>(b) * n + g) * n + r) * 3 + c];
+    };
+    for (size_t p = 0; p < pixels; ++p) {
+        float* px = &img.rgb[p * 3];
+        float fx[3];
+        for (int c = 0; c < 3; ++c) {
+            const float di = encodeTransfer(px[c], TransferId::DaVinciIntermediate);
+            fx[c] = std::min(std::max(di * top, 0.0f), top); // NaN falls to 0 through the max below
+            if (std::isnan(fx[c])) fx[c] = 0.0f;
+        }
+        int i0[3], i1[3];
+        float w[3];
+        for (int c = 0; c < 3; ++c) {
+            const float f0 = std::floor(fx[c]);
+            i0[c] = static_cast<int>(f0);
+            i1[c] = std::min(i0[c] + 1, n - 1);
+            w[c] = fx[c] - f0;
+        }
+        for (int c = 0; c < 3; ++c) {
+            const float c00 = at(i0[0], i0[1], i0[2], c) + (at(i1[0], i0[1], i0[2], c) - at(i0[0], i0[1], i0[2], c)) * w[0];
+            const float c10 = at(i0[0], i1[1], i0[2], c) + (at(i1[0], i1[1], i0[2], c) - at(i0[0], i1[1], i0[2], c)) * w[0];
+            const float c01 = at(i0[0], i0[1], i1[2], c) + (at(i1[0], i0[1], i1[2], c) - at(i0[0], i0[1], i1[2], c)) * w[0];
+            const float c11 = at(i0[0], i1[1], i1[2], c) + (at(i1[0], i1[1], i1[2], c) - at(i0[0], i1[1], i1[2], c)) * w[0];
+            const float c0 = c00 + (c10 - c00) * w[1];
+            const float c1 = c01 + (c11 - c01) * w[1];
+            px[c] = c0 + (c1 - c0) * w[2];
+        }
     }
 }
 

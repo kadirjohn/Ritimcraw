@@ -23,6 +23,9 @@
 
 #include <cstddef>
 
+#include <memory>
+#include <vector>
+
 namespace rawedit {
 
 struct ImageF; // Develop.h
@@ -65,6 +68,28 @@ private:
     struct Impl;
     Impl* impl_;
 };
+
+// ---- The baked route (owner decision 2026-11-25) -------------------------
+// The OpenDRT is baked into ONE 3D table whose input axes are DaVinci Intermediate CODE values (0..1 spans
+// -0.0075..100 linear in DWG, so highlights and shadows both fit), output is display code values (0..1).
+// The GPU applies the table through the same by-hand trilinear as every other LUT stage and the CPU
+// reference applies the SAME table with the same arithmetic, so the two agree to the usual 1 LSB; the
+// table itself differs from the direct transform by its lattice error (measured in test_opendrt).
+constexpr int kOpenDrtLutSize = 65;
+
+struct OpenDrtLut {
+    int n = 0;
+    std::vector<float> rgb; // n^3 * 3, red fastest (the .cube row order Lut uses)
+};
+
+// Bakes [spec] (NaN -> 0, clamped to 0..1 like Klipp's bake). Deterministic; ~0.3 s for n = 65.
+OpenDrtLut bakeOpenDrtLut(const OpenDrtSpec& spec, int n = kOpenDrtLutSize);
+
+// Cached bake (last 4 specs, thread-safe): the editor drags knobs, the table is rebuilt only for a new spec.
+std::shared_ptr<const OpenDrtLut> bakedOpenDrtLut(const OpenDrtSpec& spec);
+
+// Whole image, DWG linear in, display code values out, through [lut] (DI-encode, trilinear).
+void applyOpenDrtBaked(ImageF& img, const OpenDrtLut& lut);
 
 // Whole image, DWG linear in, display code values out (NaN -> 0 as Klipp's
 // bake does). Builds the transform once.
