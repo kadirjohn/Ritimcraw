@@ -721,7 +721,7 @@ object EditorPreviewLogic {
             computeOk = probe.computeOk,
             floatFboOk = true,
             parityOk = parity != null &&
-                GpuParityRules.verdict(parity, parityDetail).pass,
+                GpuParityRules.runtimeVerdict(parity, parityDetail).pass,
         )
     }
 
@@ -2132,6 +2132,8 @@ fun ClipEditorScreen(
                     parity = parityRaw?.let { GlesParityResult.fromArray(it) },
                     errorDetail = parityDetail,
                 )
+                // A green gate that exceeded the suite's strict mismatch share still logs its numbers.
+                if (gates.parityOk) parityGateDetail?.let { Log.d(RenderTrace.TAG, it) }
             } catch (t: Throwable) {
                 // A malformed seam array (the fromArray contract: loud,
                 // never papered over) costs the GPU path, never the

@@ -125,6 +125,29 @@ object GpuParityRules {
     }
 
     /**
+     * The RUNTIME gate's verdict (editor open, export open): the run must have produced numbers and every
+     * sample must be within [PASS_MAX_LSB]. The mismatch SHARE is deliberately not a runtime condition: on
+     * low-entropy frames (a dark DCG-mode frame whose few repeated codes sit on 16-bit rounding ties) a 1-LSB
+     * flip can hit ~1% of samples without any real stage difference, and the production 8-bit output is
+     * unaffected. The strict share ([PASS_MISMATCH_PER_MYRIAD]) stays in [verdict], which the device parity
+     * suites and the Measure leg keep using. The share is still reported in the reason (trace).
+     */
+    fun runtimeVerdict(parity: GlesParityResult, errorDetail: String? = null): ParityVerdict {
+        if (!parity.ran) {
+            return ParityVerdict(ParityVerdict.Status.NOT_RUN, errorDetail ?: "gpu stage failed")
+        }
+        val pct = if (parity.samples > 0) parity.mismatchCount * 100.0 / parity.samples else 0.0
+        val share = "mismatch ${parity.mismatchCount}/${parity.samples} (%.4f%%)".format(pct)
+        if (parity.maxDiffLsb > PASS_MAX_LSB) {
+            return ParityVerdict(ParityVerdict.Status.FAIL, "maxDiffLsb ${parity.maxDiffLsb} > $PASS_MAX_LSB")
+        }
+        return ParityVerdict(
+            ParityVerdict.Status.PASS,
+            "runtime gate: maxDiffLsb ${parity.maxDiffLsb} <= $PASS_MAX_LSB; $share",
+        )
+    }
+
+    /**
      * The render-backend gates a probe supports. parityOk is ALWAYS
      * false here on purpose: parity comes only from a real parity run
      * (verdict above), never from a capability probe — the BackendGates
@@ -189,8 +212,11 @@ object GpuParityRules {
         if (parity == null) {
             return "parity gate: jni failure (${errorDetail ?: "no detail"})"
         }
-        val v = verdict(parity, errorDetail)
-        if (v.pass) return null
+        val v = runtimeVerdict(parity, errorDetail)
+        if (v.pass) {
+            // Informational: the run passed the runtime gate but not the suite's strict mismatch share.
+            return if (!verdict(parity, errorDetail).pass) "parity gate: PASS (${v.reason}; above the suite's 0.01% share: informational)" else null
+        }
         if (!parity.ran) {
             return "parity gate: ${v.status.name} (${v.reason})"
         }
