@@ -1105,6 +1105,18 @@ fun ClipEditorScreen(
             mutableStateOf(PanelBehavior.defaultOpenFor(sourceWidth, sourceHeight, manualRotationDeg))
         }
         val panelDrag = rememberPanelDragState(panelState)
+        // ---- B13 panel-jank diagnosis counters (DEBUG-only) ----
+        // One PanelAnimTrace per editor open, counting (a) preview render
+        // requests and (b) SurfaceView resizes inside each panel ANIMATION
+        // window — the same motion window freezeSurfaceSize pins (below,
+        // `panelDrag.isAnimationRunning`), so the counts and the freeze
+        // share one definition of "during the panel animation". Pure object,
+        // never state: the counts no more recompose anything than the
+        // playbackTraceHolder array does. Every hook site below reads
+        // RenderTrace.enabled (= BuildConfig.DEBUG) BEFORE touching it, and
+        // the ONE emission per animation end is the throttle — nothing
+        // shows in logcat at all in release.
+        val panelAnimTrace = remember(sourceId) { PanelAnimTrace() }
         // Per-category scroll positions (§11.6 "relevant scroll position"):
         // one ScrollState per category, remembered SAVEABLY (ScrollState's
         // own Saver) so the offsets also survive process death and
@@ -1357,6 +1369,34 @@ fun ClipEditorScreen(
                         panelOpenByTap = false
                     } else if (PanelBehavior.swipeUpRetarget(live.first, live.second)) {
                         scope.launch { panelDrag.animateTo(PanelBehavior.swipeUpTarget(live.first)) }
+                    }
+                }
+        }
+        // ---- B13 panel-jank diagnosis: the animation window ----
+        // The window is panelDrag.isAnimationRunning — EXACTLY the
+        // freezeSurfaceSize signal (their one shared definition is the
+        // point: the counts measure the same motion the freeze pins).
+        // Rising edge opens the window (from-state = the settled state
+        // the panel is leaving); falling edge closes it and, DEBUG-only,
+        // logs the one summary line after the render-request and
+        // surface-resize hooks below have counted the burst. One line
+        // per animation END is the whole logcat cost — the settle runs
+        // SNAP_DURATION_MS-scale, so even a Rapid drag-dance cannot
+        // produce a line more often than one settle finishes. In release
+        // the gate short-circuits before the trace object is touched.
+        LaunchedEffect(panelDrag) {
+            snapshotFlow { panelDrag.isAnimationRunning }
+                .collect { animating ->
+                    if (!RenderTrace.enabled) return@collect
+                    if (animating) {
+                        panelAnimTrace.onAnimStart(
+                            panelDrag.settledValue, SystemClock.elapsedRealtime(),
+                        )
+                    } else if (animating == false) {
+                        panelAnimTrace.onAnimEnd(panelDrag.settledValue,
+                            SystemClock.elapsedRealtime())?.let { line ->
+                            Log.i(RenderTrace.TAG, line)
+                        }
                     }
                 }
         }
@@ -1902,6 +1942,10 @@ fun ClipEditorScreen(
                 }
                 NodeChainWire.encode(v2, nodes)
             }.getOrNull()
+            // B13 diagnosis: count this render into the open panel-animation
+            // window (no-op unless the panel is animating; release never
+            // reaches the object — RenderTrace.enabled = BuildConfig.DEBUG).
+            if (RenderTrace.enabled) panelAnimTrace.onRenderRequest()
             renderSeq += 1
             gate.offer(
                 RenderRequest(frameIndex, renderGrade, maxDim, renderSeq, cached, followUpMaxDim, renderClass, chainWire)
@@ -3406,6 +3450,12 @@ fun ClipEditorScreen(
                         // render offered while IT runs replaces it in the slot
                         // exactly like any other request.
                         if (req.followUpMaxDim != null) {
+                            // B13 diagnosis: the ONE documented render offer
+                            // that bypasses requestRender counts here too, so
+                            // the window's renders= cannot under-report during
+                            // a panel animation. Same RenderTrace.enabled
+                            // gate as every hook site; release never calls.
+                            if (RenderTrace.enabled) panelAnimTrace.onRenderRequest()
                             renderSeq += 1
                             if (gate.offerIfEmpty(
                                     RenderRequest(
@@ -4021,6 +4071,17 @@ fun ClipEditorScreen(
                     gpuWindowActive = gpuActive,
                     gpuWindowServing = gpuWindowLive,
                     freezeSurfaceSize = panelDrag.isAnimationRunning || barAnimating,
+                    // B13 diagnosis: count every surfaceChanged into the open
+                    // panel-animation window (see panelAnimTrace above). The
+                    // window is the same isAnimationRunning signal the freeze
+                    // reads, so resizes=0 in the "panel anim" line is the
+                    // freeze verdict holding. Debug compositor only; null in
+                    // release, the same gate as debugPathBadge beside it.
+                    debugOnSurfaceResized = if (RenderTrace.enabled) {
+                        { panelAnimTrace.onSurfaceResize() }
+                    } else {
+                        null
+                    },
                     // DEBUG path badge (2026-11-23): reuses the served
                     // verdict the trace's backend= field reads.
                     debugPathBadge = if (RenderTrace.enabled) {
