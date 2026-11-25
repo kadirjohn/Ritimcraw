@@ -156,6 +156,9 @@ object PanelSheet {
      * naturally to the nearest appropriate panel state"). Halfway is the
      * Material sheet convention.
      */
+    /** Share of the release velocity the settle spring inherits (see settleSpec). */
+    const val SETTLE_VELOCITY_SHARE = 0.25f
+
     const val POSITIONAL_THRESHOLD_FRACTION = 0.3f
 
     /**
