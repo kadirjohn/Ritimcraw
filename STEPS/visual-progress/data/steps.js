@@ -14510,6 +14510,39 @@ window.STEPS_DATA = {
    "screenshot": null
   },
   {
+   "id": "a1-gen-parcel-check",
+   "title": "chore: sync grade parcel generator schema",
+   "date": "2026-11-26",
+   "status": "done",
+   "commit": {
+    "hash": "149b579",
+    "date": "2026-11-26",
+    "merge_subject": "branch tip chore-gen-parcel-schema (merge commit follows)"
+   },
+   "tests": "python3 tools/gen-grade-parcel.py --check: exit 0, SLOT_COUNT 30, both mirrors up to date; drift demo (schema kind flip in a scratch copy): exit 1 with line-numbered diff; :app:assembleDebug :app:testDebugUnitTest --rerun offline: BUILD SUCCESSFUL, GradeParcelTest 7/7 incl. the_committed_cpp_header_matches_the_kotlin_offsets, 0 failures",
+   "description": "The generator's SCHEMA list was still the pre-highlightsCurve-removal layout (ended at tonemap, slot 28), so --check failed on main after the 2026-11-25 owner decisions (highlightRecovery added at slot 29 as Boolean default false, highlightsCurve removed). The schema now matches the committed 30-slot parcel: slot 29 added, the C++ struct member's hand comment carried via CPP_MEMBER_COMMENTS so regeneration stays byte-exact, and --check reworked to print the first differing line pairs with line numbers and exit 1 for gate wiring.",
+   "added": [
+    "SCHEMA row (\"highlightRecovery\", \"bool\", \"false\") at slot 29; SLOT_COUNT 30",
+    "CPP_MEMBER_COMMENTS: keeps the hand-era trailing // comment on the C++ struct member so a regenerate reproduces the committed mirrors exactly",
+    "layout-history note in the module docstring (highlightsCurve removal, owner decision, commit 6b62faa)",
+    "--check now prints 'grade parcel schema: OK (SLOT_COUNT 30)' on success and 'GRADE PARCEL SCHEMA DRIFT' with the first differing line pairs (line-numbered, committed vs schema, clipped) on drift, exiting 1 for gate steps"
+   ],
+   "removed": [],
+   "changed": [
+    "generator prose: stale 'statsEnabled' -> the committed mirror's 'statsMode' (byte-exact regeneration requirement)",
+    "generator prose: hard-coded '(the) 29' slot counts replaced with schema-derived counts or explained as frozen committed-mirror wording where the byte contract keeps them",
+    "first_diff single-line report -> drift_lines (first 8 differing line pairs for a clear nonzero-exit gate message)"
+   ],
+   "files": [
+    {
+     "path": "tools/gen-grade-parcel.py",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": ""
+  },
+  {
    "id": "e0b5-encoded-8k-surface-export",
    "title": "route encoded export through the encoder surface (8K)",
    "date": "2026-11-25",
