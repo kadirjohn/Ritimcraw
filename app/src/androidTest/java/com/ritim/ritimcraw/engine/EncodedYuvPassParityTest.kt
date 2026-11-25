@@ -786,4 +786,49 @@ class EncodedYuvPassParityTest {
             NativeSource.jniDevelopSessionClose(session)
         }
     }
+
+    @Test
+    fun bench_the_opendrt_bake_on_the_gl_thread_cold_then_warm() {
+        val session = com.ritim.ritimcraw.export.NativeGpuDevelop.openSession()
+        assertTrue(session > 0)
+        try {
+            assertTrue(NativeSource.jniDevelopSessionInitNodes(
+                session, GlesShaderSources.NODES, GlesShaderSources.FULLSCREEN_VERTEX,
+                GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+            )?.firstOrNull() == 1)
+            val base = cases[4]
+            val f = fixture(320, 180, base.bits, 0x1234)
+            val small = reduceFrame(f, 2)
+            val spec = EncodedColorSpec(
+                profile = SourceProfile(
+                    primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                    range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                    primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                    rangeProvenance = null, bitDepthProvenance = null,
+                ),
+                declaredBitDepth = base.bits,
+            )
+            // Distinct specs so every render is a cache miss (greys 4, 6, 8, 12, 14 nit: no repeats).
+            for ((k, grey) in floatArrayOf(10f, 4f, 6f, 8f, 12f, 14f).withIndex()) {
+                val drt = com.ritim.ritimcraw.data.grade2.OpenDrtParamsV2(grey = grey)
+                val grade2 = com.ritim.ritimcraw.data.grade2.ClipGradeV2(
+                    output = com.ritim.ritimcraw.data.grade2.OutputTransformV2(
+                        mode = com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT, opendrt = drt,
+                    ),
+                )
+                val wire = NodeChainWire.encode(grade2, emptyList())
+                val pack = OpenDrtPacks.resolve(OpenDrtPacks.Spec(drt.look, drt.tonescale, drt.cwp, drt.cwpLimit, drt.grey, drt.display))
+                assertTrue(NativeSource.jniDevelopSessionSetColorModelChain(session, wire, pack))
+                val t0 = System.nanoTime()
+                val out = NativeSource.jniDevelopSessionRenderYuvParcel(
+                    session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                    spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, 2, GradeParcel.encode(GradeK()),
+                )
+                assertNotNull(out)
+                Log.i("ritim-parity", "drt-bake-bench render #$k grey=$grey total=${(System.nanoTime() - t0) / 1_000_000.0} ms")
+            }
+        } finally {
+            NativeSource.jniDevelopSessionClose(session)
+        }
+    }
 }
