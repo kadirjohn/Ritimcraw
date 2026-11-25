@@ -367,16 +367,17 @@ float sampleShading(const RawMeta& meta, float u, float v, int plane);
 // capped neutral at their lowest channel (no luminance is invented). Output may exceed 1.0.
 void recoverClippedHighlights(ImageF& img, const ImageF& clipMask);
 
-// The raw clip threshold, as a fraction of the normalized range, measured BEFORE lens shading, used when a
-// channel is truly saturated at the metadata white.
-constexpr float kRecoveryClipThreshold = 0.98f;
-
-// Per-frame, per-channel (R, G, B) clip thresholds in normalized raw units; > 1 = this channel has no clip in
-// the frame. Measured on a real clip (docs/HIGHLIGHT_RECOVERY_PLAN.md, M0): the sensor/capture pipeline can
+// Per-frame, per-channel (R, G, B) clip thresholds in normalized raw units (1.0 = no measured plateau: only sites at the
+// white level itself count). Used by BOTH stage 3 (Neutral) and Recovery. Measured on a real clip (docs/HIGHLIGHT_RECOVERY_PLAN.md, M0): the sensor/capture pipeline can
 // saturate below the metadata white (G plateau at 0.9984 of white) and caps R/B at the green clip level times
 // the as-shot neutral ratio, so the thresholds come from each frame's own plateau instead of a fixed fraction.
 struct RecoveryClipLevels {
-    float threshold[3] = {2.0f, 2.0f, 2.0f};
+    float threshold[3] = {1.0f, 1.0f, 1.0f};  // 1.0 = only sites at the white level itself are clipped
+    // Diagnostics of the measurement (per channel R,G,B): the frame maximum, the sites within 0.4% below it, and the
+    // sites exactly at it.
+    float maxNorm[3] = {0.0f, 0.0f, 0.0f};
+    uint64_t plateau[3] = {0, 0, 0};
+    uint64_t topCount[3] = {0, 0, 0};
 };
 RecoveryClipLevels recoveryClipLevels(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta);
 
