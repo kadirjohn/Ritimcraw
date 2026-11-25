@@ -12,7 +12,10 @@ import java.nio.charset.StandardCharsets
  * disagree with the system.
  */
 enum class ThemeMode {
-    SYSTEM, LIGHT, DARK;
+    SYSTEM, LIGHT, DARK,
+
+    /** A user-picked palette from ThemePalettes (the last custom theme id). */
+    CUSTOM;
 
     /**
      * The dark-theme resolution for this choice: SYSTEM follows the
@@ -25,11 +28,16 @@ enum class ThemeMode {
         SYSTEM -> systemInDarkTheme
         LIGHT -> false
         DARK -> true
+        // The palette decides; callers with a palette use ThemeSelection.isDark.
+        CUSTOM -> systemInDarkTheme
     }
 
     companion object {
         /** This store's top-level key in the shared project.json. */
         const val WIRE_NAME = "theme"
+
+        /** Top-level key of the last chosen custom theme id (omitted until chosen). */
+        const val CUSTOM_WIRE_NAME = "customTheme"
 
         /** The choice a file that never picked makes — follow the system. */
         val DEFAULT: ThemeMode = SYSTEM
@@ -78,12 +86,36 @@ class ThemeStore(private val file: File) {
         synchronized(lock) {
             val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
             val merged = mergeInto(text, mode)
-            file.parentFile?.mkdirs()
-            // AtomicFiles via the single write gate (plan §6.5/F1-2):
-            // tmp + fsync + atomic rename, and an observable no-op when
-            // the process is read-only (a newer build's project file).
-            ProjectFile.writeTextIfWritable(file, merged)
+            write(merged)
         }
+    }
+
+    /** The last chosen custom theme id, or null when none was chosen yet. */
+    fun getCustomThemeId(): String? = synchronized(lock) {
+        if (!file.exists()) return@synchronized null
+        try {
+            val root = JsonParser(file.readText(StandardCharsets.UTF_8))
+                .parseValue() as? Map<*, *>
+            (root?.get(ThemeMode.CUSTOM_WIRE_NAME) as? String)?.takeIf { it.isNotEmpty() }
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+    }
+
+    /** Persists the last chosen custom theme id; null removes the key. */
+    fun putCustomThemeId(id: String?) {
+        synchronized(lock) {
+            val text = file.takeIf { it.exists() }?.readText(StandardCharsets.UTF_8)
+            write(mergeCustomInto(text, id))
+        }
+    }
+
+    private fun write(merged: String) {
+        file.parentFile?.mkdirs()
+        // AtomicFiles via the single write gate (plan §6.5/F1-2):
+        // tmp + fsync + atomic rename, and an observable no-op when
+        // the process is read-only (a newer build's project file).
+        ProjectFile.writeTextIfWritable(file, merged)
     }
 
     private fun read(): ThemeMode {
@@ -117,6 +149,33 @@ class ThemeStore(private val file: File) {
          * fresh one), then every other existing entry in encounter order,
          * then this store's key last when set. Deterministic.
          */
+        /** Same as [mergeInto] for the custom theme id key; null omits it. */
+        internal fun mergeCustomInto(existingText: String?, id: String?): String {
+            val root = existingText?.let {
+                runCatching { JsonParser(it).parseValue() as? Map<*, *> }.getOrNull()
+            }
+            val sb = StringBuilder()
+            sb.append("{\"version\":")
+                .append(ProjectJson.renderRaw(root?.get("version") ?: 1))
+            root?.forEach { (k, v) ->
+                val name = k.toString()
+                if (name != "version" && name != ThemeMode.CUSTOM_WIRE_NAME && v != null) {
+                    sb.append(',')
+                        .append(ProjectJson.quote(name))
+                        .append(':')
+                        .append(ProjectJson.renderRaw(v))
+                }
+            }
+            if (!id.isNullOrEmpty()) {
+                sb.append(',')
+                    .append(ProjectJson.quote(ThemeMode.CUSTOM_WIRE_NAME))
+                    .append(':')
+                    .append(ProjectJson.quote(id))
+            }
+            sb.append('}')
+            return sb.toString()
+        }
+
         internal fun mergeInto(existingText: String?, mode: ThemeMode): String {
             val root = existingText?.let {
                 runCatching { JsonParser(it).parseValue() as? Map<*, *> }.getOrNull()

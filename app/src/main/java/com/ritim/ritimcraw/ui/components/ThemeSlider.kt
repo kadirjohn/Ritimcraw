@@ -17,6 +17,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -124,19 +130,43 @@ import kotlinx.coroutines.launch
  */
 
 // ---- Spec geometry (dp) ----
-private val TrackWidth = 168.dp
+private val TrackWidth = 198.dp
 private val TrackHeight = 48.dp
 private val TrackInset = 3.dp
-private val SlotWidth = 54.dp
-private val ThumbWidth = 54.dp
+private val SlotWidth = 48.dp
+private val ThumbWidth = 48.dp
 private val ThumbHeight = 40.dp
 private val ThumbTopOffset = 4.dp
 private val TrackCorner = 24.dp
 private val ThumbCorner = 20.dp
 private val SlotIconSize = 22.dp
 
-/** Slot icons in visual order: 0 = Light, 1 = System, 2 = Dark. */
-private val SlotIcons = listOf(Sun, AutoThemeA, Moon)
+/**
+ * Slot glyphs in visual order: 0 = Custom (the text glyph "C", null here),
+ * 1 = Light, 2 = System, 3 = Dark. Slots are 48dp wide (the touch minimum).
+ */
+private val SlotIcons: List<ImageVector?> = listOf(null, Sun, AutoThemeA, Moon)
+
+/** Highest slot index of the four-slot control. */
+private const val SLOT_MAX = 3
+
+@Composable
+private fun SlotGlyph(icon: ImageVector?, tint: Color) {
+    if (icon == null) {
+        Text(
+            text = "C",
+            style = TextStyle(fontSize = 19.sp, fontWeight = FontWeight.Medium),
+            color = tint,
+        )
+    } else {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(SlotIconSize),
+        )
+    }
+}
 
 /** The spec's release/settle animation: spring, dampingRatio ~0.8, medium stiffness. */
 private val SettleSpec = spring<Float>(
@@ -162,8 +192,13 @@ internal object ThemeSliderMath {
     const val MAX_INDEX = 2
 
     /** The slot under fingerX (spec: floor((fingerX - 3dp) / 54dp), clamped 0..2). */
-    fun slotIndex(fingerX: Float, trackInsetPx: Float, slotWidthPx: Float): Int =
-        floor((fingerX - trackInsetPx) / slotWidthPx).toInt().coerceIn(0, MAX_INDEX)
+    fun slotIndex(
+        fingerX: Float,
+        trackInsetPx: Float,
+        slotWidthPx: Float,
+        maxIndex: Int = MAX_INDEX,
+    ): Int =
+        floor((fingerX - trackInsetPx) / slotWidthPx).toInt().coerceIn(0, maxIndex)
 
     /** The thumb's left offset while dragging (spec: clamp(fingerX - 27dp, 3dp, 3dp + 2*54dp)). */
     fun thumbOffsetPx(
@@ -171,12 +206,18 @@ internal object ThemeSliderMath {
         trackInsetPx: Float,
         slotWidthPx: Float,
         thumbWidthPx: Float,
+        maxIndex: Int = MAX_INDEX,
     ): Float = (fingerX - thumbWidthPx / 2f)
-        .coerceIn(trackInsetPx, trackInsetPx + MAX_INDEX * slotWidthPx)
+        .coerceIn(trackInsetPx, trackInsetPx + maxIndex * slotWidthPx)
 
     /** The thumb's resting left offset for a slot (spec: 3dp + index*54dp). */
-    fun restingOffsetPx(index: Int, trackInsetPx: Float, slotWidthPx: Float): Float =
-        trackInsetPx + index.coerceIn(0, MAX_INDEX) * slotWidthPx
+    fun restingOffsetPx(
+        index: Int,
+        trackInsetPx: Float,
+        slotWidthPx: Float,
+        maxIndex: Int = MAX_INDEX,
+    ): Float =
+        trackInsetPx + index.coerceIn(0, maxIndex) * slotWidthPx
 
     /** The commit rule (spec: commit once on release, only if the index changed). */
     fun shouldCommit(startIndex: Int, endIndex: Int): Boolean = startIndex != endIndex
@@ -227,7 +268,7 @@ fun ThemeSlider(
     // while the settle animations run in the composable's scope below.
     var thumbX by remember(trackInsetPx, slotWidthPx) {
         mutableFloatStateOf(
-            ThemeSliderMath.restingOffsetPx(selectedIndex, trackInsetPx, slotWidthPx)
+            ThemeSliderMath.restingOffsetPx(selectedIndex, trackInsetPx, slotWidthPx, SLOT_MAX)
         )
     }
     val currentOnCommit by rememberUpdatedState(onCommit)
@@ -256,7 +297,7 @@ fun ThemeSlider(
             currentOnDisplayIndexChange(selectedIndex)
             if (!dragging) {
                 animateThumbTo(
-                    ThemeSliderMath.restingOffsetPx(selectedIndex, trackInsetPx, slotWidthPx)
+                    ThemeSliderMath.restingOffsetPx(selectedIndex, trackInsetPx, slotWidthPx, SLOT_MAX)
                 )
             }
         }
@@ -267,13 +308,13 @@ fun ThemeSlider(
     // move happened (false at the ends of the track, so an edge D-pad
     // press can move focus on instead of being swallowed).
     fun commitTo(target: Int): Boolean {
-        if (target < 0 || target > ThemeSliderMath.MAX_INDEX || target == committedIndex) {
+        if (target < 0 || target > SLOT_MAX || target == committedIndex) {
             return false
         }
         displayIndex = target
         currentOnDisplayIndexChange(target)
         committedIndex = target
-        animateThumbTo(ThemeSliderMath.restingOffsetPx(target, trackInsetPx, slotWidthPx))
+        animateThumbTo(ThemeSliderMath.restingOffsetPx(target, trackInsetPx, slotWidthPx, SLOT_MAX))
         haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         currentOnCommit(target)
         return true
@@ -285,18 +326,18 @@ fun ThemeSlider(
             .semantics(mergeDescendants = true) {
                 contentDescription = sliderLabel
                 stateDescription =
-                    stateLabels[displayIndex.coerceIn(0, ThemeSliderMath.MAX_INDEX)]
+                    stateLabels[displayIndex.coerceIn(0, SLOT_MAX)]
                 progressBarRangeInfo = ProgressBarRangeInfo(
                     current = displayIndex.toFloat(),
-                    range = 0f..ThemeSliderMath.MAX_INDEX.toFloat(),
-                    steps = 1,
+                    range = 0f..SLOT_MAX.toFloat(),
+                    steps = SLOT_MAX - 1,
                 )
                 // TalkBack's slider adjustment: the requested progress is
                 // snapped to the nearest slot and committed through the
                 // same single-commit path.
                 setProgress { target ->
                     val slot = target
-                        .coerceIn(0f, ThemeSliderMath.MAX_INDEX.toFloat())
+                        .coerceIn(0f, SLOT_MAX.toFloat())
                         .roundToInt()
                     commitTo(slot)
                     true
@@ -333,11 +374,9 @@ fun ThemeSlider(
                     // same path as a drag. Plain synchronous state
                     // writes — no suspension needed.
                     thumbX = ThemeSliderMath.thumbOffsetPx(
-                        down.position.x, trackInsetPx, slotWidthPx, thumbWidthPx,
-                    )
+                        down.position.x, trackInsetPx, slotWidthPx, thumbWidthPx, SLOT_MAX)
                     val downSlot = ThemeSliderMath.slotIndex(
-                        down.position.x, trackInsetPx, slotWidthPx,
-                    )
+                        down.position.x, trackInsetPx, slotWidthPx, SLOT_MAX)
                     if (downSlot != displayIndex) {
                         displayIndex = downSlot
                         currentOnDisplayIndexChange(downSlot)
@@ -368,15 +407,13 @@ fun ThemeSlider(
                                 // release x and commit EXACTLY ONCE, only
                                 // if the index changed (spec).
                                 val target = ThemeSliderMath.slotIndex(
-                                    change.position.x, trackInsetPx, slotWidthPx,
-                                )
+                                    change.position.x, trackInsetPx, slotWidthPx, SLOT_MAX)
                                 dragging = false
                                 displayIndex = target
                                 currentOnDisplayIndexChange(target)
                                 animateThumbTo(
                                     ThemeSliderMath.restingOffsetPx(
-                                        target, trackInsetPx, slotWidthPx,
-                                    )
+                                        target, trackInsetPx, slotWidthPx, SLOT_MAX)
                                 )
                                 if (ThemeSliderMath.shouldCommit(committedIndex, target)) {
                                     committedIndex = target
@@ -390,11 +427,9 @@ fun ThemeSlider(
                                 // slot crossing, never write the
                                 // preference (no theme flicker).
                                 thumbX = ThemeSliderMath.thumbOffsetPx(
-                                    change.position.x, trackInsetPx, slotWidthPx, thumbWidthPx,
-                                )
+                                    change.position.x, trackInsetPx, slotWidthPx, thumbWidthPx, SLOT_MAX)
                                 val slot = ThemeSliderMath.slotIndex(
-                                    change.position.x, trackInsetPx, slotWidthPx,
-                                )
+                                    change.position.x, trackInsetPx, slotWidthPx, SLOT_MAX)
                                 if (slot != displayIndex) {
                                     displayIndex = slot
                                     currentOnDisplayIndexChange(slot)
@@ -417,8 +452,7 @@ fun ThemeSlider(
                         currentOnDisplayIndexChange(committedIndex)
                         animateThumbTo(
                             ThemeSliderMath.restingOffsetPx(
-                                committedIndex, trackInsetPx, slotWidthPx,
-                            )
+                                committedIndex, trackInsetPx, slotWidthPx, SLOT_MAX)
                         )
                     }
                 }
@@ -442,10 +476,28 @@ fun ThemeSlider(
                         modifier = Modifier.size(SlotWidth, TrackHeight),
                         contentAlignment = Alignment.Center,
                     ) {
+if (icon == null) {
+                            // Custom slot: the text glyph "C" (no morph).
+                            Box(
+                                Modifier.graphicsLayer {
+                                    alpha = ThemeIconMorph.smoothstep(
+                                        ThemeIconMorph.HANDOFF,
+                                        ThemeIconMorph.NEAR,
+                                        kotlin.math.abs(
+                                            ((thumbX - trackInsetPx) / slotWidthPx)
+                                                .coerceIn(0f, SLOT_MAX.toFloat())
+                                        ),
+                                    )
+                                },
+                            ) { SlotGlyph(null, MaterialTheme.colorScheme.onSurfaceVariant) }
+                        } else {
+                        // The morph is three-slot (sun/A/moon): slots 1..3 of
+                        // this control map to its slots 0..2, one slot shifted.
+                        val morphSlot = slot - 1
                         // Alive slot icon: pose is a pure function of the
                         // thumb position, read in the graphicsLayer
                         // (draw phase) so nothing recomposes per frame.
-                        val painter = rememberVectorPainter(icon)
+                        val painter = rememberVectorPainter(icon ?: Sun)
                         val inactiveTint = MaterialTheme.colorScheme.onSurfaceVariant
                         val accentTint = MaterialTheme.colorScheme.primary
                         val arrivalTint = MaterialTheme.colorScheme.onPrimary
@@ -454,9 +506,9 @@ fun ThemeSlider(
                                 .size(SlotIconSize)
                                 .graphicsLayer {
                                     val st = ThemeIconMorph.slotState(
-                                        slot,
+                                        morphSlot,
                                         ThemeIconMorph.positionFromThumb(
-                                            thumbX, trackInsetPx, slotWidthPx,
+                                            thumbX - slotWidthPx, trackInsetPx, slotWidthPx,
                                         ),
                                     )
                                     alpha = st.alpha
@@ -470,10 +522,10 @@ fun ThemeSlider(
                                 // glyph colour) by proximity, in the draw phase.
                                 .drawBehind {
                                     val pos = ThemeIconMorph.positionFromThumb(
-                                        thumbX, trackInsetPx, slotWidthPx,
+                                        thumbX - slotWidthPx, trackInsetPx, slotWidthPx,
                                     )
                                     val c = SlotColorJourney.colorAt(
-                                        kotlin.math.abs(pos - slot),
+                                        kotlin.math.abs(pos - morphSlot),
                                         inactiveTint, accentTint, arrivalTint,
                                     )
                                     with(painter) {
@@ -481,6 +533,7 @@ fun ThemeSlider(
                                     }
                                 },
                         )
+                        }
                     }
                 }
             }
@@ -502,14 +555,29 @@ fun ThemeSlider(
                 Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
-                // Morphs with the thumb position (drag, settle, reverse).
-                ThemeThumbIcon(
-                    position = {
-                        ThemeIconMorph.positionFromThumb(thumbX, trackInsetPx, slotWidthPx)
-                    },
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(SlotIconSize),
-                )
+Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    // C <-> sun crossfade while the thumb is between slot 0 and 1.
+                    Box(
+                        Modifier.graphicsLayer {
+                            alpha = 1f - ((thumbX - trackInsetPx) / slotWidthPx).coerceIn(0f, 1f)
+                        },
+                    ) { SlotGlyph(null, MaterialTheme.colorScheme.onPrimary) }
+                    // Morphs with the thumb position (drag, settle, reverse);
+                    // the three-slot morph is shifted one slot (see above).
+                    ThemeThumbIcon(
+                        position = {
+                            ThemeIconMorph.positionFromThumb(
+                                thumbX - slotWidthPx, trackInsetPx, slotWidthPx,
+                            )
+                        },
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier
+                            .size(SlotIconSize)
+                            .graphicsLayer {
+                                alpha = ((thumbX - trackInsetPx) / slotWidthPx).coerceIn(0f, 1f)
+                            },
+                    )
+                }
             }
         }
     }

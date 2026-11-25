@@ -562,6 +562,16 @@
     <string name="settings_theme_system">Sistem</string>
     <string name="settings_theme_light">Açık</string>
     <string name="settings_theme_dark">Koyu</string>
+    <string name="settings_theme_slider">Tema</string>
+    <string name="settings_theme_previous">Önceki tema</string>
+    <string name="settings_theme_next">Sonraki tema</string>
+    <string name="settings_theme_custom">Özel</string>
+    <string name="settings_theme_open_picker">Özel tema seç</string>
+    <string name="settings_theme_picker_title">Özel tema</string>
+    <string name="settings_theme_picker_close">Kapat</string>
+    <string name="settings_theme_group_dark">Koyu</string>
+    <string name="settings_theme_group_light">Açık</string>
+    <string name="settings_theme_selected">seçili</string>
     <string name="settings_gyro_folder">Jiro kayıt klasörü</string>
     <string name="settings_gyro_folder_body">MotionCam .gcsv jiro kayıtlarınızın bulunduğu klasörü seçin. Bir kayıtla aynı adlı yeni içe aktarımlar kaydı otomatik olarak ekler.</string>
     <string name="settings_gyro_folder_none">Ayarlanmadı — .gcsv jiro kayıtlarınızın bulunduğu klasörü seçmek için dokunun</string>
