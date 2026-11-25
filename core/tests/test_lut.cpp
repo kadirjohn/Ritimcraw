@@ -470,7 +470,7 @@ TEST_CASE("developCpu_golden_hashes_unchanged_without_lut") {
         g.tint = 12.0f;
         g.asShot = false;
         auto img = developCpu(s.cfa.data(), s.info, s.meta, g, nullptr);
-        CHECK(fnv1a(img) == 0x0d0e8d3ef0130383ULL);
+        CHECK(fnv1a(img) == 0x38150540c239af83ULL);
     }
     {
         // Fixture C: exposure + heavy highlights recovery.
@@ -479,7 +479,7 @@ TEST_CASE("developCpu_golden_hashes_unchanged_without_lut") {
         g.exposureEv = 2.1f;
         g.highlights = -55.0f;
         auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(img) == 0xed55b8eff1f1d803ULL);
+        CHECK(fnv1a(img) == 0x1cea742e0c17bf03ULL);
     }
 }
 

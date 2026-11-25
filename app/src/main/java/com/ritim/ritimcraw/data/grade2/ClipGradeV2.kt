@@ -364,6 +364,7 @@ data class DevelopV2(
     val asShot: Boolean = true,
     val highlightReconstruction: Boolean = true,
     val keepVignetting: Boolean = true,
+    val highlightsCurve: Int = com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_V1,
     val noiseReduction: Float = 0f,
     val chromaDenoise: Float = 0f,
     val temporalNr: Boolean = false,
@@ -383,6 +384,7 @@ data class DevelopV2(
                 asShot = m["asShot"] as? Boolean ?: (tempK == 5600f && tint == 0f),
                 highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
                 keepVignetting = m["keepVignetting"] as? Boolean ?: true,
+                highlightsCurve = (m["highlightsCurve"] as? Double)?.toInt() ?: com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY,
                 noiseReduction = (m["noiseReduction"] as? Double)?.toFloat() ?: 0f,
                 chromaDenoise = (m["chromaDenoise"] as? Double)?.toFloat() ?: 0f,
                 temporalNr = m["temporalNr"] as? Boolean ?: false,
@@ -459,6 +461,7 @@ object GradeV2Fiber {
             .append(",\"asShot\":").append(d.asShot)
             .append(",\"highlightReconstruction\":").append(d.highlightReconstruction)
             .append(",\"keepVignetting\":").append(d.keepVignetting)
+            .append(if (d.highlightsCurve != com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY) ",\"highlightsCurve\":${d.highlightsCurve}" else "")
             .append(",\"noiseReduction\":").append(num(d.noiseReduction))
             .append(",\"chromaDenoise\":").append(num(d.chromaDenoise))
             .append(",\"temporalNr\":").append(d.temporalNr)
@@ -640,6 +643,7 @@ fun ClipGradeV2.toGradeKLenient(): GradeK {
         asShot = develop.asShot,
         highlightReconstruction = develop.highlightReconstruction,
         keepVignetting = develop.keepVignetting,
+        highlightsCurve = develop.highlightsCurve,
         sharpness = develop.sharpness,
         detail = develop.detail,
         tonemap = output.legacy.tonemap,
@@ -690,6 +694,7 @@ fun GradeK.toClipGradeV2(): ClipGradeV2 = ClipGradeV2(
         asShot = asShot,
         highlightReconstruction = highlightReconstruction,
         keepVignetting = keepVignetting,
+        highlightsCurve = highlightsCurve,
         noiseReduction = noiseReduction,
         chromaDenoise = chromaDenoise,
         temporalNr = temporalNr,

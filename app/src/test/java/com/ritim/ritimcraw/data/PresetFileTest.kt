@@ -106,7 +106,8 @@ class PresetFileTest {
         val r = PresetFile.parse(text) as PresetFile.Ok
         assertEquals(listOf("Old"), r.presets.map { it.name })
         // Fields an older writer did not know load neutral (the shared parser).
-        assertEquals(GradeK(exposureEv = 1.5f), r.presets[0].grade)
+        // A preset entry without the curve field predates it: legacy knee.
+        assertEquals(GradeK(exposureEv = 1.5f, highlightsCurve = HIGHLIGHTS_CURVE_LEGACY), r.presets[0].grade)
         // 3 notes: two skips + the v1->v2 upgrade note for the good entry.
         assertEquals(3, r.notes.size)
         assertTrue(r.lutIdsReferenced.isEmpty())

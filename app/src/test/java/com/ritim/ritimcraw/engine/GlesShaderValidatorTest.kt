@@ -1162,11 +1162,11 @@ class GlesShaderValidatorTest {
         )
         assertTrue(
             "knee missing",
-            src.contains("const float knee = 0.40;"),
+            src.contains("float knee = uHlKnee;"),
         )
         assertTrue(
             "span missing",
-            src.contains("const float span = 1.0 - knee;"),
+            src.contains("float span = 1.0 - knee;"),
         )
         assertTrue(
             "strength sign missing (recovery -> +, lift -> -)",
