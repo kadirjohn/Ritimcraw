@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.data.grade2.GradeNodeV2
 
 /**
  * The grade undo/redo history (feature N7): a bounded stack of immutable
@@ -56,7 +57,7 @@ import com.ritim.ritimcraw.data.GradeK
  * without the screen keeping mirrors in sync. The class is otherwise
  * plain Kotlin and JVM-tested headless.
  */
-class GradeHistory(initial: GradeK) {
+class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList()) {
 
     companion object {
         /**
@@ -66,6 +67,9 @@ class GradeHistory(initial: GradeK) {
          * edits pass a null cause and never coalesce.
          */
         val SLIDER_GESTURE = Any()
+
+        /** The cause token for node-slider drags (merged into one step, closed by [settle]). */
+        val NODE_GESTURE = Any()
 
         /**
          * Capacity: 101 entries INCLUDING the initial bottom state — the
@@ -92,11 +96,15 @@ class GradeHistory(initial: GradeK) {
      */
     private data class Entry(
         val grade: GradeK,
+        val nodes: List<GradeNodeV2>,
         val cause: Any?,
         val open: Boolean,
     )
 
-    private var entries by mutableStateOf(listOf(Entry(initial, cause = null, open = false)))
+    /** One restorable editor state: the GradeK and the clip's node chain (the nodes ride the history since F1-8a). */
+    data class Snapshot(val grade: GradeK, val nodes: List<GradeNodeV2>)
+
+    private var entries by mutableStateOf(listOf(Entry(initial, initialNodes, cause = null, open = false)))
     private var redoEntries by mutableStateOf(listOf<Entry>())
 
     /** Whether an undo would produce a grade (UI gating). */
@@ -113,15 +121,28 @@ class GradeHistory(initial: GradeK) {
      * entry — clearing the redo stack.
      */
     fun record(grade: GradeK, cause: Any? = null) {
+        push(grade, entries.lastOrNull()?.nodes ?: emptyList(), cause)
+    }
+
+    /**
+     * Records a node-chain edit (the GradeK stays what the top says). Same coalescing rules as [record]: a slider
+     * drag passes [NODE_GESTURE] and its frames merge into one step; add/remove/toggle/reset pass null.
+     */
+    fun recordNodes(nodes: List<GradeNodeV2>, cause: Any? = null) {
+        val top = entries.lastOrNull() ?: return
+        push(top.grade, nodes, cause)
+    }
+
+    private fun push(grade: GradeK, nodes: List<GradeNodeV2>, cause: Any?) {
         val top = entries.lastOrNull()
         when {
-            top != null && top.grade == grade -> return
+            top != null && top.grade == grade && top.nodes == nodes -> return
             cause != null && top != null && top.cause == cause && top.open -> {
-                entries = entries.dropLast(1) + Entry(grade, cause, open = true)
+                entries = entries.dropLast(1) + Entry(grade, nodes, cause, open = true)
             }
             else -> {
                 if (redoEntries.isNotEmpty()) redoEntries = emptyList()
-                entries = (entries + Entry(grade, cause, open = cause != null))
+                entries = (entries + Entry(grade, nodes, cause, open = cause != null))
                     .takeLast(MAX_ENTRIES)
             }
         }
@@ -146,12 +167,15 @@ class GradeHistory(initial: GradeK) {
      * (the initial grade is a state to BE, not a step to take). The popped
      * entry moves to the redo stack, settled.
      */
-    fun undo(): GradeK? {
+    fun undo(): GradeK? = undoSnapshot()?.grade
+
+    /** [undo] with the node chain: the state to apply, or null at the bottom. */
+    fun undoSnapshot(): Snapshot? {
         if (entries.size <= 1) return null
         val popped = entries.last()
         entries = entries.dropLast(1)
         redoEntries = redoEntries + popped.copy(open = false)
-        return entries.last().grade
+        return entries.last().let { Snapshot(it.grade, it.nodes) }
     }
 
     /**
@@ -159,10 +183,13 @@ class GradeHistory(initial: GradeK) {
      * nothing to redo. The restored entry is settled, so the next gesture
      * after a redo pushes a fresh step.
      */
-    fun redo(): GradeK? {
+    fun redo(): GradeK? = redoSnapshot()?.grade
+
+    /** [redo] with the node chain. */
+    fun redoSnapshot(): Snapshot? {
         val popped = redoEntries.lastOrNull() ?: return null
         redoEntries = redoEntries.dropLast(1)
         entries = entries + popped.copy(open = false)
-        return popped.grade
+        return Snapshot(popped.grade, popped.nodes)
     }
 }

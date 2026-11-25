@@ -280,4 +280,57 @@ class GradeHistoryTest {
         assertEquals(interp, redone!!.lutInterp)
         assertEquals("abc123def4567890", redone.lutId)
     }
+
+    // ---- node chain on the history (F1-8a follow-up) ----
+
+    private fun node(sat: Float = 1f, enabled: Boolean = true) =
+        com.ritim.ritimcraw.data.grade2.GradeNodeV2(sat = sat, enabled = enabled)
+
+    @Test
+    fun a_node_add_is_a_step_and_undo_restores_the_empty_chain() {
+        val history = GradeHistory(initial, emptyList())
+        history.recordNodes(listOf(node()))
+        assertTrue(history.canUndo)
+        val back = history.undoSnapshot()!!
+        assertEquals(initial, back.grade)
+        assertEquals(emptyList<Any>(), back.nodes)
+        val fwd = history.redoSnapshot()!!
+        assertEquals(listOf(node()), fwd.nodes)
+    }
+
+    @Test
+    fun a_node_slider_drag_is_one_step_until_settled() {
+        val history = GradeHistory(initial, listOf(node()))
+        val cause = GradeHistory.NODE_GESTURE
+        history.recordNodes(listOf(node(1.1f)), cause)
+        history.recordNodes(listOf(node(1.2f)), cause)
+        history.recordNodes(listOf(node(1.3f)), cause)
+        history.settle()
+        history.recordNodes(listOf(node(1.5f)), cause)
+        assertEquals(listOf(node(1.3f)), history.undoSnapshot()!!.nodes)
+        assertEquals(listOf(node(1f)), history.undoSnapshot()!!.nodes)
+        assertNull(history.undoSnapshot())
+    }
+
+    @Test
+    fun grade_and_node_edits_interleave_and_each_snapshot_carries_both() {
+        val history = GradeHistory(initial, emptyList())
+        history.recordNodes(listOf(node(1.4f)))
+        history.record(gradeAt(3))
+        val s1 = history.undoSnapshot()!!
+        assertEquals(initial, s1.grade)          // the grade edit is undone ...
+        assertEquals(listOf(node(1.4f)), s1.nodes) // ... the node edit is still in place
+        val s0 = history.undoSnapshot()!!
+        assertEquals(emptyList<Any>(), s0.nodes)
+        assertEquals(gradeAt(3), history.redoSnapshot().let { history.redoSnapshot()!!.grade })
+    }
+
+    @Test
+    fun an_unchanged_node_list_is_a_no_op_and_keeps_redo() {
+        val history = GradeHistory(initial, listOf(node()))
+        history.recordNodes(listOf(node(1.2f)))
+        history.undoSnapshot()
+        history.recordNodes(listOf(node())) // equal to the top
+        assertTrue(history.canRedo)
+    }
 }
