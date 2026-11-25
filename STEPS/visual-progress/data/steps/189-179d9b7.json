@@ -1,0 +1,31 @@
+{
+ "id": "189-179d9b7",
+ "title": "docs: e0b-1 encoded gpu decode design note",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "179d9b7",
+  "date": "2026-11-24",
+  "merge_subject": "merge: docs: e0b-1 encoded gpu decode design note"
+ },
+ "tests": "not recorded",
+ "description": "Design note only. Records today's CPU path (getOutputImage -> nativeEncodedDevelop -> developEncoded), the target MediaCodec -> ImageReader -> YUV textures -> shared GLES chain with EncodedColorSpec uniforms (OES is not the main path), the effect on the GLES session and ChainSlots (a new pass-1 variant, slot plan unchanged), the relation to the F1-6 node gates (K11), the independently mergeable steps E0b-2..5, and the risks. Numbers are stated with their source; nothing is implemented.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: e0b-1 encoded gpu decode design note"
+ ],
+ "files": [
+  {
+   "path": "docs/ENCODED_GPU_DECODE_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "MediaCodec",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

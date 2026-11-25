@@ -1,0 +1,35 @@
+{
+ "id": "187-25fd685",
+ "title": "docs: plan r1 cinemadng sequence export",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "25fd685",
+  "date": "2026-11-24",
+  "merge_subject": "merge: docs: plan r1 cinemadng sequence export"
+ },
+ "tests": "not recorded",
+ "description": "Short plan only, no code: DNG frame sequence + WAV + timecode, compatible with MotionCam's CinemaDNG output and openable in Resolve. Records what the code does today (single-frame writer, no TimeCode/FrameRate tags, no sequence writer), a size table with its assumption stated, the storage-warning rule, six independently mergeable parts, and the open owner decisions. The write time per frame is explicitly unmeasured.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: plan r1 cinemadng sequence export"
+ ],
+ "files": [
+  {
+   "path": "docs/CINEMADNG_EXPORT_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "CinemaDNG",
+   "note": "named in commit messages"
+  },
+  {
+   "name": "Resolve",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

@@ -1,0 +1,57 @@
+{
+ "id": "052-553f324",
+ "title": "editor adaptive layout refactor",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "553f324",
+  "date": "2026-11-12",
+  "merge_subject": "merge: editor adaptive layout refactor"
+ },
+ "tests": "not recorded",
+ "description": "spec 2026-11-12 section 9 failure mode J (hardcoded dims) residue the\ncommit-b restructure surfaced: the zebra toggle sat at\npadding(start = 8dp, top = 64dp) — a hardcoded positional offset that\nsilently assumed the scope toggle above it was exactly 48dp tall (8dp\ninset + 48dp button + 8dp gap). any future change to the scope\ntoggle's size (a larger scrim, a different glyph) would have left the\ntwo buttons overlapping or drifting apart with no code change to\nblame.\n\nthe two topstart controls now compose in one vertically-stacked column\nat the video rect's real topstart corner: the zebra button sits below\nthe scope button by the stack's own geometry (the toggle's measured\nheight plus an 8dp spacer), never a magic offset. same visual result\non today's sizes (48 + 8 = the old 64), same 48dp iconbutton targets,\nsame 8dp corner inset, same scrim language. the mini overlay keeps\nbottomstart an",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: cap panel anchors at preview width claim",
+  "fix: anchor corner controls to the video rect",
+  "feat: landscape far-right category rail",
+  "fix: derive the corner stack, drop the magic 64dp"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorPanel.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/OrientationLayout.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/PanelSheet.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/PreviewSurface.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/OrientationLayoutTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/PanelSheetTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/PreviewSurfaceRatioTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

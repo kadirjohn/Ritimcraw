@@ -1,0 +1,43 @@
+{
+ "id": "235-dacea9a",
+ "title": "feat: encoded export develops on the gpu (e0b-3)",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "dacea9a",
+  "date": "2026-11-25",
+  "merge_subject": "merge: feat: encoded export develops on the gpu (e0b-3)"
+ },
+ "tests": "not recorded",
+ "description": "EncodedSource.renderFrameRgbGpu hands the export the RGB888 of a full-size frame straight from the develop session's YUV door (coded orientation like renderFrame(upright=false); highlights/shadows ride the node bridge; OpenDRT, a refused plane layout, a refused chain, or an RGB buffer above 48 MB (8K = 99 MB) return null and EncodedMp4Session takes the CPU oracle, reusing the already decoded planes; the path is logged once per export under ritim-export). Found on the way: a library MP4 whose source record says kind=MCRAW opened in the editor (mime rescue) but its export failed at 'open: badHeader' because the queue only looked at the kind; AppNav's isEncoded now uses the editor's own SourcePathDecision. Device, Mi-Log 4K60 clip, 1244 frames, same settings (last used custom 240 Mbps HEVC, uncapped): CPU oracle 1,168,141.6 ms (939 ms/frame, 1.06 fps, 56x slower than real time); GPU readbac",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: encoded export develops on the gpu (e0b-3)"
+ ],
+ "files": [
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/engine/EncodedYuvPassParityTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/EncodedMp4Session.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Mi-Log",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

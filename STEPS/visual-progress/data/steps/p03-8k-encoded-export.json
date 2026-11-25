@@ -1,0 +1,20 @@
+{
+ "id": "p03-8k-encoded-export",
+ "title": "8K encoded export",
+ "date": "TBD",
+ "status": "planned",
+ "commit": null,
+ "tests": "not run",
+ "description": "Encoded export at 8K. See docs/ENCODED_EXPORT_PLAN.md for the general export plan.",
+ "added": [],
+ "removed": [],
+ "changed": [],
+ "files": [
+  {
+   "path": "docs/ENCODED_EXPORT_PLAN.md",
+   "change": "?"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,30 @@
+{
+ "id": "179-73c2d9c",
+ "title": "fix: export sheet back closes the sub-page first",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "73c2d9c",
+  "date": "2026-11-24",
+  "merge_subject": "merge: fix: export sheet back closes the sub-page first"
+ },
+ "tests": "not recorded",
+ "description": "The system back from an export sub-page (e.g. Codec) dismissed the whole sheet and left the owner on the timeline: the sheet's own back handler ran before the BackHandler inside its content. The sub-page state now lives in ExportSheet, the sheet's back-dismiss is off, and one handler closes a sub-page, or hides the sheet from the list. Device-checked: sub-page back -> list; pick -> list; list back -> editor.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: export sheet back closes the sub-page first"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorTopBar.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ExportSettingsPanel.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,141 @@
+{
+ "id": "027-0e71a5d",
+ "title": "temporal denoise cfa merge stage",
+ "date": "2026-11-11",
+ "status": "done",
+ "commit": {
+  "hash": "0e71a5d",
+  "date": "2026-11-11",
+  "merge_subject": "merge: temporal denoise cfa merge stage"
+ },
+ "tests": "not recorded",
+ "description": "Measured the temporal stage on the 4K fixture (desktop -O2,\n261110_004208_VIDEO_24mm.mcraw, 3840x2160 RGGB, 310 frames, both\nneighbors, real noise profiles) with a throwaway probe under\nbuild/desktop (gitignored, like probe_shift.cpp).\n\nPer-stage (TemporalReport, strength 100): proxy 0.8-2.2 ms,\nmatch 7.9-12.1 ms, merge 76.7-93.1 ms; total ~85-107 ms per\nframe. Strength 50 lands in the same band. The merge is a\nfull-res per-pixel stage that runs BEFORE the develop tail, so\nmaxDim does not shrink it: develop at 720px is 6.1-6.5 ms and\nat 1280px 23.7-26.5 ms, but the temporal cost is identical at\nevery tier.\n\nSteady-state sequential playback with the capacity-4 ring\n(probe walk of frames 147..163, strength 100): 19 decodes over\n17 steps = 1.12 decodes/frame — the ring amortizes to ~1 decode\nper rendered frame as designed; decode 4.9-5.2 ms/step, merge\n76.7-83.8 ms/step, develop720 6.1-6.3 ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: temporal denoise core stage on cfa frames",
+  "feat: wire temporal nr through jni and grade model",
+  "feat: temporal nr controls in the detail tab",
+  "perf: temporal nr tier policy from measured costs"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewRenderer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewTiers.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/SliderSteps.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/util/Format.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/GradeStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewRendererTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewTiersTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/SliderStepsTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/util/FormatTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Develop.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Source.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Temporal.h",
+   "change": "A"
+  },
+  {
+   "path": "core/src/Source.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Temporal.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_temporal.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,48 @@
+{
+ "id": "014-588e296",
+ "title": "editor back scrim and playback before after",
+ "date": "2026-11-11",
+ "status": "done",
+ "commit": {
+  "hash": "588e296",
+  "date": "2026-11-11",
+  "merge_subject": "merge: editor back scrim and playback before after"
+ },
+ "tests": "not recorded",
+ "description": "The before/after press-hold only worked while paused: canHold\nrejected playing clips because a neutral hold render would be\nsuperseded by the playback loop within one frame. Owner request\n2026-11-11: the hold works during playback too.\n\nA hold while playing now pauses the wall clock first (isPlaying =\nfalse, which the playback loop and the audio transport both key on,\nso video and sound stop cleanly at the current position - the loop\nis not fought frame-by-frame), then renders the neutral frame at the\npaused tier through the cached path. Release re-renders the graded\nframe and resumes playback from the held position (the existing\nplay-from-position logic; PlaybackStarted stands the drag tier down\nlike the play button). A finger drag past the touch slop during the\nhold cancels it through the same end path as release - a moving\nfinger is a seek gesture, not a compare. An already-neutral gr",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: system back exits app from editor",
+  "fix: scrim behind fullscreen toggle",
+  "feat: before after during playback"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/BeforeAfter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorTopBar.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/HistogramOverlay.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/BeforeAfterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

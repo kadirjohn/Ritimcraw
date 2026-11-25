@@ -1,0 +1,47 @@
+{
+ "id": "220-8c08788",
+ "title": "feat: encoded preview takes a lut on the gpu",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "8c08788",
+  "date": "2026-11-24",
+  "merge_subject": "merge: feat: encoded preview takes a lut on the gpu"
+ },
+ "tests": "Encoded clips with a LUT no longer fall to the CPU oracle: the YUV door of the develop session carries the LUT path and binding (strength, managed interpretation). To make the shared LUT stage match t",
+ "description": "Encoded clips with a LUT no longer fall to the CPU oracle: the YUV door of the develop session carries the LUT path and binding (strength, managed interpretation). To make the shared LUT stage match the CPU lattice, the 3D table is now RGBA32F read with texelFetch and blended by hand (it was RGBA16F through the hardware filter, which differed from the CPU by 1 LSB on 3-5% of samples). Device parity of an encoded frame with a 17^3 LUT against the CPU oracle: 0 LSB, 0.0000% mismatch on an 8-bit and a Mi-Log P010 case (bound 0.01%, unchanged); the other four encoded parity tests still pass. The shader validator's pin on the old texel-centre mapping becomes a pin on the eight-corner lattice read. Playback, device, debug, 13 s: Mi-Log 4K60 with a LUT 13 -> 409 shown frames (gap p50 1001 -> 29.5 ms, p95 1358 -> 42.5 ms); 8K30 with a LUT 0 frames and 12 OutOfMemoryErrors -> 170 frames (p50 73.3",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: encoded preview takes a lut on the gpu"
+ ],
+ "files": [
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/engine/EncodedYuvPassParityTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Mi-Log",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

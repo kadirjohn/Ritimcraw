@@ -1,0 +1,26 @@
+{
+ "id": "227-52b1474",
+ "title": "docs: proxy plan for approval",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "52b1474",
+  "date": "2026-11-25",
+  "merge_subject": "merge: docs: proxy plan for approval"
+ },
+ "tests": "not recorded",
+ "description": "",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: proxy plan for approval"
+ ],
+ "files": [
+  {
+   "path": "docs/PROXY_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

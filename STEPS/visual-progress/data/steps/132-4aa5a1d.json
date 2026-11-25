@@ -1,0 +1,30 @@
+{
+ "id": "132-4aa5a1d",
+ "title": "fbo twin blit present path",
+ "date": "2026-11-18",
+ "status": "done",
+ "commit": {
+  "hash": "4aa5a1d",
+  "date": "2026-11-18",
+  "merge_subject": "merge: fbo twin blit present path"
+ },
+ "tests": "not recorded",
+ "description": "The white-window round-6 hammer, earned by five device-falsified\nclasses: the filter class (round 1's NEAREST pin — white persisted),\nthe composition class (round 2's pre-swap readback read the white IN\nthe buffer), the GL-state class (round 3's entry line read all spec\ndefaults), the config class (round 4's recordable=1 confirmed — white\npersisted), and the first-present timing class (round 5's replay read\nshot=1 AND shot=2 BOTH white — the white persists across consecutive\nframes; the healing moments the owner saw were RE-ATTACHES, not\nframe-index convergence, and the owner's AUTO note confirmed the\nclass bound: AUTO — the CPU path — plays immediately). THE CONSTANT\nacross every round: the SAME windowProgram + developTex + uniform\nfamily draws HEALTHY into the stats FBO (RGBA8 — the zebra strip\nshows real content on the very frames the window reads white) and\nWHITE into the EGL window ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: fbo twin blit present replaces window shader draw"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.h",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

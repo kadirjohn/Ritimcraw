@@ -1,0 +1,26 @@
+{
+ "id": "158-8eedc9d",
+ "title": "e5-audio-port-plan",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "8eedc9d",
+  "date": "2026-11-24",
+  "merge_subject": "merge: e5-audio-port-plan"
+ },
+ "tests": "not recorded",
+ "description": "",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: audio-dsp C++ port scan for E5"
+ ],
+ "files": [
+  {
+   "path": "docs/E5_AUDIO_PORT_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

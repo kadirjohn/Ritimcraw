@@ -1,0 +1,70 @@
+{
+ "id": "088-01f4128",
+ "title": "stage 15 highlights in develop fragment",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "01f4128",
+  "date": "2026-11-14",
+  "merge_subject": "merge: stage 15 highlights in develop fragment"
+ },
+ "tests": "not recorded",
+ "description": "The last common-grade GPU gap, closed: an active highlights grade no\nlonger forces the CPU path. The device-verified fallback was\n'reason=highlights' — stage 15 sat in FRAGMENT_UNCOVERED_STAGES and\nthe owner uses highlights recovery routinely.\n\nDEVELOP_FRAGMENT (GlesShaderSources.kt) now runs the CPU stage-15\nshoulder verbatim (core/src/Develop.cpp, the byte-exact definition —\nthe GLSL matches IT, never the reverse), between stage-14 exposure and\nstage-23 tonemap, the CPU stage order 14 -> 15 -> 23 -> OETF:\n\n    if (uHighlights != 0.0) {\n        const float knee = 0.75;\n        const float span = 1.0 - knee;\n        float s = -uHighlights / 100.0;  // recovery -> +, lift -> -\n        float mx = max(c.r, max(c.g, c.b));\n        if (mx > knee) {\n            float over = mx - knee;\n            float t = over / span;\n            float shoulder = knee + span * (t / (1.0 + t));\n            flo",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: port stage 15 highlights into develop fragment"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/RenderBackend.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GlesShaderValidatorTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourceDevelopSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/RenderBackendTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

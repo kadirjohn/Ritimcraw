@@ -1,0 +1,30 @@
+{
+ "id": "066-d3e3fd5",
+ "title": "p0 export fd offset rewind fix",
+ "date": "2026-11-13",
+ "status": "done",
+ "commit": {
+  "hash": "d3e3fd5",
+  "date": "2026-11-13",
+  "merge_subject": "merge: p0 export fd offset rewind fix"
+ },
+ "tests": "not recorded",
+ "description": "Owner report 2026-11-13 ~13:30: every MP4 export failed with\n'not a supported clip / re-import the clip / bad header / invalid\ncontainer version' (three attempts, re-import too) while clips\nopened fine in the preview. The failing headers were verified good\n('MOTION ' + version 3), so the files were never the problem.\n\nChain: with GPU Experimental selected, Mp4Exporter.export calls\nexportOnce(GPU, fd) whose ExportPipeline first opens\nrawedit::Source::open(fd) -> dup(fd) + fdopen -> the decoder reads\nthe header and seeks the index, advancing the shared file offset.\nWhen the writer's Surface mode fails (SurfaceInputUnavailable) the\nhonest CPU restart calls exportOnce(CPU, SAME fd). Attempt 2's\nSource::open dup()s that fd, but dup() shares the\nopen-file-description, so the offset is wherever attempt 1 left it\n(mid-file). motioncam::Decoder(FILE*) init() reads the header from\nthe CURRENT offs",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: rewind fd offset on source open"
+ ],
+ "files": [
+  {
+   "path": "core/src/Source.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_source.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

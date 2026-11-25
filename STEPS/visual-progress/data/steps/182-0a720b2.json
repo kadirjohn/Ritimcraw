@@ -1,0 +1,34 @@
+{
+ "id": "182-0a720b2",
+ "title": "ui: morph theme thumb icon with thumb position",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "0a720b2",
+  "date": "2026-11-24",
+  "merge_subject": "merge: ui: morph theme thumb icon with thumb position"
+ },
+ "tests": "not recorded",
+ "description": "The icon inside the ThemeSlider thumb used to swap abruptly when the\nthumb crossed a slot boundary. It is now drawn on a Canvas from the\nsame 24-unit path data as RitimIcons (Sun, AutoThemeA, Moon) and\nmorphed by the thumb position expressed in slots (0 sun, 1 A, 2 moon).\n\n- sun to A: the eight rays retract into the disc, then the disc shrinks\n  and fades while the A scales and turns in (short crossfade overlap)\n- A to moon: the A shrinks and turns out while the crescent rotates and\n  scales in\n- the morph is a pure function of thumbX (smoothstep-based), so it\n  follows the finger while dragging, plays during the settle spring and\n  reverses cleanly; at each rest position exactly one glyph is drawn\n  untransformed, identical to the static icon (stroke 1.75, round caps)\n- ThemeIconMorph holds the pure math (stateAt, positionFromThumb);\n  ThemeIconMorphTest adds 8 JVM tests (rest states, b",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "ui: morph theme thumb icon with thumb position"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeIconMorph.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeSlider.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/components/ThemeIconMorphTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

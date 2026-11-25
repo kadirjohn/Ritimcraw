@@ -1,0 +1,20 @@
+{
+ "id": "p05-f1-8b-f",
+ "title": "F1-8b to F1-8f color UI steps",
+ "date": "TBD",
+ "status": "planned",
+ "commit": null,
+ "tests": "not run",
+ "description": "Remaining color UI sub-steps F1-8b through F1-8f. Design reference: docs/F1_8_COLOR_UI_DESIGN.md.",
+ "added": [],
+ "removed": [],
+ "changed": [],
+ "files": [
+  {
+   "path": "docs/F1_8_COLOR_UI_DESIGN.md",
+   "change": "?"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

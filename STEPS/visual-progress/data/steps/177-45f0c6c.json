@@ -1,0 +1,26 @@
+{
+ "id": "177-45f0c6c",
+ "title": "test: assert displayed, not composed, on device report pages",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "45f0c6c",
+  "date": "2026-11-24",
+  "merge_subject": "merge: test: assert displayed, not composed, on device report pages"
+ },
+ "tests": "not recorded",
+ "description": "decodersTabShowsOnlyDecoders failed on device: the pager keeps page 0 (All, both codecs) composed just off-screen after a tab scroll, so assertDoesNotExist found a node at x<0 that nobody can see. The tabs promise what is displayed, so assert that. No product code change.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "test: assert displayed, not composed, on device report pages"
+ ],
+ "files": [
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/ui/settings/DeviceReportScreenTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,34 @@
+{
+ "id": "019-c589f45",
+ "title": "canonical imu model gcsv and mcraw",
+ "date": "2026-11-11",
+ "status": "done",
+ "commit": {
+  "hash": "c589f45",
+  "date": "2026-11-11",
+  "merge_subject": "merge: canonical imu model gcsv and mcraw"
+ },
+ "tests": "not recorded",
+ "description": "what: replace the gcsv-only GyroSample model with a canonical ImuData\ntype (dual-stream: gyro rad/s + accel m/s^2 incl. gravity, per-sample\nns timestamps, raw orientation/timestampSource/sensorOrientation keys)\nand two loaders: parseGcsv (path + istream) and parseImuFromMcraw, a new\nembedded-imu loader built on the vendored motioncam-decoder's\nhasGyroData/loadGyroData and hasAccelerometerData/loadAccelerometerData\nstreams.\n\nwhy: phase 1 of gyro stabilization needs one normalized in-memory\nrepresentation that both the sidecar .gcsv and the embedded container\nfeed into, so phases 2+ (orientation filter, sync, stab math) can be\nwritten against a single well-tested model. the streams are kept\nseparate because the mcraw container stores gyro and accelerometer as\nindependent blocks with their own rates and timestamps; a merged\nper-timestamp sample type would fabricate alignment the format does",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: canonical imu model with gcsv and mcraw loaders"
+ ],
+ "files": [
+  {
+   "path": "core/include/rawedit/Gyro.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Gyro.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_gyro.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

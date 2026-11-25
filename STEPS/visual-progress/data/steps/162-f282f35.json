@@ -1,0 +1,26 @@
+{
+ "id": "162-f282f35",
+ "title": "s11-drift-notes",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "f282f35",
+  "date": "2026-11-24",
+  "merge_subject": "merge: s11-drift-notes"
+ },
+ "tests": "not recorded",
+ "description": "S11 pre-design (docs-only; IMAGE_STAB_PLAN.md deliberately untouched\n- single-writer discipline; the owner folds approved parts into the\nplan). Grounded in the 2026-11-24 night measurements (branch\ns-measure-handheld: /tmp/yurumek.ristab, /tmp/yavas_pan.ristab,\n/tmp/elde_sabit.ristab) plus a throwaway desktop simulation that was\nrun and deleted per the brief.\n\nKey findings folded into the seven design items:\n\n- Drift origin is NOT lost pairs (their stored values are zero, the\n  velocity-hold inserts at most 2 frames): it is the Ok pairs'\n  systematic logS bias (+0.0122 mean on the walk clip), i.e. walking\n  parallax that the free 4-DOF similarity absorbs as per-pair scale\n  and the composition accumulates exponentially (exp ~ 18007x).\n  Pan and steady-hand clips carry no such bias (+0.0004 / ~0).\n- Banded |logS| clamps do not fix it (S=0.005 still accumulates to\n  28.7x; the bias sits in",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: add S11 robustness pre-design notes"
+ ],
+ "files": [
+  {
+   "path": "docs/S11_ROBUSTNESS_NOTES.md",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

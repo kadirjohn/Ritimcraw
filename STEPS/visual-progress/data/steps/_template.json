@@ -1,0 +1,36 @@
+{
+ "id": "_template",
+ "title": "short lowercase imperative title",
+ "date": "YYYY-MM-DD or TBD",
+ "status": "planned",
+ "commit": {
+  "hash": "abc1234",
+  "date": "YYYY-MM-DD",
+  "merge_subject": "merge: ..."
+ },
+ "tests": "command and result, e.g. ':app:testDebugUnitTest --rerun: 412 passed'",
+ "description": "One or two sentences.",
+ "added": [
+  "..."
+ ],
+ "removed": [
+  "..."
+ ],
+ "changed": [
+  "..."
+ ],
+ "files": [
+  {
+   "path": "app/src/...",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Klipp",
+   "url": "",
+   "note": "what was actually taken"
+  }
+ ],
+ "screenshot": "assets/example.png (optional; only if you can view it)"
+}

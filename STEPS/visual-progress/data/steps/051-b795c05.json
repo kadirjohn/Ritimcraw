@@ -1,0 +1,165 @@
+{
+ "id": "051-b795c05",
+ "title": "crop straighten and color wheel",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "b795c05",
+  "date": "2026-11-12",
+  "merge_subject": "merge: crop straighten and color wheel"
+ },
+ "tests": "not recorded",
+ "description": "COL-13 stage 2 of 2: the Color tab section for the stage-18/19 color\npackage the core commit wired. Section order mirrors the native stage\norder — the wheel + split block sits between the CFA toggles and\nSaturation (temp 16, tint 17, wheel 18, split 19, saturat 20) — so the\npanel reads like the pipeline it drives.\n\nThe wheel (ColorWheel.kt): one disc, three band tabs (Shadows /\nMidtones / Highlights, SingleChoiceSegmentedButtonRow; rememberSaveable\nUI-only state — the grade stores three independent band offsets, the\ntabs only choose which the drag edits). The disc's colors ARE the\nstage-18 gain math: ColorWheelMath.gainsAt evaluates the engine's\n2^0.5x / 2^0.5y / 2^-0.5x exponents; discColor maps them to display\nrange, max-normalized, mixed toward neutral gray by offset magnitude —\nthe classic radial-strength idiom, and the fix for the center: plain\nmax-normalization renders the gains-1 ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: crop core geometry and export seams",
+  "feat: crop and straighten controls in detail panel",
+  "feat: color wheel and split tone core",
+  "feat: color wheel and split tone ui"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/CropState.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EditorPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewRenderer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/DngExporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/PhotoExporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ColorWheel.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/SliderSteps.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/util/Format.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/CropStateTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/GradeStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/LutStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewRendererTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/DngExporterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportQueueTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/ColorWheelMathTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/SliderStepsTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/util/FormatTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Develop.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Lut.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Develop.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/DngWriter.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Transfer.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_develop.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_lut.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

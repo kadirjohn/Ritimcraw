@@ -1,0 +1,34 @@
+{
+ "id": "208-be979a1",
+ "title": "feat: gpu gauge counts the export session",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "be979a1",
+  "date": "2026-11-24",
+  "merge_subject": "merge: feat: gpu gauge counts the export session"
+ },
+ "tests": "not recorded",
+ "description": "The system strip's GPU figure read only the preview session's GL_TIME_ELAPSED counter (the device GPU-busy sysfs is blocked for apps), so an export, which runs entirely in the develop session, showed a dash although it was GPU work. The develop session now keeps the same per-frame TIME_ELAPSED ring around its frame jobs (readback and encoder), accumulating into its own counter; nativePreviewGpuNanos returns the preview and export counters summed (unknown only when neither session has a working timer). Device: during an export the strip shows GPU 93% then 71% and CPU 31-33% instead of a dash. Accuracy is NOT verified: the query scope may include time the GPU spends waiting inside the frame job, so the figure can overstate the load.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: gpu gauge counts the export session"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

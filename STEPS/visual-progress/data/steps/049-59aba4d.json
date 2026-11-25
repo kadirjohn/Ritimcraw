@@ -1,0 +1,56 @@
+{
+ "id": "049-59aba4d",
+ "title": "timeline core model and undo",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "59aba4d",
+  "date": "2026-11-12",
+  "merge_subject": "merge: timeline core model and undo"
+ },
+ "tests": "not recorded",
+ "description": "TL-07: cut/move/trim/duplicate/delete as transactions with\nexact undo. Command pattern (documented in the file KDoc):\neach edit is an immutable TimelineEdit with apply() and\ninverse() — the inverse is built against the PRE-edit project\n(captured by the history at apply time), so undo restores the\nprecise pre-edit state, ids included. Snapshot history was\nrejected because transactions restore the exact old clip\nwhere a snapshot diff would tempt \"restore the range but\nrenumber\", which the ID STABILITY rule forbids.\n\nTransactions: AddClip, RemoveClip, MoveClip, DuplicateClip,\nTrimClip, SplitClip (with caller-minted right ids incl. the\nlinked-audio right piece, so undo can address every piece),\nSetOutput, SetClipColor. Internal RestoreSplit/RestoreTrim\ncarry the exact undo state; redo re-applies the stored\nORIGINAL transaction, never a recomputed inverse-of-inverse.\n\nTimelineOps adds trimRes",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: timeline core model and edit ops",
+  "feat: timeline store persistence schema",
+  "feat: timeline edit transactions and undo"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ProjectJson.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/timeline/TimelineEdit.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/timeline/TimelineModel.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/timeline/TimelineOps.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/timeline/TimelineStore.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/timeline/TimelineEditTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/timeline/TimelineModelTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/timeline/TimelineStoreTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,20 @@
+{
+ "id": "p02-highlight-recovery",
+ "title": "highlight recovery",
+ "date": "TBD",
+ "status": "in-progress",
+ "commit": null,
+ "tests": "not run",
+ "description": "Approved plan in docs/HIGHLIGHT_RECOVERY_PLAN.md; implementation in progress.",
+ "added": [],
+ "removed": [],
+ "changed": [],
+ "files": [
+  {
+   "path": "docs/HIGHLIGHT_RECOVERY_PLAN.md",
+   "change": "?"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

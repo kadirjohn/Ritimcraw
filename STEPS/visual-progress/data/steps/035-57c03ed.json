@@ -1,0 +1,58 @@
+{
+ "id": "035-57c03ed",
+ "title": "material nav icons restored",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "57c03ed",
+  "date": "2026-11-12",
+  "merge_subject": "merge: material nav icons restored"
+ },
+ "tests": "not recorded",
+ "description": "Owner request (2026-11-12): revert the main bottom navigation\nglyphs to the pre-1ca091d Material icon pairs. The vendored\nic_nav_* drawables added in 1ca091d are gone; the owner\nspecifically wanted the stock Material Settings gear with its\ncenter detail back, plus PlayArrow (library), AutoMirrored List\n(projects), and AutoMirrored ExitToApp (exports), each as an\noutlined/filled pair from the cached core Material set.\n\nThe Destination enum returns to ImageVector fields\n(outlined/filled) exactly as the pre-1ca091d reference, and the\nNavigationBarItem icon slot renders via Icon(imageVector, ...).\nNothing else about the nav changed: layout, labels, Monet\nselected/unselected tinting, and the indicator pill all come from\nstock NavigationBar defaults and are untouched, as is the rest of\nthe P2+3 redesign. The old stand-ins comment was superseded by\nthe owner's explicit preference and now record",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: restore material nav icons"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_nav_exports_filled.xml",
+   "change": "D"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_nav_exports_outlined.xml",
+   "change": "D"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_nav_library_filled.xml",
+   "change": "D"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_nav_library_outlined.xml",
+   "change": "D"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_nav_projects_filled.xml",
+   "change": "D"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_nav_projects_outlined.xml",
+   "change": "D"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_nav_settings_filled.xml",
+   "change": "D"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_nav_settings_outlined.xml",
+   "change": "D"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

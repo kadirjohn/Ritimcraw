@@ -1,0 +1,26 @@
+{
+ "id": "246-43d50fa",
+ "title": "docs: highlight recovery plan",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "43d50fa",
+  "date": "2026-11-25",
+  "merge_subject": "merge: docs: highlight recovery plan"
+ },
+ "tests": "not recorded",
+ "description": "",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: highlight recovery plan"
+ ],
+ "files": [
+  {
+   "path": "docs/HIGHLIGHT_RECOVERY_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

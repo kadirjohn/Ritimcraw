@@ -1,0 +1,26 @@
+{
+ "id": "159-c49f8d9",
+ "title": "e1e-codec-measure-plan",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "c49f8d9",
+  "date": "2026-11-24",
+  "merge_subject": "merge: e1e-codec-measure-plan"
+ },
+ "tests": "not recorded",
+ "description": "",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: E1e codec measurement mode plan"
+ ],
+ "files": [
+  {
+   "path": "docs/E1E_CODEC_MEASURE_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

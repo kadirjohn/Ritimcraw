@@ -1,0 +1,26 @@
+{
+ "id": "153-bb75fb2",
+ "title": "tr strings fill — 36 missing turkish keys",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "bb75fb2",
+  "date": "2026-11-23",
+  "merge_subject": "merge: tr strings fill — 36 missing turkish keys"
+ },
+ "tests": "not recorded",
+ "description": "Groups: settings_render_backend*, settings_section_*, settings_preview_quality_*, settings_preview_stats_hint_*, settings_theme_*, settings_gyro_folder_not_set, settings_expanded/_collapsed, settings_device_report_* (incl. codec_count plural), settings_back.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: add missing turkish strings"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

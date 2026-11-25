@@ -1,0 +1,144 @@
+{
+ "id": "151-9a87d6d",
+ "title": "f0 prep — gyro paused behind flag, migration chain, codec probe dv/av1/apv, hlg/hdr10 gates",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "9a87d6d",
+  "date": "2026-11-23",
+  "merge_subject": "merge: f0 prep — gyro paused behind flag, migration chain, codec probe dv/av1/apv, hlg/hdr10 gates"
+ },
+ "tests": "not recorded",
+ "description": "ExportAbSweep drives both export doors directly, so with gyro\nstabilization paused its \"stab\" and \"grade-stab\" cases would run a warp\nthe real export no longer applies. They are now skipped before either\ndoor renders: pausedSkip(case, gyroAllowed) decides, pausedLine logs\n\"export-ab <id> frame=<n> SKIPPED (gyro paused)\", and the skip is\ncounted in the summary's skipped total. A skipped case never reaches\nthe stats, so it can never be flagged EXPORT_MISMATCH. The neutral and\ngrade cases run as before; with the flag on all four cases run again.\nTests: paused cases are exactly stab and grade-stab, flag-on skips\nnothing, the shipped default is paused, the line carries no flag.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: pause gyro stabilization behind a flag",
+  "feat: add project.json migration chain",
+  "feat: extend codec probe to dv, av1, apv",
+  "fix: gate hlg on api 35 and open an api 34 path",
+  "fix: move hdr10 gate from api 29 to api 33",
+  "fix: skip stab cases in export a/b while paused"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/AtomicFiles.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ProjectMigrations.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/CodecNames.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/CodecProbe.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/ExportAbSweep.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewRenderer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/StabilizationGate.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/hevc/HevcPreflight.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/hevc/HevcProfile.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/DeviceReportScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/util/FeatureFlags.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/AtomicFilesTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/GradeStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/ProjectMigrationsTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/CodecNamesTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/CodecProbeTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/ExportAbSweepTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewRendererTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/StabilizationGateTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/hevc/HevcPreflightTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/hevc/HevcProfileTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/settings/DeviceReportGroupingTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "HLG",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

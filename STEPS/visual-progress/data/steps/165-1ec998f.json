@@ -1,0 +1,107 @@
+{
+ "id": "165-1ec998f",
+ "title": "f1-2 project file safety, version stamp, atomics",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "1ec998f",
+  "date": "2026-11-24",
+  "merge_subject": "merge: f1-2 project file safety, version stamp, atomics"
+ },
+ "tests": "not recorded",
+ "description": "12 focused JVM tests for the project-file safety package\n(plan sections 6.4/6.5), covering the plan's own test clauses:\n\n- (a) a version-999 project.json: ProjectFile.open reports TooNew,\n  every store's write attempt is suppressed (Grade, Export, Preset,\n  Timeline, Audio, Metadata, Gyro, Lut, Source, PreviewQuality,\n  RenderBackend, Theme, PreviewStats, LibraryPrefs, GyroFolder,\n  ImportFolder, SystemMonitor), and the file survives byte for byte\n  with its 999 stamp. The suppression is observable in two ways:\n  writeTextIfWritable returns false, and GradeStore's existing\n  onTooNew notification still fires.\n- (b) ordinary v1 files through a full store sweep stay stamped at 1\n  and reopen as Outcome.Open; withSection ignores the caller's\n  version both downward (a v2-shaped file stays 2) and upward (a\n  caller claiming 7 on a v1 file cannot raise it), and an\n  unversioned legacy file st",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: project file version stamp cannot be dragged down",
+  "test: f1-2 gate, stamp policy, backup, atomic parity"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/MainActivity.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GyroFolderStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GyroStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ImportFolderStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/LibraryPrefsStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/LutStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/PresetStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/PreviewQualityStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/PreviewStatsStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ProjectFile.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ProjectJson.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/RenderBackendStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/SourceRepository.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/SystemMonitorStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ThemeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/audio/AudioStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/metadata/MetadataStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/timeline/TimelineStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/ProjectSafetyTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

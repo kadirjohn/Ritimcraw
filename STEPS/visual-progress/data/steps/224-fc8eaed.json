@@ -1,0 +1,75 @@
+{
+ "id": "224-fc8eaed",
+ "title": "feat: node chain runs on the gpu for encoded clips",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "fc8eaed",
+  "date": "2026-11-25",
+  "merge_subject": "merge: feat: node chain runs on the gpu for encoded clips"
+ },
+ "tests": "The develop session gains initNodes/setColorModelChain (the preview session's pair, mirrored; JNI + Kotlin doors), and the encoded GPU door carries the v2 node chain instead of falling to the CPU orac",
+ "description": "The develop session gains initNodes/setColorModelChain (the preview session's pair, mirrored; JNI + Kotlin doors), and the encoded GPU door carries the v2 node chain instead of falling to the CPU oracle. Getting there exposed four defects that kept node chains off the GPU everywhere (the editor ignored initNodes' result, so they were silent): the NODES shader indexed a sampler array dynamically (Adreno: 'sampler3D requires GL_EXT_gpu_shader5'; now four constant-indexed samples), the OpenDRT tail shader used kPi and kSqrt3 without declaring them, uNodeLutWorkingToInput is declared but never read (the driver drops it; the contract check wrongly required it, and the unwired slot upload is now guarded), and NodeChainWire.encode allocated one float per curveless node that the writer never filled (the native decoder refused the wire: '1 float(s) left before the output block'). Device parity of",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: node chain runs on the gpu for encoded clips"
+ ],
+ "files": [
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/engine/EncodedYuvPassParityTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NodeChainWire.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Mi-Log",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

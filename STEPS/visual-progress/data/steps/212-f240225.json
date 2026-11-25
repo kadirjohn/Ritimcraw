@@ -1,0 +1,34 @@
+{
+ "id": "212-f240225",
+ "title": "fix: 8k clips get a scaled-frame library icon",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "f240225",
+  "date": "2026-11-24",
+  "merge_subject": "merge: fix: 8k clips get a scaled-frame library icon"
+ },
+ "tests": "not recorded",
+ "description": "The encoded icon pass developed the full frame on the CPU and scaled\nafterwards. An 8K clip needs two 133 MB ARGB arrays, ran out of JVM heap,\nand never got an icon. Clips above DCI 4K, and any clip whose develop\nfails, now take MediaMetadataRetriever.getScaledFrameAtTime instead.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: 8k clips get a scaled-frame library icon"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ThumbnailStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/ClipThumbnails.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/ThumbnailRulesEncodedTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

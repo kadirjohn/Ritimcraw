@@ -1,0 +1,47 @@
+{
+ "id": "137-6fe38e8",
+ "title": "stabilization starts instantly, no plan rebuild stalls",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "6fe38e8",
+  "date": "2026-11-23",
+  "merge_subject": "merge: stabilization starts instantly, no plan rebuild stalls"
+ },
+ "tests": "not recorded",
+ "description": "Owner report: stabilization \"sometimes stutters\", takes long to kick in\non a 58 s clip and on a 4 s clip the video barely starts. Device trace:\nevery play/pause/drag flipped the preview buffer dims (1280 / 640 /\nfull-res) and the single-slot plan cache keyed on them rebuilt the plan\neach time — 2.3-2.6 s per rebuild, the optical refine re-run for the\nsame offset every time, all on the render thread.\n\n- Plan cache: 4 round-robin slots (one per recent dims/settings).\n- Sync cache: the estimate is cached per clip/log/refine flag/focal,\n  never per buffer dims.\n- Representative frame times cached (one metadata parse per frame per\n  clip).\n- Preview paths (render, cached session render, zoom probe, GPU warp\n  resolve with asyncRefine=true) start on the lag-prior anchor at once\n  and run the optical refine on a detached thread over an independent\n  Source (Source::reopenIndependentFd: /proc/se",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: stabilization starts instantly, no plan rebuild stalls"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GpuPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Source.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Source.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Resolve",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

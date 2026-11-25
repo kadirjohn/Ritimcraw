@@ -1,0 +1,31 @@
+{
+ "id": "188-c2132c1",
+ "title": "docs: fix the audio facts in the r1 plan",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "c2132c1",
+  "date": "2026-11-24",
+  "merge_subject": "merge: docs: fix the audio facts in the r1 plan"
+ },
+ "tests": "not recorded",
+ "description": "The plan named AudioRenders as Ritimcraw code; that file exists in Klipp, not here. Replaced with what grep shows: no WAV writer in export/, EditorAudio for playback, the MCRAW whole-clip PCM read, and WAV reading only in DngSequence.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: fix the audio facts in the r1 plan"
+ ],
+ "files": [
+  {
+   "path": "docs/CINEMADNG_EXPORT_PLAN.md",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Klipp",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

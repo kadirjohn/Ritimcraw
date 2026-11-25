@@ -1,0 +1,39 @@
+{
+ "id": "184-e44085f",
+ "title": "fix: ten-bit codec rows use P010 input, heavy content",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "e44085f",
+  "date": "2026-11-24",
+  "merge_subject": "merge: fix: ten-bit codec rows use P010 input, heavy content"
+ },
+ "tests": "not recorded",
+ "description": "Every codec-measure row asked MediaCodec for YUV420Flexible input, so the Main10 rows (profile 2) fed the c2.qti HEVC encoder 8-bit images: configure succeeded, EOS came back, encodedBytes=0 in 20 of 20 ten-bit rows (device run 2026-11-25). formatValues now asks for P010 (54) when bitDepth is 10 and the runner logs the Image format, plane count and the codec's input colour format of each case's first frame. New content recipe noise+v2 (the ramp plus per-pixel +-24 luma / +-6 chroma noise from a fixed xorshift tile, changing every frame) becomes the default, because the ramp kept VBR at 20-36 Mb/s at 4K and never reached the ceiling; ramp+v1 stays selectable. JVM tests pin the 10-bit colour format and the default recipe. Not yet verified on the device (low battery); see the status report.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: ten-bit codec rows use P010 input, heavy content"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/CodecMeasurer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/CodecMeasurePlan.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/CodecMeasurePlanTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "MediaCodec",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

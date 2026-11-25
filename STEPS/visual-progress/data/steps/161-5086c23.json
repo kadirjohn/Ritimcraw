@@ -1,0 +1,31 @@
+{
+ "id": "161-5086c23",
+ "title": "f1-5-gpu-ops-inventory",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "5086c23",
+  "date": "2026-11-24",
+  "merge_subject": "merge: f1-5-gpu-ops-inventory"
+ },
+ "tests": "warp, passes[7], the 32-to-64 combination test expansion with",
+ "description": "Preparation document (docs/F1_5_GPU_OPS_INVENTORY.md, Turkish,\nplan-only - no production code) for package F1-5: the pure\noperation inventory the OpenDRT + NODES GPU pass will be built\nfrom, read against the F1-1/F1-4 CPU references now on main\n(ColorModel.h/.cpp, OpenDrt.h/.cpp) and the shipped develop chain\n(GpuDevelopPipeline.cpp, ChainSlots.h, GlesShaderSources.kt).\n\nSections cover the current chain inventory (11 draws, 6 texture\nunits, 79 glUniform call sites, the absent uniform-limit query),\na per-node GLSL op table for ColorModel (which half of the node\nmath is CPU-compiled into uniforms versus per-pixel, and why the\n512-entry composite curve tables must ride a 1D R32F atlas rather\nthan uniforms), an OpenDRT stage-by-stage op table (~200 MAD +\n~25 transcendentals per pixel; the Impl constructor constants map\nstraight to uniforms; SDR/HLG differ only in the tail block), the\n33-cube",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: add F1-5 GPU ops inventory for nodes and opendrt"
+ ],
+ "files": [
+  {
+   "path": "docs/F1_5_GPU_OPS_INVENTORY.md",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "HLG",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

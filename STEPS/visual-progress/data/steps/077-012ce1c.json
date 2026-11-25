@@ -1,0 +1,84 @@
+{
+ "id": "077-012ce1c",
+ "title": "export resolution picker",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "012ce1c",
+  "date": "2026-11-14",
+  "merge_subject": "merge: export resolution picker"
+ },
+ "tests": "not recorded",
+ "description": "The export sheet's MP4 path gains the resolution ladder (owner request\n2026-11-13): Original / UHD 3840x2160 / FHD 1920x1080 / HD 1280x720 /\nCustom w+h, each chip showing the size it RESOLVES to for this clip,\nOriginal star-marked as the recommendation, and every non-Original entry\ncarrying its honest downscale/equal/upscale flag — an upscale is\nexplicitly marked, never the default. The size decision and the framing\ndecision stay separate: a 4:3 source at FHD resolves to 1440x1080 (its\nown aspect at the bound), and the export scale step is an\naspect-preserving RgbScale.aspectFit (symmetric bars only when the\nresolved bound and the effective size disagree), never a center-crop.\n\nThe chain: the sheet (EditorTopBar) computes the ladder from the\nsession's recorded frame size composed with the manual rotation and the\ncrop, the tap carries the RESOLVED bound through the widened\nonExport(Target",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: export resolution rules",
+  "feat: resolution chips in the export flow"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportJob.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportResolution.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/RgbScale.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorTopBar.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportResolutionTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/TimelineMp4ExporterTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "MediaCodec",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

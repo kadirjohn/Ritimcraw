@@ -1,0 +1,77 @@
+{
+ "id": "140-f3bc24c",
+ "title": "modern scope panels, compact density token, compact segmented controls",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "f3bc24c",
+  "date": "2026-11-23",
+  "merge_subject": "merge: modern scope panels, compact density token, compact segmented controls"
+ },
+ "tests": "not recorded",
+ "description": "With Settings > Preview stats readback off, the GPU preview publishes a\n1x1 placeholder frame, so the scopes used to draw a histogram of one\nblack pixel and an empty waveform. The strip and mini now detect the\nplaceholder (PreviewSurfaceRatio.carriesShape) and show the graticule\nwith a hint pointing at the setting, never a fabricated trace.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "ui: compact density token for high-dpi phones",
+  "ui: modern scope panels (histogram, waveform)",
+  "ui: compact segmented controls in editor panels",
+  "ui: scope empty-state hint when preview stats are off"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/MainActivity.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/CompactSegmented.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/HistogramOverlay.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ScopeStrip.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ScopeStyle.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/WaveformScope.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/theme/UiCompactness.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/ScopeClipReadoutTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/WaveformScopeTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/theme/UiCompactnessTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,34 @@
+{
+ "id": "131-e894fec",
+ "title": "one title treatment across all screens",
+ "date": "2026-11-17",
+ "status": "done",
+ "commit": {
+  "hash": "e894fec",
+  "date": "2026-11-17",
+  "merge_subject": "merge: one title treatment across all screens"
+ },
+ "tests": "not recorded",
+ "description": "Owner request 2026-11-17 (verbatim intent): \"import from folder'da\ntitle biraz yukarıda görünüyor... settings'i de diğerleriyle uyumlu\nhale getir. hepsini library projects exports gibi yap\" — every\nscreen title must match the Library/Projects/Exports treatment\n(ScreenHeader: headlineSmall, 16dp start, top 12 / bottom 8).\n\nSettings (ui/settings/SettingsScreen.kt): the old settings spec's\nbespoke 32sp SemiBold title (start 20 / top 16) is overruled —\nreplaced with ScreenHeader(title = settings_title), the same call\nshape as the other three browse screens. The dead 32sp style code\nand the KDoc bullet claiming the redesign replaced the title on\nTHIS screen only are removed; the KDoc now names the shared\nheader. The root Column pads nothing, honoring ScreenHeader's\ncall-site contract (the title's left edge stays the header's own\n16dp; the groups below keep their gutters).\n\nImport from folder ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "ui: one title treatment across all screens"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/FolderImportBrowser.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/DeviceReportScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/SettingsScreen.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

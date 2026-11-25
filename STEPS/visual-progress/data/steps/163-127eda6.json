@@ -1,0 +1,26 @@
+{
+ "id": "163-127eda6",
+ "title": "s12-acceptance-protocol",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "127eda6",
+  "date": "2026-11-24",
+  "merge_subject": "merge: s12-acceptance-protocol"
+ },
+ "tests": "not recorded",
+ "description": "",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: S12 device acceptance protocol"
+ ],
+ "files": [
+  {
+   "path": "docs/S12_DEVICE_ACCEPTANCE.md",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,69 @@
+{
+ "id": "067-411e5c0",
+ "title": "owner ui fix batch panel lut ruler",
+ "date": "2026-11-13",
+ "status": "done",
+ "commit": {
+  "hash": "411e5c0",
+  "date": "2026-11-13",
+  "merge_subject": "merge: owner ui fix batch panel lut ruler"
+ },
+ "tests": "not recorded",
+ "description": "Owner device feedback 2026-11-13: \"saniye saliseler birbirine\nkarışıyor, kötü görüntü\" — the ruler's full-timecode labels crowd\ninto an unreadable mess on the device. Scale stays 4dp/frame (no\nzoom); the fix is the labels' own precision plus one honest spacing\nconstant.\n\nThe collision's real cause, verified in code: MajorLabelSpacingPx was\n96f RAW px, but the labels render dp-scaled (labelSmall+tnum, a full\nHH:MM:SS:FF is ~76dp) and pxPerFrame is 4dp.toPx() — density-scaled\ntoo. On a 420dpi phone the 96px budget is ~37dp, under one label,\nwhile the ladder picks step 10 (10 x 10.5px = 105px >= 96px), so\n~200px-wide labels land on 105px centers and overlap by arithmetic.\nAt density 1.0 it happens to fit — which is why the host looked fine\nand the device did not.\n\nTwo changes:\n\n1. The spacing budget becomes 96dp, converted at the call site (the\n   PanelSheet.VELOCITY_THRESHOLD pattern): the",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: panel opens expanded on swipe up",
+  "fix: remove rotate rows from clip info sheet",
+  "feat: lut interpretation two-window layout",
+  "fix: timeline ruler label de-clutter"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorTopBar.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/LutInterpLayout.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/PanelBehavior.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/timeline/TimelineGeometry.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/timeline/TimelineScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/LutInterpLayoutTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/PanelBehaviorTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/timeline/TimelineGeometryTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}
