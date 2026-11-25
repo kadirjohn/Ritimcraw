@@ -11,6 +11,8 @@ data class ProxyEntry(
     val frameCount: Long,
     val createdAtMs: Long,
     val lastAccessMs: Long,
+    /** The full signature text when the writer began with [ProxyCache.begin]'s signature overload, else null. */
+    val signatureLine: String? = null,
 )
 
 /** Write side of one proxy build. Write the video to [videoFile] (a `.tmp` path), then [commit] or [abort]. */
@@ -28,8 +30,9 @@ interface ProxyWriteHandle {
  *
  * Layout, per key base name B = "<fingerprint>-<sigHash>":
  *  - `B.mp4` + `B.manifest` : a published entry. The manifest (key=value text; the plan's "json" role,
- *    JVM unit tests have no JSON library) holds the signature hash, video byte size, duration, frame count and
- *    creation time. Last access = the manifest file's mtime (touch = setLastModified, no rewrite).
+ *    JVM unit tests have no JSON library) holds the signature hash, video byte size, duration, frame count,
+ *    creation time and — when begun through the [begin] signature overload — the full signature fields
+ *    ([ProxyEntry.signatureLine]). Last access = the manifest file's mtime (touch = setLastModified, no rewrite).
  *  - `B.mp4.tmp` / `B.manifest.tmp` : an in-progress write.
  *
  * Protocol:
@@ -59,11 +62,23 @@ class ProxyCache(
     private fun mp4(k: ProxyKey) = k.baseName + ".mp4"
     private fun man(k: ProxyKey) = k.baseName + ".manifest"
 
-    fun begin(key: ProxyKey): ProxyWriteHandle = synchronized(lock) {
+    fun begin(key: ProxyKey): ProxyWriteHandle = synchronized(lock) { beginLocked(key, null) }
+
+    /**
+     * Same as [begin], keeping the FULL signature fields in the manifest (the plan's
+     * "imza alanlarının tamamı": settings, color, kind, transfer and encoder versions) —
+     * the storage page later shows a clip's proxies without recomputing the signature.
+     */
+    fun begin(signature: ProxySignature): ProxyWriteHandle = synchronized(lock) {
+        val key = signature.key()
+        beginLocked(key, signature.canonical())
+    }
+
+    private fun beginLocked(key: ProxyKey, signatureLine: String?): ProxyWriteHandle {
         storage.delete(mp4(key) + TMP)
         storage.delete(man(key) + TMP)
         open += key.baseName
-        Handle(key)
+        return Handle(key, signatureLine)
     }
 
     fun lookup(key: ProxyKey): ProxyEntry? = synchronized(lock) {
@@ -178,10 +193,14 @@ class ProxyCache(
             frameCount = p.getProperty("frameCount")?.toLongOrNull() ?: -1,
             createdAtMs = p.getProperty("createdAtMs")?.toLongOrNull() ?: 0,
             lastAccessMs = storage.lastModified(man(key)),
+            signatureLine = p.getProperty("sig"),
         )
     }
 
-    private inner class Handle(override val key: ProxyKey) : ProxyWriteHandle {
+    private inner class Handle(
+        override val key: ProxyKey,
+        private val signatureLine: String?,
+    ) : ProxyWriteHandle {
         private var done = false
         override val videoFile: File = storage.fileFor(mp4(key) + TMP)
 
@@ -204,6 +223,7 @@ class ProxyCache(
                 append("durationUs=").append(durationUs).append('\n')
                 append("frameCount=").append(frameCount).append('\n')
                 append("createdAtMs=").append(now).append('\n')
+                if (signatureLine != null) append("sig=").append(signatureLine).append('\n')
             }
             try {
                 storage.delete(man(key))                 // old entry stops resolving before its video is replaced

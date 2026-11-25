@@ -169,6 +169,30 @@ class ProxyCacheTest {
         h.abort()
     }
 
+    @Test fun signatureOverloadStoresTheFullSignatureLine() {
+        val c = cache()
+        val s = sig()
+        val h = c.begin(s) // the writer begins from the signature, not just the key
+        h.videoFile.writeBytes(ByteArray(50))
+        val e = h.commit(durationUs = 1_000_000, frameCount = 30)
+        assertNotNull(e)
+        assertEquals(s.canonical(), e!!.signatureLine)
+        assertEquals(s.canonical(), c.peek(s.key())!!.signatureLine) // survives a re-read
+    }
+
+    @Test fun sourceChangeProtectionIsTheKeyNotTheEntry() {
+        // plan section 3.1 "açılışta tekrar bakılır": size + mtime enter the signature, so a changed
+        // source resolves a DIFFERENT key — the stale entry is never served for it, the clip plays
+        // from the original until the new proxy exists
+        val c = cache()
+        val before = sig(fp = "abc123", settings = ProxySettings())
+        put(c, before.key(), 100)
+        val after = before.copy(sourceModifiedMs = before.sourceModifiedMs + 1)
+        assertNotEquals(before.key(), after.key())
+        assertNull(c.lookup(after.key()))
+        assertNotNull(c.lookup(before.key())) // still on disk; LRU or clearClip reaps it
+    }
+
     @Test fun oversizeEntryIsNotPublished() {
         val c = cache(cap = 100)
         assertNull(put(c, sig().key(), 101))
