@@ -14510,6 +14510,59 @@ window.STEPS_DATA = {
    "screenshot": null
   },
   {
+   "id": "f1-8e-async-opendrt-bake",
+   "title": "bake the opendrt table off the gl thread",
+   "date": "2026-11-25",
+   "status": "in-progress",
+   "commit": null,
+   "tests": "branch feat-opendrt-async-bake @ 2428349 (NOT merged: main is held by another worktree; device-unverified). tools/build-desktop.sh: exit 0, test_opendrt_async 10 cases / 152 assertions passed, all other suites SUCCESS (0 FAIL). :app:assembleDebug :app:testDebugUnitTest --rerun: BUILD SUCCESSFUL, 3018 JVM tests, 0 failures.",
+   "description": "Interactive preview bakes the OpenDRT 65^3 table on a background thread (latest spec wins, old table keeps drawing, one redraw on swap); export stays synchronous.",
+   "added": [
+    "OpenDrtAsyncBaker (core): latest-wins, cancellable, immutable published tables",
+    "preview-only Config::asyncDrtBake, JNI ready listener, one redraw per published table",
+    "ritim-trace 'opendrt frames' line: GL-thread p50/p95/max ms and stale frame count per 120 frames"
+   ],
+   "removed": [],
+   "changed": [
+    "bakeOpenDrtLut takes an optional cancel flag (numbers identical); spec cache split into peek/cancellable bake"
+   ],
+   "files": [
+    {
+     "path": "core/include/rawedit/OpenDrtAsync.h",
+     "change": "A"
+    },
+    {
+     "path": "core/src/OpenDrtAsync.cpp",
+     "change": "A"
+    },
+    {
+     "path": "core/tests/test_opendrt_async.cpp",
+     "change": "A"
+    },
+    {
+     "path": "core/src/OpenDrt.cpp",
+     "change": "M"
+    },
+    {
+     "path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp",
+     "change": "M"
+    },
+    {
+     "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+     "change": "M"
+    },
+    {
+     "path": "app/src/main/cpp/jni_bridge.cpp",
+     "change": "M"
+    },
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+     "change": "M"
+    }
+   ],
+   "sources": []
+  },
+  {
    "id": "p01-node-undo",
    "title": "node undo",
    "date": "TBD",
