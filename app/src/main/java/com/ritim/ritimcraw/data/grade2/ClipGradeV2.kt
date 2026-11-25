@@ -135,6 +135,13 @@ data class GradeNodeV2(
     val lutId: String? = null,
     /** The LUT result's mix into the node's DI value (rawedit GradeNode.lutMix). */
     val lutMix: Float = 1.0f,
+    /**
+     * F1-8a: the node's display name (free text, at most [NodeListOps.NAME_MAX] characters), or null = the
+     * strip's default "Node N". OPTIONAL in the JSON: an absent key reads as null and a null name writes NO
+     * key, so every file written before this field stays byte-identical on a round trip and the schema
+     * version does not change (owner decision 2026-11-24).
+     */
+    val name: String? = null,
 )
 
 /**
@@ -331,6 +338,7 @@ data class ClipGradeV2(
                         mix = (m["mix"] as? Double)?.toFloat() ?: 1.0f,
                         lutId = m["lutId"] as? String,
                         lutMix = (m["lutMix"] as? Double)?.toFloat() ?: 1.0f,
+                        name = NodeListOps.normalizeName(m["name"] as? String),
                     ),
                 )
             }
@@ -567,6 +575,7 @@ object GradeV2Fiber {
             .append(",\"lutId\":")
             .append(if (n.lutId == null) "null" else ProjectJson.quote(n.lutId))
             .append(",\"lutMix\":").append(num(n.lutMix))
+        if (n.name != null) sb.append(",\"name\":").append(ProjectJson.quote(n.name))
         sb.append('}')
     }
 
@@ -605,6 +614,16 @@ internal object NodeParcelGlueness {
 fun ClipGradeV2.toGradeK(): GradeK? {
     if (output.mode != OutputTransformV2.MODE_LEGACY) return null
     if (nodes.isNotEmpty()) return null
+    return toGradeKLenient()
+}
+
+/**
+ * The develop + legacy-tone fields of this record as a [GradeK], IGNORING the node chain and a non-legacy output
+ * (the strict [toGradeK] refuses those, which made the editor read a clip that has nodes as neutral: its slider
+ * values vanished and the next edit wrote the neutral values back). The nodes/output travel separately
+ * (GradeStore.getV2, putPreservingChain); this is only what the legacy sliders show.
+ */
+fun ClipGradeV2.toGradeKLenient(): GradeK {
     val t = transform
     return GradeK(
         version = GradeK.SCHEMA_VERSION,

@@ -242,7 +242,10 @@ object EditorCategories {
     const val COLOR_LOOK = 2
 
     /** The Color sub-tabs in row order; the SecondaryTabRow counts this. */
-    val COLOR_SUBTABS = listOf(COLOR_BALANCE, COLOR_WHEELS, COLOR_LOOK)
+    /** Nodes (F1-8a): the v2 node chain editor; both clip kinds (the node chain runs on the CPU oracle and the GPU door). */
+    const val COLOR_NODES = 3
+
+    val COLOR_SUBTABS = listOf(COLOR_BALANCE, COLOR_WHEELS, COLOR_LOOK, COLOR_NODES)
 
     /**
      * The Color sub-tabs that exist for THIS clip: Wheels is MCRAW-only
@@ -254,7 +257,7 @@ object EditorCategories {
      * inside it.
      */
     fun visibleColorSubTabs(showColorTools: Boolean): List<Int> =
-        if (showColorTools) COLOR_SUBTABS else listOf(COLOR_BALANCE, COLOR_LOOK)
+        if (showColorTools) COLOR_SUBTABS else listOf(COLOR_BALANCE, COLOR_LOOK, COLOR_NODES)
 
     /**
      * The sub-tab a restored/persisted Color selection resolves to:
@@ -895,6 +898,9 @@ fun ClipEditorScreen(
     // null keeps every existing caller working (a v1-grade project: the
     // null chainWire is the legacy fast path, bit-identical — K2).
     gradeV2For: () -> com.ritim.ritimcraw.data.grade2.ClipGradeV2? = { null },
+    /** F1-8a: the clip's stored node chain, and the write of an edited chain (persist; the screen re-renders). */
+    nodesFor: () -> List<com.ritim.ritimcraw.data.grade2.GradeNodeV2> = { emptyList() },
+    onNodesChange: (List<com.ritim.ritimcraw.data.grade2.GradeNodeV2>) -> Unit = {},
     // (Export resolution, owner request 2026-11-13) widened by the
     // resolution pair the export sheet's chip selected: null pair =
     // Original = the source's effective size, exactly what every export
@@ -1089,10 +1095,12 @@ fun ClipEditorScreen(
         val balanceScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
         val wheelsScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
         val lookScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        val nodesScroll = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
         val colorSubTabScrollStates = mapOf(
             EditorCategories.COLOR_BALANCE to balanceScroll,
             EditorCategories.COLOR_WHEELS to wheelsScroll,
             EditorCategories.COLOR_LOOK to lookScroll,
+            EditorCategories.COLOR_NODES to nodesScroll,
         )
         // The Frame tab's own sub-tab state, same shape as Color's: the
         // tab remembers its last segment (Crop | Stabilize) and each body
@@ -1309,6 +1317,8 @@ fun ClipEditorScreen(
         // gyroPathFor rememberUpdatedState precedent — the requestRender
         // closure below outlives recompositions of the param).
         val currentGradeV2 by rememberUpdatedState(gradeV2For)
+        var nodes by remember(sourceId) { mutableStateOf(nodesFor()) }
+        var selectedNode by rememberSaveable(sourceId) { mutableStateOf(0) }
 
         // ---- Grade undo/redo history (feature N7) ----
         // Per-open-editor, keyed to the clip like every other editor
@@ -1853,6 +1863,20 @@ fun ClipEditorScreen(
                 // through the cached path.
                 applyTierEvent(SliderTiers.Event.GradeEdited)
             }
+        }
+
+        /**
+         * F1-8a: a node-chain edit. The chain persists first (the render sites read it per request through
+         * gradeV2For), then the current frame re-renders at the paused tier with the source-size follow-up.
+         * Not on the GradeK undo history yet (node undo is a follow-up slice).
+         */
+        fun applyNodesEdit(list: List<com.ritim.ritimcraw.data.grade2.GradeNodeV2>) {
+            nodes = list
+            onNodesChange(list)
+            requestRender(
+                positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM,
+                cached = true, followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+            )
         }
 
         /**
@@ -2478,6 +2502,13 @@ fun ClipEditorScreen(
                                             null,
                                         )
                                     }.getOrDefault(false)
+                                    if (RenderTrace.enabled) {
+                                        Log.i(
+                                            RenderTrace.TAG,
+                                            "encoded window arm: reqWire=${req.chainWire?.get(0)?.toInt() ?: -1} " +
+                                                "sentWire=${encIn.chainWire?.get(0)?.toInt() ?: -1} chainOk=$chainOk",
+                                        )
+                                    }
                                     if (chainOk) {
                                         val encStats = statsModeFor(
                                             scopeVisible = scopePresentation != ScopePresentation.OFF,
@@ -2504,6 +2535,9 @@ fun ClipEditorScreen(
                                             zebraPeriod = ZebraOverlay.STRIPE_PERIOD,
                                             zebraAlpha = ZebraOverlay.STRIPE_ALPHA / 255f,
                                         )
+                                        if (RenderTrace.enabled) {
+                                            Log.i(RenderTrace.TAG, "encoded window arm: rendered=${encFrame != null} reduce=${encIn.reduce}")
+                                        }
                                         if (encFrame != null) {
                                             result = Result.success(encFrame)
                                             gpuServed = true
@@ -3101,6 +3135,10 @@ fun ClipEditorScreen(
                                         req.frameIndex, req.grade, req.followUpMaxDim,
                                         renderSeq, cached = true,
                                         renderClass = req.renderClass,
+                                        // The follow-up must carry the SAME node chain: without it the full-size
+                                        // settle frame rendered chainless and replaced the graded intermediate
+                                        // (found with the first editable node chain, 2026-11-25; MCRAW too).
+                                        chainWire = req.chainWire,
                                     )
                                 )
                             ) {
@@ -4416,6 +4454,10 @@ fun ClipEditorScreen(
                     // section would be dead controls (pure decision in
                     // EditorPreviewLogic.showColorTools).
                     showColorTools = EditorPreviewLogic.showColorTools(sourcePath),
+                    nodes = nodes,
+                    selectedNode = selectedNode,
+                    onSelectNode = { selectedNode = it },
+                    onNodesChange = { applyNodesEdit(it) },
                     onChange = { g ->
                         // Same slider-path recording as LightPanel: the
                         // machine is shared, so which tab the drag
@@ -5512,6 +5554,11 @@ private fun ColorPanel(
     // takes the same Grade but ignores the color-package fields, so the
     // section would be dead controls there.
     showColorTools: Boolean = false,
+    // ---- Nodes body (F1-8a) ----
+    nodes: List<com.ritim.ritimcraw.data.grade2.GradeNodeV2> = emptyList(),
+    selectedNode: Int = 0,
+    onSelectNode: (Int) -> Unit = {},
+    onNodesChange: (List<com.ritim.ritimcraw.data.grade2.GradeNodeV2>) -> Unit = {},
     // ---- Look body: LUT section (COL-07), moved from DetailPanel ----
     lutEntries: List<LutInfo> = emptyList(),
     lutImportError: String? = null,
@@ -5563,6 +5610,13 @@ private fun ColorPanel(
         // Look: Tone Mapping (+ AgX Look) and the LUT section as two
         // SEPARATE sections (plan) — both moved from DetailPanel with
         // semantics untouched.
+        EditorCategories.COLOR_NODES -> NodesBody(
+            nodes = nodes,
+            selected = selectedNode,
+            onSelect = onSelectNode,
+            onNodesChange = onNodesChange,
+            onDragActiveChange = onDragActiveChange,
+        )
         EditorCategories.COLOR_LOOK -> ColorLookBody(
             grade = grade,
             onChange = onChange,
@@ -5925,6 +5979,7 @@ private fun ColorSubTabRow(
             val labelRes = when (candidate) {
                 EditorCategories.COLOR_BALANCE -> R.string.editor_color_subtab_balance
                 EditorCategories.COLOR_WHEELS -> R.string.editor_color_subtab_wheels
+                EditorCategories.COLOR_NODES -> R.string.editor_color_subtab_nodes
                 else -> R.string.editor_color_subtab_look
             }
             Tab(

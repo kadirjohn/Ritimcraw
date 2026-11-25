@@ -654,4 +654,19 @@
     <string name="export_level_higher">Higher</string>
     <string name="export_level_ceiling">Encoder maximum</string>
     <string name="preview_error_too_large">This frame is too large to preview. Lower Preview quality in Settings or open a smaller clip.</string>
+    <!-- F1-8a: color node strip -->
+    <string name="node_strip_node">Node %1$d</string>
+    <string name="node_strip_add">Add node</string>
+    <string name="node_strip_add_limit">Limit reached (%1$d nodes)</string>
+    <string name="node_menu_disable">Turn off</string>
+    <string name="node_menu_enable">Turn on</string>
+    <string name="node_menu_reset">Reset</string>
+    <string name="node_menu_duplicate">Duplicate</string>
+    <string name="node_menu_delete">Delete</string>
+    <string name="editor_color_subtab_nodes">Nodes</string>
+    <string name="nodes_empty">No nodes yet. Add one with +.</string>
+    <string name="node_name_label">Name</string>
+    <string name="node_adjust_contrast">Contrast</string>
+    <string name="node_adjust_hue">Hue</string>
+    <string name="node_adjust_mix">Mix</string>
 </resources>

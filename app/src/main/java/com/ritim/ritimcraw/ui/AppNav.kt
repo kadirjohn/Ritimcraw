@@ -1608,7 +1608,11 @@ fun AppNav(
                         // parses to its v2 twin; a null chain stays the
                         // legacy fast path, bit-identical — K2).
                         gradeV2For = { stores.grades.getV2(r.sourceId) },
-                        onGradeChange = { g -> stores.grades.put(r.sourceId, g) },
+                        // putPreservingChain: a slider edit must not delete the clip's own node chain (the plain put
+                        // replaces the whole record with the GradeK's chainless twin).
+                        onGradeChange = { g -> stores.grades.putPreservingChain(r.sourceId, g) },
+                        nodesFor = { stores.grades.getV2(r.sourceId)?.nodes ?: emptyList() },
+                        onNodesChange = { list -> stores.grades.putNodes(r.sourceId, list) },
                         // (E1c) the export sheet's time estimate: this device's
                         // last measured MP4 export speed (null until one ran).
                         exportRate = ExportSheetModel.latestRate(exportJobs),
