@@ -1336,7 +1336,7 @@ fun ClipEditorScreen(
         // there). In memory only, deliberately: process death empties it
         // while GradeStore keeps the grade itself, so the honest
         // post-death state is "nothing to undo" (GradeHistory KDoc).
-        val gradeHistory = remember(sourceId) { GradeHistory(initialGrade) }
+        val gradeHistory = remember(sourceId) { GradeHistory(initialGrade, nodes) }
 
         // ---- Preview + transport bookkeeping (all keyed to the clip) ----
         var frame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
@@ -1877,18 +1877,52 @@ fun ClipEditorScreen(
             }
         }
 
+        // A node slider drag fires many lists; the history merges them into one step and this job closes the
+        // step once the edits pause (the node sliders report no drag end of their own).
+        var nodeSettleJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
         /**
          * F1-8a: a node-chain edit. The chain persists first (the render sites read it per request through
          * gradeV2For), then the current frame re-renders at the paused tier with the source-size follow-up.
-         * Not on the GradeK undo history yet (node undo is a follow-up slice).
+         * On the undo history: a list with the same nodes (enabled flags) as before is a value edit (slider
+         * drag, rename, reset) and merges into one step under NODE_GESTURE; add, remove, duplicate, reorder and
+         * enable/disable are discrete steps.
          */
         fun applyNodesEdit(list: List<com.ritim.ritimcraw.data.grade2.GradeNodeV2>) {
+            val before = nodes
+            val valueEdit = before.size == list.size && before.indices.all { before[it].enabled == list[it].enabled }
             nodes = list
             onNodesChange(list)
+            gradeHistory.recordNodes(list, if (valueEdit) GradeHistory.NODE_GESTURE else null)
+            if (valueEdit) {
+                nodeSettleJob?.cancel()
+                nodeSettleJob = scope.launch {
+                    kotlinx.coroutines.delay(600)
+                    gradeHistory.settle()
+                }
+            } else {
+                gradeHistory.settle()
+            }
             requestRender(
                 positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM,
                 cached = true, followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
             )
+        }
+
+        /** Applies an undo/redo snapshot (grade AND node chain) without recording. */
+        fun applyRestoredSnapshot(snap: GradeHistory.Snapshot) {
+            nodeSettleJob?.cancel()
+            grade = snap.grade
+            onGradeChange(snap.grade)
+            if (snap.nodes != nodes) {
+                nodes = snap.nodes
+                onNodesChange(snap.nodes)
+                selectedNode = selectedNode.coerceIn(0, (snap.nodes.size - 1).coerceAtLeast(0))
+                requestRender(
+                    positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM,
+                    cached = true, followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                )
+            }
         }
 
         /**
@@ -4743,10 +4777,10 @@ fun ClipEditorScreen(
                     canUndo = gradeHistory.canUndo,
                     canRedo = gradeHistory.canRedo,
                     onUndo = {
-                        gradeHistory.undo()?.let { applyRestoredGrade(it) }
+                        gradeHistory.undoSnapshot()?.let { applyRestoredSnapshot(it) }
                     },
                     onRedo = {
-                        gradeHistory.redo()?.let { applyRestoredGrade(it) }
+                        gradeHistory.redoSnapshot()?.let { applyRestoredSnapshot(it) }
                     },
                     presets = presets,
                     onSavePreset = onSavePreset,
