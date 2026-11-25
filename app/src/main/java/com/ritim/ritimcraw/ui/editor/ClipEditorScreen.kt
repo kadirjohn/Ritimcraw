@@ -2459,8 +2459,12 @@ fun ClipEditorScreen(
                         // stats) and present on the SurfaceView; the frame is never read back into a bitmap. Any
                         // refusal (no GPU-eligible plane layout, an OpenDRT chain, a refused chain door, a failed
                         // render) leaves `result` null and the CPU/bitmap dispatch below serves the request.
+                        // A manual rotation stays on the bitmap path: the window pass does not fold it for an
+                        // encoded frame (device check 2026-11-25: the landscape frame showed as a thin letterboxed
+                        // strip inside the rotated, portrait-shaped box), while the bitmap path rotates correctly.
                         if (s is EncodedPreviewSession && gpuActive && gpu != null && gpuSurfaceLive &&
-                            currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL
+                            currentRenderBackend == RenderBackend.GPU_EXPERIMENTAL &&
+                            ((currentManualRotationDeg % 360) + 360) % 360 == 0
                         ) {
                             val encIn = s.gpuInput(req.frameIndex, req.grade, req.chainWire, req.maxDim)
                             if (encIn != null) {
