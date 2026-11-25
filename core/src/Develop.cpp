@@ -758,7 +758,24 @@ void blockNeighbourhoodSums(const std::vector<double>& src, uint32_t w, uint32_t
 
 }  // namespace
 
-void recoverClippedHighlights(ImageF& img, const ImageF& clipMask) {
+// The shipped headroom rule (set from the hr_headroom measurement, see docs/HIGHLIGHT_RECOVERY_PLAN.md).
+// K = 4 (two stops): a re-estimated channel is at most 4x its own clipped value. Measured on night.mcraw frames
+// 0 and 900 (hr_headroom): camera-space est/clipped p99 = 3.4 / 4.1, max = 7.0 / 6.0; K=4 clamps 0.42% / 1.1% of the
+// recovered channel-pixels. The reference-fraction rule measured n=0 below 0.10, so it ships off (0).
+constexpr float kRecoveryHeadroom = 4.0f;
+constexpr float kRecoveryMinRefFrac = 0.0f;
+
+namespace {
+const RecoveryParams* gDiagParams = nullptr;
+RecoveryStats* gDiagStats = nullptr;
+}  // namespace
+
+void setRecoveryDiagnostics(const RecoveryParams* params, RecoveryStats* stats) {
+    gDiagParams = params;
+    gDiagStats = stats;
+}
+
+void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const RecoveryParams& params, RecoveryStats* stats) {
     const uint32_t w = img.w, h = img.h;
     if (w == 0 || h == 0 || clipMask.w != w || clipMask.h != h) return;
     const size_t n = static_cast<size_t>(w) * h;
@@ -844,7 +861,19 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask) {
         for (int c = 0; c < 3; ++c) {
             if (!cf[c]) continue;
             const float rho = ratio[c][r].empty() ? -1.0f : ratio[c][r][i];
-            if (rho > 0.0f) out[c] = std::max(px[c], vr * rho);  // the clipped value is a lower bound
+            if (rho <= 0.0f) continue;
+            const float est = vr * rho;
+            if (stats != nullptr && px[c] > 0.0f && est > px[c]) {
+                stats->ratio.push_back(est / px[c]);
+                stats->refFrac.push_back(vr / params.refLevel[r]);
+                stats->chan.push_back(static_cast<uint8_t>(c));
+                stats->pix.push_back(static_cast<uint32_t>(i));
+            }
+            // A tiny reference cannot be amplified into a bright estimate: leave the channel as clipped.
+            if (params.minRefFrac > 0.0f && vr < params.minRefFrac * params.refLevel[r]) continue;
+            float e = std::max(px[c], est);  // the clipped value is a lower bound
+            if (params.headroom > 0.0f && px[c] > 0.0f) e = std::min(e, params.headroom * px[c]);
+            out[c] = e;
         }
         px[0] = out[0]; px[1] = out[1]; px[2] = out[2];
     }
@@ -1016,8 +1045,10 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // level itself when the frame has no sharp saturation peak), taken here on the pre-shading raw values.
     std::vector<uint8_t> preClip;
     std::vector<float> clipMaskCfa;
+    RecoveryClipLevels recLevels;
     if (grade.highlightRecovery || grade.highlightReconstruction) {
         const RecoveryClipLevels levels = recoveryClipLevels(cfa, info, meta);
+        recLevels = levels;
         preClip.resize(n);
         for (uint32_t y = 0; y < h; ++y)
             for (uint32_t x = 0; x < w; ++x) {
@@ -1149,7 +1180,16 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
             img.rgb[i + 1] *= inv[1];
             img.rgb[i + 2] *= inv[2];
         }
-        recoverClippedHighlights(img, clipMask);
+        RecoveryParams rp;
+        rp.headroom = kRecoveryHeadroom;
+        rp.minRefFrac = kRecoveryMinRefFrac;
+        for (int c = 0; c < 3; ++c) rp.refLevel[c] = recLevels.threshold[c] * inv[c];
+        if (gDiagParams != nullptr) {
+            const float k = gDiagParams->headroom, f = gDiagParams->minRefFrac;
+            rp.headroom = k;
+            rp.minRefFrac = f;
+        }
+        recoverClippedHighlights(img, clipMask, rp, gDiagStats);
     }
 
     // ---- Stage 5+6: white balance + camera color transform (DNG 1.6 §6). ----

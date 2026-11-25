@@ -1632,7 +1632,11 @@ void main() {
         for (int c = 0; c < 3; ++c) {
             if (!cf[c]) continue;
             float rho = ratioFor(g, c, r);
-            if (rho > 0.0) o[c] = max(v[c], vr * rho);  // the clipped value is a lower bound
+            if (rho > 0.0) {
+                float e = max(v[c], vr * rho);  // the clipped value is a lower bound
+                if (v[c] > 0.0) e = min(e, 4.0 * v[c]);  // headroom cap K = 4 (CPU kRecoveryHeadroom)
+                o[c] = e;
+            }
         }
         v = o;
     }

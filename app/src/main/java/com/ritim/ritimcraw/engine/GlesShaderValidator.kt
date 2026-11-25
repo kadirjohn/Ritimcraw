@@ -367,7 +367,8 @@ object GlesShaderValidator {
         recoveryRequire(s, out, "if (s.x >= 117964.8 && s.z > 0.0) return s.y / s.z;", "scale 4 support")
         recoveryRequire(s, out, "if (!cf[1]) r = 1;", "reference channel: green when it is unclipped")
         recoveryRequire(s, out, "else r = (v.r >= v.b) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);", "reference channel when green is clipped")
-        recoveryRequire(s, out, "if (rho > 0.0) o[c] = max(v[c], vr * rho);", "estimate = ref x ratio, never below the clipped value")
+        recoveryRequire(s, out, "float e = max(v[c], vr * rho);", "estimate = ref x ratio, never below the clipped value")
+        recoveryRequire(s, out, "if (v[c] > 0.0) e = min(e, 4.0 * v[c]);", "headroom cap K = 4 (the CPU's kRecoveryHeadroom)")
         recoveryRequire(s, out, "v = vec3(m);", "all three clipped: neutral at the lowest channel")
         // A dynamic index into a sampler array is invalid on Adreno ES 3.00: every level is one
         // constant uniform, never indexed.

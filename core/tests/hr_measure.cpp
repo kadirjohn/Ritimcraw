@@ -197,7 +197,11 @@ int main(int argc, char** argv) {
                     lv.threshold[1], lv.threshold[2]);
         Grade a; a.highlightReconstruction = true;
         Grade b = a; b.highlightRecovery = true;
+        // HR_K=<K> overrides the shipped headroom cap (0 = uncapped) for before/after comparisons.
+        RecoveryParams diag;
+        if (const char* k = std::getenv("HR_K")) { diag.headroom = float(std::atof(k)); setRecoveryDiagnostics(&diag, nullptr); }
         const ImageF ia = developCpu(cfa.data(), info, meta, a), ib = developCpu(cfa.data(), info, meta, b);
+        setRecoveryDiagnostics(nullptr, nullptr);
         size_t changed = 0, above1 = 0, lowered = 0;
         float maxA = 0, maxB = 0;
         size_t maxAt = 0;
