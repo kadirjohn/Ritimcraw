@@ -85,7 +85,7 @@ bool nearAllClipped(uint32_t x, uint32_t y) {
         const int xx = std::min(std::max(int(x) + dx, 0), int(kW) - 1);
         float s[3];
         sceneRgb(uint32_t(xx), y, s);
-        const float t = kRecoveryClipThreshold - 0.005f;  // the mask threshold (and a hair of bilinear margin)
+        const float t = 0.99f;  // the measured plateau threshold (~0.996 on the synthetic clip) with a hair of bilinear margin
         if (s[0] * kNeutral[0] >= t && s[1] * kNeutral[1] >= t && s[2] * kNeutral[2] >= t) return true;
     }
     return false;
