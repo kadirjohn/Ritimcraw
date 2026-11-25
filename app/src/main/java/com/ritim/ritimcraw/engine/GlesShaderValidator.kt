@@ -678,9 +678,9 @@ object GlesShaderValidator {
                 "the whole stage, exactly like the CPU's own " +
                 "`if (grade.highlights != 0.0f)`)"
         }
-        if (!s.contains("const float knee = 0.40;")) {
+        if (!s.contains("const float knee = 0.18;")) {
             out += "missing the stage-15 knee " +
-                "(`const float knee = 0.40;` — the CPU stage-15 shoulder start)"
+                "(`const float knee = 0.18;` — the CPU stage-15 shoulder start)"
         }
         if (!s.contains("const float span = 1.0 - knee;")) {
             out += "missing the stage-15 span " +

@@ -245,7 +245,7 @@ void main() {
      *      (0.0 = the CPU's own `if (grade.highlights != 0.0f)` skip, so
      *      the unset uniform's 0.0 default is exactly the fast path), and
      *      the shader runs the CPU stage-15 shoulder verbatim
-     *      (core/src/Develop.cpp): knee 0.40, span = 1 - knee, s =
+     *      (core/src/Develop.cpp): knee 0.18, span = 1 - knee, s =
      *      -highlights / 100 (recovery -> +, lift -> -), the monotone
      *      shoulder knee + span * (t / (1 + t)) on pixels whose mx >
      *      knee, the blend mx + s * (shoulder - mx), and the uniform
@@ -1096,7 +1096,7 @@ vec3 lutManagedPixel(vec3 px) {
     // != 0.0f)`. knee/span are literal-only so they keep const; s/mx/over/
     // t/shoulder/newMx/gain are uniform-derived and must NOT (GLSL ES 3.00).
     if (uHighlights != 0.0) {
-        const float knee = 0.40;
+        const float knee = 0.18;
         const float span = 1.0 - knee;
         float s = -uHighlights / 100.0;  // recovery -> +1, lift -> -1
         float mx = max(c.r, max(c.g, c.b));

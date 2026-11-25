@@ -1394,8 +1394,12 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // original value and the shoulder by the recovery strength s, so at
     // s = 0 (highlights = 0) nothing changes and at full recovery the
     // over-knee region maps to a bounded, order-preserving rolloff.
+    // Knee = 0.18 (scene-linear middle gray), owner-approved 2026-11-26: with the knee at 0.40 the slider moved the
+    // brightest 5% of a night frame (AgX Punchy, +2.7 EV) by only ~1.4/255 at -100, because the tonemap that follows
+    // already compresses those values; at 0.18 the same measurement gives ~8.6/255 (6x) and 10.5% of pixels change by
+    // >= 2 codes instead of 1.7%. Earlier history: 0.75 -> 0.40 (2026-11-25).
     if (grade.highlights != 0.0f) {
-        const float knee = 0.40f;
+        const float knee = 0.18f;
         const float span = 1.0f - knee;
         const float s = -grade.highlights / 100.0f; // recovery -> +1, lift -> -1
         for (size_t i = 0; i < img.rgb.size(); i += 3) {

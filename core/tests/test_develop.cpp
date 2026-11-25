@@ -323,7 +323,7 @@ TEST_CASE("highlights_slider_changes_bright_region_only") {
     // A bright (near-white, unclipped) patch must darken with highlights
     // recovery; a mid-gray patch must stay put.
     Synthetic bright = syntheticFlat(CfaPattern::RGGB, 0.95f, 0.95f, 0.95f);
-    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.3f, 0.3f, 0.3f);
+    Synthetic mid = syntheticFlat(CfaPattern::RGGB, 0.1f, 0.1f, 0.1f);  // below the 0.18 knee
     Grade g; g.highlights = -100.0f;
     auto b0 = developCpu(bright.cfa.data(), bright.info, bright.meta, Grade{});
     auto b1 = developCpu(bright.cfa.data(), bright.info, bright.meta, g);
@@ -384,8 +384,8 @@ TEST_CASE("highlights_recovery_preserves_brightness_order") {
     auto b = developCpu(bright.cfa.data(), bright.info, bright.meta, g);
     // Both patches are above the knee after recovery; order preserved.
     CHECK(centerMean(b, 1) >= centerMean(d, 1) - 0.001f);
-    CHECK(centerMean(b, 1) > 0.40f);   // still bright, not crushed
-    CHECK(centerMean(d, 1) > 0.40f);
+    CHECK(centerMean(b, 1) > 0.18f);   // still bright, not crushed
+    CHECK(centerMean(d, 1) > 0.18f);
 }
 
 TEST_CASE("temperature_slider_moves_red_and_blue_opposite") {
@@ -459,10 +459,10 @@ TEST_CASE("neutral_tone_grade_is_bit_identical_to_old_pipeline") {
         g.tint = 12.0f;
         g.asShot = false;
         auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(img) == 0x0d0e8d3ef0130383ULL);
-        CHECK(centerPx(img, 0) == 0x1.c79f36p-1f);
-        CHECK(centerPx(img, 1) == 0x1.d5d85cp-2f);
-        CHECK(centerPx(img, 2) == 0x1.4d8acap-3f);
+        CHECK(fnv1a(img) == 0xe72df5bb2d63b683ULL);
+        CHECK(centerPx(img, 0) == 0x1.b23ed4p-1f);
+        CHECK(centerPx(img, 1) == 0x1.bfcd26p-2f);
+        CHECK(centerPx(img, 2) == 0x1.3de4aep-3f);
     }
     {
         // Fixture C: exposure + heavy highlights recovery on a bright patch.
@@ -471,8 +471,8 @@ TEST_CASE("neutral_tone_grade_is_bit_identical_to_old_pipeline") {
         g.exposureEv = 2.1f;
         g.highlights = -55.0f;
         auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(img) == 0xed55b8eff1f1d803ULL);
-        CHECK(centerPx(img, 0) == 0x1.2b0b86p+1f);
+        CHECK(fnv1a(img) == 0x2919a47e6d669183ULL);
+        CHECK(centerPx(img, 0) == 0x1.26ee94p+1f);
     }
 }
 
@@ -1146,7 +1146,7 @@ TEST_CASE("tonemap_off_is_bit_identical_passthrough") {
     auto b = developCpu(s.cfa.data(), s.info, s.meta, neutralToneGrade());
     // Same graded fixture as golden test B but tonemap explicitly 0: the
     // hash must equal the captured pre-tonemapping value.
-    CHECK(fnv1a(a) == 0x0d0e8d3ef0130383ULL);
+    CHECK(fnv1a(a) == 0xe72df5bb2d63b683ULL);
     // Default Grade vs explicitly-neutral Grade: bit identical.
     auto c = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
     auto d = developCpu(s.cfa.data(), s.info, s.meta, neutralToneGrade());
@@ -1581,7 +1581,7 @@ TEST_CASE("develop_cpu_serial_vs_parallel_all_grade_permutations") {
         g.asShot = false;
         ImageF par = developCpu(s.cfa.data(), s.info, s.meta, g);
         ImageF ser = developSerial(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(par) == 0x0d0e8d3ef0130383ULL);
+        CHECK(fnv1a(par) == 0xe72df5bb2d63b683ULL);
         CHECK(byteEqual(ser, par));
     }
 
@@ -1593,7 +1593,7 @@ TEST_CASE("develop_cpu_serial_vs_parallel_all_grade_permutations") {
         g.highlights = -55.0f;
         ImageF par = developCpu(s.cfa.data(), s.info, s.meta, g);
         ImageF ser = developSerial(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(par) == 0xed55b8eff1f1d803ULL);
+        CHECK(fnv1a(par) == 0x2919a47e6d669183ULL);
         CHECK(byteEqual(ser, par));
     }
 
