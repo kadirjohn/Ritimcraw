@@ -185,8 +185,7 @@ object GradeV2Migration {
             "sharpness" to carry(g["sharpness"], 0.0),
             "detail" to carry(g["detail"], 0.0),
         )
-        // Only a non-legacy curve is written; absent stays legacy.
-        (g["highlightsCurve"] as? Double)?.let { if (it != 0.0) develop["highlightsCurve"] = it }
+        // A stored "highlightsCurve" key (removed versioning) is deliberately NOT carried: dropped silently.
         // Only an enabled recovery is written; absent = off.
         if (g["highlightRecovery"] as? Boolean == true) develop["highlightRecovery"] = true
         val legacy = linkedMapOf<String, Any?>(

@@ -333,23 +333,23 @@ TEST_CASE("highlights_slider_changes_bright_region_only") {
     CHECK(std::abs(centerMean(m1, 1) - centerMean(m0, 1)) < 0.001f); // mid untouched
 }
 
-TEST_CASE("highlights_curve_v1_reaches_upper_midtones_legacy_does_not") {
-    // Owner 2026-11-25: the legacy 0.75 knee left everything below display ~0.88
-    // untouched. Curve v1 (knee 0.40) must visibly darken an upper-mid patch at
-    // -100 and brighten it at +100, monotone in the slider; legacy (the default,
-    // so old grades and goldens are unchanged) must still leave it alone.
+TEST_CASE("highlights_slider_reaches_upper_midtones") {
+    // Regression (owner 2026-11-25: "highlight slider has little effect"):
+    // the old 0.75 knee left everything below display ~0.88 untouched. An
+    // upper-mid patch (0.7) must now visibly darken at -100 and brighten at
+    // +100, and the response must be monotone in the slider.
     Synthetic hi = syntheticFlat(CfaPattern::RGGB, 0.7f, 0.7f, 0.7f);
-    auto at = [&](float h, int curve) {
-        Grade g; g.highlights = h; g.highlightsCurve = curve;
-        return centerMean(developCpu(hi.cfa.data(), hi.info, hi.meta, g), 1);
-    };
-    const float n = at(0.0f, 1);
-    CHECK(at(-100.0f, 1) < at(-50.0f, 1));
-    CHECK(at(-50.0f, 1) < n);
-    CHECK(n < at(100.0f, 1));
-    CHECK(at(-100.0f, 1) < n - 0.02f);
-    CHECK(at(0.0f, 0) == n);                 // curve is inert at highlights 0
-    CHECK(Grade{}.highlightsCurve == 0);     // default = legacy
+    Grade rec; rec.highlights = -100.0f;
+    Grade half; half.highlights = -50.0f;
+    Grade lift; lift.highlights = 100.0f;
+    const float n = centerMean(developCpu(hi.cfa.data(), hi.info, hi.meta, Grade{}), 1);
+    const float r = centerMean(developCpu(hi.cfa.data(), hi.info, hi.meta, rec), 1);
+    const float h = centerMean(developCpu(hi.cfa.data(), hi.info, hi.meta, half), 1);
+    const float l = centerMean(developCpu(hi.cfa.data(), hi.info, hi.meta, lift), 1);
+    CHECK(r < h);
+    CHECK(h < n);
+    CHECK(n < l);
+    CHECK(r < n - 0.02f);
 }
 
 TEST_CASE("highlights_recovery_never_turns_bright_sky_black") {
@@ -384,8 +384,8 @@ TEST_CASE("highlights_recovery_preserves_brightness_order") {
     auto b = developCpu(bright.cfa.data(), bright.info, bright.meta, g);
     // Both patches are above the knee after recovery; order preserved.
     CHECK(centerMean(b, 1) >= centerMean(d, 1) - 0.001f);
-    CHECK(centerMean(b, 1) > 0.75f);   // still bright, not crushed
-    CHECK(centerMean(d, 1) > 0.75f);
+    CHECK(centerMean(b, 1) > 0.40f);   // still bright, not crushed
+    CHECK(centerMean(d, 1) > 0.40f);
 }
 
 TEST_CASE("temperature_slider_moves_red_and_blue_opposite") {
@@ -459,10 +459,10 @@ TEST_CASE("neutral_tone_grade_is_bit_identical_to_old_pipeline") {
         g.tint = 12.0f;
         g.asShot = false;
         auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(img) == 0x38150540c239af83ULL);
-        CHECK(centerPx(img, 0) == 0x1.e8f262p-1f);
-        CHECK(centerPx(img, 1) == 0x1.f835dcp-2f);
-        CHECK(centerPx(img, 2) == 0x1.65f01cp-3f);
+        CHECK(fnv1a(img) == 0x0d0e8d3ef0130383ULL);
+        CHECK(centerPx(img, 0) == 0x1.c79f36p-1f);
+        CHECK(centerPx(img, 1) == 0x1.d5d85cp-2f);
+        CHECK(centerPx(img, 2) == 0x1.4d8acap-3f);
     }
     {
         // Fixture C: exposure + heavy highlights recovery on a bright patch.
@@ -471,8 +471,8 @@ TEST_CASE("neutral_tone_grade_is_bit_identical_to_old_pipeline") {
         g.exposureEv = 2.1f;
         g.highlights = -55.0f;
         auto img = developCpu(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(img) == 0x1cea742e0c17bf03ULL);
-        CHECK(centerPx(img, 0) == 0x1.2fbecap+1f);
+        CHECK(fnv1a(img) == 0xed55b8eff1f1d803ULL);
+        CHECK(centerPx(img, 0) == 0x1.2b0b86p+1f);
     }
 }
 
@@ -1146,7 +1146,7 @@ TEST_CASE("tonemap_off_is_bit_identical_passthrough") {
     auto b = developCpu(s.cfa.data(), s.info, s.meta, neutralToneGrade());
     // Same graded fixture as golden test B but tonemap explicitly 0: the
     // hash must equal the captured pre-tonemapping value.
-    CHECK(fnv1a(a) == 0x38150540c239af83ULL);
+    CHECK(fnv1a(a) == 0x0d0e8d3ef0130383ULL);
     // Default Grade vs explicitly-neutral Grade: bit identical.
     auto c = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
     auto d = developCpu(s.cfa.data(), s.info, s.meta, neutralToneGrade());
@@ -1581,7 +1581,7 @@ TEST_CASE("develop_cpu_serial_vs_parallel_all_grade_permutations") {
         g.asShot = false;
         ImageF par = developCpu(s.cfa.data(), s.info, s.meta, g);
         ImageF ser = developSerial(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(par) == 0x38150540c239af83ULL);
+        CHECK(fnv1a(par) == 0x0d0e8d3ef0130383ULL);
         CHECK(byteEqual(ser, par));
     }
 
@@ -1593,7 +1593,7 @@ TEST_CASE("develop_cpu_serial_vs_parallel_all_grade_permutations") {
         g.highlights = -55.0f;
         ImageF par = developCpu(s.cfa.data(), s.info, s.meta, g);
         ImageF ser = developSerial(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(par) == 0x1cea742e0c17bf03ULL);
+        CHECK(fnv1a(par) == 0xed55b8eff1f1d803ULL);
         CHECK(byteEqual(ser, par));
     }
 

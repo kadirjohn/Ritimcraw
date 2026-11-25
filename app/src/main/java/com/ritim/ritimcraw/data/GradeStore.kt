@@ -8,10 +8,6 @@ import com.ritim.ritimcraw.data.grade2.toGradeKLenient
 import java.io.File
 import java.nio.charset.StandardCharsets
 
-/** Highlights curve versions (GradeK.highlightsCurve). */
-const val HIGHLIGHTS_CURVE_LEGACY = 0
-const val HIGHLIGHTS_CURVE_V1 = 1
-
 /**
  * Per-clip grade (sprint plan Task 4). Schema version 1.
  *
@@ -120,8 +116,6 @@ data class GradeK(
     val asShot: Boolean = true,
     val highlightReconstruction: Boolean = true,
     val keepVignetting: Boolean = true,
-    /** Highlights stage-15 curve: 0 = legacy (knee 0.75, old projects), 1 = v1 (knee 0.40). New grades take v1. */
-    val highlightsCurve: Int = HIGHLIGHTS_CURVE_V1,
     /** Highlight RECOVERY (CPU oracle recoverClippedHighlights): re-estimates clipped channels instead of capping them. MCRAW only. Default off; written only when true. */
     val highlightRecovery: Boolean = false,
     val sharpness: Float = 0f,
@@ -540,7 +534,6 @@ class GradeStore(private val file: File) {
                 .append("\"asShot\":").append(g.asShot).append(',')
                 .append("\"highlightReconstruction\":").append(g.highlightReconstruction).append(',')
                 .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
-                .append(if (g.highlightsCurve != HIGHLIGHTS_CURVE_LEGACY) "\"highlightsCurve\":${g.highlightsCurve}," else "")
                 .append(if (g.highlightRecovery) "\"highlightRecovery\":true," else "")
                 .append("\"sharpness\":").append(num(g.sharpness)).append(',')
                 .append("\"detail\":").append(num(g.detail)).append(',')
@@ -791,8 +784,6 @@ class GradeStore(private val file: File) {
                         ?: (parsedTempK == 5600f && parsedTint == 0f),
                     highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
                     keepVignetting = m["keepVignetting"] as? Boolean ?: true,
-                    // Absent = a record from before the v1 curve: stays legacy.
-                    highlightsCurve = (m["highlightsCurve"] as? Double)?.toInt() ?: HIGHLIGHTS_CURVE_LEGACY,
                     highlightRecovery = m["highlightRecovery"] as? Boolean ?: false,
                     // Detail/tonemap fields (COL-15/COL-16) postdate older
                     // schema-1 files: fall back to neutral (0), which the

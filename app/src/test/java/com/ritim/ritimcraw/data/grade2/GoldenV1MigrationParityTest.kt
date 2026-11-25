@@ -1,7 +1,6 @@
 package com.ritim.ritimcraw.data.grade2
 
 import com.ritim.ritimcraw.data.GradeK
-import com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.JsonParser
 import com.ritim.ritimcraw.data.ProjectFile
@@ -169,8 +168,7 @@ class GoldenV1MigrationParityTest {
         }
         // The materialized record's GradeK is the neutral grade.
         val never = ClipGradeV2.parse(v2Grades["never-graded"] as Map<*, *>).toGradeK()
-        // A materialized record from before the curve field stays on the legacy knee.
-        assertEquals(GradeK(highlightsCurve = HIGHLIGHTS_CURVE_LEGACY), never)
+        assertEquals(GradeK(), never)
 
         // §7's gate proof: the v2 records fed through the adapter drive the
         // SAME stabilization verdicts the v1 records did (the gate is the

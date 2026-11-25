@@ -1101,7 +1101,7 @@ TEST_CASE("router: nullptr binding is byte-identical to the legacy pair") {
         g.tint = 12.0f;
         g.asShot = false;
         auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g, nullptr);
-        CHECK(fnv1a(img) == 0x38150540c239af83ULL);
+        CHECK(fnv1a(img) == 0x0d0e8d3ef0130383ULL);
     }
     {
         auto s = syntheticFlat(0.95f, 0.95f, 0.95f);
@@ -1109,7 +1109,7 @@ TEST_CASE("router: nullptr binding is byte-identical to the legacy pair") {
         g.exposureEv = 2.1f;
         g.highlights = -55.0f;
         auto img = rawedit::developCpu(s.cfa.data(), s.info, s.meta, g);
-        CHECK(fnv1a(img) == 0x1cea742e0c17bf03ULL);
+        CHECK(fnv1a(img) == 0xed55b8eff1f1d803ULL);
     }
     // The ACES golden anchor of test_develop.cpp (the tonemap path through
     // the router): 0.18 flat + tonemap 1 lands on 0.26581848.
