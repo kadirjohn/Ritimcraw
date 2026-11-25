@@ -453,6 +453,14 @@ interface EncodedGpuDeveloper {
         /** F1-6 node chain wire (null = the plain chain); the door keeps nodes on the GPU or answers null (CPU fallback). */
         chainWire: FloatArray? = null,
     ): IntArray?
+    /**
+     * E0b-3: the same develop as [develop] but answering the RGB888 bytes of the REDUCED frame directly (no ARGB
+     * detour; what the export's frame writer consumes). Null = not available / refused (the caller keeps its CPU path).
+     */
+    fun developRgb(
+        frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int,
+        lutPath: String? = null, chainWire: FloatArray? = null,
+    ): ByteArray? = null
     fun close()
 }
 
@@ -484,10 +492,10 @@ internal class NativeEncodedGpuDeveloper : EncodedGpuDeveloper {
         return session > 0
     }
 
-    override fun develop(
+    override fun developRgb(
         frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int, lutPath: String?,
         chainWire: FloatArray?,
-    ): IntArray? {
+    ): ByteArray? {
         if (!ensure()) return null
         // The node chain door (the preview session's own pair, mirrored on the develop session). A chain the
         // GPU cannot take (programs not compiled, an OpenDRT pack that does not resolve, a refused wire) answers
@@ -544,6 +552,16 @@ internal class NativeEncodedGpuDeveloper : EncodedGpuDeveloper {
         val w = (frame.width + reduce - 1) / reduce
         val h = (frame.height + reduce - 1) / reduce
         if (rgb.size != w * h * 3) return null
+        return rgb
+    }
+
+    override fun develop(
+        frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int, lutPath: String?,
+        chainWire: FloatArray?,
+    ): IntArray? {
+        val rgb = developRgb(frame, color, grade, reduce, lutPath, chainWire) ?: return null
+        val w = (frame.width + reduce - 1) / reduce
+        val h = (frame.height + reduce - 1) / reduce
         val out = IntArray(2 + w * h)
         out[0] = w; out[1] = h
         var i = 0
@@ -830,7 +848,8 @@ class EncodedSource(
             throw OutOfMemoryError("8K preview needs the GPU path (no nodes or rotated source)")
         }
         val tDecode = System.nanoTime()
-        val planes = if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex)
+        val planes = pendingExport?.takeIf { it.first == frameIndex }?.second?.also { pendingExport = null }
+            ?: (if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex))
         val decodeWallNs = System.nanoTime() - tDecode
         if (gpuEligible) {
             val color = fmt.color.withDecodedBitDepth(planes.bitDepth)
@@ -866,6 +885,40 @@ class EncodedSource(
             )
         return argb
     }
+
+    /**
+     * E0b-3: the EXPORT frame straight from the GPU door as RGB888 at the source size, in the coded orientation
+     * (the exporter rotates itself; a container rotation is NOT applied here, like [renderFrame] with upright=false).
+     * Null = take [renderFrame] (the CPU oracle): no GPU door, an OpenDRT chain, a plane layout the door cannot take,
+     * a refused chain, or a frame whose RGB888 buffer would not fit the heap ([EXPORT_GPU_MAX_RGB_BYTES]: 8K is
+     * 99 MB; that clip needs the encoder-surface door, a follow-up). The path taken is reported by the caller.
+     */
+    fun renderFrameRgbGpu(frameIndex: Int, grade: GradeK, lutPath: String?, chainWire: FloatArray?): ByteArray? {
+        val fmt = requireOpen()
+        require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
+        val gpu = gpuDeveloper ?: return null
+        if (!gpu.available()) return null
+        if (fmt.width.toLong() * fmt.height * 3L > EXPORT_GPU_MAX_RGB_BYTES) return null
+        val wire = EncodedToneBridge.apply(grade.highlights, grade.shadows, chainWire)
+        if (wire != null && wire.size >= 2 && wire[1] == 1.0f) return null
+        val planes = if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex)
+        val g = EncodedYuv.toGpuFrame(planes)
+        if (g == null) {
+            // The planes are consumed for the CPU path through toNv12; do not decode twice.
+            pendingExport = frameIndex to planes
+            return null
+        }
+        var refused = false
+        return try {
+            gpu.developRgb(g, fmt.color.withDecodedBitDepth(planes.bitDepth), grade, 1, lutPath, wire)
+                ?: run { refused = true; pendingExport = frameIndex to planes; null }
+        } finally {
+            if (!refused) decoder.recycle(planes)
+        }
+    }
+
+    /** Planes already decoded by a refused [renderFrameRgbGpu], reused by the CPU fallback so the frame is not decoded twice. */
+    private var pendingExport: Pair<Int, YuvPlanes>? = null
 
     /**
      * E0b-4b follow-up: the decoded frame for the PREVIEW session's GPU window door (the editor presents through the
@@ -1427,6 +1480,8 @@ class EncodedSource(
         private const val AHEAD_JOIN_MS = 3_000L
         /** Longest edge the encoded GPU preview develops to (8K reduces by 2 to 3840x2160 = 33 MB ARGB). */
         private const val GPU_MAX_EDGE = 3840
+        /** Largest RGB888 export frame the GPU readback door returns (4K DCI = 41 MB passes, 8K = 99 MB does not). */
+        private const val EXPORT_GPU_MAX_RGB_BYTES = 48L * 1024 * 1024
         /** The largest ARGB frame the CPU preview path may allocate (4K = 33 MB passes, 8K = 132 MB does not). */
         private const val CPU_PREVIEW_MAX_ARGB_BYTES = 64L * 1024 * 1024
         /** A decoded frame above this many plane bytes (8K) is only queued one deep: heap limit 256 MB. */

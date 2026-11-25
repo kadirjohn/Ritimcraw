@@ -288,6 +288,10 @@ class EncodedYuvPassParityTest {
             ChainCase("Mi-Log P010, everything at once", 4, 3,
                 GradeK().copy(noiseReduction = 30f, chromaDenoise = 40f, sharpness = 25f, detail = 20f,
                     tonemap = 1, exposureEv = -0.3f, tempK = 5200f, tint = -6f)),
+            // The EXPORT shape (E0b-3): full size, no reduction. Appended LAST: the fixture seed follows the case
+            // index, and inserting earlier would change every later case's noise (and its AgX number).
+            ChainCase("Mi-Log P010, full size (export shape)", 4, 1, GradeK().copy(exposureEv = 0.4f, sharpness = 15f)),
+            ChainCase("8-bit sRGB, full size (export shape)", 8, 1, GradeK().copy(exposureEv = -0.3f, noiseReduction = 20f)),
         )
         val session = com.ritim.ritimcraw.export.NativeGpuDevelop.openSession()
         assertTrue("the develop session did not open", session > 0)

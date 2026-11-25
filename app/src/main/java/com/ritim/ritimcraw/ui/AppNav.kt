@@ -99,6 +99,7 @@ import com.ritim.ritimcraw.engine.ExportAbSweep
 import com.ritim.ritimcraw.engine.GradeParitySweep
 import com.ritim.ritimcraw.engine.PreviewMetrics
 import com.ritim.ritimcraw.engine.RenderBackend
+import com.ritim.ritimcraw.engine.SourcePath
 import com.ritim.ritimcraw.engine.SourcePathDecision
 import com.ritim.ritimcraw.ui.components.NavExports
 import com.ritim.ritimcraw.ui.components.NavLibrary
@@ -326,7 +327,19 @@ fun AppNav(
                 gyroPathFor = { sourceId -> stores.gyros.pathFor(stores.sources.get(sourceId)?.gyroId) },
                 // E0: an encoded (Mi-Log / MP4) source decodes through
                 // MediaCodec and shares the rest of the export pipeline.
-                isEncoded = { sourceId -> stores.sources.get(sourceId)?.kind == SourceKind.ENCODED },
+                // The editor's own decision: the stored kind is authoritative for ENCODED, the container mime is
+                // the rescue for clips imported as MCRAW before detection existed (a library MP4 recorded as
+                // kind=MCRAW opened fine in the editor but its export failed at "open: badHeader" because the
+                // queue only looked at the kind; found with the first encoded export on the device, 2026-11-25).
+                isEncoded = { sourceId ->
+                    val rec = stores.sources.get(sourceId)
+                    rec != null && SourcePathDecision.decide(
+                        rec.kind,
+                        rec.uri.let { u ->
+                            try { context.contentResolver.getType(Uri.parse(u)) } catch (e: Exception) { null }
+                        },
+                    ) == SourcePath.ENCODED
+                },
                 // AUD-02: the job's sourceId -> the source's CURRENT link
                 // state, resolved once per export (AudioProject.link's
                 // absent-record default is ATTACHED, so a source without
