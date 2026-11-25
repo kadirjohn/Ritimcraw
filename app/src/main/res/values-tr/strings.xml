@@ -584,6 +584,7 @@
 
     <!-- E2 Library delete: how many clips the confirm dialog removes. -->
     <plurals name="library_delete_message">
+        <item quantity="one">1 klip kitaplıktan kaldırılacak. Özgün dosya cihazınızda kalır.</item>
         <item quantity="other">%1$d klip kitaplıktan kaldırılacak. Özgün dosyalar cihazınızda kalır.</item>
     </plurals>
     <string name="settings_system_monitor">Sistem monitörü</string>
@@ -617,6 +618,7 @@
     <string name="settings_expanded">Genişletildi</string>
     <string name="settings_collapsed">Daraltıldı</string>
     <plurals name="settings_device_report_codec_count">
+        <item quantity="one">%1$d codec</item>
         <item quantity="other">%1$d codec</item>
     </plurals>
     <string name="settings_device_report_summary">bu cihazdaki video codec\'leri</string>
