@@ -37,7 +37,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
+import androidx.compose.foundation.clickable
+import androidx.compose.runtime.mutableStateOf
 import com.ritim.ritimcraw.data.ThemeMode
+import com.ritim.ritimcraw.ui.theme.ThemePalettes
+import com.ritim.ritimcraw.ui.theme.ThemeSelection
 import com.ritim.ritimcraw.engine.CodecProbe
 import com.ritim.ritimcraw.engine.CodecReport
 import com.ritim.ritimcraw.engine.PreviewQuality
@@ -188,6 +192,8 @@ fun SettingsScreen(
     // preview working.
     themeMode: ThemeMode = ThemeMode.DEFAULT,
     onThemeModeChange: (ThemeMode) -> Unit = {},
+    customThemeId: String = ThemePalettes.DEFAULT_ID,
+    onCustomThemePick: (String) -> Unit = {},
     // ---- System monitor strip (owner request 2026-11-23) ----
     // The top GPU/CPU/RAM/storage strip's visibility; AppNav persists it
     // (SystemMonitorStore) and shows/hides the strip above every screen.
@@ -481,24 +487,26 @@ fun SettingsScreen(
             // 2 = Dark — the spec's VISUAL order only; the stored
             // enum and its values are untouched, the mapping lives
             // here at the call site.
-            val themeSlots = listOf(
-                ThemeMode.LIGHT,
-                ThemeMode.SYSTEM,
-                ThemeMode.DARK,
-            )
+            // Slot 0 is the custom "C" (owner request 2026-11-25): tap or
+            // drag onto it activates the last custom theme; the Theme
+            // row itself opens the custom-theme picker.
+            val themeSlots = ThemeSelection.slots
+            var showThemePicker by remember { mutableStateOf(false) }
+            val customName = ThemePalettes.resolve(customThemeId).name
             val slotNames = mapOf(
+                ThemeMode.CUSTOM to customName,
                 ThemeMode.LIGHT to stringResource(R.string.settings_theme_light),
                 ThemeMode.SYSTEM to stringResource(R.string.settings_theme_system),
                 ThemeMode.DARK to stringResource(R.string.settings_theme_dark),
             )
             var displaySlot by remember(themeMode) {
-                mutableIntStateOf(themeSlots.indexOf(themeMode).coerceAtLeast(0))
+                mutableIntStateOf(ThemeSelection.slotOf(themeMode))
             }
             SettingsGroupItem(index = 0, count = 2) {
                 SettingRowBase(
                     icon = Contrast,
                     title = stringResource(R.string.settings_theme),
-                    hint = slotNames[themeSlots[displaySlot.coerceIn(0, 2)]],
+                    hint = slotNames[themeSlots[displaySlot.coerceIn(0, themeSlots.lastIndex)]],
                     // Spec row: the 168dp pill fits the group at readable
                     // widths. The spec's "end padding 12dp (not 16dp)"
                     // was expressed as a NEGATIVE padding on the row —
@@ -507,8 +515,12 @@ fun SettingsScreen(
                     // component's own 16dp padding and no offset is
                     // applied: the pill's trailing slot simply sits at
                     // the standard inset.
-                    modifier = Modifier.fillMaxWidth(),
-                    // Single-line non-tappable row: the spec's 14dp
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            onClickLabel = stringResource(R.string.settings_theme_open_picker),
+                        ) { showThemePicker = true },
+                    // Single-line row: the spec's 14dp
                     // vertical exception (the base default). The slider
                     // rides the TRAILING slot: SettingRowBase has no
                     // content slot, and its last parameter is
@@ -516,19 +528,31 @@ fun SettingsScreen(
                     // THERE (the compile error this comment replaced).
                     trailing = {
                         ThemeSlider(
-                            selectedIndex = themeSlots.indexOf(themeMode).coerceAtLeast(0),
+                            selectedIndex = ThemeSelection.slotOf(themeMode),
                             onCommit = { slot -> onThemeModeChange(themeSlots[slot]) },
                             onDisplayIndexChange = { slot -> displaySlot = slot },
                             sliderLabel = stringResource(R.string.settings_theme_slider),
                             previousLabel = stringResource(R.string.settings_theme_previous),
                             nextLabel = stringResource(R.string.settings_theme_next),
                             stateLabels = listOf(
+                                stringResource(R.string.settings_theme_custom),
                                 stringResource(R.string.settings_theme_light),
                                 stringResource(R.string.settings_theme_system),
                                 stringResource(R.string.settings_theme_dark),
                             ),
                         )
                     },
+                )
+            }
+            if (showThemePicker) {
+                CustomThemePickerDialog(
+                    currentId = customThemeId,
+                    customActive = themeMode == ThemeMode.CUSTOM,
+                    onPick = { id ->
+                        onCustomThemePick(id)
+                        showThemePicker = false
+                    },
+                    onDismiss = { showThemePicker = false },
                 )
             }
             SettingRowSwitch(

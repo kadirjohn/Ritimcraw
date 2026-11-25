@@ -16,6 +16,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import com.ritim.ritimcraw.ui.theme.SystemBars
 import com.ritim.ritimcraw.ui.theme.SystemBarIconsEffect
+import com.ritim.ritimcraw.ui.theme.ThemePalettes
+import com.ritim.ritimcraw.ui.theme.ThemeSelection
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalConfiguration
@@ -191,6 +193,8 @@ private const val EXPORT_FILE_PROVIDER_AUTHORITY = "com.ritim.ritimcraw.fileprov
 fun AppNav(
     themeMode: ThemeMode = ThemeMode.DEFAULT,
     onThemeModeChange: (ThemeMode) -> Unit = {},
+    customThemeId: String = ThemePalettes.DEFAULT_ID,
+    onCustomThemePick: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     // The system-monitor strip's visibility (Settings > Appearance),
@@ -1226,7 +1230,7 @@ fun AppNav(
     // dark in both modes, so they keep light icons.
     SystemBarIconsEffect(
         lightIcons = SystemBars.lightIcons(
-            darkTheme = themeMode.isDark(isSystemInDarkTheme()),
+            darkTheme = ThemeSelection.isDark(themeMode, customThemeId, isSystemInDarkTheme()),
             darkChrome = editorRoute != null || timelineOpen,
         ),
     )
@@ -2502,6 +2506,8 @@ fun AppNav(
                                 systemMonitorVisible = visible
                             },
                             onThemeModeChange = onThemeModeChange,
+                            customThemeId = customThemeId,
+                            onCustomThemePick = onCustomThemePick,
                         )
                     }
                 }
