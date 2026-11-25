@@ -707,6 +707,198 @@ ImageF demosaicBilinear(const std::vector<float>& cfa, uint32_t w, uint32_t h, C
     return img;
 }
 
+// ---- Highlight recovery (docs/HIGHLIGHT_RECOVERY_PLAN.md) ----
+namespace {
+
+// Sums of a (w x h) double field over (2r+1)^2 boxes, clamped at the borders, via an integral image.
+void boxSumsFullRes(const std::vector<double>& src, uint32_t w, uint32_t h, int r, std::vector<double>& out) {
+    const size_t W1 = static_cast<size_t>(w) + 1;
+    std::vector<double> integ(W1 * (static_cast<size_t>(h) + 1), 0.0);
+    for (uint32_t y = 0; y < h; ++y) {
+        double row = 0.0;
+        for (uint32_t x = 0; x < w; ++x) {
+            row += src[static_cast<size_t>(y) * w + x];
+            integ[(static_cast<size_t>(y) + 1) * W1 + x + 1] = integ[static_cast<size_t>(y) * W1 + x + 1] + row;
+        }
+    }
+    out.assign(static_cast<size_t>(w) * h, 0.0);
+    for (uint32_t y = 0; y < h; ++y) {
+        const int y0 = std::max(0, static_cast<int>(y) - r), y1 = std::min(static_cast<int>(h) - 1, static_cast<int>(y) + r);
+        for (uint32_t x = 0; x < w; ++x) {
+            const int x0 = std::max(0, static_cast<int>(x) - r), x1 = std::min(static_cast<int>(w) - 1, static_cast<int>(x) + r);
+            out[static_cast<size_t>(y) * w + x] =
+                integ[static_cast<size_t>(y1 + 1) * W1 + x1 + 1] - integ[static_cast<size_t>(y0) * W1 + x1 + 1] -
+                integ[static_cast<size_t>(y1 + 1) * W1 + x0] + integ[static_cast<size_t>(y0) * W1 + x0];
+        }
+    }
+}
+
+// Block sums (block x block pixels) then the 3x3 block neighbourhood sum, looked up per pixel.
+void blockNeighbourhoodSums(const std::vector<double>& src, uint32_t w, uint32_t h, int block, std::vector<double>& out) {
+    const int bw = (static_cast<int>(w) + block - 1) / block, bh = (static_cast<int>(h) + block - 1) / block;
+    std::vector<double> bs(static_cast<size_t>(bw) * bh, 0.0), ns(static_cast<size_t>(bw) * bh, 0.0);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x)
+            bs[static_cast<size_t>(y / block) * bw + x / block] += src[static_cast<size_t>(y) * w + x];
+    for (int by = 0; by < bh; ++by)
+        for (int bx = 0; bx < bw; ++bx) {
+            double a = 0.0;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int yy = by + dy, xx = bx + dx;
+                    if (yy >= 0 && yy < bh && xx >= 0 && xx < bw) a += bs[static_cast<size_t>(yy) * bw + xx];
+                }
+            ns[static_cast<size_t>(by) * bw + bx] = a;
+        }
+    out.assign(static_cast<size_t>(w) * h, 0.0);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x)
+            out[static_cast<size_t>(y) * w + x] = ns[static_cast<size_t>(y / block) * bw + x / block];
+}
+
+}  // namespace
+
+void recoverClippedHighlights(ImageF& img, const ImageF& clipMask) {
+    const uint32_t w = img.w, h = img.h;
+    if (w == 0 || h == 0 || clipMask.w != w || clipMask.h != h) return;
+    const size_t n = static_cast<size_t>(w) * h;
+
+    // Scales: 9x9 box at full resolution, then 3x3 block neighbourhoods on 8/32/128/512-pixel blocks (24..1536 px).
+    // A scale is usable at a pixel when its unclipped-pair support is at least 5% of its area.
+    struct Scale { int kind; int param; double minSupport; };
+    constexpr int kScales = 5;
+    constexpr double fsup = 0.05;  // a scale needs >= 5% of its area as unclipped-pair support
+    const Scale scales[kScales] = {
+        {0, 4, fsup * 81.0},
+        {1, 8, fsup * 9.0 * 64.0},
+        {1, 32, fsup * 9.0 * 1024.0},
+        {1, 128, fsup * 9.0 * 16384.0},
+        {1, 512, fsup * 9.0 * 262144.0},
+    };
+    constexpr float kEps = 1e-4f;
+
+    std::vector<uint8_t> clipped(n * 3, 0);
+    for (size_t i = 0; i < n; ++i)
+        for (int c = 0; c < 3; ++c) clipped[i * 3 + c] = clipMask.rgb[i * 3 + c] >= 0.5f ? 1 : 0;
+
+    // ratio[c][r][i] = estimated v_c / v_r near pixel i, or -1 when no scale has support.
+    std::vector<float> ratio[3][3];
+    bool needPair[3][3] = {};
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t* cf = &clipped[i * 3];
+        const int nc = cf[0] + cf[1] + cf[2];
+        if (nc == 0 || nc == 3) continue;
+        int r;
+        if (!cf[1]) r = 1;
+        else r = (img.rgb[i * 3 + 0] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+        for (int c = 0; c < 3; ++c)
+            if (cf[c]) needPair[c][r] = true;
+    }
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r) {
+            if (!needPair[c][r]) continue;
+            std::vector<double> wv(n), a(n), b(n);
+            for (size_t i = 0; i < n; ++i) {
+                const float vc = img.rgb[i * 3 + c], vr = img.rgb[i * 3 + r];
+                const bool ok = !clipped[i * 3 + c] && !clipped[i * 3 + r] && vr > kEps && vc >= 0.0f;
+                wv[i] = ok ? 1.0 : 0.0;
+                a[i] = ok ? vc : 0.0;
+                b[i] = ok ? vr : 0.0;
+            }
+            std::vector<double> W[kScales], A[kScales], B[kScales];
+            for (int s = 0; s < kScales; ++s) {
+                if (scales[s].kind == 0) {
+                    boxSumsFullRes(wv, w, h, scales[s].param, W[s]);
+                    boxSumsFullRes(a, w, h, scales[s].param, A[s]);
+                    boxSumsFullRes(b, w, h, scales[s].param, B[s]);
+                } else {
+                    blockNeighbourhoodSums(wv, w, h, scales[s].param, W[s]);
+                    blockNeighbourhoodSums(a, w, h, scales[s].param, A[s]);
+                    blockNeighbourhoodSums(b, w, h, scales[s].param, B[s]);
+                }
+            }
+            ratio[c][r].assign(n, -1.0f);
+            for (size_t i = 0; i < n; ++i)
+                for (int s = 0; s < kScales; ++s)
+                    if (W[s][i] >= scales[s].minSupport && B[s][i] > 0.0) {
+                        ratio[c][r][i] = static_cast<float>(A[s][i] / B[s][i]);
+                        break;
+                    }
+        }
+
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t* cf = &clipped[i * 3];
+        const int nc = cf[0] + cf[1] + cf[2];
+        float* px = &img.rgb[i * 3];
+        if (nc == 0) continue;
+        if (nc == 3) {
+            const float m = std::min(px[0], std::min(px[1], px[2]));
+            px[0] = px[1] = px[2] = m;  // no information: neutral at the lowest level, nothing invented
+            continue;
+        }
+        int r;
+        if (!cf[1]) r = 1;
+        else r = (px[0] >= px[2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+        const float vr = px[r];
+        float out[3] = {px[0], px[1], px[2]};
+        for (int c = 0; c < 3; ++c) {
+            if (!cf[c]) continue;
+            const float rho = ratio[c][r].empty() ? -1.0f : ratio[c][r][i];
+            if (rho > 0.0f) out[c] = std::max(px[c], vr * rho);  // the clipped value is a lower bound
+        }
+        px[0] = out[0]; px[1] = out[1]; px[2] = out[2];
+    }
+}
+
+RecoveryClipLevels recoveryClipLevels(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta) {
+    RecoveryClipLevels out;  // thresholds default to "none" (> 1)
+    const uint32_t w = info.width, h = info.height;
+    if (w == 0 || h == 0 || cfa == nullptr) return out;
+    // Stage-1 level resolution, identical to developCpu.
+    const bool useFrameBlack = info.dynamicBlack[0] >= 0;
+    const float white = info.dynamicWhite > 0 ? static_cast<float>(info.dynamicWhite) : static_cast<float>(meta.white);
+    float black[4], range[4];
+    for (int slot = 0; slot < 4; ++slot) {
+        black[slot] = useFrameBlack ? static_cast<float>(info.dynamicBlack[slot]) : static_cast<float>(meta.black[slot]);
+        range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
+    }
+    const CfaLayout layout = layoutFor(info.cfa);
+    float maxNorm[3] = {0.0f, 0.0f, 0.0f};
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const int slot = cellSlot(y & 1, x & 1);
+            const float v = std::min(std::max((static_cast<float>(cfa[static_cast<size_t>(y) * w + x]) - black[slot]) / range[slot], 0.0f), 1.0f);
+            const int color = layout.cell[y & 1][x & 1];
+            if (v > maxNorm[color]) maxNorm[color] = v;
+        }
+    // Plateau count: sites within kBand of the channel maximum.
+    constexpr float kBand = 0.004f;
+    uint64_t plateau[3] = {0, 0, 0};
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const int slot = cellSlot(y & 1, x & 1);
+            const float v = std::min(std::max((static_cast<float>(cfa[static_cast<size_t>(y) * w + x]) - black[slot]) / range[slot], 0.0f), 1.0f);
+            const int color = layout.cell[y & 1][x & 1];
+            if (v >= maxNorm[color] - kBand) ++plateau[color];
+        }
+    constexpr uint64_t kMinPlateau = 16;
+    // Green saturates first on real sensors: its plateau must sit near the top of the range.
+    const bool gClipped = maxNorm[1] >= 0.9f && plateau[1] >= kMinPlateau;
+    if (gClipped) out.threshold[1] = maxNorm[1] - kBand;
+    else if (maxNorm[1] >= kRecoveryClipThreshold) out.threshold[1] = kRecoveryClipThreshold;
+    // Red/blue: either truly saturated, or capped at the green clip level times the as-shot neutral ratio (the
+    // capture pipelines neutralise clipped regions that way), within 1%.
+    for (int c = 0; c < 3; c += 2) {
+        if (maxNorm[c] >= kRecoveryClipThreshold) { out.threshold[c] = kRecoveryClipThreshold; continue; }
+        if (!gClipped || plateau[c] < kMinPlateau) continue;
+        const float gN = meta.asShotNeutral[1] > 0.0f ? meta.asShotNeutral[1] : 1.0f;
+        const float cN = meta.asShotNeutral[c] > 0.0f ? meta.asShotNeutral[c] : 1.0f;
+        const float expected = maxNorm[1] * cN / gN;
+        if (std::fabs(maxNorm[c] - expected) <= 0.01f * std::max(expected, 1e-3f)) out.threshold[c] = maxNorm[c] - kBand;
+    }
+    return out;
+}
+
 ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut, const CompiledLutBinding* binding) {
     const uint32_t w = info.width;
     const uint32_t h = info.height;
@@ -752,6 +944,19 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         }
     });
 
+    // Highlight recovery needs the raw clip mask measured BEFORE lens shading (the sensor saturates at
+    // the raw level, not at the shaded one); built here, consumed after the demosaic.
+    std::vector<float> clipMaskCfa;
+    if (grade.highlightRecovery) {
+        const RecoveryClipLevels levels = recoveryClipLevels(cfa, info, meta);
+        clipMaskCfa.resize(n);
+        for (uint32_t y = 0; y < h; ++y)
+            for (uint32_t x = 0; x < w; ++x) {
+                const size_t i = static_cast<size_t>(y) * w + x;
+                clipMaskCfa[i] = norm[i] >= levels.threshold[layout.cell[y & 1][x & 1]] ? 1.0f : 0.0f;
+            }
+    }
+
     // Stage 2: lens shading gain (bilinear on the shading map in sensor
     // coordinates; identity when the map is empty). Skipped when the grade
     // asks to KEEP the optical vignette (grade.keepVignetting false) — the
@@ -785,7 +990,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // Toggleable (RAW-04): grade.highlightReconstruction false skips this
     // stage entirely, so clipped sites keep their raw clipped level and can
     // read magenta — the sensor-channel artifact the owner wants optional.
-    if (grade.highlightReconstruction) {
+    if (grade.highlightReconstruction && !grade.highlightRecovery) {
         const float gain[3] = {
             meta.wbGains[0] > 0.0f ? meta.wbGains[0] : 1.0f,
             meta.wbGains[1] > 0.0f ? meta.wbGains[1] : 1.0f,
@@ -855,6 +1060,24 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // ---- Stage 4: bilinear demosaic. ----
     img = demosaicBilinear(norm, w, h, info.cfa);
 
+    // Recovery replaces stage 3: white-balance the camera RGB first (the same division stage 5 does), then
+    // re-estimate the clipped channels; stage 5 below then skips its own division.
+    const bool recovery = grade.highlightRecovery;
+    if (recovery) {
+        const ImageF clipMask = demosaicBilinear(clipMaskCfa, w, h, info.cfa);
+        const float inv[3] = {
+            meta.asShotNeutral[0] > 0.0f ? 1.0f / meta.asShotNeutral[0] : 1.0f,
+            meta.asShotNeutral[1] > 0.0f ? 1.0f / meta.asShotNeutral[1] : 1.0f,
+            meta.asShotNeutral[2] > 0.0f ? 1.0f / meta.asShotNeutral[2] : 1.0f,
+        };
+        for (size_t i = 0; i < img.rgb.size(); i += 3) {
+            img.rgb[i + 0] *= inv[0];
+            img.rgb[i + 1] *= inv[1];
+            img.rgb[i + 2] *= inv[2];
+        }
+        recoverClippedHighlights(img, clipMask);
+    }
+
     // ---- Stage 5+6: white balance + camera color transform (DNG 1.6 §6). ----
     // The container's ColorMatrix1 maps XYZ -> native camera RGB: multiplying
     // it onto camera RGB (the old code) inverts the wrong direction and puts
@@ -873,10 +1096,11 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         float cam2rgb[9];
         const bool hasProfile = buildCameraToRec709(meta, cam2rgb);
 
+        // (recovery already applied the WB division above: 1.0f here keeps the arithmetic path identical.)
         const float invNeutral[3] = {
-            meta.asShotNeutral[0] > 0.0f ? 1.0f / meta.asShotNeutral[0] : 1.0f,
-            meta.asShotNeutral[1] > 0.0f ? 1.0f / meta.asShotNeutral[1] : 1.0f,
-            meta.asShotNeutral[2] > 0.0f ? 1.0f / meta.asShotNeutral[2] : 1.0f,
+            !recovery && meta.asShotNeutral[0] > 0.0f ? 1.0f / meta.asShotNeutral[0] : 1.0f,
+            !recovery && meta.asShotNeutral[1] > 0.0f ? 1.0f / meta.asShotNeutral[1] : 1.0f,
+            !recovery && meta.asShotNeutral[2] > 0.0f ? 1.0f / meta.asShotNeutral[2] : 1.0f,
         };
 
         for (size_t i = 0; i < img.rgb.size(); i += 3) {
