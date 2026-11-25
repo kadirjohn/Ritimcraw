@@ -4,6 +4,7 @@ import com.ritim.ritimcraw.data.grade2.ClipGradeV2
 import com.ritim.ritimcraw.data.grade2.GradeV2Fiber
 import com.ritim.ritimcraw.data.grade2.toClipGradeV2
 import com.ritim.ritimcraw.data.grade2.toGradeK
+import com.ritim.ritimcraw.data.grade2.toGradeKLenient
 import java.io.File
 import java.nio.charset.StandardCharsets
 
@@ -244,7 +245,11 @@ class GradeStore(private val file: File) {
     private val lock = Any()
 
     fun get(sourceId: String): GradeK {
-        return synchronized(lock) { load()[sourceId] ?: GradeK() }
+        return synchronized(lock) {
+            // A clip whose record carries a node chain / OpenDRT output has no strict GradeK twin (the strict
+            // adapter refuses it): read the slider fields leniently so they do not vanish.
+            load()[sourceId] ?: getV2(sourceId)?.toGradeKLenient() ?: GradeK()
+        }
     }
 
     /** Persists immediately. */
@@ -259,6 +264,34 @@ class GradeStore(private val file: File) {
             val grades = rawGradesSection().toMutableMap()
             grades[sourceId] = renderedV2Record(grade.toClipGradeV2())
             writeRaw(grades)
+        }
+    }
+
+    /**
+     * The editor's per-edit write once nodes exist (F1-8a, 2026-11-25): [put] with a [GradeK] replaces the clip's
+     * WHOLE record with the grade's v2 twin, which has no node chain, so a slider move on a clip that has nodes
+     * would have deleted them. This keeps the clip's own node chain, its output mode + OpenDRT block and its
+     * transform extras and takes only what a [GradeK] can express (develop, legacy tone/LUT fields) from [grade].
+     * A clip without a stored v2 record behaves exactly like [put].
+     */
+    fun putPreservingChain(sourceId: String, grade: GradeK) {
+        synchronized(lock) {
+            val old = getV2(sourceId)
+            val fresh = grade.toClipGradeV2()
+            val merged = if (old == null) fresh else fresh.copy(
+                nodes = old.nodes,
+                output = fresh.output.copy(mode = old.output.mode, opendrt = old.output.opendrt),
+                transform = old.transform,
+            )
+            put(sourceId, merged)
+        }
+    }
+
+    /** Replaces the clip's node chain (everything else of its record kept); a clip without a v2 record starts from its [GradeK] twin. */
+    fun putNodes(sourceId: String, nodes: List<com.ritim.ritimcraw.data.grade2.GradeNodeV2>) {
+        synchronized(lock) {
+            val base = getV2(sourceId) ?: get(sourceId).toClipGradeV2()
+            put(sourceId, base.copy(nodes = nodes))
         }
     }
 

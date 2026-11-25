@@ -652,4 +652,10 @@
     <string name="node_menu_reset">Sıfırla</string>
     <string name="node_menu_duplicate">Çoğalt</string>
     <string name="node_menu_delete">Sil</string>
+    <string name="editor_color_subtab_nodes">Düğümler</string>
+    <string name="nodes_empty">Henüz düğüm yok. + ile ekleyin.</string>
+    <string name="node_name_label">Ad</string>
+    <string name="node_adjust_contrast">Kontrast</string>
+    <string name="node_adjust_hue">Ton</string>
+    <string name="node_adjust_mix">Karışım</string>
 </resources>

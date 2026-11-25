@@ -42,6 +42,34 @@ class GradeStoreTest {
     }
 
     @Test
+    fun a_slider_write_keeps_the_clips_own_node_chain_and_output_block() {
+        val file = projectFile()
+        val store = GradeStore(file)
+        val nodes = listOf(
+            com.ritim.ritimcraw.data.grade2.GradeNodeV2(sat = 1.3f, name = "Sky"),
+            com.ritim.ritimcraw.data.grade2.GradeNodeV2(contrast = 1.2f),
+        )
+        store.put("c1", GradeK(exposureEv = 0.5f))
+        store.putNodes("c1", nodes)
+        // The old path wipes the chain (documented): this is what putPreservingChain exists to avoid.
+        store.putPreservingChain("c1", GradeK(exposureEv = 1.5f, highlights = -20f))
+        val reloaded = GradeStore(file)
+        assertEquals(1.5f, reloaded.get("c1").exposureEv, 0f)
+        assertEquals(-20f, reloaded.get("c1").highlights, 0f)
+        val v2 = reloaded.getV2("c1")!!
+        assertEquals(2, v2.nodes.size)
+        assertEquals(1.3f, v2.nodes[0].sat, 0f)
+        assertEquals("Sky", v2.nodes[0].name)
+        // A clip without a record is a plain put.
+        reloaded.putPreservingChain("c2", GradeK(tempK = 3200f))
+        assertEquals(3200f, GradeStore(file).get("c2").tempK, 0f)
+        // Another clip's chain is untouched by a write on this one.
+        reloaded.putNodes("c3", nodes.take(1))
+        reloaded.putPreservingChain("c1", GradeK(exposureEv = 2f))
+        assertEquals(1, GradeStore(file).getV2("c3")!!.nodes.size)
+    }
+
+    @Test
     fun put_persists_every_write() {
         val file = projectFile()
         val store = GradeStore(file)

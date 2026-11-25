@@ -645,4 +645,64 @@ class EncodedYuvPassParityTest {
             readerThread.quitSafely()
         }
     }
+
+    @Test
+    fun a_node_chain_changes_the_preview_window_door_output() {
+        val session = NativeSource.jniPreviewSessionOpen(
+            GlesShaderSources.FULLSCREEN_VERTEX, GlesShaderSources.FULLSCREEN_VERTEX_310,
+            GlesShaderSources.DEVELOP_FRAGMENT_PRE, GlesShaderSources.DEVELOP_FRAGMENT_POST,
+            GlesShaderSources.DEVELOP_FRAGMENT_TAIL, GlesShaderSources.SHARPNESS_H, GlesShaderSources.SHARPNESS_V,
+            GlesShaderSources.DETAIL_H, GlesShaderSources.DETAIL_V, GlesShaderSources.WARP,
+            GlesShaderSources.NR_CHROMA_H, GlesShaderSources.NR_CHROMA_V, GlesShaderSources.NR_LUMA,
+            GlesShaderSources.STORE_FRAGMENT, GlesShaderSources.WINDOW_FRAGMENT,
+        )
+        assertTrue("preview session did not open", session != 0L)
+        val readerThread = android.os.HandlerThread("window-node-reader").apply { start() }
+        val reader = android.media.ImageReader.newInstance(640, 360, android.graphics.PixelFormat.RGBA_8888, 3)
+        reader.setOnImageAvailableListener({ r -> r.acquireLatestImage()?.close() }, android.os.Handler(readerThread.looper))
+        try {
+            assertTrue("surface attach failed", NativeSource.jniPreviewSessionSetSurface(session, reader.surface))
+            val init = NativeSource.jniPreviewSessionInitNodes(
+                session, GlesShaderSources.NODES, GlesShaderSources.FULLSCREEN_VERTEX,
+                GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+            )
+            assertTrue("preview session NODES programs did not compile (${NativeSource.previewLastError()})",
+                init != null && init.isNotEmpty() && init[0] == 1)
+            val base = cases[8]
+            val f = fixture(640, 360, base.bits, 0x9191)
+            val spec = EncodedColorSpec(
+                profile = SourceProfile(
+                    primaries = base.primaries, transfer = base.transfer, matrix = base.matrix,
+                    range = if (base.full) SourceRange.Full else SourceRange.Limited, bitDepth = base.bits,
+                    primariesProvenance = null, transferProvenance = null, matrixProvenance = null,
+                    rangeProvenance = null, bitDepthProvenance = null,
+                ),
+                declaredBitDepth = base.bits,
+            )
+            fun render(): IntArray? = NativeSource.jniPreviewSessionRenderYuvParcel(
+                session, f.y, f.c, f.w, f.h, f.stride, f.uvStride, base.bits, base.full,
+                spec.nativeMatrix, spec.nativeTransfer, spec.nativePrimaries, 1,
+                GradeParcel.encode(GradeK()), null, 0f, -1, -1, -1, -1, -1,
+                PreviewStatsMode.SYNC.native, false, floatArrayOf(0f, 0f, 1f, 1f, 0f), false, 253, 12, 200f / 255f,
+            )
+            fun sum(p: IntArray): Long { var s = 0L; for (i in 2 until 2 + p[0] * p[1]) { val a = p[i]; s += ((a shr 16) and 255) + ((a shr 8) and 255) * 3 + (a and 255) }; return s }
+            assertTrue("clear chain", NativeSource.jniPreviewSessionSetColorModelChain(session, NodeChainWire.encode(com.ritim.ritimcraw.data.grade2.ClipGradeV2(), emptyList()), null))
+            val plain = render()
+            val wire = NodeChainWire.encode(com.ritim.ritimcraw.data.grade2.ClipGradeV2(), listOf(com.ritim.ritimcraw.data.grade2.GradeNodeV2(sat = 0.0f, contrast = 1.6f)))
+            assertTrue("set chain (${NativeSource.previewLastError()})", NativeSource.jniPreviewSessionSetColorModelChain(session, wire, null))
+            val noded = render()
+            assertNotNull("plain render", plain); assertNotNull("node render (${NativeSource.previewLastError()})", noded)
+            var diff = 0
+            for (i in 2 until 2 + plain!![0] * plain[1]) {
+                val a = plain[i]; val b = noded!![i]
+                diff = maxOf(diff, Math.abs(((a shr 16) and 255) - ((b shr 16) and 255)), Math.abs(((a shr 8) and 255) - ((b shr 8) and 255)), Math.abs((a and 255) - (b and 255)))
+            }
+            Log.i("ritim-parity", "e0b-wnode max channel diff = $diff (plain sum=${sum(plain)} noded sum=${sum(noded!!)})")
+            assertTrue("the node chain did not change the preview window door output (diff=$diff)", diff > 8)
+        } finally {
+            NativeSource.jniPreviewSessionClose(session)
+            reader.close()
+            readerThread.quitSafely()
+        }
+    }
 }

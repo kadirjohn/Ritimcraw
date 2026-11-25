@@ -127,7 +127,7 @@ private fun NodeChip(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                stringResource(R.string.node_strip_node, number),
+                node.name ?: stringResource(R.string.node_strip_node, number),
                 color = if (selected) scheme.onPrimaryContainer else scheme.onSurface,
                 style = MaterialTheme.typography.labelLarge,
                 maxLines = 1,

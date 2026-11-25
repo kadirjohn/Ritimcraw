@@ -67,11 +67,11 @@ class EditorCategoriesTest {
 
     @Test
     fun color_subtabs_in_row_order() {
-        // The Color tab's three segments in SecondaryTabRow order; the
+        // The Color tab's four segments in SecondaryTabRow order (Nodes added by F1-8a); the
         // pinned row composes from this list, so the order here IS the
         // order on screen.
         assertEquals(
-            listOf(0, 1, 2),
+            listOf(0, 1, 2, 3),
             EditorCategories.COLOR_SUBTABS,
         )
     }
@@ -87,7 +87,7 @@ class EditorCategoriesTest {
             EditorCategories.visibleColorSubTabs(showColorTools = true),
         )
         assertEquals(
-            listOf(EditorCategories.COLOR_BALANCE, EditorCategories.COLOR_LOOK),
+            listOf(EditorCategories.COLOR_BALANCE, EditorCategories.COLOR_LOOK, EditorCategories.COLOR_NODES),
             EditorCategories.visibleColorSubTabs(showColorTools = false),
         )
     }
@@ -126,7 +126,7 @@ class EditorCategoriesTest {
         // anything: the sanitizer resolves to the first visible sub-tab
         // (Balance on both clip kinds), never an IndexOutOfBounds, never
         // a selected index outside the composed list.
-        for (garbage in listOf(-1, 3, 99, Int.MIN_VALUE, Int.MAX_VALUE)) {
+        for (garbage in listOf(-1, 4, 99, Int.MIN_VALUE, Int.MAX_VALUE)) {
             assertEquals(
                 EditorCategories.COLOR_BALANCE,
                 EditorCategories.sanitizeColorSubTab(garbage, showColorTools = true),

@@ -614,6 +614,16 @@ internal object NodeParcelGlueness {
 fun ClipGradeV2.toGradeK(): GradeK? {
     if (output.mode != OutputTransformV2.MODE_LEGACY) return null
     if (nodes.isNotEmpty()) return null
+    return toGradeKLenient()
+}
+
+/**
+ * The develop + legacy-tone fields of this record as a [GradeK], IGNORING the node chain and a non-legacy output
+ * (the strict [toGradeK] refuses those, which made the editor read a clip that has nodes as neutral: its slider
+ * values vanished and the next edit wrote the neutral values back). The nodes/output travel separately
+ * (GradeStore.getV2, putPreservingChain); this is only what the legacy sliders show.
+ */
+fun ClipGradeV2.toGradeKLenient(): GradeK {
     val t = transform
     return GradeK(
         version = GradeK.SCHEMA_VERSION,
