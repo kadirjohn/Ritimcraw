@@ -10,7 +10,7 @@ import com.ritim.ritimcraw.data.GradeK
 // offsets.
 
 /**
- * The grade parcel: the 29 SCALAR grade fields as ONE flat FloatArray
+ * The grade parcel: the 30 SCALAR grade fields as ONE flat FloatArray
  * crossing the JNI seam (the per-frame parameter collapse). One source of
  * truth - the schema in tools/gen-grade-parcel.py - generates BOTH this
  * object and the C++ mirror (gles/GradeParcel.h, the gles::DevelopGrade

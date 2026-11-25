@@ -18,7 +18,7 @@ import kotlin.math.abs
  *
  * THE MECHANISM: the wire is a hand-written mirror PAIR — NodeChainWire.kt
  * (this side) and app/src/main/cpp/gles/NodeChainWire.h (the C++ side).
- * The GRADE parcel's generator owns the 29 scalar slots only, so this
+ * The GRADE parcel's generator owns the 30 scalar slots only, so this
  * test cross-checks the committed C++ header's constants against the
  * Kotlin ones (the NodeParcelTest pattern), pins the ENCODER's layout
  * (header/stride/curve-mask/output block, slot by slot), the honest

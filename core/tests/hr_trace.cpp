@@ -2,7 +2,8 @@
 // 261124_144344 at ~00:02; measure instead of guessing which stage pushes a channel below 0 / above 1).
 //
 // Usage: hr_trace <clip.mcraw> <frame> [x y] [exposureEv highlights chromaDenoise noiseReduction]
-// Defaults are the clip's saved grade at the time of the screenshot: Gain +1.1 EV, Highlights -100 (legacy knee 0.75),
+// Defaults are the clip's saved grade at the time of the screenshot: Gain +1.1 EV, Highlights -100 (knee was 0.75 then; it
+// is 0.18 since 2026-11-26, so re-running the same grade today traces a slightly different S6/disp than the original run),
 // chroma denoise 61, noise reduction 63, as-shot WB, Neutral stage 3 on. Without x y it searches the developed frame for
 // the most lilac pixel (display R and B above G, bright) and traces that. Stages (cumulative, linear unless noted):
 //   raw  : the 2x2 raw cell around the pixel (codes and normalised)

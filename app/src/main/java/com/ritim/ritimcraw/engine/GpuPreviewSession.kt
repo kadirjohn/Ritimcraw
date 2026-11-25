@@ -79,7 +79,7 @@ interface GpuPreviewDevelop {
      * falls back to the CPU render for THIS and every later frame. Runs
      * on the engine thread.
      *
-     * GRADE PARCEL (commit b): the 29 scalar grade fields cross as ONE
+     * GRADE PARCEL (commit b): the 30 scalar grade fields cross as ONE
      * flat FloatArray — GradeParcel.encode(grade), the GENERATED slot
      * layout (tools/gen-grade-parcel.py is the single source of truth for
      * both sides of the seam). The caller encodes per request, AFTER the

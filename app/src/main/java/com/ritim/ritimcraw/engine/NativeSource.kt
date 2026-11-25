@@ -1059,7 +1059,7 @@ class NativeSource private constructor(
          * session's GL thread — full-res RGB888, row-major, NOT rotated,
          * the same byte shape nativeExportFrameParcel returns. The render
          * takes the fragment-covered grade controls as the GRADE PARCEL
-         * (commit b: the 29 scalar fields as ONE flat FloatArray —
+         * (commit b: the 30 scalar fields as ONE flat FloatArray —
          * GradeParcel.encode; the layout is GENERATED from
          * tools/gen-grade-parcel.py's schema); an uncovered grade cannot
          * express itself through the parcel. Close is idempotent.
@@ -1094,7 +1094,7 @@ class NativeSource private constructor(
 
         /**
          * GRADE PARCEL (commit b): the develop session's render door — the
-         * 29 scalar grade fields as ONE flat FloatArray
+         * 30 scalar grade fields as ONE flat FloatArray
          * (GradeParcel.encode; the layout is GENERATED from
          * tools/gen-grade-parcel.py's schema, the single source of truth
          * for both sides of the seam). The bridge decodes ONCE per call;
@@ -1211,7 +1211,7 @@ class NativeSource private constructor(
 
         /**
          * GRADE PARCEL (commit b): the encoder-surface render door — the
-         * 29 scalar grade fields as ONE flat FloatArray
+         * 30 scalar grade fields as ONE flat FloatArray
          * (GradeParcel.encode; the layout is GENERATED from
          * tools/gen-grade-parcel.py's schema, the single source of truth
          * for both sides of the seam). Same contract as the M5 entry:
@@ -1300,7 +1300,7 @@ class NativeSource private constructor(
 
         /**
          * GRADE PARCEL (commit b): the preview session's render door — the
-         * 29 scalar grade fields as ONE flat FloatArray
+         * 30 scalar grade fields as ONE flat FloatArray
          * (GradeParcel.encode; the layout is GENERATED from
          * tools/gen-grade-parcel.py's schema, the single source of truth
          * for both sides of the seam). The caller encodes per request,

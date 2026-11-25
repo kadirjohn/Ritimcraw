@@ -10,7 +10,7 @@ import java.io.File
 /**
  * The grade parcel's JVM locks (GRADE PARCEL, commit a).
  *
- * THE MECHANISM: the parcel layout (29 scalar slots, wire order, defaults,
+ * THE MECHANISM: the parcel layout (30 scalar slots, wire order, defaults,
  * types) is defined ONCE in tools/gen-grade-parcel.py's SCHEMA; the script
  * GENERATES both mirrors - this side (GradeParcel.kt: the SLOT_* offsets,
  * encode, the validating decode) and the C++ side

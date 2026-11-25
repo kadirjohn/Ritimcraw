@@ -268,7 +268,7 @@ object BackendRules {
      * ACES fit and every AgX mode (1-5) behind uTonemap, the CPU's
      * exact math, so an active tonemap grade no longer forces the CPU
      * path. Stage 15 left it with the highlights port: the shader
-     * carries the CPU stage-15 shoulder (knee 0.75, the monotone
+     * carries the CPU stage-15 shoulder (knee 0.18, the monotone
      * shoulder, the uniform gain) behind uHighlights, so an active
      * highlights grade no longer forces the CPU path. The ten pointwise
      * grade stages (9-13, 16-20) left it with the pointwise port: the

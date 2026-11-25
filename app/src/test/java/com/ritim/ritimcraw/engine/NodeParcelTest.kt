@@ -14,7 +14,7 @@ import kotlin.math.cos
  *
  * THE MECHANISM: the node chain's parcel is a hand-written mirror PAIR —
  * NodeParcel.kt (this side) and app/src/main/cpp/gles/NodeParcel.h (the
- * C++ side). The GRADE parcel's generator owns only the 29 scalar grade
+ * C++ side). The GRADE parcel's generator owns only the 30 scalar grade
  * slots (the inventory §4.1: the generator is out of scope for F1-5), so
  * this test cross-checks the committed C++ header's constants against the
  * Kotlin ones, the GradeParcelTest mechanism.
