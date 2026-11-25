@@ -14639,6 +14639,56 @@
    "sources": []
   },
   {
+   "id": "n1-node-undo",
+   "title": "feat: node edits join the undo history",
+   "date": "2026-11-26",
+   "status": "done",
+   "commit": {
+    "hash": "c25cf79",
+    "date": "2026-11-26",
+    "merge_subject": "merge: feat: node edits join the undo history"
+   },
+   "tests": "gradle 3054 tests, 0 failures; device (Xiaomi, yavas_pan): add node, one continuous drag = one undo step (undo 1.52, redo 0.55), turn off/on, delete: each undone and redone with values restored.",
+   "description": "Node chain edits (add, remove, enable, slider drags) are steps in the undo history; a node slider drag merges into one step.",
+   "added": [],
+   "removed": [],
+   "changed": [],
+   "files": [],
+   "sources": []
+  },
+  {
+   "id": "n2-curve-versioning-removed",
+   "title": "fix: remove the highlights curve versioning",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "5f51f56",
+    "date": "2026-11-25",
+    "merge_subject": "merge: fix: remove the highlights curve versioning"
+   },
+   "tests": "gradle 3050 tests, 0 failures; build-desktop.sh 35 suites SUCCESS; device sweep 59 cases worst 1 LSB; goldens re-pinned to the 0.40 values (documented in the commit).",
+   "description": "The stage-15 knee is one constant for every record; a stored highlightsCurve key is ignored on read and never written.",
+   "added": [],
+   "removed": [],
+   "changed": [],
+   "files": [],
+   "sources": []
+  },
+  {
+   "id": "n3-highlights-knee-018",
+   "title": "fix: highlights knee 0.40 to 0.18 (mid gray)",
+   "date": "2026-11-26",
+   "status": "in-progress",
+   "commit": null,
+   "tests": "gradle 3050 tests, 0 failures; build-desktop.sh 35 suites SUCCESS; device sweep 59 cases worst 1 LSB, Highlights 0.001%. NOT MERGED: awaiting the owner's approval of the golden changes (listed in the commit).",
+   "description": "On a night frame (+2.7 EV, AgX Punchy) Highlights -100 moved the brightest 5% by 1.42/255 at knee 0.40 and 8.60/255 at 0.18.",
+   "added": [],
+   "removed": [],
+   "changed": [],
+   "files": [],
+   "sources": []
+  },
+  {
    "id": "p01-node-undo",
    "title": "node undo",
    "date": "TBD",
