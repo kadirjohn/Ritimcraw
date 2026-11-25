@@ -9,6 +9,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -69,6 +73,26 @@ internal fun NodesBody(
         }
         val node = nodes[sel]
         fun edit(n: GradeNodeV2) = onNodesChange(nodes.toMutableList().also { it[sel] = n })
+        // Page tab and wheel selection are view state (saved across rotation), not part of the grade.
+        var tab by rememberSaveable { mutableStateOf(NodeTab.WHEELS) }
+        var wheel by rememberSaveable { mutableStateOf(NodeWheelId.LIFT) }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            SegmentedChoice(
+                labels = listOf(stringResource(R.string.node_tab_wheels), stringResource(R.string.node_tab_adjust)),
+                selectedIndex = tab.ordinal,
+                onSelect = { tab = NodeTab.entries[it] },
+            )
+        }
+        if (tab == NodeTab.WHEELS) {
+            NodeWheelsPage(
+                node = node,
+                wheel = wheel,
+                onWheelSelect = { wheel = it },
+                onNodeChange = { edit(it) },
+                onDragActiveChange = onDragActiveChange,
+            )
+            return@Column
+        }
         // Thumb double-tap resets this node's six sliders (node scope, not the clip grade).
         CompositionLocalProvider(
             LocalSliderResetActions provides SliderResetActions(

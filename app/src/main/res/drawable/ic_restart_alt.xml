@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Thin (1.5 on a 24 grid) outlined "restart_alt"-style reset glyph: a nearly closed arc with an arrow corner. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M6.34,6.34 A8,8 0 1 1 4,12 M3,4.5 V9 H7.5" />
+</vector>

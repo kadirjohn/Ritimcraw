@@ -678,4 +678,19 @@
     <string name="node_adjust_contrast">Contrast</string>
     <string name="node_adjust_hue">Hue</string>
     <string name="node_adjust_mix">Mix</string>
+    <!-- F1-8b: node wheels page -->
+    <string name="node_tab_wheels">Wheels</string>
+    <string name="node_tab_adjust">Adjust</string>
+    <string name="node_wheels_primary">Primary</string>
+    <string name="node_wheels_log">Log</string>
+    <string name="node_wheel_lift">Lift</string>
+    <string name="node_wheel_gamma">Gamma</string>
+    <string name="node_wheel_gain">Gain</string>
+    <string name="node_wheel_offset">Offset</string>
+    <string name="node_wheel_log_shadow">Shadows</string>
+    <string name="node_wheel_log_mid">Midtones</string>
+    <string name="node_wheel_log_high">Highlights</string>
+    <string name="node_wheel_master">Master</string>
+    <string name="node_wheel_reset">Reset wheel</string>
+    <string name="node_wheel_pad_desc">%1$s wheel, drag to colour, double tap to centre</string>
 </resources>
