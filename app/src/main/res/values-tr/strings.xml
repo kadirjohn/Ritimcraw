@@ -684,4 +684,17 @@
     <string name="node_wheel_master">Ana seviye</string>
     <string name="node_wheel_reset">Tekerleği sıfırla</string>
     <string name="node_wheel_pad_desc">%1$s tekerleği, renk için sürükleyin, ortalamak için çift dokunun</string>
+    <!-- F1-8c: node eğriler sayfası (Türkçe metinler sahibin gözden geçirmesine açık) -->
+    <string name="node_tab_curves">Eğriler</string>
+    <string name="node_curve_y">Luma</string>
+    <string name="node_curve_r">Kırmızı</string>
+    <string name="node_curve_g">Yeşil</string>
+    <string name="node_curve_b">Mavi</string>
+    <string name="node_curve_reset">Eğriyi sıfırla</string>
+    <string name="node_curve_canvas_desc">%1$s eğrisi, biçimlendirmek için noktaları sürükleyin, sıfırlamak için boş yere çift dokunun</string>
+    <!-- F1-8d: node LUT sayfası (Türkçe metinler sahibin gözden geçirmesine açık) -->
+    <string name="node_tab_lut">LUT</string>
+    <string name="node_lut_none">Yok</string>
+    <string name="node_lut_mix">LUT karışımı</string>
+    <string name="node_lut_reset">LUT\'u sıfırla</string>
 </resources>

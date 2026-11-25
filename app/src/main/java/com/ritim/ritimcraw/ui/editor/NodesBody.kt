@@ -25,7 +25,8 @@ import java.util.Locale
  * F1-8a: the Color tab's Nodes body. The node strip, then the selected node's Adjust page (saturation, contrast,
  * hue, temperature, tint, mix) and its free-text name (at most [NodeListOps.NAME_MAX] characters). STATELESS over
  * `nodes`: every edit goes out as a new list through [onNodesChange] (the screen persists it and re-renders).
- * Wheels, curves and the node LUT are later slices; the strip and the page are ready for them.
+ * Wheels, curves and the node LUT are later slices; the strip and the page are ready for them. Wheels joined
+ * in F1-8b, the Curves page in F1-8c; the node LUT (F1-8d per the doc's slice table) follows.
  */
 @Composable
 internal fun NodesBody(
@@ -73,12 +74,17 @@ internal fun NodesBody(
         }
         val node = nodes[sel]
         fun edit(n: GradeNodeV2) = onNodesChange(nodes.toMutableList().also { it[sel] = n })
-        // Page tab and wheel selection are view state (saved across rotation), not part of the grade.
+        // Page tab and wheel/curve selection are view state (saved across rotation), not part of the grade.
         var tab by rememberSaveable { mutableStateOf(NodeTab.WHEELS) }
         var wheel by rememberSaveable { mutableStateOf(NodeWheelId.LIFT) }
+        var curve by rememberSaveable { mutableStateOf(NodeCurveId.Y) }
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             SegmentedChoice(
-                labels = listOf(stringResource(R.string.node_tab_wheels), stringResource(R.string.node_tab_adjust)),
+                labels = listOf(
+                    stringResource(R.string.node_tab_wheels),
+                    stringResource(R.string.node_tab_curves),
+                    stringResource(R.string.node_tab_adjust),
+                ),
                 selectedIndex = tab.ordinal,
                 onSelect = { tab = NodeTab.entries[it] },
             )
@@ -88,6 +94,16 @@ internal fun NodesBody(
                 node = node,
                 wheel = wheel,
                 onWheelSelect = { wheel = it },
+                onNodeChange = { edit(it) },
+                onDragActiveChange = onDragActiveChange,
+            )
+            return@Column
+        }
+        if (tab == NodeTab.CURVES) {
+            NodeCurvesPage(
+                node = node,
+                curve = curve,
+                onCurveSelect = { curve = it },
                 onNodeChange = { edit(it) },
                 onDragActiveChange = onDragActiveChange,
             )

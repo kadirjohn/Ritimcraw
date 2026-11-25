@@ -10,8 +10,8 @@ import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-/** F1-8b: the node tool-page tabs. Curves and LUT join in F1-8c/d; the page order follows the design (wheels first). */
-enum class NodeTab { WHEELS, ADJUST }
+/** F1-8b: the node tool-page tabs. Curves joined in F1-8c, the LUT follows in F1-8d; the page order follows the design (wheels first). */
+enum class NodeTab { WHEELS, CURVES, ADJUST }
 
 /** The seven node wheels, in the two groups the Wheels page shows. */
 enum class NodeWheelId(val primary: Boolean) {
