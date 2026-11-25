@@ -2487,6 +2487,8 @@ void GpuDevelopPipeline::Impl::teardown() {
 // the per-draw cost is the live-knob profile (uniforms update, never a
 // recompile).
 
+// The hue pairs are declared `vec4` in the tail-drt shader (x,y used): a glUniform2f on a vec4 is a type mismatch
+// and raised GL_INVALID_OPERATION (0x0502) at the draw on this device, the OpenDRT failure the first v2-sweep run found.
 void GpuDevelopPipeline::Impl::drtFoldUniforms(const float* b) {
     glUniform1i(drtEotfLoc, static_cast<int>(b[0]));
     glUniform1f(drtHdrLoc, b[1]);
@@ -2501,12 +2503,12 @@ void GpuDevelopPipeline::Impl::drtFoldUniforms(const float* b) {
     glUniform4fv(drtLconLoc, 1, &b[25]);
     glUniform4fv(drtHconLoc, 1, &b[29]);
     glUniform4fv(drtTsLoc, 1, &b[33]);
-    glUniform2f(drtHueRLoc, b[37], b[38]);
-    glUniform2f(drtHueGLoc, b[39], b[40]);
-    glUniform2f(drtHueBLoc, b[41], b[42]);
-    glUniform2f(drtHueCLoc, b[43], b[44]);
-    glUniform2f(drtHueMLoc, b[45], b[46]);
-    glUniform2f(drtHueYLoc, b[47], b[48]);
+    glUniform4f(drtHueRLoc, b[37], b[38], 0.0f, 0.0f);
+    glUniform4f(drtHueGLoc, b[39], b[40], 0.0f, 0.0f);
+    glUniform4f(drtHueBLoc, b[41], b[42], 0.0f, 0.0f);
+    glUniform4f(drtHueCLoc, b[43], b[44], 0.0f, 0.0f);
+    glUniform4f(drtHueMLoc, b[45], b[46], 0.0f, 0.0f);
+    glUniform4f(drtHueYLoc, b[47], b[48], 0.0f, 0.0f);
     glUniform4fv(drtConf0Loc, 1, &b[49]);
     glUniform4fv(drtConf1Loc, 1, &b[53]);
     glUniform4fv(drtConf2Loc, 1, &b[57]);
