@@ -4,6 +4,7 @@ import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.ExportStore
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
+import com.ritim.ritimcraw.data.grade2.toGradeK
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -39,6 +40,51 @@ class GradeStoreTest {
         assertEquals(5600f, reloaded.get(clipA).tempK, 0f) // A keeps default temp
         assertEquals(0f, reloaded.get(clipB).exposureEv, 0f) // B keeps default EV
         assertEquals(3200f, reloaded.get(clipB).tempK, 0f)
+    }
+
+    @Test
+    fun put_output_replaces_only_the_output_group() {
+        // F1-8d: the Output card's write. A clip with a chain + a legacy tonemap keeps BOTH through an
+        // output switch, and the drt params it set survive a round trip through the file.
+        val file = projectFile()
+        val store = GradeStore(file)
+        val nodes = listOf(com.ritim.ritimcraw.data.grade2.GradeNodeV2(sat = 1.3f))
+        store.put("c1", GradeK(exposureEv = 0.5f, tonemap = 1))
+        store.putNodes("c1", nodes)
+
+        val drt = com.ritim.ritimcraw.data.grade2.OutputTransformV2(
+            mode = com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT,
+            legacy = com.ritim.ritimcraw.data.grade2.LegacyOutputV2(tonemap = 2, lutId = "cube", lutStrength = 40f),
+            opendrt = com.ritim.ritimcraw.data.grade2.OpenDrtParamsV2(
+                look = 3, tonescale = 5, cwp = 2, cwpLimit = 0.5f, grey = 12f, display = 1,
+            ),
+        )
+        store.putOutput("c1", drt)
+
+        val reloaded = GradeStore(file)
+        val v2 = reloaded.getV2("c1")!!
+        assertEquals(drt, v2.output)
+        // everything else of the record kept: the chain, the develop fields, the legacy block it had
+        assertEquals(1, v2.nodes.size)
+        assertEquals(0.5f, v2.develop.exposureEv, 0f)
+        assertEquals(drt.legacy, v2.output.legacy)
+        // and the strict adapter still refuses it (a DRT record has no honest GradeK twin), while the
+        // lenient read keeps the sliders: the output rides only the v2 record
+        assertNull(v2.toGradeK())
+        assertEquals(0.5f, reloaded.get("c1").exposureEv, 0f)
+
+        // a chainless clip: the FIRST output edit keeps the stored GradeK fields verbatim
+        store.put("c2", GradeK(tempK = 4300f, highlights = -10f))
+        store.putOutput(
+            "c2",
+            com.ritim.ritimcraw.data.grade2.OutputTransformV2(
+                mode = com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT,
+            ),
+        )
+        val c2 = GradeStore(file).getV2("c2")!!
+        assertEquals(4300f, c2.develop.tempK, 0f)
+        assertEquals(-10f, c2.legacy.highlights, 0f)
+        assertEquals(emptyList<Nothing>(), c2.nodes)
     }
 
     @Test

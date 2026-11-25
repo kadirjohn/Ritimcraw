@@ -298,6 +298,20 @@ class GradeStore(private val file: File) {
     }
 
     /**
+     * F1-8d: replaces the clip's output transform (the mode + both blocks; everything else of its record
+     * kept) — the same shape as [putNodes]: the base is the clip's own v2 record (or its GradeK twin when the
+     * clip still has none, so the FIRST output edit on a chainless clip keeps the stored GradeK fields and
+     * rewrites only the output group). A slider write preserves the output through [putPreservingChain]; the
+     * Output card itself edits through THIS one.
+     */
+    fun putOutput(sourceId: String, output: com.ritim.ritimcraw.data.grade2.OutputTransformV2) {
+        synchronized(lock) {
+            val base = getV2(sourceId) ?: get(sourceId).toClipGradeV2()
+            put(sourceId, base.copy(output = output))
+        }
+    }
+
+    /**
      * The parsed grades section RAW (records as parsed), or an empty map;
      * the raw-carry read counterpart of [writeRaw].
      */

@@ -706,4 +706,19 @@
     <string name="node_lut_none">None</string>
     <string name="node_lut_mix">LUT mix</string>
     <string name="node_lut_reset">Reset LUT</string>
+    <!-- F1-8d: the output card (OpenDRT) -->
+    <string name="node_output_chip">Output</string>
+    <string name="node_output_chip_desc">Output transform</string>
+    <string name="node_output_mode_legacy">Legacy</string>
+    <string name="node_output_mode_opendrt">OpenDRT</string>
+    <string name="node_output_legacy_hint">Tonemapping and the LUT stay on the Look tab.</string>
+    <string name="node_output_look">Look</string>
+    <string name="node_output_tonescale">Tonescale</string>
+    <string name="node_output_cwp">Colour weight</string>
+    <string name="node_output_cwp_limit">Weight limit</string>
+    <string name="node_output_grey">Grey</string>
+    <string name="node_output_display">Display</string>
+    <string name="node_output_display_srgb">sRGB 2.2</string>
+    <string name="node_output_display_1886">Rec.1886</string>
+    <string name="node_output_display_hlg">HLG 1000</string>
 </resources>

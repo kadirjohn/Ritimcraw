@@ -25,18 +25,24 @@ import java.util.Locale
  * F1-8a: the Color tab's Nodes body. The node strip, then the selected node's Adjust page (saturation, contrast,
  * hue, temperature, tint, mix) and its free-text name (at most [NodeListOps.NAME_MAX] characters). STATELESS over
  * `nodes`: every edit goes out as a new list through [onNodesChange] (the screen persists it and re-renders).
- * Wheels, curves and the node LUT are later slices; the strip and the page are ready for them. Wheels joined
- * in F1-8b, the Curves page in F1-8c; the node LUT (F1-8d per the doc's slice table) follows.
+ * Wheels joined in F1-8b, the Curves page in F1-8c, the node LUT (F1-8e per the doc's slice table) follows.
+ *
+ * F1-8d: the strip's END hosts the Output chip (the design's undeleteable Output card); selecting it opens the
+ * Output page ([NodeOutputPage]) INSTEAD of the node tools — the strip selection and the output flag are one
+ * selection domain (`selected < 0` = the Output chip is open), so a node tap closes the output page and an
+ * output tap closes the node tools without a second selection variable.
  */
 @Composable
 internal fun NodesBody(
     nodes: List<GradeNodeV2>,
+    output: com.ritim.ritimcraw.data.grade2.OutputTransformV2 = com.ritim.ritimcraw.data.grade2.OutputTransformV2(),
     selected: Int,
     onSelect: (Int) -> Unit,
     onNodesChange: (List<GradeNodeV2>) -> Unit,
+    onOutputChange: (com.ritim.ritimcraw.data.grade2.OutputTransformV2) -> Unit = {},
     onDragActiveChange: (Boolean) -> Unit = {},
 ) {
-    val sel = selected.coerceIn(0, (nodes.size - 1).coerceAtLeast(0))
+    val sel = if (selected >= 0) selected.coerceIn(0, (nodes.size - 1).coerceAtLeast(0)) else -1
     Column(
         Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -44,6 +50,8 @@ internal fun NodesBody(
         NodeStrip(
             nodes = nodes,
             selected = sel,
+            outputSelected = sel < 0,
+            onSelectOutput = { onSelect(-1) },
             onSelect = onSelect,
             onAdd = {
                 val next = NodeListOps.add(nodes)
@@ -63,6 +71,16 @@ internal fun NodesBody(
                 onSelect(NodeListOps.selectionAfterDelete(it, next.size).coerceAtLeast(0))
             },
         )
+        if (sel < 0) {
+            // The Output card: always present (even on a chainless clip — the design's K3 default is
+            // exactly a chainless OpenDRT record), before the empty-chain check so it never strands.
+            NodeOutputPage(
+                output = output,
+                onOutputChange = onOutputChange,
+                onDragActiveChange = onDragActiveChange,
+            )
+            return@Column
+        }
         if (nodes.isEmpty()) {
             Text(
                 stringResource(R.string.nodes_empty),
@@ -154,7 +172,7 @@ internal fun NodesBody(
             GradeSlider(
                 label = stringResource(R.string.node_adjust_hue),
                 value = node.hue, valueRange = -180f..180f, step = 1f,
-                valueLabel = String.format(Locale.ROOT, "%+d\u00B0", node.hue.toInt()),
+                valueLabel = String.format(Locale.ROOT, "%+d°", node.hue.toInt()),
                 onChange = { edit(node.copy(hue = it)) },
                 onDoubleTapReset = { edit(node.copy(hue = 0f)) },
                 onDragActiveChange = onDragActiveChange,
