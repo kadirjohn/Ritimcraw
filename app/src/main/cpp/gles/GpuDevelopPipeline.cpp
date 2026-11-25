@@ -2468,7 +2468,13 @@ void GpuDevelopPipeline::Impl::drtFoldUniforms(const float* b) {
     spec.display = static_cast<int>(sp[5]) == 2 ? rawedit::OpenDrtDisplay::Hlg1000
         : static_cast<int>(sp[5]) == 1 ? rawedit::OpenDrtDisplay::SdrRec1886
         : rawedit::OpenDrtDisplay::SdrSrgb22;
+    const auto tBake0 = std::chrono::steady_clock::now();
     std::shared_ptr<const rawedit::OpenDrtLut> lut = rawedit::bakedOpenDrtLut(spec);
+    const double bakeUs = elapsedUs(tBake0, std::chrono::steady_clock::now());
+    if (bakeUs > 2000) {  // a cache miss (a hit costs microseconds): ritim-trace, debug diagnostics only
+        __android_log_print(ANDROID_LOG_INFO, "ritim-trace", "opendrt bake: %.1f ms (n=%d, look=%d display=%d)",
+                            bakeUs / 1000.0, lut->n, spec.look, static_cast<int>(sp[5]));
+    }
     glActiveTexture(GL_TEXTURE11);
     if (drtLutTex == 0) glGenTextures(1, &drtLutTex);
     glBindTexture(GL_TEXTURE_3D, drtLutTex);
