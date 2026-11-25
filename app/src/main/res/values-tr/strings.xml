@@ -562,9 +562,6 @@
     <string name="settings_theme_system">Sistem</string>
     <string name="settings_theme_light">Açık</string>
     <string name="settings_theme_dark">Koyu</string>
-    <string name="settings_theme_slider">Tema</string>
-    <string name="settings_theme_previous">Önceki tema</string>
-    <string name="settings_theme_next">Sonraki tema</string>
     <string name="settings_theme_custom">Özel</string>
     <string name="settings_theme_open_picker">Özel tema seç</string>
     <string name="settings_theme_picker_title">Özel tema</string>

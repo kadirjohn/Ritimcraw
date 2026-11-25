@@ -508,8 +508,9 @@ if (icon == null) {
                                     val st = ThemeIconMorph.slotState(
                                         morphSlot,
                                         ThemeIconMorph.positionFromThumb(
-                                            thumbX - slotWidthPx, trackInsetPx, slotWidthPx,
+                                            thumbX - slotWidthPx, trackInsetPx, slotWidthPx, -1f,
                                         ),
+                                        -1f,
                                     )
                                     alpha = st.alpha
                                     scaleX = st.scale
@@ -522,7 +523,7 @@ if (icon == null) {
                                 // glyph colour) by proximity, in the draw phase.
                                 .drawBehind {
                                     val pos = ThemeIconMorph.positionFromThumb(
-                                        thumbX - slotWidthPx, trackInsetPx, slotWidthPx,
+                                        thumbX - slotWidthPx, trackInsetPx, slotWidthPx, -1f,
                                     )
                                     val c = SlotColorJourney.colorAt(
                                         kotlin.math.abs(pos - morphSlot),
