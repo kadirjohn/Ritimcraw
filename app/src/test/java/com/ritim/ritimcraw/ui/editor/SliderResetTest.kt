@@ -116,4 +116,34 @@ class SliderResetTest {
         assertTrue(hit(24f, 72f, 0f))
         assertTrue(hit(976f, 72f, 0f, rtl = true))
     }
+
+    @Test
+    fun double_tap_after_an_open_tap_entry_undoes_to_the_exact_previous_value() {
+        // Device bug: a tap-to-position leaves its entry OPEN (no drag Stop),
+        // so the double-tap's nudge replaced it and undo skipped a step.
+        val a = GradeK()
+        val d = GradeK(exposureEv = 2.5f)
+        val nudged = GradeK(exposureEv = -4.4f)
+        val h = GradeHistory(a)
+        h.record(d, GradeHistory.SLIDER_GESTURE) // open
+        h.markGestureBase()
+        h.record(nudged, GradeHistory.SLIDER_GESTURE)
+        h.settle()
+        h.resetScope { h.record(a) }
+        assertEquals(d, h.undo())
+        assertEquals(a, h.undo())
+        assertNull(h.undo())
+    }
+
+    @Test
+    fun label_zone_never_overlaps_track_or_thumb_in_overlay_geometry() {
+        assertTrue(CompactSliderDefaults.labelZone(5f, 60f))
+        assertFalse(CompactSliderDefaults.labelZone(60f, 60f))
+        assertFalse(CompactSliderDefaults.labelZone(5f, 0f)) // unmeasured
+        // Overlay only while the label line is <= 22dp: the strip ends above the 22dp track top.
+        val trackTopDp = (CompactSliderDefaults.ROW_HEIGHT.value - CompactSliderDefaults.TRACK_HEIGHT.value) / 2f
+        assertTrue(CompactSliderDefaults.OVERLAY_LABEL_LINE_HEIGHT_MAX_SP <= trackTopDp)
+        // The strip stays inside the slider's 48dp touch slot (floor kept).
+        assertTrue(CompactSliderDefaults.OVERLAY_LABEL_LINE_HEIGHT_MAX_SP < CompactSliderDefaults.ROW_HEIGHT.value)
+    }
 }

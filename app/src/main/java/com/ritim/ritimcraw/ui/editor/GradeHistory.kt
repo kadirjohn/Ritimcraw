@@ -168,6 +168,13 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
      * slider-gesture entries after it); otherwise the reset records plainly.
      */
     fun markGestureBase() {
+        // A new finger down means the previous gesture is over. A tap-to-
+        // position never emits a DragInteraction Stop on the device, so its
+        // entry can still be OPEN here; without closing it the double-tap's
+        // own nudge would REPLACE it (losing that step) and the collapse
+        // below would see no growth. Settle first so the mark is a closed
+        // entry and the nudge pushes a droppable one.
+        settle()
         base = entries.lastOrNull()?.let { Base(entries.size, it.grade) }
     }
 

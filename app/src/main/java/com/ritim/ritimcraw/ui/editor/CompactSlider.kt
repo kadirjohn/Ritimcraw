@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.Dp
@@ -103,6 +104,8 @@ fun GradeSlider(
         } else 0f
     )
     val isRtlRow = LocalLayoutDirection.current == LayoutDirection.Rtl
+    // Measured height of the label row (px); a down above it is a LABEL touch.
+    val labelHeightPx = remember { intArrayOf(0) }
     val viewConfig = LocalViewConfiguration.current
     val rowModifier = Modifier
         .fillMaxWidth()
@@ -120,9 +123,16 @@ fun GradeSlider(
                     val second = lastTapUp >= 0 &&
                         down.uptimeMillis - lastTapUp <= viewConfig.doubleTapTimeoutMillis &&
                         (down.position - lastTapPos).getDistance() <= hitRadius
+                    // A label touch never reaches the slider: consuming the
+                    // down on the Initial pass makes the Slider's tap-to-seek
+                    // and drag detectors (requireUnconsumed) ignore it.
+                    if (CompactSliderDefaults.labelZone(down.position.y, labelHeightPx[0].toFloat())) {
+                        down.consume()
+                    }
                     if (!second) {
                         currentActions.gestureBase()
-                        firstOnThumb = CompactSliderDefaults.thumbHit(
+                        firstOnThumb = !CompactSliderDefaults.labelZone(down.position.y, labelHeightPx[0].toFloat()) &&
+                            CompactSliderDefaults.thumbHit(
                             x = down.position.x, y = down.position.y,
                             widthPx = size.width.toFloat(), heightPx = size.height.toFloat(),
                             fraction = fraction, rtl = isRtlRow,
@@ -216,6 +226,7 @@ fun GradeSlider(
         Row(
             Modifier
                 .fillMaxWidth()
+                .onSizeChanged { labelHeightPx[0] = it.height }
                 .heightIn(min = minRowHeight),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
@@ -244,10 +255,10 @@ fun GradeSlider(
     if (overlay) {
         Box(rowModifier.height(CompactSliderDefaults.ROW_HEIGHT)) {
             slider()
-            // Non-consuming overlay: the label never intercepts slider
-            // gestures — a tap on the label drives the slider exactly as
-            // a tap on that bare slice of slot always has (the whole 48dp
-            // row is the touch target; that is what keeps the floor).
+            // The label rides in the slot's whitespace above the track
+            // (the slot stays the 48dp touch floor), but a touch on the
+            // label strip is consumed by the row detector above: it never
+            // seeks the slider, so a label double-tap resets without a nudge.
             labelRow(Dp.Unspecified)
         }
     } else {
@@ -336,6 +347,14 @@ object CompactSliderDefaults {
         val cy = heightPx - slotHalfPx
         return kotlin.math.abs(x - cx) <= radiusPx && kotlin.math.abs(y - cy) <= bandHalfPx
     }
+
+    /**
+     * Pure (JVM-tested): is a touch at [yPx] on the label strip (the top
+     * [labelHeightPx] of the row)? Label touches never move the slider.
+     * Unmeasured (0) is never a label touch.
+     */
+    fun labelZone(yPx: Float, labelHeightPx: Float): Boolean =
+        labelHeightPx > 0f && yPx < labelHeightPx
 
     /** Zero tick: 2dp wide, taller than the track line so it reads. */
     val ZERO_TICK_WIDTH = 2.dp
