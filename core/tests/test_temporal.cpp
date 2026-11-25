@@ -820,6 +820,114 @@ TEST_CASE("merge_with_seeded_next_side_bit_identical_to_plain") {
     // next side's own gate inputs and must not.)
 }
 
+// ---- round 2: staticBlockCap (full-confidence static block cap boost) ----
+// docs/TEMPORAL_NR.md holds the measured before/after; these pin the code
+// contract: default bit-identical, the boost only deepens static denoise,
+// and every ADMIT decision (the gates) is independent of the cap.
+
+TEST_CASE("static_cap_boost_default_is_bit_identical") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kTw, kTw);
+    std::vector<uint16_t> c = makeFrame(kTw, kTw, flat(0.3f), 211, 6.0f);
+    std::vector<uint16_t> p = makeFrame(kTw, kTw, flat(0.3f), 212, 6.0f);
+    std::vector<uint16_t> x = makeFrame(kTw, kTw, flat(0.3f), 213, 6.0f);
+    std::vector<uint16_t> o1(c.size(), 0), o2(c.size(), 0);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    temporalMergeCfa(c.data(), info, p.data(), x.data(), m, ts, o1.data(), nullptr);
+    TemporalSettings ts2 = ts;
+    ts2.staticBlockCap = 0.40f; // the legacy value, explicitly
+    temporalMergeCfa(c.data(), info, p.data(), x.data(), m, ts2, o2.data(), nullptr);
+    CHECK(std::memcmp(o1.data(), o2.data(), o1.size() * sizeof(uint16_t)) == 0);
+    // And the real default run is what the golden checksum test above pins.
+}
+
+TEST_CASE("static_cap_boost_deepens_static_denoise") {
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kTw, kTw);
+    const float sigma = 6.0f;
+    std::vector<uint16_t> c = makeFrame(kTw, kTw, flat(0.3f), 221, sigma);
+    std::vector<uint16_t> p = makeFrame(kTw, kTw, flat(0.3f), 222, sigma);
+    std::vector<uint16_t> x = makeFrame(kTw, kTw, flat(0.3f), 223, sigma);
+    // Both neighbors: legacy weights 0.40 -> var ~0.41x; boost 0.50 ->
+    // var ~0.375x. Same frames, only the flag differs.
+    TemporalSettings tsL;
+    tsL.strength = 100.0f;
+    std::vector<uint16_t> oL(c.size(), 0);
+    TemporalReport repL;
+    temporalMergeCfa(c.data(), info, p.data(), x.data(), m, tsL, oL.data(), &repL);
+    CHECK(repL.prev.meanWeight == doctest::Approx(0.40f).epsilon(0.05));
+
+    TemporalSettings tsB;
+    tsB.strength = 100.0f;
+    tsB.staticBlockCap = 0.50f;
+    std::vector<uint16_t> oB(c.size(), 0);
+    TemporalReport repB;
+    temporalMergeCfa(c.data(), info, p.data(), x.data(), m, tsB, oB.data(), &repB);
+    // Every block is full-confidence static here, so the applied weight is
+    // the boosted cap itself.
+    CHECK(repB.prev.meanWeight == doctest::Approx(0.50f).epsilon(0.05));
+    CHECK(repB.next.meanWeight == doctest::Approx(0.50f).epsilon(0.05));
+    const double varL = variance(oL, kTw, 32, 32, 224, 224);
+    const double varB = variance(oB, kTw, 32, 32, 224, 224);
+    CHECK(varB < 0.95 * varL);            // the boost measurably deepens
+    CHECK(varB > 0.15 * variance(c, kTw, 32, 32, 224, 224)); // not flattened
+    // Static content: the mean does not move beyond the noise scale.
+    const double dMean = meanOf(oB, kTw, 32, 32, 224, 224)
+                       - meanOf(c, kTw, 32, 32, 224, 224);
+    CHECK(std::fabs(dMean) < 1.5);
+}
+
+TEST_CASE("static_cap_boost_never_changes_admit_decisions") {
+    // The occlusion fixture under the boost: the changed (object) blocks
+    // stay rejected by the FLOOR gate — a weight cap cannot admit content
+    // the gates refuse — and the coupled occluded-object region keeps the
+    // center EXACTLY. The static background merges at a HIGHER weight than
+    // the legacy run of the same fixture (meanWeight is a whole-frame mean
+    // that includes rejected blocks' zeros, so the honest comparison is
+    // boost-vs-legacy, not an absolute). The boost moves weights, never
+    // decisions.
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(kTw, kTw);
+    const int objY0 = 48, objSize = 60;
+    auto withObject = [&](int ox) {
+        return [&, ox](uint32_t x, uint32_t y) {
+            return (static_cast<int>(x) >= ox && static_cast<int>(x) < ox + objSize
+                    && static_cast<int>(y) >= objY0
+                    && static_cast<int>(y) < objY0 + objSize)
+                       ? 0.80f
+                       : 0.30f;
+        };
+    };
+    std::vector<uint16_t> c = makeFrame(kTw, kTw, withObject(48), 231, 5.0f);
+    std::vector<uint16_t> p = makeFrame(kTw, kTw, withObject(208), 232, 5.0f);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.staticBlockCap = 0.50f;
+    std::vector<uint16_t> out(c.size(), 0);
+    TemporalReport rep;
+    temporalMergeCfa(c.data(), info, p.data(), nullptr, m, ts, out.data(), &rep);
+    // Legacy reference of the same fixture.
+    TemporalSettings tsL;
+    tsL.strength = 100.0f;
+    std::vector<uint16_t> outL(c.size(), 0);
+    TemporalReport repL;
+    temporalMergeCfa(c.data(), info, p.data(), nullptr, m, tsL, outL.data(), &repL);
+    CHECK(rep.prev.eligible);
+    CHECK(rep.prev.acceptRate < 1.0f);   // the changed blocks still reject
+    CHECK(rep.prev.acceptRate >= 0.25f);
+    // Same decisions under the boost (the cap cannot move a gate).
+    CHECK(rep.prev.acceptRate == repL.prev.acceptRate);
+    for (uint32_t y = objY0; y < objY0 + objSize; ++y)
+        for (uint32_t x = 48; x < 48 + objSize; ++x)
+            CHECK(out[static_cast<size_t>(y) * kTw + x]
+                  == c[static_cast<size_t>(y) * kTw + x]);
+    // Background merges at a measurably higher weight than legacy.
+    CHECK(rep.prev.meanWeight > repL.prev.meanWeight);
+    CHECK(variance(out, kTw, 176, 176, 240, 240)
+          < 0.8 * variance(c, kTw, 176, 176, 240, 240));
+}
+
 // ---- window clamping (DN-09) ----
 
 TEST_CASE("first_and_last_frame_clamp_window_no_crash") {

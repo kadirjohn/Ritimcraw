@@ -211,7 +211,8 @@ NoiseProfile constantProfile(float sigmaDn) {
 
 // ---------------- noise command (real clip) ----------------
 
-static int cmdNoise(const char* path, size_t centerArg, float strength) {
+static int cmdNoise(const char* path, size_t centerArg, float strength,
+                    float staticCap) {
     const auto tOpen0 = std::chrono::steady_clock::now();
     auto res = Source::open(path);
     if (!res.isOk()) {
@@ -259,6 +260,7 @@ static int cmdNoise(const char* path, size_t centerArg, float strength) {
         const int64_t dur = (dPrev + dNext) / 2; // local median of 2
         TemporalSettings ts;
         ts.strength = strength;
+        ts.staticBlockCap = staticCap;
         ts.centerNoise = &npc;
         ts.prevNoise = &npp;
         ts.nextNoise = &npn;
@@ -343,9 +345,9 @@ static int cmdNoise(const char* path, size_t centerArg, float strength) {
 
     std::printf("== temporal_measure noise ==\n");
     std::printf("clip=%s center=%zu frames=%zu..%zu (%zu centers) %ux%u cfa=%d "
-                "bitDepth=%u strength=%g\n",
+                "bitDepth=%u strength=%g staticBlockCap=%g\n",
                 path, center, center - 2, center + 2, n, w, h, int(cInfo.cfa),
-                cInfo.bitDepth, strength);
+                cInfo.bitDepth, strength, staticCap);
     std::printf("decode7 ms=%.1f  merge5 ms=%.1f  static_px=%lld\n",
                 std::chrono::duration<double, std::milli>(tDecode - tOpen0)
                     .count() / 7.0 * 7.0,
@@ -432,14 +434,14 @@ std::vector<uint16_t> renderFrame(int k, uint32_t vx, float sigmaDn,
 
 } // namespace
 
-static int cmdGhost(float strength) {
+static int cmdGhost(float strength, float staticCap) {
     std::printf("== temporal_measure ghost ==\n");
     std::printf("scene: %ux%u RGGB black=%u white=%u plate=%.2f+%.2f*u "
                 "obj=%ux%u@(%u,%u) level=%.2f sigma=%.1f DN dur=%lldus "
-                "seed=20261126\n",
+                "seed=20261126 strength=%g staticBlockCap=%g\n",
                 kGw, kGh, kBlack, kWhite, kPlateBase, kPlateAmp, kObjSize,
                 kObjSize, kObjX0Center, kObjY0, kObjLevel, kGhostSigmaDn,
-                static_cast<long long>(kFrameDurUs));
+                static_cast<long long>(kFrameDurUs), strength, staticCap);
 
     // Plate texture: deterministic white-noise field.
     std::vector<float> tex(static_cast<size_t>(kGw) * kGh);
@@ -465,6 +467,7 @@ static int cmdGhost(float strength) {
         const NoiseProfile prof = constantProfile(kGhostSigmaDn);
         TemporalSettings ts;
         ts.strength = strength;
+        ts.staticBlockCap = staticCap;
         ts.centerNoise = &prof;
         ts.prevNoise = &prof;
         ts.nextNoise = &prof;
@@ -571,14 +574,18 @@ static int cmdGhost(float strength) {
 int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "noise") == 0) {
         const float strength = argc >= 5 ? float(std::atof(argv[4])) : 100.0f;
-        return cmdNoise(argv[2], std::strtoull(argv[3], nullptr, 10), strength);
+        const float staticCap = argc >= 6 ? float(std::atof(argv[5])) : 0.40f;
+        return cmdNoise(argv[2], std::strtoull(argv[3], nullptr, 10), strength,
+                        staticCap);
     }
     if (argc >= 2 && std::strcmp(argv[1], "ghost") == 0) {
         const float strength = argc >= 3 ? float(std::atof(argv[2])) : 100.0f;
-        return cmdGhost(strength);
+        const float staticCap = argc >= 4 ? float(std::atof(argv[3])) : 0.40f;
+        return cmdGhost(strength, staticCap);
     }
     std::fprintf(stderr,
-                 "usage: temporal_measure noise <clip.mcraw> <centerFrame> [strength=100]\n"
-                 "       temporal_measure ghost [strength=100]\n");
+                 "usage: temporal_measure noise <clip.mcraw> <centerFrame> "
+                 "[strength=100] [staticBlockCap=0.40]\n"
+                 "       temporal_measure ghost [strength=100] [staticBlockCap=0.40]\n");
     return 2;
 }
