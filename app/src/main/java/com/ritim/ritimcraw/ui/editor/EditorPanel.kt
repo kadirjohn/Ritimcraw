@@ -2,7 +2,8 @@
 
 package com.ritim.ritimcraw.ui.editor
 
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.rememberSplineBasedDecay
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -51,7 +52,7 @@ import com.ritim.ritimcraw.R
  * in [PanelSheet]: release settles to the nearest anchor past
  * [PanelSheet.positionalThreshold] or on a fling above
  * [PanelSheet.VELOCITY_THRESHOLD], and the settle runs the plain
- * [PanelSheet.SNAP_DURATION_MS] tween (no overshoot, section 11.4).
+ * critically damped spring (no overshoot, section 11.4; the fling velocity carries over).
  *
  * Remembered ONCE per editor open — [initial] is the restored panel
  * state on the first composition (process death / configuration change);
@@ -67,7 +68,8 @@ fun rememberPanelDragState(initial: PanelState): AnchoredDraggableState<PanelSta
             initialValue = initial,
             positionalThreshold = { distance -> PanelSheet.positionalThreshold(distance) },
             velocityThreshold = { with(density) { PanelSheet.VELOCITY_THRESHOLD.toPx() } },
-            snapAnimationSpec = tween(PanelSheet.SNAP_DURATION_MS),
+            // Critically damped spring: no overshoot, and the release/fling velocity carries into the settle.
+            snapAnimationSpec = spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow),
             decayAnimationSpec = decay,
         )
     }

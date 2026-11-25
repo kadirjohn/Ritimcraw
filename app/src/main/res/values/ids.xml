@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- View tag key: the preview SurfaceView buffer is pinned to a fixed size while the editor panel animates. -->
+    <item name="preview_surface_frozen" type="id" />
+</resources>

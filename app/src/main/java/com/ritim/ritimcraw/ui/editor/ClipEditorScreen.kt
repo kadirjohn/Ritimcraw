@@ -1054,7 +1054,10 @@ fun ClipEditorScreen(
         // 2026-11-13 "default en yüksek boyda açılsın" — PanelBehavior.
         // DEFAULT_OPEN, JVM-tested); a restored saveable keeps whatever
         // the user last settled on, as before.
-        var panelState by rememberSaveable { mutableStateOf(PanelBehavior.DEFAULT_OPEN) }
+        // First open only (a saved state wins): portrait result opens NORMAL, landscape EXPANDED.
+        var panelState by rememberSaveable {
+            mutableStateOf(PanelBehavior.defaultOpenFor(sourceWidth, sourceHeight, manualRotationDeg))
+        }
         val panelDrag = rememberPanelDragState(panelState)
         // Per-category scroll positions (§11.6 "relevant scroll position"):
         // one ScrollState per category, remembered SAVEABLY (ScrollState's
@@ -3664,6 +3667,7 @@ fun ClipEditorScreen(
                     // must never block on the engine.
                     gpuWindowActive = gpuActive,
                     gpuWindowServing = gpuWindowLive,
+                    freezeSurfaceSize = panelDrag.isAnimationRunning,
                     // DEBUG path badge (2026-11-23): reuses the served
                     // verdict the trace's backend= field reads.
                     debugPathBadge = if (RenderTrace.enabled) {
