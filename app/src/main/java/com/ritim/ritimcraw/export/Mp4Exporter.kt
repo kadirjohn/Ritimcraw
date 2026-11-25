@@ -1636,7 +1636,7 @@ class ExportPipeline(
                         // stay byte-identical, the gates decide nothing new.
                         val parityDetail = gpuDevelop.lastDetail()
                         val parityVerdict =
-                            parity?.let { GpuParityRules.verdict(it, parityDetail) }
+                            parity?.let { GpuParityRules.runtimeVerdict(it, parityDetail) }
                         parityGateDetail = GpuParityRules.gateDetailLine(
                             parityPaid = true,
                             parity = parity,

@@ -65,6 +65,33 @@ class GpuParityTest {
 
     // ---- verdict rules ----
 
+    // ---- runtime verdict (the editor/export open gate; the mismatch SHARE is not a runtime condition) ----
+
+    @Test
+    fun runtime_gate_passes_one_lsb_flips_even_at_a_high_mismatch_share_but_the_suite_verdict_still_fails_them() {
+        // The DCG-mode clip on 2026-11-25: 121946 of 12582912 samples (0.97%), all 1 LSB.
+        val p = GlesParityResult(ran = true, maxDiffLsb = 1, mismatchCount = 121946, samples = 12582912)
+        val rt = GpuParityRules.runtimeVerdict(p)
+        assertEquals(ParityVerdict.Status.PASS, rt.status)
+        assertTrue(rt.reason.contains("121946/12582912"))
+        assertEquals(ParityVerdict.Status.FAIL, GpuParityRules.verdict(p).status)
+        assertTrue(GpuParityRules.gateDetailLine(true, p, null)!!.startsWith("parity gate: PASS"))
+    }
+
+    @Test
+    fun runtime_gate_still_fails_two_lsb_and_not_run() {
+        assertEquals(
+            ParityVerdict.Status.FAIL,
+            GpuParityRules.runtimeVerdict(GlesParityResult(true, 2, 1, 1000)).status,
+        )
+        assertEquals(
+            ParityVerdict.Status.NOT_RUN,
+            GpuParityRules.runtimeVerdict(GlesParityResult(false, 0, 0, 0), "boom").status,
+        )
+        // A strict-passing run logs nothing extra.
+        assertEquals(null, GpuParityRules.gateDetailLine(true, GlesParityResult(true, 1, 0, 1000), null))
+    }
+
     @Test
     fun a_run_that_did_not_run_is_not_run_with_the_error_detail() {
         val v = GpuParityRules.verdict(
@@ -330,10 +357,11 @@ class GpuParityTest {
     }
 
     @Test
-    fun gate_detail_line_carries_the_share_numbers_for_a_share_failure() {
+    fun gate_detail_line_reports_a_share_above_the_suite_threshold_as_informational_pass() {
+        // Owner decision 2026-11-26: the runtime gate checks maxDiffLsb only; the share stays in the suites.
         assertEquals(
-            "parity gate: FAIL (mismatch 49766/24883200 > 0.01%; " +
-                "ran=1 maxDiffLsb=1 mismatch=49766 samples=24883200)",
+            "parity gate: PASS (runtime gate: maxDiffLsb 1 <= 1; mismatch 49766/24883200 (0.2000%); " +
+                "above the suite's 0.01% share: informational)",
             GpuParityRules.gateDetailLine(
                 parityPaid = true,
                 parity = GlesParityResult(ran = true, maxDiffLsb = 1, mismatchCount = 49766, samples = 24883200),
