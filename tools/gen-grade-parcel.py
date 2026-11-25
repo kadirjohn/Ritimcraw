@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The grade parcel's single source of truth (the parcel crossing, commit a).
 
-The 29 SCALAR grade fields cross the JNI seam as ONE flat FloatArray. The
+The SCALAR grade fields cross the JNI seam as ONE flat FloatArray. The
 wire layout — name, kind, neutral default, slot index — is defined ONCE in
 the SCHEMA list below, and BOTH mirrors are GENERATED from it:
 
@@ -20,8 +20,9 @@ the GradeK property itself.
 Stale-mirror catches (two independent ones):
   1. `python3 tools/gen-grade-parcel.py --check` regenerates both files in
      memory and diffs them against the committed copies — any drift
-     (hand-edit, forgotten regeneration after a schema change) fails with
-     the file and first differing line.
+     (hand-edit, forgotten regeneration after a schema change) prints the
+     file, the first differing line pairs, and EXITS 1 (wireable as a
+     gate step).
   2. GradeParcelTest (the JVM suite) reads the committed C++ header from
      the repo and asserts every constexpr slot equals the Kotlin offset —
      so a regenerated-but-not-cross-checked mirror cannot pass the suite
@@ -34,6 +35,11 @@ tonemap crosses as int-as-float. lutStrength is NOT a parcel field: it
 belongs to the per-job LUT binding group (lutPath, lutStrength, and the
 five interpretation ordinals), which stays flat at the seam.
 
+Layout history: 2026-11-25 (owner decision, 6b62faa) REMOVED highlightsCurve
+(slot 29 of the 31-slot era) and renumbered highlightRecovery 30 -> 29
+(SLOT_COUNT 31 -> 30). The SCHEMA list below is the CURRENT committed
+layout; the append-only rule holds from here.
+
 Usage:
   python3 tools/gen-grade-parcel.py           # (re)generate both mirrors
   python3 tools/gen-grade-parcel.py --check   # verify committed mirrors
@@ -45,7 +51,8 @@ import sys
 # ---------------------------------------------------------------------------
 # The schema: (name, kind, default). The list order IS the slot order.
 # kind: "float" | "bool" | "int" (int crosses as float; decode casts back).
-# APPEND ONLY — see the module docstring.
+# APPEND ONLY — see the module docstring (the one removal so far: the
+# 2026-11-25 highlightsCurve removal, owner decision, committed as 6b62faa).
 # ---------------------------------------------------------------------------
 SCHEMA = [
     ("chromaDenoise", "float", "0.0"),
@@ -77,7 +84,15 @@ SCHEMA = [
     ("highlightReconstruction", "bool", "true"),
     ("keepVignetting", "bool", "true"),
     ("tonemap", "int", "0"),
+    ("highlightRecovery", "bool", "false"),
 ]
+
+# Trailing // comments the committed struct members carry (added by hand in
+# the highlightsCurve era and kept by the byte contract: a regenerate must
+# reproduce the committed mirrors exactly). Keyed by schema name.
+CPP_MEMBER_COMMENTS = {
+    "highlightRecovery": "highlight recovery (replaces stage 3 with a real re-estimate)",
+}
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KOTLIN_PATH = os.path.join(
@@ -128,6 +143,14 @@ def cpp_default(kind, default):
 # ---------------------------------------------------------------------------
 # The Kotlin mirror
 # ---------------------------------------------------------------------------
+
+# FROZEN PROSE: the "29 SCALAR" (the Kotlin doc below) and "ALL 29 schema
+# fields" (the C++ rawedit-fold doc) counts are the committed mirrors' own
+# stale wording from the hand-edit era (the slot count moved 29 -> 30 -> 31
+# -> 30 across the highlightsCurve era; the prose never followed). The byte
+# contract — regeneration must reproduce the committed mirrors exactly —
+# keeps them; making the counts dynamic means changing committed mirror
+# content (a runtime-code edit), so they stay until the owner decides.
 
 def gen_kotlin():
     count = len(SCHEMA)
@@ -219,7 +242,7 @@ import com.ritim.ritimcraw.data.GradeK
  *   - the warp verdict: warpActive, warpM - per-frame plan output;
  *   - job mechanics: handles, frameIndex, maxDim, ptsUs, rotationDeg;
  *   - GradeK-only fields: version, lutId, lutInterp, the stabilization
- *     group, the crop group, statsEnabled.
+ *     group, the crop group, statsMode.
  *
  * REFUSAL CHANNELS (both honest, never a silent misread): the Kotlin
  * decode throws IllegalStateException with a recovery message; the C++
@@ -306,7 +329,10 @@ def gen_cpp():
     struct_members = []
     for name, kind, default in SCHEMA:
         cpp_type = {"float": "float", "bool": "bool", "int": "int"}[kind]
-        struct_members.append("    %s %s = %s;" % (cpp_type, name, cpp_default(kind, default)))
+        line = "    %s %s = %s;" % (cpp_type, name, cpp_default(kind, default))
+        if name in CPP_MEMBER_COMMENTS:
+            line += "  // " + CPP_MEMBER_COMMENTS[name]
+        struct_members.append(line)
 
     slot_consts = []
     for i, (name, _kind, _default) in enumerate(SCHEMA):
@@ -464,15 +490,26 @@ inline void applyGradeToRawedit(const DevelopGrade& grade, GradeT* out) {
     )
 
 
-def first_diff(a, b):
-    al = a.splitlines()
-    bl = b.splitlines()
+def clip(line, width=160):
+    """Gate-log hygiene: one differing line, truncated, never a page dump."""
+    return line if len(line) <= width else line[:width] + " ..."
+
+
+def drift_lines(committed, generated, limit=8):
+    """The first [limit] differing line pairs (committed vs schema) with
+    line numbers, for a clear nonzero-exit gate message."""
+    al = committed.splitlines()
+    bl = generated.splitlines()
+    out = []
     for i in range(max(len(al), len(bl))):
         la = al[i] if i < len(al) else "<EOF>"
         lb = bl[i] if i < len(bl) else "<EOF>"
         if la != lb:
-            return i + 1, la, lb
-    return None
+            out.append("    line %d committed: %s" % (i + 1, clip(la)))
+            out.append("    line %d schema:    %s" % (i + 1, clip(lb)))
+            if len(out) >= 2 * limit:
+                break
+    return out
 
 
 def main():
@@ -497,20 +534,23 @@ def main():
             continue
         stale = True
         if check:
-            d = first_diff(committed, text)
             print("%s: STALE" % rel)
-            if d:
-                line, old, new = d
-                print("  first difference at line %d:" % line)
-                print("    committed: %s" % old)
-                print("    schema:    %s" % new)
+            print("  schema drift, first differing lines (committed vs schema):")
+            for drift in drift_lines(committed, text):
+                print(drift)
             print("  regenerate with: python3 tools/gen-grade-parcel.py")
         else:
             with open(path, "w") as f:
                 f.write(text)
             print("%s: regenerated" % rel)
-    if check and stale:
-        sys.exit(1)
+    if check:
+        if stale:
+            print(
+                "GRADE PARCEL SCHEMA DRIFT: the %d-slot schema does not match "
+                "the committed mirrors (exit 1 for gates)" % len(SCHEMA)
+            )
+            sys.exit(1)
+        print("grade parcel schema: OK (SLOT_COUNT %d)" % len(SCHEMA))
 
 
 if __name__ == "__main__":
