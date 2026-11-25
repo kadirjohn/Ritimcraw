@@ -643,4 +643,13 @@
     <string name="export_level_higher">Daha yüksek</string>
     <string name="export_level_ceiling">Kodlayıcı azami</string>
     <string name="preview_error_too_large">Bu kare önizleme için çok büyük. Ayarlar\'dan önizleme kalitesini düşürün ya da daha küçük bir klip açın.</string>
+    <!-- F1-8a: renk node şeridi -->
+    <string name="node_strip_node">Node %1$d</string>
+    <string name="node_strip_add">Node ekle</string>
+    <string name="node_strip_add_limit">Sınıra ulaşıldı (%1$d node)</string>
+    <string name="node_menu_disable">Kapat</string>
+    <string name="node_menu_enable">Aç</string>
+    <string name="node_menu_reset">Sıfırla</string>
+    <string name="node_menu_duplicate">Çoğalt</string>
+    <string name="node_menu_delete">Sil</string>
 </resources>
