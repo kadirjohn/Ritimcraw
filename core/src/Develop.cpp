@@ -758,7 +758,24 @@ void blockNeighbourhoodSums(const std::vector<double>& src, uint32_t w, uint32_t
 
 }  // namespace
 
-void recoverClippedHighlights(ImageF& img, const ImageF& clipMask) {
+// The shipped headroom rule (set from the hr_headroom measurement, see docs/HIGHLIGHT_RECOVERY_PLAN.md).
+// K = 4 (two stops): a re-estimated channel is at most 4x its own clipped value. Measured on night.mcraw frames
+// 0 and 900 (hr_headroom): camera-space est/clipped p99 = 3.4 / 4.1, max = 7.0 / 6.0; K=4 clamps 0.42% / 1.1% of the
+// recovered channel-pixels. The reference-fraction rule measured n=0 below 0.10, so it ships off (0).
+constexpr float kRecoveryHeadroom = 4.0f;
+constexpr float kRecoveryMinRefFrac = 0.0f;
+
+namespace {
+const RecoveryParams* gDiagParams = nullptr;
+RecoveryStats* gDiagStats = nullptr;
+}  // namespace
+
+void setRecoveryDiagnostics(const RecoveryParams* params, RecoveryStats* stats) {
+    gDiagParams = params;
+    gDiagStats = stats;
+}
+
+void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const RecoveryParams& params, RecoveryStats* stats) {
     const uint32_t w = img.w, h = img.h;
     if (w == 0 || h == 0 || clipMask.w != w || clipMask.h != h) return;
     const size_t n = static_cast<size_t>(w) * h;
@@ -844,7 +861,19 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask) {
         for (int c = 0; c < 3; ++c) {
             if (!cf[c]) continue;
             const float rho = ratio[c][r].empty() ? -1.0f : ratio[c][r][i];
-            if (rho > 0.0f) out[c] = std::max(px[c], vr * rho);  // the clipped value is a lower bound
+            if (rho <= 0.0f) continue;
+            const float est = vr * rho;
+            if (stats != nullptr && px[c] > 0.0f && est > px[c]) {
+                stats->ratio.push_back(est / px[c]);
+                stats->refFrac.push_back(vr / params.refLevel[r]);
+                stats->chan.push_back(static_cast<uint8_t>(c));
+                stats->pix.push_back(static_cast<uint32_t>(i));
+            }
+            // A tiny reference cannot be amplified into a bright estimate: leave the channel as clipped.
+            if (params.minRefFrac > 0.0f && vr < params.minRefFrac * params.refLevel[r]) continue;
+            float e = std::max(px[c], est);  // the clipped value is a lower bound
+            if (params.headroom > 0.0f && px[c] > 0.0f) e = std::min(e, params.headroom * px[c]);
+            out[c] = e;
         }
         px[0] = out[0]; px[1] = out[1]; px[2] = out[2];
     }
@@ -863,26 +892,87 @@ RecoveryClipLevels recoveryClipLevels(const uint16_t* cfa, const FrameInfo& info
         range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
     }
     const CfaLayout layout = layoutFor(info.cfa);
-    const auto normAt = [&](uint32_t x, uint32_t y) {
-        const int slot = cellSlot(y & 1, x & 1);
-        return std::min(std::max((static_cast<float>(cfa[static_cast<size_t>(y) * w + x]) - black[slot]) / range[slot], 0.0f), 1.0f);
+    // The per-site normalization is monotone in the raw value, so the per-channel maximum and the plateau count
+    // are computed on raw integers (a vectorizable max, then a count against an exact per-slot raw threshold)
+    // and give the identical numbers a per-site float scan would (the threshold search re-evaluates the very
+    // same float expression). The scan is the per-frame CPU cost of the GPU path, hence the care.
+    const auto normOf = [&](int slot, uint32_t raw) {
+        return std::min(std::max((static_cast<float>(raw) - black[slot]) / range[slot], 0.0f), 1.0f);
     };
-    float maxNorm[3] = {0.0f, 0.0f, 0.0f};
-    for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x) {
-            const float v = normAt(x, y);
-            const int color = layout.cell[y & 1][x & 1];
-            if (v > maxNorm[color]) maxNorm[color] = v;
+    std::vector<uint16_t> rowMax(static_cast<size_t>(h) * 2, 0);
+    parallelForRows(h, [&](size_t y0, size_t y1) {
+        for (size_t y = y0; y < y1; ++y) {
+            const uint16_t* row = cfa + y * w;
+            uint16_t m0 = 0, m1 = 0;
+            uint32_t x = 0;
+            for (; x + 1 < w; x += 2) {
+                m0 = std::max(m0, row[x]);
+                m1 = std::max(m1, row[x + 1]);
+            }
+            if (x < w) m0 = std::max(m0, row[x]);
+            rowMax[y * 2] = m0;
+            rowMax[y * 2 + 1] = m1;
         }
-    // Plateau: sites within kBand of the channel maximum, and the sites exactly at the maximum.
+    });
+    uint16_t maxRaw[4] = {0, 0, 0, 0};
+    for (uint32_t y = 0; y < h; ++y)
+        for (int px = 0; px < 2; ++px) {
+            const int slot = cellSlot(y & 1, px);
+            maxRaw[slot] = std::max(maxRaw[slot], rowMax[static_cast<size_t>(y) * 2 + px]);
+        }
+    float maxNorm[3] = {0.0f, 0.0f, 0.0f};
+    for (int slot = 0; slot < 4; ++slot) {
+        const int color = layout.cell[slot / 2][slot % 2];
+        maxNorm[color] = std::max(maxNorm[color], normOf(slot, maxRaw[slot]));
+    }
+    // Plateau count: sites within kBand of the channel maximum.
     constexpr float kBand = 0.004f;
+    // Smallest raw value of each slot whose normalized level reaches the plateau floor (monotone: binary search).
+    uint32_t rawFloor[4], rawTop[4];
+    for (int slot = 0; slot < 4; ++slot) {
+        const float topN = maxNorm[layout.cell[slot / 2][slot % 2]];
+        const float floorN = topN - kBand;
+        uint32_t lo = 0, hi = 65536;  // 65536 = unreachable
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) / 2;
+            if (normOf(slot, mid) >= floorN) hi = mid; else lo = mid + 1;
+        }
+        rawFloor[slot] = lo;
+        lo = 0; hi = 65536;
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) / 2;
+            if (normOf(slot, mid) >= topN) hi = mid; else lo = mid + 1;
+        }
+        rawTop[slot] = lo;
+    }
+    std::vector<uint32_t> rowCount(static_cast<size_t>(h) * 2, 0), rowTop(static_cast<size_t>(h) * 2, 0);
+    parallelForRows(h, [&](size_t y0, size_t y1) {
+        for (size_t y = y0; y < y1; ++y) {
+            const uint16_t* row = cfa + y * w;
+            const uint32_t f0 = rawFloor[cellSlot(static_cast<int>(y & 1), 0)];
+            const uint32_t f1 = rawFloor[cellSlot(static_cast<int>(y & 1), 1)];
+            const uint32_t t0 = rawTop[cellSlot(static_cast<int>(y & 1), 0)];
+            const uint32_t t1 = rawTop[cellSlot(static_cast<int>(y & 1), 1)];
+            uint32_t c0 = 0, c1 = 0, k0 = 0, k1 = 0;
+            uint32_t x = 0;
+            for (; x + 1 < w; x += 2) {
+                c0 += row[x] >= f0;
+                c1 += row[x + 1] >= f1;
+                k0 += row[x] >= t0;
+                k1 += row[x + 1] >= t1;
+            }
+            if (x < w) { c0 += row[x] >= f0; k0 += row[x] >= t0; }
+            rowCount[y * 2] = c0;
+            rowCount[y * 2 + 1] = c1;
+            rowTop[y * 2] = k0;
+            rowTop[y * 2 + 1] = k1;
+        }
+    });
     uint64_t band[3] = {0, 0, 0}, top[3] = {0, 0, 0};
     for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x) {
-            const float v = normAt(x, y);
-            const int color = layout.cell[y & 1][x & 1];
-            if (v >= maxNorm[color] - kBand) ++band[color];
-            if (v >= maxNorm[color]) ++top[color];
+        for (int px = 0; px < 2; ++px) {
+            band[layout.cell[y & 1][px]] += rowCount[static_cast<size_t>(y) * 2 + px];
+            top[layout.cell[y & 1][px]] += rowTop[static_cast<size_t>(y) * 2 + px];
         }
     for (int c = 0; c < 3; ++c) { out.maxNorm[c] = maxNorm[c]; out.plateau[c] = band[c]; out.topCount[c] = top[c]; }
     constexpr uint64_t kMinPlateau = 16;
@@ -955,8 +1045,10 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // level itself when the frame has no sharp saturation peak), taken here on the pre-shading raw values.
     std::vector<uint8_t> preClip;
     std::vector<float> clipMaskCfa;
+    RecoveryClipLevels recLevels;
     if (grade.highlightRecovery || grade.highlightReconstruction) {
         const RecoveryClipLevels levels = recoveryClipLevels(cfa, info, meta);
+        recLevels = levels;
         preClip.resize(n);
         for (uint32_t y = 0; y < h; ++y)
             for (uint32_t x = 0; x < w; ++x) {
@@ -1088,7 +1180,16 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
             img.rgb[i + 1] *= inv[1];
             img.rgb[i + 2] *= inv[2];
         }
-        recoverClippedHighlights(img, clipMask);
+        RecoveryParams rp;
+        rp.headroom = kRecoveryHeadroom;
+        rp.minRefFrac = kRecoveryMinRefFrac;
+        for (int c = 0; c < 3; ++c) rp.refLevel[c] = recLevels.threshold[c] * inv[c];
+        if (gDiagParams != nullptr) {
+            const float k = gDiagParams->headroom, f = gDiagParams->minRefFrac;
+            rp.headroom = k;
+            rp.minRefFrac = f;
+        }
+        recoverClippedHighlights(img, clipMask, rp, gDiagStats);
     }
 
     // ---- Stage 5+6: white balance + camera color transform (DNG 1.6 §6). ----

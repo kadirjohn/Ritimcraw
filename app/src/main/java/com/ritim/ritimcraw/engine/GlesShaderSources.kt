@@ -430,6 +430,8 @@ uniform highp sampler2D uShading; // the clip's 4-plane shading map: GL_R32F, pl
 uniform ivec2 uShadingSize;     // one plane's size: (shadingW, shadingH)
 uniform int uHr;                // 1 = apply stage 3 (grade.highlightReconstruction)
 uniform vec3 uHrGain;           // stage-3 WB gains = meta.wbGains with the >0 guard (CPU-computed)
+uniform int uClipUse;           // 1 = flag clipped sites against uClipThr (recoveryClipLevels); 0 = the white level 1.0
+uniform vec3 uClipThr;          // per-channel clip thresholds on the PRE-shading normalized site value (CPU-computed)
 uniform vec3 uWb;               // WB gains = 1/asShotNeutral, >0 guard included (CPU-computed)
 uniform mat3 uCam2rgb;          // camera->Rec.709, the CPU row-major matrix uploaded with transpose=GL_TRUE
 uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (no profile / parity shape)
@@ -554,6 +556,13 @@ float normAt(ivec2 p) {
     return v;
 }
 
+// The clip flag of a site (stage 3 and recovery share it): the PRE-shading stage-1 value at or over its
+// channel's per-frame threshold (core recoveryClipLevels); the plain white level when uClipUse is 0.
+bool clipFlag(ivec2 p) {
+    float thr = uClipUse == 1 ? uClipThr[siteAt(p)] : 1.0;
+    return stage1(p) >= thr;
+}
+
 // Stage 3: highlight reconstruction - the CPU stage-3 cell pass,
 // verbatim (core/src/Develop.cpp). The CPU computes the per-color stats
 // once per 2x2 cell and applies the cap in a second pass over the same
@@ -586,7 +595,7 @@ float hrAt(ivec2 p) {
             float v = normAt(ivec2(xx, yy));
             present[color] = true;
             if (minV[color] < 0.0 || v < minV[color]) minV[color] = v;
-            if (v >= 1.0) clipped[color] = true;
+            if (clipFlag(ivec2(xx, yy))) clipped[color] = true;
         }
     }
 
@@ -614,7 +623,7 @@ float hrAt(ivec2 p) {
     // buffer exactly. cap = ceiling / gain[wbIndex(color)] with the CPU's
     // wbIndex(siteColor) = siteColor.
     float v = normAt(p);
-    if (v < 1.0) return v;
+    if (!clipFlag(p)) return v;
     float cap = ceiling / uHrGain[siteAt(p)];
     return v > cap ? cap : v;
 }
@@ -1368,6 +1377,275 @@ precision highp int;
             kDevelopPreUniforms + "\n" + kDevelopOutDecl + "\n" +
             kDevelopPreHelpers + "\n" + kDevelopMainHead +
             kDevelopPreBody + kDevelopWriteOut
+
+    // ---- Highlight RECOVERY passes (docs/HIGHLIGHT_RECOVERY_PLAN.md) --------
+    //
+    // The GPU twin of the CPU oracle rawedit::recoverClippedHighlights (core/
+    // src/Develop.cpp). Drawn INSTEAD of the PRE pass only when the request
+    // carries highlightRecovery, so the no-recovery chain is untouched:
+    //   RECOVERY_PRE        CFA -> white-balanced camera RGB + a 3-bit clip
+    //                       mask in alpha (the demosaiced 0/1 mask >= 0.5)
+    //   RECOVERY_BLOCK0     per-8-pixel-block sums (W, A, B) of every ordered
+    //                       channel pair's unclipped-pair statistics
+    //   RECOVERY_BLOCK_UP   4x4 block sums -> the 32/128/512 pixel blocks
+    //   RECOVERY_COMPOSITE  per pixel: finest scale with >= 5% support
+    //                       (9x9 box, then 3x3 neighbourhoods of the 8/32/
+    //                       128/512 blocks) -> ratio -> estimate; then the
+    //                       camera matrix, into the slot PRE would write.
+    // The block pyramids are sampler2DArray layers (layer = ordered pair
+    // index c*2 + (r > c ? r-1 : r)) so the composite never indexes a sampler
+    // array dynamically (invalid on Adreno ES 3.00); layer is a coordinate.
+
+    /** Recovery's own banner + precision block. */
+    private const val kRecoveryBanner: String = """// Highlight recovery - GPU twin of rawedit::recoverClippedHighlights
+// (core/src/Develop.cpp). Same math as the CPU oracle: ratio-from-unclipped-
+// neighbours at the finest of five scales with >= 5% support.
+
+precision highp float;
+precision highp int;
+"""
+
+    /** The pair statistic shared by the block sums and the 9x9 box: (W, A, B) of one pixel. */
+    private const val kRecoveryPairTerm: String = """// One pixel's contribution to the (c, r) pair statistics: weight 1 and the
+// two channel values when BOTH channels are unclipped and the reference
+// is above the CPU's kEps (1e-4); zero otherwise.
+// mc / mr are the channels' bit masks (1 << c), sc / sr their one-hot selectors: channel values are picked
+// with a dot product, not a dynamic vector index (which Adreno compiles to slow scratch-memory code).
+vec3 pairTerm(vec4 t, int bits, int mc, int mr, vec3 sc, vec3 sr) {
+    float vc = dot(t.rgb, sc);
+    float vr = dot(t.rgb, sr);
+    bool ok = (bits & mc) == 0 && (bits & mr) == 0 && vr > 1e-4 && vc >= 0.0;
+    return ok ? vec3(1.0, vc, vr) : vec3(0.0);
+}
+"""
+
+    /** RECOVERY_PRE's own extra uniform + the raw clip-mask helper. */
+    private const val kRecoveryPreExtra: String = ""
+
+    private const val kRecoveryClipHelper: String = """// The raw clip mask at a site: the stage-1 value (before lens shading) at or over its channel's threshold.
+float clipAt(ivec2 p) {
+    return clipFlag(p) ? 1.0 : 0.0;
+}
+"""
+
+    private const val kRecoveryPreBody: String = """    int maxI = uSize.x - 1;
+    int maxJ = uSize.y - 1;
+    int ownSite = siteAt(g);
+    float px[3];
+    float mk[3];
+    for (int t = 0; t < 3; ++t) {
+        if (t == ownSite) {
+            px[t] = normAt(g);
+            mk[t] = clipAt(g);
+        } else {
+            float sum = 0.0;
+            float msum = 0.0;
+            int n = 0;
+            for (int k = 0; k < 8; ++k) {
+                int nx = min(max(g.x + kDx[k], 0), maxI);
+                int ny = min(max(g.y + kDy[k], 0), maxJ);
+                ivec2 np = ivec2(nx, ny);
+                if (siteAt(np) == t) {
+                    sum += normAt(np);
+                    msum += clipAt(np);
+                    n += 1;
+                }
+            }
+            px[t] = n > 0 ? sum / float(n) : normAt(g);
+            mk[t] = n > 0 ? msum / float(n) : clipAt(g);
+        }
+    }
+    vec3 c = vec3(px[0], px[1], px[2]) * uWb;
+    float bits = (mk[0] >= 0.5 ? 1.0 : 0.0) + (mk[1] >= 0.5 ? 2.0 : 0.0) + (mk[2] >= 0.5 ? 4.0 : 0.0);
+    oCol = vec4(c, bits);
+}
+"""
+
+    /**
+     * RECOVERY_PRE - stages 1, 2 and 4 + WB of the recovery path: the demosaiced,
+     * lens-shaded, white-balanced camera RGB (NO stage 3, NO camera matrix) and
+     * the clip mask. The mask is the PRE-shading normalized site value against
+     * the per-channel clip thresholds (uClipThr, the CPU's recoveryClipLevels),
+     * demosaiced by the same bilinear as the pixels and thresholded at 0.5.
+     */
+    const val RECOVERY_PRE: String =
+        "#version 300 es\n\n" + kRecoveryBanner + "\n" +
+            kDevelopPreUniforms + kRecoveryPreExtra + "\n" +
+            kDevelopOutDecl + "\n" + kDevelopPreHelpers + "\n" +
+            kRecoveryClipHelper + "\n" + kDevelopMainHead + kRecoveryPreBody
+
+    /** RECOVERY_BLOCK0 - 4x4 block sums of the pair statistics, three ordered pairs per draw (MRT). */
+    const val RECOVERY_BLOCK0: String =
+        "#version 300 es\n\n" + kRecoveryBanner + "\n" + """uniform highp sampler2D uSrc;  // RECOVERY_PRE's output (rgb + clip bits in alpha), unit 1
+uniform ivec2 uSize;           // full-resolution size
+uniform int uPairBase;         // first ordered-pair index of this draw (0 or 3); attachment i = pair uPairBase + i
+
+layout(location = 0) out vec4 oP0;
+layout(location = 1) out vec4 oP1;
+layout(location = 2) out vec4 oP2;
+
+""" + kRecoveryPairTerm + """
+void main() {
+    ivec2 b = ivec2(gl_FragCoord.xy);
+    // The three ordered pairs of this draw (pair p = c*2 + (r > c ? r-1 : r)), as masks and one-hot selectors.
+    int p0 = uPairBase, p1 = uPairBase + 1, p2 = uPairBase + 2;
+    int c0 = p0 / 2, c1 = p1 / 2, c2 = p2 / 2;
+    int q0 = p0 - c0 * 2, q1 = p1 - c1 * 2, q2 = p2 - c2 * 2;
+    int r0 = q0 >= c0 ? q0 + 1 : q0, r1 = q1 >= c1 ? q1 + 1 : q1, r2 = q2 >= c2 ? q2 + 1 : q2;
+    int mc0 = 1 << c0, mc1 = 1 << c1, mc2 = 1 << c2, mr0 = 1 << r0, mr1 = 1 << r1, mr2 = 1 << r2;
+    vec3 sc0 = vec3(float(c0 == 0), float(c0 == 1), float(c0 == 2));
+    vec3 sc1 = vec3(float(c1 == 0), float(c1 == 1), float(c1 == 2));
+    vec3 sc2 = vec3(float(c2 == 0), float(c2 == 1), float(c2 == 2));
+    vec3 sr0 = vec3(float(r0 == 0), float(r0 == 1), float(r0 == 2));
+    vec3 sr1 = vec3(float(r1 == 0), float(r1 == 1), float(r1 == 2));
+    vec3 sr2 = vec3(float(r2 == 0), float(r2 == 1), float(r2 == 2));
+    vec3 s0 = vec3(0.0);
+    vec3 s1 = vec3(0.0);
+    vec3 s2 = vec3(0.0);
+    ivec2 o = b * 4;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            ivec2 p = o + ivec2(x, y);
+            // Constant loop bounds + a coordinate clamp (no `continue`) so the compiler unrolls the 16 taps and
+            // issues the fetches together; out-of-frame taps are weighted to zero.
+            float inb = (p.x < uSize.x && p.y < uSize.y) ? 1.0 : 0.0;
+            vec4 t = texelFetch(uSrc, min(p, uSize - 1), 0);
+            int bits = int(t.a + 0.5);
+            s0 += inb * pairTerm(t, bits, mc0, mr0, sc0, sr0);
+            s1 += inb * pairTerm(t, bits, mc1, mr1, sc1, sr1);
+            s2 += inb * pairTerm(t, bits, mc2, mr2, sc2, sr2);
+        }
+    }
+    oP0 = vec4(s0, 0.0);
+    oP1 = vec4(s1, 0.0);
+    oP2 = vec4(s2, 0.0);
+}
+"""
+
+    /** RECOVERY_BLOCK_UP - uFactor x uFactor children of the previous level's block sums (2: 4 -> 8 px; 4: 8 -> 32 -> 128 -> 512), three layers per draw (MRT). */
+    const val RECOVERY_BLOCK_UP: String =
+        "#version 300 es\n\n" + kRecoveryBanner + "\n" + """uniform highp sampler2DArray uPrev;  // the previous level's block sums (layer = ordered pair), unit 1
+uniform ivec2 uPrevSize;            // the previous level's block grid
+uniform int uPairBase;              // first layer of this draw; attachment i = layer uPairBase + i
+uniform int uFactor;                // children per axis (2 or 4)
+
+layout(location = 0) out vec4 oP0;
+layout(location = 1) out vec4 oP1;
+layout(location = 2) out vec4 oP2;
+
+vec3 sumLayer(ivec2 o, int layer) {
+    vec3 s = vec3(0.0);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            ivec2 p = o + ivec2(x, y);
+            float w = (x < uFactor && y < uFactor && p.x < uPrevSize.x && p.y < uPrevSize.y) ? 1.0 : 0.0;
+            s += w * texelFetch(uPrev, ivec3(min(p, uPrevSize - 1), layer), 0).rgb;
+        }
+    }
+    return s;
+}
+
+void main() {
+    ivec2 o = ivec2(gl_FragCoord.xy) * uFactor;
+    oP0 = vec4(sumLayer(o, uPairBase), 0.0);
+    oP1 = vec4(sumLayer(o, uPairBase + 1), 0.0);
+    oP2 = vec4(sumLayer(o, uPairBase + 2), 0.0);
+}
+"""
+
+    /** RECOVERY_COMPOSITE - ratio selection + estimate + camera matrix, into the slot PRE would have written. */
+    const val RECOVERY_COMPOSITE: String =
+        "#version 300 es\n\n" + kRecoveryBanner + "\n" + """uniform highp sampler2D uSrc;          // RECOVERY_PRE's output, unit 1
+uniform highp sampler2DArray uL0;      // 8-pixel block sums, unit 12
+uniform highp sampler2DArray uL1;      // 32-pixel block sums, unit 13
+uniform highp sampler2DArray uL2;      // 128-pixel block sums, unit 14
+uniform highp sampler2DArray uL3;      // 512-pixel block sums, unit 15
+uniform ivec2 uSize;                   // full-resolution size
+uniform mat3 uCam2rgb;                 // camera->Rec.709 (row-major CPU matrix uploaded with transpose=GL_TRUE)
+uniform int uHasProfile;               // 1 = apply uCam2rgb
+
+out vec4 oCol;
+
+""" + kRecoveryPairTerm + """
+// The 3x3 block neighbourhood sum around pixel g's block, clipped to the
+// grid (the CPU's blockNeighbourhoodSums): (W, A, B) of the ordered pair.
+vec3 nbSum(highp sampler2DArray s, ivec2 g, int blk, int layer) {
+    ivec2 dims = (uSize + (blk - 1)) / blk;
+    ivec2 bc = g / blk;
+    vec3 a = vec3(0.0);
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            ivec2 q = bc + ivec2(dx, dy);
+            if (q.x < 0 || q.y < 0 || q.x >= dims.x || q.y >= dims.y) continue;
+            a += texelFetch(s, ivec3(q, layer), 0).rgb;
+        }
+    }
+    return a;
+}
+
+// The ratio v_c / v_r near g at the finest scale with >= 5% unclipped-pair
+// support (the CPU's five scales, same thresholds), or -1 when none has any.
+float ratioFor(ivec2 g, int c, int r) {
+    int layer = c * 2 + (r > c ? r - 1 : r);
+    int mc = 1 << c;
+    int mr = 1 << r;
+    vec3 sc = vec3(float(c == 0), float(c == 1), float(c == 2));
+    vec3 sr = vec3(float(r == 0), float(r == 1), float(r == 2));
+    vec3 s = vec3(0.0);
+    for (int dy = -4; dy <= 4; ++dy) {
+        for (int dx = -4; dx <= 4; ++dx) {
+            ivec2 q = g + ivec2(dx, dy);
+            if (q.x < 0 || q.y < 0 || q.x >= uSize.x || q.y >= uSize.y) continue;
+            vec4 t = texelFetch(uSrc, q, 0);
+            s += pairTerm(t, int(t.a + 0.5), mc, mr, sc, sr);
+        }
+    }
+    if (s.x >= 4.05 && s.z > 0.0) return s.y / s.z;
+    s = nbSum(uL0, g, 8, layer);
+    if (s.x >= 28.8 && s.z > 0.0) return s.y / s.z;
+    s = nbSum(uL1, g, 32, layer);
+    if (s.x >= 460.8 && s.z > 0.0) return s.y / s.z;
+    s = nbSum(uL2, g, 128, layer);
+    if (s.x >= 7372.8 && s.z > 0.0) return s.y / s.z;
+    s = nbSum(uL3, g, 512, layer);
+    if (s.x >= 117964.8 && s.z > 0.0) return s.y / s.z;
+    return -1.0;
+}
+
+void main() {
+    ivec2 g = ivec2(gl_FragCoord.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) discard;
+    vec4 t = texelFetch(uSrc, g, 0);
+    vec3 v = t.rgb;
+    int bits = int(t.a + 0.5);
+    bool cf[3] = bool[3]((bits & 1) != 0, (bits & 2) != 0, (bits & 4) != 0);
+    int nc = int(cf[0]) + int(cf[1]) + int(cf[2]);
+    if (nc == 3) {
+        float m = min(v.r, min(v.g, v.b));
+        v = vec3(m);  // no information: neutral at the lowest level, nothing invented
+    } else if (nc > 0) {
+        int r;
+        if (!cf[1]) r = 1;
+        else r = (v.r >= v.b) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+        float vr = v[r];
+        vec3 o = v;
+        for (int c = 0; c < 3; ++c) {
+            if (!cf[c]) continue;
+            float rho = ratioFor(g, c, r);
+            if (rho > 0.0) {
+                float e = max(v[c], vr * rho);  // the clipped value is a lower bound
+                if (v[c] > 0.0) e = min(e, 4.0 * v[c]);  // headroom cap K = 4 (CPU kRecoveryHeadroom)
+                o[c] = e;
+            }
+        }
+        v = o;
+    }
+    if (uHasProfile == 1) {
+        v = uCam2rgb * v;
+    }
+    oCol = vec4(v, 1.0);
+}
+"""
 
     /**
      * The develop chain's POINTWISE POST pass (the sharpness/detail port's

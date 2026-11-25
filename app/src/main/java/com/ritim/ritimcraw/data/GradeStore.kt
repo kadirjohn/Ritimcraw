@@ -122,6 +122,8 @@ data class GradeK(
     val keepVignetting: Boolean = true,
     /** Highlights stage-15 curve: 0 = legacy (knee 0.75, old projects), 1 = v1 (knee 0.40). New grades take v1. */
     val highlightsCurve: Int = HIGHLIGHTS_CURVE_V1,
+    /** Highlight RECOVERY (CPU oracle recoverClippedHighlights): re-estimates clipped channels instead of capping them. MCRAW only. Default off; written only when true. */
+    val highlightRecovery: Boolean = false,
     val sharpness: Float = 0f,
     val detail: Float = 0f,
     val tonemap: Int = 0,
@@ -539,6 +541,7 @@ class GradeStore(private val file: File) {
                 .append("\"highlightReconstruction\":").append(g.highlightReconstruction).append(',')
                 .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
                 .append(if (g.highlightsCurve != HIGHLIGHTS_CURVE_LEGACY) "\"highlightsCurve\":${g.highlightsCurve}," else "")
+                .append(if (g.highlightRecovery) "\"highlightRecovery\":true," else "")
                 .append("\"sharpness\":").append(num(g.sharpness)).append(',')
                 .append("\"detail\":").append(num(g.detail)).append(',')
                 .append("\"tonemap\":").append(g.tonemap).append(',')
@@ -790,6 +793,7 @@ class GradeStore(private val file: File) {
                     keepVignetting = m["keepVignetting"] as? Boolean ?: true,
                     // Absent = a record from before the v1 curve: stays legacy.
                     highlightsCurve = (m["highlightsCurve"] as? Double)?.toInt() ?: HIGHLIGHTS_CURVE_LEGACY,
+                    highlightRecovery = m["highlightRecovery"] as? Boolean ?: false,
                     // Detail/tonemap fields (COL-15/COL-16) postdate older
                     // schema-1 files: fall back to neutral (0), which the
                     // native pipeline treats as a no-op — the old look is

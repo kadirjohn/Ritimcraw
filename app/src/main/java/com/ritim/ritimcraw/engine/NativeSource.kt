@@ -127,6 +127,12 @@ class NativeSource private constructor(
                 // skip reason); release keeps the native default (off) and
                 // never logs.
                 if (BuildConfig.DEBUG) nativeSetStabDebugLog(true)
+                // Highlight recovery's shader texts (single source of truth in Kotlin; the GPU pipelines
+                // compile them lazily on the first recovery draw).
+                nativeRegisterRecoveryShaders(
+                    GlesShaderSources.RECOVERY_PRE, GlesShaderSources.RECOVERY_BLOCK0,
+                    GlesShaderSources.RECOVERY_BLOCK_UP, GlesShaderSources.RECOVERY_COMPOSITE,
+                )
                 // Export sub-stage timing (commit (d)): same gate — debug
                 // builds collect the six nativeExportFrameParcel sub-stage slots
                 // (decode/temporal/develop/warp/oetf/copy) so the export
@@ -213,6 +219,9 @@ class NativeSource private constructor(
          * BuildConfig.DEBUG, so release builds stay silent.
          */
         @JvmStatic private external fun nativeSetStabDebugLog(enabled: Boolean)
+        @JvmStatic private external fun nativeRegisterRecoveryShaders(
+            pre: String, block0: String, blockUp: String, composite: String,
+        )
 
         /**
          * Toggles the export sub-stage timing collection (commit (d)):
@@ -348,6 +357,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightsCurve: Int,
+            highlightRecovery: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -411,6 +421,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightsCurve: Int,
+            highlightRecovery: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -772,6 +783,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightsCurve: Int,
+            highlightRecovery: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1395,6 +1407,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightsCurve: Int,
+            highlightRecovery: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1431,7 +1444,7 @@ class NativeSource private constructor(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
-            asShot, highlightReconstruction, keepVignetting, highlightsCurve,
+            asShot, highlightReconstruction, keepVignetting, highlightsCurve, highlightRecovery,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
@@ -1462,6 +1475,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightsCurve: Int,
+            highlightRecovery: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1498,7 +1512,7 @@ class NativeSource private constructor(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
-            asShot, highlightReconstruction, keepVignetting, highlightsCurve,
+            asShot, highlightReconstruction, keepVignetting, highlightsCurve, highlightRecovery,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
@@ -1674,6 +1688,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightsCurve: Int,
+            highlightRecovery: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1706,7 +1721,7 @@ class NativeSource private constructor(
             bitDepth, fullRange, matrix, transfer, primaries,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
-            asShot, highlightReconstruction, keepVignetting, highlightsCurve,
+            asShot, highlightReconstruction, keepVignetting, highlightsCurve, highlightRecovery,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,

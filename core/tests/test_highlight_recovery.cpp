@@ -206,3 +206,67 @@ TEST_CASE("recovery_is_a_bit_exact_no_op_on_an_unclipped_image") {
     for (size_t i = 0; i < ra.rgb.size(); ++i) diff += ra.rgb[i] != rb.rgb[i];
     CHECK(diff == 0);
 }
+
+// The raw-integer scan in recoveryClipLevels must give exactly the thresholds the per-site float scan gave
+// (the scan is the GPU path's per-frame CPU cost, so it was rewritten for speed; the numbers must not move).
+namespace {
+struct RefScan { float maxNorm[3] = {0, 0, 0}; uint64_t band[3] = {0, 0, 0}, top[3] = {0, 0, 0}; };
+RefScan referenceScan(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta) {
+    RefScan out;
+    const uint32_t w = info.width, h = info.height;
+    const bool useFrameBlack = info.dynamicBlack[0] >= 0;
+    const float white = info.dynamicWhite > 0 ? float(info.dynamicWhite) : float(meta.white);
+    float black[4], range[4];
+    for (int s = 0; s < 4; ++s) {
+        black[s] = useFrameBlack ? float(info.dynamicBlack[s]) : float(meta.black[s]);
+        range[s] = white > black[s] ? white - black[s] : 1.0f;
+    }
+    const int cell[2][2] = {{0, 1}, {1, 2}};  // RGGB
+    auto norm = [&](uint32_t x, uint32_t y) {
+        const int slot = int(y & 1) * 2 + int(x & 1);
+        return std::min(std::max((float(cfa[size_t(y) * w + x]) - black[slot]) / range[slot], 0.0f), 1.0f);
+    };
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) out.maxNorm[cell[y & 1][x & 1]] = std::max(out.maxNorm[cell[y & 1][x & 1]], norm(x, y));
+    constexpr float kBand = 0.004f;
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const int c = cell[y & 1][x & 1];
+            const float v = norm(x, y);
+            if (v >= out.maxNorm[c] - kBand) ++out.band[c];
+            if (v >= out.maxNorm[c]) ++out.top[c];
+        }
+    return out;
+}
+}  // namespace
+
+TEST_CASE("clip_levels_fast_scan_matches_the_per_site_reference") {
+    uint32_t rng = 12345;
+    auto next = [&]() { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; };
+    for (int trial = 0; trial < 12; ++trial) {
+        const uint32_t w = 101 + trial * 7, h = 64 + trial * 3;  // odd sizes too
+        FrameInfo info;
+        info.width = w; info.height = h; info.bitDepth = 16; info.cfa = CfaPattern::RGGB;
+        info.activeArea = Rect{0, 0, int(w), int(h)};
+        RawMeta meta;
+        for (int s = 0; s < 4; ++s) meta.black[s] = uint16_t(60 + s * 3 + trial);
+        meta.white = 4095;
+        meta.asShotNeutral[0] = 0.55f; meta.asShotNeutral[1] = 1.0f; meta.asShotNeutral[2] = 0.7f;
+        std::vector<uint16_t> cfa(size_t(w) * h);
+        const uint32_t plateauG = 4000 + (next() % 90), plateauR = uint32_t(plateauG * 0.55f), plateauB = uint32_t(plateauG * 0.7f);
+        for (uint32_t y = 0; y < h; ++y)
+            for (uint32_t x = 0; x < w; ++x) {
+                const int c = siteColor(x, y);
+                uint32_t v = next() % 4200;
+                if (trial % 3 != 0 && (next() % 5) == 0) v = c == 1 ? plateauG : (c == 0 ? plateauR : plateauB);
+                cfa[size_t(y) * w + x] = uint16_t(v);
+            }
+        const RecoveryClipLevels a = recoveryClipLevels(cfa.data(), info, meta);
+        const RefScan b = referenceScan(cfa.data(), info, meta);
+        for (int c = 0; c < 3; ++c) {
+            CHECK(a.maxNorm[c] == b.maxNorm[c]);
+            CHECK(a.plateau[c] == b.band[c]);
+            CHECK(a.topCount[c] == b.top[c]);
+        }
+    }
+}

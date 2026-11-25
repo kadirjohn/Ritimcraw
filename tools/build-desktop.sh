@@ -147,6 +147,9 @@ echo "== building tests =="
 # hr_levels <clip.mcraw> [step] — recoveryClipLevels over a frame sweep (per-camera verification).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_levels.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_levels"
+# hr_headroom <clip.mcraw> <frame> [x,y,w,h] — recovery headroom-cap measurement (distribution of estimate / clipped value).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_headroom.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_headroom"
 # hr_trace <clip.mcraw> <frame> [x y] [ev hl chroma nr curve] — per-stage trace of one pixel (the lilac-streak measurement).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_trace.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_trace"

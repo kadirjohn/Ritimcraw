@@ -51,7 +51,7 @@ import com.ritim.ritimcraw.data.GradeK
 object GradeParcel {
 
     /** The one length the decode accepts; any other length is a refusal. */
-    const val SLOT_COUNT = 30
+    const val SLOT_COUNT = 31
 
     const val SLOT_CHROMA_DENOISE = 0
     const val SLOT_NOISE_REDUCTION = 1
@@ -83,6 +83,7 @@ object GradeParcel {
     const val SLOT_KEEP_VIGNETTING = 27
     const val SLOT_TONEMAP = 28
     const val SLOT_HIGHLIGHTS_CURVE = 29
+    const val SLOT_HIGHLIGHT_RECOVERY = 30
 
     /** Slot names, index-aligned, for honest refusal messages. */
     private val SLOT_NAMES = arrayOf(
@@ -116,6 +117,7 @@ object GradeParcel {
             "keepVignetting",
             "tonemap",
             "highlightsCurve",
+            "highlightRecovery",
     )
 
     /** The typed decode target: every scalar field, booleans as Boolean. */
@@ -150,6 +152,7 @@ object GradeParcel {
         val keepVignetting: Boolean,
         val tonemap: Int,
         val highlightsCurve: Int,
+        val highlightRecovery: Boolean,
     )
 
     /**
@@ -190,6 +193,7 @@ object GradeParcel {
         if (grade.keepVignetting) 1.0f else 0.0f,
         grade.tonemap.toFloat(),
         grade.highlightsCurve.toFloat(),
+        if (grade.highlightRecovery) 1.0f else 0.0f,
     )
 
     /**
@@ -241,6 +245,13 @@ object GradeParcel {
                 ") (recovery: booleans cross the parcel as 0.0f/1.0f)",
             )
         }
+        if (parcel[SLOT_HIGHLIGHT_RECOVERY] != 0.0f && parcel[SLOT_HIGHLIGHT_RECOVERY] != 1.0f) {
+            refuse(
+                "grade parcel: highlightRecovery must be 0.0 or 1.0 (got " +
+                    parcel[SLOT_HIGHLIGHT_RECOVERY] +
+                ") (recovery: booleans cross the parcel as 0.0f/1.0f)",
+            )
+        }
         return DecodedGrade(
             chromaDenoise = parcel[SLOT_CHROMA_DENOISE],
             noiseReduction = parcel[SLOT_NOISE_REDUCTION],
@@ -272,6 +283,7 @@ object GradeParcel {
             keepVignetting = parcel[SLOT_KEEP_VIGNETTING] != 0.0f,
             tonemap = parcel[SLOT_TONEMAP].toInt(),
             highlightsCurve = parcel[SLOT_HIGHLIGHTS_CURVE].toInt(),
+            highlightRecovery = parcel[SLOT_HIGHLIGHT_RECOVERY] != 0.0f,
         )
     }
 

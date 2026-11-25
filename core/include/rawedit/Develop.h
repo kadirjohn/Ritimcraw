@@ -365,7 +365,25 @@ float sampleShading(const RawMeta& meta, float u, float v, int plane);
 // re-estimated as (reference unclipped channel) x (local channel ratio from unclipped neighbours, finest
 // of three scales with enough support), never lower than the clipped value; fully clipped pixels are
 // capped neutral at their lowest channel (no luminance is invented). Output may exceed 1.0.
-void recoverClippedHighlights(ImageF& img, const ImageF& clipMask);
+// Recovery limits (the headroom rule, owner request 2026-11-25: night frame 0 showed a 10x overshoot where a tiny
+// reference channel was multiplied by a large neighbour ratio). Defaults = no limit; developCpu passes the shipped
+// constants (kRecoveryHeadroom / kRecoveryMinRefFrac in Develop.cpp).
+struct RecoveryParams {
+    float headroom = 0.0f;     // K: a re-estimated channel is at most K x its own clipped value (0 = no cap)
+    float minRefFrac = 0.0f;   // the reference channel must be >= this fraction of ITS clip level, else the channel is left as clipped (0 = off)
+    float refLevel[3] = {1.0f, 1.0f, 1.0f};  // each channel's clip level in white-balanced camera units
+};
+// Diagnostics (hr_headroom tool): one entry per re-estimated channel-pixel, BEFORE any limit is applied.
+struct RecoveryStats {
+    std::vector<float> ratio;    // estimate / clipped value of the channel
+    std::vector<float> refFrac;  // reference value / the reference channel's clip level
+    std::vector<uint8_t> chan;   // recovered channel (0 R, 1 G, 2 B)
+    std::vector<uint32_t> pix;   // pixel index (y * width + x)
+};
+void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const RecoveryParams& params = RecoveryParams(),
+                              RecoveryStats* stats = nullptr);
+// Tool/test override: when set, developCpu uses these params (and fills the stats) instead of the shipped constants.
+void setRecoveryDiagnostics(const RecoveryParams* params, RecoveryStats* stats);
 
 // Per-frame, per-channel (R, G, B) clip thresholds in normalized raw units (1.0 = no measured plateau: only sites at the
 // white level itself count). Used by BOTH stage 3 (Neutral) and Recovery. Measured on a real clip (docs/HIGHLIGHT_RECOVERY_PLAN.md, M0): the sensor/capture pipeline can

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -46,6 +47,7 @@ import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -74,6 +76,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -4447,6 +4450,7 @@ fun ClipEditorScreen(
                     onReset = { g ->
                         applyGradeEdit(g)
                     },
+                    showRecovery = EditorPreviewLogic.showRawStageToggles(sourcePath),
                 )
                 EditorCategories.COLOR -> ColorPanel(
                     grade = grade,
@@ -5427,6 +5431,8 @@ private fun LightPanel(
     onChange: (GradeK) -> Unit,
     onDragActiveChange: (Boolean) -> Unit = {},
     onReset: (GradeK) -> Unit = {},
+    // The Recovery button (MCRAW sources only: EditorPreviewLogic.showRawStageToggles).
+    showRecovery: Boolean = false,
 ) {
     Column(
         Modifier
@@ -5458,6 +5464,33 @@ private fun LightPanel(
             },
             onDragActiveChange = onDragActiveChange,
         )
+        if (showRecovery) {
+            // Highlight Recovery: toggles ONLY GradeK.highlightRecovery, as one discrete undo step (the onReset
+            // route); it never touches the Highlights slider above, and the second press only switches it off.
+            val on = grade.highlightRecovery
+            val desc = stringResource(R.string.editor_highlight_recovery_desc)
+            val content: @Composable RowScope.() -> Unit = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_highlight_recovery),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.editor_highlight_recovery))
+            }
+            val buttonModifier = Modifier
+                .heightIn(min = 48.dp)
+                .semantics {
+                    contentDescription = desc
+                    stateDescription = if (on) "on" else "off"
+                }
+            val toggle = { onReset(grade.copy(highlightRecovery = !grade.highlightRecovery)) }
+            if (on) {
+                FilledTonalButton(onClick = toggle, modifier = buttonModifier, content = content)
+            } else {
+                OutlinedButton(onClick = toggle, modifier = buttonModifier, content = content)
+            }
+        }
         GradeSlider(
             label = stringResource(R.string.editor_slider_black_point),
             value = grade.blackPoint,

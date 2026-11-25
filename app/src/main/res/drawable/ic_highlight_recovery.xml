@@ -1,0 +1,21 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <!-- Thin outlined "recovered highlight" glyph in the Material Symbols weight-300 style (drawn for this app,
+         NOT a Google glyph): a ring (the bright source) with four short rays. Stroke 50 on the
+         960 grid matches the weight-300 outlines of the sibling icons. Tinted by Compose's Icon. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="50"
+        android:strokeLineCap="round"
+        android:pathData="M230,480a250,250 0 1,0 500,0a250,250 0 1,0 -500,0Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="50"
+        android:strokeLineCap="round"
+        android:pathData="M480,100L480,150M480,810L480,860M100,480L150,480M810,480L860,480" />
+</vector>

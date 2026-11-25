@@ -81,6 +81,11 @@ namespace gles {
 // keepVignetting feeds the shading gate.
 struct DevelopFrameRequest;
 
+// Highlight recovery's shader texts (GlesShaderSources.RECOVERY_PRE / _BLOCK0 / _BLOCK_UP / _COMPOSITE), set
+// once per process by the Kotlin side; pipelines compile them lazily on the first recovery draw.
+void setRecoveryShaderSources(const std::string& pre, const std::string& block0, const std::string& blockUp,
+                              const std::string& composite);
+
 // DEBUG probe helpers (2026-11-23, owner report: the GPU preview shows no
 // change when a develop slider moves). gradeProbeSummary renders the develop
 // controls of a request as one compact "ev=.. hi=.. ..." string for the
@@ -105,6 +110,7 @@ struct DevelopFrameRequest {
     const rawedit::RawMeta* meta = nullptr;
     float exposureEv = 0.0f;
     int highlightsCurve = 0;  // stage-15 curve version (0 legacy knee 0.75, 1 v1 knee 0.40)
+    bool highlightRecovery = false;  // replaces stage 3 with the pyramid re-estimate (CPU oracle: recoverClippedHighlights)
     float highlights = 0.0f;  // raw grade.highlights; the shader computes s
     float blackPoint = 0.0f;  // raw grade.blackPoint; the shader computes the lift
     float whitePoint = 0.0f;  // raw grade.whitePoint; the shader computes the gain

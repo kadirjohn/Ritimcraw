@@ -14705,6 +14705,64 @@ window.STEPS_DATA = {
    "screenshot": "assets/p10-custom-themes.png"
   },
   {
+   "id": "p11-highlight-recovery-gpu",
+   "title": "feat: highlight recovery on the gpu, grade field, headroom cap and editor button",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "0bb557f",
+    "date": "2026-11-25",
+    "merge_subject": "branch tip feat-highlight-recovery-gpu (merge commit follows)"
+   },
+   "tests": ":app:assembleDebug :app:testDebugUnitTest --rerun: 3025 tests, 0 failures; tools/build-desktop.sh: exit 0, every doctest suite 0 failed; device (Xiaomi 25010PN30G) HighlightRecoveryDeviceTest on night.mcraw frames 0 and 900 sliced: GPU vs CPU maxDiffLsb=1, mismatch=0.0001%, over1=0.0000% for neutral, neutral hr-off, recovery, recovery -2EV, recovery highlights -100",
+   "description": "Highlight recovery now runs on the GPU twin of the CPU oracle (demosaic + clip bits, block-sum pyramid, composite), the grade carries a highlightRecovery flag through store, v2 record and parcel slot 30, stage 3 and recovery share the per-frame clip flags, recovery has a K=4 headroom cap, and the Light tab has a Recovery button.",
+   "added": [
+    "highlightRecovery GradeK field (written only when true), parcel slot 30, JNI argument",
+    "GPU passes RECOVERY_PRE / BLOCK0 / BLOCK_UP / COMPOSITE with validator pins",
+    "HighlightRecoveryDeviceTest (GPU vs CPU on real clipped frames), hr_headroom measurement tool",
+    "Recovery button + thin icon, en and tr strings"
+   ],
+   "removed": [],
+   "changed": [
+    "stage-3 shader flags clipped sites with the CPU's per-frame thresholds on the pre-shading value",
+    "recoveryClipLevels scans raw integers (about 1.4 ms at 4K instead of about 40 ms)",
+    "recovery caps a re-estimated channel at 4x its clipped value (CPU and GPU)"
+   ],
+   "files": [
+    {
+     "path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp",
+     "change": "M"
+    },
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+     "change": "M"
+    },
+    {
+     "path": "core/src/Develop.cpp",
+     "change": "M"
+    },
+    {
+     "path": "core/tests/hr_headroom.cpp",
+     "change": "A"
+    },
+    {
+     "path": "app/src/androidTest/java/com/ritim/ritimcraw/engine/HighlightRecoveryDeviceTest.kt",
+     "change": "A"
+    },
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+     "change": "M"
+    }
+   ],
+   "sources": [
+    {
+     "name": "darktable",
+     "note": "inpaint-opposed idea only; code written from scratch"
+    }
+   ],
+   "screenshot": "assets/p11-highlight-recovery-gpu.png"
+  },
+  {
    "id": "r1-hr-measure",
    "title": "hr_measure tool for highlight clip stats",
    "date": "2026-11-25",

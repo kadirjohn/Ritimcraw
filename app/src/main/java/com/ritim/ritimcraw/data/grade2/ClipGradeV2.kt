@@ -365,6 +365,7 @@ data class DevelopV2(
     val highlightReconstruction: Boolean = true,
     val keepVignetting: Boolean = true,
     val highlightsCurve: Int = com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_V1,
+    val highlightRecovery: Boolean = false,
     val noiseReduction: Float = 0f,
     val chromaDenoise: Float = 0f,
     val temporalNr: Boolean = false,
@@ -385,6 +386,7 @@ data class DevelopV2(
                 highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
                 keepVignetting = m["keepVignetting"] as? Boolean ?: true,
                 highlightsCurve = (m["highlightsCurve"] as? Double)?.toInt() ?: com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY,
+                highlightRecovery = m["highlightRecovery"] as? Boolean ?: false,
                 noiseReduction = (m["noiseReduction"] as? Double)?.toFloat() ?: 0f,
                 chromaDenoise = (m["chromaDenoise"] as? Double)?.toFloat() ?: 0f,
                 temporalNr = m["temporalNr"] as? Boolean ?: false,
@@ -462,6 +464,7 @@ object GradeV2Fiber {
             .append(",\"highlightReconstruction\":").append(d.highlightReconstruction)
             .append(",\"keepVignetting\":").append(d.keepVignetting)
             .append(if (d.highlightsCurve != com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY) ",\"highlightsCurve\":${d.highlightsCurve}" else "")
+            .append(if (d.highlightRecovery) ",\"highlightRecovery\":true" else "")
             .append(",\"noiseReduction\":").append(num(d.noiseReduction))
             .append(",\"chromaDenoise\":").append(num(d.chromaDenoise))
             .append(",\"temporalNr\":").append(d.temporalNr)
@@ -644,6 +647,7 @@ fun ClipGradeV2.toGradeKLenient(): GradeK {
         highlightReconstruction = develop.highlightReconstruction,
         keepVignetting = develop.keepVignetting,
         highlightsCurve = develop.highlightsCurve,
+        highlightRecovery = develop.highlightRecovery,
         sharpness = develop.sharpness,
         detail = develop.detail,
         tonemap = output.legacy.tonemap,
@@ -695,6 +699,7 @@ fun GradeK.toClipGradeV2(): ClipGradeV2 = ClipGradeV2(
         highlightReconstruction = highlightReconstruction,
         keepVignetting = keepVignetting,
         highlightsCurve = highlightsCurve,
+        highlightRecovery = highlightRecovery,
         noiseReduction = noiseReduction,
         chromaDenoise = chromaDenoise,
         temporalNr = temporalNr,

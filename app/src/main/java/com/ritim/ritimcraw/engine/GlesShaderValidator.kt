@@ -105,6 +105,18 @@ object GlesShaderValidator {
          * coded already; plan §3.4).
          */
         DEVELOP_FRAGMENT_TAIL_DRT("#version 300 es"),
+
+        /** RECOVERY_PRE - GLSL ES 3.00 fragment, highlight recovery's demosaic + WB + clip-mask pass (replaces PRE when recovery is on). */
+        RECOVERY_PRE("#version 300 es"),
+
+        /** RECOVERY_BLOCK0 - GLSL ES 3.00 fragment, the 8-pixel block sums of the ordered-pair statistics (MRT). */
+        RECOVERY_BLOCK0("#version 300 es"),
+
+        /** RECOVERY_BLOCK_UP - GLSL ES 3.00 fragment, the 4x4 block-sum reduction to the 32/128/512 levels (MRT). */
+        RECOVERY_BLOCK_UP("#version 300 es"),
+
+        /** RECOVERY_COMPOSITE - GLSL ES 3.00 fragment, ratio selection + estimate + camera matrix. */
+        RECOVERY_COMPOSITE("#version 300 es"),
     }
 
     /**
@@ -168,6 +180,10 @@ object GlesShaderValidator {
             Kind.WINDOW_FRAGMENT -> windowFragmentProblems(stripped, out)
             Kind.NODES -> nodesProblems(stripped, out)
             Kind.DEVELOP_FRAGMENT_TAIL_DRT -> tailDrtProblems(stripped, out)
+            Kind.RECOVERY_PRE -> recoveryPreProblems(stripped, out)
+            Kind.RECOVERY_BLOCK0 -> recoveryBlock0Problems(stripped, out)
+            Kind.RECOVERY_BLOCK_UP -> recoveryBlockUpProblems(stripped, out)
+            Kind.RECOVERY_COMPOSITE -> recoveryCompositeProblems(stripped, out)
         }
         return out
     }
@@ -289,6 +305,76 @@ object GlesShaderValidator {
         }
     }
 
+
+    // ---- highlight recovery passes (docs/HIGHLIGHT_RECOVERY_PLAN.md) --------
+    // Each check names the C++ line (GpuDevelopPipeline.cpp recovery draws) or the
+    // CPU line (core/src/Develop.cpp recoverClippedHighlights) that depends on it.
+
+    private fun recoveryRequire(s: String, out: MutableList<String>, text: String, why: String) {
+        if (!s.contains(text)) out += "missing `$text` ($why)"
+    }
+
+    private fun recoveryPreProblems(s: String, out: MutableList<String>) {
+        for (u in kDevelopPreUniformDecls) recoveryRequire(s, out, u, "the recovery PRE pass shares the PRE uniform set")
+        recoveryRequire(s, out, "out vec4 oCol;", "single color output")
+        recoveryRequire(s, out, "return clipFlag(p) ? 1.0 : 0.0;",
+            "the clip mask is the PRE-shading stage-1 value against its channel threshold (the CPU's norm >= threshold)")
+        recoveryRequire(s, out, "px[t] = normAt(g);", "stage 3 is REPLACED: the pixel is the lens-shaded value, never hrAt")
+        recoveryRequire(s, out, "mk[t] = n > 0 ? msum / float(n) : clipAt(g);", "the mask is demosaiced by the same bilinear as the pixels")
+        recoveryRequire(s, out, "vec3 c = vec3(px[0], px[1], px[2]) * uWb;", "WB division before recovery, no camera matrix here")
+        recoveryRequire(s, out, "oCol = vec4(c, bits);", "rgb + the 3-bit clip mask in alpha")
+        if (s.contains("hrAt(g)") || s.contains("uCam2rgb *")) out += "recovery PRE must not run stage 3 or the camera matrix"
+    }
+
+    private fun recoveryBlock0Problems(s: String, out: MutableList<String>) {
+        recoveryRequire(s, out, "uniform highp sampler2D uSrc;", "the chain source on unit 1")
+        recoveryRequire(s, out, "uniform ivec2 uSize;", "full-resolution size")
+        recoveryRequire(s, out, "uniform int uPairBase;", "first ordered pair of the draw")
+        for (i in 0..2) recoveryRequire(s, out, "layout(location = $i) out vec4 oP$i;", "MRT attachment $i of the layered block texture")
+        recoveryRequire(s, out, "bool ok = (bits & mc) == 0 && (bits & mr) == 0 && vr > 1e-4 && vc >= 0.0;",
+            "the CPU's unclipped-pair predicate (!clipped[c] && !clipped[r] && vr > kEps && vc >= 0)")
+        recoveryRequire(s, out, "ivec2 o = b * 4;", "4-pixel blocks, grid aligned at 0 (summed 2x2 to the 8-pixel level)")
+        recoveryRequire(s, out, "float inb = (p.x < uSize.x && p.y < uSize.y) ? 1.0 : 0.0;", "partial edge blocks count only real pixels")
+    }
+
+    private fun recoveryBlockUpProblems(s: String, out: MutableList<String>) {
+        recoveryRequire(s, out, "uniform highp sampler2DArray uPrev;", "the previous level's layered sums on unit 1")
+        recoveryRequire(s, out, "uniform ivec2 uPrevSize;", "the previous level's grid")
+        recoveryRequire(s, out, "uniform int uPairBase;", "first layer of the draw")
+        for (i in 0..2) recoveryRequire(s, out, "layout(location = $i) out vec4 oP$i;", "MRT attachment $i")
+        recoveryRequire(s, out, "uniform int uFactor;", "children per axis (2: 4 -> 8, 4: 8 -> 32 -> 128 -> 512)")
+        recoveryRequire(s, out, "ivec2 o = ivec2(gl_FragCoord.xy) * uFactor;", "uFactor x uFactor children per output block")
+        recoveryRequire(s, out, "float w = (x < uFactor && y < uFactor && p.x < uPrevSize.x && p.y < uPrevSize.y) ? 1.0 : 0.0;", "partial edge blocks")
+    }
+
+    private fun recoveryCompositeProblems(s: String, out: MutableList<String>) {
+        recoveryRequire(s, out, "uniform highp sampler2D uSrc;", "the recovery PRE output on unit 1")
+        for ((i, u) in listOf("uL0", "uL1", "uL2", "uL3").withIndex())
+            recoveryRequire(s, out, "uniform highp sampler2DArray $u;", "block level $i on unit ${12 + i}")
+        recoveryRequire(s, out, "uniform ivec2 uSize;", "full-resolution size")
+        recoveryRequire(s, out, "uniform mat3 uCam2rgb;", "camera matrix uploaded transpose=GL_TRUE")
+        recoveryRequire(s, out, "uniform int uHasProfile;", "profile gate")
+        recoveryRequire(s, out, "out vec4 oCol;", "single color output")
+        recoveryRequire(s, out, "for (int dy = -4; dy <= 4; ++dy) {", "the CPU's 9x9 box scale")
+        recoveryRequire(s, out, "if (s.x >= 4.05 && s.z > 0.0) return s.y / s.z;", "scale 0 support 5% of 81")
+        recoveryRequire(s, out, "nbSum(uL0, g, 8, layer);", "scale 1: 8-pixel blocks")
+        recoveryRequire(s, out, "if (s.x >= 28.8 && s.z > 0.0) return s.y / s.z;", "scale 1 support 5% of 9*64")
+        recoveryRequire(s, out, "nbSum(uL1, g, 32, layer);", "scale 2: 32-pixel blocks")
+        recoveryRequire(s, out, "if (s.x >= 460.8 && s.z > 0.0) return s.y / s.z;", "scale 2 support")
+        recoveryRequire(s, out, "nbSum(uL2, g, 128, layer);", "scale 3: 128-pixel blocks")
+        recoveryRequire(s, out, "if (s.x >= 7372.8 && s.z > 0.0) return s.y / s.z;", "scale 3 support")
+        recoveryRequire(s, out, "nbSum(uL3, g, 512, layer);", "scale 4: 512-pixel blocks")
+        recoveryRequire(s, out, "if (s.x >= 117964.8 && s.z > 0.0) return s.y / s.z;", "scale 4 support")
+        recoveryRequire(s, out, "if (!cf[1]) r = 1;", "reference channel: green when it is unclipped")
+        recoveryRequire(s, out, "else r = (v.r >= v.b) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);", "reference channel when green is clipped")
+        recoveryRequire(s, out, "float e = max(v[c], vr * rho);", "estimate = ref x ratio, never below the clipped value")
+        recoveryRequire(s, out, "if (v[c] > 0.0) e = min(e, 4.0 * v[c]);", "headroom cap K = 4 (the CPU's kRecoveryHeadroom)")
+        recoveryRequire(s, out, "v = vec3(m);", "all three clipped: neutral at the lowest channel")
+        // A dynamic index into a sampler array is invalid on Adreno ES 3.00: every level is one
+        // constant uniform, never indexed.
+        if (Regex("""uL\d?\s*\[""").containsMatchIn(s)) out += "dynamic sampler array indexing is banned (Adreno ES 3.00)"
+    }
+
     /** Stages 1-6's uniform declarations (the PRE pass set; the fused pass's own text). */
     private val kDevelopPreUniformDecls = listOf(
         "uniform highp usampler2D uCfa;",
@@ -301,6 +387,8 @@ object GlesShaderValidator {
         "uniform ivec2 uShadingSize;",
         "uniform int uHr;",
         "uniform vec3 uHrGain;",
+        "uniform int uClipUse;",
+        "uniform vec3 uClipThr;",
         "uniform vec3 uWb;",
         "uniform mat3 uCam2rgb;",
         "uniform int uHasProfile;",
@@ -431,17 +519,21 @@ object GlesShaderValidator {
         // Stage 3: the CPU highlight-reconstruction cell pass, verbatim —
         // the clipped criterion, the ceiling level, the unclipped passthrough,
         // and the cap.
-        if (!s.contains("if (v >= 1.0) clipped[color] = true;")) {
+        if (!s.contains("if (clipFlag(ivec2(xx, yy))) clipped[color] = true;") ||
+            !s.contains("return stage1(p) >= thr;") ||
+            !s.contains("float thr = uClipUse == 1 ? uClipThr[siteAt(p)] : 1.0;")
+        ) {
             out += "missing the stage-3 clipped criterion " +
-                "(`if (v >= 1.0) clipped[color] = true;` — the CPU's >= 1.0 test)"
+                "(`if (clipFlag(ivec2(xx, yy))) clipped[color] = true;` over the PRE-shading " +
+                "stage-1 value against the per-frame channel threshold — the CPU's preClip flag)"
         }
         if (!s.contains("float level = minV[c] * uHrGain[c];")) {
             out += "missing the stage-3 ceiling level " +
                 "(`float level = minV[c] * uHrGain[c];` — the CPU's minV * gain)"
         }
-        if (!s.contains("if (v < 1.0) return v;")) {
+        if (!s.contains("if (!clipFlag(p)) return v;")) {
             out += "missing the stage-3 unclipped passthrough " +
-                "(`if (v < 1.0) return v;` — unclipped sites keep their real level)"
+                "(`if (!clipFlag(p)) return v;` — unclipped sites keep their real level)"
         }
         if (!s.contains("float cap = ceiling / uHrGain[siteAt(p)];")) {
             out += "missing the stage-3 cap " +

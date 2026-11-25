@@ -945,7 +945,7 @@ class GlesShaderValidatorTest {
         )
         assertTrue(
             "clipped criterion missing",
-            src.contains("if (v >= 1.0) clipped[color] = true;"),
+            src.contains("if (clipFlag(ivec2(xx, yy))) clipped[color] = true;"),
         )
         assertTrue(
             "ceiling level missing",
@@ -953,7 +953,7 @@ class GlesShaderValidatorTest {
         )
         assertTrue(
             "unclipped passthrough missing",
-            src.contains("if (v < 1.0) return v;"),
+            src.contains("if (!clipFlag(p)) return v;"),
         )
         assertTrue(
             "cap missing",
@@ -4249,5 +4249,46 @@ class GlesShaderValidatorTest {
         assertEquals(8, src.split("texelFetch(uDrtLut, ").size - 1)
         assertFalse("hardware-filtered table read", src.contains("texture(uDrtLut"))
         assertFalse("per-pixel OpenDRT leaked back", src.contains("kXYZ_TO_P3D65") || src.contains("uDrtTn"))
+    }
+
+    // ---- highlight recovery passes ----
+
+    @Test
+    fun shipped_recovery_passes_pass_their_own_kinds() {
+        for ((src, kind) in listOf(
+            GlesShaderSources.RECOVERY_PRE to GlesShaderValidator.Kind.RECOVERY_PRE,
+            GlesShaderSources.RECOVERY_BLOCK0 to GlesShaderValidator.Kind.RECOVERY_BLOCK0,
+            GlesShaderSources.RECOVERY_BLOCK_UP to GlesShaderValidator.Kind.RECOVERY_BLOCK_UP,
+            GlesShaderSources.RECOVERY_COMPOSITE to GlesShaderValidator.Kind.RECOVERY_COMPOSITE,
+        )) {
+            assertEquals(kind.name, emptyList<String>(), GlesShaderValidator.problems(src, kind))
+        }
+    }
+
+    @Test
+    fun recovery_composite_keeps_the_cpu_scale_table_and_never_indexes_samplers() {
+        val src = GlesShaderSources.RECOVERY_COMPOSITE
+        val mutated = src.replace("s.x >= 28.8", "s.x >= 29.8")
+        assertTrue("mutation must apply", mutated != src)
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.RECOVERY_COMPOSITE)
+                .any { it.contains("scale 1 support") },
+        )
+        val dyn = src.replace("nbSum(uL0, g, 8, layer);", "nbSum(uL0, g, 8, layer); float q = uL[layer];")
+        assertTrue(
+            GlesShaderValidator.problems(dyn, GlesShaderValidator.Kind.RECOVERY_COMPOSITE)
+                .any { it.contains("dynamic sampler array") },
+        )
+    }
+
+    @Test
+    fun recovery_pre_never_runs_stage_3_or_the_camera_matrix() {
+        val src = GlesShaderSources.RECOVERY_PRE
+        val mutated = src.replace("px[t] = normAt(g);", "px[t] = hrAt(g);")
+        assertTrue("mutation must apply", mutated != src)
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.RECOVERY_PRE)
+                .isNotEmpty(),
+        )
     }
 }
