@@ -77,6 +77,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
+import androidx.compose.ui.layout.layout
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
@@ -4865,12 +4867,17 @@ fun ClipEditorScreen(
                     // synchronously on the same first layout pass
                     // (the trimmed 36dp strip, owner add-on
                     // 2026-11-12).
+                    // The offset is read in the LAYOUT phase (not composition), so an animating
+                    // panel re-measures its own subtree per frame instead of recomposing the screen.
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(
-                            if (panelDrag.anchors.size == 0) PanelCollapsedHeight
-                            else with(density) { panelDrag.offset.toDp() },
-                        ),
+                        .layout { measurable, constraints ->
+                            val h = if (panelDrag.anchors.size == 0) PanelCollapsedHeight.roundToPx()
+                            else panelDrag.requireOffset().roundToInt().coerceAtLeast(0)
+                            val hh = h.coerceIn(constraints.minHeight, constraints.maxHeight.coerceAtLeast(constraints.minHeight))
+                            val placeable = measurable.measure(constraints.copy(minHeight = hh, maxHeight = hh))
+                            layout(placeable.width, hh) { placeable.place(0, 0) }
+                        },
                     // The active tab's pinned sub-tab row (segmentation
                     // plan): fixed at the panel top, above the scrolling
                     // body — the row's natural height comes out of the
