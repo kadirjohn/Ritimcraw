@@ -64,9 +64,20 @@
 // two paths cannot drift in interpretation.
 #include <rawedit/Lut.h>
 #include <rawedit/Color.h>
+#include <rawedit/Develop.h>
+#include <mutex>
 
 namespace gles {
 namespace {
+
+// Highlight recovery's shader texts: the Kotlin single source of truth (GlesShaderSources.RECOVERY_*),
+// registered ONCE per process through nativeRegisterRecoveryShaders (jni_bridge.cpp) so the many session
+// open signatures stay untouched. Pipelines compile them lazily on the first recovery draw.
+struct RecoverySources {
+    std::string pre, block0, blockUp, composite;
+};
+std::mutex gRecoveryMutex;
+RecoverySources gRecoverySources;
 
 // ---- Documented copies (each verbatim from its source, which stays the
 // ---- owner of the text; see the per-copy notes). -------------------------
@@ -464,6 +475,27 @@ struct GpuDevelopPipeline::Impl {
     GLuint nrChromaVProgram = 0;
     GLuint nrLumaProgram = 0;
     GLuint storeProgram = 0;
+    // ---- highlight recovery (docs/HIGHLIGHT_RECOVERY_PLAN.md): compiled lazily on the first recovery draw ----
+    std::string vertexSourceKept;
+    GLuint recPreProgram = 0, recBlock0Program = 0, recBlockUpProgram = 0, recCompositeProgram = 0;
+    bool recoveryReady = false;
+    // RECOVERY_PRE uniform locations (the PRE set it shares + the clip thresholds).
+    GLint rpCfa = -1, rpSize = -1, rpCell = -1, rpBlack = -1, rpRange = -1, rpHasShading = -1, rpShading = -1,
+          rpShadingSize = -1, rpWb = -1, rpClipThr = -1;
+    GLint rb0Src = -1, rb0Size = -1, rb0PairBase = -1;
+    GLint rbuPrev = -1, rbuPrevSize = -1, rbuPairBase = -1;
+    GLint rcSrc = -1, rcL[4] = {-1, -1, -1, -1}, rcSize = -1, rcCam = -1, rcHasProfile = -1;
+    // The block-sum pyramid: 4 levels (8/32/128/512-pixel blocks) of RGBA32F array textures, one layer per
+    // ordered channel pair; two framebuffers per level (layers 0-2 / 3-5 as three colour attachments).
+    GLuint recLvlTex[4] = {0, 0, 0, 0};
+    GLuint recLvlFbo[4][2] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
+    int recLvlW[4] = {0, 0, 0, 0}, recLvlH[4] = {0, 0, 0, 0};
+    uint32_t recW = 0, recH = 0;
+    bool ensureRecovery(uint32_t w, uint32_t h, std::string* detail);
+    bool recoveryDraw(const DevelopFrameRequest& req, uint32_t w, uint32_t h, const float* black,
+                      const float* range, const float* invNeutral, const int* cell, bool applyShading,
+                      const float* cam2rgb, bool hasProfile, std::string* detail);
+    void recoveryRelease();
     // Uniform locations, resolved ONCE at init. The develop set is SPLIT
     // with the programs: the 13 PRE uniforms (uCfa..uHasProfile — the
     // pre-stage set) resolve on preProgram, the 21 POINTWISE uniforms
@@ -687,6 +719,7 @@ bool GpuDevelopPipeline::Impl::init(
         const Config& config,
         std::string* detail) {
     this->config = config;
+    vertexSourceKept = vertexSource;
 
     // --- capability gates (THIS context, not a probe's throwaway one) --------
     // STORE_FRAGMENT needs ES 3.1 (fragment-shader SSBO access); the
@@ -1821,6 +1854,13 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         setEncodedYuvUniforms(yuvProgram, req.yuv->params);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(encoded-yuv)", &r.detail) != GL_NO_ERROR) return r;
+    } else if (req.highlightRecovery) {
+        // Highlight recovery replaces PRE (stage 3 + the camera matrix move after the recovery math); the
+        // chain from texA onward is unchanged.
+        if (!recoveryDraw(req, w, h, black, range, invNeutral, cell, applyShading, cam2rgb, hasProfile,
+                          &r.detail)) {
+            return r;
+        }
     } else {
     glUseProgram(preProgram);
     glBindFramebuffer(GL_FRAMEBUFFER, fboA);
@@ -2396,6 +2436,234 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     return r;
 }
 
+
+// ---- highlight recovery (docs/HIGHLIGHT_RECOVERY_PLAN.md) -------------------
+
+void GpuDevelopPipeline::Impl::recoveryRelease() {
+    for (int k = 0; k < 4; ++k) {
+        for (int g = 0; g < 2; ++g) {
+            if (recLvlFbo[k][g] != 0) { glDeleteFramebuffers(1, &recLvlFbo[k][g]); recLvlFbo[k][g] = 0; }
+        }
+        if (recLvlTex[k] != 0) { glDeleteTextures(1, &recLvlTex[k]); recLvlTex[k] = 0; }
+        recLvlW[k] = recLvlH[k] = 0;
+    }
+    recW = recH = 0;
+    if (recPreProgram != 0) { glDeleteProgram(recPreProgram); recPreProgram = 0; }
+    if (recBlock0Program != 0) { glDeleteProgram(recBlock0Program); recBlock0Program = 0; }
+    if (recBlockUpProgram != 0) { glDeleteProgram(recBlockUpProgram); recBlockUpProgram = 0; }
+    if (recCompositeProgram != 0) { glDeleteProgram(recCompositeProgram); recCompositeProgram = 0; }
+    recoveryReady = false;
+}
+
+bool GpuDevelopPipeline::Impl::ensureRecovery(uint32_t w, uint32_t h, std::string* detail) {
+    if (!recoveryReady) {
+        RecoverySources src;
+        {
+            std::lock_guard<std::mutex> lock(gRecoveryMutex);
+            src = gRecoverySources;
+        }
+        if (src.pre.empty() || src.block0.empty() || src.blockUp.empty() || src.composite.empty()) {
+            *detail = "recovery: shader sources not registered";
+            return false;
+        }
+        GlShader vert;
+        vert.id = compileShader(GL_VERTEX_SHADER, vertexSourceKept, "vertex", detail);
+        if (vert.id == 0) return false;
+        const auto build = [&](const std::string& text, const char* stage, GLuint* prog) {
+            GlShader frag;
+            frag.id = compileShader(GL_FRAGMENT_SHADER, text, stage, detail);
+            if (frag.id == 0) return false;
+            *prog = linkProgram(vert.id, frag.id, stage, detail);
+            return *prog != 0;
+        };
+        if (!build(src.pre, "recovery-pre", &recPreProgram) ||
+            !build(src.block0, "recovery-block0", &recBlock0Program) ||
+            !build(src.blockUp, "recovery-block-up", &recBlockUpProgram) ||
+            !build(src.composite, "recovery-composite", &recCompositeProgram)) {
+            recoveryRelease();
+            return false;
+        }
+        rpCfa = glGetUniformLocation(recPreProgram, "uCfa");
+        rpSize = glGetUniformLocation(recPreProgram, "uSize");
+        rpCell = glGetUniformLocation(recPreProgram, "uCell");
+        rpBlack = glGetUniformLocation(recPreProgram, "uBlack");
+        rpRange = glGetUniformLocation(recPreProgram, "uRange");
+        rpHasShading = glGetUniformLocation(recPreProgram, "uHasShading");
+        rpShading = glGetUniformLocation(recPreProgram, "uShading");
+        rpShadingSize = glGetUniformLocation(recPreProgram, "uShadingSize");
+        rpWb = glGetUniformLocation(recPreProgram, "uWb");
+        rpClipThr = glGetUniformLocation(recPreProgram, "uClipThr");
+        rb0Src = glGetUniformLocation(recBlock0Program, "uSrc");
+        rb0Size = glGetUniformLocation(recBlock0Program, "uSize");
+        rb0PairBase = glGetUniformLocation(recBlock0Program, "uPairBase");
+        rbuPrev = glGetUniformLocation(recBlockUpProgram, "uPrev");
+        rbuPrevSize = glGetUniformLocation(recBlockUpProgram, "uPrevSize");
+        rbuPairBase = glGetUniformLocation(recBlockUpProgram, "uPairBase");
+        rcSrc = glGetUniformLocation(recCompositeProgram, "uSrc");
+        rcL[0] = glGetUniformLocation(recCompositeProgram, "uL0");
+        rcL[1] = glGetUniformLocation(recCompositeProgram, "uL1");
+        rcL[2] = glGetUniformLocation(recCompositeProgram, "uL2");
+        rcL[3] = glGetUniformLocation(recCompositeProgram, "uL3");
+        rcSize = glGetUniformLocation(recCompositeProgram, "uSize");
+        rcCam = glGetUniformLocation(recCompositeProgram, "uCam2rgb");
+        rcHasProfile = glGetUniformLocation(recCompositeProgram, "uHasProfile");
+        if (rpCfa < 0 || rpSize < 0 || rpCell < 0 || rpBlack < 0 || rpRange < 0 || rpHasShading < 0 ||
+            rpShading < 0 || rpShadingSize < 0 || rpWb < 0 || rpClipThr < 0 || rb0Src < 0 || rb0Size < 0 ||
+            rb0PairBase < 0 || rbuPrev < 0 || rbuPrevSize < 0 || rbuPairBase < 0 || rcSrc < 0 || rcL[0] < 0 ||
+            rcL[1] < 0 || rcL[2] < 0 || rcL[3] < 0 || rcSize < 0 || rcCam < 0 || rcHasProfile < 0) {
+            *detail = "recovery: shader-contract: missing uniform";
+            recoveryRelease();
+            return false;
+        }
+        glUseProgram(recPreProgram);
+        glUniform1i(rpCfa, 0);
+        glUniform1i(rpShading, 3);
+        glUseProgram(recBlock0Program);
+        glUniform1i(rb0Src, 1);
+        glUseProgram(recBlockUpProgram);
+        glUniform1i(rbuPrev, 1);
+        glUseProgram(recCompositeProgram);
+        glUniform1i(rcSrc, 1);
+        for (int k = 0; k < 4; ++k) glUniform1i(rcL[k], 12 + k);
+        glUseProgram(0);
+        recoveryReady = true;
+    }
+    if (recW == w && recH == h && recLvlTex[0] != 0) return true;
+    // (Re)allocate the pyramid for this resolution.
+    for (int k = 0; k < 4; ++k) {
+        for (int g = 0; g < 2; ++g) {
+            if (recLvlFbo[k][g] != 0) { glDeleteFramebuffers(1, &recLvlFbo[k][g]); recLvlFbo[k][g] = 0; }
+        }
+        if (recLvlTex[k] != 0) { glDeleteTextures(1, &recLvlTex[k]); recLvlTex[k] = 0; }
+    }
+    int div = 8;
+    for (int k = 0; k < 4; ++k, div *= 4) {
+        recLvlW[k] = (static_cast<int>(w) + div - 1) / div;
+        recLvlH[k] = (static_cast<int>(h) + div - 1) / div;
+        glGenTextures(1, &recLvlTex[k]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, recLvlTex[k]);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA32F, recLvlW[k], recLvlH[k], 6);
+        if (glErrorAfter("glTexStorage3D(recovery level)", detail) != GL_NO_ERROR) return false;
+        for (int g = 0; g < 2; ++g) {
+            glGenFramebuffers(1, &recLvlFbo[k][g]);
+            glBindFramebuffer(GL_FRAMEBUFFER, recLvlFbo[k][g]);
+            for (int i = 0; i < 3; ++i) {
+                glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, recLvlTex[k], 0, g * 3 + i);
+            }
+            const GLenum bufs[3] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+            glDrawBuffers(3, bufs);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                *detail = "recovery: level fbo incomplete (3 x RGBA32F layered attachments)";
+                return false;
+            }
+        }
+    }
+    recW = w;
+    recH = h;
+    return true;
+}
+
+bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint32_t w, uint32_t h,
+                                            const float* black, const float* range, const float* invNeutral,
+                                            const int* cell, bool applyShading, const float* cam2rgb,
+                                            bool hasProfile, std::string* detail) {
+    if (!ensureRecovery(w, h, detail)) return false;
+    // The clip thresholds: measured CPU-side from the raw CFA (the CPU oracle's own function, so the GPU
+    // cannot disagree about which sites are clipped).
+    const rawedit::RecoveryClipLevels levels = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
+    // Ordered pair p = c*2 + (r > c ? r-1 : r). A pair is needed when its c can clip and (green can clip, so
+    // any reference may be chosen) or (the reference is green, the only choice while green never clips).
+    const bool canClip[3] = {levels.threshold[0] <= 1.0f, levels.threshold[1] <= 1.0f, levels.threshold[2] <= 1.0f};
+    bool groupNeeded[2] = {false, false};
+    for (int c = 0; c < 3; ++c) {
+        if (!canClip[c]) continue;
+        for (int rr = 0; rr < 3; ++rr) {
+            if (rr == c) continue;
+            if (!canClip[1] && rr != 1) continue;
+            const int pair = c * 2 + (rr > c ? rr - 1 : rr);
+            groupNeeded[pair / 3] = true;
+        }
+    }
+
+    // Pass 1: demosaic + WB + clip bits into texB (free: PRE's slot is texA).
+    glUseProgram(recPreProgram);
+    glBindFramebuffer(GL_FRAMEBUFFER, fboB);
+    glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+    glUniform2i(rpSize, static_cast<GLint>(w), static_cast<GLint>(h));
+    glUniform4i(rpCell, cell[0], cell[1], cell[2], cell[3]);
+    glUniform4f(rpBlack, black[0], black[1], black[2], black[3]);
+    glUniform4f(rpRange, range[0], range[1], range[2], range[3]);
+    glUniform1i(rpHasShading, applyShading ? 1 : 0);
+    glUniform2i(rpShadingSize, static_cast<GLint>(applyShading ? req.meta->shadingW : 1),
+                static_cast<GLint>(applyShading ? req.meta->shadingH : 1));
+    glUniform3f(rpWb, invNeutral[0], invNeutral[1], invNeutral[2]);
+    glUniform3f(rpClipThr, levels.threshold[0], levels.threshold[1], levels.threshold[2]);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (glErrorAfter("glDrawArrays(recovery-pre)", detail) != GL_NO_ERROR) return false;
+
+    // Block pyramid, only when some channel can clip in this frame (a clip-free frame needs no ratios).
+    if (groupNeeded[0] || groupNeeded[1]) {
+        for (int g = 0; g < 2; ++g) {
+            if (!groupNeeded[g]) continue;
+            glUseProgram(recBlock0Program);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, texB);
+            glBindFramebuffer(GL_FRAMEBUFFER, recLvlFbo[0][g]);
+            glViewport(0, 0, recLvlW[0], recLvlH[0]);
+            glUniform2i(rb0Size, static_cast<GLint>(w), static_cast<GLint>(h));
+            glUniform1i(rb0PairBase, g * 3);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            if (glErrorAfter("glDrawArrays(recovery-block0)", detail) != GL_NO_ERROR) return false;
+        }
+        for (int k = 1; k < 4; ++k) {
+            for (int g = 0; g < 2; ++g) {
+                if (!groupNeeded[g]) continue;
+                glUseProgram(recBlockUpProgram);
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, recLvlTex[k - 1]);
+                glBindFramebuffer(GL_FRAMEBUFFER, recLvlFbo[k][g]);
+                glViewport(0, 0, recLvlW[k], recLvlH[k]);
+                glUniform2i(rbuPrevSize, recLvlW[k - 1], recLvlH[k - 1]);
+                glUniform1i(rbuPairBase, g * 3);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                if (glErrorAfter("glDrawArrays(recovery-block-up)", detail) != GL_NO_ERROR) return false;
+            }
+        }
+    }
+
+    // Composite: texB + the four levels -> texA (the slot PRE writes), camera matrix applied.
+    glUseProgram(recCompositeProgram);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, texB);
+    for (int k = 0; k < 4; ++k) {
+        glActiveTexture(GL_TEXTURE12 + k);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, recLvlTex[k]);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, fboA);
+    glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+    glUniform2i(rcSize, static_cast<GLint>(w), static_cast<GLint>(h));
+    glUniformMatrix3fv(rcCam, 1, GL_TRUE, cam2rgb);
+    glUniform1i(rcHasProfile, hasProfile ? 1 : 0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (glErrorAfter("glDrawArrays(recovery-composite)", detail) != GL_NO_ERROR) return false;
+    glActiveTexture(GL_TEXTURE1);
+    return true;
+}
+
+void setRecoveryShaderSources(const std::string& pre, const std::string& block0, const std::string& blockUp,
+                              const std::string& composite) {
+    std::lock_guard<std::mutex> lock(gRecoveryMutex);
+    gRecoverySources.pre = pre;
+    gRecoverySources.block0 = block0;
+    gRecoverySources.blockUp = blockUp;
+    gRecoverySources.composite = composite;
+}
+
 // ---- teardown ---------------------------------------------------------------
 
 void GpuDevelopPipeline::Impl::teardown() {
@@ -2434,6 +2702,7 @@ void GpuDevelopPipeline::Impl::teardown() {
     if (nrChromaVProgram != 0) { glDeleteProgram(nrChromaVProgram); nrChromaVProgram = 0; }
     if (nrLumaProgram != 0) { glDeleteProgram(nrLumaProgram); nrLumaProgram = 0; }
     if (storeProgram != 0) { glDeleteProgram(storeProgram); storeProgram = 0; }
+    recoveryRelease();
     // The F1-5 additions (initNodes' own objects; guarded no-ops on a
     // pre-F1-5 session — every handle starts at 0).
     if (nodesProgram != 0) { glDeleteProgram(nodesProgram); nodesProgram = 0; }
@@ -2554,7 +2823,7 @@ uint64_t gradeProbeHash(const DevelopFrameRequest& r) {
         r.midtones, r.contrast, r.tempK, r.tint, r.saturation,
         r.asShot ? 1.0f : 0.0f, r.sharpness, r.detail, r.chromaDenoise,
         r.noiseReduction, static_cast<float>(r.tonemap),
-        static_cast<float>(r.highlightsCurve),
+        static_cast<float>(r.highlightsCurve), r.highlightRecovery ? 1.0f : 0.0f,
         r.wheelShadowX, r.wheelShadowY, r.wheelMidX, r.wheelMidY,
         r.wheelHighX, r.wheelHighY, r.splitShadowHue, r.splitHighlightHue,
         r.splitBalance,

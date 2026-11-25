@@ -1638,7 +1638,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
                                float saturation, float blackPoint, float whitePoint,
                                float shadows, float midtones, float contrast,
                                bool asShot, bool highlightReconstruction, bool keepVignetting,
-                               int highlightsCurve,
+                               int highlightsCurve, bool highlightRecovery,
                                float sharpness, float detail, int tonemap,
                                float lutStrength,
                                float noiseReduction, float chromaDenoise,
@@ -1663,6 +1663,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.highlightReconstruction = highlightReconstruction;
     g.keepVignetting = keepVignetting;
     g.highlightsCurve = highlightsCurve;
+    g.highlightRecovery = highlightRecovery;
     g.sharpness = sharpness;
     g.detail = detail;
     g.tonemap = tonemap;
@@ -2358,6 +2359,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeSetStabDebugLog(
     gStabDebugLog.store(enabled == JNI_TRUE, std::memory_order_relaxed);
 }
 
+// Highlight recovery shader texts (GlesShaderSources.RECOVERY_*): registered once from the companion init so
+// the GPU pipelines can compile them lazily on the first recovery draw (no session open signature changes).
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRegisterRecoveryShaders(
+        JNIEnv* env, jclass, jstring pre, jstring block0, jstring blockUp, jstring composite) {
+    const auto text = [&](jstring j) {
+        const char* c = env->GetStringUTFChars(j, nullptr);
+        std::string out = c != nullptr ? c : "";
+        if (c != nullptr) env->ReleaseStringUTFChars(j, c);
+        return out;
+    };
+    gles::setRecoveryShaderSources(text(pre), text(block0), text(blockUp), text(composite));
+}
+
 // Export sub-stage timing toggle (commit (d)): same companion-init pattern
 // as nativeSetStabDebugLog — the gate flips on only in debug builds, and a
 // release build reads it once per boundary as a relaxed load.
@@ -2500,7 +2515,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jint highlightsCurve,
+        jint highlightsCurve, jboolean highlightRecovery,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -2571,7 +2586,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              saturation, blackPoint, whitePoint,
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
-                                             keepVignetting, highlightsCurve,
+                                             keepVignetting, highlightsCurve, highlightRecovery == JNI_TRUE,
                                              sharpness, detail,
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
@@ -2610,7 +2625,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jint highlightsCurve,
+        jint highlightsCurve, jboolean highlightRecovery,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -2692,7 +2707,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              saturation, blackPoint, whitePoint,
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
-                                             keepVignetting, highlightsCurve,
+                                             keepVignetting, highlightsCurve, highlightRecovery == JNI_TRUE,
                                              sharpness, detail,
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
@@ -6589,7 +6604,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jint highlightsCurve,
+        jint highlightsCurve, jboolean highlightRecovery,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -6718,7 +6733,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
-                            highlightsCurve,
+                            highlightsCurve, highlightRecovery == JNI_TRUE,
                             sharpness, detail, tonemap, lutStrength,
                             noiseReduction, chromaDenoise,
                             temporalNr == JNI_TRUE, temporalStrength,
