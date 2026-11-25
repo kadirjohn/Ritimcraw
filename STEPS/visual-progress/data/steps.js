@@ -14515,8 +14515,8 @@ window.STEPS_DATA = {
    "date": "2026-11-25",
    "status": "in-progress",
    "commit": null,
-   "tests": "branch feat-opendrt-async-bake @ 2428349 (NOT merged: main is held by another worktree; device-unverified). tools/build-desktop.sh: exit 0, test_opendrt_async 10 cases / 152 assertions passed, all other suites SUCCESS (0 FAIL). :app:assembleDebug :app:testDebugUnitTest --rerun: BUILD SUCCESSFUL, 3018 JVM tests, 0 failures.",
-   "description": "Interactive preview bakes the OpenDRT 65^3 table on a background thread (latest spec wins, old table keeps drawing, one redraw on swap); export stays synchronous.",
+   "tests": "gradle :app:assembleDebug :app:testDebugUnitTest --rerun: 3025 tests, 0 failures; tools/build-desktop.sh exit 0 (35 suites SUCCESS, test_opendrt_async 10 cases)",
+   "description": "Interactive preview bakes the OpenDRT 65^3 table on a background thread (latest spec wins, old table keeps drawing, one redraw on swap); export stays synchronous. Merged to main (merge 8072dfa) but DEVICE-UNVERIFIED: the editor still routes OpenDRT grades to the CPU arm (v2NeedsDrt gate, stale since the bake fixed the tail-drt 0x0502 error); the gate lifts with the Output card (F1-8d), then the async path can be measured on the phone.",
    "added": [
     "OpenDrtAsyncBaker (core): latest-wins, cancellable, immutable published tables",
     "preview-only Config::asyncDrtBake, JNI ready listener, one redraw per published table",
