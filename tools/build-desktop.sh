@@ -138,6 +138,10 @@ echo "== building tests =="
 #     real fixtures; run by hand from the repo root, not a test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/bp_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/bp_measure"
+# hr_measure <clip.mcraw> <frame> — highlight-recovery M0 (docs/HIGHLIGHT_RECOVERY_PLAN.md): where the sensor
+# channels really clip (raw code pile-up vs metadata white, stage-3 detection hits/misses) on a real frame.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_measure"
 # p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/p5_compare.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/p5_compare"
