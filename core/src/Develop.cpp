@@ -863,24 +863,73 @@ RecoveryClipLevels recoveryClipLevels(const uint16_t* cfa, const FrameInfo& info
         range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
     }
     const CfaLayout layout = layoutFor(info.cfa);
-    float maxNorm[3] = {0.0f, 0.0f, 0.0f};
-    for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x) {
-            const int slot = cellSlot(y & 1, x & 1);
-            const float v = std::min(std::max((static_cast<float>(cfa[static_cast<size_t>(y) * w + x]) - black[slot]) / range[slot], 0.0f), 1.0f);
-            const int color = layout.cell[y & 1][x & 1];
-            if (v > maxNorm[color]) maxNorm[color] = v;
+    // The per-site normalization is monotone in the raw value, so the per-channel maximum and the plateau count
+    // are computed on raw integers (a vectorizable max, then a count against an exact per-slot raw threshold)
+    // and give the identical numbers a per-site float scan would (the threshold search re-evaluates the very
+    // same float expression). The scan is the per-frame CPU cost of the GPU path, hence the care.
+    const auto normOf = [&](int slot, uint32_t raw) {
+        return std::min(std::max((static_cast<float>(raw) - black[slot]) / range[slot], 0.0f), 1.0f);
+    };
+    std::vector<uint16_t> rowMax(static_cast<size_t>(h) * 2, 0);
+    parallelForRows(h, [&](size_t y0, size_t y1) {
+        for (size_t y = y0; y < y1; ++y) {
+            const uint16_t* row = cfa + y * w;
+            uint16_t m0 = 0, m1 = 0;
+            uint32_t x = 0;
+            for (; x + 1 < w; x += 2) {
+                m0 = std::max(m0, row[x]);
+                m1 = std::max(m1, row[x + 1]);
+            }
+            if (x < w) m0 = std::max(m0, row[x]);
+            rowMax[y * 2] = m0;
+            rowMax[y * 2 + 1] = m1;
         }
+    });
+    uint16_t maxRaw[4] = {0, 0, 0, 0};
+    for (uint32_t y = 0; y < h; ++y)
+        for (int px = 0; px < 2; ++px) {
+            const int slot = cellSlot(y & 1, px);
+            maxRaw[slot] = std::max(maxRaw[slot], rowMax[static_cast<size_t>(y) * 2 + px]);
+        }
+    float maxNorm[3] = {0.0f, 0.0f, 0.0f};
+    for (int slot = 0; slot < 4; ++slot) {
+        const int color = layout.cell[slot / 2][slot % 2];
+        maxNorm[color] = std::max(maxNorm[color], normOf(slot, maxRaw[slot]));
+    }
     // Plateau count: sites within kBand of the channel maximum.
     constexpr float kBand = 0.004f;
+    // Smallest raw value of each slot whose normalized level reaches the plateau floor (monotone: binary search).
+    uint32_t rawFloor[4];
+    for (int slot = 0; slot < 4; ++slot) {
+        const float floorN = maxNorm[layout.cell[slot / 2][slot % 2]] - kBand;
+        uint32_t lo = 0, hi = 65536;  // 65536 = unreachable
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) / 2;
+            if (normOf(slot, mid) >= floorN) hi = mid; else lo = mid + 1;
+        }
+        rawFloor[slot] = lo;
+    }
+    std::vector<uint32_t> rowCount(static_cast<size_t>(h) * 2, 0);
+    parallelForRows(h, [&](size_t y0, size_t y1) {
+        for (size_t y = y0; y < y1; ++y) {
+            const uint16_t* row = cfa + y * w;
+            const uint32_t f0 = rawFloor[cellSlot(static_cast<int>(y & 1), 0)];
+            const uint32_t f1 = rawFloor[cellSlot(static_cast<int>(y & 1), 1)];
+            uint32_t c0 = 0, c1 = 0;
+            uint32_t x = 0;
+            for (; x + 1 < w; x += 2) {
+                c0 += row[x] >= f0;
+                c1 += row[x + 1] >= f1;
+            }
+            if (x < w) c0 += row[x] >= f0;
+            rowCount[y * 2] = c0;
+            rowCount[y * 2 + 1] = c1;
+        }
+    });
     uint64_t plateau[3] = {0, 0, 0};
     for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x) {
-            const int slot = cellSlot(y & 1, x & 1);
-            const float v = std::min(std::max((static_cast<float>(cfa[static_cast<size_t>(y) * w + x]) - black[slot]) / range[slot], 0.0f), 1.0f);
-            const int color = layout.cell[y & 1][x & 1];
-            if (v >= maxNorm[color] - kBand) ++plateau[color];
-        }
+        for (int px = 0; px < 2; ++px)
+            plateau[layout.cell[y & 1][px]] += rowCount[static_cast<size_t>(y) * 2 + px];
     constexpr uint64_t kMinPlateau = 16;
     // Green saturates first on real sensors: its plateau must sit near the top of the range.
     const bool gClipped = maxNorm[1] >= 0.9f && plateau[1] >= kMinPlateau;

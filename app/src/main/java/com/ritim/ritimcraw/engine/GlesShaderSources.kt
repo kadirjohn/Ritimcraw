@@ -1462,7 +1462,7 @@ float clipAt(ivec2 p) {
             kDevelopOutDecl + "\n" + kDevelopPreHelpers + "\n" +
             kRecoveryClipHelper + "\n" + kDevelopMainHead + kRecoveryPreBody
 
-    /** RECOVERY_BLOCK0 - 8x8 block sums of the pair statistics, three ordered pairs per draw (MRT). */
+    /** RECOVERY_BLOCK0 - 4x4 block sums of the pair statistics, three ordered pairs per draw (MRT). */
     const val RECOVERY_BLOCK0: String =
         "#version 300 es\n\n" + kRecoveryBanner + "\n" + """uniform highp sampler2D uSrc;  // RECOVERY_PRE's output (rgb + clip bits in alpha), unit 1
 uniform ivec2 uSize;           // full-resolution size
@@ -1487,9 +1487,9 @@ void main() {
     vec3 s0 = vec3(0.0);
     vec3 s1 = vec3(0.0);
     vec3 s2 = vec3(0.0);
-    ivec2 o = b * 8;
-    for (int y = 0; y < 8; ++y) {
-        for (int x = 0; x < 8; ++x) {
+    ivec2 o = b * 4;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
             ivec2 p = o + ivec2(x, y);
             if (p.x >= uSize.x || p.y >= uSize.y) continue;
             vec4 t = texelFetch(uSrc, p, 0);
@@ -1505,11 +1505,12 @@ void main() {
 }
 """
 
-    /** RECOVERY_BLOCK_UP - 4x4 children of the previous level's block sums, three layers per draw (MRT). */
+    /** RECOVERY_BLOCK_UP - uFactor x uFactor children of the previous level's block sums (2: 4 -> 8 px; 4: 8 -> 32 -> 128 -> 512), three layers per draw (MRT). */
     const val RECOVERY_BLOCK_UP: String =
         "#version 300 es\n\n" + kRecoveryBanner + "\n" + """uniform highp sampler2DArray uPrev;  // the previous level's block sums (layer = ordered pair), unit 1
 uniform ivec2 uPrevSize;            // the previous level's block grid
 uniform int uPairBase;              // first layer of this draw; attachment i = layer uPairBase + i
+uniform int uFactor;                // children per axis (2 or 4)
 
 layout(location = 0) out vec4 oP0;
 layout(location = 1) out vec4 oP1;
@@ -1517,8 +1518,8 @@ layout(location = 2) out vec4 oP2;
 
 vec3 sumLayer(ivec2 o, int layer) {
     vec3 s = vec3(0.0);
-    for (int y = 0; y < 4; ++y) {
-        for (int x = 0; x < 4; ++x) {
+    for (int y = 0; y < uFactor; ++y) {
+        for (int x = 0; x < uFactor; ++x) {
             ivec2 p = o + ivec2(x, y);
             if (p.x >= uPrevSize.x || p.y >= uPrevSize.y) continue;
             s += texelFetch(uPrev, ivec3(p, layer), 0).rgb;
@@ -1528,7 +1529,7 @@ vec3 sumLayer(ivec2 o, int layer) {
 }
 
 void main() {
-    ivec2 o = ivec2(gl_FragCoord.xy) * 4;
+    ivec2 o = ivec2(gl_FragCoord.xy) * uFactor;
     oP0 = vec4(sumLayer(o, uPairBase), 0.0);
     oP1 = vec4(sumLayer(o, uPairBase + 1), 0.0);
     oP2 = vec4(sumLayer(o, uPairBase + 2), 0.0);

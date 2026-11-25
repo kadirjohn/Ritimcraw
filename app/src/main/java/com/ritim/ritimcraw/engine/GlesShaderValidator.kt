@@ -334,7 +334,7 @@ object GlesShaderValidator {
         for (i in 0..2) recoveryRequire(s, out, "layout(location = $i) out vec4 oP$i;", "MRT attachment $i of the layered block texture")
         recoveryRequire(s, out, "bool ok = ((bits >> c) & 1) == 0 && ((bits >> r) & 1) == 0 && t[r] > 1e-4 && t[c] >= 0.0;",
             "the CPU's unclipped-pair predicate (!clipped[c] && !clipped[r] && vr > kEps && vc >= 0)")
-        recoveryRequire(s, out, "ivec2 o = b * 8;", "8-pixel blocks, grid aligned at 0")
+        recoveryRequire(s, out, "ivec2 o = b * 4;", "4-pixel blocks, grid aligned at 0 (summed 2x2 to the 8-pixel level)")
         recoveryRequire(s, out, "if (p.x >= uSize.x || p.y >= uSize.y) continue;", "partial edge blocks count only real pixels")
     }
 
@@ -343,7 +343,8 @@ object GlesShaderValidator {
         recoveryRequire(s, out, "uniform ivec2 uPrevSize;", "the previous level's grid")
         recoveryRequire(s, out, "uniform int uPairBase;", "first layer of the draw")
         for (i in 0..2) recoveryRequire(s, out, "layout(location = $i) out vec4 oP$i;", "MRT attachment $i")
-        recoveryRequire(s, out, "ivec2 o = ivec2(gl_FragCoord.xy) * 4;", "4x4 children per output block (8 -> 32 -> 128 -> 512)")
+        recoveryRequire(s, out, "uniform int uFactor;", "children per axis (2: 4 -> 8, 4: 8 -> 32 -> 128 -> 512)")
+        recoveryRequire(s, out, "ivec2 o = ivec2(gl_FragCoord.xy) * uFactor;", "uFactor x uFactor children per output block")
         recoveryRequire(s, out, "if (p.x >= uPrevSize.x || p.y >= uPrevSize.y) continue;", "partial edge blocks")
     }
 

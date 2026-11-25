@@ -66,6 +66,7 @@
 #include <rawedit/Color.h>
 #include <rawedit/Develop.h>
 #include <mutex>
+#include <sys/system_properties.h>
 
 namespace gles {
 namespace {
@@ -73,6 +74,16 @@ namespace {
 // Highlight recovery's shader texts: the Kotlin single source of truth (GlesShaderSources.RECOVERY_*),
 // registered ONCE per process through nativeRegisterRecoveryShaders (jni_bridge.cpp) so the many session
 // open signatures stay untouched. Pipelines compile them lazily on the first recovery draw.
+// DEBUG: `setprop debug.ritim.rectime 1` makes the PRE / recovery passes bracket themselves with glFinish and
+// log their GPU wall time ("ritim-trace rectime"); off by default, one property read per frame.
+bool recoveryTimingOn() {
+    char v[PROP_VALUE_MAX] = {0};
+    return __system_property_get("debug.ritim.rectime", v) > 0 && v[0] == '1';
+}
+double nowMs() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 struct RecoverySources {
     std::string pre, block0, blockUp, composite;
 };
@@ -483,13 +494,13 @@ struct GpuDevelopPipeline::Impl {
     GLint rpCfa = -1, rpSize = -1, rpCell = -1, rpBlack = -1, rpRange = -1, rpHasShading = -1, rpShading = -1,
           rpShadingSize = -1, rpWb = -1, rpClipThr = -1;
     GLint rb0Src = -1, rb0Size = -1, rb0PairBase = -1;
-    GLint rbuPrev = -1, rbuPrevSize = -1, rbuPairBase = -1;
+    GLint rbuPrev = -1, rbuPrevSize = -1, rbuPairBase = -1, rbuFactor = -1;
     GLint rcSrc = -1, rcL[4] = {-1, -1, -1, -1}, rcSize = -1, rcCam = -1, rcHasProfile = -1;
-    // The block-sum pyramid: 4 levels (8/32/128/512-pixel blocks) of RGBA32F array textures, one layer per
+    // The block-sum pyramid: 5 levels (4/8/32/128/512-pixel blocks; the 4-pixel one is only a staging level) of RGBA32F array textures, one layer per
     // ordered channel pair; two framebuffers per level (layers 0-2 / 3-5 as three colour attachments).
-    GLuint recLvlTex[4] = {0, 0, 0, 0};
-    GLuint recLvlFbo[4][2] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
-    int recLvlW[4] = {0, 0, 0, 0}, recLvlH[4] = {0, 0, 0, 0};
+    GLuint recLvlTex[5] = {0, 0, 0, 0, 0};
+    GLuint recLvlFbo[5][2] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}};
+    int recLvlW[5] = {0, 0, 0, 0, 0}, recLvlH[5] = {0, 0, 0, 0, 0};
     uint32_t recW = 0, recH = 0;
     bool ensureRecovery(uint32_t w, uint32_t h, std::string* detail);
     bool recoveryDraw(const DevelopFrameRequest& req, uint32_t w, uint32_t h, const float* black,
@@ -1862,6 +1873,9 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
             return r;
         }
     } else {
+    const bool preTiming = recoveryTimingOn();
+    if (preTiming) glFinish();
+    const double preT0 = preTiming ? nowMs() : 0.0;
     glUseProgram(preProgram);
     glBindFramebuffer(GL_FRAMEBUFFER, fboA);
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
@@ -1881,6 +1895,11 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     glUniform1i(hasProfileLoc, hasProfile ? 1 : 0);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(pre)", &r.detail) != GL_NO_ERROR) return r;
+    if (preTiming) {
+        glFinish();
+        __android_log_print(ANDROID_LOG_INFO, "ritim-trace", "rectime pre %ux%u: %.2f ms",
+                            static_cast<unsigned>(w), static_cast<unsigned>(h), nowMs() - preT0);
+    }
     }
     auto probePass = [&](const char* tag, GLuint tex) {
         probePassFbo(tag, tex == texA ? fboA : (tex == texB ? fboB : fboC));
@@ -2440,7 +2459,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
 // ---- highlight recovery (docs/HIGHLIGHT_RECOVERY_PLAN.md) -------------------
 
 void GpuDevelopPipeline::Impl::recoveryRelease() {
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < 5; ++k) {
         for (int g = 0; g < 2; ++g) {
             if (recLvlFbo[k][g] != 0) { glDeleteFramebuffers(1, &recLvlFbo[k][g]); recLvlFbo[k][g] = 0; }
         }
@@ -2499,6 +2518,7 @@ bool GpuDevelopPipeline::Impl::ensureRecovery(uint32_t w, uint32_t h, std::strin
         rbuPrev = glGetUniformLocation(recBlockUpProgram, "uPrev");
         rbuPrevSize = glGetUniformLocation(recBlockUpProgram, "uPrevSize");
         rbuPairBase = glGetUniformLocation(recBlockUpProgram, "uPairBase");
+        rbuFactor = glGetUniformLocation(recBlockUpProgram, "uFactor");
         rcSrc = glGetUniformLocation(recCompositeProgram, "uSrc");
         rcL[0] = glGetUniformLocation(recCompositeProgram, "uL0");
         rcL[1] = glGetUniformLocation(recCompositeProgram, "uL1");
@@ -2509,7 +2529,7 @@ bool GpuDevelopPipeline::Impl::ensureRecovery(uint32_t w, uint32_t h, std::strin
         rcHasProfile = glGetUniformLocation(recCompositeProgram, "uHasProfile");
         if (rpCfa < 0 || rpSize < 0 || rpCell < 0 || rpBlack < 0 || rpRange < 0 || rpHasShading < 0 ||
             rpShading < 0 || rpShadingSize < 0 || rpWb < 0 || rpClipThr < 0 || rb0Src < 0 || rb0Size < 0 ||
-            rb0PairBase < 0 || rbuPrev < 0 || rbuPrevSize < 0 || rbuPairBase < 0 || rcSrc < 0 || rcL[0] < 0 ||
+            rb0PairBase < 0 || rbuPrev < 0 || rbuPrevSize < 0 || rbuPairBase < 0 || rbuFactor < 0 || rcSrc < 0 || rcL[0] < 0 ||
             rcL[1] < 0 || rcL[2] < 0 || rcL[3] < 0 || rcSize < 0 || rcCam < 0 || rcHasProfile < 0) {
             *detail = "recovery: shader-contract: missing uniform";
             recoveryRelease();
@@ -2530,14 +2550,14 @@ bool GpuDevelopPipeline::Impl::ensureRecovery(uint32_t w, uint32_t h, std::strin
     }
     if (recW == w && recH == h && recLvlTex[0] != 0) return true;
     // (Re)allocate the pyramid for this resolution.
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < 5; ++k) {
         for (int g = 0; g < 2; ++g) {
             if (recLvlFbo[k][g] != 0) { glDeleteFramebuffers(1, &recLvlFbo[k][g]); recLvlFbo[k][g] = 0; }
         }
         if (recLvlTex[k] != 0) { glDeleteTextures(1, &recLvlTex[k]); recLvlTex[k] = 0; }
     }
-    int div = 8;
-    for (int k = 0; k < 4; ++k, div *= 4) {
+    int div = 4;
+    for (int k = 0; k < 5; ++k, div *= (k == 1 ? 2 : 4)) {
         recLvlW[k] = (static_cast<int>(w) + div - 1) / div;
         recLvlH[k] = (static_cast<int>(h) + div - 1) / div;
         glGenTextures(1, &recLvlTex[k]);
@@ -2573,9 +2593,13 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
                                             const int* cell, bool applyShading, const float* cam2rgb,
                                             bool hasProfile, std::string* detail) {
     if (!ensureRecovery(w, h, detail)) return false;
+    const bool timing = recoveryTimingOn();
+    if (timing) glFinish();
+    const double t0 = timing ? nowMs() : 0.0;
     // The clip thresholds: measured CPU-side from the raw CFA (the CPU oracle's own function, so the GPU
     // cannot disagree about which sites are clipped).
     const rawedit::RecoveryClipLevels levels = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
+    const double tLv = timing ? nowMs() : 0.0;
     // Ordered pair p = c*2 + (r > c ? r-1 : r). A pair is needed when its c can clip and (green can clip, so
     // any reference may be chosen) or (the reference is green, the only choice while green never clips).
     const bool canClip[3] = {levels.threshold[0] <= 1.0f, levels.threshold[1] <= 1.0f, levels.threshold[2] <= 1.0f};
@@ -2605,7 +2629,10 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
     glUniform3f(rpClipThr, levels.threshold[0], levels.threshold[1], levels.threshold[2]);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(recovery-pre)", detail) != GL_NO_ERROR) return false;
+    if (timing) glFinish();
+    const double t1 = timing ? nowMs() : 0.0;
 
+    double tB0 = 0.0;
     // Block pyramid, only when some channel can clip in this frame (a clip-free frame needs no ratios).
     if (groupNeeded[0] || groupNeeded[1]) {
         for (int g = 0; g < 2; ++g) {
@@ -2620,7 +2647,9 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             if (glErrorAfter("glDrawArrays(recovery-block0)", detail) != GL_NO_ERROR) return false;
         }
-        for (int k = 1; k < 4; ++k) {
+        if (timing) glFinish();
+        tB0 = timing ? nowMs() : 0.0;
+        for (int k = 1; k < 5; ++k) {
             for (int g = 0; g < 2; ++g) {
                 if (!groupNeeded[g]) continue;
                 glUseProgram(recBlockUpProgram);
@@ -2630,19 +2659,22 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
                 glViewport(0, 0, recLvlW[k], recLvlH[k]);
                 glUniform2i(rbuPrevSize, recLvlW[k - 1], recLvlH[k - 1]);
                 glUniform1i(rbuPairBase, g * 3);
+                glUniform1i(rbuFactor, k == 1 ? 2 : 4);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
                 if (glErrorAfter("glDrawArrays(recovery-block-up)", detail) != GL_NO_ERROR) return false;
             }
         }
     }
 
+    if (timing) glFinish();
+    const double t2 = timing ? nowMs() : 0.0;
     // Composite: texB + the four levels -> texA (the slot PRE writes), camera matrix applied.
     glUseProgram(recCompositeProgram);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, texB);
     for (int k = 0; k < 4; ++k) {
         glActiveTexture(GL_TEXTURE12 + k);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, recLvlTex[k]);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, recLvlTex[k + 1]);  // composite reads the 8/32/128/512 levels
     }
     glBindFramebuffer(GL_FRAMEBUFFER, fboA);
     glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
@@ -2651,6 +2683,16 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
     glUniform1i(rcHasProfile, hasProfile ? 1 : 0);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(recovery-composite)", detail) != GL_NO_ERROR) return false;
+    if (timing) {
+        glFinish();
+        const double t3 = nowMs();
+        __android_log_print(ANDROID_LOG_INFO, "ritim-trace",
+            "rectime recovery %ux%u: levels(cpu)=%.2f ms pre=%.2f ms pyramid=%.2f ms (block0 %.2f) ms composite=%.2f ms total=%.2f ms "
+            "thr=(%.4f,%.4f,%.4f)",
+            static_cast<unsigned>(w), static_cast<unsigned>(h), tLv - t0, t1 - tLv, t2 - t1, tB0 - t1, t3 - t2, t3 - t0,
+            static_cast<double>(levels.threshold[0]), static_cast<double>(levels.threshold[1]),
+            static_cast<double>(levels.threshold[2]));
+    }
     glActiveTexture(GL_TEXTURE1);
     return true;
 }
