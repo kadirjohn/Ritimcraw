@@ -308,6 +308,10 @@ fun PreviewSurface(
     // the last frame): "GPU" / "CPU", null (the default and every release
     // call site) draws nothing. The caller gates it on BuildConfig.DEBUG.
     debugPathBadge: String? = null,
+    // True while the editor panel animates: the SurfaceView buffer keeps its size (setFixedSize) so the
+    // resize does not reallocate buffers every frame; one layout-sized surfaceChanged (and so one render
+    // request) follows when the panel settles. Default false keeps every other call site unchanged.
+    freezeSurfaceSize: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val currentGpuSurfaceChanged by rememberUpdatedState(onGpuSurfaceChanged)
@@ -502,6 +506,9 @@ fun PreviewSurface(
                                     // buffers. Reattach and request a frame
                                     // even when playback is paused; waiting
                                     // for a next playback tick strands black.
+                                    if (com.ritim.ritimcraw.engine.RenderTrace.enabled) {
+                                        android.util.Log.i("ritim-trace", "surfaceChanged ${width}x$height")
+                                    }
                                     if (width > 0 && height > 0) {
                                         currentGpuSurfaceChanged?.invoke(holder.surface)
                                     }
@@ -511,6 +518,16 @@ fun PreviewSurface(
                                     currentGpuSurfaceChanged?.invoke(null)
                                 }
                             })
+                        }
+                    },
+                    update = { view ->
+                        val tagged = view.getTag(R.id.preview_surface_frozen) == true
+                        if (freezeSurfaceSize && !tagged && view.width > 0 && view.height > 0) {
+                            view.holder.setFixedSize(view.width, view.height)
+                            view.setTag(R.id.preview_surface_frozen, true)
+                        } else if (!freezeSurfaceSize && tagged) {
+                            view.holder.setSizeFromLayout()
+                            view.setTag(R.id.preview_surface_frozen, false)
                         }
                     },
                     // The transform rides the AndroidView exactly as on

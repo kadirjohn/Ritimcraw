@@ -82,8 +82,8 @@ class PanelSheetTest {
     // ---- snap thresholds ----
 
     @Test
-    fun positional_threshold_is_half_the_inter_anchor_distance() {
-        assertEquals(50f, PanelSheet.positionalThreshold(100f), 1e-4f)
+    fun positional_threshold_is_thirty_percent_of_the_inter_anchor_distance() {
+        assertEquals(30f, PanelSheet.positionalThreshold(100f), 1e-4f)
         assertEquals(0f, PanelSheet.positionalThreshold(0f), 1e-4f)
     }
 
@@ -310,5 +310,18 @@ class PanelSheetTest {
         assertTrue(anchors.getValue(PanelState.COLLAPSED) <= anchors.getValue(PanelState.NORMAL))
         assertTrue(anchors.getValue(PanelState.NORMAL) <= anchors.getValue(PanelState.EXPANDED))
         assertTrue(anchors.getValue(PanelState.EXPANDED) <= 30f)
+    }
+
+    @Test
+    fun default_open_depends_on_the_upright_shape() {
+        assertEquals(PanelState.EXPANDED, PanelBehavior.defaultOpenFor(3840, 2160, 0))
+        assertEquals(PanelState.EXPANDED, PanelBehavior.defaultOpenFor(4096, 3072, 0)) // 4:3 open gate
+        assertEquals(PanelState.EXPANDED, PanelBehavior.defaultOpenFor(1000, 1000, 0))
+        assertEquals(PanelState.NORMAL, PanelBehavior.defaultOpenFor(2160, 3840, 0))
+        assertEquals(PanelState.NORMAL, PanelBehavior.defaultOpenFor(3840, 2160, 90))
+        assertEquals(PanelState.NORMAL, PanelBehavior.defaultOpenFor(3840, 2160, -90))
+        assertEquals(PanelState.EXPANDED, PanelBehavior.defaultOpenFor(3840, 2160, 180))
+        assertEquals(PanelState.EXPANDED, PanelBehavior.defaultOpenFor(2160, 3840, 270))
+        assertEquals(PanelState.EXPANDED, PanelBehavior.defaultOpenFor(0, 0, 0))
     }
 }

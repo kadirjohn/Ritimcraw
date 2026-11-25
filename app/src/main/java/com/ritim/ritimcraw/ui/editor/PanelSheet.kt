@@ -156,7 +156,7 @@ object PanelSheet {
      * naturally to the nearest appropriate panel state"). Halfway is the
      * Material sheet convention.
      */
-    const val POSITIONAL_THRESHOLD_FRACTION = 0.5f
+    const val POSITIONAL_THRESHOLD_FRACTION = 0.3f
 
     /**
      * Release velocity (dp/s) above which the fling direction, not the
@@ -164,7 +164,7 @@ object PanelSheet {
      * 125 dp/s is the Material bottom sheet convention. dp so the pure
      * value is readable in JVM tests; the wiring converts with density.
      */
-    val VELOCITY_THRESHOLD = 125.dp
+    val VELOCITY_THRESHOLD = 300.dp
 
     /** The positional snap threshold in px for an inter-anchor distance. */
     fun positionalThreshold(totalDistancePx: Float): Float =

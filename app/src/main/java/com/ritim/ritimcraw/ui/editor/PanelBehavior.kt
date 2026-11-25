@@ -38,6 +38,20 @@ object PanelBehavior {
     val DEFAULT_OPEN: PanelState = PanelState.EXPANDED
 
     /**
+     * The first-open state for a clip of [width] x [height] with [rotationDeg] applied: a portrait result
+     * (height > width after the quarter turns) opens NORMAL so the tall picture keeps room; everything else
+     * (landscape, square, 4:3 open gate, unknown size) opens EXPANDED as before. Only the first open uses this;
+     * a saved panel state wins.
+     */
+    fun defaultOpenFor(width: Int, height: Int, rotationDeg: Int): PanelState {
+        if (width <= 0 || height <= 0) return DEFAULT_OPEN
+        val turned = ((rotationDeg % 360) + 360) % 360 / 90 % 2 == 1
+        val w = if (turned) height else width
+        val h = if (turned) width else height
+        return if (h > w) PanelState.NORMAL else PanelState.EXPANDED
+    }
+
+    /**
      * The state an upward swipe from [current] unfolds to: EXPANDED
      * from every state — from COLLAPSED that is the owner's full
      * unfold, and from NORMAL/EXPANDED an up-release already heads
