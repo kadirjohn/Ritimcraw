@@ -1,0 +1,30 @@
+{
+ "id": "122-e69e4b8",
+ "title": "linear dng audit and contract tests",
+ "date": "2026-11-16",
+ "status": "done",
+ "commit": {
+  "hash": "e69e4b8",
+  "date": "2026-11-16",
+  "merge_subject": "merge: linear dng audit and contract tests"
+ },
+ "tests": "not recorded",
+ "description": "read-only audit (B6) of the existing linear dng writer plus new jvm\ncontract tests pinning the kotlin-visible seam. no writer changes;\nevery gap found is routed to the writer's owner, never fixed here.\n\ndocs/LINEAR_DNG_GAPS.md records the writer's actual contract with\nfile:line citations: developLinear's exactly-three stages (black/\nwhite normalization frame-preferred, bilinear demosaic, as-shot wb;\nnothing else), the jni flow (effective rotation in the tag, raw-09\ncrop cut before the develop, stage 2 develop exists only on this\npath), and the full 21-tag linear file set (34892 linearraw, 270\nstage list, blacklevel 0/whitelevel 65535, colormatrix1 kept,\nasshotneutral identity, activearea from the cut frame).\n\nverdicts: raw-13 clauses 2/3/4 covered (separate file contracts,\nstage recording via imagedescription, tone map separate); clause 1\npartial - the file is the minimal scene-referred ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: linear dng raw-13/qa-17 audit + contract tests"
+ ],
+ "files": [
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/LinearDngContractTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "docs/LINEAR_DNG_GAPS.md",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

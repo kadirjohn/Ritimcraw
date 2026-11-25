@@ -1,0 +1,26 @@
+{
+ "id": "238-51a0c18",
+ "title": "fix: panel flings settle through the spring, not decay",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "51a0c18",
+  "date": "2026-11-25",
+  "merge_subject": "merge: fix: panel flings settle through the spring, not decay"
+ },
+ "tests": "not recorded",
+ "description": "A release above the velocity threshold took AnchoredDraggableState's decay path and stopped on the anchor without braking. The decay now dies at once (exponentialDecay, friction x1000), so every settle runs PanelSheet.settleSpec. Device, injected 150 px / 50 ms downward flicks, per-frame panel height: before NORMAL->COLLAPSED 589 -> 97 in 2 frames (one 492 px step); after EXPANDED->NORMAL 966 -> 720 in about 100 frames, steps 11 px at the start shrinking to 1 px. JVM green.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: panel flings settle through the spring, not decay"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorPanel.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

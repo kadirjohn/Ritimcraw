@@ -257,6 +257,14 @@ struct Grade {
     float contrast = 0.0f;
     bool asShot = true;
     bool highlightReconstruction = true;
+    // Stage-15 highlights curve version: 0 = legacy (knee 0.75, the default so every
+    // existing grade and golden is unchanged), 1 = v1 (knee 0.40).
+    int highlightsCurve = 0;
+    // Highlight RECOVERY (docs/HIGHLIGHT_RECOVERY_PLAN.md): false = today's behaviour (stage 3 per
+    // highlightReconstruction). true = stage 3 is replaced by a real re-estimation of clipped channels
+    // from the unclipped ones (CPU oracle: recoverClippedHighlights in Develop.cpp); may produce values
+    // above 1.0. Default false keeps every existing grade and golden unchanged.
+    bool highlightRecovery = false;
     bool keepVignetting = true;
     float sharpness = 0.0f;
     float detail = 0.0f;
@@ -349,6 +357,29 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
 // coordinates (u, v in [0,1]). plane selects the CFA channel plane (0..3,
 // 2x2 order). Returns 1.0f when the map is empty.
 float sampleShading(const RawMeta& meta, float u, float v, int plane);
+
+// Highlight recovery (docs/HIGHLIGHT_RECOVERY_PLAN.md). `img` is white-balanced camera RGB (after the
+// as-shot-neutral division, BEFORE the camera matrix); `clipMask` holds, per pixel and channel, the
+// demosaiced raw clip mask (1 = the site was at/over the clip threshold, fractional where interpolated;
+// a channel counts as clipped at >= 0.5). Pixels with 1-2 clipped channels get those channels
+// re-estimated as (reference unclipped channel) x (local channel ratio from unclipped neighbours, finest
+// of three scales with enough support), never lower than the clipped value; fully clipped pixels are
+// capped neutral at their lowest channel (no luminance is invented). Output may exceed 1.0.
+void recoverClippedHighlights(ImageF& img, const ImageF& clipMask);
+
+// Per-frame, per-channel (R, G, B) clip thresholds in normalized raw units (1.0 = no measured plateau: only sites at the
+// white level itself count). Used by BOTH stage 3 (Neutral) and Recovery. Measured on a real clip (docs/HIGHLIGHT_RECOVERY_PLAN.md, M0): the sensor/capture pipeline can
+// saturate below the metadata white (G plateau at 0.9984 of white) and caps R/B at the green clip level times
+// the as-shot neutral ratio, so the thresholds come from each frame's own plateau instead of a fixed fraction.
+struct RecoveryClipLevels {
+    float threshold[3] = {1.0f, 1.0f, 1.0f};  // 1.0 = only sites at the white level itself are clipped
+    // Diagnostics of the measurement (per channel R,G,B): the frame maximum, the sites within 0.4% below it, and the
+    // sites exactly at it.
+    float maxNorm[3] = {0.0f, 0.0f, 0.0f};
+    uint64_t plateau[3] = {0, 0, 0};
+    uint64_t topCount[3] = {0, 0, 0};
+};
+RecoveryClipLevels recoveryClipLevels(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta);
 
 // Bilinear demosaic of a CFA buffer into linear RGB (no levels, no color).
 // Exposed for tests; developCpu calls it after normalization stages.

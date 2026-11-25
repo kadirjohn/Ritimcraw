@@ -1,0 +1,163 @@
+{
+ "id": "062-8fb4733",
+ "title": "lut color management managed paths",
+ "date": "2026-11-13",
+ "status": "done",
+ "commit": {
+  "hash": "8fb4733",
+  "date": "2026-11-13",
+  "merge_subject": "merge: lut color management managed paths"
+ },
+ "tests": "Verification (offline): :app:testDebugUnitTest 1444 tests green,",
+ "description": "Commit (e) of the LUT color-management contract: the ACES and camera\nOEM color encodings, ported from the pinned sources only.\n\nCurves (TransferId, appended — ordinals pinned by LutInterpTest):\n- ACEScct (ACES CTL lib_ACES.util baked_param, pin 79688e5)\n- ARRI LogC3, SUP 3.x EI 800 (colour-science arri.py, pin 7ca0c87)\n- Sony S-Log3 (colour-science sony.py; decode derived, encode pinned)\n- Canon C-Log3 (Canon CSC CTL; decode derived, encode pinned)\n- Apple Log / Apple Log 2 — one shared curve (Apple CSC CTLs)\n- Panasonic V-Log (AVC-Intra white paper; decode derived)\n- Fujifilm F-Log (colour-science fuji.py; the pinned inverse verbatim)\n- Cineon (the pinned black-offset form)\n\nGamuts (GamutId, appended):\n- ACEScg (AP1 primaries, ACES ~D60 white; npm-derived)\n- ARRI Wide Gamut 3, S-Gamut3.Cine (pinned matrices, memcpy'd verbatim)\n- Canon Cinema Gamut, Apple Wide Gamut, V-Gamut (npm-derived",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: native lut color model",
+  "feat: managed lut paths in develop",
+  "feat: kotlin lut bindings and persistence",
+  "feat: lut interpretation import dialog",
+  "feat: priority-2 camera log curves and gamuts"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/LutInterp.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/LutStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewRenderer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/LutInterpPresets.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/GradeStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/LutInterpTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/LutStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/GradeClipboardTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/GradeHistoryTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/LutInterpPresetsTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Color.h",
+   "change": "A"
+  },
+  {
+   "path": "core/include/rawedit/Develop.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Thumbnail.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Transfer.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Color.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/src/Develop.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Thumbnail.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Transfer.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_color.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "ACES",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

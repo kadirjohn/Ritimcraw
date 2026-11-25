@@ -1,0 +1,26 @@
+{
+ "id": "183-716abb9",
+ "title": "fix: crop sweep attaches a reader surface",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "716abb9",
+  "date": "2026-11-24",
+  "merge_subject": "merge: fix: crop sweep attaches a reader surface"
+ },
+ "tests": "not recorded",
+ "description": "The crop parity leg opened a preview session but never attached a surface. The crop parameters switch the window pass on, and since 2b1e2ff a window draw with no attached surface fails the present and the JNI seam returns null, so all 21 cases were skipped (cases=0). The sweep now attaches a throwaway ImageReader surface (drained by a listener so the swap never blocks) and detaches and closes it afterwards. Device run: cases=21 skipped=0; results are in the status report. No thresholds changed.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: crop sweep attaches a reader surface"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GradeParitySweep.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

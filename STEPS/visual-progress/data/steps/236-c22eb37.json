@@ -1,0 +1,55 @@
+{
+ "id": "236-c22eb37",
+ "title": "feat: editor panel settles on a critically damped spring",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "c22eb37",
+  "date": "2026-11-25",
+  "merge_subject": "merge: feat: editor panel settles on a critically damped spring"
+ },
+ "tests": "not recorded",
+ "description": "Snap uses spring(dampingRatio 1, StiffnessMediumLow) so release velocity carries into the settle instead of a fixed 200 ms tween; release thresholds are 30% of the anchor distance and 300 dp/s (was 50% and 125 dp/s) so a short drag eases to the middle and a longer one closes. PanelBehavior.defaultOpenFor(w, h, rot) picks NORMAL for a portrait result and EXPANDED otherwise, first open only. The preview SurfaceView buffer is pinned (setFixedSize) while the panel animates and returns to layout size after. Device (Mi-Log 4K clip, 12 up/down drags per run): surfaceChanged 0 before and after (the surface keeps its size in this layout); gfxinfo janky 5.26% / 2.19% new vs 1.87% / 4.99% old, within run-to-run noise. JVM 2991/0, desktop 0.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: editor panel settles on a critically damped spring"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorPanel.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/PanelBehavior.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/PanelSheet.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/PreviewSurface.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/ids.xml",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/PanelSheetTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Mi-Log",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

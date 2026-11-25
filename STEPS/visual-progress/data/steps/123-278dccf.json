@@ -1,0 +1,30 @@
+{
+ "id": "123-278dccf",
+ "title": "lens profile schema and parser",
+ "date": "2026-11-16",
+ "status": "done",
+ "commit": {
+  "hash": "278dccf",
+  "date": "2026-11-16",
+  "merge_subject": "merge: lens profile schema and parser"
+ },
+ "tests": "not recorded",
+ "description": "New files only — schema + parser + tests; no warp, store, grade or UI\nintegration (the integrator's wave).\n\napp/src/main/java/com/ritim/ritimcraw/data/lens/LensProfile.kt:\n- the pure model: LensProfile (version/name/source/identity/intrinsics/\n  distortion/modes), LensIdentity, LensIntrinsics, LensDistortion,\n  LensStabMode, LensProfileError\n- binding key derived from the REAL container fields: the\n  MetadataBuilder.mcrawCamera fallback chain (uniqueCameraModel ->\n  deviceModel -> \"manufacturer buildModel\" -> buildModel ->\n  manufacturer) + the 35mm-equivalent focal rounded to 0.1 mm + the\n  aperture when carried; the container's float noise (23.9501972...)\n  must not split one lens into two keys, real lenses sit far apart\n- distortion model: Brown-Conrady k1/k2/k3 + p1/p2 (normalized\n  coordinates), chosen over k1-only because the warp's current math\n  (a 3x3 homography, single projecti",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "lens: pure profile schema + parser (b7/gy-06)"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/lens/LensProfile.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/lens/LensProfileTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

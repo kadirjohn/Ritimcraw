@@ -1,0 +1,57 @@
+{
+ "id": "072-838a90c",
+ "title": "m0 trace source nr fix off main crop",
+ "date": "2026-11-13",
+ "status": "done",
+ "commit": {
+  "hash": "838a90c",
+  "date": "2026-11-13",
+  "merge_subject": "merge: m0 trace source nr fix off main crop"
+ },
+ "tests": "not recorded",
+ "description": "The audit's host harness measured the develop pipeline off-device\n(17.5/61.8/62.4/107.9 ms at the 1280 tier for neutral / AgX /\n+managed-LUT / +temporal-NR on the 4K fixture), but the production\npath had no instrument: nothing on the phone could say which pipeline\nactually ran, at what tier, in how many milliseconds, for a given\ngrade. The owner's A/B comparison had host numbers and no device\nnumbers.\n\nNew engine/RenderTrace.kt: ONE logcat line per completed editor render\nunder the stable tag \"ritim-trace\" (the ritim-stab-timing precedent),\ndebug-gated via BuildConfig.DEBUG (the PreviewMetrics precedent —\nrelease never logs):\n\n  seq=12 frame=34 class=settle req=1280 out=1280x720 backend=cpu\n  ms=62 grade=tonemap=agx lut=kodak-2383\n\n- line() is pure (the MetricsSummary precedent): every value is\n  caller-supplied, so the JVM tests pin the format with no Android\n  classes.\n- out= logs the ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: source settle applies temporal nr",
+  "fix: active crop straighten off main thread",
+  "feat: production render trace line"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewTiers.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/RenderTrace.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/PublishCrop.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewTiersTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/RenderTraceTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/PublishCropTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "ACES",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

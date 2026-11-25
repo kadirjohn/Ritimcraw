@@ -1,0 +1,79 @@
+{
+ "id": "079-f575270",
+ "title": "m5 gpu encoder surface + sync exposure",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "f575270",
+  "date": "2026-11-14",
+  "merge_subject": "merge: m5 gpu encoder surface + sync exposure"
+ },
+ "tests": "not recorded",
+ "description": "Consume the c510035 core (refineOffsetOptically) behind a runtime\nuser toggle, default off until the owner's on-device A/B proves the\nrefined offset reduces the vibration.\n\nEngine (jni_bridge.cpp):\n- gSyncRefine: a runtime atomic, NOT a build gate — the companion init\n  never touches it; the stab sheet's switch owns it through the new\n  nativeSetSyncRefine setter. Rides the StabRequest so the plan cache,\n  the refine gate and all three render paths + the export see it\n  without widening the six flat JNI params (the resolution-picker\n  seam stays untouched).\n- refineSyncEstimate: the once-per-plan-cache-key refinement. 75\n  evenly-spaced frames (3 windows x the core's maxPairsPerWindow 24),\n  ~480px neutral-Grade thumbnails (strideFor(info, 480) — the CALLER\n  BUDGET note's seconds-class cost), repTimeNs = captureNs +\n  frameIntervalNs/2 (the documented fallback: the container carries no\n",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: gpu develop draws to encoder surface",
+  "feat: expose optical sync refinement"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPipeline.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPipeline.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/MediaCodecMp4Writer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourceDevelopSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,63 @@
+{
+ "id": "164-94d07cc",
+ "title": "e1c export sheet compact + fps n-1 measure",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "94d07cc",
+  "date": "2026-11-24",
+  "merge_subject": "merge: e1c export sheet compact + fps n-1 measure"
+ },
+ "tests": "not recorded",
+ "description": "The editor's clip fps was frames / span, which reads low by (N-1)/N\n(a 30.06 fps clip of 130 frames showed 29.826). N frames span N-1\nintervals. The exporter already used (N-1)/span; only the editor's\ndisplay value (info sheet, export sheet subject) was off.\n\nAdds PtsTimeline.measuredFps with a test.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: compact export sheet with target tabs",
+  "fix: measure clip fps over n-1 intervals"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PtsTimeline.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/AppSegmentedControl.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorTopBar.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ExportSettingsPanel.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ExportSheetState.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PtsTimelineTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/ExportSheetStateTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

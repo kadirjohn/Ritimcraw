@@ -1,0 +1,84 @@
+{
+ "id": "147-18f2e3f",
+ "title": "A3 GPU zebra — window-draw stripes at window resolution, clean scopes",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "18f2e3f",
+  "date": "2026-11-23",
+  "merge_subject": "merge: A3 GPU zebra — window-draw stripes at window resolution, clean scopes"
+ },
+ "tests": "not recorded",
+ "description": "- gpuPreviewEligible (A3, guide §A3, owner request 2026-11-23): the\n  zebraOn parameter and the zebra rule are GONE — the window pass paints\n  the stripes (values single-sourced from ZebraOverlay/FrameHistogram\n  across the seam), so a zebra-on covered grade is GPU-ELIGIBLE; the\n  KDoc and the dispatch comments state the new truth\n- EditorPreviewLogicTest: zebra_forces_the_cpu_path replaced by\n  zebra_on_is_eligible_since_the_gpu_zebra; all 10 gpuPreviewEligible\n  call sites drop the zebraOn argument\n- the zebra paint LaunchedEffect keeps zebraFrame NULL while\n  gpuWindowLive holds (read inside the snapshotFlow pair — the publish\n  fold writes frame + gpuWindowLive in one batch, so a GPU-live publish\n  derives null and a surface death repaints immediately); the CPU path\n  derives verbatim today's ZebraOverlay.paint, and the swap line falls\n  through to the clean frame (nothing blocky rea",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: pure zebraStriped decision helper — the A3 GPU zebra's JVM reference",
+  "feat: WINDOW_FRAGMENT zebra uniforms + the session draw split + the widened seam",
+  "feat: zebra rides the GPU — eligibility drops zebraOn, the paint effect skips the window-served frames"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GpuPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GradeParitySweep.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ZebraOverlay.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GlesShaderValidatorTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GpuPreviewSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourcePreviewSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/ZebraOverlayTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

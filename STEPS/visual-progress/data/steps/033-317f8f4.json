@@ -1,0 +1,30 @@
+{
+ "id": "033-317f8f4",
+ "title": "intrinsic width chip fix",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "317f8f4",
+  "date": "2026-11-12",
+  "merge_subject": "merge: intrinsic width chip fix"
+ },
+ "tests": "not recorded",
+ "description": "The Library filter chip stacked its label twice on device (E5, then\nagain on 2026-11-12 on the build that shipped the first guard 973d58f:\nTurkish 'Sıkıştırılmış' as 'Sıkış/tırıl/mış'). The first fix pinned the\nlabel Text's own flags (maxLines=1, softWrap=false, Visible) — single-\nline by construction in the foundation 1.7.0 sources, yet the device\nstill stacked it. The chip must not trust the text layer at all.\n\nNew approach, measured and pinned:\n- Measure the label's intrinsic single-line width with rememberTextMeas-\n  urer, same style (labelLarge), resolver and density the chip's Text\n  uses, so the measurements agree exactly. The measured string IS the\n  displayed string.\n- Pin the label Text with requiredWidth(measured) — enforceIncoming=\n  false, so the paragraph receives min=max=its own intrinsic width\n  whatever constraints reach it; no spare width to wrap into.\n- Pin the whole F",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: chips measure at intrinsic single-line width"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/FilterChipsRow.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/components/ChipWidthsTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

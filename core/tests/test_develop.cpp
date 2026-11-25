@@ -333,6 +333,25 @@ TEST_CASE("highlights_slider_changes_bright_region_only") {
     CHECK(std::abs(centerMean(m1, 1) - centerMean(m0, 1)) < 0.001f); // mid untouched
 }
 
+TEST_CASE("highlights_curve_v1_reaches_upper_midtones_legacy_does_not") {
+    // Owner 2026-11-25: the legacy 0.75 knee left everything below display ~0.88
+    // untouched. Curve v1 (knee 0.40) must visibly darken an upper-mid patch at
+    // -100 and brighten it at +100, monotone in the slider; legacy (the default,
+    // so old grades and goldens are unchanged) must still leave it alone.
+    Synthetic hi = syntheticFlat(CfaPattern::RGGB, 0.7f, 0.7f, 0.7f);
+    auto at = [&](float h, int curve) {
+        Grade g; g.highlights = h; g.highlightsCurve = curve;
+        return centerMean(developCpu(hi.cfa.data(), hi.info, hi.meta, g), 1);
+    };
+    const float n = at(0.0f, 1);
+    CHECK(at(-100.0f, 1) < at(-50.0f, 1));
+    CHECK(at(-50.0f, 1) < n);
+    CHECK(n < at(100.0f, 1));
+    CHECK(at(-100.0f, 1) < n - 0.02f);
+    CHECK(at(0.0f, 0) == n);                 // curve is inert at highlights 0
+    CHECK(Grade{}.highlightsCurve == 0);     // default = legacy
+}
+
 TEST_CASE("highlights_recovery_never_turns_bright_sky_black") {
     // Owner finding 2026-11-10: Exposure +2.1 EV then Highlights -55 turned
     // a bright sky BLACK. Root cause: the old quadratic factor crossed zero

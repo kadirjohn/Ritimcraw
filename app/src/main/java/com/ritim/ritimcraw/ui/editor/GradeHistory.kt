@@ -104,6 +104,12 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
     /** One restorable editor state: the GradeK and the clip's node chain (the nodes ride the history since F1-8a). */
     data class Snapshot(val grade: GradeK, val nodes: List<GradeNodeV2>)
 
+    /** The history shape captured at the first touch of a possible double-tap. */
+    private data class Base(val size: Int, val grade: GradeK)
+
+    private var base: Base? = null
+    private var inReset = false
+
     private var entries by mutableStateOf(listOf(Entry(initial, initialNodes, cause = null, open = false)))
     private var redoEntries by mutableStateOf(listOf<Entry>())
 
@@ -121,6 +127,7 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
      * entry — clearing the redo stack.
      */
     fun record(grade: GradeK, cause: Any? = null) {
+        if (inReset) collapseToBase()
         push(grade, entries.lastOrNull()?.nodes ?: emptyList(), cause)
     }
 
@@ -145,6 +152,44 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
                 entries = (entries + Entry(grade, nodes, cause, open = cause != null))
                     .takeLast(MAX_ENTRIES)
             }
+        }
+    }
+
+    /**
+     * Slider double-tap reset support. The first tap of a double-tap is
+     * also a tap-to-position jump on the slider, which records a
+     * SLIDER_GESTURE step; undoing the reset would then land on that
+     * nudged value instead of the real previous one. [markGestureBase] is
+     * called at the first touch of a possible double-tap and remembers the
+     * history shape; records made inside [resetScope] first drop the
+     * slider-gesture steps added since, so the reset is ONE step whose undo
+     * restores the exact pre-gesture grade. The collapse only happens when
+     * the stack still matches the mark (same entry at the mark, only
+     * slider-gesture entries after it); otherwise the reset records plainly.
+     */
+    fun markGestureBase() {
+        base = entries.lastOrNull()?.let { Base(entries.size, it.grade) }
+    }
+
+    /** Runs a reset so its record collapses the double-tap's own tap jumps. */
+    fun <T> resetScope(block: () -> T): T {
+        inReset = true
+        try {
+            return block()
+        } finally {
+            inReset = false
+            base = null
+        }
+    }
+
+    private fun collapseToBase() {
+        val b = base ?: return
+        base = null
+        if (entries.size > b.size &&
+            entries[b.size - 1].grade == b.grade &&
+            entries.drop(b.size).all { it.cause === SLIDER_GESTURE }
+        ) {
+            entries = entries.take(b.size)
         }
     }
 

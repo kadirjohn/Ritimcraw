@@ -101,6 +101,8 @@ echo "== building tests =="
 # test_lut runs from the repo root so it finds the vendor cube fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_lut.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_lut"
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_highlight_recovery.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_highlight_recovery"
 # test_gyro runs from the repo root so it finds the STEPS/media/test fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gyro"
@@ -138,6 +140,16 @@ echo "== building tests =="
 #     real fixtures; run by hand from the repo root, not a test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/bp_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/bp_measure"
+# hr_measure <clip.mcraw> <frame> — highlight-recovery M0 (docs/HIGHLIGHT_RECOVERY_PLAN.md): where the sensor
+# channels really clip (raw code pile-up vs metadata white, stage-3 detection hits/misses) on a real frame.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_measure"
+# hr_levels <clip.mcraw> [step] — recoveryClipLevels over a frame sweep (per-camera verification).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_levels.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_levels"
+# hr_trace <clip.mcraw> <frame> [x y] [ev hl chroma nr curve] — per-stage trace of one pixel (the lilac-streak measurement).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_trace.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_trace"
 # p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/p5_compare.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/p5_compare"
@@ -280,6 +292,8 @@ echo "== running test_dng =="
 "$BUILD/test_dng"
 echo "== running test_lut =="
 (cd "$ROOT" && "$BUILD/test_lut")
+echo "== running test_highlight_recovery =="
+"$BUILD/test_highlight_recovery"
 echo "== running test_gyro =="
 (cd "$ROOT" && "$BUILD/test_gyro")
 echo "== running test_orientation =="

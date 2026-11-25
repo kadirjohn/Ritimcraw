@@ -1,0 +1,189 @@
+{
+ "id": "034-7bee43b",
+ "title": "gyro stabilization ui and visible warp",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "7bee43b",
+  "date": "2026-11-12",
+  "merge_subject": "merge: gyro stabilization ui and visible warp"
+ },
+ "tests": "not recorded",
+ "description": "SUMMARY: the paused editor preview now renders the gyro-stabilized\nframe and MP4 export applies the same warp at full resolution, with\ntier gating that mirrors temporal NR exactly.\n\nC++ seam (jni_bridge.cpp): thread_local path-keyed GyroArtifacts cache\n(mirrors the gLut pattern) parses the .gcsv once per path, applies the\nIMU axis remap to every gyro AND accel sample, and runs\nestimateOrientationVqf. resolveStabilization returns false ONLY on\nparse failure; a null/empty path or IoError degrades to no-warp, never\na crash. stabilizationFrameFor syncs from frame-0 anchors\n(frameInfo(0).recvdMs vs gyro imu.logStartWallMs vs first.ptsUs*1000)\nand composes the trim offset: an anchored verdict is kept with its\ntrimOffsetMs, an unanchored clip with trim falls back to\nmanualOffsetMs with offsetKnown=true, otherwise offsetKnown=false.\ncomputeStabilization runs with assumedFocal=true when the conta",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: stabilization grade fields",
+  "feat: core warp + sync anchors",
+  "feat: stabilization controls + gyro attach + sync status",
+  "feat: stabilization visible preview + export warp"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GyroStore.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/SourceRepository.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EditorPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewRenderer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewTiers.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/SliderSteps.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/util/Format.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/GradeStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/GyroStoreTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/SourceRepositoryTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/EditorAudioTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewRendererTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewTiersTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportQueueTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/PhotoExporterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/SliderStepsTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/util/FormatTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Gyro.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Source.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Warp.h",
+   "change": "A"
+  },
+  {
+   "path": "core/src/Gyro.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Source.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Warp.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_gyro.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_sync.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_warp.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

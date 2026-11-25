@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ritimcraw progress</title>
+<meta name="color-scheme" content="dark light">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-in">
+    <div>
+      <h1>Ritimcraw progress</h1>
+      <p class="sub" id="summary">loading...</p>
+    </div>
+    <button class="btn" id="theme" type="button" aria-label="Toggle light/dark theme">theme</button>
+  </div>
+  <div class="wrap filters" id="filters" role="group" aria-label="Filter by status"></div>
+</header>
+
+<main class="wrap">
+  <ol class="timeline" id="timeline" aria-live="polite"></ol>
+  <p class="empty" id="empty" hidden>No steps match this filter.</p>
+</main>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="p-title" aria-hidden="true" tabindex="-1">
+  <div class="panel-head">
+    <h2 id="p-title"></h2>
+    <button class="btn" id="p-close" type="button" aria-label="Close panel">close</button>
+  </div>
+  <div class="panel-body" id="p-body"></div>
+</aside>
+
+<noscript><p class="wrap">This page needs JavaScript.</p></noscript>
+<script src="data/steps.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+{
+ "id": "213-1b9adbd",
+ "title": "feat: encoded preview develops on the gpu",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "1b9adbd",
+  "date": "2026-11-24",
+  "merge_subject": "merge: feat: encoded preview develops on the gpu"
+ },
+ "tests": "not recorded",
+ "description": "EncodedSource.renderFrame takes the GPU door for preview renders (no nodes, LUT or rotation; everything else falls back to the CPU oracle, noted in the ritim-trace encoded-path line): the decoded planes go to the develop session's YUV pass, reduced first by the tier. Three costs found and removed on the Mi-Log 4K60 and 8K30 clips: (1) the per-pixel Kotlin repack to NV12 (toGpuFrame hands the luma plane over in place and rebuilds CbCr with one bulk copy); (2) the adapter's plane copies now come from PlaneBufferPool, and frames before the seek target are dequeued without any pixel copy; (3) a forward jump inside the current GOP no longer re-seeks to the keyframe and re-decodes the GOP (15-52 decoded frames per render). Playback, device, debug, 12-14 s, tier 720: Mi-Log 4K60 shown 31 -> 98, frame gap p50 408 -> 135 ms, p95 777 -> 230 ms; 8K30 shown 51 -> 148, gap p50 259 -> 82 ms, p95 451 -",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: encoded preview develops on the gpu (e0b-4b)"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EditorPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedAdapters.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/EncodedGpuFrameTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/EncodedSourceTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Mi-Log",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

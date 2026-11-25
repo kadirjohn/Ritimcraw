@@ -1,0 +1,26 @@
+{
+ "id": "082-aff2122",
+ "title": "egl wrap fix for gpu export",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "aff2122",
+  "date": "2026-11-14",
+  "merge_subject": "merge: egl wrap fix for gpu export"
+ },
+ "tests": "not recorded",
+ "description": "The Xiaomi 15 Ultra GPU export fell back honestly with\nreason=surface-input-unavailable:egl-wrap: both\neglCreateWindowSurface sites (configureSurfaceVideoCodec and the\nadoptEncoderSurface twin) passed surfaceAttribs =\n{ EGL_RECORDABLE_ANDROID, 1, EGL_NONE }, and the device returned\nEGL_NO_SURFACE for that form. The RECORDABLE flag is already required\nin the CONFIG setupEgl chooses (eglChooseConfig line ~268), so the\nwindow-surface attribs repeated it — redundant at best, fatal on this\ndevice's EGL.\n\nEvidence: the M4 preview session (GlesPreviewSession.cpp:753) creates\nits window surface on the SAME device with nullptr attribs and works;\nGrafika (the project's EGL reference) also rides the flag on the\nconfig with a null attrib list.\n\nFix: pass null at BOTH call sites — the EGL14 platform-type binding\ntreats null as the empty/default attrib list (the native nullptr\nform). The RECORDABLE fl",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: egl wrap drops recordable surface attribs"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/MediaCodecMp4Writer.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

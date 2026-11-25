@@ -75,9 +75,9 @@ internal object ThemeIconMorph {
      *   is gone (alpha 0) and never doubles the thumb glyph.
      * Leaving a slot is the same function read the other way (symmetric).
      */
-    fun slotState(slot: Int, position: Float): ThemeSlotIconState {
+    fun slotState(slot: Int, position: Float, minPosition: Float = 0f): ThemeSlotIconState {
         val s = slot.coerceIn(0, 2)
-        val signed = (position.coerceIn(0f, 2f) - s).coerceIn(-1f, 1f)
+        val signed = (position.coerceIn(minPosition, 2f) - s).coerceIn(-1f, 1f)
         val d = kotlin.math.abs(signed)
         val q = 1f - smoothstep(NEAR, 1f, d)
         val g = q * smoothstep(0f, NEAR, d) // anticipation, relaxed under the thumb
@@ -99,6 +99,25 @@ internal object ThemeIconMorph {
         }
     }
 
+    /**
+     * Pose of a text-glyph slot (the custom "C") for the signed distance
+     * [signed] = thumbPosition - slotIndex in track slots. Same curve as
+     * [slotState] (rises, scales up, leans toward the thumb, brightens,
+     * hands off under the thumb) with the per-icon gesture left out: a
+     * letter neither spins nor stretches.
+     */
+    fun textGlyphState(signed: Float): ThemeSlotIconState {
+        val sd = signed.coerceIn(-1f, 1f)
+        val d = kotlin.math.abs(sd)
+        val q = 1f - smoothstep(NEAR, 1f, d)
+        val g = q * smoothstep(0f, NEAR, d)
+        val lean = (sd / NEAR).coerceIn(-1f, 1f)
+        return ThemeSlotIconState(
+            smoothstep(HANDOFF, NEAR, d), 1f + 0.10f * g, lean * g * 0.12f,
+            -0.10f * g, 0f, 1f, g,
+        )
+    }
+
     fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
         val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
         return t * t * (3f - 2f * t)
@@ -109,8 +128,9 @@ internal object ThemeIconMorph {
         thumbXPx: Float,
         trackInsetPx: Float,
         slotWidthPx: Float,
+        minPosition: Float = 0f,
     ): Float = ((thumbXPx - trackInsetPx) / slotWidthPx)
-        .coerceIn(0f, ThemeSliderMath.MAX_INDEX.toFloat())
+        .coerceIn(minPosition, ThemeSliderMath.MAX_INDEX.toFloat())
 
     private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 

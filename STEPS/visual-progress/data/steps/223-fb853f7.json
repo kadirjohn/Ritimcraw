@@ -1,0 +1,30 @@
+{
+ "id": "223-fb853f7",
+ "title": "test: lut case in the grade parity sweep",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "fb853f7",
+  "date": "2026-11-25",
+  "merge_subject": "merge: test: lut case in the grade parity sweep"
+ },
+ "tests": "not recorded",
+ "description": "GradeParitySweep gains a LUT case (a generated 17^3 .cube, 100%) run through both the GPU develop door and the CPU export door; the sweep had no LUT case, so the shared LUT stage (now a float32 table read with texelFetch) had no device number on MCRAW. Device, MCRAW 4K frame 0: maxDiffLsb=1, mismatch=0.001% (bound 0.01%, unchanged), cpuMoved=gpuMoved=99.14%. The grade summary line was lost from the log (logd rate limit), the per-case lines are in device/grade-sweep-lut.log.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "test: lut case in the grade parity sweep"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GradeParitySweep.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GradeParitySweepTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

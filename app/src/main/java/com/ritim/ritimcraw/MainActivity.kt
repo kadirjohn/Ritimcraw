@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import com.ritim.ritimcraw.data.ProjectFile
 import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.data.ThemeStore
+import com.ritim.ritimcraw.ui.theme.ThemeSelection
 import com.ritim.ritimcraw.ui.AppNav
 import com.ritim.ritimcraw.ui.theme.CompactDensity
 import com.ritim.ritimcraw.ui.theme.RitimTheme
@@ -60,13 +61,26 @@ class MainActivity : ComponentActivity() {
             // tree re-tints immediately (no restart needed).
             val themeStore = remember { ThemeStore(File(filesDir, "project.json")) }
             var themeMode by remember { mutableStateOf(themeStore.get()) }
+            var customThemeId by remember { mutableStateOf(themeStore.getCustomThemeId()) }
             // CompactDensity: the app's one compactness token (see
             // UiCompactness) — high-density phones render the ~400dp
             // layout every screen was designed for.
             CompactDensity {
-                RitimTheme(darkTheme = themeMode.isDark(isSystemInDarkTheme())) {
+                RitimTheme(
+                    darkTheme = ThemeSelection.isDark(
+                        themeMode, customThemeId, isSystemInDarkTheme(),
+                    ),
+                    palette = ThemeSelection.activePalette(themeMode, customThemeId),
+                ) {
                     AppNav(
                         themeMode = themeMode,
+                        customThemeId = ThemeSelection.lastCustomId(customThemeId),
+                        onCustomThemePick = { id ->
+                            themeStore.putCustomThemeId(id)
+                            themeStore.put(ThemeMode.CUSTOM)
+                            customThemeId = id
+                            themeMode = ThemeMode.CUSTOM
+                        },
                         onThemeModeChange = { mode ->
                             themeStore.put(mode)
                             themeMode = mode

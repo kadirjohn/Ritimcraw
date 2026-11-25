@@ -1,0 +1,56 @@
+{
+ "id": "075-93b804a",
+ "title": "m3 production gpu develop for export",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "93b804a",
+  "date": "2026-11-14",
+  "merge_subject": "merge: m3 production gpu develop for export"
+ },
+ "tests": "not recorded",
+ "description": "The 69723d5 \"render backend: requested=... effective=... unsupported=...\"\nline's effective= is now the DEVELOP axis, truthfully: GLES when the GPU\ndevelop session rendered the frames, CPU otherwise. The line moves from\nbefore the encode loop to the big try's finally because the develop axis\nis only knowable after the frames have rendered — a mid-render GPU\nfailure latches the CPU develop mid-stream, so a pre-loop line would\nhave promised GLES and delivered CPU. The finally covers success,\nmid-encode failure, and finish() failure alike; the one path it stays\nsilent on is a writer.start() throw — that attempt never began, and the\nexporter's SurfaceInputUnavailable restart re-runs with its own line,\nso the restart still reads one line per export.\n\nThe encoder-input mode is now its OWN unconditional line — \"encoder\ninput: surface\" when the writer took the Surface mode, \"encoder input:\nbytes\"",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: gpu develop session (production, not parity-harness)",
+  "feat: export dispatches gpu develop when covered",
+  "feat: export log reports develop backend truthfully"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.cpp",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.h",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourceDevelopSessionTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

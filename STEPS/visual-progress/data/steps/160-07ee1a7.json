@@ -1,0 +1,31 @@
+{
+ "id": "160-07ee1a7",
+ "title": "e1f-frame-rate-plan",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "07ee1a7",
+  "date": "2026-11-24",
+  "merge_subject": "merge: e1f-frame-rate-plan"
+ },
+ "tests": "not recorded",
+ "description": "Design document (docs/E1F_FRAME_PLAN.md, Turkish, plan-only — no\nproduction code) for package E1f: the optional target-fps picker the\nE1 settings deferred (ExportSettings.kt wires frame rate as source-\nonly and promises the picker as a later package).\n\nSections cover the current E1 fps chain (measured ExportFps.fromPts,\nKEY_FRAME_RATE from the plan, the real 29.83 fps ~CFR owner device\ncase), the conversion options (frame-nearest drop/duplicate chosen;\ntrue speed change deferred to E5's resampler; VFR passthrough\nrejected because SOURCE already carries it), the audio sync analysis\nthat corrects the first-round mistake — converting video by frame\nindex onto a 30 fps grid drifts ~0.45 s over 79 s at 29.83->30 while\nwall-clock pts + untouched audio pts keep drift at zero — the\nExportSettings.targetFps model with exact NTSC rationals, the pure\nmapping formula parallel to TimelineExport's (in",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: add E1f optional frame rate conversion plan"
+ ],
+ "files": [
+  {
+   "path": "docs/E1F_FRAME_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "MediaCodec",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

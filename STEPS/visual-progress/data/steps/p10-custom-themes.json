@@ -1,0 +1,21 @@
+{
+ "id": "p10-custom-themes",
+ "title": "custom themes with C slot and picker",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {"hash": "20b8b5d", "date": "2026-11-25", "merge_subject": "merge: custom themes with C slot and picker"},
+ "tests": ":app:assembleDebug :app:testDebugUnitTest --rerun: 3017 tests, 0 failures; tools/build-desktop.sh green",
+ "description": "Settings theme control gains a C slot (custom) left of the sun; the Theme row opens a picker of 16 palettes (12 dark, 4 light).",
+ "added": ["ThemePalette table with WCAG contrast helpers", "ThemeSelection pure logic", "custom theme picker dialog", "CUSTOM mode and customTheme persistence key"],
+ "removed": [],
+ "changed": ["ThemeSlider is four slots (48dp each); status bar icons follow the active palette"],
+ "files": [
+  {"path": "app/src/main/java/com/ritim/ritimcraw/ui/theme/ThemePalette.kt", "change": "A"},
+  {"path": "app/src/main/java/com/ritim/ritimcraw/ui/theme/ThemeSelection.kt", "change": "A"},
+  {"path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/CustomThemePicker.kt", "change": "A"},
+  {"path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeSlider.kt", "change": "M"},
+  {"path": "app/src/main/java/com/ritim/ritimcraw/data/ThemeStore.kt", "change": "M"}
+ ],
+ "sources": [],
+ "screenshot": "assets/p10-custom-themes.png"
+}

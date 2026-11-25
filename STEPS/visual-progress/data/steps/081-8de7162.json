@@ -1,0 +1,42 @@
+{
+ "id": "081-8de7162",
+ "title": "timeline native rotate+scale",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "8de7162",
+  "date": "2026-11-14",
+  "merge_subject": "merge: timeline native rotate+scale"
+ },
+ "tests": "and green: 1757 tests, 0 failures, 0 errors",
+ "description": "The timeline export's frame loop ran two Kotlin per-frame passes after\nthe YUV seam went native (302d565): RotationState.rotateRgb888 then\nRgbScale.aspectFill — two allocations and two full-buffer walks per\nframe. This adds the fused native twin and dispatches the frame loop\nthrough it, the same seam pattern as the RGB->I420 step.\n\nnativeRgbRotateScale (jni_bridge.cpp): rotates sensor-oriented RGB888\nupright by orientationDeg (0/90/180/270 CW, any other value identity —\nRotationState's else branch) and aspect-fills to the output frame in\nONE bilinear pass: the aspect-fill sample position is computed in\nupright space exactly like RgbScale.bilinear (cover scale, symmetric\ncrop window, center-of-pixel inverse mapping, clamp-to-edge), then the\nfour integer taps are inverse-mapped through the rotation into source\nspace (the rotation is a lattice bijection, so integer taps land on\ninteger sour",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: fuse rgb rotate+scale into native seam"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/TimelineMp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/TimelineMp4ExporterTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

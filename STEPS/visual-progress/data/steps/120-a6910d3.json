@@ -1,0 +1,30 @@
+{
+ "id": "120-a6910d3",
+ "title": "pure regional grade mask model",
+ "date": "2026-11-16",
+ "status": "done",
+ "commit": {
+  "hash": "a6910d3",
+  "date": "2026-11-16",
+  "merge_subject": "merge: pure regional grade mask model"
+ },
+ "tests": "not recorded",
+ "description": "New files only (night B2): engine/mask/MaskState.kt plus its\nhost test suite. No shader, no UI, no shared-file edits.\n\nThe model, chosen home engine/mask/:\n\n- MaskState: an ordered list of up to MAX_MASKS 8 masks with\n  duplicate-id rejection. isNeutralForRender is the empty\n  effective list (enabled AND non-neutral delta); coverageAt is\n  the union blend 1 - prod(1 - w_i) over ENABLED masks (drawing\n  coverage includes neutral-delta shapes); deltaAt sums each\n  enabled non-neutral mask's per-knob delta additively, clamped\n  to the global knob ranges. Order-independent by construction.\n- MaskK: id, shape, feather 0..1, invert, enabled, delta.\n  weightAt is 1 - smoothstep over the shape's ramp band (radial\n  band [1-feather, 1] of the normalized ellipse ramp; linear\n  band centered on the axis midpoint), then 1 - w when invert.\n  enabled does not gate weightAt (the UI draws grayed shapes)",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "engine: pure regional-grade mask model (b2)"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/mask/MaskState.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/mask/MaskStateTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

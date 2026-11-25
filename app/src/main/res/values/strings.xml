@@ -593,6 +593,13 @@
     <string name="settings_theme_slider">Theme</string>
     <string name="settings_theme_previous">Previous theme</string>
     <string name="settings_theme_next">Next theme</string>
+    <string name="settings_theme_custom">Custom</string>
+    <string name="settings_theme_open_picker">Choose a custom theme</string>
+    <string name="settings_theme_picker_title">Custom theme</string>
+    <string name="settings_theme_picker_close">Close</string>
+    <string name="settings_theme_group_dark">Dark</string>
+    <string name="settings_theme_group_light">Light</string>
+    <string name="settings_theme_selected">selected</string>
     <string name="settings_expanded">Expanded</string>
     <string name="settings_collapsed">Collapsed</string>
     <plurals name="settings_device_report_codec_count">

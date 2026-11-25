@@ -1,0 +1,42 @@
+{
+ "id": "167-5278ec1",
+ "title": "s0f focus-fit effective-focal calibration",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "5278ec1",
+  "date": "2026-11-24",
+  "merge_subject": "merge: s0f focus-fit effective-focal calibration"
+ },
+ "tests": "not recorded",
+ "description": "New focus-fit subcommand in image_stab_measure: turns the gyro\ncross-check's persistent x-slope finding (1.216-1.22 on the real\nhand-held clips) into a measured effective focal - the S10 input and\nthe missing piece of the gyrocheck translation acceptance.\n\nMethod (core/tests/image_stab_focus_fit.hpp, pure layer shared with\nthe doctest suite; production code untouched, no constants written):\nthe translation part of a pure-rotation homography is LINEAR in the\nfocal, so one prediction pass per sync-offset candidate at the\ncontainer focal gives every focal-scale candidate by multiplication,\nand the best scale against the measured pairs is the closed-form\nleast-squares k* = (pred.meas)/(pred.meas self-dot) - no grid search\nover k. The (offset, k) joint optimization the brief asked for\nbecomes: scan offset +-150 ms at 5 ms, solve k at each candidate,\npick the RMS minimum. The SSE parabola's cu",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: add focus-fit effective-focal calibration"
+ ],
+ "files": [
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/image_stab_focus_fit.hpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/image_stab_measure.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_focus_fit.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

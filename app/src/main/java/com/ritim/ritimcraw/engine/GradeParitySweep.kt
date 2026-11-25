@@ -164,6 +164,12 @@ object GradeParitySweep {
         out += Case(CONTROL_WARP_IDENTITY, "+1EV", GradeK(exposureEv = 1f), IDENTITY_M)
         out += Case(CONTROL_WARP_ROT, "+1EV", GradeK(exposureEv = 1f), ROT_M)
         out += Case(CONTROL_WARP_ROT, "-1EV", GradeK(exposureEv = -1f), ROT_M)
+        // Legacy-curve highlights (knee 0.75): old projects must keep matching the CPU. Appended LAST (case index
+        // seeds the fixture); the plain "highlights" rows above now run the v1 curve (GradeK() default).
+        for (v in floatArrayOf(-100f, -50f, 50f, 100f)) {
+            add("highlights-legacy", (if (v > 0f) "+" else "") + fmt(v),
+                GradeK(highlights = v, highlightsCurve = com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY))
+        }
         return out
     }
 
@@ -454,8 +460,8 @@ object GradeParitySweep {
                 // line per case — the before/after-merge comparison the
                 // stats' bucket cannot make (1-2 LSB jitter rounds to the
                 // same line; the CRC does not).
-                Log.i(TAG, "grade-sweep ${c.control} ${c.label}: frameDigest=cpu:%08x gpu:%08x"
-                    .format(frameDigest(r), frameDigest(g)))
+                Log.i(TAG, "grade-sweep ${c.control} ${c.label}: " +
+                    "frameDigest=cpu:%08x gpu:%08x".format(frameDigest(r), frameDigest(g)))
             }
             val summary = summaryLine(rows, skipped)
             Log.i(TAG, summary)
@@ -735,7 +741,7 @@ object GradeParitySweep {
                 args.exposureEv, args.highlights, args.tempK, args.tint,
                 args.saturation, args.blackPoint, args.whitePoint,
                 args.shadows, args.midtones, args.contrast,
-                args.asShot, args.highlightReconstruction, args.keepVignetting,
+                args.asShot, args.highlightReconstruction, args.keepVignetting, args.highlightsCurve,
                 args.sharpness, args.detail, args.tonemap,
                 null, args.lutStrength,
                 args.noiseReduction, args.chromaDenoise,
@@ -974,7 +980,7 @@ object GradeParitySweep {
                 c.grade.exposureEv, c.grade.highlights, c.grade.tempK, c.grade.tint,
                 c.grade.saturation, c.grade.blackPoint, c.grade.whitePoint,
                 c.grade.shadows, c.grade.midtones, c.grade.contrast,
-                c.grade.asShot, c.grade.highlightReconstruction, c.grade.keepVignetting,
+                c.grade.asShot, c.grade.highlightReconstruction, c.grade.keepVignetting, c.grade.highlightsCurve,
                 c.grade.sharpness, c.grade.detail, c.grade.tonemap,
                 null, c.grade.lutStrength,
                 c.grade.noiseReduction, c.grade.chromaDenoise,
@@ -1032,8 +1038,8 @@ object GradeParitySweep {
                 Log.i(TAG, v2Line(c, stats))
                 // The frame digest (the grade sweep's karne line, the
                 // same shape): the v2 chain's before/after content proof.
-                Log.i(TAG, "v2-sweep ${c.control} ${c.label}: frameDigest=cpu:%08x gpu:%08x"
-                    .format(frameDigest(argbBytes(cpuArgb)), frameDigest(argbBytes(gpuArgb))))
+                Log.i(TAG, "v2-sweep ${c.control} ${c.label}: " +
+                    "frameDigest=cpu:%08x gpu:%08x".format(frameDigest(argbBytes(cpuArgb)), frameDigest(argbBytes(gpuArgb))))
                 // The CLEAR after every case: the next case's chain is
                 // handed explicitly, but the sweep's own discipline keeps
                 // the session's state obvious per case (K2's shape

@@ -1,0 +1,62 @@
+{
+ "id": "086-7800f15",
+ "title": "surface-gpu quarter-turn rotation",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "7800f15",
+  "date": "2026-11-14",
+  "merge_subject": "merge: surface-gpu quarter-turn rotation"
+ },
+ "tests": "not recorded",
+ "description": "The M5 surface-gpu path was upright-only: the dispatcher's gate\nrequired effectiveDeg == 0, so a vertical clip (3840x2160 sensor\nframe, upright 2160x3840) fell back to encoder-input=surface and\npaid the CPU rotate plus the writer's own copy on every frame.\n\nThe rotation now rides the session's encoder blit itself. The\ndeveloped texture stays linear sdr-rgb; BLIT_FRAGMENT (the shared\nsource the writer's Surface mode also compiles, and which never\nsets uRotation) gains an int uRotation uniform defaulting to 0 in\nGLSL, plus a texture-coordinate fold that reproduces\nrotateRgb888's quarter-turn index math in-shader:\n\n  0:   src = (g.x, uSize.y-1-g.y)\n  90:  src = (uSize.x-1-g.y, uSize.y-1-g.x)\n  180: src = (uSize.x-1-g.x, g.y)\n  270: src = (g.y, g.x)\n\nwith uSize carrying the SOURCE dims and the session swapping the\ndestination viewport to (h,w) for 90/270. Because the uniform\ndefaults to 0, t",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: encoder blit applies quarter-turn rotation"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GlesShaderValidatorTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourceDevelopSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

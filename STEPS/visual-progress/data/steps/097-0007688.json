@@ -1,0 +1,99 @@
+{
+ "id": "097-0007688",
+ "title": "spatial nr on gpu multi-pass",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "0007688",
+  "date": "2026-11-14",
+  "merge_subject": "merge: spatial nr on gpu multi-pass"
+ },
+ "tests": "re-counts 29. the guard tests pass the two named params.",
+ "description": "the two spatial-nr stages' raw grade values now ride every render\nseam end to end, so a grade using chroma denoise (stage 7) or noise\nreduction (stage 8) stays on the gpu path instead of falling back\nto the cpu develop with unsupported=chroma-denoise,noise-reduction.\n\nthe threading, parameter order locked as (chromaDenoise,\nnoiseReduction) directly after the plumbing values:\n\n- jni_bridge.cpp: nativeDevelopSessionRenderFrame gains the pair\n  after frameIndex, nativeDevelopSessionRenderFrameToEncoder after\n  ptsUs, nativePreviewSessionRenderFrame after maxDim; each entry\n  populates its request struct (DevelopFrameRequest /\n  PreviewFrameRequest) with the raw values before exposureEv,\n  mirroring the c++ call sites' clamp-and-gate math. the doc\n  comments list the widened control set.\n- NativeSource.kt: the three external decls plus their three\n  wrappers (jniDevelopSessionRenderFrame,\n  ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: spatial nr in develop fragment (multi-pass)",
+  "feat: nr controls cross the seams"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GpuPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/RenderBackend.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GlesShaderValidatorTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GpuPreviewSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourceDevelopSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourcePreviewSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/RenderBackendTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

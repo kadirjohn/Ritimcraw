@@ -1,0 +1,30 @@
+{
+ "id": "201-e0b3552",
+ "title": "test: imagereader layout probe for the e0b clips",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "e0b3552",
+  "date": "2026-11-24",
+  "merge_subject": "merge: test: imagereader layout probe for the e0b clips"
+ },
+ "tests": "not recorded",
+ "description": "E0b-2's first task: a diagnostic device test that decodes the first frames of a clip as ByteBuffer, YUV_420_888 ImageReader and P010 ImageReader and logs Image format, planes, strides, HardwareBuffer format and decode ms/frame (clips are read from files/probe in the app data). Findings are in docs/ENCODED_GPU_DECODE_PLAN.md section 7: HW decode runs both owner clips at about twice real time (4K 10-bit 60p 8.0-9.0 ms/frame, 8K 16.6 ms/frame); P010 reader images arrive as format 54 with three planes, vendor-private HardwareBuffer format, Y height padded to 2176; a YUV_420_888 reader gets no images from a 10-bit stream and aborted the process on 8K (cause not shown in the log).",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "test: imagereader layout probe for the e0b clips"
+ ],
+ "files": [
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/engine/EncodedImageReaderProbeTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "docs/ENCODED_GPU_DECODE_PLAN.md",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

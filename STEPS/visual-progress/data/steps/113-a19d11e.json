@@ -1,0 +1,63 @@
+{
+ "id": "113-a19d11e",
+ "title": "folder import browser and rename seam",
+ "date": "2026-11-15",
+ "status": "done",
+ "commit": {
+  "hash": "a19d11e",
+  "date": "2026-11-15",
+  "merge_subject": "merge: folder import browser and rename seam"
+ },
+ "tests": "not recorded",
+ "description": "Owner request 2026-11-15: import a whole folder's videos through\nthe library title row, on top of the 92615d8 data layer.\n\nThe Library title row gains a folder icon RIGHT of a new import\nicon button (ScreenHeader's actions slot; the FAB stays — its\nremoval was not asked). The folder button launches\nACTION_OPEN_DOCUMENT_TREE with a persistable read grant: the tree\ngrant IS the permission, so no manifest change — a\nSecurityException on the take is non-fatal and the browser's\nenumeration reports the honest state if the grant truly is missing.\n\nThe granted tree takes over the screen with a new full-screen\nbrowser (never a sheet): the folder's direct supported-video\nchildren as a 3-column grid (LazyVerticalGrid; the brief's explicit\ngrid wins over DESIGN.md's list rule), 16dp gutters, 8dp between\ncells. Already-imported files stay visible but dimmed (40% alpha +\nan Imported tag, no gestures) ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "data: video tree enumeration + clip rename seam",
+  "ui: folder import browser + header wiring"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/SourceRepository.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/VideoTree.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/FolderImportBrowser.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/LibraryScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_folder.xml",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/SourceRepositoryTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/VideoTreeTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

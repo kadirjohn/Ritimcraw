@@ -1,0 +1,130 @@
+{
+ "id": "046-8b23a8c",
+ "title": "stabilization round two audit fixes",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "8b23a8c",
+  "date": "2026-11-12",
+  "merge_subject": "merge: stabilization round two audit fixes"
+ },
+ "tests": "not recorded",
+ "description": "Fix 5 of the stabilization round-2 audit (2026-11-12): the\nzoom-limit slider showed a ceiling the user set, but nothing showed\nthe crop the clip ACTUALLY pays or when that limit was cutting the\nwarp's reach. The stabilization group now renders an honest zoom\nreadout beside the sync status line.\n\nThe probe chain (all new plumbing, zero core change):\n- jni_bridge.cpp nativeStabZoomProbe: evaluates the full stab plan\n  for frame 0 at the clip's recorded CFA dims through the existing\n  stabilizationFrameFor (with a StabMeasure), returning\n  [requiredZoom, appliedZoom, statusInt] or null. The zooms are\n  uniform-scale invariant (focalLengthPxFromEquivalent and\n  staticCropZoom are both linear in buffer dims), so one probe per\n  grade change covers every preview tier and the export. Null on a\n  dead handle / no log / parse failure - never a fabricated zoom.\n- NativeSource: private external dec",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: stabilization warp at every preview tier",
+  "fix: strength tau map spans useful range",
+  "docs: sync status says approximate not precise",
+  "feat: debug-gated stabilization measurement log",
+  "feat: zoom-limit honesty readout in stab group"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EditorPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewRenderer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewTiers.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/SliderSteps.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/GradeStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewRendererTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewTiersTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/SliderStepsTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Stabilization.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Sync.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Stabilization.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Sync.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_stabilization.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_warp.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,43 @@
+{
+ "id": "121-8745eec",
+ "title": "pure hevc preflight decision model",
+ "date": "2026-11-16",
+ "status": "done",
+ "commit": {
+  "hash": "8745eec",
+  "date": "2026-11-16",
+  "merge_subject": "merge: pure hevc preflight decision model"
+ },
+ "tests": "not recorded",
+ "description": "the b5 first deliverable, new files only — no encoder edits, no\ndevice calls. home: the export/ package's new hevc/ subpackage\n(com.ritim.ritimcraw.export.hevc), export being the natural\nneighbor of the thing being decided.\n\nHevcProfile.kt — the output-profile contract model, android-free\n(the framework constants carried as data, verified against the\ninstalled android-34 sdk jar — the minsdk — and the android-36\nsources). four DISTINCT values, never one hdr toggle:\n- AVC_SDR: today's baseline for comparison, byte-for-byte the\n  writer's videoFormat contract (video/avc, AVCProfileHigh=8 +\n  AVCLevel41, BT709/SMPTE170m/limited, 8-bit).\n- HEVC10_SDR: Main10 (profile 2), 10-bit, still SMPTE170m/BT709,\n  no hdr gate, no static metadata — 10-bit is NOT the same\n  feature as hdr.\n- HLG: Main10 + ARIB STD-B67 (transfer 7), BT2020, scene-referred\n  (no hdr-static-info); gates on FEATURE_HlgEditin",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "export: pure hevc preflight decision model (b5)"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/hevc/HevcPreflight.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/hevc/HevcProfile.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/hevc/HevcPreflightTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/hevc/HevcProfileTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "HLG",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

@@ -57,9 +57,10 @@ struct DevelopGrade {
     bool highlightReconstruction = true;
     bool keepVignetting = true;
     int tonemap = 0;
+    int highlightsCurve = 0;  // stage-15 curve version: 0 legacy (knee 0.75), 1 v1 (knee 0.40)
 };
 
-constexpr int kGradeParcelSlotCount = 29;
+constexpr int kGradeParcelSlotCount = 30;
 
 constexpr int kGradeParcelChromaDenoise = 0;
 constexpr int kGradeParcelNoiseReduction = 1;
@@ -90,6 +91,7 @@ constexpr int kGradeParcelSplitBalance = 25;
 constexpr int kGradeParcelHighlightReconstruction = 26;
 constexpr int kGradeParcelKeepVignetting = 27;
 constexpr int kGradeParcelTonemap = 28;
+constexpr int kGradeParcelHighlightsCurve = 29;
 
 // Slot names, index-aligned, for honest refusal messages.
 inline constexpr const char* kGradeParcelSlotNames[] = {
@@ -122,6 +124,7 @@ inline constexpr const char* kGradeParcelSlotNames[] = {
 "highlightReconstruction",
 "keepVignetting",
 "tonemap",
+"highlightsCurve",
 };
 
 // Decodes the flat parcel into [out] by NAME. Returns false with the full
@@ -196,6 +199,7 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
     out->highlightReconstruction = parcel[kGradeParcelHighlightReconstruction] != 0.0f;
     out->keepVignetting = parcel[kGradeParcelKeepVignetting] != 0.0f;
     out->tonemap = static_cast<int>(parcel[kGradeParcelTonemap]);
+    out->highlightsCurve = static_cast<int>(parcel[kGradeParcelHighlightsCurve]);
     return true;
 }
 
@@ -236,6 +240,7 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
     req->highlightReconstruction = grade.highlightReconstruction;
     req->keepVignetting = grade.keepVignetting;
     req->tonemap = grade.tonemap;
+    req->highlightsCurve = grade.highlightsCurve;
 }
 
 // Folds the decoded grade onto a rawedit::Grade (the CPU export path's
@@ -278,6 +283,7 @@ inline void applyGradeToRawedit(const DevelopGrade& grade, GradeT* out) {
     out->highlightReconstruction = grade.highlightReconstruction;
     out->keepVignetting = grade.keepVignetting;
     out->tonemap = grade.tonemap;
+    out->highlightsCurve = grade.highlightsCurve;
 }
 
 }  // namespace gles

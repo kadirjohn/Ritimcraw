@@ -1,0 +1,17 @@
+{
+ "id": "p06-panel-jank",
+ "title": "panel downward-jank diagnosis",
+ "date": "TBD",
+ "status": "planned",
+ "commit": null,
+ "tests": "not run",
+ "description": "Diagnose the jank seen when a panel moves downward.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "Diagnosis first, fix later."
+ ],
+ "files": [],
+ "sources": [],
+ "screenshot": null
+}

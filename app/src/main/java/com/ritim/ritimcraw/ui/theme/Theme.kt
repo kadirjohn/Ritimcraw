@@ -33,10 +33,12 @@ import androidx.compose.ui.platform.LocalContext
 fun RitimTheme(
     editor: Boolean = false,
     darkTheme: Boolean = isSystemInDarkTheme(),
+    palette: ThemePalette? = null,
     content: @Composable () -> Unit,
 ) {
     val colorScheme: ColorScheme = when {
         editor -> NeutralEditorScheme
+        palette != null -> palette.toColorScheme()
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context)

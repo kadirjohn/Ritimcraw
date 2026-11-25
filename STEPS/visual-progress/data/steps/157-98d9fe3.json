@@ -1,0 +1,31 @@
+{
+ "id": "157-98d9fe3",
+ "title": "e2-hlg-research",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "98d9fe3",
+  "date": "2026-11-24",
+  "merge_subject": "merge: e2-hlg-research"
+ },
+ "tests": "not recorded",
+ "description": "Preparation document (docs/E2_HLG_PLAN.md, Turkish, plan-only - no\nproduction code) for package E2: the HLG export leg, ahead of the\nowner's start after the F1 N1 merge.\n\nCoverage, read against main @ fd749d0:\n- feasibility verdict for THIS device (feasible: the c2.qti.hevc\n  encoder carries hlg-editing per the plan's device dump; the\n  E1d 10-bit GPU chain already runs - the RGBA1010102 config is\n  chosen by a query-never-assume filter over 64 candidates; the\n  OpenDRT HLG math is shipped C++)\n- the 203-nit grey -> HLG signal 0.75 -> 10-bit limited code 721\n  chain recomputed numerically in this package (BT.2408 confirmed)\n- current state: which of HevcProfile/HevcPreflight's two planned\n  fixes already landed (both: the API-35 string-queried gate with\n  the API-34 hdr-editing fallback + trialEncodeRequired, and the\n  full HLG MediaFormat contract), and what remains un-wired\n  (nothing ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: add E2 HLG export research and plan"
+ ],
+ "files": [
+  {
+   "path": "docs/E2_HLG_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "HLG",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

@@ -1,7 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -18,7 +18,12 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -85,12 +90,69 @@ fun GradeSlider(
     onDragActiveChange: (Boolean) -> Unit = {},
     trackGradient: List<Color>? = null,
 ) {
-    // Double tap anywhere on the slider row resets this control to its
-    // GradeK default (DESIGN.md Inputs: "double tap resets").
+    // Double tap on the row: the label/track resets THIS slider; the thumb
+    // resets everything (owner request). Detected on the Initial pass without
+    // consuming, then acted on in the Final pass after the slider handled the
+    // same up (its tap-to-position must not overwrite the reset).
+    val actions = LocalSliderResetActions.current
+    val currentOnReset by rememberUpdatedState(onDoubleTapReset)
+    val currentActions by rememberUpdatedState(actions)
+    val fraction by rememberUpdatedState(
+        if (valueRange.endInclusive > valueRange.start) {
+            ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+        } else 0f
+    )
+    val isRtlRow = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val viewConfig = LocalViewConfiguration.current
     val rowModifier = Modifier
         .fillMaxWidth()
         .pointerInput(label) {
-            detectTapGestures(onDoubleTap = { onDoubleTapReset() })
+            val hitRadius = CompactSliderDefaults.THUMB_HIT_RADIUS.toPx()
+            val bandHalf = CompactSliderDefaults.THUMB_HIT_BAND_HALF.toPx()
+            val thumbHalf = CompactSliderDefaults.THUMB_SIZE.width.toPx() / 2f
+            val slotHalf = CompactSliderDefaults.ROW_HEIGHT.toPx() / 2f
+            awaitPointerEventScope {
+                var lastTapUp = -1L
+                var lastTapPos = Offset.Zero
+                var firstOnThumb = false
+                while (true) {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val second = lastTapUp >= 0 &&
+                        down.uptimeMillis - lastTapUp <= viewConfig.doubleTapTimeoutMillis &&
+                        (down.position - lastTapPos).getDistance() <= hitRadius
+                    if (!second) {
+                        currentActions.gestureBase()
+                        firstOnThumb = CompactSliderDefaults.thumbHit(
+                            x = down.position.x, y = down.position.y,
+                            widthPx = size.width.toFloat(), heightPx = size.height.toFloat(),
+                            fraction = fraction, rtl = isRtlRow,
+                            thumbHalfPx = thumbHalf, slotHalfPx = slotHalf,
+                            radiusPx = hitRadius, bandHalfPx = bandHalf,
+                        )
+                    }
+                    var tap = true
+                    var upTime = -1L
+                    while (true) {
+                        val ev = awaitPointerEvent(PointerEventPass.Initial)
+                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                        if (ev.changes.count { it.pressed } > 1) tap = false
+                        if ((ch.position - down.position).getDistance() > viewConfig.touchSlop) tap = false
+                        if (!ch.pressed) { upTime = ch.uptimeMillis; break }
+                    }
+                    if (!tap || upTime < 0) { lastTapUp = -1L; continue }
+                    if (second) {
+                        awaitPointerEvent(PointerEventPass.Final)
+                        lastTapUp = -1L
+                        val all = currentActions.resetAll
+                        currentActions.resetScope {
+                            if (firstOnThumb && all != null) all() else currentOnReset()
+                        }
+                    } else {
+                        lastTapUp = upTime
+                        lastTapPos = down.position
+                    }
+                }
+            }
         }
 
     // Finger down/up on a GRADE slider drives the same tier machine as
@@ -255,6 +317,26 @@ object CompactSliderDefaults {
      */
     val THUMB_SIZE = DpSize(16.dp, 16.dp)
 
+    /** Thumb double-tap target: horizontal radius (48dp touch target) and vertical half band around the thumb. */
+    val THUMB_HIT_RADIUS = 24.dp
+    val THUMB_HIT_BAND_HALF = 12.dp
+
+    /**
+     * Pure (JVM-tested): is a touch on the slider's thumb? The thumb centre
+     * is [thumbHalfPx] + fraction * (width - 2 * thumbHalfPx) from the start
+     * edge (mirrored in RTL) and sits in the bottom 48dp slot of the row
+     * (the label row overlays that slot or stacks above it).
+     */
+    fun thumbHit(
+        x: Float, y: Float, widthPx: Float, heightPx: Float, fraction: Float, rtl: Boolean,
+        thumbHalfPx: Float, slotHalfPx: Float, radiusPx: Float, bandHalfPx: Float,
+    ): Boolean {
+        val f = if (rtl) 1f - fraction else fraction
+        val cx = thumbHalfPx + f * (widthPx - 2f * thumbHalfPx)
+        val cy = heightPx - slotHalfPx
+        return kotlin.math.abs(x - cx) <= radiusPx && kotlin.math.abs(y - cy) <= bandHalfPx
+    }
+
     /** Zero tick: 2dp wide, taller than the track line so it reads. */
     val ZERO_TICK_WIDTH = 2.dp
     val ZERO_TICK_HEIGHT = 12.dp
@@ -366,3 +448,17 @@ private fun ThinTrack(
         }
     }
 }
+
+/**
+ * What a GradeSlider's double-tap can reach beyond its own reset: the
+ * thumb double-tap's reset-all, and the history hooks that keep either
+ * reset one exact undo step. The default (no provider) leaves a thumb
+ * double-tap as a plain single reset.
+ */
+class SliderResetActions(
+    val resetAll: (() -> Unit)? = null,
+    val gestureBase: () -> Unit = {},
+    val resetScope: (() -> Unit) -> Unit = { it() },
+)
+
+val LocalSliderResetActions = compositionLocalOf { SliderResetActions() }

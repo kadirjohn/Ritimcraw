@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -4439,7 +4440,19 @@ fun ClipEditorScreen(
             else -> null
         }
 
+        // Slider double-tap: the thumb resets every slider as ONE undo step; both
+        // resets collapse the double-tap's own tap-to-position jumps (GradeHistory).
+        val sliderResetActions = remember(gradeHistory) {
+            SliderResetActions(
+                resetAll = { applyGradeEdit(SliderSteps.resetAll(grade)) },
+                gestureBase = { gradeHistory.markGestureBase() },
+                resetScope = { block -> gradeHistory.resetScope(block) },
+            )
+        }
         val panelRegion: @Composable () -> Unit = {
+          androidx.compose.runtime.CompositionLocalProvider(
+            LocalSliderResetActions provides sliderResetActions,
+          ) {
             when (tab) {
                 EditorCategories.LIGHT -> LightPanel(
                     grade = grade,
@@ -4658,6 +4671,7 @@ fun ClipEditorScreen(
                     onRotate = onRotate,
                 )
             }
+          }
         }
 
         // Neutral root surface (design review 2026-11-10, maroon bug): the

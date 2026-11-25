@@ -1638,6 +1638,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
                                float saturation, float blackPoint, float whitePoint,
                                float shadows, float midtones, float contrast,
                                bool asShot, bool highlightReconstruction, bool keepVignetting,
+                               int highlightsCurve,
                                float sharpness, float detail, int tonemap,
                                float lutStrength,
                                float noiseReduction, float chromaDenoise,
@@ -1661,6 +1662,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.asShot = asShot;
     g.highlightReconstruction = highlightReconstruction;
     g.keepVignetting = keepVignetting;
+    g.highlightsCurve = highlightsCurve;
     g.sharpness = sharpness;
     g.detail = detail;
     g.tonemap = tonemap;
@@ -2498,6 +2500,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
+        jint highlightsCurve,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -2568,7 +2571,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              saturation, blackPoint, whitePoint,
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
-                                             keepVignetting, sharpness, detail,
+                                             keepVignetting, highlightsCurve,
+                                             sharpness, detail,
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
                                              temporalNr == JNI_TRUE,
@@ -2606,6 +2610,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
+        jint highlightsCurve,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -2687,7 +2692,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              saturation, blackPoint, whitePoint,
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
-                                             keepVignetting, sharpness, detail,
+                                             keepVignetting, highlightsCurve,
+                                             sharpness, detail,
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
                                              temporalNr == JNI_TRUE,
@@ -6583,6 +6589,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
+        jint highlightsCurve,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -6711,6 +6718,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
+                            highlightsCurve,
                             sharpness, detail, tonemap, lutStrength,
                             noiseReduction, chromaDenoise,
                             temporalNr == JNI_TRUE, temporalStrength,

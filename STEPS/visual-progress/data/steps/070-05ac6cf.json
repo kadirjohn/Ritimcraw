@@ -1,0 +1,54 @@
+{
+ "id": "070-05ac6cf",
+ "title": "temporal nr gate on render class",
+ "date": "2026-11-13",
+ "status": "done",
+ "commit": {
+  "hash": "05ac6cf",
+  "date": "2026-11-13",
+  "merge_subject": "merge: temporal nr gate on render class"
+ },
+ "tests": "not recorded",
+ "description": "Measured on the owner's device (2026-11-13, 37s window, HIGH\npreview quality): 135 settle-class-rate renders = 3.65 renders/sec\n(~274 ms/frame) while the position advanced +8 frames per render —\nchoppy ~3.6fps playback. Cause: the temporal NR gate\n(temporalNrAppliesAt, maxDim >= 1280) keyed on TIER SIZE alone, and\nPreviewQuality.HIGH makes the playback tier 1280, so every playback\nrender silently ran the temporal merge — a full-res CFA pass measured\nat ~85-107 ms/frame, tier-INDEPENDENT (proxy 0.8-2.2 + match 7.9-12.1\n+ merge 76.7-93.1 ms, 4K fixture desktop -O2), roughly a third of the\n274ms. The tier ladder predates the HIGH quality level; when HIGH made\nplayback 1280-capable, the tier-size gate could no longer tell a\nplayback render from a settle render.\n\nFix: gate on the render CLASS, not just the tier size. New minimal\nPreviewTiers.RenderClass {DRAG, SETTLE, PLAYBACK} — no existing\n",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: temporal nr gate on render class"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EditorPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewRenderer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewTiers.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/RenderGate.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/EditorAudioTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewTiersTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

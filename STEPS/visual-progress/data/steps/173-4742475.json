@@ -1,0 +1,74 @@
+{
+ "id": "173-4742475",
+ "title": "e1e codec measurement mode — matrix, runner, debug ui",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "4742475",
+  "date": "2026-11-24",
+  "merge_subject": "merge: e1e codec measurement mode — matrix, runner, debug ui"
+ },
+ "tests": "not recorded",
+ "description": "",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: codec measure core plan, wire, runner",
+  "feat: codec measure debug ui (e1e-b)",
+  "fix: runner drain deadline and p010 sizing",
+  "ui: restore the nav comment over the measure block",
+  "merge: main into e1e codec measure before handoff"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/CodecMeasurer.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/CodecMeasurePlan.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/CodecMeasureStore.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/CodecMeasureWire.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/DeviceReportScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/SettingsScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/CodecMeasurePlanTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/CodecMeasureWireTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/settings/CodecMeasureRowsTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -171,6 +171,10 @@ object SliderSteps {
         SPLIT_SHADOW_HUE, SPLIT_HIGHLIGHT_HUE, SPLIT_BALANCE,
     }
 
+    /** Resets EVERY slider axis to its default (the thumb double-tap); non-slider fields are untouched. */
+    fun resetAll(current: GradeK): GradeK =
+        Axis.values().fold(current) { g, axis -> resetToDefault(axis, g) }
+
     fun resetToDefault(axis: Axis, current: GradeK): GradeK = when (axis) {
         Axis.EXPOSURE -> current.copy(exposureEv = GradeK().exposureEv)
         Axis.HIGHLIGHTS -> current.copy(highlights = GradeK().highlights)

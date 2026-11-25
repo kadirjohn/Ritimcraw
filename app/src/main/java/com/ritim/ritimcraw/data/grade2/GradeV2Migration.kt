@@ -185,6 +185,8 @@ object GradeV2Migration {
             "sharpness" to carry(g["sharpness"], 0.0),
             "detail" to carry(g["detail"], 0.0),
         )
+        // Only a non-legacy curve is written; absent stays legacy.
+        (g["highlightsCurve"] as? Double)?.let { if (it != 0.0) develop["highlightsCurve"] = it }
         val legacy = linkedMapOf<String, Any?>(
             "highlights" to carry(g["highlights"], 0.0),
             "blackPoint" to carry(g["blackPoint"], 0.0),

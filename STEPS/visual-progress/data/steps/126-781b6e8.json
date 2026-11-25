@@ -1,0 +1,115 @@
+{
+ "id": "126-781b6e8",
+ "title": "settings v2 polish and library toolbar",
+ "date": "2026-11-16",
+ "status": "done",
+ "commit": {
+  "hash": "781b6e8",
+  "date": "2026-11-16",
+  "merge_subject": "merge: settings v2 polish and library toolbar"
+ },
+ "tests": "not recorded",
+ "description": "Settings v2 polish step 7 (VERIFY): the spec's Compose UI tests,\nwhere the project's setup allows them.\n\nThe project already wires Compose UI test setup (ui-test-junit4\nin androidTestImplementation, ui-test-manifest debug-only,\nAndroidJUnitRunner configured, an androidTest source set), so\nstep 7's pager/slider tests are added as instrumented tests —\nRobolectric is not declared and adding it would be a forbidden\ndependency change, so they cannot run on the host; they compile\noffline and run under connectedDebugAndroidTest on a device.\n\nDeviceReportScreenTest pins the C5 pager contract: one swipe\nleft advances exactly one page (0 -> 1, not 0 -> 2); a second\nswipe reaches page 2; clicking the Encoders tab selects page 2\nand shows only encoders; the Decoders tab shows only decoders;\nthe tab row exposes all three tabs with selectable semantics.\n\nThemeSliderTest pins the C4 gesture contract on",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "ui: tonal segmented settings groups",
+  "ui: pinned library toolbar replaces chip strip",
+  "ui: library sort and view state persist",
+  "ui: library grid view mode",
+  "ui: library import fab removed",
+  "ui: library names wrap at separators",
+  "ui: segmented control uses stock m3 row",
+  "ui: theme slider system slot a glyph",
+  "ui: device report tabs and pager",
+  "ui: device report and theme slider instrumented tests"
+ ],
+ "files": [
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/ui/components/ThemeSliderTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/ui/settings/DeviceReportScreenTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/LibraryPrefsStore.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/AppSegmentedControl.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/RitimIcons.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/SettingsComponents.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/SettingsComponentsPreview.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeSlider.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/LibraryRowModel.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/LibraryScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/LibrarySort.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/DeviceReportScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/SettingsScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/LibraryPrefsStoreTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/components/RitimIconsTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/components/SettingsGroupShapesTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/library/LibraryRowModelTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/library/LibrarySortTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

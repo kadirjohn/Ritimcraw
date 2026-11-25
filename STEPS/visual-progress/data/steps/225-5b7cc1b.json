@@ -1,0 +1,43 @@
+{
+ "id": "225-5b7cc1b",
+ "title": "feat: encoded highlights and shadows drive log wheels",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "5b7cc1b",
+  "date": "2026-11-25",
+  "merge_subject": "merge: feat: encoded highlights and shadows drive log wheels"
+ },
+ "tests": "Owner decision 2026-11-25 (step 4b): on an encoded clip the Highlights and Shadows sliders drive the node chain's log highlight / log shadow wheels (EncodedToneBridge appends a synthetic node to the c",
+ "description": "Owner decision 2026-11-25 (step 4b): on an encoded clip the Highlights and Shadows sliders drive the node chain's log highlight / log shadow wheels (EncodedToneBridge appends a synthetic node to the chain wire, preview and export alike through EncodedSource.renderFrame); the legacy tone stages 9-20 stay off for encoded clips and MCRAW is untouched. They did nothing before: frame luma identical at Highlights -50 on a Mi-Log 4K60 and an 8K clip. The node's default region (DI 0.142 / 0.552) barely touches ordinary SDR-range footage (Highlights -100 moved no pixel by more than 3 levels in the app), so the synthetic node narrows it to 0.35 / 0.45 around mid grey. Device, Mi-Log frame 0: Highlights -100 luma 122.4 -> 118.8, 18% of pixels change by more than 8 levels (max 35); Shadows +100 luma +6.0, 24% of pixels by more than 20; both back to 0 reproduce the neutral frame exactly (max diff 0).",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: encoded highlights and shadows drive log wheels"
+ ],
+ "files": [
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/engine/EncodedYuvPassParityTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedToneBridge.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/EncodedToneBridgeTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Mi-Log",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

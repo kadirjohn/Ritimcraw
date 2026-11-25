@@ -1,0 +1,39 @@
+{
+ "id": "124-6c9f2a2",
+ "title": "dng file model and source plan",
+ "date": "2026-11-16",
+ "status": "done",
+ "commit": {
+  "hash": "6c9f2a2",
+  "date": "2026-11-16",
+  "merge_subject": "merge: dng file model and source plan"
+ },
+ "tests": "not recorded",
+ "description": "B3, night research 2026-11-16 — the DNG source package's first\ndeliverable, new files only (no decoder integration, no shared-file\nedits; composes with the merged engine/DngSequence.kt).\n\nPart 1, docs/DNG_SOURCE_PLAN.md (review-pending, the owner reads it):\n- the decoder decision matrix: LibRaw (LGPL-2.1/CDDL dual license,\n  untried NDK build, full IN-08 camera coverage) vs a hand-rolled\n  minimal reader (the committed model is its metadata half) vs defer.\n  Recommendation: hand-rolled first wave, LibRaw as its own later\n  wave for CR2/CR3/RAF/NEF/ARW — the A-priority features (IN-09\n  sequence, IN-10 photo import) need only DNG.\n- the supported subset: the 23-tag minimum honest set (10 required),\n  uncompressed single-strip CFA/LinearRaw, 8-16 bit; out-of-subset\n  files are honest rejections with a named cause, never misreads.\n- the adapter contract: the exact DngFileMetadata -> RawMeta",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "dng: pure file metadata model + source plan"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/dng/DngFileModel.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/dng/DngFileModelTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "docs/DNG_SOURCE_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "LibRaw",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}
