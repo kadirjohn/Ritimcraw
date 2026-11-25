@@ -30,9 +30,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items as gridItems
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.lazy.staggeredgrid.items as staggeredItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -98,7 +98,8 @@ import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.ui.components.Add
-import com.ritim.ritimcraw.ui.components.AdaptiveMinGridCells
+import com.ritim.ritimcraw.ui.components.AdaptiveMinStaggeredCells
+import com.ritim.ritimcraw.ui.components.ThumbnailRow
 import com.ritim.ritimcraw.ui.components.Check
 import com.ritim.ritimcraw.ui.components.ExpandMore
 import com.ritim.ritimcraw.ui.components.FileListRow
@@ -123,7 +124,7 @@ enum class LibraryFilter(val labelRes: Int) {
 
 /*
  * Grid columns: the spec's 3 on phones, more on large screens
- * (AdaptiveMinGridCells — owner request 2026-11-23, tablet adaptation).
+ * (AdaptiveMinStaggeredCells — owner request 2026-11-23, tablet adaptation).
  */
 
 /**
@@ -285,7 +286,7 @@ fun LibraryScreen(
     // not an animation — the new view lands already at the anchor
     // instead of visibly catching up.
     val listState = rememberLazyListState()
-    val gridState = rememberLazyGridState()
+    val gridState = rememberLazyStaggeredGridState()
     LaunchedEffect(viewMode) {
         if (viewMode == LibraryViewMode.GRID) {
             gridState.scrollToItem(listState.firstVisibleItemIndex)
@@ -569,9 +570,9 @@ fun LibraryScreen(
                             onImport = { picker.launch(arrayOf("*/*")) },
                         )
                     } else if (viewMode == LibraryViewMode.GRID) {
-                        LazyVerticalGrid(
+                        LazyVerticalStaggeredGrid(
                             state = gridState,
-                            columns = AdaptiveMinGridCells(),
+                            columns = AdaptiveMinStaggeredCells(),
                             modifier = Modifier.weight(1f).fillMaxWidth(),
                             // The spec's grid geometry: 16dp screen
                             // gutters, 4dp to the toolbar above, 8dp
@@ -586,9 +587,9 @@ fun LibraryScreen(
                                 bottom = 16.dp,
                             ),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalItemSpacing = 12.dp,
                         ) {
-                            gridItems(visible, key = { it.id }) { source ->
+                            staggeredItems(visible, key = { it.id }) { source ->
                                 LibraryGridCell(
                                     source = source,
                                     // Pinned to the generation revision —
@@ -1270,42 +1271,53 @@ private fun LibraryGridCell(
                 onLongClick = onToggleSelected,
             ),
     ) {
+        // The tile keeps the clip's OWN ratio (ThumbnailRow.gridTile): the
+        // loaded bitmap's size, or the record's placeholder ratio until it
+        // loads (so cells do not jump). No background, no bands; a very
+        // vertical clip is fitted and centred in a 4:3-portrait box.
+        // The decode: the SAME produceState/BitmapFactory off-UI-thread
+        // pattern the list rows run (cancels when the cell leaves
+        // composition).
+        val bitmap by produceState<Bitmap?>(initialValue = null, thumbnailPath) {
+            value = withContext(Dispatchers.IO) {
+                try {
+                    thumbnailPath?.let { BitmapFactory.decodeFile(it) }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+        val b = bitmap
+        val aspect = if (b != null) {
+            b.width.toFloat() / b.height.coerceAtLeast(1)
+        } else {
+            ThumbnailRow.placeholderAspect(source.width, source.height, source.manualRotationDeg)
+        }
+        val tile = ThumbnailRow.gridTile(aspect)
         Box(
             Modifier
                 .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(12.dp))
-                // The tile reads one step above the list's placeholder
-                // gray (surfaceContainerHighest): the grid's larger
-                // letterbox area wants the calmer surfaceContainerHigh,
-                // the spec's own slot color.
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                .aspectRatio(tile.boxAspect),
+            contentAlignment = Alignment.Center,
         ) {
-            // The tile's decode: the SAME produceState/BitmapFactory
-            // off-UI-thread pattern the list rows run (cancels when the
-            // cell leaves composition).
-            val bitmap by produceState<Bitmap?>(initialValue = null, thumbnailPath) {
-                value = withContext(Dispatchers.IO) {
-                    try {
-                        thumbnailPath?.let { BitmapFactory.decodeFile(it) }
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-            }
-            val b = bitmap
-            when {
-                b != null -> {
+            // The image box: the corner rounding rides the IMAGE itself and
+            // the badge / check anchor to ITS corners.
+            Box(
+                Modifier
+                    .fillMaxWidth(tile.imageWidthFraction)
+                    .aspectRatio(aspect.takeIf { it > 0f && it.isFinite() } ?: ThumbnailRow.DEFAULT_ASPECT)
+                    .clip(RoundedCornerShape(12.dp)),
+            ) {
+                if (b != null) {
                     Image(
                         bitmap = b.asImageBitmap(),
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit,
+                        contentScale = ContentScale.FillBounds,
                     )
-                }
-                // The access-lost marker rides the placeholder while the
-                // clip cannot be probed (the list row's treatment).
-                accessLost -> {
+                } else if (accessLost) {
+                    // The access-lost marker rides the placeholder while
+                    // the clip cannot be probed (the list row's treatment).
                     Icon(
                         imageVector = Icons.Outlined.Warning,
                         contentDescription = null,
@@ -1313,7 +1325,6 @@ private fun LibraryGridCell(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            }
             // Duration badge (the spec's own): the recorded span when the
             // record carries one (the pure durationText rule — null
             // renders nothing, never a faked 0:00), a fully-rounded
@@ -1359,6 +1370,7 @@ private fun LibraryGridCell(
                         .align(Alignment.TopEnd)
                         .padding(4.dp),
                 )
+            }
             }
         }
         // The file name beneath the tile (the spec's own): 12sp, onSurface,
