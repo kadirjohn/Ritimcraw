@@ -933,6 +933,8 @@ object GradeParitySweep {
             return null
         }
         var nodesInit: IntArray? = null
+        var v2Reader: android.media.ImageReader? = null
+        var v2ReaderThread: android.os.HandlerThread? = null
         try {
             nodesInit = runCatching {
                 NativeSource.jniPreviewSessionInitNodes(
@@ -952,6 +954,20 @@ object GradeParitySweep {
             Log.i(TAG, "v2-sweep nodes init: fragmentUniformVectors=${nodesInit[1]} " +
                 "textureImageUnits=${nodesInit[2]}")
             val maxDim = 256
+            // The window pass present needs an attached surface (a window draw with none is a failed present: every
+            // node case reported "no attached surface" on its first run, 2026-11-25). A throwaway ImageReader surface
+            // gives the session a real window, drained by a listener so eglSwapBuffers never blocks (the crop sweep's
+            // pattern).
+            val thread = android.os.HandlerThread("v2-sweep-reader").apply { start() }
+            v2ReaderThread = thread
+            val reader = android.media.ImageReader.newInstance(maxDim, maxDim, android.graphics.PixelFormat.RGBA_8888, 3)
+            v2Reader = reader
+            reader.setOnImageAvailableListener({ r -> r.acquireLatestImage()?.close() }, android.os.Handler(thread.looper))
+            val attached = runCatching { NativeSource.jniPreviewSessionSetSurface(session, reader.surface) }.getOrDefault(false)
+            if (!attached) {
+                Log.w(TAG, "v2-sweep aborted: could not attach the reader surface (${NativeSource.previewLastError()})")
+                return null
+            }
             val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
             fun cpu(c: V2Case): IntArray? = NativeSource.jniPreviewRender(
                 clip, 0,
@@ -1033,6 +1049,8 @@ object GradeParitySweep {
             return summary
         } finally {
             NativeSource.jniPreviewSessionClose(session)
+            runCatching { v2Reader?.close() }
+            runCatching { v2ReaderThread?.quitSafely() }
             NativeSource.jniCloseSource(clip)
         }
     }
