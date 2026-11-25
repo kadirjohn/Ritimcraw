@@ -1,0 +1,29 @@
+{
+ "id": "r1-hr-measure",
+ "title": "hr_measure tool for highlight clip stats",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "61c3c6e",
+  "date": "2026-11-25",
+  "merge_subject": "merge: feat: hr_measure tool for highlight clip stats"
+ },
+ "tests": "build-desktop.sh exit 0 (34 test binaries Status: SUCCESS)",
+ "description": "M0 of the highlight recovery plan: measures where the sensor channels really clip on a real frame.",
+ "added": [
+  "core/tests/hr_measure.cpp: per-channel top-code pile-up, share at 1.00/0.99/0.98/0.97/0.95 of white, stage-3 hits and misses, whole frame and brightest 1% tiles"
+ ],
+ "removed": [],
+ "changed": [],
+ "files": [
+  {
+   "path": "core/tests/hr_measure.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": []
+}
