@@ -154,6 +154,21 @@ class ProxyCacheTest {
         assertNotNull(c.peek(ka)); assertNull(c.peek(kb)) // b evicted instead
     }
 
+    @Test fun evictionSparesTheEntryBeingRebuiltAndProtectedKeys() {
+        // plan section 6: eviction deletes only proxies not playing and not being built.
+        // The storage-page eviction hook: the same storage, a tighter user cap.
+        val c = cache(cap = 90)
+        val ka = sig("a1").key(); val kb = sig("b1").key(); val kp = sig("c1").key()
+        put(c, ka, 30); put(c, kb, 30); put(c, kp, 30) // 90 <= 90: all published
+        val tight = ProxyCache(storage, 50) { now += 10_000; now }
+        val h = tight.begin(kb) // kb is being rebuilt: its published entry must survive
+        val evicted = tight.evictToCap(protect = setOf(kp)) // kp is playing: spared too
+        assertEquals(listOf(ka), evicted) // only the untouched, least recent one goes
+        assertNull(tight.peek(ka))
+        assertNotNull(tight.peek(kb)); assertNotNull(tight.peek(kp))
+        h.abort()
+    }
+
     @Test fun oversizeEntryIsNotPublished() {
         val c = cache(cap = 100)
         assertNull(put(c, sig().key(), 101))

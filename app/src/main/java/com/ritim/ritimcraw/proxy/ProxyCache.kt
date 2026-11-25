@@ -41,8 +41,9 @@ interface ProxyWriteHandle {
  *     video exists with exactly the recorded size resolves. A `.tmp` never resolves. A hit touches last access.
  *  4. [sweep] (run at startup, before any job) deletes every `*.tmp`, every `.mp4` without a manifest and
  *     every manifest without a `.mp4`, except the tmp of handles currently open.
- *  5. [evictToCap] deletes least-recently-used entries until total <= cap (protected keys are never evicted;
- *     it also runs after each commit, protecting the committed key). An entry bigger than the cap is not published.
+ *  5. [evictToCap] deletes least-recently-used entries until total <= cap (protected keys, the key of an
+ *     open handle and, after each commit, the committed key are never evicted). An entry bigger than the cap
+ *     is not published.
  * There is no resume: an interrupted build restarts from scratch.
  *
  * Thread-safe through one lock. No Android classes.
@@ -126,14 +127,19 @@ class ProxyCache(
         }
     }
 
-    /** Evict least-recently-used entries until total <= cap. Returns the evicted keys, oldest first. */
+    /**
+     * Evict least-recently-used entries until total <= cap. Returns the evicted keys, oldest first.
+     * [protect] (e.g. the key playing right now) and the key of a handle currently open (a build
+     * in progress, plan section 6: eviction deletes only proxies not playing and not being built)
+     * are never evicted.
+     */
     fun evictToCap(protect: Set<ProxyKey> = emptySet()): List<ProxyKey> = synchronized(lock) {
         val all = allEntries()
         var total = all.sumOf { it.bytes }
         val evicted = ArrayList<ProxyKey>()
         for (e in all.sortedWith(compareBy({ it.lastAccessMs }, { it.createdAtMs }, { it.key.baseName }))) {
             if (total <= capBytes) break
-            if (e.key in protect) continue
+            if (e.key in protect || e.key.baseName in open) continue
             clear(e.key)
             total -= e.bytes
             evicted += e.key
