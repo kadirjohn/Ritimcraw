@@ -47,6 +47,7 @@ internal class EncodedMp4Session(
     private var nextHandle = 1L
     private val sessions = HashMap<Long, Open>()
     private var lastMessage: String? = null
+    private var pathLogged = false
 
     /** The last clip's color, for reports and tests. */
     var lastColor: EncodedColorSpec? = null
@@ -72,6 +73,13 @@ internal class EncodedMp4Session(
     override fun renderFrame(handle: Long, frameIndex: Int, grade: GradeK, lutPath: String?, gyroPath: String?, chainWire: FloatArray?): ByteArray? {
         val s = sessions[handle] ?: return fail("render: no open encoded session")
         return try {
+            // E0b-3: the GPU door first (full-size RGB888 straight from the develop session); null = the CPU oracle.
+            val gpuRgb = s.source.renderFrameRgbGpu(frameIndex, grade, lutPath, chainWire)
+            if (!pathLogged) {
+                pathLogged = true
+                log("encoded export develop path: " + (if (gpuRgb != null) "gpu (readback)" else "cpu (oracle)"))
+            }
+            if (gpuRgb != null) return gpuRgb
             val argb = s.source.renderFrame(frameIndex, grade, lutPath, upright = false, chainWire = chainWire)
             argbToRgb888(argb, s.info.width, s.info.height)
         } catch (e: Throwable) {
