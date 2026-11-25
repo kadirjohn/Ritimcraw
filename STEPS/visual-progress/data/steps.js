@@ -15141,6 +15141,36 @@ window.STEPS_DATA = {
     }
    ],
    "sources": []
+  },
+  {
+   "id": "r5-clip-levels-tests",
+   "title": "recoveryClipLevels unit tests",
+   "date": "2026-11-26",
+   "status": "done",
+   "commit": {
+    "hash": "700c2c8",
+    "date": "2026-11-26"
+   },
+   "tests": "build-desktop.sh exit 0 (7 cases, 389 assertions)",
+   "description": "Unit contracts of recoveryClipLevels (the per-frame, per-channel measured clip levels of stage 3/Recovery) on DCG-style synthetic frames: the 0.995 own-saturation gate, the three-part sharp-peak test (band >= 16, top >= 16, peak >= 25% of band) at its exact boundaries both ways, the R/B piggy-back rule (measured only while green saturates), flat bright patches never measured, zero/null inputs returning defaults, and the raw-integer fast scan's exact agreement with a per-site float reference.",
+   "added": [
+    "core/tests/test_recovery_clip_levels.cpp"
+   ],
+   "removed": [],
+   "changed": [
+    "tools/build-desktop.sh (test registered, build + run)"
+   ],
+   "files": [
+    {
+     "path": "core/tests/test_recovery_clip_levels.cpp",
+     "change": "A"
+    },
+    {
+     "path": "tools/build-desktop.sh",
+     "change": "M"
+    }
+   ],
+   "sources": []
   }
  ]
 };
