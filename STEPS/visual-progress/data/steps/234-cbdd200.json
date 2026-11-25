@@ -1,0 +1,31 @@
+{
+ "id": "234-cbdd200",
+ "title": "fix: opendrt hue uniforms are vec4",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "cbdd200",
+  "date": "2026-11-25",
+  "merge_subject": "merge: fix: opendrt hue uniforms are vec4"
+ },
+ "tests": "not recorded",
+ "description": "The tail-drt shader declares uDrtHueR..Y as vec4 but the uniform fold wrote them with glUniform2f: a type mismatch that raised GL_INVALID_OPERATION (0x0502) at the tail-drt draw on the device (found by the first v2-sweep run). They now use glUniform4f (x, y, 0, 0). The draw then completes, but the GPU OpenDRT output does NOT match the CPU reference (v2 sweep: drt-sdr max 149 levels / 98.05% mismatch, drt-hlg 30 / 94.54%, nodes+drt 156 / 97.27%), so OpenDRT stays on the CPU in the editor's GPU arm and the encoded door (their guards are untouched). The numeric port needs debugging or the baked-LUT route (bake OpenDRT to a 3D LUT on the CPU, apply through the 0-LSB LUT stage, CPU reference uses the same LUT).",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: opendrt hue uniforms are vec4"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "HLG",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

@@ -1,0 +1,26 @@
+{
+ "id": "221-5707cff",
+ "title": "fix: 8k preview never allocates a cpu frame",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "5707cff",
+  "date": "2026-11-24",
+  "merge_subject": "merge: fix: 8k preview never allocates a cpu frame"
+ },
+ "tests": "not recorded",
+ "description": "An 8K-class preview frame that cannot take the GPU door (a LUT, nodes, a rotated source) fell to the CPU oracle, which allocates the whole frame as ARGB: 132 MB, OutOfMemoryError on the 256 MB heap, 12 of them in a 13 s playback and no frame shown (device, 8K clip with a LUT). It is now refused up front with the OutOfMemoryError the screens already turn into their short preview-too-large message. Export (maxDim < 0) is untouched. Build and JVM green; device verification pending (phone was in landscape).",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: 8k preview never allocates a cpu frame"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

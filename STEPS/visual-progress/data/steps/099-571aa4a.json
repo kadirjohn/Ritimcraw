@@ -1,0 +1,26 @@
+{
+ "id": "099-571aa4a",
+ "title": "gray thumbnail slot background",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "571aa4a",
+  "date": "2026-11-14",
+  "merge_subject": "merge: gray thumbnail slot background"
+ },
+ "tests": "not recorded",
+ "description": "The library row's thumbnail slot (ClipThumbnail in FileListRow.kt)\nletterboxed the ratio-true icon over surfaceVariant, which rides the\nNeutralVariant palette — under dynamic color that palette carries the\nwallpaper's hue, so the slot's background tinted itself with whatever\nMonet tone the wallpaper produced instead of reading as plain gray.\n\nSwap the slot's background to surfaceContainerHighest, which rides the\nNEUTRAL palette: chroma-free in both modes, so the letterbox area is a\nplain gray in light AND dark. The tone is a like-for-like swap in\nlight mode (M3 maps light surfaceVariant to NeutralVariant90 and\nsurfaceContainerHighest to Neutral90 — same lightness, hue removed);\ndark mode drops from NV30 to N22, still a clearly visible step above\nthe dark surface. The app's own neutral editor scheme already proves\nthis container family reads gray (0xFF3b3b3b).\n\nScope: the rounded slot's b",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: gray thumbnail slot letterbox bg"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/FileListRow.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

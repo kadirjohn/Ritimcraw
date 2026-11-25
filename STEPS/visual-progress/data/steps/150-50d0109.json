@@ -1,0 +1,48 @@
+{
+ "id": "150-50d0109",
+ "title": "A7 export A/B harness — CPU export door vs GPU develop, 4 cases x 3 frames, EXPORT_MISMATCH gate",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "50d0109",
+  "date": "2026-11-23",
+  "merge_subject": "merge: A7 export A/B harness — CPU export door vs GPU develop, 4 cases x 3 frames, EXPORT_MISMATCH gate"
+ },
+ "tests": "not recorded",
+ "description": "- SettingsScreen: onExportAb param (KDoc cites guide §A7, 2026-11-23) and a\n  second OutlinedButton under the sweep button in the same debug block —\n  same fillMaxWidth/16/12/16 modifier pattern, disabled while measuring,\n  single-line ellipsized label; release compiles with the callback null\n- AppNav: exportAbKick state beside sweepKick; LaunchedEffect picks the\n  FIRST Access.OK source whose gyro resolves via stores.gyros.pathFor(...)\n  (guide design point 1 — the harness needs a gyro, a gyro-less run would\n  silently test the no-warp path), no-gyro = toast + one ritim-parity log\n  line + measuring reset, never a crash on a lost grant; fd ownership passes\n  to ExportAbSweep.run which always closes it\n- strings: settings_export_ab + settings_export_ab_no_gyro in BOTH locales\n  (TR parity)\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "test(a7): ExportAbSweep pure core — 4-case list, frame indices, mismatch flag, log lines",
+  "merge: main baseline with the five prior packages (A1-A3, A6, A5) before Task 2/3",
+  "ui(a7): Export A/B (debug) button + AppNav wiring + EN/TR strings"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/ExportAbSweep.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/SettingsScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/ExportAbSweepTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

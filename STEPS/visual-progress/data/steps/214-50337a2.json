@@ -1,0 +1,51 @@
+{
+ "id": "214-50337a2",
+ "title": "feat: encoded preview decodes ahead",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "50337a2",
+  "date": "2026-11-24",
+  "merge_subject": "merge: feat: encoded preview decodes ahead"
+ },
+ "tests": "not recorded",
+ "description": "EncodedSource(readAhead = true), used by the preview session only: a helper thread owns the reader and decoder, decodes the requested frame (frames before it without a pixel copy) and then the next one or two into a queue (depth 1 for 8K-class frames, heap limit 256 MB), so a sequential playback overlaps decode with the GPU develop. Adapter copies the interleaved chroma once into one pooled array (U and V are views of it) and the YUV JNI door uses GetPrimitiveArrayCritical. PlaneBufferPool is synchronized. Device numbers (debug, tier 720, 14 s): Mi-Log 4K60 shown 116-206, gap p50 63-95 ms, p95 144-199 ms; 8K30 shown 175, p50 74, p95 124 ms; run-to-run spread is large and smooth playback is not reached yet (see STATUS update 6). JVM 2950/0.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: encoded preview decodes ahead on a helper thread"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EditorPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedAdapters.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PlaneBufferPool.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/EncodedSourceTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Mi-Log",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

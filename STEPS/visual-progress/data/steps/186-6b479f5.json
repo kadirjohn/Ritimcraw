@@ -1,0 +1,26 @@
+{
+ "id": "186-6b479f5",
+ "title": "fix: display rate is released when playback stops",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "6b479f5",
+  "date": "2026-11-24",
+  "merge_subject": "merge: fix: display rate is released when playback stops"
+ },
+ "tests": "not recorded",
+ "description": "The release lambda read the delegated isPlaying at dispose time, when it is already false because playback stopping is what tears the effect down, so DisplayRateApply.end was never called and the requested refresh rate stayed after a pause. The request flag is now captured when the effect starts. Device log after the fix: begin and end are paired around a playback run.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: display rate is released when playback stops"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,46 @@
+{
+ "id": "078-1d3f2c8",
+ "title": "optical sync refinement core",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "1d3f2c8",
+  "date": "2026-11-14",
+  "merge_subject": "merge: optical sync refinement core"
+ },
+ "tests": "not recorded",
+ "description": "GY-04: refine the frame-IMU clock offset optically, starting\nfrom the existing wall-clock anchor (never re-anchoring). The\nshipped anchor is a receive-wall-clock estimate with an\nASSUMED +/-25 ms bound; a constant sync error makes the\nstabilization correction fight motion instead of canceling it.\n\ncore/src/OpticalSync.cpp + core/include/rawedit/OpticalSync.h\n(image-side math, I/O-free; Sync.cpp untouched):\n- refineOffsetOptically(anchor, frames, orientationSeries,\n  intrinsics, opts): search +/-150 ms around the anchor at 1 ms\n  (301 candidates), then refine the best at 0.1 ms over +/-2 ms.\n- per candidate: t_imu = repTime + offset; quaternion from the\n  RAW orientation series via orientationAt (SLERP, clamped);\n  predicted image translation from the rotation difference via\n  frameTransform (the SAME homography production uses); measured\n  translation from decoded low-res frames via a 2-",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: optical sync refinement + tests"
+ ],
+ "files": [
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/OpticalSync.h",
+   "change": "A"
+  },
+  {
+   "path": "core/include/rawedit/Sync.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/OpticalSync.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_optical_sync.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

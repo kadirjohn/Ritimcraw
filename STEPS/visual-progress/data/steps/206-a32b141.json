@@ -1,0 +1,35 @@
+{
+ "id": "206-a32b141",
+ "title": "temporal phase clocks and a parallel merge loop",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "a32b141",
+  "date": "2026-11-24",
+  "merge_subject": "merge: temporal phase clocks and a parallel merge loop"
+ },
+ "tests": "not recorded",
+ "description": "Export CPU bottleneck. The full-resolution merge loop of temporalMergeCfa was about 90% of the temporal stage (104-175 ms per frame on the heavy 4K clip) and ran on one thread. Its rows are independent, so they now go through core's parallelForRows (bit-exact contract: one thread per row range, immutable inputs). The only cross-row state, two diagnostic weight sums and the pixel count, is kept per row and combined in row order, so serial and parallel runs report identical numbers. A new desktop test pins the output of two full merge scenarios (both neighbors eligible, real shifts, noise and a noise profile) as FNV-1a checksums taken from the OLD serial code, and requires the forced-serial and the parallel runs to equal them: the output is bit-identical to before. Device, same 58.7 s 4K30 clip with nr+unsharp+temporal+tonemap+lut, instrumented log: merge loop 160-175 ms -> 42-49 ms at the",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "test: temporal phase clocks in the export log",
+  "feat: temporal merge rows run in parallel"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Temporal.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_temporal.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

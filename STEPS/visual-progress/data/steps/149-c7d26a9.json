@@ -1,0 +1,57 @@
+{
+ "id": "149-c7d26a9",
+ "title": "A5 parity diagnosis harness — mismatch histograms by magnitude/channel/tonal/boundary, no rule change",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "c7d26a9",
+  "date": "2026-11-23",
+  "merge_subject": "merge: A5 parity diagnosis harness — mismatch histograms by magnitude/channel/tonal/boundary, no rule change"
+ },
+ "tests": "parity test files untouched and green; the 4:3 clip still falls back",
+ "description": "Owner request 2026-11-23, guide A5 step 1 (diagnosis only — NO rule\nchange: engine/GpuParity.kt, ui/editor/ClipEditorScreen.kt, both\nparity test files untouched and green; the 4:3 clip still falls back\nexactly as before).\n\n- NativeSource.kt: @JvmStatic private external fun\n  nativeGlesFragmentParityDiag beside the plain door (same parameter\n  list, String? return), plus the internal wrapper\n  jniGlesFragmentParityDiag mirroring jniGlesFragmentParity exactly\n  (the nativeAvailable IllegalStateException guard, the bridge-pointing\n  KDoc, the same parameter pass-through).\n- PreviewMetrics.kt measureGles: leg 4d, appended AFTER leg 4c's\n  verdict lines inside the SAME contextOk && floatFboOk branch — the\n  block's every existing line stays byte-identical (append-only, the\n  gateDetailLine convention). Calls the diag door with the identical\n  shader texts (FULLSCREEN_VERTEX, FULLSCREEN_VERTEX",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "test: failing doctest for the A5 parity diagnosis harness (RED)",
+  "feat: pure ParityDiag histogram header — the A5 mismatch population's four dimensions (GREEN)",
+  "feat: the harness accumulates the A5 diag + the JNI string door",
+  "feat: Measure leg 4d — the A5 fragment parity diag, append-only"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesPipeline.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPipeline.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/ParityDiag.h",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewMetrics.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_parity_diag.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,46 @@
+{
+ "id": "191-d73ba81",
+ "title": "fix: preview reduction bins instead of decimating",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "d73ba81",
+  "date": "2026-11-24",
+  "merge_subject": "merge: fix: preview reduction bins instead of decimating"
+ },
+ "tests": "not recorded",
+ "description": "P5. The preview CFA reduction (core Thumbnail.cpp and its copy in jni_bridge.cpp) copied ONE cell out of every NxN block with no filter: at 4K -> 1280 (N=3) 8/9 of the samples were thrown away, so edges crawled and sensor noise kept full amplitude while playing (paused frames render at source size and were clean). It now averages the N x N same-colour sites of each block (rawedit::reduceCfaBinned, one shared function; the jni copy is gone), which keeps the 2x2 pattern, never mixes colours, centres all four sites on the same block centre and cuts noise by about N. Output dims and the pattern convention are unchanged, so warp/stab dim math is untouched; N = 1 (export) is the source bit for bit and a test locks it. Same real frame, old vs new: .planning/night-2026-11-25/device/p5-desk-compare.png. Device (debug, HIGH = 1280): CFA reduction 1.21 -> 3.24 ms per frame mean; dropped frames and ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: preview reduction bins instead of decimating"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Thumbnail.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Thumbnail.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/p5_compare.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_thumbnail.cpp",
+   "change": "M"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

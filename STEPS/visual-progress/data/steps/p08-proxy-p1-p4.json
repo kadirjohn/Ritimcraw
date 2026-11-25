@@ -1,0 +1,20 @@
+{
+ "id": "p08-proxy-p1-p4",
+ "title": "proxy P1 to P4",
+ "date": "TBD",
+ "status": "planned",
+ "commit": null,
+ "tests": "not run",
+ "description": "Proxy media phases P1 through P4. Plan: docs/PROXY_PLAN.md.",
+ "added": [],
+ "removed": [],
+ "changed": [],
+ "files": [
+  {
+   "path": "docs/PROXY_PLAN.md",
+   "change": "?"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

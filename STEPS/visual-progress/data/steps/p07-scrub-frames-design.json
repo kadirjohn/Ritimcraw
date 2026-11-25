@@ -1,0 +1,17 @@
+{
+ "id": "p07-scrub-frames-design",
+ "title": "scrub-frames design",
+ "date": "TBD",
+ "status": "planned",
+ "commit": null,
+ "tests": "not run",
+ "description": "Design for frame scrubbing in the timeline.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "Design document, no code yet."
+ ],
+ "files": [],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,30 @@
+{
+ "id": "244-8cb6a79",
+ "title": "chore: untrack and ignore .gsd",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "8cb6a79",
+  "date": "2026-11-25",
+  "merge_subject": "merge: chore: untrack and ignore .gsd"
+ },
+ "tests": "not recorded",
+ "description": "",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "chore: untrack and ignore .gsd"
+ ],
+ "files": [
+  {
+   "path": ".gitignore",
+   "change": "M"
+  },
+  {
+   "path": ".gsd/dispatch-isolation-sentinel.json",
+   "change": "D"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

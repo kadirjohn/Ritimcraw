@@ -1,0 +1,44 @@
+{
+ "id": "119-160ddfd",
+ "title": "source color profile model and routing plan",
+ "date": "2026-11-16",
+ "status": "done",
+ "commit": {
+  "hash": "160ddfd",
+  "date": "2026-11-16",
+  "merge_subject": "merge: source color profile model and routing plan"
+ },
+ "tests": "not recorded",
+ "description": "second b1 deliverable: the routing plan document for the pure source\ncolor profile model committed alongside it (9527948). new file only,\nnothing imports anything; the two pipeline gaps are cited, not fixed.\n\ncurrent-state map (code-verified, file:line citations):\n- the unconditional mi-log inverse: transfer.cpp:147-150 applies\n  miLogToLinear to every encoded clip regardless of its actual\n  transfer; the 601/709 matrix branch at transfer.cpp:143-146 is the\n  only container fact that reaches the develop today.\n- the deferred gamut conversion: transfer.h:59-61 documents that\n  mi-log's rec.2020 primaries are treated as the working space until\n  the aces pass lands; the working space (linear rec.709) is an\n  implicit assumption, not a declared contract.\n- the single-fact flow: encodedadapters.kt:102-113 reads only\n  key_color_standard (isbt709 defaults true); the transfer/range/\n  bit-dept",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "data: pure source color profile model (b1)",
+  "docs: color routing plan (b1)"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/color/SourceProfile.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/color/SourceProfileTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "docs/COLOR_ROUTING_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [
+  {
+   "name": "ACES",
+   "note": "named in commit messages"
+  },
+  {
+   "name": "Mi-Log",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

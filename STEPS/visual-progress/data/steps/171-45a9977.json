@@ -1,0 +1,89 @@
+{
+ "id": "171-45a9977",
+ "title": "f1-5 gpu nodes pass and drt tail — planChain, shaders, parcel",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "45a9977",
+  "date": "2026-11-24",
+  "merge_subject": "merge: f1-5 gpu nodes pass and drt tail — planChain, shaders, parcel"
+ },
+ "tests": "not recorded",
+ "description": "color model v2 f1-5, fourth slice: the preview session's additive doors\n+ a shader cleanup.\n\n- GlesPreviewSession: initNodes() posts one job on the existing\n  single-slot handoff (a new JobKind::InitNodes; the pipeline's\n  additive compile runs on the OWNING GL thread like every other GL\n  call, the sources cross as job-owned copies) and returns the\n  pipeline's NodesLimits - the two device queries the inventory\n  found missing, surfaced to the Kotlin seam. setColorModelChain()\n  is the C++-level chain door the F1-6 JNI binding wraps: validates\n  (the N1 caps + core's own validateNodeChain), deep-copies the\n  borrowed knobs + the 77-float DRT block under the session mutex,\n  and the flags drive renderFrame's request fold (nodeCount 0 +\n  mode 0 = the plain v1 chain, nodesActive false - the regression\n  lock's shape). An outputMode-1 chain without the DRT block refuses\n  honestly at the d",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: chain slot planner grows the nodes pass (kPassNodes)",
+  "feat: nodes parcel, node/drt shaders, headless parity proofs",
+  "feat: gpu pipeline nodes pass and drt tail variant wiring",
+  "feat: preview session nodes doors; shader dead uniforms pruned"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/ChainSlots.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/NodeParcel.h",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NodeParcel.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GlesShaderValidatorTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NodeParcelTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "core/include/rawedit/ColorModel.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/ColorModel.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_chain_slots.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_gpu_nodes_logic.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

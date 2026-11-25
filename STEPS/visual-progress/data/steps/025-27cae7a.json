@@ -1,0 +1,43 @@
+{
+ "id": "025-27cae7a",
+ "title": "frame imu sync anchored offset",
+ "date": "2026-11-11",
+ "status": "done",
+ "commit": {
+  "hash": "27cae7a",
+  "date": "2026-11-11",
+  "merge_subject": "merge: frame imu sync anchored offset"
+ },
+ "tests": "not recorded",
+ "description": "Stabilization Phase 3, part 2 of 2: the wall-clock-anchored offset\nestimate (method A) and the frame-to-IMU mapping with clamp\nbookkeeping (deliverables 2-5).\n\n- Method A, estimateOffsetFromAnchors: each MCRAW frame's per-frame\n  JSON carries recvdTimestampMs (epoch ms, the app-side receive\n  time of that frame; the same key telemetry-parser exposes as the\n  CaptureTimestamp tag - established MotionCam wall anchor, not an\n  ritiMCRAW invention), and the GCSV header timestamp key carries\n  the log-start epoch ms. Two wall timestamps over one shared epoch\n  give the bridge:\n    offsetNs = (frame0RecvdMs - gcsvLogStartMs)*1e6 - frame0CaptureNs\n  since the first gyro sample IS the log start (t=0). Documented\n  error budget in Sync.h: header ms + recvd ms quantization\n  (+/-0.5 ms each) + the unobservable first-frame receive lag\n  (within-clip receive jitter measured at -13.2..+3.5 ms and\n  -",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: syncmodel clock bridge and manual offset",
+  "feat: anchored offset estimate and frame mapping"
+ ],
+ "files": [
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Sync.h",
+   "change": "A"
+  },
+  {
+   "path": "core/src/Sync.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_sync.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

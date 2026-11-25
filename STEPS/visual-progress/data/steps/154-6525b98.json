@@ -1,0 +1,63 @@
+{
+ "id": "154-6525b98",
+ "title": "s1-s3 image stab core — estimator, analyzer, plan, measurements",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "6525b98",
+  "date": "2026-11-23",
+  "merge_subject": "merge: s1-s3 image stab core — estimator, analyzer, plan, measurements"
+ },
+ "tests": "not recorded",
+ "description": "Section 4.1: implementation deviations (gradient floor 0.005, edge margin ramp, separate confidence cap), stage timings, real-clip analysis speed (0.38x clip time on desktop), acceleration and jerk in separate PTS-scaled columns, zoom rate A/B 0.05/0.10/0.20, Gyroflow-follower reference (approximation, unverified), raw vs developed luma check, and the honest caveat that both fixture clips are nearly static so thresholds cannot be fixed from them yet.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: add image stabilization design plan",
+  "merge: s0 image stab design plan",
+  "docs: record owner decisions, fix migration claim",
+  "feat: add image stab pairwise motion estimator",
+  "feat: add image stab analyzer, plan and measure",
+  "docs: add S1-S3 measurements to image stab plan"
+ ],
+ "files": [
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/ImageStab.h",
+   "change": "A"
+  },
+  {
+   "path": "core/src/ImageStab.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/src/ImageStabPlan.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/src/ImageStabSource.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/image_stab_measure.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_image_stab.cpp",
+   "change": "A"
+  },
+  {
+   "path": "docs/IMAGE_STAB_PLAN.md",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

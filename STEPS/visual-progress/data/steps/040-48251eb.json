@@ -1,0 +1,77 @@
+{
+ "id": "040-48251eb",
+ "title": "n8 waveform scope build",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "48251eb",
+  "date": "2026-11-12",
+  "merge_subject": "merge: n8 waveform scope build"
+ },
+ "tests": "not recorded",
+ "description": "Owner spec PLAY-10, 2026-11-12 section 8.\n\nThe mid-gray reference is DERIVED, never hardcoded: 18% scene\nlinear pushed through the Rec.709 camera OETF power branch\n(1.099 * L^0.45 - 0.099) lands mid-gray at ~40.9% coded signal\n(8-bit bin 104) - NOT at 18% screen level, the spec's explicit\ntrap. WaveformScope.midGraySignal() is pure and JVM-tested\n(mid_gray_reference_is_derived_not_linear asserts the value, the\nnot-18% property and the bin).\n\nHonesty gate: the derivation is valid only while the analyzed\nsignal's luma path is the bare OETF, so the screen derives the\ngate live from the grade (tonemap off, no LUT). The toggle\ndisappears the moment a tonemap curve or a LUT rewrites the\ntransform - no fabricated fixed line over a signal it does not\ndescribe. The line draws dashed at the derived level under the\ntrace, in the theme's primary so it reads as a reference, not\ngrid furniture.\n\nThe c",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: waveform scope density computation",
+  "feat: scope strip with histogram and waveform",
+  "feat: scope sampling quality and pacing",
+  "feat: scope mid-gray reference toggle"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/CompactSlider.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorLayout.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/HistogramOverlay.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ScopeStrip.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/WaveformScope.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_histogram.xml",
+   "change": "D"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_scope.xml",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_scope_close.xml",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_scope_midgray.xml",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/WaveformScopeTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

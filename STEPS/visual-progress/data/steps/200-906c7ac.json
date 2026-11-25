@@ -1,0 +1,35 @@
+{
+ "id": "200-906c7ac",
+ "title": "docs: e0b plan revision 2, two paths and proxy",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "906c7ac",
+  "date": "2026-11-24",
+  "merge_subject": "merge: docs: e0b plan revision 2, two paths and proxy"
+ },
+ "tests": "not recorded",
+ "description": "Records the owner's direction after reading Klipp: preview rides MediaCodec -> SurfaceTexture/OES with the first GPU step downscaling to the preview tier; export and the CPU-oracle parity ride ImageReader planes and our own EncodedColorSpec shader; an OES-vs-planes colour comparison on the same frame; a Klipp-style proxy as separate work (never play a half-written proxy). The Klipp claims were checked in its code (previewShort 1080, full-resolution export from originals, proxies). Not adopted: Media3 as a whole and KlippPrecision (not applicable to our own RGBA32F chain); Klipp is GPL-3.0-only overall, so only the architecture is taken, with a NOTICE entry for anything ported (K6). Acceptance tests are the owner's two clips.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: e0b plan revision 2, two paths and proxy"
+ ],
+ "files": [
+  {
+   "path": "docs/ENCODED_GPU_DECODE_PLAN.md",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "Klipp",
+   "note": "named in commit messages"
+  },
+  {
+   "name": "MediaCodec",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

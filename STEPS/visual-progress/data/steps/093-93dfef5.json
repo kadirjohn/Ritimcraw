@@ -1,0 +1,47 @@
+{
+ "id": "093-93dfef5",
+ "title": "developed mcraw import thumbnail + margin",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "93dfef5",
+  "date": "2026-11-14",
+  "merge_subject": "merge: developed mcraw import thumbnail + margin"
+ },
+ "tests": "not recorded",
+ "description": "the library rows' thumbnails sat flush against the screen's left\nedge (owner request 2026-11-14: \"sadece thumbnail'ler için\" margin -\nonly the thumbnails). the clipthumbnail in filelistrow now carries\nthe screen's established 16dp gutter as its start padding - the\nsame token screenheader and filterchipsrow use - which also makes\nthe row divider's own start math true (16 + 76 + 16 = 108dp, its\ncomment's arithmetic). the text column's alignment and every other\nrow element are untouched, and filelistrow is used only by the\nlibrary screen, so no other screen shifts.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: full-res developed mcraw import thumbnail",
+  "feat: 16dp start margin for library thumbnails"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ThumbnailStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/ClipThumbnails.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/ThumbnailDevelop.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/FileListRow.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/ClipThumbnailsMcrawTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/ThumbnailBalanceTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

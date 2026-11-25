@@ -1,0 +1,74 @@
+{
+ "id": "039-9eb1dbb",
+ "title": "n1 editor phase 5 landscape workspace",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "9eb1dbb",
+  "date": "2026-11-12",
+  "merge_subject": "merge: n1 editor phase 5 landscape workspace"
+ },
+ "tests": "not recorded",
+ "description": "Owner request 2026-11-11d sections 17.3 + 18.\n\n- Landscape panel hide/reopen: the right column's header carries a\n  hide IconButton (vendored Material Symbols right_panel_close\n  glyph); hidden, the preview column widens to the FULL width\n  (OrientationLayout.previewWidthFraction with panelVisible=false\n  returns 1f — the horizontal expansion section 17.3 names) and a\n  scrimmed reopen chip appears on the preview's right edge, the\n  same scrimmed IconButton group as the corner controls. panelVisible\n  is rememberSaveable: a rotation keeps the panel where the user\n  left it. The portrait sheet's drag-handle collapse is untouched\n  and independent.\n- Orientation state preservation (sections 17.3 + 18: 'Do not reset\n  editing state or playback when switching orientation'):\n  MainActivity now handles orientation|screenSize|screenLayout|\n  keyboardHidden itself, so the system does NOT recreat",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: compact grade slider rows",
+  "feat: orientation layout decisions",
+  "feat: fullscreen chrome tap toggle",
+  "feat: landscape two-column editor workspace",
+  "feat: landscape panel hide and rotation safety"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/AndroidManifest.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/CompactSlider.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/EditorPanel.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/OrientationLayout.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_panel_hide.xml",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/drawable/ic_panel_show.xml",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/CompactSliderTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/OrientationLayoutTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,30 @@
+{
+ "id": "127-16ad5d0",
+ "title": "clean gl entry state at window draws",
+ "date": "2026-11-16",
+ "status": "done",
+ "commit": {
+  "hash": "16ad5d0",
+  "date": "2026-11-16",
+  "merge_subject": "merge: clean gl entry state at window draws"
+ },
+ "tests": "not recorded",
+ "description": "Round 3 of the white window. The probe answered (2026-11-16\n11:22-11:23): rgb=(255,255,255) at the uRect center from the\nwindow surface's back buffer PRE-swap, on every white frame —\nTHE DRAW ITSELF PRODUCES WHITE into the EGL window surface\n(FBO 0) while the SAME windowProgram + developTex + near-identical\nuniforms draw HEALTHY into the stats FBO, so the divergence is\nthe DESTINATION, not the uniforms (win/vp/rect/src/orient all\nsane on the probe lines).\n\nThe audit (the brief's first job, cited):\n- grep across app/src/main/cpp/ for glEnable / glDisable /\n  glScissor / glColorMask / glBlend* / glDepthMask / glStencil* /\n  glClear / glCullFace: ZERO matches. NO app code ever enables,\n  disables, or masks ANY of the poison candidates — every pass in\n  the chain (GpuDevelopPipeline.cpp draws 1-11) and both session\n  draws ride the GL spec defaults for these enables/masks. The\n  chain's TAIL",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: clean gl entry state at window and stats draws"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.h",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

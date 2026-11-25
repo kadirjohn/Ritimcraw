@@ -1,0 +1,89 @@
+{
+ "id": "042-3be1c0c",
+ "title": "n6 raw histogram mode",
+ "date": "2026-11-12",
+ "status": "done",
+ "commit": {
+  "hash": "3be1c0c",
+  "date": "2026-11-12",
+  "merge_subject": "merge: n6 raw histogram mode"
+ },
+ "tests": "not recorded",
+ "description": "The N6 core commit (395d819) added core/src/RawStats.cpp to the\ndesktop build (tools/build-desktop.sh compiles core sources\ndirectly) but never registered it in core/CMakeLists.txt — the\nbuild the Android app consumes via add_subdirectory from\napp/src/main/cpp/CMakeLists.txt. The JNI bridge's new\nnativeRawHistogram calls rawedit::rawHistogramStats, so the NDK\nlink of librawedit_jni.so failed with an undefined symbol:\n\n  ld.lld: error: undefined symbol:\n  rawedit::rawHistogramStats(unsigned short const*, unsigned int,\n  unsigned int, rawedit::CfaPattern, int const*, int const*, int, int)\n\nCaught by the required combined gradle verify\n(:app:assembleDebug); the desktop verify alone could not see it.\n\nAdds src/RawStats.cpp to the rawedit static library's source list\nand names its consumer in the lib's comment block, matching the\nexisting per-file annotation style.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: raw cfa histogram stats core",
+  "feat: raw histogram jni and session seam",
+  "feat: raw histogram scope mode",
+  "fix: register rawstats in core cmake"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EditorPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/RawHistogram.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/HistogramOverlay.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ScopeStrip.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/RawHistogramTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/HistogramDisplayTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/RawStats.h",
+   "change": "A"
+  },
+  {
+   "path": "core/src/RawStats.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_rawstats.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

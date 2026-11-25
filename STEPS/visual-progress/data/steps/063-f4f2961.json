@@ -1,0 +1,113 @@
+{
+ "id": "063-f4f2961",
+ "title": "gpu fragment develop + encoder surface mode",
+ "date": "2026-11-13",
+ "status": "done",
+ "commit": {
+  "hash": "f4f2961",
+  "date": "2026-11-13",
+  "merge_subject": "merge: gpu fragment develop + encoder surface mode"
+ },
+ "tests": "not recorded",
+ "description": "Deliverable D, commit 4 of 4: the fragment develop leg's own\ngate and stage-coverage rules in BackendGates/BackendRules, added\nALONGSIDE the locked compute-leg math (gpuAllowed/effectiveBackend\nunchanged, re-locked by test).\n\n- BackendGates.fragmentAllowed(): context + float FBO + parity, NO\n  compute — the fragment chain is a draw pipeline (ES 3.00 develop +\n  ES 3.10 store), so a compute-less device can still run it.\n  fragmentFallbackReason() lists only the fragment gates.\n- BackendRules.FRAGMENT_COVERED_STAGES (1, 4, 5, 6, 14 + OETF tail)\n  and FRAGMENT_UNCOVERED_STAGES (19 stages) with the fallback-line\n  token for each.\n- fragmentUncoveredStages(grade) mirrors the CPU guards in\n  core/src/Develop.cpp exactly (lines 720/745/1016/1035/1058-1060/\n  1094/1192): same field != neutral checks, asShot inertness for\n  temp/tint, LUT strength-0 bypass, split hues >= 0. Stage 2 is\n  conservat",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: fragment develop shader sources + validator",
+  "feat: fragment develop parity harness",
+  "feat: encoder surface input mode + export wiring",
+  "feat: fragment coverage rules + gates"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesPipeline.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPipeline.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GpuParity.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewMetrics.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/RenderBackend.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportJob.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/MediaCodecMp4Writer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/PtsTimeline.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/SurfaceInputUnavailable.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GlesShaderValidatorTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GpuParityTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/RenderBackendTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "docs/GPU_BASELINE.md",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,26 @@
+{
+ "id": "152-0146d1a",
+ "title": "f1-0 color model plan — di/dwg node chain, opendrt, schema v2 design",
+ "date": "2026-11-23",
+ "status": "done",
+ "commit": {
+  "hash": "0146d1a",
+  "date": "2026-11-23",
+  "merge_subject": "merge: f1-0 color model plan — di/dwg node chain, opendrt, schema v2 design"
+ },
+ "tests": "not recorded",
+ "description": "Plan only, no code. Covers DI/DWG working space, N1 node chain with per-node spaces, OpenDRT v1.1.0 integration (C++ reference + GLSL, license note), ChainSlots/planChain changes (kPassNodes, 64 combos), schema 1->2 migration with field mapping, backup and atomic write, pixel parity strategy, S4 stabilization fold (no engine key = gyro), encoded source color definition (E0) link, F1-1..F1-8 breakdown and 14 open owner decisions.\n\nRecords plan/code contradictions, notably: the single Primary node, same pixels criterion cannot hold with log-space nodes (legacy block proposed), and eight stores stamp version=1 into project.json which would silently downgrade a v2 file. Unverified claims are marked.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "docs: add color model v2 (f1) design plan"
+ ],
+ "files": [
+  {
+   "path": "docs/COLOR_MODEL_V2_PLAN.md",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

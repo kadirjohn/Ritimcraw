@@ -1,0 +1,76 @@
+{
+ "id": "156-fd749d0",
+ "title": "f1-1/f1-4 color core — di/dwg node reference, opendrt cpu",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "fd749d0",
+  "date": "2026-11-24",
+  "merge_subject": "merge: f1-1/f1-4 color core — di/dwg node reference, opendrt cpu"
+ },
+ "tests": "not recorded",
+ "description": "F1-4 of the color model v2 plan. core/src/OpenDrt.cpp is a line-by-line\nport of Klipp's Kotlin port (engine/OpenDrt.kt) of OpenDRT.dctl v1.1.0:\nthe look/tonescale preset tables and the matrices were converted from\nthe Kotlin source by script (no retyping), the algorithm keeps the\nKotlin operation order so the GLSL pass can be held to the same\nnumbers. Input is DWG linear (NodesOutput::DwgLinear); displays are\nsRGB 2.2, Rec.1886 2.4 and HLG 1000 as a float signal. PQ is out of\nscope (K7). 10-bit quantisation stays with E1d/E2.\n\nReference vectors: core/tests/data/opendrt_klipp_*.txt are verbatim\nsubsets (S-Log3 and DI input rows, 768 SDR + 384 HLG) of Klipp's test\nresources. Klipp states they are OpenDRT.dctl output; this repo has\nnot regenerated or verified that, so the tests prove equivalence with\nKlipp's data, not with the DCTL. Measured worst deviation: 6.6e-7 SDR,\n7.7e-7 HLG (print-ro",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: add di/dwg glue and cpu node reference",
+  "feat: add opendrt v1.1.0 cpu reference"
+ ],
+ "files": [
+  {
+   "path": "NOTICE",
+   "change": "M"
+  },
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/ColorModel.h",
+   "change": "A"
+  },
+  {
+   "path": "core/include/rawedit/OpenDrt.h",
+   "change": "A"
+  },
+  {
+   "path": "core/src/ColorModel.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/src/OpenDrt.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/data/opendrt_klipp_hlg.txt",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/data/opendrt_klipp_sdr.txt",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_color_model.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_opendrt.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "HLG",
+   "note": "named in commit messages"
+  },
+  {
+   "name": "Klipp",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

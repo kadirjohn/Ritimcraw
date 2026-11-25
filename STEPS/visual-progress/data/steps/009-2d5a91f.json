@@ -1,0 +1,127 @@
+{
+ "id": "009-2d5a91f",
+ "title": "spatial chroma noise reduction",
+ "date": "2026-11-11",
+ "status": "done",
+ "commit": {
+  "hash": "2d5a91f",
+  "date": "2026-11-11",
+  "merge_subject": "merge: spatial chroma noise reduction"
+ },
+ "tests": "Tests: 349 JVM tests green (was 343) — GradeMapping pass-through and",
+ "description": "Surface the DN-01..08 denoise stages (commit be9970f) as two\nDetail-tab sliders and thread the values through every render path.\n\nJNI: both floats join the flat grade params of all four entry points\n(nativePreviewRender, nativePreviewSessionRenderCached,\nnativeExportFrame, nativeEncodedDevelop + their jni* wrappers).\nPosition rule: the preview pair carries them between lutStrength and\nmaxDim; the export/encoded pair at the tail after lutStrength, matching\ngradeFromKotlin's field order (GradeK = rawedit::Grade field order).\n\nScale: unlike lutStrength (percent / 100 -> 0..1 blend at the Kotlin\nboundary), both denoise controls are UI percents 0..100 that pass\nthrough at rawedit's native 0..100 scale; the core clamps [0,100]\nitself. GradeMapping.toNative, NativeMp4Session.renderFrame and\nNativeEncodedDeveloper.develop all pass them unchanged.\n\nPersistence: GradeK gains noiseReduction/chromaD",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: spatial chroma noise reduction stages",
+  "feat: wire noise reduction controls"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/GradeStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewRenderer.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/PreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/ExportStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/SliderSteps.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/GradeStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/PreviewRendererTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/ExportStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/SliderStepsTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Develop.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Lut.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Transfer.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Develop.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Transfer.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_develop.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_noise.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_transfer.cpp",
+   "change": "M"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

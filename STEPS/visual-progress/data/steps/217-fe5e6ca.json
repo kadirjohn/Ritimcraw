@@ -1,0 +1,26 @@
+{
+ "id": "217-fe5e6ca",
+ "title": "fix: library names are not clipped by the card",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "fe5e6ca",
+  "date": "2026-11-24",
+  "merge_subject": "merge: fix: library names are not clipped by the card"
+ },
+ "tests": "not recorded",
+ "description": "",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: library names are not clipped by the card"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/LibraryScreen.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

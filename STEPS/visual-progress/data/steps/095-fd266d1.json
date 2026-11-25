@@ -1,0 +1,26 @@
+{
+ "id": "095-fd266d1",
+ "title": "scrollable settings screen",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "fd266d1",
+  "date": "2026-11-14",
+  "merge_subject": "merge: scrollable settings screen"
+ },
+ "tests": "not recorded",
+ "description": "Owner finding 2026-11-14: \"settings'te scroll edilmiyor, ekran dolmuş\"\n— the Settings body did not scroll and the screen was full, so the\nbottom rows were unreachable. The stats-readback toggle row was\ntappable where it peeked on screen but its supporting text was\nunreadable, and on tighter layouts the whole row (plus the Measure\naction) was clipped off-screen entirely.\n\nRoot cause: the body is a fixed Column with no scroll modifier. As rows\nwere added over time (preview quality, render backend, gyro folder,\ndevice report, Measure, the stats-readback toggle), the content\noutgrew the screen and nothing could reach the tail.\n\nFix (minimal, preserving the design):\n- The body Column gains .verticalScroll(rememberScrollState()) — the\n  exact modifier pattern the screen already used for the codec-report\n  FlowRow in the device dialog. Every row is now reachable on any\n  screen height and the l",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: make settings screen scrollable"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/SettingsScreen.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

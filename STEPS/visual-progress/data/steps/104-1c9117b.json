@@ -1,0 +1,77 @@
+{
+ "id": "104-1c9117b",
+ "title": "settings redesign with device report screen",
+ "date": "2026-11-15",
+ "status": "done",
+ "commit": {
+  "hash": "1c9117b",
+  "date": "2026-11-15",
+  "merge_subject": "merge: settings redesign with device report screen"
+ },
+ "tests": "not recorded",
+ "description": "Replace the Settings screen's codec AlertDialog with a full\nscreen (owner spec 2026-11-14, device_report_screen), same\ndata source — AppNav's one CodecProbe.probe() per Settings-tab\ncomposition, shared with the Settings row.\n\nDeviceReportScreen.kt (new): fixed top bar (back IconButton\n24dp 'Back', title 'Device report' 22sp SemiBold onSurface,\ntrailing copy IconButton 22dp 'Copy report', 8dp padding under\nthe shell's status-bar inset); the whole page scrolls as one —\nsummary card (group-card container, 20dp padding, 56dp\nprimaryContainer tile with cpu icon 28dp, codec count 32sp\nSemiBold -0.02em, 'video codecs on this device' 13sp\nonSurfaceVariant), the All/Decoders/Encoders segmented control\n(local state, default All), then one group-card list: group\nheaders ('AVC . Decoders', 12sp SemiBold ALL CAPS 0.08em\nonSurfaceVariant on surfaceContainerHighest), each codec with\na 1dp top divider o",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: settings redesign foundation",
+  "feat: settings screen sections",
+  "feat: theme slider pill",
+  "feat: device report screen"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/AppSegmentedControl.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/RitimIcons.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/SettingsComponents.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/SettingsComponentsPreview.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeSlider.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/DeviceReportScreen.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/settings/SettingsScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/theme/PreviewSchemes.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/components/RitimIconsTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/components/ThemeSliderTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/settings/DeviceReportGroupingTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

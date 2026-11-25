@@ -1,0 +1,26 @@
+{
+ "id": "232-07831d3",
+ "title": "test: v2 sweep attaches a surface",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "07831d3",
+  "date": "2026-11-25",
+  "merge_subject": "merge: test: v2 sweep attaches a surface"
+ },
+ "tests": "not recorded",
+ "description": "The v2 node-chain sweep reported 'no attached surface' for every node case (its preview session had no window); it now attaches a throwaway ImageReader surface like the crop sweep. First device numbers for the MCRAW preview-session node chain against the CPU preview door (4K frame 0, 256 px tier): all 9 node cases at most 1 LSB and at most 0.004% mismatch (bound 0.01%, unchanged): primary lift/gain/contrast+sat, log shadow/mid, curves, hue, temperature, a 3-node chain. The 3 OpenDRT cases still fail in the GPU draw (glDrawArrays(tail-drt): gl error 0x0502).",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "test: v2 sweep attaches a surface, first node numbers"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GradeParitySweep.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

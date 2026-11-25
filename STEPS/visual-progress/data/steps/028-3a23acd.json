@@ -1,0 +1,71 @@
+{
+ "id": "028-3a23acd",
+ "title": "portrait preview bound and library delete",
+ "date": "2026-11-11",
+ "status": "done",
+ "commit": {
+  "hash": "3a23acd",
+  "date": "2026-11-11",
+  "merge_subject": "merge: portrait preview bound and library delete"
+ },
+ "tests": "not recorded",
+ "description": "owner finding 2026-11-11 e2 (\"library'deki videoları silme yapılmıyor.\nbasılı tutup çöp kutusu ile library'yi temizleme yok\"): the library had\nno way to remove clips — long-press a row to start selection with that\nrow checked, tap more rows to multi-select, trash to delete after a\nconfirm dialog.\n\nui: LibraryScreen gains a selection mode driven by the pure\nLibrarySelection rules (toggle on tap/long-press, prune of ids the list\nno longer has; selection is active exactly while the set is non-empty).\nwhile selecting, the title + filter chips are replaced by a stock m3\nbar (close iconbutton, count in tabular numerals via Tnum, trash\niconbutton — icons.filled.close/delete, both 48dp iconbutton targets),\nthe fab hides, and each row's trailing slot shows the check state\n(outlined checkcircle unchecked, filled + primary checked) with the\nthumbnail kept in the leading slot so rows are still picke",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: bound the portrait preview to its capped region",
+  "feat: library multi-select delete with confirm dialog"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ClipDeletion.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/data/ThumbnailStore.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/AppNav.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/PreviewSurface.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/LibraryScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/library/LibrarySelection.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/main/res/values-tr/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/res/values/strings.xml",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/ClipDeletionTest.kt",
+   "change": "A"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/data/ThumbnailStoreTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/PreviewSurfaceRatioTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/library/LibrarySelectionTest.kt",
+   "change": "A"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

@@ -1,0 +1,75 @@
+{
+ "id": "240-35c7fe7",
+ "title": "feat: opendrt bakes into a 3d lut for the gpu tail",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "35c7fe7",
+  "date": "2026-11-25",
+  "merge_subject": "merge: feat: opendrt bakes into a 3d lut for the gpu tail"
+ },
+ "tests": "The per-pixel GLSL OpenDRT never matched core (149 levels, 98% mismatch on device). core now bakes the transform into a 65^3 table on DaVinci Intermediate code axes (cached per spec) and the TAIL vari",
+ "description": "The per-pixel GLSL OpenDRT never matched core (149 levels, 98% mismatch on device). core now bakes the transform into a 65^3 table on DaVinci Intermediate code axes (cached per spec) and the TAIL variant is DI encode + by-hand trilinear over it; the CPU reference applies the same table (applyOpenDrtBaked), so the two agree like every other LUT stage. Lattice error against the direct transform: worst 0.39 LSB, mean 0.078 LSB (desktop test, 4096-sample log sweep). Device v2 sweep: drt-sdr 0.003%, drt-hlg 0.001%, nodes+drt 0.001%, all max 1 LSB (bound 0.01%, unchanged); encoded frame + OpenDRT SDR 0.0023% / HLG 0.0000%. The encoded GPU door and window arm no longer fall back to the CPU for an OpenDRT chain. JVM green, desktop 0.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: opendrt bakes into a 3d lut for the gpu tail"
+ ],
+ "files": [
+  {
+   "path": "app/src/androidTest/java/com/ritim/ritimcraw/engine/EncodedYuvPassParityTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GlesShaderValidatorTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/OpenDrt.h",
+   "change": "M"
+  },
+  {
+   "path": "core/src/OpenDrt.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/tests/test_opendrt.cpp",
+   "change": "M"
+  }
+ ],
+ "sources": [
+  {
+   "name": "DaVinci",
+   "note": "named in commit messages"
+  },
+  {
+   "name": "HLG",
+   "note": "named in commit messages"
+  }
+ ],
+ "screenshot": null
+}

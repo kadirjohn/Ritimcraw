@@ -1,0 +1,52 @@
+{
+ "id": "030-579bf9b",
+ "title": "gyro stabilization math phase four",
+ "date": "2026-11-11",
+ "status": "done",
+ "commit": {
+  "hash": "579bf9b",
+  "date": "2026-11-11",
+  "merge_subject": "merge: gyro stabilization math phase four"
+ },
+ "tests": "not recorded",
+ "description": "tier 3 of the phase 4 test suite: the clip-level computeStabilization\ncontract plus real-fixture evidence on both xiaomi clips.\n\nsynthetic pins (9 cases):\n- mode Off is identity + zoom 1 + status Off for every frame, zero cost\n- the refusal ladder: empty series -> NoImu, unknown offset -> Unsynced,\n  missing intrinsics -> NoImu, no frames -> empty result\n- LowOverlap flags frames outside the gyro span while LockFirstFrame\n  makes the clamp direction observable (angles 10/0/20/30 deg)\n- Smooth at the default strength 0.5 is an exact no-op on the frame\n  grid (tau = 31.6 us -> alpha = 1); strength 0.95 smooths for real\n- LockFirstFrame pins the first inside frame (1 deg/frame pan)\n- HorizonLock levels a rolled camera (pure roll block, requiredZoom ==\n  the roll closed form) and degrades to plain Smooth (flagged) without\n  usable gravity\n- the zoom-limit clamp keeps requiredZoom honest: app",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: gyro stabilization smoothing and relative transform",
+  "test: pin homography and static crop contracts",
+  "test: pin clip stabilization api and fixture evidence"
+ ],
+ "files": [
+  {
+   "path": "core/CMakeLists.txt",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Source.h",
+   "change": "M"
+  },
+  {
+   "path": "core/include/rawedit/Stabilization.h",
+   "change": "A"
+  },
+  {
+   "path": "core/src/Source.cpp",
+   "change": "M"
+  },
+  {
+   "path": "core/src/Stabilization.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_stabilization.cpp",
+   "change": "A"
+  },
+  {
+   "path": "tools/build-desktop.sh",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

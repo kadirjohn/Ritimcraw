@@ -1,0 +1,31 @@
+{
+ "id": "129-5120cf8",
+ "title": "match encoder blit egl config class",
+ "date": "2026-11-17",
+ "status": "done",
+ "commit": {
+  "hash": "5120cf8",
+  "date": "2026-11-17",
+  "merge_subject": "merge: match encoder blit egl config class"
+ },
+ "tests": "not recorded",
+ "description": "The white-window round 4 probe extension (the brief's optional\ncommit 2 — free, so landed). The per-attach geometry line now also\ncarries the CHOSEN CONFIG's class: four one-shot eglGetConfigAttrib\nreads per attach — EGL_RENDERABLE_TYPE, EGL_SURFACE_TYPE,\nEGL_NATIVE_VISUAL_ID and the EGL_RECORDABLE_ANDROID verdict —\nappended to the existing 'window probe: attach win=... dots=...'\nline as cfg[renderable=0x.. surface=0x.. visual=N recordable=R].\n\nPurpose: the round-4 fix (783ba1d) added EGL_RECORDABLE_ANDROID to\nthe preview session's eglChooseConfig attribs; this line lets the\nowner's device replay CONFIRM the config class actually changed\n(recordable=1) on the same one-shot-per-attach line that already\nreports the surface geometry — no second build, no new readback,\nzero per-frame cost (release builds never reach the block; the\nlatch keeps it once per attach).\n\nThe round-3 evidence chain ",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "fix: match encoder blit egl config class",
+  "trace: probe logs chosen egl config class"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.h",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

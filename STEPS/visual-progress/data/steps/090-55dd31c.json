@@ -1,0 +1,99 @@
+{
+ "id": "090-55dd31c",
+ "title": "pointwise grade stages on gpu",
+ "date": "2026-11-14",
+ "status": "done",
+ "commit": {
+  "hash": "55dd31c",
+  "date": "2026-11-14",
+  "merge_subject": "merge: pointwise grade stages on gpu"
+ },
+ "tests": "happy-path tests assert the verbatim pass-through (a swapped or",
+ "description": "The ten pointwise grade stages (9 black point, 10 white point,\n11 shadows, 12 midtones, 13 contrast, 16 temperature, 17 tint,\n18 color wheel, 19 split tone, 20 saturation) crossed both GPU\nseams, so a multi-control grade stays on GPU end to end instead\nof falling back to CPU per control.\n\nNative layer: both request structs (DevelopFrameRequest,\nPreviewFrameRequest) gain the 18 raw grade values (17 floats +\nasShot) with GradeK's own defaults (tempK 5600, split hues -1,\nasShot true); both Impl loc chains gain the 19 uniforms\n(uBlackPoint..uSaturation plus the two hoisted int gates\nuWbManual/uSplitActive); both lookup blocks extend the\nshader-contract check; both passes compute the CPU-side gates\nexactly like the shading gate (wbManual = !asShot,\nsplitActive = a split hue >= 0) and bind the 19 uniforms between\nhighlights and tonemap.\n\nJNI: all three render entries (develop readback, develop",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "feat: pointwise grade stages in develop fragment",
+  "feat: pointwise controls cross the seams"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesDevelopSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.h",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/GpuPreviewSession.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/NativeSource.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/RenderBackend.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GlesShaderValidatorTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/GpuPreviewSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourceDevelopSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/NativeSourcePreviewSessionTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/engine/RenderBackendTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/export/Mp4ExporterTest.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/EditorPreviewLogicTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

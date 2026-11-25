@@ -1,0 +1,35 @@
+{
+ "id": "199-21bee77",
+ "title": "test: export stage ms and encoded frame breakdown",
+ "date": "2026-11-24",
+ "status": "done",
+ "commit": {
+  "hash": "21bee77",
+  "date": "2026-11-24",
+  "merge_subject": "merge: test: export stage ms and encoded frame breakdown"
+ },
+ "tests": "not recorded",
+ "description": "Debug-only: the surface-gpu export call (nativeDevelopSessionRenderFrameToEncoderParcel) now logs, every 100 frames, the average ms of the centre-frame decode, the temporal CFA merge and the GPU session call (upload, draws, blit, swap); the old Kotlin stage table reads zeros on this path. Measured, 58.7 s 4K30 MCRAW with nr+unsharp+temporal+tonemap+lut (1749 frames, 366 s): decode 0.0, temporal 136 rising to 198 ms, gpu-session 4.2-5.3 ms, total 209 ms per frame: the export is bound by the single-threaded CPU temporal merge, not by the GPU or the encoder. A clip with no effects: decode 19.1, temporal 0.6, gpu 58.4, total 90.2 ms.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "test: encoded preview frame breakdown and color log",
+  "test: export stage ms in the gpu encoder path"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedAdapters.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}
