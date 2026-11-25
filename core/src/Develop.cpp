@@ -851,7 +851,7 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask) {
 }
 
 RecoveryClipLevels recoveryClipLevels(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta) {
-    RecoveryClipLevels out;  // thresholds default to "none" (> 1)
+    RecoveryClipLevels out;  // every threshold defaults to 1.0: only a site at the very white level is clipped
     const uint32_t w = info.width, h = info.height;
     if (w == 0 || h == 0 || cfa == nullptr) return out;
     // Stage-1 level resolution, identical to developCpu.
@@ -899,52 +899,69 @@ RecoveryClipLevels recoveryClipLevels(const uint16_t* cfa, const FrameInfo& info
     // Plateau count: sites within kBand of the channel maximum.
     constexpr float kBand = 0.004f;
     // Smallest raw value of each slot whose normalized level reaches the plateau floor (monotone: binary search).
-    uint32_t rawFloor[4];
+    uint32_t rawFloor[4], rawTop[4];
     for (int slot = 0; slot < 4; ++slot) {
-        const float floorN = maxNorm[layout.cell[slot / 2][slot % 2]] - kBand;
+        const float topN = maxNorm[layout.cell[slot / 2][slot % 2]];
+        const float floorN = topN - kBand;
         uint32_t lo = 0, hi = 65536;  // 65536 = unreachable
         while (lo < hi) {
             const uint32_t mid = (lo + hi) / 2;
             if (normOf(slot, mid) >= floorN) hi = mid; else lo = mid + 1;
         }
         rawFloor[slot] = lo;
+        lo = 0; hi = 65536;
+        while (lo < hi) {
+            const uint32_t mid = (lo + hi) / 2;
+            if (normOf(slot, mid) >= topN) hi = mid; else lo = mid + 1;
+        }
+        rawTop[slot] = lo;
     }
-    std::vector<uint32_t> rowCount(static_cast<size_t>(h) * 2, 0);
+    std::vector<uint32_t> rowCount(static_cast<size_t>(h) * 2, 0), rowTop(static_cast<size_t>(h) * 2, 0);
     parallelForRows(h, [&](size_t y0, size_t y1) {
         for (size_t y = y0; y < y1; ++y) {
             const uint16_t* row = cfa + y * w;
             const uint32_t f0 = rawFloor[cellSlot(static_cast<int>(y & 1), 0)];
             const uint32_t f1 = rawFloor[cellSlot(static_cast<int>(y & 1), 1)];
-            uint32_t c0 = 0, c1 = 0;
+            const uint32_t t0 = rawTop[cellSlot(static_cast<int>(y & 1), 0)];
+            const uint32_t t1 = rawTop[cellSlot(static_cast<int>(y & 1), 1)];
+            uint32_t c0 = 0, c1 = 0, k0 = 0, k1 = 0;
             uint32_t x = 0;
             for (; x + 1 < w; x += 2) {
                 c0 += row[x] >= f0;
                 c1 += row[x + 1] >= f1;
+                k0 += row[x] >= t0;
+                k1 += row[x + 1] >= t1;
             }
-            if (x < w) c0 += row[x] >= f0;
+            if (x < w) { c0 += row[x] >= f0; k0 += row[x] >= t0; }
             rowCount[y * 2] = c0;
             rowCount[y * 2 + 1] = c1;
+            rowTop[y * 2] = k0;
+            rowTop[y * 2 + 1] = k1;
         }
     });
-    uint64_t plateau[3] = {0, 0, 0};
+    uint64_t band[3] = {0, 0, 0}, top[3] = {0, 0, 0};
     for (uint32_t y = 0; y < h; ++y)
-        for (int px = 0; px < 2; ++px)
-            plateau[layout.cell[y & 1][px]] += rowCount[static_cast<size_t>(y) * 2 + px];
+        for (int px = 0; px < 2; ++px) {
+            band[layout.cell[y & 1][px]] += rowCount[static_cast<size_t>(y) * 2 + px];
+            top[layout.cell[y & 1][px]] += rowTop[static_cast<size_t>(y) * 2 + px];
+        }
+    for (int c = 0; c < 3; ++c) { out.maxNorm[c] = maxNorm[c]; out.plateau[c] = band[c]; out.topCount[c] = top[c]; }
     constexpr uint64_t kMinPlateau = 16;
-    // Green saturates first on real sensors: its plateau must sit near the top of the range.
-    const bool gClipped = maxNorm[1] >= 0.9f && plateau[1] >= kMinPlateau;
-    if (gClipped) out.threshold[1] = maxNorm[1] - kBand;
-    else if (maxNorm[1] >= kRecoveryClipThreshold) out.threshold[1] = kRecoveryClipThreshold;
-    // Red/blue: either truly saturated, or capped at the green clip level times the as-shot neutral ratio (the
-    // capture pipelines neutralise clipped regions that way), within 1%.
-    for (int c = 0; c < 3; c += 2) {
-        if (maxNorm[c] >= kRecoveryClipThreshold) { out.threshold[c] = kRecoveryClipThreshold; continue; }
-        if (!gClipped || plateau[c] < kMinPlateau) continue;
-        const float gN = meta.asShotNeutral[1] > 0.0f ? meta.asShotNeutral[1] : 1.0f;
-        const float cN = meta.asShotNeutral[c] > 0.0f ? meta.asShotNeutral[c] : 1.0f;
-        const float expected = maxNorm[1] * cN / gN;
-        if (std::fabs(maxNorm[c] - expected) <= 0.01f * std::max(expected, 1e-3f)) out.threshold[c] = maxNorm[c] - kBand;
-    }
+    // A SHARP peak: enough sites, and the maximum code itself holds a real share of the band (noise or a smooth
+    // highlight spreads over many codes and never does).
+    const auto sharp = [&](int c) { return band[c] >= kMinPlateau && top[c] >= kMinPlateau && top[c] * 4 >= band[c]; };
+    // Own saturation: only a sharp peak in the top 0.5% of the raw range counts. Green saturates first on real sensors.
+    bool saturated[3];
+    for (int c = 0; c < 3; ++c) saturated[c] = maxNorm[c] >= 0.995f && sharp(c);
+    for (int c = 0; c < 3; ++c)
+        if (saturated[c]) out.threshold[c] = maxNorm[c] - kBand;
+    // Red/blue below the top of the range: the capture pipeline caps them at the green clip level times the frame's own
+    // neutral ratio (measured: R/B pile up sharply at e.g. 0.46-0.72 of white while green sits at 0.9984, and the
+    // ratio drifts per frame with the camera's AWB, so it cannot be tied to the container's neutral). A sharp peak on
+    // R/B counts only while green itself is saturated; noise never makes a peak that sharp.
+    if (saturated[1])
+        for (int c = 0; c < 3; c += 2)
+            if (!saturated[c] && sharp(c)) out.threshold[c] = maxNorm[c] - kBand;
     return out;
 }
 
@@ -995,15 +1012,22 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
 
     // Highlight recovery needs the raw clip mask measured BEFORE lens shading (the sensor saturates at
     // the raw level, not at the shaded one); built here, consumed after the demosaic.
+    // Stage 3 (Neutral) and Recovery share the per-frame, per-channel clip flags (measured plateau, or the white
+    // level itself when the frame has no sharp saturation peak), taken here on the pre-shading raw values.
+    std::vector<uint8_t> preClip;
     std::vector<float> clipMaskCfa;
-    if (grade.highlightRecovery) {
+    if (grade.highlightRecovery || grade.highlightReconstruction) {
         const RecoveryClipLevels levels = recoveryClipLevels(cfa, info, meta);
-        clipMaskCfa.resize(n);
+        preClip.resize(n);
         for (uint32_t y = 0; y < h; ++y)
             for (uint32_t x = 0; x < w; ++x) {
                 const size_t i = static_cast<size_t>(y) * w + x;
-                clipMaskCfa[i] = norm[i] >= levels.threshold[layout.cell[y & 1][x & 1]] ? 1.0f : 0.0f;
+                preClip[i] = norm[i] >= levels.threshold[layout.cell[y & 1][x & 1]] ? 1 : 0;
             }
+        if (grade.highlightRecovery) {
+            clipMaskCfa.resize(n);
+            for (size_t i = 0; i < n; ++i) clipMaskCfa[i] = preClip[i] ? 1.0f : 0.0f;
+        }
     }
 
     // Stage 2: lens shading gain (bilinear on the shading map in sensor
@@ -1060,11 +1084,12 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
                 for (int yy = y0; yy <= y1; ++yy) {
                     for (int xx = x0; xx <= x1; ++xx) {
                         const int color = layout.cell[yy & 1][xx & 1];
-                        const float v = norm[static_cast<size_t>(yy) * w + xx];
+                        const size_t site = static_cast<size_t>(yy) * w + xx;
+                        const float v = norm[site];
                         present[color] = true;
                         if (minV[color] < 0.0f || v < minV[color])
                             minV[color] = v;
-                        if (v >= 1.0f)
+                        if (preClip[site])
                             clipped[color] = true;
                     }
                 }
@@ -1095,7 +1120,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
                 for (int yy = y0; yy <= y1; ++yy) {
                     for (int xx = x0; xx <= x1; ++xx) {
                         const size_t idx = static_cast<size_t>(yy) * w + xx;
-                        if (norm[idx] < 1.0f)
+                        if (!preClip[idx])
                             continue; // unclipped sites keep their real level
                         const float cap = ceiling / gain[wbIndex(layout.cell[yy & 1][xx & 1])];
                         if (norm[idx] > cap)

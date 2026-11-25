@@ -85,7 +85,7 @@ bool nearAllClipped(uint32_t x, uint32_t y) {
         const int xx = std::min(std::max(int(x) + dx, 0), int(kW) - 1);
         float s[3];
         sceneRgb(uint32_t(xx), y, s);
-        const float t = kRecoveryClipThreshold - 0.005f;  // the mask threshold (and a hair of bilinear margin)
+        const float t = 0.99f;  // the measured plateau threshold (~0.996 on the synthetic clip) with a hair of bilinear margin
         if (s[0] * kNeutral[0] >= t && s[1] * kNeutral[1] >= t && s[2] * kNeutral[2] >= t) return true;
     }
     return false;
@@ -210,8 +210,9 @@ TEST_CASE("recovery_is_a_bit_exact_no_op_on_an_unclipped_image") {
 // The raw-integer scan in recoveryClipLevels must give exactly the thresholds the per-site float scan gave
 // (the scan is the GPU path's per-frame CPU cost, so it was rewritten for speed; the numbers must not move).
 namespace {
-RecoveryClipLevels referenceClipLevels(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta) {
-    RecoveryClipLevels out;
+struct RefScan { float maxNorm[3] = {0, 0, 0}; uint64_t band[3] = {0, 0, 0}, top[3] = {0, 0, 0}; };
+RefScan referenceScan(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta) {
+    RefScan out;
     const uint32_t w = info.width, h = info.height;
     const bool useFrameBlack = info.dynamicBlack[0] >= 0;
     const float white = info.dynamicWhite > 0 ? float(info.dynamicWhite) : float(meta.white);
@@ -221,31 +222,20 @@ RecoveryClipLevels referenceClipLevels(const uint16_t* cfa, const FrameInfo& inf
         range[s] = white > black[s] ? white - black[s] : 1.0f;
     }
     const int cell[2][2] = {{0, 1}, {1, 2}};  // RGGB
-    float maxNorm[3] = {0, 0, 0};
     auto norm = [&](uint32_t x, uint32_t y) {
         const int slot = int(y & 1) * 2 + int(x & 1);
         return std::min(std::max((float(cfa[size_t(y) * w + x]) - black[slot]) / range[slot], 0.0f), 1.0f);
     };
     for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x) maxNorm[cell[y & 1][x & 1]] = std::max(maxNorm[cell[y & 1][x & 1]], norm(x, y));
+        for (uint32_t x = 0; x < w; ++x) out.maxNorm[cell[y & 1][x & 1]] = std::max(out.maxNorm[cell[y & 1][x & 1]], norm(x, y));
     constexpr float kBand = 0.004f;
-    uint64_t plateau[3] = {0, 0, 0};
     for (uint32_t y = 0; y < h; ++y)
         for (uint32_t x = 0; x < w; ++x) {
             const int c = cell[y & 1][x & 1];
-            if (norm(x, y) >= maxNorm[c] - kBand) ++plateau[c];
+            const float v = norm(x, y);
+            if (v >= out.maxNorm[c] - kBand) ++out.band[c];
+            if (v >= out.maxNorm[c]) ++out.top[c];
         }
-    const bool gClipped = maxNorm[1] >= 0.9f && plateau[1] >= 16;
-    if (gClipped) out.threshold[1] = maxNorm[1] - kBand;
-    else if (maxNorm[1] >= kRecoveryClipThreshold) out.threshold[1] = kRecoveryClipThreshold;
-    for (int c = 0; c < 3; c += 2) {
-        if (maxNorm[c] >= kRecoveryClipThreshold) { out.threshold[c] = kRecoveryClipThreshold; continue; }
-        if (!gClipped || plateau[c] < 16) continue;
-        const float gN = meta.asShotNeutral[1] > 0.0f ? meta.asShotNeutral[1] : 1.0f;
-        const float cN = meta.asShotNeutral[c] > 0.0f ? meta.asShotNeutral[c] : 1.0f;
-        const float expected = maxNorm[1] * cN / gN;
-        if (std::fabs(maxNorm[c] - expected) <= 0.01f * std::max(expected, 1e-3f)) out.threshold[c] = maxNorm[c] - kBand;
-    }
     return out;
 }
 }  // namespace
@@ -271,7 +261,12 @@ TEST_CASE("clip_levels_fast_scan_matches_the_per_site_reference") {
                 if (trial % 3 != 0 && (next() % 5) == 0) v = c == 1 ? plateauG : (c == 0 ? plateauR : plateauB);
                 cfa[size_t(y) * w + x] = uint16_t(v);
             }
-        const RecoveryClipLevels a = recoveryClipLevels(cfa.data(), info, meta), b = referenceClipLevels(cfa.data(), info, meta);
-        for (int c = 0; c < 3; ++c) CHECK(a.threshold[c] == b.threshold[c]);
+        const RecoveryClipLevels a = recoveryClipLevels(cfa.data(), info, meta);
+        const RefScan b = referenceScan(cfa.data(), info, meta);
+        for (int c = 0; c < 3; ++c) {
+            CHECK(a.maxNorm[c] == b.maxNorm[c]);
+            CHECK(a.plateau[c] == b.band[c]);
+            CHECK(a.topCount[c] == b.top[c]);
+        }
     }
 }
