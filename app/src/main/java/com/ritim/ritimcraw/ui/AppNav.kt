@@ -1788,6 +1788,14 @@ fun AppNav(
                         // The top bar's clip name (§2b): display name with
                         // the id as fallback — displayOrId never blank.
                         sourceName = sourceName,
+                        onRenameClip = { name ->
+                            val renamed = stores.sources.rename(r.sourceId, name)
+                            if (renamed != null) {
+                                sourceName = renamed.displayOrId
+                                sources = stores.sources.all()
+                            }
+                            renamed != null
+                        },
                         // ---- LUT wiring (COL-07, managed interpretations
                         // 2026-11-13) ----
                         lutEntries = lutEntries,
@@ -2198,6 +2206,13 @@ fun AppNav(
                             // import path uses, so the list (and the
                             // empty-library state after deleting
                             // everything) updates in place.
+                            onRenameClip = { id, name ->
+                                // Display name only: the record's field.
+                                // The file/URI is never touched.
+                                val renamed = stores.sources.rename(id, name)
+                                sources = stores.sources.all()
+                                renamed != null
+                            },
                             onDeleteClips = { ids ->
                                 com.ritim.ritimcraw.data.ClipDeletion.delete(
                                     ids = ids,

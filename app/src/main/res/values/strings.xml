@@ -734,4 +734,12 @@
     <string name="node_output_display_srgb">sRGB 2.2</string>
     <string name="node_output_display_1886">Rec.1886</string>
     <string name="node_output_display_hlg">HLG 1000</string>
+    <string name="rename_clip_title">Rename clip</string>
+    <string name="rename_clip_label">Name</string>
+    <string name="rename_clip_action">Rename</string>
+    <string name="rename_clip_cancel">Cancel</string>
+    <string name="rename_clip_error">Could not rename this clip. Try another name.</string>
+    <string name="library_selection_rename">Rename clip</string>
+    <string name="editor_rename_clip">Rename clip</string>
+    <string name="editor_rename_clip_detail">Change the name shown for this clip</string>
 </resources>

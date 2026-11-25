@@ -219,6 +219,9 @@ fun LibraryScreen(
     // ClipDeletion and refreshes the list. Default keeps previews and any
     // other caller compiling unchanged.
     onDeleteClips: (ids: List<String>) -> Unit = {},
+    // Rename of an already-imported clip (display name only): true when
+    // the repository accepted it. AppNav refreshes the list.
+    onRenameClip: (id: String, name: String) -> Boolean = { _, _ -> false },
     // Folder import (owner request 2026-11-15): the toolbar's folder button
     // opens the tree picker; a granted tree takes over the screen with
     // the FolderImportBrowser. The single-file path runs the caller's
@@ -304,6 +307,7 @@ fun LibraryScreen(
     if (selection != selectedIds) selectedIds = selection
     val selecting = selection.isNotEmpty()
     var confirmDeleteOpen by remember { mutableStateOf(false) }
+    var renameOpen by remember { mutableStateOf(false) }
 
     // The degraded row whose action opened the SAF picker. The id (not the
     // record) is remembered: the callback runs after the picker round-trip,
@@ -500,6 +504,15 @@ fun LibraryScreen(
                         .weight(1f)
                         .padding(start = 8.dp),
                 )
+                if (selection.size == 1) {
+                    val renameDescription = stringResource(R.string.library_selection_rename)
+                    IconButton(onClick = { renameOpen = true }) {
+                        Icon(
+                            painterResource(R.drawable.ic_edit),
+                            contentDescription = renameDescription,
+                        )
+                    }
+                }
                 IconButton(onClick = { confirmDeleteOpen = true }) {
                     Icon(
                         Icons.Filled.Delete,
@@ -669,6 +682,21 @@ fun LibraryScreen(
                         )
                     }
                 }
+            }
+            val renameTarget = if (renameOpen && selection.size == 1) {
+                visible.firstOrNull { it.id == selection.first() }
+            } else {
+                null
+            }
+            if (renameTarget != null) {
+                RenameClipDialog(
+                    currentName = renameTarget.displayOrId,
+                    onRename = { name -> onRenameClip(renameTarget.id, name) },
+                    onDismiss = {
+                        renameOpen = false
+                        selectedIds = emptySet()
+                    },
+                )
             }
             if (confirmDeleteOpen && selecting) {
                 // The E2 confirm dialog: states HOW MANY clips leave, because
