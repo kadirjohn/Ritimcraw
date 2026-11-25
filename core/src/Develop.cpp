@@ -1057,7 +1057,7 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // s = 0 (highlights = 0) nothing changes and at full recovery the
     // over-knee region maps to a bounded, order-preserving rolloff.
     if (grade.highlights != 0.0f) {
-        const float knee = 0.40f;
+        const float knee = grade.highlightsCurve >= 1 ? 0.40f : 0.75f;
         const float span = 1.0f - knee;
         const float s = -grade.highlights / 100.0f; // recovery -> +1, lift -> -1
         for (size_t i = 0; i < img.rgb.size(); i += 3) {

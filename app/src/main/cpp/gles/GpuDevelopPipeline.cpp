@@ -481,7 +481,7 @@ struct GpuDevelopPipeline::Impl {
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
-          exposureLoc = -1, highlightsLoc = -1,
+          exposureLoc = -1, highlightsLoc = -1, hlKneeLoc = -1,
           blackPointLoc = -1, whitePointLoc = -1, shadowsLoc = -1,
           midtonesLoc = -1, contrastLoc = -1, wbManualLoc = -1, tempKLoc = -1,
           tintLoc = -1, wheelShadowXLoc = -1, wheelShadowYLoc = -1,
@@ -860,6 +860,7 @@ bool GpuDevelopPipeline::Impl::init(
     postSizeLoc = glGetUniformLocation(postProgram, "uSize");
     exposureLoc = glGetUniformLocation(postProgram, "uExposure");
     highlightsLoc = glGetUniformLocation(postProgram, "uHighlights");
+    hlKneeLoc = glGetUniformLocation(postProgram, "uHlKnee");
     blackPointLoc = glGetUniformLocation(postProgram, "uBlackPoint");
     whitePointLoc = glGetUniformLocation(postProgram, "uWhitePoint");
     shadowsLoc = glGetUniformLocation(postProgram, "uShadows");
@@ -880,7 +881,7 @@ bool GpuDevelopPipeline::Impl::init(
     splitBalanceLoc = glGetUniformLocation(postProgram, "uSplitBalance");
     saturationLoc = glGetUniformLocation(postProgram, "uSaturation");
     if (postSrcLoc < 0 || postSizeLoc < 0 || exposureLoc < 0 ||
-        highlightsLoc < 0 ||
+        highlightsLoc < 0 || hlKneeLoc < 0 ||
         blackPointLoc < 0 || whitePointLoc < 0 || shadowsLoc < 0 ||
         midtonesLoc < 0 || contrastLoc < 0 || wbManualLoc < 0 ||
         tempKLoc < 0 || tintLoc < 0 || wheelShadowXLoc < 0 ||
@@ -1960,6 +1961,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     glUniform2i(postSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
     glUniform1f(exposureLoc, exposure);
     glUniform1f(highlightsLoc, req.highlights);  // raw; the shader computes s
+    glUniform1f(hlKneeLoc, req.highlightsCurve >= 1 ? 0.40f : 0.75f);  // the CPU stage-15 knee by curve version
     // The ten pointwise stages' raw grade values (each 0.0f is the CPU's
     // own neutral skip) + the two hoisted int gates.
     glUniform1f(blackPointLoc, req.blackPoint);
@@ -2552,6 +2554,7 @@ uint64_t gradeProbeHash(const DevelopFrameRequest& r) {
         r.midtones, r.contrast, r.tempK, r.tint, r.saturation,
         r.asShot ? 1.0f : 0.0f, r.sharpness, r.detail, r.chromaDenoise,
         r.noiseReduction, static_cast<float>(r.tonemap),
+        static_cast<float>(r.highlightsCurve),
         r.wheelShadowX, r.wheelShadowY, r.wheelMidX, r.wheelMidY,
         r.wheelHighX, r.wheelHighY, r.splitShadowHue, r.splitHighlightHue,
         r.splitBalance,
