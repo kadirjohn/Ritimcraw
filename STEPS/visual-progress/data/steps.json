@@ -14702,6 +14702,159 @@
    ],
    "sources": [],
    "screenshot": "assets/p10-custom-themes.png"
+  },
+  {
+   "id": "r1-hr-measure",
+   "title": "hr_measure tool for highlight clip stats",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "61c3c6e",
+    "date": "2026-11-25",
+    "merge_subject": "merge: feat: hr_measure tool for highlight clip stats"
+   },
+   "tests": "build-desktop.sh exit 0 (34 test binaries Status: SUCCESS)",
+   "description": "M0 of the highlight recovery plan: measures where the sensor channels really clip on a real frame.",
+   "added": [
+    "core/tests/hr_measure.cpp: per-channel top-code pile-up, share at 1.00/0.99/0.98/0.97/0.95 of white, stage-3 hits and misses, whole frame and brightest 1% tiles"
+   ],
+   "removed": [],
+   "changed": [],
+   "files": [
+    {
+     "path": "core/tests/hr_measure.cpp",
+     "change": "A"
+    },
+    {
+     "path": "tools/build-desktop.sh",
+     "change": "M"
+    }
+   ],
+   "sources": []
+  },
+  {
+   "id": "r2-recovery-cpu",
+   "title": "highlight recovery on the cpu oracle",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "ca0d2d0",
+    "date": "2026-11-25",
+    "merge_subject": "merge: feat: highlight recovery on the cpu oracle"
+   },
+   "tests": "build-desktop.sh exit 0; test_highlight_recovery 3 cases passed (M1 synthetic ground truth)",
+   "description": "Real re-estimation of clipped channels from the unclipped ones (neighbourhood-ratio pyramid), as the CPU reference for the GPU twin. Screenshot: night clip frame 0, exposure -2 EV, Recovery (traffic-light core regains red); the same crop with Neutral is assets/recovery-cpu-night-f0-neutral-2ev.png.",
+   "added": [
+    "Grade::highlightRecovery, recoverClippedHighlights (5 scales: 9x9 box then 3x3 block neighbourhoods on 8/32/128/512 px), recoveryClipLevels (per-frame per-channel plateau)",
+    "test_highlight_recovery.cpp: synthetic ground truth; mean error on clipped channels, 1 channel clipped: neutral 0.1746 -> recovery 0.0105; 2 channels: 0.2348 -> 0.0257"
+   ],
+   "removed": [],
+   "changed": [
+    "Develop.cpp: stage 3 is replaced by Recovery when the flag is set; WB division moves before it"
+   ],
+   "files": [
+    {
+     "path": "core/include/rawedit/Develop.h",
+     "change": "M"
+    },
+    {
+     "path": "core/src/Develop.cpp",
+     "change": "M"
+    },
+    {
+     "path": "core/tests/hr_measure.cpp",
+     "change": "M"
+    },
+    {
+     "path": "core/tests/test_highlight_recovery.cpp",
+     "change": "A"
+    },
+    {
+     "path": "tools/build-desktop.sh",
+     "change": "M"
+    }
+   ],
+   "sources": [
+    {
+     "name": "darktable / RawTherapee",
+     "url": "",
+     "note": "method family only (inpaint opposed / colour propagation); the code is written in-house"
+    }
+   ],
+   "screenshot": "assets/recovery-cpu-night-f0-recovery-2ev.png"
+  },
+  {
+   "id": "r3-neutral-levels",
+   "title": "stage 3 uses the measured clip levels",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "b268af2",
+    "date": "2026-11-25",
+    "merge_subject": "merge: feat: stage 3 uses the measured clip levels"
+   },
+   "tests": "build-desktop.sh exit 0 (34 test binaries Status: SUCCESS); no golden hash or parity constant changed",
+   "description": "Neutral (stage 3) and Recovery flag clipped sites from the per-frame, per-channel plateau measured on the pre-shading raw values; frames without a sharp saturation peak flag only sites at the white level. Owner-approved behaviour change, no version field.",
+   "added": [
+    "Sharp-peak rule: maxNorm >= 0.995, >= 16 sites at the max code, >= 25% of the 0.4% band; R/B plateaus count only while G is saturated",
+    "hr_levels tool: per-camera verification (24 mm, 72 mm, 99 mm clips)"
+   ],
+   "removed": [],
+   "changed": [
+    "Develop.cpp stage 3 flags come from preClip instead of v >= 1.0 after shading"
+   ],
+   "files": [
+    {
+     "path": "core/include/rawedit/Develop.h",
+     "change": "M"
+    },
+    {
+     "path": "core/src/Develop.cpp",
+     "change": "M"
+    },
+    {
+     "path": "core/tests/hr_levels.cpp",
+     "change": "A"
+    },
+    {
+     "path": "core/tests/test_highlight_recovery.cpp",
+     "change": "M"
+    },
+    {
+     "path": "tools/build-desktop.sh",
+     "change": "M"
+    }
+   ],
+   "sources": []
+  },
+  {
+   "id": "r4-hr-trace",
+   "title": "hr_trace per-stage pixel trace tool",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "9377b09",
+    "date": "2026-11-25",
+    "merge_subject": "merge: feat: hr_trace per-stage pixel trace tool"
+   },
+   "tests": "build-desktop.sh --no-tests exit 0 (tool only)",
+   "description": "Per-stage trace of one pixel (WB, matrix, noise reduction, exposure, highlights, OETF) used to measure the lilac tint on 261124_144344: the tint is already in the white-balanced image (R/G 1.05-1.16, B/G 1.06-1.12) and the matrix raises it; exposure and highlights keep the ratios.",
+   "added": [
+    "core/tests/hr_trace.cpp"
+   ],
+   "removed": [],
+   "changed": [],
+   "files": [
+    {
+     "path": "core/tests/hr_trace.cpp",
+     "change": "A"
+    },
+    {
+     "path": "tools/build-desktop.sh",
+     "change": "M"
+    }
+   ],
+   "sources": []
   }
  ]
 }
