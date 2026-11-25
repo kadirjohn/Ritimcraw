@@ -14513,9 +14513,13 @@ window.STEPS_DATA = {
    "id": "e0b5-encoded-8k-surface-export",
    "title": "route encoded export through the encoder surface (8K)",
    "date": "2026-11-25",
-   "status": "blocked",
-   "commit": null,
-   "tests": "blocked-on-device: JVM green (:app:assembleDebug :app:testDebugUnitTest --rerun: 3049 tests, 0 failures; tools/build-desktop.sh exit 0); device test app/src/androidTest/.../Encoded8kSurfaceExportTest.kt not run, awaiting coordinator",
+   "status": "done",
+   "commit": {
+    "hash": "09c2f22",
+    "date": "2026-11-25",
+    "merge_subject": "merge: feat: encoded export through the encoder surface"
+   },
+   "tests": "gradle assembleDebug testDebugUnitTest --rerun: 3049 tests, 0 failures. Device (Xiaomi 25010PN30G): 8K 7680x4320 HEVC source, 12 frames through the encoder surface in 2749 ms, no CPU fallback, GPU budget 2135 MiB; 4K60 Mi-Log clip: 1244 frames in 30736 ms (~25 ms/frame), encoder-input=surface-gpu, frame count 1244/1244; MCRAW readback render unchanged (ClipParityDiagTest 0.0001% mismatch, <=1 LSB).",
    "description": "Encoded sources develop YUV on the GPU and draw straight onto the encoder input Surface, so an 8K clip never builds a 99 MB RGB frame. Branch feat-encoded-8k-surface-export, not merged until verified on the device.",
    "added": [
     "EncodedExportPlanner: pure path decision and GPU memory budget",
