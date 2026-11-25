@@ -202,6 +202,21 @@ val Activity: ImageVector = strokeIcon(
 )
 
 /**
+ * filmstrip (Scrub frames row, F2-C3): the stack of small frames with a
+ * playhead line through it — the spec-set's own stroke contract, drawn
+ * for the seek-drag cache (a small frame + the timeline line it rides).
+ */
+val Filmstrip: ImageVector = strokeIcon(
+    name = "Filmstrip",
+    paths = listOf(
+        rectPath(x = 3f, y = 5f, w = 18f, h = 14f, rx = 1.5f),
+        "M3 9h18",
+        "M8 9v10M13 9v10M18 9v10",
+        "M6.5 14h.01M10.5 14h.01M14.5 14h.01",
+    ),
+)
+
+/**
  * contrast (Theme row tile): the disc is stroked; the LEFT half is
  * FILLED with the same tint (spec: path "M12 3a9 9 0 0 1 0 18z" filled).
  */

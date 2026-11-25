@@ -619,6 +619,9 @@
     <string name="settings_render_backend_hint_gpu">Deneysel</string>
     <string name="settings_render_backend_info">Geliştirme hattının çalıştığı yer. CPU referans yoludur. Otomatik, cihaz doğruladığında GPU\'yu kullanır. GPU deneyseldir ve CPU\'ya döner. Video kodlayıcı ayrıca seçilir.</string>
     <string name="settings_render_backend_about">Görüntü işleme hakkında</string>
+    <string name="settings_scrub_frames">Sarma kareleri</string>
+    <string name="settings_scrub_frames_hint_on">Sürüklerken küçük önbellek kareleri anında görünür</string>
+    <string name="settings_scrub_frames_hint_off">Sürüklerken her kare ayrıca işlenir</string>
     <string name="settings_gyro_folder_not_set">Ayarlanmadı</string>
     <string name="settings_preview_stats_hint_on">Hata ayıklama · istatistikler her karede okunuyor</string>
     <string name="settings_preview_stats_hint_off">Hata ayıklama · kapalı, kare başına maliyet yok</string>
