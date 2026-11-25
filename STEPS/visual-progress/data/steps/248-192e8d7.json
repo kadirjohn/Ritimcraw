@@ -1,0 +1,63 @@
+{
+ "id": "248-192e8d7",
+ "title": "docs: add visual progress timeline site",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "192e8d7",
+  "date": "2026-11-25",
+  "merge_subject": "merge: docs: add visual progress timeline site"
+ },
+ "tests": "not recorded",
+ "description": "Static no-build timeline of the change history: one JSON per step under data/steps (255 at launch - 247 backfilled from git log --merges --first-parent main plus the planned items), generated data/steps.json and data/steps.js, index.html + css + js, and tools/build-data.py which validates and regenerates. No network, no npm.",
+ "added": [
+  "index.html, css/style.css, js/app.js: timeline over done/in-progress/planned/blocked",
+  "data/steps/<id>.json per-step source of truth with _template.json",
+  "tools/build-data.py: validates every step, rewrites steps.json/steps.js, writes nothing on error",
+  "README.md: schema, add-a-step workflow, standing rule"
+ ],
+ "removed": [],
+ "changed": [
+  ".gitignore: STEPS/ narrowed to STEPS/* with !STEPS/visual-progress/ so the site is tracked"
+ ],
+ "files": [
+  {
+   "path": "STEPS/visual-progress/index.html",
+   "change": "A"
+  },
+  {
+   "path": "STEPS/visual-progress/css/style.css",
+   "change": "A"
+  },
+  {
+   "path": "STEPS/visual-progress/js/app.js",
+   "change": "A"
+  },
+  {
+   "path": "STEPS/visual-progress/README.md",
+   "change": "A"
+  },
+  {
+   "path": "STEPS/visual-progress/tools/build-data.py",
+   "change": "A"
+  },
+  {
+   "path": "STEPS/visual-progress/data/steps.json",
+   "change": "A"
+  },
+  {
+   "path": "STEPS/visual-progress/data/steps.js",
+   "change": "A"
+  },
+  {
+   "path": "STEPS/visual-progress/data/steps/_template.json",
+   "change": "A"
+  },
+  {
+   "path": ".gitignore",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

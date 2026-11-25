@@ -14510,6 +14510,376 @@ window.STEPS_DATA = {
    "screenshot": null
   },
   {
+   "id": "248-192e8d7",
+   "title": "docs: add visual progress timeline site",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "192e8d7",
+    "date": "2026-11-25",
+    "merge_subject": "merge: docs: add visual progress timeline site"
+   },
+   "tests": "not recorded",
+   "description": "Static no-build timeline of the change history: one JSON per step under data/steps (255 at launch - 247 backfilled from git log --merges --first-parent main plus the planned items), generated data/steps.json and data/steps.js, index.html + css + js, and tools/build-data.py which validates and regenerates. No network, no npm.",
+   "added": [
+    "index.html, css/style.css, js/app.js: timeline over done/in-progress/planned/blocked",
+    "data/steps/<id>.json per-step source of truth with _template.json",
+    "tools/build-data.py: validates every step, rewrites steps.json/steps.js, writes nothing on error",
+    "README.md: schema, add-a-step workflow, standing rule"
+   ],
+   "removed": [],
+   "changed": [
+    ".gitignore: STEPS/ narrowed to STEPS/* with !STEPS/visual-progress/ so the site is tracked"
+   ],
+   "files": [
+    {
+     "path": "STEPS/visual-progress/index.html",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/css/style.css",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/js/app.js",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/README.md",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/tools/build-data.py",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.js",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps/_template.json",
+     "change": "A"
+    },
+    {
+     "path": ".gitignore",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
+   "id": "251-26110e2",
+   "title": "fix: theme slot icons animate for every slot incl C",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "26110e2",
+    "date": "2026-11-25",
+    "merge_subject": "merge: fix: theme slot icons animate for every slot incl C"
+   },
+   "tests": "not recorded",
+   "description": "The custom C slot used to sit still while the icon slots rose, scaled and leaned toward the thumb. The text glyph now gets the same proximity pose (rise, scale, lean, alpha handoff under the thumb, colour charge drawn offscreen with SrcIn), as pure draw-phase curves.",
+   "added": [
+    "ThemeIconMorph.textGlyphState(signed): the same curve as slotState without the per-icon gesture (a letter neither spins nor stretches)",
+    "ThemeIconMorphTest.textGlyph_restNearAndHandoff: rest/handoff/alpha/brightness and left-right scale symmetry"
+   ],
+   "removed": [],
+   "changed": [
+    "ThemeSlider custom slot draws the glyph with graphicsLayer pose + offscreen SrcIn recolour instead of a bare alpha smoothstep"
+   ],
+   "files": [
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeIconMorph.kt",
+     "change": "M"
+    },
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeSlider.kt",
+     "change": "M"
+    },
+    {
+     "path": "app/src/test/java/com/ritim/ritimcraw/ui/components/ThemeIconMorphTest.kt",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
+   "id": "255-a74e246",
+   "title": "docs: recovery steps in the progress site",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "a74e246",
+    "date": "2026-11-25",
+    "merge_subject": "merge: docs: recovery steps in the progress site"
+   },
+   "tests": "not recorded",
+   "description": "Night bookkeeping: the four highlight-recovery desktop steps (r1 hr_measure, r2 CPU oracle, r3 measured clip levels, r4 hr_trace) added to the progress site with regenerated data, plus the two recovery screenshots.",
+   "added": [
+    "steps r1-hr-measure, r2-recovery-cpu, r3-neutral-levels, r4-hr-trace (260 steps total after regeneration)"
+   ],
+   "removed": [],
+   "changed": [
+    "data/steps.json and data/steps.js regenerated"
+   ],
+   "files": [
+    {
+     "path": "STEPS/visual-progress/data/steps/r1-hr-measure.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps/r2-recovery-cpu.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps/r3-neutral-levels.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps/r4-hr-trace.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/assets/recovery-cpu-night-f0-recovery-2ev.png",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/assets/recovery-cpu-night-f0-neutral-2ev.png",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.json",
+     "change": "M"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.js",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
+   "id": "257-127cc7d",
+   "title": "test: clip parity diagnosis by stage and gate",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "127cc7d",
+    "date": "2026-11-25",
+    "merge_subject": "merge: test: clip parity diagnosis by stage and gate"
+   },
+   "tests": "not recorded",
+   "description": "Device diagnostic (androidTest, needs -e clip/-e clips args): GPU vs CPU on ONE real clip frame under seven grades (default, hr-off, vignette-off, both off, +3ev, hr-off+3ev, highlights-100), logging one ritim-parity line per case (maxDiffLsb, mismatch, over1, meanSigned), plus the editor's open-time parity gate histograms per clip. Built to find which stage split GPU and CPU on the DCG clip (black 1023, white 16383) that made the editor fall back to the CPU arm.",
+   "added": [
+    "ClipParityDiagTest: per-stage compare and the gate diagnostic over the jniGlesFragmentParityDiag path"
+   ],
+   "removed": [],
+   "changed": [],
+   "files": [
+    {
+     "path": "app/src/androidTest/java/com/ritim/ritimcraw/engine/ClipParityDiagTest.kt",
+     "change": "A"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
+   "id": "259-816a97d",
+   "title": "docs: async opendrt bake merged, device pending",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "816a97d",
+    "date": "2026-11-25",
+    "merge_subject": "merge: docs: async opendrt bake merged, device pending"
+   },
+   "tests": "not recorded",
+   "description": "Night bookkeeping: step f1-8e-async-opendrt-bake updated to record the merge (8072dfa) with its JVM/desktop test numbers, status left in-progress because the async path stays device-unverified until the Output card (F1-8d) lifts the v2NeedsDrt gate. 262 steps after regeneration.",
+   "added": [],
+   "removed": [],
+   "changed": [
+    "f1-8e step: tests line replaced with the merged run (3025 JVM tests, 35 desktop suites), description notes the merge and the stale CPU-arm gate",
+    "data/steps.json and data/steps.js regenerated"
+   ],
+   "files": [
+    {
+     "path": "STEPS/visual-progress/data/steps/f1-8e-async-opendrt-bake.json",
+     "change": "M"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.json",
+     "change": "M"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.js",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
+   "id": "261-8f0662b",
+   "title": "docs: 8k surface export verified on device",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "8f0662b",
+    "date": "2026-11-25",
+    "merge_subject": "merge: docs: 8k surface export verified on device"
+   },
+   "tests": "not recorded",
+   "description": "Night bookkeeping: e0b5 unblocked after the device run. The step recorded the Xiaomi numbers (8K HEVC 12 frames through the encoder surface in 2749 ms, 4K60 Mi-Log 1244 frames in 30736 ms, no CPU fallback) and moved from blocked to done with the merge hash. 263 steps after regeneration.",
+   "added": [],
+   "removed": [],
+   "changed": [
+    "e0b5 step: status blocked -> done, commit 09c2f22 recorded, tests line carries the device numbers",
+    "data/steps.json and data/steps.js regenerated"
+   ],
+   "files": [
+    {
+     "path": "STEPS/visual-progress/data/steps/e0b5-encoded-8k-surface-export.json",
+     "change": "M"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.json",
+     "change": "M"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.js",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
+   "id": "263-6278a25",
+   "title": "docs: runtime parity gate step",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "6278a25",
+    "date": "2026-11-25",
+    "merge_subject": "merge: docs: runtime parity gate step"
+   },
+   "tests": "not recorded",
+   "description": "Night bookkeeping: step g1-runtime-parity-gate added for the merge that made the open-time parity gate require ran and maxDiffLsb <= 1 only (owner decision: the mismatch share is rounding noise on low-entropy dark frames). 264 steps after regeneration.",
+   "added": [
+    "step g1-runtime-parity-gate"
+   ],
+   "removed": [],
+   "changed": [
+    "data/steps.json and data/steps.js regenerated"
+   ],
+   "files": [
+    {
+     "path": "STEPS/visual-progress/data/steps/g1-runtime-parity-gate.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.json",
+     "change": "M"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.js",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
+   "id": "266-76638c2",
+   "title": "docs: node undo, curve removal, knee steps",
+   "date": "2026-11-26",
+   "status": "done",
+   "commit": {
+    "hash": "76638c2",
+    "date": "2026-11-26",
+    "merge_subject": "merge: docs: node undo, curve removal, knee steps"
+   },
+   "tests": "not recorded",
+   "description": "Night bookkeeping: three steps added in one merge - n1 node undo (done, device-verified), n2 curve versioning removed (done), n3 highlights knee 0.18 (in-progress at the time: awaiting the owner's approval of the golden changes, merged the next night). 267 steps after regeneration.",
+   "added": [
+    "steps n1-node-undo, n2-curve-versioning-removed, n3-highlights-knee-018"
+   ],
+   "removed": [],
+   "changed": [
+    "data/steps.json and data/steps.js regenerated"
+   ],
+   "files": [
+    {
+     "path": "STEPS/visual-progress/data/steps/n1-node-undo.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps/n2-curve-versioning-removed.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps/n3-highlights-knee-018.json",
+     "change": "A"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.json",
+     "change": "M"
+    },
+    {
+     "path": "STEPS/visual-progress/data/steps.js",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
+   "id": "268-50c63c8",
+   "title": "label double tap fix",
+   "date": "2026-11-26",
+   "status": "done",
+   "commit": {
+    "hash": "50c63c8",
+    "date": "2026-11-26",
+    "merge_subject": "merge: label double tap fix"
+   },
+   "tests": "not recorded",
+   "description": "A double-tap on a slider LABEL (the value strip above the track; leg commit a154d68 'fix: label double tap no longer nudges slider') fired the label's own double-tap reset and also drove the slider underneath - the tap sought the track and the undo step of the previous tap-to-position was lost. Label-zone touches are now consumed on the Initial pass (the slider's requireUnconsumed detectors ignore them), and a finger down settles any open tap entry first so the reset stands on a closed base.",
+   "added": [
+    "CompactSliderDefaults.labelZone(yPx, labelHeightPx): pure, JVM-tested (0 height is never a label touch)",
+    "SliderResetTest.double_tap_after_an_open_tap_entry_undoes_to_the_exact_previous_value"
+   ],
+   "removed": [],
+   "changed": [
+    "GradeSlider: label-row height measured with onSizeChanged; a down in the zone is consumed and cannot hit the thumb or mark a gesture base",
+    "GradeHistory.markGestureBase settles the previous open entry so an open tap entry is not replaced by the next nudge"
+   ],
+   "files": [
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/CompactSlider.kt",
+     "change": "M"
+    },
+    {
+     "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/GradeHistory.kt",
+     "change": "M"
+    },
+    {
+     "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/SliderResetTest.kt",
+     "change": "M"
+    }
+   ],
+   "sources": [],
+   "screenshot": null
+  },
+  {
    "id": "e0b5-encoded-8k-surface-export",
    "title": "route encoded export through the encoder surface (8K)",
    "date": "2026-11-25",
@@ -14679,10 +15049,14 @@ window.STEPS_DATA = {
    "id": "n3-highlights-knee-018",
    "title": "fix: highlights knee 0.40 to 0.18 (mid gray)",
    "date": "2026-11-26",
-   "status": "in-progress",
-   "commit": null,
-   "tests": "gradle 3050 tests, 0 failures; build-desktop.sh 35 suites SUCCESS; device sweep 59 cases worst 1 LSB, Highlights 0.001%. NOT MERGED: awaiting the owner's approval of the golden changes (listed in the commit).",
-   "description": "On a night frame (+2.7 EV, AgX Punchy) Highlights -100 moved the brightest 5% by 1.42/255 at knee 0.40 and 8.60/255 at 0.18.",
+   "status": "done",
+   "commit": {
+    "hash": "b884460",
+    "date": "2026-11-26",
+    "merge_subject": "merge: highlights knee 0.18"
+   },
+   "tests": "gradle 3050 tests, 0 failures; build-desktop.sh 35 suites SUCCESS; device sweep 59 cases worst 1 LSB, Highlights 0.001%.",
+   "description": "On a night frame (+2.7 EV, AgX Punchy) Highlights -100 moved the brightest 5% by 1.42/255 at knee 0.40 and 8.60/255 at 0.18. At write time the step was held in-progress for the owner's approval of the golden changes (documented in commit a939cb3); the merge landed as b884460 with the goldens re-pinned.",
    "added": [],
    "removed": [],
    "changed": [],
@@ -14692,16 +15066,18 @@ window.STEPS_DATA = {
   {
    "id": "p01-node-undo",
    "title": "node undo",
-   "date": "TBD",
-   "status": "blocked",
-   "commit": null,
-   "tests": "not run",
-   "description": "Branch feat-node-undo (c5c0e67) is unmerged and not verified on a device. Waiting for a device test before merge.",
+   "date": "2026-11-26",
+   "status": "done",
+   "commit": {
+    "hash": "c25cf79",
+    "date": "2026-11-26",
+    "merge_subject": "merge: feat: node edits join the undo history"
+   },
+   "tests": "see n1-node-undo: gradle 3054 tests, 0 failures; device (Xiaomi, yavas_pan): add node, one continuous drag = one undo step (undo 1.52, redo 0.55), turn off/on, delete: each undone and redone with values restored.",
+   "description": "Node chain edits (add, remove, enable, slider drags) are steps in the undo history; a node slider drag merges into one step. Merged as c25cf79 and verified on the device; tracked step-by-step in n1-node-undo (was blocked at write time on the device test).",
    "added": [],
    "removed": [],
-   "changed": [
-    "Unmerged branch; device-unverified."
-   ],
+   "changed": [],
    "files": [],
    "sources": [],
    "screenshot": null
@@ -14713,7 +15089,7 @@ window.STEPS_DATA = {
    "status": "in-progress",
    "commit": null,
    "tests": "not run",
-   "description": "Approved plan in docs/HIGHLIGHT_RECOVERY_PLAN.md; implementation in progress.",
+   "description": "Umbrella for docs/HIGHLIGHT_RECOVERY_PLAN.md. Merged so far: hr_measure + CPU oracle + measured clip levels + hr_trace (r1-r4) and the GPU twin with the Recovery button (0ec9434, step p11). Remaining from the plan's order of work: the frame-time cost measurement (<= 10 ms per 4K30 frame on the Xiaomi, GPU_BASELINE procedure).",
    "added": [],
    "removed": [],
    "changed": [],
@@ -14729,11 +15105,15 @@ window.STEPS_DATA = {
   {
    "id": "p03-8k-encoded-export",
    "title": "8K encoded export",
-   "date": "TBD",
-   "status": "planned",
-   "commit": null,
-   "tests": "not run",
-   "description": "Encoded export at 8K. See docs/ENCODED_EXPORT_PLAN.md for the general export plan.",
+   "date": "2026-11-25",
+   "status": "done",
+   "commit": {
+    "hash": "09c2f22",
+    "date": "2026-11-25",
+    "merge_subject": "merge: feat: encoded export through the encoder surface"
+   },
+   "tests": "see e0b5-encoded-8k-surface-export: assembleDebug testDebugUnitTest --rerun 3049 tests, 0 failures; device 8K HEVC 12 frames through the encoder surface in 2749 ms, 4K60 Mi-Log 1244 frames in 30736 ms, no CPU fallback.",
+   "description": "Encoded export at 8K: YUV develops on the GPU and draws straight onto the encoder input Surface (no 99 MB RGB frame, no readback). Done as e0b5-encoded-8k-surface-export; see that step for the numbers. General export plan: docs/ENCODED_EXPORT_PLAN.md.",
    "added": [],
    "removed": [],
    "changed": [],
@@ -14767,10 +15147,10 @@ window.STEPS_DATA = {
    "id": "p05-f1-8b-f",
    "title": "F1-8b to F1-8f color UI steps",
    "date": "TBD",
-   "status": "planned",
+   "status": "in-progress",
    "commit": null,
    "tests": "not run",
-   "description": "Remaining color UI sub-steps F1-8b through F1-8f. Design reference: docs/F1_8_COLOR_UI_DESIGN.md.",
+   "description": "Umbrella for the color UI sub-steps of docs/F1_8_COLOR_UI_DESIGN.md. F1-8b (wheels page) merged as ecd454f, tracked in p12-f1-8b-wheels, device verification pending. Remaining: F1-8c curves editor, F1-8d node LUT, F1-8e Output card (Legacy/OpenDRT), F1-8f import defaults and undo/clipboard integration. F1-8a (nodes tab) and F1-8b (wheels) merged.",
    "added": [],
    "removed": [],
    "changed": [],
@@ -14890,12 +15270,12 @@ window.STEPS_DATA = {
    "date": "2026-11-25",
    "status": "done",
    "commit": {
-    "hash": "0bb557f",
+    "hash": "0ec9434",
     "date": "2026-11-25",
-    "merge_subject": "branch tip feat-highlight-recovery-gpu (merge commit follows)"
+    "merge_subject": "merge: feat: highlight recovery on the gpu with a recovery button"
    },
    "tests": ":app:assembleDebug :app:testDebugUnitTest --rerun: 3025 tests, 0 failures; tools/build-desktop.sh: exit 0, every doctest suite 0 failed; device (Xiaomi 25010PN30G) HighlightRecoveryDeviceTest on night.mcraw frames 0 and 900 sliced: GPU vs CPU maxDiffLsb=1, mismatch=0.0001%, over1=0.0000% for neutral, neutral hr-off, recovery, recovery -2EV, recovery highlights -100",
-   "description": "Highlight recovery now runs on the GPU twin of the CPU oracle (demosaic + clip bits, block-sum pyramid, composite), the grade carries a highlightRecovery flag through store, v2 record and parcel slot 30, stage 3 and recovery share the per-frame clip flags, recovery has a K=4 headroom cap, and the Light tab has a Recovery button.",
+   "description": "Highlight recovery now runs on the GPU twin of the CPU oracle (demosaic + clip bits, block-sum pyramid, composite), the grade carries a highlightRecovery flag through store, v2 record and parcel slot 30, stage 3 and recovery share the per-frame clip flags, recovery has a K=4 headroom cap, and the Light tab has a Recovery button. Merged as 0ec9434 (branch tip 0bb557f; hash earlier recorded the branch tip while the merge was pending).",
    "added": [
     "highlightRecovery GradeK field (written only when true), parcel slot 30, JNI argument",
     "GPU passes RECOVERY_PRE / BLOCK0 / BLOCK_UP / COMPOSITE with validator pins",
@@ -14949,7 +15329,7 @@ window.STEPS_DATA = {
    "status": "in-progress",
    "commit": null,
    "tests": ":app:assembleDebug :app:testDebugUnitTest --rerun: 3066 tests, 0 failed (12 new in NodeWheelOpsTest); device verification pending",
-   "description": "F1-8b: Wheels | Adjust tabs on the selected node; the Wheels page edits lift/gamma/gain/offset and the log shadow/mid/high wheels (puck pad + master) through the node undo history. Branch feat-f1-8b-wheels, not merged until verified on the device.",
+   "description": "F1-8b: Wheels | Adjust tabs on the selected node; the Wheels page edits lift/gamma/gain/offset and the log shadow/mid/high wheels (puck pad + master) through the node undo history. Merged to main (merge ecd454f, branch tip d9f0497) but not yet verified on the device.",
    "added": [
     "NodeWheelsPage: Primary|Log switch, wheel chips, wheelRgb-shaded pad, master slider, reset button",
     "NodeWheelOps: pure get/set/clamp/snap/reset/y-flip/disc colour, JVM tested incl. undo coverage",

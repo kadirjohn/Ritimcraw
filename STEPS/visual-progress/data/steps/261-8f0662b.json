@@ -1,0 +1,35 @@
+{
+ "id": "261-8f0662b",
+ "title": "docs: 8k surface export verified on device",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "8f0662b",
+  "date": "2026-11-25",
+  "merge_subject": "merge: docs: 8k surface export verified on device"
+ },
+ "tests": "not recorded",
+ "description": "Night bookkeeping: e0b5 unblocked after the device run. The step recorded the Xiaomi numbers (8K HEVC 12 frames through the encoder surface in 2749 ms, 4K60 Mi-Log 1244 frames in 30736 ms, no CPU fallback) and moved from blocked to done with the merge hash. 263 steps after regeneration.",
+ "added": [],
+ "removed": [],
+ "changed": [
+  "e0b5 step: status blocked -> done, commit 09c2f22 recorded, tests line carries the device numbers",
+  "data/steps.json and data/steps.js regenerated"
+ ],
+ "files": [
+  {
+   "path": "STEPS/visual-progress/data/steps/e0b5-encoded-8k-surface-export.json",
+   "change": "M"
+  },
+  {
+   "path": "STEPS/visual-progress/data/steps.json",
+   "change": "M"
+  },
+  {
+   "path": "STEPS/visual-progress/data/steps.js",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}
