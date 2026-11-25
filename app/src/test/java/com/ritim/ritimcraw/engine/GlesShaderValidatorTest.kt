@@ -945,7 +945,7 @@ class GlesShaderValidatorTest {
         )
         assertTrue(
             "clipped criterion missing",
-            src.contains("if (v >= 1.0) clipped[color] = true;"),
+            src.contains("if (clipFlag(ivec2(xx, yy))) clipped[color] = true;"),
         )
         assertTrue(
             "ceiling level missing",
@@ -953,7 +953,7 @@ class GlesShaderValidatorTest {
         )
         assertTrue(
             "unclipped passthrough missing",
-            src.contains("if (v < 1.0) return v;"),
+            src.contains("if (!clipFlag(p)) return v;"),
         )
         assertTrue(
             "cap missing",

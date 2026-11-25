@@ -491,6 +491,7 @@ struct GpuDevelopPipeline::Impl {
     GLuint recPreProgram = 0, recBlock0Program = 0, recBlockUpProgram = 0, recCompositeProgram = 0;
     bool recoveryReady = false;
     // RECOVERY_PRE uniform locations (the PRE set it shares + the clip thresholds).
+    GLint rpClipUse = -1;
     GLint rpCfa = -1, rpSize = -1, rpCell = -1, rpBlack = -1, rpRange = -1, rpHasShading = -1, rpShading = -1,
           rpShadingSize = -1, rpWb = -1, rpClipThr = -1;
     GLint rb0Src = -1, rb0Size = -1, rb0PairBase = -1;
@@ -521,6 +522,7 @@ struct GpuDevelopPipeline::Impl {
     // uSize/uSharpness (or uDetail) on the V (uGuide = the stage's own
     // input — the CPU's tail reads the ORIGINAL luma, not the sharpened
     // one). Store keeps its own pair.
+    GLint clipUseLoc = -1, clipThrLoc = -1;  // stage-3 / recovery clip flag uniforms (PRE program)
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
@@ -888,6 +890,8 @@ bool GpuDevelopPipeline::Impl::init(
     shadingSizeLoc = glGetUniformLocation(preProgram, "uShadingSize");
     hrLoc = glGetUniformLocation(preProgram, "uHr");
     hrGainLoc = glGetUniformLocation(preProgram, "uHrGain");
+    clipUseLoc = glGetUniformLocation(preProgram, "uClipUse");
+    clipThrLoc = glGetUniformLocation(preProgram, "uClipThr");
     wbLoc = glGetUniformLocation(preProgram, "uWb");
     camLoc = glGetUniformLocation(preProgram, "uCam2rgb");
     hasProfileLoc = glGetUniformLocation(preProgram, "uHasProfile");
@@ -1889,6 +1893,15 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
                 static_cast<GLint>(applyShading ? req.meta->shadingH : 1));
     glUniform1i(hrLoc, req.highlightReconstruction ? 1 : 0);
     glUniform3f(hrGainLoc, hrGain[0], hrGain[1], hrGain[2]);
+    // Stage 3 flags clipped sites with the per-frame measured thresholds (the CPU oracle's own function, so
+    // the two paths cannot disagree about which sites are clipped); a grade without stage 3 needs none.
+    if (req.highlightReconstruction) {
+        const rawedit::RecoveryClipLevels lv = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
+        if (clipUseLoc >= 0) glUniform1i(clipUseLoc, 1);
+        if (clipThrLoc >= 0) glUniform3f(clipThrLoc, lv.threshold[0], lv.threshold[1], lv.threshold[2]);
+    } else {
+        if (clipUseLoc >= 0) glUniform1i(clipUseLoc, 0);
+    }
     glUniform3f(wbLoc, invNeutral[0], invNeutral[1], invNeutral[2]);
     // transpose=GL_TRUE: row-major upload, the CPU contract.
     glUniformMatrix3fv(camLoc, 1, GL_TRUE, cam2rgb);
@@ -2512,6 +2525,7 @@ bool GpuDevelopPipeline::Impl::ensureRecovery(uint32_t w, uint32_t h, std::strin
         rpShadingSize = glGetUniformLocation(recPreProgram, "uShadingSize");
         rpWb = glGetUniformLocation(recPreProgram, "uWb");
         rpClipThr = glGetUniformLocation(recPreProgram, "uClipThr");
+        rpClipUse = glGetUniformLocation(recPreProgram, "uClipUse");
         rb0Src = glGetUniformLocation(recBlock0Program, "uSrc");
         rb0Size = glGetUniformLocation(recBlock0Program, "uSize");
         rb0PairBase = glGetUniformLocation(recBlock0Program, "uPairBase");
@@ -2528,7 +2542,7 @@ bool GpuDevelopPipeline::Impl::ensureRecovery(uint32_t w, uint32_t h, std::strin
         rcCam = glGetUniformLocation(recCompositeProgram, "uCam2rgb");
         rcHasProfile = glGetUniformLocation(recCompositeProgram, "uHasProfile");
         if (rpCfa < 0 || rpSize < 0 || rpCell < 0 || rpBlack < 0 || rpRange < 0 || rpHasShading < 0 ||
-            rpShading < 0 || rpShadingSize < 0 || rpWb < 0 || rpClipThr < 0 || rb0Src < 0 || rb0Size < 0 ||
+            rpShading < 0 || rpShadingSize < 0 || rpWb < 0 || rpClipThr < 0 || rpClipUse < 0 || rb0Src < 0 || rb0Size < 0 ||
             rb0PairBase < 0 || rbuPrev < 0 || rbuPrevSize < 0 || rbuPairBase < 0 || rbuFactor < 0 || rcSrc < 0 || rcL[0] < 0 ||
             rcL[1] < 0 || rcL[2] < 0 || rcL[3] < 0 || rcSize < 0 || rcCam < 0 || rcHasProfile < 0) {
             *detail = "recovery: shader-contract: missing uniform";
@@ -2602,7 +2616,9 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
     const double tLv = timing ? nowMs() : 0.0;
     // Ordered pair p = c*2 + (r > c ? r-1 : r). A pair is needed when its c can clip and (green can clip, so
     // any reference may be chosen) or (the reference is green, the only choice while green never clips).
-    const bool canClip[3] = {levels.threshold[0] <= 1.0f, levels.threshold[1] <= 1.0f, levels.threshold[2] <= 1.0f};
+    // A channel can clip only when some site reaches its threshold (the frame's measured per-channel maximum).
+    const bool canClip[3] = {levels.maxNorm[0] >= levels.threshold[0], levels.maxNorm[1] >= levels.threshold[1],
+                             levels.maxNorm[2] >= levels.threshold[2]};
     bool groupNeeded[2] = {false, false};
     for (int c = 0; c < 3; ++c) {
         if (!canClip[c]) continue;
@@ -2626,6 +2642,7 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
     glUniform2i(rpShadingSize, static_cast<GLint>(applyShading ? req.meta->shadingW : 1),
                 static_cast<GLint>(applyShading ? req.meta->shadingH : 1));
     glUniform3f(rpWb, invNeutral[0], invNeutral[1], invNeutral[2]);
+    glUniform1i(rpClipUse, 1);
     glUniform3f(rpClipThr, levels.threshold[0], levels.threshold[1], levels.threshold[2]);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(recovery-pre)", detail) != GL_NO_ERROR) return false;

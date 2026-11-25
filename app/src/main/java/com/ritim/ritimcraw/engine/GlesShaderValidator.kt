@@ -316,9 +316,8 @@ object GlesShaderValidator {
 
     private fun recoveryPreProblems(s: String, out: MutableList<String>) {
         for (u in kDevelopPreUniformDecls) recoveryRequire(s, out, u, "the recovery PRE pass shares the PRE uniform set")
-        recoveryRequire(s, out, "uniform vec3 uClipThr;", "the session uploads the CPU's recoveryClipLevels thresholds")
         recoveryRequire(s, out, "out vec4 oCol;", "single color output")
-        recoveryRequire(s, out, "return stage1(p) >= uClipThr[siteAt(p)] ? 1.0 : 0.0;",
+        recoveryRequire(s, out, "return clipFlag(p) ? 1.0 : 0.0;",
             "the clip mask is the PRE-shading stage-1 value against its channel threshold (the CPU's norm >= threshold)")
         recoveryRequire(s, out, "px[t] = normAt(g);", "stage 3 is REPLACED: the pixel is the lens-shaded value, never hrAt")
         recoveryRequire(s, out, "mk[t] = n > 0 ? msum / float(n) : clipAt(g);", "the mask is demosaiced by the same bilinear as the pixels")
@@ -332,10 +331,10 @@ object GlesShaderValidator {
         recoveryRequire(s, out, "uniform ivec2 uSize;", "full-resolution size")
         recoveryRequire(s, out, "uniform int uPairBase;", "first ordered pair of the draw")
         for (i in 0..2) recoveryRequire(s, out, "layout(location = $i) out vec4 oP$i;", "MRT attachment $i of the layered block texture")
-        recoveryRequire(s, out, "bool ok = ((bits >> c) & 1) == 0 && ((bits >> r) & 1) == 0 && t[r] > 1e-4 && t[c] >= 0.0;",
+        recoveryRequire(s, out, "bool ok = (bits & mc) == 0 && (bits & mr) == 0 && vr > 1e-4 && vc >= 0.0;",
             "the CPU's unclipped-pair predicate (!clipped[c] && !clipped[r] && vr > kEps && vc >= 0)")
         recoveryRequire(s, out, "ivec2 o = b * 4;", "4-pixel blocks, grid aligned at 0 (summed 2x2 to the 8-pixel level)")
-        recoveryRequire(s, out, "if (p.x >= uSize.x || p.y >= uSize.y) continue;", "partial edge blocks count only real pixels")
+        recoveryRequire(s, out, "float inb = (p.x < uSize.x && p.y < uSize.y) ? 1.0 : 0.0;", "partial edge blocks count only real pixels")
     }
 
     private fun recoveryBlockUpProblems(s: String, out: MutableList<String>) {
@@ -345,7 +344,7 @@ object GlesShaderValidator {
         for (i in 0..2) recoveryRequire(s, out, "layout(location = $i) out vec4 oP$i;", "MRT attachment $i")
         recoveryRequire(s, out, "uniform int uFactor;", "children per axis (2: 4 -> 8, 4: 8 -> 32 -> 128 -> 512)")
         recoveryRequire(s, out, "ivec2 o = ivec2(gl_FragCoord.xy) * uFactor;", "uFactor x uFactor children per output block")
-        recoveryRequire(s, out, "if (p.x >= uPrevSize.x || p.y >= uPrevSize.y) continue;", "partial edge blocks")
+        recoveryRequire(s, out, "float w = (x < uFactor && y < uFactor && p.x < uPrevSize.x && p.y < uPrevSize.y) ? 1.0 : 0.0;", "partial edge blocks")
     }
 
     private fun recoveryCompositeProblems(s: String, out: MutableList<String>) {
@@ -387,6 +386,8 @@ object GlesShaderValidator {
         "uniform ivec2 uShadingSize;",
         "uniform int uHr;",
         "uniform vec3 uHrGain;",
+        "uniform int uClipUse;",
+        "uniform vec3 uClipThr;",
         "uniform vec3 uWb;",
         "uniform mat3 uCam2rgb;",
         "uniform int uHasProfile;",
@@ -517,17 +518,21 @@ object GlesShaderValidator {
         // Stage 3: the CPU highlight-reconstruction cell pass, verbatim —
         // the clipped criterion, the ceiling level, the unclipped passthrough,
         // and the cap.
-        if (!s.contains("if (v >= 1.0) clipped[color] = true;")) {
+        if (!s.contains("if (clipFlag(ivec2(xx, yy))) clipped[color] = true;") ||
+            !s.contains("return stage1(p) >= thr;") ||
+            !s.contains("float thr = uClipUse == 1 ? uClipThr[siteAt(p)] : 1.0;")
+        ) {
             out += "missing the stage-3 clipped criterion " +
-                "(`if (v >= 1.0) clipped[color] = true;` — the CPU's >= 1.0 test)"
+                "(`if (clipFlag(ivec2(xx, yy))) clipped[color] = true;` over the PRE-shading " +
+                "stage-1 value against the per-frame channel threshold — the CPU's preClip flag)"
         }
         if (!s.contains("float level = minV[c] * uHrGain[c];")) {
             out += "missing the stage-3 ceiling level " +
                 "(`float level = minV[c] * uHrGain[c];` — the CPU's minV * gain)"
         }
-        if (!s.contains("if (v < 1.0) return v;")) {
+        if (!s.contains("if (!clipFlag(p)) return v;")) {
             out += "missing the stage-3 unclipped passthrough " +
-                "(`if (v < 1.0) return v;` — unclipped sites keep their real level)"
+                "(`if (!clipFlag(p)) return v;` — unclipped sites keep their real level)"
         }
         if (!s.contains("float cap = ceiling / uHrGain[siteAt(p)];")) {
             out += "missing the stage-3 cap " +

@@ -170,6 +170,12 @@ object GradeParitySweep {
             add("highlights-legacy", (if (v > 0f) "+" else "") + fmt(v),
                 GradeK(highlights = v, highlightsCurve = com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY))
         }
+        // Highlight recovery (appended LAST: the case index seeds nothing here but the list order is the log order).
+        // The first library clip is usually unclipped, where recovery must still match the CPU; the clipped real
+        // frames run in HighlightRecoveryDeviceTest (androidTest).
+        add("recovery", "on", GradeK(highlightRecovery = true))
+        add("recovery", "-2EV", GradeK(highlightRecovery = true, exposureEv = -2f))
+        add("neutral-stage3", "hr-off", GradeK(highlightReconstruction = false))
         return out
     }
 

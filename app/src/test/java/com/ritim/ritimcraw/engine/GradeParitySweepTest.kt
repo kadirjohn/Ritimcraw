@@ -12,8 +12,9 @@ class GradeParitySweepTest {
     @Test
     fun case_list_covers_every_control_at_the_requested_values() {
         val cases = GradeParitySweep.cases()
-        // 4 exposure + 11 percent controls x 4 + 3 tonemap + 1 lut + 1 combined + 3 warp + 4 legacy-curve highlights.
-        assertEquals(4 + 11 * 4 + 3 + 1 + 1 + 3 + 4, cases.size)
+        // 4 exposure + 11 percent controls x 4 + 3 tonemap + 1 lut + 1 combined + 3 warp + 4 legacy-curve highlights
+        // + 3 recovery / stage-3 cases.
+        assertEquals(4 + 11 * 4 + 3 + 1 + 1 + 3 + 4 + 3, cases.size)
         val controls = cases.map { it.control }.toSet()
         for (c in listOf(
             "exposure", "highlights", "blackPoint", "whitePoint", "shadows", "midtones",

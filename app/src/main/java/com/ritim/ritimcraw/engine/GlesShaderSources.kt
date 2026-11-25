@@ -430,6 +430,8 @@ uniform highp sampler2D uShading; // the clip's 4-plane shading map: GL_R32F, pl
 uniform ivec2 uShadingSize;     // one plane's size: (shadingW, shadingH)
 uniform int uHr;                // 1 = apply stage 3 (grade.highlightReconstruction)
 uniform vec3 uHrGain;           // stage-3 WB gains = meta.wbGains with the >0 guard (CPU-computed)
+uniform int uClipUse;           // 1 = flag clipped sites against uClipThr (recoveryClipLevels); 0 = the white level 1.0
+uniform vec3 uClipThr;          // per-channel clip thresholds on the PRE-shading normalized site value (CPU-computed)
 uniform vec3 uWb;               // WB gains = 1/asShotNeutral, >0 guard included (CPU-computed)
 uniform mat3 uCam2rgb;          // camera->Rec.709, the CPU row-major matrix uploaded with transpose=GL_TRUE
 uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (no profile / parity shape)
@@ -554,6 +556,13 @@ float normAt(ivec2 p) {
     return v;
 }
 
+// The clip flag of a site (stage 3 and recovery share it): the PRE-shading stage-1 value at or over its
+// channel's per-frame threshold (core recoveryClipLevels); the plain white level when uClipUse is 0.
+bool clipFlag(ivec2 p) {
+    float thr = uClipUse == 1 ? uClipThr[siteAt(p)] : 1.0;
+    return stage1(p) >= thr;
+}
+
 // Stage 3: highlight reconstruction - the CPU stage-3 cell pass,
 // verbatim (core/src/Develop.cpp). The CPU computes the per-color stats
 // once per 2x2 cell and applies the cap in a second pass over the same
@@ -586,7 +595,7 @@ float hrAt(ivec2 p) {
             float v = normAt(ivec2(xx, yy));
             present[color] = true;
             if (minV[color] < 0.0 || v < minV[color]) minV[color] = v;
-            if (v >= 1.0) clipped[color] = true;
+            if (clipFlag(ivec2(xx, yy))) clipped[color] = true;
         }
     }
 
@@ -614,7 +623,7 @@ float hrAt(ivec2 p) {
     // buffer exactly. cap = ceiling / gain[wbIndex(color)] with the CPU's
     // wbIndex(siteColor) = siteColor.
     float v = normAt(p);
-    if (v < 1.0) return v;
+    if (!clipFlag(p)) return v;
     float cap = ceiling / uHrGain[siteAt(p)];
     return v > cap ? cap : v;
 }
@@ -1400,19 +1409,22 @@ precision highp int;
     private const val kRecoveryPairTerm: String = """// One pixel's contribution to the (c, r) pair statistics: weight 1 and the
 // two channel values when BOTH channels are unclipped and the reference
 // is above the CPU's kEps (1e-4); zero otherwise.
-vec3 pairTerm(vec4 t, int bits, int c, int r) {
-    bool ok = ((bits >> c) & 1) == 0 && ((bits >> r) & 1) == 0 && t[r] > 1e-4 && t[c] >= 0.0;
-    return ok ? vec3(1.0, t[c], t[r]) : vec3(0.0);
+// mc / mr are the channels' bit masks (1 << c), sc / sr their one-hot selectors: channel values are picked
+// with a dot product, not a dynamic vector index (which Adreno compiles to slow scratch-memory code).
+vec3 pairTerm(vec4 t, int bits, int mc, int mr, vec3 sc, vec3 sr) {
+    float vc = dot(t.rgb, sc);
+    float vr = dot(t.rgb, sr);
+    bool ok = (bits & mc) == 0 && (bits & mr) == 0 && vr > 1e-4 && vc >= 0.0;
+    return ok ? vec3(1.0, vc, vr) : vec3(0.0);
 }
 """
 
     /** RECOVERY_PRE's own extra uniform + the raw clip-mask helper. */
-    private const val kRecoveryPreExtra: String = """uniform vec3 uClipThr;           // per-channel raw clip thresholds (recoveryClipLevels; > 1 = never clips)
-"""
+    private const val kRecoveryPreExtra: String = ""
 
     private const val kRecoveryClipHelper: String = """// The raw clip mask at a site: the stage-1 value (before lens shading) at or over its channel's threshold.
 float clipAt(ivec2 p) {
-    return stage1(p) >= uClipThr[siteAt(p)] ? 1.0 : 0.0;
+    return clipFlag(p) ? 1.0 : 0.0;
 }
 """
 
@@ -1475,15 +1487,18 @@ layout(location = 2) out vec4 oP2;
 """ + kRecoveryPairTerm + """
 void main() {
     ivec2 b = ivec2(gl_FragCoord.xy);
-    int cc[3];
-    int rr[3];
-    for (int i = 0; i < 3; ++i) {
-        int p = uPairBase + i;
-        int c = p / 2;
-        int q = p - c * 2;
-        cc[i] = c;
-        rr[i] = q >= c ? q + 1 : q;
-    }
+    // The three ordered pairs of this draw (pair p = c*2 + (r > c ? r-1 : r)), as masks and one-hot selectors.
+    int p0 = uPairBase, p1 = uPairBase + 1, p2 = uPairBase + 2;
+    int c0 = p0 / 2, c1 = p1 / 2, c2 = p2 / 2;
+    int q0 = p0 - c0 * 2, q1 = p1 - c1 * 2, q2 = p2 - c2 * 2;
+    int r0 = q0 >= c0 ? q0 + 1 : q0, r1 = q1 >= c1 ? q1 + 1 : q1, r2 = q2 >= c2 ? q2 + 1 : q2;
+    int mc0 = 1 << c0, mc1 = 1 << c1, mc2 = 1 << c2, mr0 = 1 << r0, mr1 = 1 << r1, mr2 = 1 << r2;
+    vec3 sc0 = vec3(float(c0 == 0), float(c0 == 1), float(c0 == 2));
+    vec3 sc1 = vec3(float(c1 == 0), float(c1 == 1), float(c1 == 2));
+    vec3 sc2 = vec3(float(c2 == 0), float(c2 == 1), float(c2 == 2));
+    vec3 sr0 = vec3(float(r0 == 0), float(r0 == 1), float(r0 == 2));
+    vec3 sr1 = vec3(float(r1 == 0), float(r1 == 1), float(r1 == 2));
+    vec3 sr2 = vec3(float(r2 == 0), float(r2 == 1), float(r2 == 2));
     vec3 s0 = vec3(0.0);
     vec3 s1 = vec3(0.0);
     vec3 s2 = vec3(0.0);
@@ -1491,12 +1506,14 @@ void main() {
     for (int y = 0; y < 4; ++y) {
         for (int x = 0; x < 4; ++x) {
             ivec2 p = o + ivec2(x, y);
-            if (p.x >= uSize.x || p.y >= uSize.y) continue;
-            vec4 t = texelFetch(uSrc, p, 0);
+            // Constant loop bounds + a coordinate clamp (no `continue`) so the compiler unrolls the 16 taps and
+            // issues the fetches together; out-of-frame taps are weighted to zero.
+            float inb = (p.x < uSize.x && p.y < uSize.y) ? 1.0 : 0.0;
+            vec4 t = texelFetch(uSrc, min(p, uSize - 1), 0);
             int bits = int(t.a + 0.5);
-            s0 += pairTerm(t, bits, cc[0], rr[0]);
-            s1 += pairTerm(t, bits, cc[1], rr[1]);
-            s2 += pairTerm(t, bits, cc[2], rr[2]);
+            s0 += inb * pairTerm(t, bits, mc0, mr0, sc0, sr0);
+            s1 += inb * pairTerm(t, bits, mc1, mr1, sc1, sr1);
+            s2 += inb * pairTerm(t, bits, mc2, mr2, sc2, sr2);
         }
     }
     oP0 = vec4(s0, 0.0);
@@ -1518,11 +1535,11 @@ layout(location = 2) out vec4 oP2;
 
 vec3 sumLayer(ivec2 o, int layer) {
     vec3 s = vec3(0.0);
-    for (int y = 0; y < uFactor; ++y) {
-        for (int x = 0; x < uFactor; ++x) {
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
             ivec2 p = o + ivec2(x, y);
-            if (p.x >= uPrevSize.x || p.y >= uPrevSize.y) continue;
-            s += texelFetch(uPrev, ivec3(p, layer), 0).rgb;
+            float w = (x < uFactor && y < uFactor && p.x < uPrevSize.x && p.y < uPrevSize.y) ? 1.0 : 0.0;
+            s += w * texelFetch(uPrev, ivec3(min(p, uPrevSize - 1), layer), 0).rgb;
         }
     }
     return s;
@@ -1570,13 +1587,17 @@ vec3 nbSum(highp sampler2DArray s, ivec2 g, int blk, int layer) {
 // support (the CPU's five scales, same thresholds), or -1 when none has any.
 float ratioFor(ivec2 g, int c, int r) {
     int layer = c * 2 + (r > c ? r - 1 : r);
+    int mc = 1 << c;
+    int mr = 1 << r;
+    vec3 sc = vec3(float(c == 0), float(c == 1), float(c == 2));
+    vec3 sr = vec3(float(r == 0), float(r == 1), float(r == 2));
     vec3 s = vec3(0.0);
     for (int dy = -4; dy <= 4; ++dy) {
         for (int dx = -4; dx <= 4; ++dx) {
             ivec2 q = g + ivec2(dx, dy);
             if (q.x < 0 || q.y < 0 || q.x >= uSize.x || q.y >= uSize.y) continue;
             vec4 t = texelFetch(uSrc, q, 0);
-            s += pairTerm(t, int(t.a + 0.5), c, r);
+            s += pairTerm(t, int(t.a + 0.5), mc, mr, sc, sr);
         }
     }
     if (s.x >= 4.05 && s.z > 0.0) return s.y / s.z;
