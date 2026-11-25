@@ -1,0 +1,163 @@
+package com.ritim.ritimcraw.ui.editor
+
+import com.ritim.ritimcraw.ui.editor.PlayerBarVisibility.TapResult
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class PlayerBarVisibilityTest {
+
+    private fun on(playing: Boolean = true, at: Long = 0): PlayerBarVisibility =
+        PlayerBarVisibility().apply {
+            setAutoHide(true, at)
+            setPlaying(playing, at)
+        }
+
+    @Test
+    fun setting_off_is_always_visible_and_taps_do_nothing() {
+        val v = PlayerBarVisibility()
+        v.setPlaying(true, 0)
+        assertTrue(v.visible)
+        assertNull(v.msUntilHide(0))
+        assertFalse(v.tick(10_000))
+        assertTrue(v.visible)
+        assertEquals(TapResult.NONE, v.onVideoTap(10))
+        assertEquals(TapResult.NONE, v.onVideoTap(20))
+    }
+
+    @Test
+    fun playing_hides_after_delay() {
+        val v = on()
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(0))
+        assertFalse(v.tick(2999))
+        assertTrue(v.visible)
+        assertTrue(v.tick(3000))
+        assertFalse(v.visible)
+        assertNull(v.msUntilHide(3001))
+    }
+
+    @Test
+    fun paused_never_hides() {
+        val v = on(playing = false)
+        assertNull(v.msUntilHide(0))
+        assertFalse(v.tick(60_000))
+        assertTrue(v.visible)
+    }
+
+    @Test
+    fun pausing_after_hide_shows_bar() {
+        val v = on()
+        v.tick(3000)
+        assertFalse(v.visible)
+        v.setPlaying(false, 3500)
+        assertTrue(v.visible)
+    }
+
+    @Test
+    fun resuming_restarts_timer() {
+        val v = on(playing = false)
+        v.setPlaying(true, 10_000)
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(10_000))
+    }
+
+    @Test
+    fun tap_while_hidden_shows_and_restarts_timer() {
+        val v = on()
+        v.tick(3000)
+        assertEquals(TapResult.NONE, v.onVideoTap(5000))
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(5000))
+        assertFalse(v.tick(7999))
+        assertTrue(v.tick(8000))
+    }
+
+    @Test
+    fun tap_while_visible_restarts_timer_and_never_pauses() {
+        val v = on()
+        assertEquals(TapResult.NONE, v.onVideoTap(2000))
+        assertEquals(3000L, v.msUntilHide(2000))
+        assertFalse(v.tick(4999))
+        assertTrue(v.visible)
+    }
+
+    @Test
+    fun bar_interaction_restarts_timer() {
+        val v = on()
+        v.onBarInteraction(2500)
+        assertFalse(v.tick(5000))
+        assertEquals(500L, v.msUntilHide(5000))
+        assertTrue(v.tick(5500))
+    }
+
+    @Test
+    fun double_tap_toggles_playback() {
+        val v = on()
+        assertEquals(TapResult.NONE, v.onVideoTap(1000))
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(1200))
+        assertTrue(v.visible)
+    }
+
+    @Test
+    fun slow_second_tap_is_not_a_double_tap() {
+        val v = on()
+        assertEquals(TapResult.NONE, v.onVideoTap(1000))
+        assertEquals(TapResult.NONE, v.onVideoTap(1301))
+    }
+
+    @Test
+    fun triple_tap_does_not_chain_toggles() {
+        val v = on()
+        v.onVideoTap(1000)
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(1100))
+        assertEquals(TapResult.NONE, v.onVideoTap(1200))
+    }
+
+    @Test
+    fun double_tap_works_while_paused() {
+        val v = on(playing = false)
+        v.onVideoTap(100)
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(250))
+        assertTrue(v.visible)
+    }
+
+    @Test
+    fun double_tap_that_starts_playback_shows_bar_briefly() {
+        val v = on(playing = false)
+        v.onVideoTap(100)
+        v.onVideoTap(250)
+        v.setPlaying(true, 250)
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(250))
+    }
+
+    @Test
+    fun turning_setting_off_while_hidden_shows_bar() {
+        val v = on()
+        v.tick(3000)
+        assertFalse(v.visible)
+        v.setAutoHide(false, 3100)
+        assertTrue(v.visible)
+        assertNull(v.msUntilHide(3100))
+    }
+
+    @Test
+    fun turning_setting_on_while_playing_starts_timer() {
+        val v = PlayerBarVisibility()
+        v.setPlaying(true, 0)
+        v.setAutoHide(true, 1000)
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(1000))
+    }
+
+    @Test
+    fun custom_delay_is_honoured() {
+        val v = PlayerBarVisibility(hideDelayMs = 500)
+        v.setAutoHide(true, 0)
+        v.setPlaying(true, 0)
+        assertTrue(v.tick(500))
+    }
+}

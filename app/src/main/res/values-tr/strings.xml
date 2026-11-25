@@ -593,6 +593,10 @@
         <item quantity="one">1 klip kitaplıktan kaldırılacak. Özgün dosya cihazınızda kalır.</item>
         <item quantity="other">%1$d klip kitaplıktan kaldırılacak. Özgün dosyalar cihazınızda kalır.</item>
     </plurals>
+    <string name="settings_auto_hide_player_bar">Medya oynatıcı çubuğunu otomatik gizle</string>
+    <string name="settings_auto_hide_player_bar_hint_on">Oynatırken gizlenir; göstermek için videoya dokun, oynat/duraklat için çift dokun</string>
+    <string name="settings_auto_hide_player_bar_hint_off">Her zaman görünür</string>
+    <string name="editor_show_controls">Oynatma kontrollerini göster</string>
     <string name="settings_system_monitor">Sistem monitörü</string>
     <string name="settings_system_monitor_hint_on">GPU, CPU, RAM ve depolama üstte gösteriliyor</string>
     <string name="settings_system_monitor_hint_off">Gizli</string>
