@@ -123,6 +123,8 @@
     <string name="editor_slider_tint">Tint</string>
     <string name="editor_slider_saturation">Saturation</string>
     <string name="editor_as_shot">As Shot</string>
+    <string name="editor_highlight_recovery">Recovery</string>
+    <string name="editor_highlight_recovery_desc">Highlight recovery: rebuild clipped highlights from the unclipped channels</string>
     <string name="editor_highlight_reconstruction">Highlight Reconstruction</string>
     <string name="editor_keep_vignetting">Keep Vignetting</string>
     <string name="editor_slider_sharpness">Sharpness</string>
