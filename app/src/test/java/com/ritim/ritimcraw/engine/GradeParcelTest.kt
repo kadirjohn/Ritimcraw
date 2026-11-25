@@ -248,6 +248,7 @@ class GradeParcelTest {
             GradeParcel.SLOT_AS_SHOT,
             GradeParcel.SLOT_HIGHLIGHT_RECONSTRUCTION,
             GradeParcel.SLOT_KEEP_VIGNETTING,
+            GradeParcel.SLOT_HIGHLIGHT_RECOVERY,
         )) {
             val parcel = GradeParcel.encode(GradeK())
             parcel[slot] = 0.37f

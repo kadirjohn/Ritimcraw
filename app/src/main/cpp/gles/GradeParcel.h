@@ -58,9 +58,10 @@ struct DevelopGrade {
     bool keepVignetting = true;
     int tonemap = 0;
     int highlightsCurve = 0;  // stage-15 curve version: 0 legacy (knee 0.75), 1 v1 (knee 0.40)
+    bool highlightRecovery = false;  // highlight recovery (replaces stage 3 with a real re-estimate)
 };
 
-constexpr int kGradeParcelSlotCount = 30;
+constexpr int kGradeParcelSlotCount = 31;
 
 constexpr int kGradeParcelChromaDenoise = 0;
 constexpr int kGradeParcelNoiseReduction = 1;
@@ -92,6 +93,7 @@ constexpr int kGradeParcelHighlightReconstruction = 26;
 constexpr int kGradeParcelKeepVignetting = 27;
 constexpr int kGradeParcelTonemap = 28;
 constexpr int kGradeParcelHighlightsCurve = 29;
+constexpr int kGradeParcelHighlightRecovery = 30;
 
 // Slot names, index-aligned, for honest refusal messages.
 inline constexpr const char* kGradeParcelSlotNames[] = {
@@ -125,6 +127,7 @@ inline constexpr const char* kGradeParcelSlotNames[] = {
 "keepVignetting",
 "tonemap",
 "highlightsCurve",
+"highlightRecovery",
 };
 
 // Decodes the flat parcel into [out] by NAME. Returns false with the full
@@ -170,6 +173,12 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
                      ") (recovery: booleans cross the parcel as 0.0f/1.0f)";
         return false;
     }
+    if (parcel[kGradeParcelHighlightRecovery] != 0.0f && parcel[kGradeParcelHighlightRecovery] != 1.0f) {
+        *error = std::string("grade parcel: highlightRecovery must be 0.0 or 1.0 (got ") +
+                     std::to_string(parcel[kGradeParcelHighlightRecovery]) +
+                     ") (recovery: booleans cross the parcel as 0.0f/1.0f)";
+        return false;
+    }
     out->chromaDenoise = parcel[kGradeParcelChromaDenoise];
     out->noiseReduction = parcel[kGradeParcelNoiseReduction];
     out->temporalNr = parcel[kGradeParcelTemporalNr] != 0.0f;
@@ -200,6 +209,7 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
     out->keepVignetting = parcel[kGradeParcelKeepVignetting] != 0.0f;
     out->tonemap = static_cast<int>(parcel[kGradeParcelTonemap]);
     out->highlightsCurve = static_cast<int>(parcel[kGradeParcelHighlightsCurve]);
+    out->highlightRecovery = parcel[kGradeParcelHighlightRecovery] != 0.0f;
     return true;
 }
 
@@ -241,6 +251,7 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
     req->keepVignetting = grade.keepVignetting;
     req->tonemap = grade.tonemap;
     req->highlightsCurve = grade.highlightsCurve;
+    req->highlightRecovery = grade.highlightRecovery;
 }
 
 // Folds the decoded grade onto a rawedit::Grade (the CPU export path's
@@ -284,6 +295,7 @@ inline void applyGradeToRawedit(const DevelopGrade& grade, GradeT* out) {
     out->keepVignetting = grade.keepVignetting;
     out->tonemap = grade.tonemap;
     out->highlightsCurve = grade.highlightsCurve;
+    out->highlightRecovery = grade.highlightRecovery;
 }
 
 }  // namespace gles
