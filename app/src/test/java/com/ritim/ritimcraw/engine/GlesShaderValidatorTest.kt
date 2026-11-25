@@ -1162,7 +1162,7 @@ class GlesShaderValidatorTest {
         )
         assertTrue(
             "knee missing",
-            src.contains("const float knee = 0.40;"),
+            src.contains("const float knee = 0.18;"),
         )
         assertTrue(
             "span missing",
@@ -2250,7 +2250,7 @@ class GlesShaderValidatorTest {
         // core/src/Develop.cpp stage 15, transcribed verbatim (the
         // byte-exact definition the GLSL matches).
         if (highlights != 0.0f) {
-            val knee = 0.40f
+            val knee = 0.18f
             val span = 1.0f - knee
             val s = -highlights / 100.0f // recovery -> +1, lift -> -1
             val mx = maxOf(r, maxOf(g, b))
@@ -2276,7 +2276,7 @@ class GlesShaderValidatorTest {
         // The shipped GLSL block, transcribed verbatim (the uHighlights
         // != 0.0 gate, the mx > knee branch — the CPU skip's complement).
         if (uHighlights != 0.0f) {
-            val knee = 0.40f
+            val knee = 0.18f
             val span = 1.0f - knee
             val s = -uHighlights / 100.0f
             val mx = maxOf(r, maxOf(g, b))
@@ -2306,7 +2306,7 @@ class GlesShaderValidatorTest {
             Triple(0.0f, 0.0f, 0.0f),
             Triple(0.5f, 0.25f, 0.1f),
             Triple(0.75f, 0.3f, 0.6f),
-            Triple(0.40f, 0.2f, 0.1f),
+            Triple(0.18f, 0.2f, 0.1f),
             Triple(0.76f, 0.4f, 0.2f),
             Triple(1.0f, 0.9f, 0.85f),
             Triple(1.2f, 0.7f, 0.3f),
