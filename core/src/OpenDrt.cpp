@@ -454,7 +454,7 @@ void applyOpenDrt(ImageF& img, const OpenDrtSpec& spec) {
 
 // ---- baked route -----------------------------------------------------------
 
-OpenDrtLut bakeOpenDrtLut(const OpenDrtSpec& spec, int n) {
+OpenDrtLut bakeOpenDrtLut(const OpenDrtSpec& spec, int n, const std::atomic<bool>* cancel) {
     OpenDrtLut lut;
     if (n < 2) return lut;
     lut.n = n;
@@ -464,6 +464,7 @@ OpenDrtLut bakeOpenDrtLut(const OpenDrtSpec& spec, int n) {
     // Rows = (g, b) pairs; each row owns its own output, so the split is deterministic.
     parallelForRows(static_cast<size_t>(n) * n, [&](size_t rowBegin, size_t rowEnd) {
         for (size_t row = rowBegin; row < rowEnd; ++row) {
+            if (cancel != nullptr && cancel->load(std::memory_order_relaxed)) return;
             const int b = static_cast<int>(row / n);
             const int g = static_cast<int>(row % n);
             for (int r = 0; r < n; ++r) {
@@ -479,31 +480,47 @@ OpenDrtLut bakeOpenDrtLut(const OpenDrtSpec& spec, int n) {
             }
         }
     });
+    if (cancel != nullptr && cancel->load(std::memory_order_relaxed)) return OpenDrtLut{};
     return lut;
 }
 
-std::shared_ptr<const OpenDrtLut> bakedOpenDrtLut(const OpenDrtSpec& spec) {
-    struct Entry { OpenDrtSpec spec; std::shared_ptr<const OpenDrtLut> lut; };
-    static std::mutex mu;
-    static std::vector<Entry> cache;
-    {
-        std::lock_guard<std::mutex> lock(mu);
-        for (size_t i = 0; i < cache.size(); ++i) {
-            const OpenDrtSpec& c = cache[i].spec;
-            if (c.look == spec.look && c.tonescale == spec.tonescale && c.cwp == spec.cwp &&
-                c.cwpLimit == spec.cwpLimit && c.grey == spec.grey && c.display == spec.display) {
-                Entry hit = cache[i];
-                cache.erase(cache.begin() + static_cast<long>(i));
-                cache.push_back(hit); // most recent last
-                return hit.lut;
-            }
+namespace {
+struct DrtCacheEntry { OpenDrtSpec spec; std::shared_ptr<const OpenDrtLut> lut; };
+std::mutex gDrtCacheMu;
+std::vector<DrtCacheEntry> gDrtCache;
+bool sameSpec(const OpenDrtSpec& c, const OpenDrtSpec& spec) {
+    return c.look == spec.look && c.tonescale == spec.tonescale && c.cwp == spec.cwp &&
+           c.cwpLimit == spec.cwpLimit && c.grey == spec.grey && c.display == spec.display;
+}
+} // namespace
+
+std::shared_ptr<const OpenDrtLut> peekBakedOpenDrtLut(const OpenDrtSpec& spec) {
+    std::lock_guard<std::mutex> lock(gDrtCacheMu);
+    for (size_t i = 0; i < gDrtCache.size(); ++i) {
+        if (sameSpec(gDrtCache[i].spec, spec)) {
+            DrtCacheEntry hit = gDrtCache[i];
+            gDrtCache.erase(gDrtCache.begin() + static_cast<long>(i));
+            gDrtCache.push_back(hit); // most recent last
+            return hit.lut;
         }
     }
-    auto baked = std::make_shared<const OpenDrtLut>(bakeOpenDrtLut(spec));
-    std::lock_guard<std::mutex> lock(mu);
-    cache.push_back({spec, baked});
-    if (cache.size() > 4) cache.erase(cache.begin());
+    return nullptr;
+}
+
+std::shared_ptr<const OpenDrtLut> bakedOpenDrtLutCancellable(const OpenDrtSpec& spec,
+                                                             const std::atomic<bool>& cancel) {
+    if (auto hit = peekBakedOpenDrtLut(spec)) return hit;
+    auto baked = std::make_shared<const OpenDrtLut>(bakeOpenDrtLut(spec, kOpenDrtLutSize, &cancel));
+    if (baked->n == 0 || cancel.load(std::memory_order_relaxed)) return nullptr;
+    std::lock_guard<std::mutex> lock(gDrtCacheMu);
+    gDrtCache.push_back({spec, baked});
+    if (gDrtCache.size() > 4) gDrtCache.erase(gDrtCache.begin());
     return baked;
+}
+
+std::shared_ptr<const OpenDrtLut> bakedOpenDrtLut(const OpenDrtSpec& spec) {
+    static const std::atomic<bool> never{false};
+    return bakedOpenDrtLutCancellable(spec, never);
 }
 
 void applyOpenDrtBaked(ImageF& img, const OpenDrtLut& lut) {

@@ -5271,6 +5271,64 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionInitNodes(
     return arr;
 }
 
+// F1-8e: the async OpenDRT bake's redraw hook. [listener] is a java.lang.Runnable the bake thread runs
+// ONCE per table the async bake published (post-only: the Kotlin side posts one redraw to the main
+// thread). Null clears it. The global ref lives exactly as long as the callback object (the pipeline
+// drops the callback on clear/close), and is released through a thread-attached deleter.
+namespace {
+struct DrtListenerRef {
+    JavaVM* vm = nullptr;
+    jobject runnable = nullptr;
+    jmethodID run = nullptr;
+    ~DrtListenerRef() {
+        if (vm == nullptr || runnable == nullptr) return;
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+            if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+            attached = true;
+        }
+        env->DeleteGlobalRef(runnable);
+        if (attached) vm->DetachCurrentThread();
+    }
+};
+}  // namespace
+
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetDrtReadyListener(
+        JNIEnv* env, jclass, jlong sessionHandle, jobject listener) {
+    gles::PreviewSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        if (sessionHandle > 0 && sessionHandle <= kMaxPreviewSessions) {
+            session = gPreviewSessions[sessionHandle - 1].get();
+        }
+    }
+    if (session == nullptr) return;
+    if (listener == nullptr) {
+        session->setDrtReadyCallback({});
+        return;
+    }
+    auto ref = std::make_shared<DrtListenerRef>();
+    if (env->GetJavaVM(&ref->vm) != JNI_OK) return;
+    jclass cls = env->GetObjectClass(listener);
+    ref->run = env->GetMethodID(cls, "run", "()V");
+    env->DeleteLocalRef(cls);
+    if (ref->run == nullptr) return;
+    ref->runnable = env->NewGlobalRef(listener);
+    session->setDrtReadyCallback([ref]() {
+        JNIEnv* cbEnv = nullptr;
+        bool attached = false;
+        if (ref->vm->GetEnv(reinterpret_cast<void**>(&cbEnv), JNI_VERSION_1_6) != JNI_OK) {
+            if (ref->vm->AttachCurrentThread(&cbEnv, nullptr) != JNI_OK) return;
+            attached = true;
+        }
+        cbEnv->CallVoidMethod(ref->runnable, ref->run);
+        if (cbEnv->ExceptionCheck()) cbEnv->ExceptionClear();
+        if (attached) ref->vm->DetachCurrentThread();
+    });
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetColorModelChain(
         JNIEnv* env, jclass, jlong sessionHandle, jfloatArray chainWire,
