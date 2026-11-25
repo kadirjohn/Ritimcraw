@@ -9,7 +9,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.TwoWayConverter
 import androidx.compose.animation.core.VectorizedFiniteAnimationSpec
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.rememberSplineBasedDecay
+import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.AnchoredDraggableState
@@ -95,7 +95,9 @@ internal fun PanelSheet.settleSpec(): FiniteAnimationSpec<Float> {
 @Composable
 fun rememberPanelDragState(initial: PanelState): AnchoredDraggableState<PanelState> {
     val density = LocalDensity.current
-    val decay = rememberSplineBasedDecay<Float>()
+    // A decay that dies almost at once never reaches another anchor, so every fling settles through
+    // snapAnimationSpec (the damped spring) instead of coasting into the anchor without braking.
+    val decay = remember { exponentialDecay<Float>(frictionMultiplier = 1000f) }
     return remember {
         AnchoredDraggableState(
             initialValue = initial,
