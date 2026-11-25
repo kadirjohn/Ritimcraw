@@ -147,6 +147,9 @@ echo "== building tests =="
 # hr_levels <clip.mcraw> [step] — recoveryClipLevels over a frame sweep (per-camera verification).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_levels.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_levels"
+# hr_trace <clip.mcraw> <frame> [x y] [ev hl chroma nr curve] — per-stage trace of one pixel (the lilac-streak measurement).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_trace.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_trace"
 # p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/p5_compare.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/p5_compare"
