@@ -1630,6 +1630,13 @@ fun AppNav(
                         onGradeChange = { g -> stores.grades.putPreservingChain(r.sourceId, g) },
                         nodesFor = { stores.grades.getV2(r.sourceId)?.nodes ?: emptyList() },
                         onNodesChange = { list -> stores.grades.putNodes(r.sourceId, list) },
+                        // F1-8d: the Output card's read/write seams (putOutput replaces only the output
+                        // group; the record's chain and GradeK fields stay).
+                        outputFor = {
+                            stores.grades.getV2(r.sourceId)?.output
+                                ?: com.ritim.ritimcraw.data.grade2.OutputTransformV2()
+                        },
+                        onOutputChange = { o -> stores.grades.putOutput(r.sourceId, o) },
                         // (E1c) the export sheet's time estimate: this device's
                         // last measured MP4 export speed (null until one ran).
                         exportRate = ExportSheetModel.latestRate(exportJobs),

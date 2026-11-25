@@ -907,6 +907,12 @@ fun ClipEditorScreen(
     /** F1-8a: the clip's stored node chain, and the write of an edited chain (persist; the screen re-renders). */
     nodesFor: () -> List<com.ritim.ritimcraw.data.grade2.GradeNodeV2> = { emptyList() },
     onNodesChange: (List<com.ritim.ritimcraw.data.grade2.GradeNodeV2>) -> Unit = {},
+    /**
+     * F1-8d: the clip's stored output transform (mode + both blocks), and the write of a card edit — the
+     * putOutput seam (a node write preserves it; a slider write preserves it; only the card edits it).
+     */
+    outputFor: () -> com.ritim.ritimcraw.data.grade2.OutputTransformV2 = { com.ritim.ritimcraw.data.grade2.OutputTransformV2() },
+    onOutputChange: (com.ritim.ritimcraw.data.grade2.OutputTransformV2) -> Unit = {},
     // (Export resolution, owner request 2026-11-13) widened by the
     // resolution pair the export sheet's chip selected: null pair =
     // Original = the source's effective size, exactly what every export
@@ -1328,6 +1334,10 @@ fun ClipEditorScreen(
         val currentGradeV2 by rememberUpdatedState(gradeV2For)
         var nodes by remember(sourceId) { mutableStateOf(nodesFor()) }
         var selectedNode by rememberSaveable(sourceId) { mutableStateOf(0) }
+        // F1-8d: the output transform, read once per clip (the editor's own state; the putOutput seam
+        // persists each card edit). The render sites read the whole v2 record per request through
+        // gradeV2For (which carries the output), so THIS copy only feeds the card's own page.
+        var output by remember(sourceId) { mutableStateOf(outputFor()) }
 
         // ---- Grade undo/redo history (feature N7) ----
         // Per-open-editor, keyed to the clip like every other editor
@@ -1909,6 +1919,22 @@ fun ClipEditorScreen(
             )
         }
 
+        /**
+         * F1-8d: an Output card edit — the screen's output state + the putOutput seam + the re-render,
+         * the applyNodesEdit shape. The grade's undo history does NOT record it (the history's Snapshot
+         * carries grade + nodes; the output rides only the v2 record whose wire the render sites read per
+         * request, and output edits are mode/param switches, not drags). A cheaper take-back for a stray
+         * mode switch is a conscious F1-8f decision (the design's undo-integration slice), not smuggled in.
+         */
+        fun applyOutputEdit(o: com.ritim.ritimcraw.data.grade2.OutputTransformV2) {
+            output = o
+            onOutputChange(o)
+            requestRender(
+                positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM,
+                cached = true, followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+            )
+        }
+
         /** Applies an undo/redo snapshot (grade AND node chain) without recording. */
         fun applyRestoredSnapshot(snap: GradeHistory.Snapshot) {
             nodeSettleJob?.cancel()
@@ -1917,7 +1943,11 @@ fun ClipEditorScreen(
             if (snap.nodes != nodes) {
                 nodes = snap.nodes
                 onNodesChange(snap.nodes)
-                selectedNode = selectedNode.coerceIn(0, (snap.nodes.size - 1).coerceAtLeast(0))
+                // The F1-8d Output selection (-1) survives an undo: a restored chain must only keep the
+                // node index inside the chain, not yank the Output page shut.
+                if (selectedNode >= 0) {
+                    selectedNode = selectedNode.coerceIn(0, (snap.nodes.size - 1).coerceAtLeast(0))
+                }
                 requestRender(
                     positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM,
                     cached = true, followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
@@ -2725,16 +2755,23 @@ fun ClipEditorScreen(
                                     } else {
                                         null
                                     }
-                                    // The OpenDRT tail draw fails on this device (gl error 0x0502 in the tail-drt
-                                    // draw, first v2-sweep run 2026-11-25) and the failure latches the GPU
-                                    // preview unhealthy: until it is fixed an OpenDRT grade renders on the CPU
-                                    // arm (which is what happened silently before the NODES programs compiled).
-                                    if (v2NeedsDrt) {
-                                        chainDoorOk = false
-                                    } else if (v2NeedsDrt && drtPack == null) {
-                                        chainDoorOk = false
+                                    // F1-8d: the old v2NeedsDrt CPU-arm gate is GONE. It was bolted on while the
+                                    // tail-drt draw failed with gl 0x0502 (first v2-sweep run 2026-11-25); that
+                                    // cause was fixed by the baked-3D-LUT route (core bakeOpenDrtLut + the
+                                    // TAIL's trilinear sample), and the device sweep then read drt-sdr 0.003% /
+                                    // drt-hlg 0.001% / nodes+drt 0.001%, all maxDiffLsb=1 (STATUS 2026-11-25
+                                    // ss.211-212, vectors device/v2-sweep-bake.log) — with the async bake
+                                    // (8072dfa) carrying the cook off the GL thread. With the Output card now
+                                    // REACHABLE from the UI, keeping the gate would push every OpenDRT grade
+                                    // to the CPU arm and the async bake would never be measured on the device
+                                    // (the morning task). A refusal still folds honestly: a failed door or a
+                                    // drtPack resolve miss takes the CPU arm for THIS request only.
+                                    chainDoorOk = if (v2NeedsDrt && drtPack == null) {
+                                        // The pack is the door's contract: a resolve miss (never seen in
+                                        // practice; resolve is pure math) is an honest refusal.
+                                        false
                                     } else {
-                                        chainDoorOk = runCatching {
+                                        runCatching {
                                             NativeSource.jniPreviewSessionSetColorModelChain(
                                                 gpu.handle,
                                                 req.chainWire,
@@ -4537,6 +4574,8 @@ fun ClipEditorScreen(
                     selectedNode = selectedNode,
                     onSelectNode = { selectedNode = it },
                     onNodesChange = { applyNodesEdit(it) },
+                    output = output,
+                    onOutputChange = { applyOutputEdit(it) },
                     onChange = { g ->
                         // Same slider-path recording as LightPanel: the
                         // machine is shared, so which tab the drag
@@ -5673,6 +5712,9 @@ private fun ColorPanel(
     selectedNode: Int = 0,
     onSelectNode: (Int) -> Unit = {},
     onNodesChange: (List<com.ritim.ritimcraw.data.grade2.GradeNodeV2>) -> Unit = {},
+    // ---- Output card (F1-8d) ----
+    output: com.ritim.ritimcraw.data.grade2.OutputTransformV2 = com.ritim.ritimcraw.data.grade2.OutputTransformV2(),
+    onOutputChange: (com.ritim.ritimcraw.data.grade2.OutputTransformV2) -> Unit = {},
     // ---- Look body: LUT section (COL-07), moved from DetailPanel ----
     lutEntries: List<LutInfo> = emptyList(),
     lutImportError: String? = null,
@@ -5726,9 +5768,11 @@ private fun ColorPanel(
         // semantics untouched.
         EditorCategories.COLOR_NODES -> NodesBody(
             nodes = nodes,
+            output = output,
             selected = selectedNode,
             onSelect = onSelectNode,
             onNodesChange = onNodesChange,
+            onOutputChange = onOutputChange,
             onDragActiveChange = onDragActiveChange,
         )
         EditorCategories.COLOR_LOOK -> ColorLookBody(
