@@ -1,0 +1,30 @@
+{
+ "id": "e0b5-encoded-8k-surface-export",
+ "title": "route encoded export through the encoder surface (8K)",
+ "date": "2026-11-25",
+ "status": "blocked",
+ "commit": null,
+ "tests": "blocked-on-device: JVM green (:app:assembleDebug :app:testDebugUnitTest --rerun: 3049 tests, 0 failures; tools/build-desktop.sh exit 0); device test app/src/androidTest/.../Encoded8kSurfaceExportTest.kt not run, awaiting coordinator",
+ "description": "Encoded sources develop YUV on the GPU and draw straight onto the encoder input Surface, so an 8K clip never builds a 99 MB RGB frame. Branch feat-encoded-8k-surface-export, not merged until verified on the device.",
+ "added": [
+  "EncodedExportPlanner: pure path decision and GPU memory budget",
+  "nativeDevelopSessionRenderYuvToEncoderParcel and EncodedSource.renderFrameToEncoder",
+  "Mp4Session encoder-surface hooks, ExportPipeline session-owned surface mode with adopt fallback",
+  "Encoded8kSurfaceExportTest (device, skipped without fixture)"
+ ],
+ "removed": [],
+ "changed": [
+  "develop session defers the readback scratch + SSBO until a frame is read back (531 MB at 8K)",
+  "CPU fallback for an 8K frame refuses with a short message instead of an OutOfMemoryError"
+ ],
+ "files": [
+  {"path": "app/src/main/java/com/ritim/ritimcraw/export/EncodedExportPlanner.kt", "change": "A"},
+  {"path": "app/src/main/java/com/ritim/ritimcraw/export/EncodedMp4Session.kt", "change": "M"},
+  {"path": "app/src/main/java/com/ritim/ritimcraw/export/Mp4Exporter.kt", "change": "M"},
+  {"path": "app/src/main/java/com/ritim/ritimcraw/engine/EncodedSource.kt", "change": "M"},
+  {"path": "app/src/main/cpp/jni_bridge.cpp", "change": "M"},
+  {"path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp", "change": "M"},
+  {"path": "app/src/androidTest/java/com/ritim/ritimcraw/export/Encoded8kSurfaceExportTest.kt", "change": "A"}
+ ],
+ "sources": []
+}

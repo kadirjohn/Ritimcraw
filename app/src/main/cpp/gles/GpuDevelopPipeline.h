@@ -311,6 +311,11 @@ public:
         // its own small scratch + SSBO sized to the published dims,
         // session-side, unchanged.
         bool withStoreScratch = false;
+        // true = withStoreScratch's pair is NOT allocated with the frame storage but on the first
+        // ensureStoreScratch() (the readback render). The develop session sets it: an encoder-surface
+        // export (no readback) then never pays the SSBO + RGBA8 scratch (531 MB at 8K). Default false
+        // = the original allocation, byte-identical for every other caller.
+        bool deferStoreScratch = false;
     };
 
     // One draw's outcome. ok=false means the step named in [detail]
@@ -493,6 +498,8 @@ public:
     GLint storeSizeLoc() const;
     // The develop-config store-scratch pair (0 / 0 when the config did
     // not request it).
+    // Allocates the deferred store-scratch pair for the CURRENT frame size (idempotent; GL thread).
+    bool ensureStoreScratch(std::string* detail);
     GLuint scratchFbo() const;
     GLuint outBuf() const;
     uint64_t outBytes() const;

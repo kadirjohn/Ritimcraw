@@ -700,6 +700,7 @@ struct GpuDevelopPipeline::Impl {
     // were, plus the F1-5 NODES/DRT pair (only when the request carries
     // them and initNodes ran).
     DrawResult draw(const DevelopFrameRequest& req);
+    bool allocStoreScratch(uint32_t w, uint32_t h, std::string* detail);
     // The F1-5 ADDITIVE door: compiles the NODES + DRT programs, resolves
     // their uniforms, allocates the atlas + the dummy node-LUT tables and
     // reads the two device limits (the inventory §1.3's missing query).
@@ -1284,6 +1285,41 @@ bool GpuDevelopPipeline::Impl::initNodes(const std::string& nodesSource,
 
 // ---- draw -------------------------------------------------------------------
 
+bool GpuDevelopPipeline::Impl::allocStoreScratch(uint32_t w, uint32_t h, std::string* detail) {
+    if (scratchTex != 0 && outBuf != 0) return true;
+
+        glGenTextures(1, &scratchTex);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, scratchTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8,
+                       static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        if (glErrorAfter("glTexStorage2D(RGBA8)", detail) != GL_NO_ERROR) return false;
+        glGenFramebuffers(1, &scratchFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, scratchFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               scratchTex, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            if (detail) *detail = "store fbo incomplete";
+            return false;
+        }
+
+        // SSBO: w*h*3 floats, STREAM_READ (the store pass writes it,
+        // the map reads it back — the harness's exact sizes and usage).
+        const uint64_t bytes = static_cast<uint64_t>(w) * h * 3 * sizeof(float);
+        glGenBuffers(1, &outBuf);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, outBuf);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes),
+                     nullptr, GL_STREAM_READ);
+        if (glErrorAfter("glBufferData(out)", detail) != GL_NO_ERROR) return false;
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, outBuf);
+        outBytes = bytes;
+    return true;
+}
+
 GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         const DevelopFrameRequest& req) {
     DrawResult r;
@@ -1551,40 +1587,11 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
             }
         }
 
-        // The develop config's store-scratch pair (withStoreScratch):
-        // scratch RGBA8, the store pass's throwaway target — never the
-        // develop FBO, whose texture is the source: a feedback loop. The
-        // RGBA8 contents are never read; the SSBO is the real output.
-        if (config.withStoreScratch) {
-            glGenTextures(1, &scratchTex);
-            glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, scratchTex);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8,
-                           static_cast<GLsizei>(w), static_cast<GLsizei>(h));
-            if (glErrorAfter("glTexStorage2D(RGBA8)", &r.detail) != GL_NO_ERROR) return r;
-            glGenFramebuffers(1, &scratchFbo);
-            glBindFramebuffer(GL_FRAMEBUFFER, scratchFbo);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                                   scratchTex, 0);
-            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-                r.detail = "store fbo incomplete";
-                return r;
-            }
-
-            // SSBO: w*h*3 floats, STREAM_READ (the store pass writes it,
-            // the map reads it back — the harness's exact sizes and usage).
-            const uint64_t bytes = static_cast<uint64_t>(w) * h * 3 * sizeof(float);
-            glGenBuffers(1, &outBuf);
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, outBuf);
-            glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes),
-                         nullptr, GL_STREAM_READ);
-            if (glErrorAfter("glBufferData(out)", &r.detail) != GL_NO_ERROR) return r;
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, outBuf);
-            outBytes = bytes;
+        // The develop config's store-scratch pair (withStoreScratch): allocated here unless the
+        // config defers it (deferStoreScratch: the encoder-surface export never reads back, so the
+        // 8K SSBO + RGBA8 scratch, 531 MB, wait for the first readback render: ensureStoreScratch).
+        if (config.withStoreScratch && !config.deferStoreScratch) {
+            if (!allocStoreScratch(w, h, &r.detail)) return r;
         }
         cfaW = w;
         cfaH = h;
@@ -2909,6 +2916,20 @@ GLuint GpuDevelopPipeline::developTex() const { return impl_->developTex; }
 GLuint GpuDevelopPipeline::storeProgram() const { return impl_->storeProgram; }
 GLint GpuDevelopPipeline::storeSrcLoc() const { return impl_->storeSrcLoc; }
 GLint GpuDevelopPipeline::storeSizeLoc() const { return impl_->storeSizeLoc; }
+bool GpuDevelopPipeline::ensureStoreScratch(std::string* detail) {
+    if (!impl_->config.withStoreScratch) {
+        if (detail) *detail = "store scratch not configured";
+        return false;
+    }
+    if (impl_->cfaW == 0 || impl_->cfaH == 0) {
+        if (detail) *detail = "store scratch before the first draw";
+        return false;
+    }
+    std::string d;
+    const bool ok = impl_->allocStoreScratch(impl_->cfaW, impl_->cfaH, &d);
+    if (!ok && detail) *detail = d;
+    return ok;
+}
 GLuint GpuDevelopPipeline::scratchFbo() const { return impl_->scratchFbo; }
 GLuint GpuDevelopPipeline::outBuf() const { return impl_->outBuf; }
 uint64_t GpuDevelopPipeline::outBytes() const { return impl_->outBytes; }

@@ -4108,4 +4108,102 @@ class Mp4ExporterTest {
         assertTrue(rep.steps.any { it.startsWith("fix: 10-bit -> 8-bit") })
         assertTrue(ExportText.tenBitDropped(rep))
     }
+
+    // ---- E0b-5: an encoded source's own GPU -> encoder-surface door ----
+
+    /** A session that claims the encoder-surface door (what EncodedMp4Session does for a capable clip). */
+    private class SurfaceDoorSession(
+        private val capable: Boolean = true,
+        private val attachOk: Boolean = true,
+        private val drawsOk: Int = Int.MAX_VALUE,
+    ) : FakeSession(frames = 3, audio = false) {
+        var asked = 0
+        val attaches = ArrayList<Any?>()
+        val encoded = ArrayList<Triple<Int, Long, Int>>()
+        override fun encoderSurfaceCapable(handle: Long, grade: GradeK, chainWire: FloatArray?, oneToOne: Boolean): Boolean {
+            asked++
+            return capable && oneToOne
+        }
+        override fun attachEncoderSurface(handle: Long, surface: Any?): Boolean {
+            attaches.add(surface)
+            return attachOk
+        }
+        override fun renderFrameToEncoder(
+            handle: Long, frameIndex: Int, ptsUs: Long, grade: GradeK, lutPath: String?, chainWire: FloatArray?,
+            rotationDeg: Int,
+        ): Boolean {
+            if (encoded.size >= drawsOk) return false
+            encoded.add(Triple(frameIndex, ptsUs, rotationDeg))
+            return true
+        }
+    }
+
+    @Test
+    fun encoded_surface_door_sends_every_frame_to_the_encoder_and_never_builds_an_rgb_frame() {
+        val session = SurfaceDoorSession()
+        val writer = SessionSurfaceWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(session, writer, lines::add).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(listOf("requestSessionEncoderSurface"), writer.sessionRequests)
+        assertTrue(session.attaches[0] === writer.inputSurface)
+        // the three frames, the container's 90 deg as the blit fold, the frame's own pts
+        assertEquals(
+            listOf(Triple(0, 0L, 90), Triple(1, 33_333L, 90), Triple(2, 66_666L, 90)),
+            session.encoded,
+        )
+        assertTrue("no RGB frame may be developed", session.rendered.isEmpty())
+        assertEquals(3, writer.drainCalls)
+        assertEquals(0, writer.rgbFrames + writer.packedFrames)
+        assertEquals(0, writer.adoptCalls.size)
+        // the detach before the codec is released
+        assertEquals(null, session.attaches.last())
+        assertTrue(lines.any { it.contains("encoder-input=surface-gpu") })
+    }
+
+    @Test
+    fun encoded_surface_door_is_not_used_for_a_scaled_export() {
+        val session = SurfaceDoorSession()
+        val writer = SessionSurfaceWriter()
+        // an Original-size job is 1:1; a 2x2 bound is not
+        ExportPipeline(session, writer, resolutionW = 2, resolutionH = 2).run(7, GradeK(), "/tmp/out.partial")
+        assertTrue(writer.sessionRequests.isEmpty())
+        assertTrue(session.encoded.isEmpty())
+        assertEquals(3, session.rendered.size)
+    }
+
+    @Test
+    fun encoded_surface_door_not_claimed_leaves_the_export_untouched() {
+        val session = SurfaceDoorSession(capable = false)
+        val writer = FakeWriter()
+        ExportPipeline(session, writer).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, session.asked)
+        assertTrue(session.attaches.isEmpty())
+        assertEquals(3, session.rendered.size)
+        assertEquals(3, writer.videoFrames)
+    }
+
+    @Test
+    fun encoded_surface_door_refused_attach_adopts_and_continues_through_the_rgb_path() {
+        val session = SurfaceDoorSession(attachOk = false)
+        val writer = SessionSurfaceWriter()
+        val lines = ArrayList<String>()
+        ExportPipeline(session, writer, lines::add).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, writer.adoptCalls.size)
+        assertTrue(session.encoded.isEmpty())
+        assertEquals(3, session.rendered.size)
+        assertEquals(3, writer.rgbFrames) // the adopted surface takes the RGB frames
+        assertTrue(lines.any { it.contains("encoder surface fallback") && it.contains("writer adopted") })
+    }
+
+    @Test
+    fun encoded_surface_door_refused_frame_mid_stream_adopts_and_finishes_the_rest() {
+        val session = SurfaceDoorSession(drawsOk = 1)
+        val writer = SessionSurfaceWriter()
+        ExportPipeline(session, writer).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(listOf(0), session.encoded.map { it.first })
+        assertEquals(1, writer.adoptCalls.size)
+        assertEquals(listOf(1, 2), session.rendered)
+        assertEquals(2, writer.rgbFrames)
+        assertEquals(1, writer.drainCalls)
+    }
 }

@@ -1138,6 +1138,40 @@ class NativeSource private constructor(
             )
         }
 
+        /**
+         * E0b-5: the encoded-frame door that ENDS AT THE ENCODER: the same YUV pass at full size, the developed
+         * texture blitted onto the Surface handed to [jniDevelopSessionSetEncoderSurface]; no RGB bytes exist.
+         * False = refused (lastError names the step). No default parameter values (the wrapper mirrors the seam).
+         */
+        @JvmStatic private external fun nativeDevelopSessionRenderYuvToEncoderParcel(
+            sessionHandle: Long,
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?, lutStrength: Float,
+            lutRole: Int, lutInGamut: Int, lutInTransfer: Int, lutOutGamut: Int, lutOutTransfer: Int,
+            ptsUs: Long, rotationDeg: Int,
+        ): Boolean
+
+        internal fun jniDevelopSessionRenderYuvToEncoderParcel(
+            sessionHandle: Long,
+            yPlane: ByteArray, cPlane: ByteArray,
+            width: Int, height: Int, stride: Int, uvStride: Int, bitDepth: Int, fullRange: Boolean,
+            matrix: Int, transfer: Int, primaries: Int,
+            gradeParcel: FloatArray,
+            lutPath: String?, lutStrength: Float,
+            lutRole: Int, lutInGamut: Int, lutInTransfer: Int, lutOutGamut: Int, lutOutTransfer: Int,
+            ptsUs: Long, rotationDeg: Int,
+        ): Boolean {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            return nativeDevelopSessionRenderYuvToEncoderParcel(
+                sessionHandle, yPlane, cPlane, width, height, stride, uvStride, bitDepth, fullRange,
+                matrix, transfer, primaries, gradeParcel, lutPath, lutStrength,
+                lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer, ptsUs, rotationDeg,
+            )
+        }
+
         @JvmStatic private external fun nativeDevelopSessionRenderFrameParcel(
             sessionHandle: Long,
             clipHandle: Long,

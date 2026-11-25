@@ -16,6 +16,7 @@ import com.ritim.ritimcraw.engine.YuvPlane
 import com.ritim.ritimcraw.engine.YuvPlanes
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -44,7 +45,7 @@ class EncodedMp4SessionTest {
         override fun release() {}
     }
 
-    private class Decoder : EncodedFrameDecoder {
+    private class Decoder(private val nv12: Boolean = false) : EncodedFrameDecoder {
         private val pending = ArrayList<EncodedSample>()
         private var eos = false
         override fun configure(format: EncodedVideoFormat): String? = null
@@ -54,6 +55,14 @@ class EncodedMp4SessionTest {
         override fun dequeueFrame(timeoutUs: Long): YuvPlanes? {
             if (pending.isEmpty()) return null
             val s = pending.removeAt(0)
+            if (nv12) {
+                // 4x2 NV12: one interleaved chroma array, U and V views of it (what the GPU door takes)
+                val c = ByteArray(4)
+                return YuvPlanes(
+                    s.ptsUs, 4, 2,
+                    YuvPlane(ByteArray(8), 0, 4, 1), YuvPlane(c, 0, 4, 2), YuvPlane(c, 1, 4, 2),
+                )
+            }
             return YuvPlanes(
                 s.ptsUs, 4, 2,
                 YuvPlane(ByteArray(8), 0, 4, 1), YuvPlane(ByteArray(2), 0, 2, 1), YuvPlane(ByteArray(2), 0, 2, 1),
@@ -178,5 +187,107 @@ class EncodedMp4SessionTest {
         assertNull(s.renderFrame(42, 0, GradeK(), null, null))
         assertTrue(s.detail()!!.contains("no open"))
         assertEquals(-1L, s.framePts(42, 0))
+    }
+
+    // ---- E0b-5: the GPU -> encoder-surface door ----
+
+    private class FakeGpu(var available: Boolean = true, var drawOk: Boolean = true, var attachOk: Boolean = true) :
+        com.ritim.ritimcraw.engine.EncodedGpuDeveloper {
+        val draws = ArrayList<Triple<Int, Long, Int>>() // width, ptsUs, rotation
+        var attached: Any? = null
+        override fun available() = available
+        override fun develop(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, reduce: Int, lutPath: String?, chainWire: FloatArray?): IntArray? = null
+        override fun attachEncoderSurface(surface: Any?): Boolean {
+            if (attachOk) attached = surface
+            return attachOk
+        }
+        override fun developToEncoder(
+            frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, lutPath: String?, chainWire: FloatArray?,
+            ptsUs: Long, rotationDeg: Int,
+        ): Boolean {
+            draws.add(Triple(frame.width, ptsUs, rotationDeg))
+            return drawOk
+        }
+        override fun close() {}
+    }
+
+    private fun gpuSession(
+        gpu: FakeGpu, w: Int = 4, h: Int = 2, heap: Long = 256L * 1024 * 1024, dev: Developer = Developer(),
+        logs: MutableList<String> = ArrayList(),
+    ): EncodedMp4Session {
+        val format = EncodedVideoFormat("video/hevc", w, h, 0, color)
+        return EncodedMp4Session(
+            newSource = { EncodedSource(Reader(3, format), Decoder(nv12 = true), dev, gpu) },
+            dupFd = { it },
+            log = { logs.add(it) },
+            maxTextureSize = { 16384 },
+            heapLimitBytes = { heap },
+        )
+    }
+
+    @Test
+    fun surface_capable_is_decided_by_the_planner_and_logged() {
+        val logs = ArrayList<String>()
+        val s = gpuSession(FakeGpu(), w = 7680, h = 4320, logs = logs)
+        val h = s.open(1)!!.handle
+        assertTrue(s.encoderSurfaceCapable(h, GradeK(), null, true))
+        assertTrue(logs.any { it.contains("encoded export path: surface") && it.contains("gpu budget 2183 MiB") })
+        // a scaled export is not a 1:1 blit
+        assertFalse(s.encoderSurfaceCapable(h, GradeK(), null, false))
+    }
+
+    @Test
+    fun no_gpu_door_means_no_surface() {
+        val s = gpuSession(FakeGpu(available = false))
+        val h = s.open(1)!!.handle
+        assertFalse(s.encoderSurfaceCapable(h, GradeK(), null, true))
+    }
+
+    @Test
+    fun frames_go_to_the_encoder_with_pts_and_rotation_and_never_touch_the_cpu_developer() {
+        val gpu = FakeGpu()
+        val dev = Developer()
+        val s = gpuSession(gpu, dev = dev)
+        val h = s.open(1)!!.handle
+        val surface = Any()
+        assertTrue(s.attachEncoderSurface(h, surface))
+        assertEquals(surface, gpu.attached)
+        assertTrue(s.renderFrameToEncoder(h, 1, 33_333L, GradeK(), null, null, 90))
+        assertEquals(listOf(Triple(4, 33_333L, 90)), gpu.draws)
+        assertEquals(0, dev.colors.size) // no CPU develop, no RGB frame
+    }
+
+    @Test
+    fun a_refused_surface_frame_reports_why_and_keeps_the_decoded_frame_for_the_fallback() {
+        val gpu = FakeGpu(drawOk = false)
+        val dev = Developer()
+        val s = gpuSession(gpu, dev = dev)
+        val h = s.open(1)!!.handle
+        assertFalse(s.renderFrameToEncoder(h, 0, 0L, GradeK(), null, null, 0))
+        assertTrue(s.detail()!!.contains("refused frame 0"))
+        // the fallback RGB path then develops the frame (decoded once, pending planes reused)
+        val rgb = s.renderFrame(h, 0, GradeK(), null, null)
+        assertEquals(4 * 2 * 3, rgb!!.size)
+    }
+
+    @Test
+    fun the_cpu_fallback_refuses_an_8k_frame_with_a_short_message_before_allocating_anything() {
+        val gpu = FakeGpu(available = false)
+        val dev = Developer()
+        val s = gpuSession(gpu, w = 7680, h = 4320, dev = dev)
+        val h = s.open(1)!!.handle
+        assertNull(s.renderFrame(h, 0, GradeK(), null, null))
+        val d = s.detail()!!
+        assertTrue(d.contains("7680x4320"))
+        assertTrue(d.length < 250)
+        assertEquals(0, dev.colors.size) // the oracle never ran
+    }
+
+    @Test
+    fun a_refused_attach_is_reported() {
+        val s = gpuSession(FakeGpu(attachOk = false))
+        val h = s.open(1)!!.handle
+        assertFalse(s.attachEncoderSurface(h, Any()))
+        assertTrue(s.detail()!!.contains("refused the input surface"))
     }
 }
