@@ -245,7 +245,7 @@ void main() {
      *      (0.0 = the CPU's own `if (grade.highlights != 0.0f)` skip, so
      *      the unset uniform's 0.0 default is exactly the fast path), and
      *      the shader runs the CPU stage-15 shoulder verbatim
-     *      (core/src/Develop.cpp): knee = uHlKnee (0.75 legacy / 0.40 v1), span = 1 - knee, s =
+     *      (core/src/Develop.cpp): knee 0.40, span = 1 - knee, s =
      *      -highlights / 100 (recovery -> +, lift -> -), the monotone
      *      shoulder knee + span * (t / (1 + t)) on pixels whose mx >
      *      knee, the blend mx + s * (shoulder - mx), and the uniform
@@ -445,7 +445,6 @@ uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (n
      */
     private const val kDevelopPointwiseUniforms: String = """uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
 uniform float uHighlights;      // raw grade.highlights (stage 15); 0.0 = the CPU's own skip
-uniform float uHlKnee;          // stage-15 knee by curve version: 0.75 legacy, 0.40 v1
 uniform float uBlackPoint;      // raw grade.blackPoint (stage 9); 0.0 = the CPU's own skip
 uniform float uWhitePoint;      // raw grade.whitePoint (stage 10); 0.0 = the CPU's own skip
 uniform float uShadows;         // raw grade.shadows (stage 11); 0.0 = the CPU's own skip
@@ -1097,8 +1096,8 @@ vec3 lutManagedPixel(vec3 px) {
     // != 0.0f)`. knee/span are literal-only so they keep const; s/mx/over/
     // t/shoulder/newMx/gain are uniform-derived and must NOT (GLSL ES 3.00).
     if (uHighlights != 0.0) {
-        float knee = uHlKnee;            // 0.75 legacy / 0.40 v1, chosen CPU-side by the curve version
-        float span = 1.0 - knee;
+        const float knee = 0.40;
+        const float span = 1.0 - knee;
         float s = -uHighlights / 100.0;  // recovery -> +1, lift -> -1
         float mx = max(c.r, max(c.g, c.b));
         if (mx > knee) {

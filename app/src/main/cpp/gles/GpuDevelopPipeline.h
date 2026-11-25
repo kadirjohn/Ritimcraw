@@ -110,7 +110,6 @@ struct DevelopFrameRequest {
     rawedit::FrameInfo info{};
     const rawedit::RawMeta* meta = nullptr;
     float exposureEv = 0.0f;
-    int highlightsCurve = 0;  // stage-15 curve version (0 legacy knee 0.75, 1 v1 knee 0.40)
     bool highlightRecovery = false;  // replaces stage 3 with the pyramid re-estimate (CPU oracle: recoverClippedHighlights)
     float highlights = 0.0f;  // raw grade.highlights; the shader computes s
     float blackPoint = 0.0f;  // raw grade.blackPoint; the shader computes the lift

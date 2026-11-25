@@ -57,11 +57,10 @@ struct DevelopGrade {
     bool highlightReconstruction = true;
     bool keepVignetting = true;
     int tonemap = 0;
-    int highlightsCurve = 0;  // stage-15 curve version: 0 legacy (knee 0.75), 1 v1 (knee 0.40)
     bool highlightRecovery = false;  // highlight recovery (replaces stage 3 with a real re-estimate)
 };
 
-constexpr int kGradeParcelSlotCount = 31;
+constexpr int kGradeParcelSlotCount = 30;
 
 constexpr int kGradeParcelChromaDenoise = 0;
 constexpr int kGradeParcelNoiseReduction = 1;
@@ -92,8 +91,7 @@ constexpr int kGradeParcelSplitBalance = 25;
 constexpr int kGradeParcelHighlightReconstruction = 26;
 constexpr int kGradeParcelKeepVignetting = 27;
 constexpr int kGradeParcelTonemap = 28;
-constexpr int kGradeParcelHighlightsCurve = 29;
-constexpr int kGradeParcelHighlightRecovery = 30;
+constexpr int kGradeParcelHighlightRecovery = 29;
 
 // Slot names, index-aligned, for honest refusal messages.
 inline constexpr const char* kGradeParcelSlotNames[] = {
@@ -126,7 +124,6 @@ inline constexpr const char* kGradeParcelSlotNames[] = {
 "highlightReconstruction",
 "keepVignetting",
 "tonemap",
-"highlightsCurve",
 "highlightRecovery",
 };
 
@@ -208,7 +205,6 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
     out->highlightReconstruction = parcel[kGradeParcelHighlightReconstruction] != 0.0f;
     out->keepVignetting = parcel[kGradeParcelKeepVignetting] != 0.0f;
     out->tonemap = static_cast<int>(parcel[kGradeParcelTonemap]);
-    out->highlightsCurve = static_cast<int>(parcel[kGradeParcelHighlightsCurve]);
     out->highlightRecovery = parcel[kGradeParcelHighlightRecovery] != 0.0f;
     return true;
 }
@@ -250,7 +246,6 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
     req->highlightReconstruction = grade.highlightReconstruction;
     req->keepVignetting = grade.keepVignetting;
     req->tonemap = grade.tonemap;
-    req->highlightsCurve = grade.highlightsCurve;
     req->highlightRecovery = grade.highlightRecovery;
 }
 
@@ -294,7 +289,6 @@ inline void applyGradeToRawedit(const DevelopGrade& grade, GradeT* out) {
     out->highlightReconstruction = grade.highlightReconstruction;
     out->keepVignetting = grade.keepVignetting;
     out->tonemap = grade.tonemap;
-    out->highlightsCurve = grade.highlightsCurve;
     out->highlightRecovery = grade.highlightRecovery;
 }
 

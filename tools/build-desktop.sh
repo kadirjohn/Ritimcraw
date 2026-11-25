@@ -150,7 +150,7 @@ echo "== building tests =="
 # hr_headroom <clip.mcraw> <frame> [x,y,w,h] — recovery headroom-cap measurement (distribution of estimate / clipped value).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_headroom.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_headroom"
-# hr_trace <clip.mcraw> <frame> [x y] [ev hl chroma nr curve] — per-stage trace of one pixel (the lilac-streak measurement).
+# hr_trace <clip.mcraw> <frame> [x y] [ev hl chroma nr] — per-stage trace of one pixel (the lilac-streak measurement).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_trace.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_trace"
 # p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame

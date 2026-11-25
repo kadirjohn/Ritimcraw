@@ -364,7 +364,6 @@ data class DevelopV2(
     val asShot: Boolean = true,
     val highlightReconstruction: Boolean = true,
     val keepVignetting: Boolean = true,
-    val highlightsCurve: Int = com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_V1,
     val highlightRecovery: Boolean = false,
     val noiseReduction: Float = 0f,
     val chromaDenoise: Float = 0f,
@@ -385,7 +384,6 @@ data class DevelopV2(
                 asShot = m["asShot"] as? Boolean ?: (tempK == 5600f && tint == 0f),
                 highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
                 keepVignetting = m["keepVignetting"] as? Boolean ?: true,
-                highlightsCurve = (m["highlightsCurve"] as? Double)?.toInt() ?: com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY,
                 highlightRecovery = m["highlightRecovery"] as? Boolean ?: false,
                 noiseReduction = (m["noiseReduction"] as? Double)?.toFloat() ?: 0f,
                 chromaDenoise = (m["chromaDenoise"] as? Double)?.toFloat() ?: 0f,
@@ -463,7 +461,6 @@ object GradeV2Fiber {
             .append(",\"asShot\":").append(d.asShot)
             .append(",\"highlightReconstruction\":").append(d.highlightReconstruction)
             .append(",\"keepVignetting\":").append(d.keepVignetting)
-            .append(if (d.highlightsCurve != com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY) ",\"highlightsCurve\":${d.highlightsCurve}" else "")
             .append(if (d.highlightRecovery) ",\"highlightRecovery\":true" else "")
             .append(",\"noiseReduction\":").append(num(d.noiseReduction))
             .append(",\"chromaDenoise\":").append(num(d.chromaDenoise))
@@ -646,7 +643,6 @@ fun ClipGradeV2.toGradeKLenient(): GradeK {
         asShot = develop.asShot,
         highlightReconstruction = develop.highlightReconstruction,
         keepVignetting = develop.keepVignetting,
-        highlightsCurve = develop.highlightsCurve,
         highlightRecovery = develop.highlightRecovery,
         sharpness = develop.sharpness,
         detail = develop.detail,
@@ -698,7 +694,6 @@ fun GradeK.toClipGradeV2(): ClipGradeV2 = ClipGradeV2(
         asShot = asShot,
         highlightReconstruction = highlightReconstruction,
         keepVignetting = keepVignetting,
-        highlightsCurve = highlightsCurve,
         highlightRecovery = highlightRecovery,
         noiseReduction = noiseReduction,
         chromaDenoise = chromaDenoise,

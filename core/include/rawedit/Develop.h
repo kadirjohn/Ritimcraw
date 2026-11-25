@@ -257,9 +257,6 @@ struct Grade {
     float contrast = 0.0f;
     bool asShot = true;
     bool highlightReconstruction = true;
-    // Stage-15 highlights curve version: 0 = legacy (knee 0.75, the default so every
-    // existing grade and golden is unchanged), 1 = v1 (knee 0.40).
-    int highlightsCurve = 0;
     // Highlight RECOVERY (docs/HIGHLIGHT_RECOVERY_PLAN.md): false = today's behaviour (stage 3 per
     // highlightReconstruction). true = stage 3 is replaced by a real re-estimation of clipped channels
     // from the unclipped ones (CPU oracle: recoverClippedHighlights in Develop.cpp); may produce values

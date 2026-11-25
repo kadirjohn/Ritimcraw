@@ -64,8 +64,6 @@ class LegacyGradeWireLockTest {
         asShot = false,
         highlightReconstruction = false,
         keepVignetting = false,
-        // A pre-v1 record: the legacy stage-15 knee (the lock pins slots 0..28 exactly as before).
-        highlightsCurve = com.ritim.ritimcraw.data.HIGHLIGHTS_CURVE_LEGACY,
         sharpness = 31f,
         detail = -17f,
         tonemap = 3,
@@ -105,7 +103,7 @@ class LegacyGradeWireLockTest {
     )
 
     /**
-     * The parcel: today's 29 slots (+ the appended curve slot), byte for byte. The expected array is
+     * The parcel: today's 29 slots (0..28) + the appended recovery slot [29], byte for byte. The expected array is
      * hand-written FIRST (the values ARE the fixture's fields in the
      * SLOT_* order GradeParcel documents: chromaDenoise, noiseReduction,
      * temporalNr, temporalStrength, sharpness, detail, exposureEv,
@@ -142,8 +140,8 @@ class LegacyGradeWireLockTest {
                 210.0f, 45.0f, -25.0f,
                 // [26] highlightReconstruction  [27] keepVignetting
                 0.0f, 0.0f,
-                // [28] tonemap  [29] highlightsCurve (0 = legacy knee 0.75)  [30] highlightRecovery (appended, off)
-                3.0f, 0.0f, 0.0f,
+                // [28] tonemap  [29] highlightRecovery (appended, off)
+                3.0f, 0.0f,
             ),
             parcel,
         )
@@ -170,8 +168,7 @@ class LegacyGradeWireLockTest {
                 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
                 -1.0f, -1.0f, 0.0f,
                 1.0f, 1.0f, 0.0f,
-                1.0f, // [29] highlightsCurve: a new grade takes the v1 knee 0.40
-                0.0f, // [30] highlightRecovery: appended, off by default
+                0.0f, // [29] highlightRecovery: appended, off by default
             ),
             GradeParcel.encode(GradeK()),
         )

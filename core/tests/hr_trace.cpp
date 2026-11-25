@@ -1,7 +1,7 @@
 // hr_trace — per-stage trace of ONE pixel through the develop chain (owner request 2026-11-25: the lilac streak on
 // 261124_144344 at ~00:02; measure instead of guessing which stage pushes a channel below 0 / above 1).
 //
-// Usage: hr_trace <clip.mcraw> <frame> [x y] [exposureEv highlights chromaDenoise noiseReduction highlightsCurve]
+// Usage: hr_trace <clip.mcraw> <frame> [x y] [exposureEv highlights chromaDenoise noiseReduction]
 // Defaults are the clip's saved grade at the time of the screenshot: Gain +1.1 EV, Highlights -100 (legacy knee 0.75),
 // chroma denoise 61, noise reduction 63, as-shot WB, Neutral stage 3 on. Without x y it searches the developed frame for
 // the most lilac pixel (display R and B above G, bright) and traces that. Stages (cumulative, linear unless noted):
@@ -51,7 +51,7 @@ void line(const char* name, const Px& p) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 3) { std::fprintf(stderr, "usage: hr_trace <clip> <frame> [x y] [ev hl chroma nr curve]\n"); return 2; }
+    if (argc < 3) { std::fprintf(stderr, "usage: hr_trace <clip> <frame> [x y] [ev hl chroma nr]\n"); return 2; }
     auto opened = Source::open(std::string(argv[1]));
     if (!opened.isOk()) { std::fprintf(stderr, "open: %s\n", opened.detail.c_str()); return 1; }
     Source& src = **opened.value;
@@ -68,13 +68,12 @@ int main(int argc, char** argv) {
     const float hl = argc > ai + 1 ? float(std::atof(argv[ai + 1])) : -100.0f;
     const float chroma = argc > ai + 2 ? float(std::atof(argv[ai + 2])) : 61.0f;
     const float nr = argc > ai + 3 ? float(std::atof(argv[ai + 3])) : 63.0f;
-    const int curve = argc > ai + 4 ? std::atoi(argv[ai + 4]) : 0;
 
     Grade base;
     base.highlightReconstruction = true;
     Grade gNr = base; gNr.chromaDenoise = chroma; gNr.noiseReduction = nr;
     Grade gEv = gNr; gEv.exposureEv = ev;
-    Grade gHl = gEv; gHl.highlights = hl; gHl.highlightsCurve = curve;
+    Grade gHl = gEv; gHl.highlights = hl;
     RawMeta metaId = meta;  // identity matrices -> stage 6 is a passthrough: the image after WB only
     for (int i = 0; i < 9; ++i) { metaId.forwardMatrix[i] = metaId.colorMatrix[i] = metaId.calibration[i] = (i % 4 == 0) ? 1.0f : 0.0f; }
 
@@ -98,8 +97,8 @@ int main(int argc, char** argv) {
             }
         std::printf("search: most lilac pixel (min(R,B) - G in display, lum > 0.45) at (%ld,%ld), score %.3f\n", px, py, best);
     }
-    std::printf("clip=%s frame=%zu pixel=(%ld,%ld) grade: ev=%.2f highlights=%.0f curve=%d chroma=%.0f nr=%.0f; asShotNeutral=%.4f %.4f %.4f\n",
-                argv[1], fi, px, py, ev, hl, curve, chroma, nr, meta.asShotNeutral[0], meta.asShotNeutral[1], meta.asShotNeutral[2]);
+    std::printf("clip=%s frame=%zu pixel=(%ld,%ld) grade: ev=%.2f highlights=%.0f chroma=%.0f nr=%.0f; asShotNeutral=%.4f %.4f %.4f\n",
+                argv[1], fi, px, py, ev, hl, chroma, nr, meta.asShotNeutral[0], meta.asShotNeutral[1], meta.asShotNeutral[2]);
 
     // raw cell
     {
