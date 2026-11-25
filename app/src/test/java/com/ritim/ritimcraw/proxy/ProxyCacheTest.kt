@@ -37,6 +37,20 @@ class ProxyCacheTest {
         return h.commit(durationUs = 1_000_000, frameCount = 30)
     }
 
+    @Test fun dirLayoutMatchesThePlan() {
+        // the plan pins the path: filesDir (NOT cacheDir, the OS may clear it) /cache/proxies,
+        // the same nesting as filesDir/cache/imagestab
+        assertEquals(
+            File("/data/user/0/app/files/cache/proxies"),
+            ProxyDirs.cacheDir(File("/data/user/0/app/files")),
+        )
+        // the storage sits exactly there and keeps names inside it
+        val s = ProxyDirs.storage(root)
+        s.write("abc-1.mp4", ByteArray(1))
+        assertEquals(listOf("abc-1.mp4"), s.names())
+        assertEquals(listOf("abc-1.mp4"), root.resolve("cache/proxies").list()?.toList())
+    }
+
     @Test fun signatureIsStableAndFilenameSafe() {
         val a = sig(); val b = sig()
         assertEquals(a.canonical(), b.canonical())
