@@ -4,12 +4,12 @@
  "date": "2026-11-25",
  "status": "done",
  "commit": {
-  "hash": "0bb557f",
+  "hash": "0ec9434",
   "date": "2026-11-25",
-  "merge_subject": "branch tip feat-highlight-recovery-gpu (merge commit follows)"
+  "merge_subject": "merge: feat: highlight recovery on the gpu with a recovery button"
  },
  "tests": ":app:assembleDebug :app:testDebugUnitTest --rerun: 3025 tests, 0 failures; tools/build-desktop.sh: exit 0, every doctest suite 0 failed; device (Xiaomi 25010PN30G) HighlightRecoveryDeviceTest on night.mcraw frames 0 and 900 sliced: GPU vs CPU maxDiffLsb=1, mismatch=0.0001%, over1=0.0000% for neutral, neutral hr-off, recovery, recovery -2EV, recovery highlights -100",
- "description": "Highlight recovery now runs on the GPU twin of the CPU oracle (demosaic + clip bits, block-sum pyramid, composite), the grade carries a highlightRecovery flag through store, v2 record and parcel slot 30, stage 3 and recovery share the per-frame clip flags, recovery has a K=4 headroom cap, and the Light tab has a Recovery button.",
+ "description": "Highlight recovery now runs on the GPU twin of the CPU oracle (demosaic + clip bits, block-sum pyramid, composite), the grade carries a highlightRecovery flag through store, v2 record and parcel slot 30, stage 3 and recovery share the per-frame clip flags, recovery has a K=4 headroom cap, and the Light tab has a Recovery button. Merged as 0ec9434 (branch tip 0bb557f; hash earlier recorded the branch tip while the merge was pending).",
  "added": [
   "highlightRecovery GradeK field (written only when true), parcel slot 30, JNI argument",
   "GPU passes RECOVERY_PRE / BLOCK0 / BLOCK_UP / COMPOSITE with validator pins",

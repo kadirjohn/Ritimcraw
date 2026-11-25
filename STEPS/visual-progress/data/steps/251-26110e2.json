@@ -1,0 +1,37 @@
+{
+ "id": "251-26110e2",
+ "title": "fix: theme slot icons animate for every slot incl C",
+ "date": "2026-11-25",
+ "status": "done",
+ "commit": {
+  "hash": "26110e2",
+  "date": "2026-11-25",
+  "merge_subject": "merge: fix: theme slot icons animate for every slot incl C"
+ },
+ "tests": "not recorded",
+ "description": "The custom C slot used to sit still while the icon slots rose, scaled and leaned toward the thumb. The text glyph now gets the same proximity pose (rise, scale, lean, alpha handoff under the thumb, colour charge drawn offscreen with SrcIn), as pure draw-phase curves.",
+ "added": [
+  "ThemeIconMorph.textGlyphState(signed): the same curve as slotState without the per-icon gesture (a letter neither spins nor stretches)",
+  "ThemeIconMorphTest.textGlyph_restNearAndHandoff: rest/handoff/alpha/brightness and left-right scale symmetry"
+ ],
+ "removed": [],
+ "changed": [
+  "ThemeSlider custom slot draws the glyph with graphicsLayer pose + offscreen SrcIn recolour instead of a bare alpha smoothstep"
+ ],
+ "files": [
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeIconMorph.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/components/ThemeSlider.kt",
+   "change": "M"
+  },
+  {
+   "path": "app/src/test/java/com/ritim/ritimcraw/ui/components/ThemeIconMorphTest.kt",
+   "change": "M"
+  }
+ ],
+ "sources": [],
+ "screenshot": null
+}

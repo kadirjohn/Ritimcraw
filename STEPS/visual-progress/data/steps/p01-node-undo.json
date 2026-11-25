@@ -1,16 +1,18 @@
 {
  "id": "p01-node-undo",
  "title": "node undo",
- "date": "TBD",
- "status": "blocked",
- "commit": null,
- "tests": "not run",
- "description": "Branch feat-node-undo (c5c0e67) is unmerged and not verified on a device. Waiting for a device test before merge.",
+ "date": "2026-11-26",
+ "status": "done",
+ "commit": {
+  "hash": "c25cf79",
+  "date": "2026-11-26",
+  "merge_subject": "merge: feat: node edits join the undo history"
+ },
+ "tests": "see n1-node-undo: gradle 3054 tests, 0 failures; device (Xiaomi, yavas_pan): add node, one continuous drag = one undo step (undo 1.52, redo 0.55), turn off/on, delete: each undone and redone with values restored.",
+ "description": "Node chain edits (add, remove, enable, slider drags) are steps in the undo history; a node slider drag merges into one step. Merged as c25cf79 and verified on the device; tracked step-by-step in n1-node-undo (was blocked at write time on the device test).",
  "added": [],
  "removed": [],
- "changed": [
-  "Unmerged branch; device-unverified."
- ],
+ "changed": [],
  "files": [],
  "sources": [],
  "screenshot": null

@@ -5,7 +5,7 @@
  "status": "in-progress",
  "commit": null,
  "tests": "not run",
- "description": "Approved plan in docs/HIGHLIGHT_RECOVERY_PLAN.md; implementation in progress.",
+ "description": "Umbrella for docs/HIGHLIGHT_RECOVERY_PLAN.md. Merged so far: hr_measure + CPU oracle + measured clip levels + hr_trace (r1-r4) and the GPU twin with the Recovery button (0ec9434, step p11). Remaining from the plan's order of work: the frame-time cost measurement (<= 10 ms per 4K30 frame on the Xiaomi, GPU_BASELINE procedure).",
  "added": [],
  "removed": [],
  "changed": [],
