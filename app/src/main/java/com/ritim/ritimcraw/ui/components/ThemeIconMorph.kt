@@ -99,6 +99,25 @@ internal object ThemeIconMorph {
         }
     }
 
+    /**
+     * Pose of a text-glyph slot (the custom "C") for the signed distance
+     * [signed] = thumbPosition - slotIndex in track slots. Same curve as
+     * [slotState] (rises, scales up, leans toward the thumb, brightens,
+     * hands off under the thumb) with the per-icon gesture left out: a
+     * letter neither spins nor stretches.
+     */
+    fun textGlyphState(signed: Float): ThemeSlotIconState {
+        val sd = signed.coerceIn(-1f, 1f)
+        val d = kotlin.math.abs(sd)
+        val q = 1f - smoothstep(NEAR, 1f, d)
+        val g = q * smoothstep(0f, NEAR, d)
+        val lean = (sd / NEAR).coerceIn(-1f, 1f)
+        return ThemeSlotIconState(
+            smoothstep(HANDOFF, NEAR, d), 1f + 0.10f * g, lean * g * 0.12f,
+            -0.10f * g, 0f, 1f, g,
+        )
+    }
+
     fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
         val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
         return t * t * (3f - 2f * t)
