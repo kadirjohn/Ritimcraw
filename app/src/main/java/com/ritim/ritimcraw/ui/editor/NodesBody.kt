@@ -8,6 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -68,6 +69,14 @@ internal fun NodesBody(
         }
         val node = nodes[sel]
         fun edit(n: GradeNodeV2) = onNodesChange(nodes.toMutableList().also { it[sel] = n })
+        // Thumb double-tap resets this node's six sliders (node scope, not the clip grade).
+        CompositionLocalProvider(
+            LocalSliderResetActions provides SliderResetActions(
+                resetAll = {
+                    edit(node.copy(sat = 1f, contrast = 1f, hue = 0f, temp = 0f, tint = 0f, mix = 1f))
+                },
+            ),
+        ) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -136,6 +145,7 @@ internal fun NodesBody(
                 onDoubleTapReset = { edit(node.copy(mix = 1f)) },
                 onDragActiveChange = onDragActiveChange,
             )
+        }
         }
     }
 }
