@@ -4,8 +4,8 @@
  "date": "2026-11-25",
  "status": "in-progress",
  "commit": null,
- "tests": "branch feat-opendrt-async-bake @ 2428349 (NOT merged: main is held by another worktree; device-unverified). tools/build-desktop.sh: exit 0, test_opendrt_async 10 cases / 152 assertions passed, all other suites SUCCESS (0 FAIL). :app:assembleDebug :app:testDebugUnitTest --rerun: BUILD SUCCESSFUL, 3018 JVM tests, 0 failures.",
- "description": "Interactive preview bakes the OpenDRT 65^3 table on a background thread (latest spec wins, old table keeps drawing, one redraw on swap); export stays synchronous.",
+ "tests": "gradle :app:assembleDebug :app:testDebugUnitTest --rerun: 3025 tests, 0 failures; tools/build-desktop.sh exit 0 (35 suites SUCCESS, test_opendrt_async 10 cases)",
+ "description": "Interactive preview bakes the OpenDRT 65^3 table on a background thread (latest spec wins, old table keeps drawing, one redraw on swap); export stays synchronous. Merged to main (merge 8072dfa) but DEVICE-UNVERIFIED: the editor still routes OpenDRT grades to the CPU arm (v2NeedsDrt gate, stale since the bake fixed the tail-drt 0x0502 error); the gate lifts with the Output card (F1-8d), then the async path can be measured on the phone.",
  "added": [
   "OpenDrtAsyncBaker (core): latest-wins, cancellable, immutable published tables",
   "preview-only Config::asyncDrtBake, JNI ready listener, one redraw per published table",
@@ -16,14 +16,38 @@
   "bakeOpenDrtLut takes an optional cancel flag (numbers identical); spec cache split into peek/cancellable bake"
  ],
  "files": [
-  {"path": "core/include/rawedit/OpenDrtAsync.h", "change": "A"},
-  {"path": "core/src/OpenDrtAsync.cpp", "change": "A"},
-  {"path": "core/tests/test_opendrt_async.cpp", "change": "A"},
-  {"path": "core/src/OpenDrt.cpp", "change": "M"},
-  {"path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp", "change": "M"},
-  {"path": "app/src/main/cpp/gles/GlesPreviewSession.cpp", "change": "M"},
-  {"path": "app/src/main/cpp/jni_bridge.cpp", "change": "M"},
-  {"path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt", "change": "M"}
+  {
+   "path": "core/include/rawedit/OpenDrtAsync.h",
+   "change": "A"
+  },
+  {
+   "path": "core/src/OpenDrtAsync.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/tests/test_opendrt_async.cpp",
+   "change": "A"
+  },
+  {
+   "path": "core/src/OpenDrt.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GpuDevelopPipeline.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/gles/GlesPreviewSession.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/cpp/jni_bridge.cpp",
+   "change": "M"
+  },
+  {
+   "path": "app/src/main/java/com/ritim/ritimcraw/ui/editor/ClipEditorScreen.kt",
+   "change": "M"
+  }
  ],
  "sources": []
 }
