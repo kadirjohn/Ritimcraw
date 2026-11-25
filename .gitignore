@@ -49,3 +49,6 @@ STEPS/
 *.log
 *.tmp
 /tmp/
+
+# GSD dispatch scratch
+.gsd/
