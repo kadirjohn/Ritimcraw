@@ -595,6 +595,9 @@
     <string name="settings_render_backend_hint_gpu">Experimental</string>
     <string name="settings_render_backend_info">Where the develop pipeline runs. CPU is the reference path. Auto uses the GPU once this device verifies it. GPU is experimental and falls back to CPU. The video encoder is chosen separately.</string>
     <string name="settings_render_backend_about">About image processing</string>
+    <string name="settings_scrub_frames">Scrub frames</string>
+    <string name="settings_scrub_frames_hint_on">Seek drags show small cached frames instantly</string>
+    <string name="settings_scrub_frames_hint_off">Seek drags render each frame</string>
     <string name="settings_gyro_folder_not_set">Not set</string>
     <string name="settings_preview_stats_hint_on">Debug · reading stats every frame</string>
     <string name="settings_preview_stats_hint_off">Debug · off, no per-frame cost</string>

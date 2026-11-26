@@ -77,6 +77,7 @@ import com.ritim.ritimcraw.data.PreviewQualityStore
 import com.ritim.ritimcraw.data.PreviewStatsStore
 import com.ritim.ritimcraw.data.SystemMonitorStore
 import com.ritim.ritimcraw.data.AutoHidePlayerBarStore
+import com.ritim.ritimcraw.data.ScrubFramesStore
 import com.ritim.ritimcraw.ui.components.SystemMonitorBar
 import com.ritim.ritimcraw.data.PreviewStatsToggle
 import com.ritim.ritimcraw.data.RenderBackendStore
@@ -293,6 +294,11 @@ fun AppNav(
             // destination; swapping or clearing either must never touch
             // the other (they are often the SAME tree on this device).
             importFolder = ImportFolderStore(project),
+            // Scrub frames (F2-C3 wiring): whether the editor's seek drag
+            // serves the small cached frames — same shared project.json,
+            // own top-level "scrubFrames" boolean scalar,
+            // omit-when-default(false), the SystemMonitorStore pattern.
+            scrubFrames = ScrubFramesStore(project),
         )
     }
     // Image-based stabilization analysis service (S4, ships dark behind
@@ -537,6 +543,12 @@ fun AppNav(
     // on the remembered tree (no picker), null routes a first-time user
     // to the tree picker.
     var importFolder by remember { mutableStateOf(stores.importFolder.get()) }
+    // Scrub frames (F2-C3 wiring): the persisted toggle, read once at
+    // composition and refreshed on every change — the previewQuality/
+    // systemMonitor pattern. DEFAULT FALSE (ScrubFramesStore.DEFAULT): an
+    // untouched project.json keeps the editor's seek drag byte-identical
+    // to the pre-wiring behavior.
+    var scrubFramesEnabled by remember { mutableStateOf(stores.scrubFrames.get()) }
     // App start: apply the persisted choice to the engine (the restart
     // lock, run once per composition entry — the previewQuality pattern
     // has no equivalent because the editor re-reads the store; THIS
@@ -2021,6 +2033,12 @@ fun AppNav(
                         // authoritative kill-switch fold; this keeps the
                         // Kotlin-side per-request mode decision honest.
                         previewStatsEnabled = stores.previewStats.current(),
+                        // Scrub frames (F2-C3 wiring): the persisted toggle,
+                        // snapshotted at editor composition like every other
+                        // scalar — the screen owns no store (the renderBackend
+                        // pattern), so a Settings flip applies to the NEXT
+                        // editor open.
+                        scrubFramesEnabled = scrubFramesEnabled,
                     )
                 }
             } else {
@@ -2524,6 +2542,17 @@ fun AppNav(
                                 systemMonitorStore.put(visible)
                                 systemMonitorVisible = visible
                             },
+                            // ---- Scrub frames (F2-C3 wiring) ----
+                            // Pure pass-through like the systemMonitor
+                            // row: the state above feeds the row, the
+                            // callback persists + refreshes it; the
+                            // editor reads the state at its own
+                            // composition.
+                            scrubFrames = scrubFramesEnabled,
+                            onScrubFramesChange = { enabled ->
+                                stores.scrubFrames.put(enabled)
+                                scrubFramesEnabled = enabled
+                            },
                             onThemeModeChange = onThemeModeChange,
                             customThemeId = customThemeId,
                             onCustomThemePick = onCustomThemePick,
@@ -2637,4 +2666,8 @@ private class Stores(
     // through the metadata gate; the audio settings sheet (AUD-03)
     // is the same store's UI.
     val audio: AudioStore,
+    // Scrub frames (F2-C3 wiring): the seek drag's cached-frame toggle —
+    // same shared project.json, own top-level "scrubFrames" boolean
+    // scalar, omit-when-default(false). The SystemMonitorStore pattern.
+    val scrubFrames: ScrubFramesStore,
 )

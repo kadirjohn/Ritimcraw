@@ -154,6 +154,10 @@ import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.PreviewTiers.RenderClass
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
+import com.ritim.ritimcraw.engine.ScrubFramesAndroid
+import com.ritim.ritimcraw.engine.ScrubFramesPolicy
+import com.ritim.ritimcraw.engine.ScrubResult
+import com.ritim.ritimcraw.engine.SessionScrubSource
 import com.ritim.ritimcraw.engine.RenderTrace
 import com.ritim.ritimcraw.engine.keepsLastPublishedFrame
 import com.ritim.ritimcraw.engine.statsModeFor
@@ -1074,6 +1078,15 @@ fun ClipEditorScreen(
     // parameter only keeps the Kotlin-side statsModeFor decision honest.
     // Default true keeps every other caller byte-identical.
     previewStatsEnabled: Boolean = true,
+    // ---- Scrub frames (F2-C3 wiring) ----
+    // The persisted scrubFrames setting (AppNav reads ScrubFramesStore),
+    // snapshotted at editor composition like every other scalar above.
+    // DEFAULT FALSE (the behavior flag): the wiring ships dark — a
+    // project.json that never flipped it keeps the pre-wiring editor
+    // byte-identical (the seek drag renders through the existing drag
+    // tier; no cache is built or consulted). Default keeps every other
+    // caller working unchanged.
+    scrubFramesEnabled: Boolean = false,
 ) {
     RitimTheme(editor = true) {
         var tab by rememberSaveable { mutableStateOf(0) }
@@ -1792,6 +1805,47 @@ fun ClipEditorScreen(
             }
         }
 
+        // ---- Scrub frames (F2-C3 wiring over the ScrubFrames facade) ----
+        // The seek drag's cached-frame path. OFF BY DEFAULT (the persisted
+        // scrubFrames setting, ScrubFramesStore.DEFAULT = false): an
+        // untouched project.json keeps the editor byte-identical to the
+        // pre-wiring behavior — every seek drag renders through the
+        // existing drag-tier pipeline and this whole block stays inert
+        // (scrub stays null; every gate below falls through to the real
+        // render). The flag rides the renderBackend/previewQuality
+        // parameter pattern: AppNav reads the store and hands the value
+        // in, so the screen owns no store.
+        val scrub: ScrubFramesAndroid? = remember(sourceId, scrubFramesEnabled) {
+            scrubFramesEnabled.takeIf { canRender }?.let { ScrubFramesAndroid.create() }
+        }
+        // The small frame currently shown while the drag serves from the
+        // cache (null = the normal preview owns the display). A plain
+        // PreviewFrame built from the facade's decoded ScrubPixels — the
+        // SAME type PreviewSurface renders, so the display swap is one
+        // parameter (see the previewRegion call).
+        var scrubPreviewFrame by remember(sourceId) {
+            mutableStateOf<PreviewFrame?>(null)
+        }
+        // ---- Scrub drag metrics (DEBUG-only, behind RenderTrace.enabled
+        // AND the scrub holder) ----
+        // One ScrubDragTrace per editor open, counting the seek drag's
+        // cache asks (hit / miss / served sizes) and the release settle
+        // latency, emitting ONE "scrub drag" ritim-trace line per
+        // completed gesture (the PanelAnimTrace window convention). Pure
+        // object, never state: the counts no more recompose anything than
+        // the playbackTraceHolder array does. THE OFF-STATE RULE: the
+        // object lives inside the same remember block as the facade, so
+        // with the scrubFrames setting OFF (scrub == null) every hook
+        // site below falls through its null check BEFORE touching the
+        // counter — no object is even created, no code path changes,
+        // output and timing identical. In release the hooks'
+        // RenderTrace.enabled (= BuildConfig.DEBUG) gate is a
+        // compile-time false: the same dead-code shape as every other
+        // RenderTrace call site in this file.
+        val scrubDragTrace: ScrubDragTrace? = remember(sourceId, scrubFramesEnabled) {
+            if (scrubFramesEnabled && RenderTrace.enabled && canRender) ScrubDragTrace() else null
+        }
+
         /**
          * Offers a render to the pipeline (replaces any pending one).
          * [followUpMaxDim] (progressive pause settle, owner request
@@ -2322,6 +2376,59 @@ fun ClipEditorScreen(
             }
         }
 
+        // ---- Scrub frames (F2-C3 wiring): attach + playback stand-down ----
+        // ATTACH re-runs the facade's attach with the CURRENT settled
+        // grade + the same per-request paths the pump resolves (a NEW
+        // SessionScrubSource each time — the source is immutable, so a
+        // re-attach is the only way a grade/attachment change reaches
+        // the walk). Keying: session (attaches when the open hands one
+        // in), the grade + lut/gyro ids (a settled edit re-attaches; the
+        // debounced grade render's own trailing-edge timing, since this
+        // effect restarts on every grade step and attaches the value it
+        // sees — the walk is retarget-bound and cheap, never a render).
+        // The facade's attach cancels the PREVIOUS walk when the
+        // sourceId changed and keeps the cache warm — a re-attach on a
+        // grade change walks the SAME cache keys
+        // (sourceId/frameIndex/tier), so the walk re-encodes only what
+        // the grade change moved (cache.contains skips the rest).
+        LaunchedEffect(session, grade, lutEntries, gyroId) {
+            val s = session ?: return@LaunchedEffect
+            val holder = scrub ?: return@LaunchedEffect
+            if (!ScrubFramesPolicy.engage(hasSession = true, s.frames)) return@LaunchedEffect
+            val chainWireScrub = runCatching {
+                val v2 = currentGradeV2()
+                val nodes = v2?.let { GradeV2Usage.activeNodes(it) }
+                if ((nodes == null || nodes.isEmpty()) &&
+                    v2?.output?.mode != com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT
+                ) {
+                    null
+                } else {
+                    NodeChainWire.encode(v2!!, nodes ?: emptyList())
+                }
+            }.getOrNull()
+            holder.scrub.attach(
+                sourceId,
+                SessionScrubSource(
+                    session = s,
+                    grade = grade,
+                    lutPath = lutPathFor(grade.lutId),
+                    gyroPath = if (gyroId.isBlank()) null else gyroPathFor(gyroId),
+                    chainWire = chainWireScrub,
+                ),
+            )
+        }
+
+        // PLAYBACK stands the walk down (the decoder + the engine thread
+        // are needed for the picture being played — Klipp's
+        // ScrubFrames.paused; expressed as the facade's standDown: the
+        // walk stops, the cache stays warm for when scrubbing resumes).
+        LaunchedEffect(isPlaying) {
+            if (ScrubFramesPolicy.standsDown(isPlaying)) {
+                scrub?.scrub?.standDown()
+                scrubPreviewFrame = null
+            }
+        }
+
         // Session close: exactly once, when the editor leaves composition
         // (route change / dispose). Drained: the close is submitted to the
         // same single engine thread, so it runs after all pending renders.
@@ -2330,6 +2437,12 @@ fun ClipEditorScreen(
                 gpuSession?.handle?.let { h ->
                     if (h != 0L) runCatching { NativeSource.jniPreviewSessionSetDrtReadyListener(h, null) }
                 }
+                // Scrub frames (F2-C3): the facade's close cancels the
+                // walk and clears the in-memory cache — beside the
+                // session close; the walk's renders went through the SAME
+                // engine thread, so the ordering discipline below covers
+                // them too.
+                scrub?.close()
                 session?.close()
                 gpuSession?.close()
                 audio.release()
@@ -2493,6 +2606,11 @@ fun ClipEditorScreen(
         // the pump.
         val currentRenderBackend by rememberUpdatedState(renderBackend)
         val currentZebraOn by rememberUpdatedState(zebraOn)
+        // Scrub drag metrics: the pump's settle-publish hook must read the
+        // trace object of the CURRENT composition (the holder is keyed to
+        // the scrubFrames setting beside the facade — a settings flip
+        // recreates it), the currentRenderBackend mirror precedent.
+        val currentScrubDragTrace by rememberUpdatedState(scrubDragTrace)
 
         LaunchedEffect(sourceId) {
             // Monotonic publication: the pump is serial and the gate is
@@ -3260,6 +3378,20 @@ fun ClipEditorScreen(
                             if (BuildConfig.DEBUG && req.renderClass == RenderClass.PLAYBACK && !lastRenderFailed) {
                                 playbackTraceHolder[0]?.onPublished(System.nanoTime() / 1000)
                             }
+                            // Scrub drag metrics: the release's settle
+                            // publish closes the drag's window — the
+                            // parked frame's real render is on screen, so
+                            // the gesture's summary line emits HERE (one
+                            // line per drag, the PanelAnimTrace throttle;
+                            // the frame-index match drops the superseded
+                            // leftovers the gate coalesced away).
+                            if (BuildConfig.DEBUG && !lastRenderFailed &&
+                                req.renderClass == RenderClass.SETTLE
+                            ) {
+                                currentScrubDragTrace?.onSettlePublished(
+                                    SystemClock.elapsedRealtime(), req.frameIndex,
+                                )?.let { line -> Log.i(RenderTrace.TAG, line) }
+                            }
                             lastPublished = req.sequence
                         }
                         // Progressive pause settle (owner request 2026-11-11
@@ -3814,8 +3946,26 @@ fun ClipEditorScreen(
                 // line — the whole feature lives in ZebraOverlay + the
                 // paint effect + the corner toggle (+ the window pass's
                 // zebra block on the GPU path).
+                //
+                // Scrub frames (F2-C3): while the drag serves from the
+                // cache, the small cached frame REPLACES the published
+                // preview in the SAME surface — the zebra swap's
+                // precedent, one display swap. The small frame keeps the
+                // clip's own aspect (the facade's tier caps only the
+                // long edge), so the surface's ratio chain is unchanged
+                // and ContentScale.Fit letterboxes nothing new. It is
+                // gone the moment the drag ends (the settle render's
+                // real frame replaces it). Zebra wins over it (the scrub
+                // frames carry no stripes), and the GPU window's own
+                // owner precedence (PreviewDisplayOwner) outranks both
+                // — the scrub path only visibly serves while the Image
+                // owns the display.
                 PreviewSurface(
-                    frame = if (zebraOn) zebraFrame ?: frame else frame,
+                    frame = when {
+                        zebraOn -> zebraFrame ?: frame
+                        scrubPreviewFrame != null -> scrubPreviewFrame
+                        else -> frame
+                    },
                     state = previewState,
                     errorText = errorText,
                     accessLost = accessLost,
@@ -4345,6 +4495,58 @@ fun ClipEditorScreen(
                     if (idx >= 0) {
                         positionFrame = idx
                         isPlaying = false
+                        // Scrub frames (F2-C3 wiring): while the flag is on
+                        // and the drag is active, the facade's cache is
+                        // asked FIRST — a forward-or-same hit within the
+                        // facade's tolerance answers the finger with the
+                        // small cached frame (no decode, no develop), and
+                        // the real render is SKIPPED for this step (the
+                        // drag-end settle still renders the parked frame
+                        // through the existing pipeline). A Miss (or a
+                        // behind hit — the monotonic seek bar must never
+                        // rewind the picture) falls through to the
+                        // existing drag-tier render, so the wiring can
+                        // never make a drag WORSE than today.
+                        val sf = scrub?.scrub
+                        if (sf != null && dragActive &&
+                            ScrubFramesPolicy.engage(hasSession = session != null, p.size)
+                        ) {
+                            when (val r = sf.onScrub(idx)) {
+                                is ScrubResult.Cached ->
+                                    if (ScrubFramesPolicy.shouldServe(idx, r.frameIndex)) {
+                                        // Scrub drag metrics: a served hit
+                                        // (the line's hit count + the
+                                        // served size range).
+                                        scrubDragTrace?.onHit(
+                                            idx, r.pixels.width, r.pixels.height,
+                                        )
+                                        // Served: swap the display to the
+                                        // small frame and SKIP the real
+                                        // render for this step — the drag
+                                        // end still settles the parked
+                                        // frame through the pipeline.
+                                        scrubPreviewFrame = PreviewFrame(
+                                            r.pixels.width, r.pixels.height, r.pixels.argb,
+                                        )
+                                        return@TransportRow
+                                    }
+                                // A behind hit, or a Miss: drop the served
+                                // small frame — the facade's "keep last
+                                // picture, never black" is what the normal
+                                // preview already provides (the last real
+                                // frame stays on screen), and the existing
+                                // drag-tier render below catches the step
+                                // up. The picture never rewinds under a
+                                // forward drag either way.
+                                else -> {
+                                    // Scrub drag metrics: the behind hit and
+                                    // the Miss share the miss count (the
+                                    // line's "full render expected" leg).
+                                    scrubDragTrace?.onMiss(idx)
+                                    scrubPreviewFrame = null
+                                }
+                            }
+                        }
                         requestRender(
                             idx, grade,
                             SliderTiers.tierFor(
@@ -4356,8 +4558,28 @@ fun ClipEditorScreen(
                         )
                     }
                 },
-                onSeekStarted = { applyTierEvent(SliderTiers.Event.DragStarted) },
-                onSeekFinished = { applyTierEvent(SliderTiers.Event.DragEnded) },
+                onSeekStarted = {
+                    // Scrub drag metrics: the window opens with the drag.
+                    // ScrubDragTraceTest pins the reset semantics.
+                    scrubDragTrace?.onDragStart(SystemClock.elapsedRealtime())
+                    applyTierEvent(SliderTiers.Event.DragStarted)
+                },
+                onSeekFinished = {
+                    // Scrub frames (F2-C3): a served small frame NEVER
+                    // survives the drag (ScrubFramesPolicy.settleAfterDrag
+                    // — the parked frame's real settle render replaces it,
+                    // the same progressive settle every drag end already
+                    // emits). Cleared BEFORE the tier event so the very
+                    // same recomposition that starts the settle shows the
+                    // normal preview path again.
+                    scrubPreviewFrame = null
+                    scrub?.scrub?.onRelease(positionFrame)
+                    // Scrub drag metrics: the window now awaits the parked
+                    // frame's settle publish (the class matches the frame
+                    // index before emitting).
+                    scrubDragTrace?.onDragEnd(SystemClock.elapsedRealtime(), positionFrame)
+                    applyTierEvent(SliderTiers.Event.DragEnded)
+                },
                 // Adaptive readout format (owner request 2026-11-11b
                 // section 7): the transport pair's field count follows the
                 // clip's TOTAL (2/3/4 fields), so the salise field only

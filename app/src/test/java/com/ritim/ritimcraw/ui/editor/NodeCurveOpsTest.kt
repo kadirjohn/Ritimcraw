@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 /**
@@ -619,5 +620,129 @@ class NodeCurveOpsTest {
         val pts = NodeCurveOps.points(dragged, NodeCurveId.Y)
         assertEquals(3, pts.size)
         assertTrue(pts[0].first < pts[1].first && pts[1].first < pts[2].first)
+    }
+
+    // ---- edge values: NaN, infinities, huge finite, -0.0, degenerate curves (C3) ----
+
+    @Test
+    fun add_of_non_finite_x_y_clamps_to_the_domain_and_stays_finite() {
+        // +Inf clamps to the domain ceiling, -Inf to the floor; a huge finite input is a
+        // normal clamp. Nothing NaN or past 0..1 ever enters the stored list.
+        val inf = NodeCurveOps.addPoint(neutral, NodeCurveId.R, Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
+        val ip = NodeCurveOps.points(inf, NodeCurveId.R)
+        assertEquals(1f, ip[1].first, 0f)
+        assertEquals(1f, ip[1].second, 0f)
+        val negInf = NodeCurveOps.addPoint(neutral, NodeCurveId.G, Float.NEGATIVE_INFINITY, Float.NEGATIVE_INFINITY)
+        val gp = NodeCurveOps.points(negInf, NodeCurveId.G)
+        assertEquals(0f, gp[1].first, 0f)
+        assertEquals(0f, gp[1].second, 0f)
+        val huge = NodeCurveOps.addPoint(neutral, NodeCurveId.B, 1e30f, -1e30f)
+        assertTrue(NodeCurveOps.points(huge, NodeCurveId.B).all { it.first in 0f..1f && it.second in 0f..1f })
+    }
+
+    @Test
+    fun add_of_nan_lands_on_zero_and_never_throws() {
+        // Was night C3 finding (addPoint(NaN) threw "Cannot round NaN value"); fixed: NaN -> 0.
+        val n = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, Float.NaN, 0.5f)
+        val pts = NodeCurveOps.points(n, NodeCurveId.Y)
+        assertTrue(pts.all { it.first in 0f..1f && it.second in 0f..1f })
+        val m = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, 0.5f, Float.NaN)
+        assertTrue(NodeCurveOps.points(m, NodeCurveId.Y).all { it.first in 0f..1f && it.second in 0f..1f })
+    }
+
+    @Test
+    fun drag_with_non_finite_x_lands_inside_the_neighbour_slot() {
+        val n = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, 0.5f, 0.5f)
+        // x=-Inf: coerceIn gives 0, snapped, then held at the floor 1/256.
+        val negInf = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 1, Float.NEGATIVE_INFINITY, 0.9f)
+        assertEquals(1f / 256f, NodeCurveOps.points(negInf, NodeCurveId.Y)[1].first, 1e-7f)
+        // x=+Inf: the ceiling, one step below the right endpoint.
+        val posInf = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 1, Float.POSITIVE_INFINITY, 0.1f)
+        assertEquals(255f / 256f, NodeCurveOps.points(posInf, NodeCurveId.Y)[1].first, 1e-7f)
+        // a huge finite x behaves like +Inf: the ceiling
+        val huge = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 1, 1e30f, 0.5f)
+        assertEquals(255f / 256f, NodeCurveOps.points(huge, NodeCurveId.Y)[1].first, 1e-7f)
+        // NaN x (interior branch) and NaN y (any branch) used to throw; fixed: NaN -> 0 (then the
+        // usual clamps: x held at the neighbour floor, y at the floor of the range).
+        val nanX = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 1, Float.NaN, 0.9f)
+        assertEquals(1f / 256f, NodeCurveOps.points(nanX, NodeCurveId.Y)[1].first, 1e-7f)
+        val nanY = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 0, 0f, Float.NaN)
+        assertEquals(0f, NodeCurveOps.points(nanY, NodeCurveId.Y)[0].second, 0f)
+    }
+
+    @Test
+    fun empty_and_single_point_curves_evaluate_to_the_identity_and_have_no_tangents() {
+        // NodeCurveV2.parse of a foreign/unreadable block yields an EMPTY list: the editor
+        // must treat it as identity-shaped (the n<2 branch), never throw.
+        for (pts in listOf(emptyList<Pair<Float, Float>>(), listOf(0.5f to 0.9f))) {
+            assertEquals(0.25f, NodeCurveOps.evaluate(pts, 0.25f), 1e-6f)
+            assertEquals(0f, NodeCurveOps.evaluate(pts, 0f), 1e-6f)
+            assertEquals(1f, NodeCurveOps.evaluate(pts, 1f), 1e-6f)
+            assertTrue(NodeCurveOps.evaluate(pts, Float.NaN).isNaN()) // identity of NaN is NaN (the n<2 clamp)
+            assertNull(NodeCurveOps.tangents(pts))
+            val t = NodeCurveOps.table256(pts)
+            assertEquals(256, t.size)
+            for (k in t.indices) assertEquals(k / 255f, t[k], 1e-6f)
+        }
+        // the same shape rides the node: an empty curve read back is identity-evaluated
+        val n = NodeCurveOps.set(neutral, NodeCurveId.G, NodeCurveV2(emptyList()))
+        assertEquals(0.5f, NodeCurveOps.evaluate(NodeCurveOps.points(n, NodeCurveId.G), 0.5f), 1e-6f)
+    }
+
+    @Test
+    fun degenerate_slot_pins_the_drag_between_adjacent_neighbours() {
+        // The dragged point's NEIGHBOURS are one lattice cell apart (100/256 and 101/256):
+        // lo = 100/256 + 1/256 = 101/256 > hi = 101/256 - 1/256 = 100/256, the degenerate
+        // branch, and the point pins exactly between them (100.5/256).
+        val base = NodeCurveV2(
+            listOf(0f to 0f, 100f / 256f to 0.2f, 100.5f / 256f to 0.5f, 101f / 256f to 0.8f, 1f to 1f),
+        )
+        val n = NodeCurveOps.set(neutral, NodeCurveId.B, base)
+        val dragged = NodeCurveOps.setPointAt(n, NodeCurveId.B, 2, 0.9f, 0.6f)
+        val pts = NodeCurveOps.points(dragged, NodeCurveId.B)
+        assertEquals((100f / 256f + 101f / 256f) / 2f, pts[2].first, 1e-6f)
+        assertEquals(0.6f, pts[2].second, NodeCurveOps.SNAP_STEP) // y still snapped to the grid
+        // the wire bound is respected: all xs distinct and count inside min 2..64
+        assertTrue(pts.map { it.first }.zipWithNext().all { (a, b) -> b > a })
+        // and the pin keeps the curve evaluable
+        assertTrue(NodeCurveOps.table256(pts).all { it in 0f..1f })
+    }
+
+    @Test
+    fun a_full_64_point_curve_evaluates_monotone_and_the_cap_survives_a_reset() {
+        var n = neutral
+        val xs = (1 until NodeCurveOps.MAX_POINTS).map { it / (NodeCurveOps.MAX_POINTS + 1).toFloat() }
+        for (x in xs) n = NodeCurveOps.addPoint(n, NodeCurveId.R, x, x) // a rising diagonal
+        assertEquals(NodeCurveOps.MAX_POINTS, NodeCurveOps.get(n, NodeCurveId.R).points.size)
+        val pts = NodeCurveOps.get(n, NodeCurveId.R).points
+        // every sample is in range, the curve is non-decreasing (monotone FC), passes through the points
+        val t = NodeCurveOps.table256(pts)
+        assertTrue(t.all { it in 0f..1f })
+        for (k in 1 until t.size) assertTrue("descent at $k", t[k] >= t[k - 1] - 1e-6f)
+        for ((x, y) in pts) assertEquals(y, NodeCurveOps.evaluate(pts, x), 1e-5f)
+        // and the reset returns the channel to the two-point identity inside the bounds
+        val reset = NodeCurveOps.resetCurve(n, NodeCurveId.R)
+        assertEquals(2, NodeCurveOps.get(reset, NodeCurveId.R).points.size)
+    }
+
+    @Test
+    fun hit_test_never_matches_at_non_finite_positions() {
+        val n = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, 0.5f, 0.5f)
+        // dist(NaN) is NaN: NaN <= HIT_RADIUS is false -> -1 (never a crash, never a hit)
+        assertEquals(-1, NodeCurveOps.hitTest(n, NodeCurveId.Y, Float.NaN, 0.5f))
+        assertEquals(-1, NodeCurveOps.hitTest(n, NodeCurveId.Y, 0.5f, Float.NaN))
+        assertEquals(-1, NodeCurveOps.hitTest(n, NodeCurveId.Y, Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY))
+    }
+
+    @Test
+    fun duplicate_x_adds_collapse_only_inside_one_lattice_cell() {
+        // The same-cell rule is |x - stored| < SNAP_STEP/2: a point ONE cell away never
+        // collapses (it inserts and sorts in between), an exact hit moves the point.
+        val start = NodeCurveOps.addPoint(neutral, NodeCurveId.G, 0.5f, 0.5f)
+        val near = NodeCurveOps.addPoint(start, NodeCurveId.G, 128.6f / 256f, 0.7f)
+        assertEquals(4, NodeCurveOps.points(near, NodeCurveId.G).size) // a new point, not a move
+        val exact = NodeCurveOps.addPoint(start, NodeCurveId.G, 0.5f, 0.9f)
+        assertEquals(3, NodeCurveOps.points(exact, NodeCurveId.G).size) // same cell: moved
+        assertEquals(230f / 256f, NodeCurveOps.points(exact, NodeCurveId.G)[1].second, 1e-6f) // 0.9 -> 230/256
     }
 }

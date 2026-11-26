@@ -55,6 +55,7 @@ import com.ritim.ritimcraw.ui.components.Eye
 import com.ritim.ritimcraw.ui.components.Folder
 import com.ritim.ritimcraw.ui.components.Gauge
 import com.ritim.ritimcraw.ui.components.PlayerBar
+import com.ritim.ritimcraw.ui.components.Filmstrip
 import com.ritim.ritimcraw.ui.components.Report
 import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.components.SettingsGroup
@@ -203,6 +204,13 @@ fun SettingsScreen(
     // ---- Auto-hide media player bar (owner request 2026-11-26) ----
     autoHidePlayerBar: Boolean = false,
     onAutoHidePlayerBarChange: (Boolean) -> Unit = {},
+    // ---- Scrub frames (F2-C3 wiring) ----
+    // The persisted toggle (AppNav reads ScrubFramesStore) and the change
+    // callback (AppNav persists + refreshes its state). DEFAULT FALSE
+    // (the behavior flag): the wiring ships dark — an untouched
+    // project.json keeps the editor's seek drag byte-identical.
+    scrubFrames: Boolean = false,
+    onScrubFramesChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // The Device report row's navigation: AppNav owns the route flag
@@ -255,7 +263,7 @@ fun SettingsScreen(
                 expandedText = stringResource(R.string.settings_expanded),
                 collapsedText = stringResource(R.string.settings_collapsed),
                 index = 0,
-                count = 3,
+                count = 4,
             ) {
                 AppSegmentedControl(
                     options = listOf(
@@ -290,7 +298,7 @@ fun SettingsScreen(
                 expandedText = stringResource(R.string.settings_expanded),
                 collapsedText = stringResource(R.string.settings_collapsed),
                 index = 1,
-                count = 3,
+                count = 4,
             ) {
                 AppSegmentedControl(
                     options = listOf(
@@ -317,7 +325,25 @@ fun SettingsScreen(
                 checked = autoHidePlayerBar,
                 onCheckedChange = onAutoHidePlayerBarChange,
                 index = 2,
-                count = 3,
+                count = 4,
+            )
+            // Scrub frames (F2-C3 wiring): the seek drag's cached-frame
+            // toggle. Ships OFF (ScrubFramesStore.DEFAULT) — the hint's
+            // one line states what a flip does (the switch_row spec's
+            // state-dependent hint, the systemMonitor row's shape); the
+            // semantics live in the row's info note.
+            SettingRowSwitch(
+                icon = Filmstrip,
+                title = stringResource(R.string.settings_scrub_frames),
+                hint = if (scrubFrames) {
+                    stringResource(R.string.settings_scrub_frames_hint_on)
+                } else {
+                    stringResource(R.string.settings_scrub_frames_hint_off)
+                },
+                checked = scrubFrames,
+                onCheckedChange = onScrubFramesChange,
+                index = 3,
+                count = 4,
             )
         }
                 // ---- Storage & device ----
