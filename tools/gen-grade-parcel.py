@@ -144,13 +144,12 @@ def cpp_default(kind, default):
 # The Kotlin mirror
 # ---------------------------------------------------------------------------
 
-# FROZEN PROSE: the "29 SCALAR" (the Kotlin doc below) and "ALL 29 schema
-# fields" (the C++ rawedit-fold doc) counts are the committed mirrors' own
-# stale wording from the hand-edit era (the slot count moved 29 -> 30 -> 31
-# -> 30 across the highlightsCurve era; the prose never followed). The byte
-# contract — regeneration must reproduce the committed mirrors exactly —
-# keeps them; making the counts dynamic means changing committed mirror
-# content (a runtime-code edit), so they stay until the owner decides.
+# PROSE COUNTS: the "30 SCALAR" (the Kotlin doc below) and "ALL 30 schema
+# fields" (the C++ rawedit-fold doc) are plain wording (comments, not runtime
+# code) and must equal len(SCHEMA). They were 29 until 2026-11-26, when
+# `--check` was found failing on main after a comment-only housekeeping commit
+# had corrected the Kotlin mirror to 30; this file now states the same number.
+# Bump them together with SCHEMA.
 
 def gen_kotlin():
     count = len(SCHEMA)
@@ -212,7 +211,7 @@ import com.ritim.ritimcraw.data.GradeK
 // offsets.
 
 /**
- * The grade parcel: the 29 SCALAR grade fields as ONE flat FloatArray
+ * The grade parcel: the 30 SCALAR grade fields as ONE flat FloatArray
  * crossing the JNI seam (the per-frame parameter collapse). One source of
  * truth - the schema in tools/gen-grade-parcel.py - generates BOTH this
  * object and the C++ mirror (gles/GradeParcel.h, the gles::DevelopGrade
@@ -374,7 +373,7 @@ def gen_cpp():
     for name, _kind, _default in request_fields:
         applies.append("    req->%s = grade.%s;" % (name, name))
 
-    # The CPU-side fold: ALL 29 schema fields (the temporal pair included -
+    # The CPU-side fold: ALL 30 schema fields (the temporal pair included -
     # rawedit::Grade carries them so the whole grade pipeline transports the
     # controls; the bridge consumes the temporal stage before developCpu).
     # lutStrength is NOT a schema field (per-job LUT binding group): the
@@ -463,7 +462,7 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
 }
 
 // Folds the decoded grade onto a rawedit::Grade (the CPU export path's
-// developCpu input). ALL 29 schema fields copy by name - the temporal pair
+// developCpu input). ALL 30 schema fields copy by name - the temporal pair
 // included (rawedit::Grade carries them so the whole grade pipeline
 // transports the controls; the bridge consumes the temporal stage on the
 // CFA before developCpu, exactly as the flat path's gradeFromKotlin always
