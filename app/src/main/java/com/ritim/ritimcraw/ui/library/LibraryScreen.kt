@@ -94,6 +94,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ritim.ritimcraw.R
@@ -283,6 +284,76 @@ fun LibraryScreen(
     onViewModeChange: (LibraryViewMode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    // The screen's REAL content width (owner request 2026-11-26: the grid
+    // chunks its clips into rows at the CURRENT column count, which must
+    // match the width the layout actually gives this screen — a wide
+    // window's NavigationRail already took its share before this box
+    // measures). BoxWithConstraints at the root wraps the whole screen
+    // (the folder-browser early return included) so the width is always
+    // the layout's own answer, never LocalConfiguration.
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val contentWidth = maxWidth
+        LibraryScreenContent(
+            contentWidth = contentWidth,
+            sources = sources,
+            onOpenClip = onOpenClip,
+            onImport = onImport,
+            onRelink = onRelink,
+            thumbnailAt = thumbnailAt,
+            thumbnailRevision = thumbnailRevision,
+            thumbnailBatchLimit = thumbnailBatchLimit,
+            onGenerateThumbnails = onGenerateThumbnails,
+            onRefresh = onRefresh,
+            refreshing = refreshing,
+            onOpenRefresh = onOpenRefresh,
+            onDeleteClips = onDeleteClips,
+            onRenameClip = onRenameClip,
+            onImportFromFolder = onImportFromFolder,
+            onImportManyFromFolder = onImportManyFromFolder,
+            folderPreviewAt = folderPreviewAt,
+            onGenerateFolderPreview = onGenerateFolderPreview,
+            rememberedFolder = rememberedFolder,
+            onFolderPicked = onFolderPicked,
+            sortKey = sortKey,
+            sortAscending = sortAscending,
+            viewMode = viewMode,
+            onSortKeyChange = onSortKeyChange,
+            onSortAscendingChange = onSortAscendingChange,
+            onViewModeChange = onViewModeChange,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LibraryScreenContent(
+    contentWidth: Dp,
+    sources: List<MediaSource>,
+    onOpenClip: (String) -> Unit,
+    onImport: (uri: String) -> Result<MediaSource>,
+    onRelink: (sourceId: String, uri: String) -> Result<MediaSource>,
+    thumbnailAt: (id: String) -> String?,
+    thumbnailRevision: Int,
+    thumbnailBatchLimit: Int,
+    onGenerateThumbnails: (pending: List<String>) -> Unit,
+    onRefresh: () -> Unit,
+    refreshing: Boolean,
+    onOpenRefresh: () -> Unit,
+    onDeleteClips: (ids: List<String>) -> Unit,
+    onRenameClip: (id: String, name: String) -> Boolean,
+    onImportFromFolder: (uri: String, kind: SourceKind, editedName: String?) -> Result<MediaSource>,
+    onImportManyFromFolder: (docs: List<VideoTree.VideoDocument>) -> BulkImportOutcome,
+    folderPreviewAt: (uri: String) -> String?,
+    onGenerateFolderPreview: suspend (uri: String, displayName: String) -> Unit,
+    rememberedFolder: String?,
+    onFolderPicked: (oldUri: String?, newUri: String) -> Unit,
+    sortKey: LibrarySortKey?,
+    sortAscending: Boolean,
+    viewMode: LibraryViewMode,
+    onSortKeyChange: (LibrarySortKey?) -> Unit,
+    onSortAscendingChange: (Boolean) -> Unit,
+    onViewModeChange: (LibraryViewMode) -> Unit,
+) {
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
     // The visible list: filter first (the chips' unchanged rule), then the
     // toolbar's ordering (null key = today's import order, returned
@@ -305,7 +376,13 @@ fun LibraryScreen(
     // the mapping and the chunking can never disagree.
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
-    val gridColumns by rememberGridColumns()
+    // The grid's column count from the screen's REAL content width
+    // (owner request 2026-11-26): BoxWithConstraints at the screen root
+    // measures what the layout actually gives the Library (the nav
+    // rail's share on wide windows already subtracted by AppNav), and
+    // the pure AdaptiveLayout.gridColumns applies the same rule the
+    // old AdaptiveMinStaggeredCells did — 3 on phones, more on tablets.
+    val gridColumns by rememberGridColumns(contentWidth)
     LaunchedEffect(viewMode, visible.size) {
         if (viewMode == LibraryViewMode.GRID) {
             // The clip at the top of the list view: its ROW in the
@@ -486,7 +563,7 @@ fun LibraryScreen(
             // re-enumerates in place on the new tree.
             onChangeFolder = { folderPicker.launch(null) },
             onClose = { folderUri = null },
-            modifier = modifier,
+            modifier = Modifier.fillMaxSize(),
         )
         return
     }
@@ -503,7 +580,7 @@ fun LibraryScreen(
     // title's chain structurally identical to ProjectsScreen's:
     // AppNav Scaffold -> Box(padding) -> Crossfade -> Column ->
     // ScreenHeader.
-    Column(modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize()) {
         if (selecting) {
             // The selection bar (E2) replaces the title + filter row:
             // close (X) exits the mode, the count carries the state,
@@ -641,7 +718,7 @@ fun LibraryScreen(
                             // probed dimensions (the same placeholder
                             // contract the list rows run), and the box
                             // height it dictates is the SAME height
-                            // gridTile(aspect) would give that clip.
+                            // the clip's own aspect would give it.
                             val rows = remember(visible, gridColumns) {
                                 LibraryGridRows.of(
                                     sources = visible,
@@ -825,25 +902,31 @@ fun LibraryScreen(
 /**
  * The Library grid's CURRENT column count (owner request 2026-11-26: the
  * grid lays out ROWS, so the count must be known in composition to chunk
- * the clips). Measured from the screen width through
+ * the clips). Computed from the screen's REAL content width through
  * [AdaptiveLayout.gridColumns] — the SAME pure rule the old
  * AdaptiveMinStaggeredCells applied (and AdaptiveMinGridCells still
  * applies in the FolderImportBrowser), with the same 16dp gutters and
  * 8dp cell spacing the grid's own geometry carries: the chunk size
  * always equals the real column count, 3 on phones, more on tablets,
- * and it re-derives when an orientation change moves the width.
+ * and it re-derives when an orientation change moves the width. The
+ * width is the caller's BoxWithConstraints maxWidth — the screen's own
+ * layout box, never LocalConfiguration: a wide window's NavigationRail
+ * already took its share before the box gets its width, and the chunk
+ * count must track what the grid really has.
  */
 @Composable
-private fun rememberGridColumns(): State<Int> {
+private fun rememberGridColumns(contentWidth: Dp): State<Int> {
     val density = LocalDensity.current
-    val configuration = LocalConfiguration.current
-    return remember(density, configuration) {
-        val contentPx = with(density) {
-            (configuration.screenWidthDp.dp - 32.dp).roundToPx() // 2 x 16dp gutter
-        }
-        val spacingPx = with(density) { 8.dp.roundToPx() }
-        val cellMinPx = with(density) { AdaptiveLayout.GRID_CELL_MIN.roundToPx() }
-        mutableStateOf(AdaptiveLayout.gridColumns(contentPx, spacingPx, cellMinPx))
+    return remember(contentWidth, density) {
+        mutableStateOf(
+            AdaptiveLayout.gridColumns(
+                availablePx = with(density) {
+                    (contentWidth - 32.dp).roundToPx() // 2 x 16dp gutter
+                },
+                spacingPx = with(density) { 8.dp.roundToPx() },
+                cellMinPx = with(density) { AdaptiveLayout.GRID_CELL_MIN.roundToPx() },
+            ),
+        )
     }
 }
 
