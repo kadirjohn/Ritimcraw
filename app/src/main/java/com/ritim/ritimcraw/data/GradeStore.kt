@@ -224,6 +224,11 @@ data class GradeK(
     val rawLevelsClipR: Float = -1f,
     val rawLevelsClipG: Float = -1f,
     val rawLevelsClipB: Float = -1f,
+    /**
+     * D3 (adaptive Highlights knee): the clip's luma P85 at unit gain, measured once per clip (see
+     * HighlightKneeStore). 0 = unmeasured = the legacy fixed knee 0.18. Written only when > 0.
+     */
+    val highlightKneeRef: Float = 0f,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -612,6 +617,7 @@ class GradeStore(private val file: File) {
                 .append("\"highlightReconstruction\":").append(g.highlightReconstruction).append(',')
                 .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
                 .append(if (g.highlightRecovery) "\"highlightRecovery\":true," else "")
+                .append(if (g.highlightKneeRef > 0f) "\"highlightKneeRef\":" + num(g.highlightKneeRef) + "," else "")
                 .append("\"sharpness\":").append(num(g.sharpness)).append(',')
                 .append("\"detail\":").append(num(g.detail)).append(',')
                 .append("\"tonemap\":").append(g.tonemap).append(',')
@@ -887,6 +893,8 @@ class GradeStore(private val file: File) {
                     highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
                     keepVignetting = m["keepVignetting"] as? Boolean ?: true,
                     highlightRecovery = m["highlightRecovery"] as? Boolean ?: false,
+                    highlightKneeRef = ((m["highlightKneeRef"] as? Double)?.toFloat() ?: 0f)
+                        .let { if (it.isFinite() && it > 0f) it else 0f },
                     // Detail/tonemap fields (COL-15/COL-16) postdate older
                     // schema-1 files: fall back to neutral (0), which the
                     // native pipeline treats as a no-op — the old look is

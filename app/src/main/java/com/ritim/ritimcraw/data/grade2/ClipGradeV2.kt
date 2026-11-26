@@ -383,6 +383,8 @@ data class DevelopV2(
      * half-set override).
      */
     val rawLevels: RawLevels? = null,
+    /** D3: the clip's luma P85 at unit gain for the adaptive Highlights knee (0 = unmeasured; omit-when-default). */
+    val highlightKneeRef: Float = 0f,
 ) {
     companion object {
         internal fun parse(m: Any?): DevelopV2 {
@@ -404,6 +406,8 @@ data class DevelopV2(
                 sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
                 detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
                 rawLevels = parseRawLevels(m["rawLevels"]),
+                highlightKneeRef = ((m["highlightKneeRef"] as? Double)?.toFloat() ?: 0f)
+                    .let { if (it.isFinite() && it > 0f) it else 0f },
             )
         }
 
@@ -506,6 +510,7 @@ object GradeV2Fiber {
             .append(",\"highlightReconstruction\":").append(d.highlightReconstruction)
             .append(",\"keepVignetting\":").append(d.keepVignetting)
             .append(if (d.highlightRecovery) ",\"highlightRecovery\":true" else "")
+            .append(if (d.highlightKneeRef > 0f) ",\"highlightKneeRef\":" + num(d.highlightKneeRef) else "")
             .append(",\"noiseReduction\":").append(num(d.noiseReduction))
             .append(",\"chromaDenoise\":").append(num(d.chromaDenoise))
             .append(",\"temporalNr\":").append(d.temporalNr)
@@ -746,6 +751,7 @@ fun ClipGradeV2.toGradeKLenient(): GradeK {
         rawLevelsClipR = develop.rawLevels?.clipR ?: -1f,
         rawLevelsClipG = develop.rawLevels?.clipG ?: -1f,
         rawLevelsClipB = develop.rawLevels?.clipB ?: -1f,
+        highlightKneeRef = develop.highlightKneeRef,
     )
 }
 
@@ -781,6 +787,7 @@ fun GradeK.toClipGradeV2(): ClipGradeV2 = ClipGradeV2(
             blackGb = rawLevelsBlackGb, blackB = rawLevelsBlackB,
             clipR = rawLevelsClipR, clipG = rawLevelsClipG, clipB = rawLevelsClipB,
         ),
+        highlightKneeRef = highlightKneeRef,
     ),
     legacy = LegacyControlsV2(
         highlights = highlights,

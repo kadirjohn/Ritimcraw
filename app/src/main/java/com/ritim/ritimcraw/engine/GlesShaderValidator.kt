@@ -678,13 +678,19 @@ object GlesShaderValidator {
                 "the whole stage, exactly like the CPU's own " +
                 "`if (grade.highlights != 0.0f)`)"
         }
-        if (!s.contains("const float knee = 0.18;")) {
-            out += "missing the stage-15 knee " +
-                "(`const float knee = 0.18;` — the CPU stage-15 shoulder start)"
+        if (!s.contains(
+                "float knee = uHighlightKneeRef > 0.0 ? " +
+                    "clamp(uHighlightKneeRef * uExposure, 0.02, 0.18) : 0.18;",
+            )
+        ) {
+            out += "missing the stage-15 adaptive knee " +
+                "(`float knee = uHighlightKneeRef > 0.0 ? clamp(uHighlightKneeRef * uExposure, " +
+                "0.02, 0.18) : 0.18;` — core highlightKnee: unmeasured = the legacy 0.18, " +
+                "measured = clamp(P85 * gainScale, kHighlightKneeMin, kHighlightKneeMax))"
         }
-        if (!s.contains("const float span = 1.0 - knee;")) {
+        if (!s.contains("float span = 1.0 - knee;")) {
             out += "missing the stage-15 span " +
-                "(`const float span = 1.0 - knee;` — the CPU's 1 - knee)"
+                "(`float span = 1.0 - knee;` — the CPU's 1 - knee)"
         }
         if (!s.contains("float s = -uHighlights / 100.0;")) {
             out += "missing the stage-15 strength " +

@@ -397,6 +397,7 @@ class NativeSource private constructor(
             rawLevelsClipR: Float,
             rawLevelsClipG: Float,
             rawLevelsClipB: Float,
+            highlightKneeRef: Float,
         ): IntArray?
 
         /**
@@ -468,6 +469,7 @@ class NativeSource private constructor(
             rawLevelsClipR: Float,
             rawLevelsClipG: Float,
             rawLevelsClipB: Float,
+            highlightKneeRef: Float,
         ): IntArray?
 
         /** rawedit::ErrorCode of the last failed preview call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
@@ -1576,6 +1578,8 @@ class NativeSource private constructor(
              * resolves by.
              */
             rawLevels: RawLevels? = null,
+            /** D3: the clip's luma P85 at unit gain (0 = unmeasured = the legacy knee 0.18, bit-identical). */
+            highlightKneeRef: Float = 0f,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -1596,6 +1600,7 @@ class NativeSource private constructor(
             rawLevels?.blackB ?: -1f,
             rawLevels?.clipR ?: -1f, rawLevels?.clipG ?: -1f,
             rawLevels?.clipB ?: -1f,
+            highlightKneeRef,
         )
 
         /** JNI bridge: cached interactive render; see nativePreviewSessionRenderCached. */
@@ -1654,6 +1659,8 @@ class NativeSource private constructor(
              * ([jniPreviewRender]'s own doc).
              */
             rawLevels: RawLevels? = null,
+            /** D3: the clip's luma P85 at unit gain (0 = unmeasured = the legacy knee 0.18, bit-identical). */
+            highlightKneeRef: Float = 0f,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -1674,6 +1681,7 @@ class NativeSource private constructor(
             rawLevels?.blackB ?: -1f,
             rawLevels?.clipR ?: -1f, rawLevels?.clipG ?: -1f,
             rawLevels?.clipB ?: -1f,
+            highlightKneeRef,
         )
 
         /** JNI bridge: rawedit::ErrorCode of the last failed preview call. */

@@ -51,7 +51,7 @@ import com.ritim.ritimcraw.data.GradeK
 object GradeParcel {
 
     /** The one length the decode accepts; any other length is a refusal. */
-    const val SLOT_COUNT = 38
+    const val SLOT_COUNT = 39
 
     const val SLOT_CHROMA_DENOISE = 0
     const val SLOT_NOISE_REDUCTION = 1
@@ -91,6 +91,7 @@ object GradeParcel {
     const val SLOT_RAW_LEVELS_CLIP_R = 35
     const val SLOT_RAW_LEVELS_CLIP_G = 36
     const val SLOT_RAW_LEVELS_CLIP_B = 37
+    const val SLOT_HIGHLIGHT_KNEE_REF = 38
 
     /** Slot names, index-aligned, for honest refusal messages. */
     private val SLOT_NAMES = arrayOf(
@@ -132,6 +133,7 @@ object GradeParcel {
             "rawLevelsClipR",
             "rawLevelsClipG",
             "rawLevelsClipB",
+            "highlightKneeRef",
     )
 
     /** The typed decode target: every scalar field, booleans as Boolean. */
@@ -174,6 +176,7 @@ object GradeParcel {
         val rawLevelsClipR: Float,
         val rawLevelsClipG: Float,
         val rawLevelsClipB: Float,
+        val highlightKneeRef: Float,
     )
 
     /**
@@ -222,6 +225,7 @@ object GradeParcel {
         grade.rawLevelsClipR,
         grade.rawLevelsClipG,
         grade.rawLevelsClipB,
+        grade.highlightKneeRef,
     )
 
     /**
@@ -319,6 +323,7 @@ object GradeParcel {
             rawLevelsClipR = parcel[SLOT_RAW_LEVELS_CLIP_R],
             rawLevelsClipG = parcel[SLOT_RAW_LEVELS_CLIP_G],
             rawLevelsClipB = parcel[SLOT_RAW_LEVELS_CLIP_B],
+            highlightKneeRef = parcel[SLOT_HIGHLIGHT_KNEE_REF],
         )
     }
 

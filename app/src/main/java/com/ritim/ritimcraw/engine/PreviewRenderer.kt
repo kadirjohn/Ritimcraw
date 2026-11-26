@@ -75,6 +75,8 @@ object GradeMapping {
         val asShot: Boolean,
         val highlightReconstruction: Boolean,
         val highlightRecovery: Boolean,
+        /** D3 adaptive Highlights knee ref (0 = unmeasured = legacy knee). */
+        val highlightKneeRef: Float = 0f,
         val keepVignetting: Boolean,
         val sharpness: Float,
         val detail: Float,
@@ -113,6 +115,7 @@ object GradeMapping {
         asShot = grade.asShot,
         highlightReconstruction = grade.highlightReconstruction,
         highlightRecovery = grade.highlightRecovery,
+        highlightKneeRef = grade.highlightKneeRef,
         keepVignetting = grade.keepVignetting,
         sharpness = grade.sharpness,
         detail = grade.detail,
@@ -333,6 +336,7 @@ class PreviewRenderer private constructor(
             interp?.input?.transfer?.value ?: -1,
             interp?.output?.gamut?.value ?: -1,
             interp?.output?.transfer?.value ?: -1,
+            highlightKneeRef = args.highlightKneeRef,
         )
         if (out == null || out.size < 2) {
             val code = NativeSource.jniPreviewErrorCode()

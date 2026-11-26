@@ -188,6 +188,7 @@ class PreviewSession private constructor(
                 // F1-6: the v2 node chain's wire (null = the legacy fast
                 // path, byte-identical — the K2 lock).
                 chainWire,
+                highlightKneeRef = args.highlightKneeRef,
             )
         )
     }
@@ -279,6 +280,7 @@ class PreviewSession private constructor(
                                     // F1-6: the v2 chain's wire (null = the
                                     // legacy fast path).
                                     chainWire,
+                                    highlightKneeRef = args.highlightKneeRef,
                                 )
                             )
                         }

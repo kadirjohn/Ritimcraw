@@ -112,6 +112,7 @@ struct DevelopFrameRequest {
     float exposureEv = 0.0f;
     bool highlightRecovery = false;  // replaces stage 3 with the pyramid re-estimate (CPU oracle: recoverClippedHighlights)
     float highlights = 0.0f;  // raw grade.highlights; the shader computes s
+    float highlightKneeRef = 0.0f;  // D3: clip luma P85 at unit gain; 0 = unmeasured = legacy knee 0.18 (shader: knee = clamp(ref * uExposure, 0.02, 0.18))
     float blackPoint = 0.0f;  // raw grade.blackPoint; the shader computes the lift
     float whitePoint = 0.0f;  // raw grade.whitePoint; the shader computes the gain
     float shadows = 0.0f;     // raw grade.shadows; the shader computes the gamma

@@ -103,8 +103,8 @@ class LegacyGradeWireLockTest {
     )
 
     /**
-     * The parcel: today's 38 slots (0..29 unchanged since the recovery
-     * append, the D1 rawLevels octet at [30..37]), byte for byte. The expected array is
+     * The parcel: today's 39 slots (0..29 unchanged since the recovery
+     * append, the D1 rawLevels octet at [30..37], D3 highlightKneeRef at [38]), byte for byte. The expected array is
      * hand-written FIRST (the values ARE the fixture's fields in the
      * SLOT_* order GradeParcel documents: chromaDenoise, noiseReduction,
      * temporalNr, temporalStrength, sharpness, detail, exposureEv,
@@ -149,6 +149,9 @@ class LegacyGradeWireLockTest {
                 // [30..37] the D1 rawLevels octet (appended, all sentinels —
                 // this legacy fixture sets no override)
                 -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,
+                // [38] highlightKneeRef (D3, appended; 0 = unmeasured = the legacy knee 0.18 —
+                // golden change documented in the D3 commit: one new slot, default 0.0)
+                0.0f,
             ),
             parcel,
         )
@@ -180,6 +183,9 @@ class LegacyGradeWireLockTest {
                 // (metadata semantics — the default grade is bit-identical
                 // to the pre-D1 pipeline)
                 -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,
+                // [38] highlightKneeRef (D3, appended; 0 = unmeasured = the legacy knee 0.18 —
+                // golden change documented in the D3 commit: one new slot, default 0.0)
+                0.0f,
             ),
             GradeParcel.encode(GradeK()),
         )

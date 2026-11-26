@@ -445,6 +445,7 @@ uniform int uHasProfile;        // 1 = apply uCam2rgb (stage 6); 0 = identity (n
      */
     private const val kDevelopPointwiseUniforms: String = """uniform float uExposure;        // 2^ev (stage 14); 1.0 = neutral
 uniform float uHighlights;      // raw grade.highlights (stage 15); 0.0 = the CPU's own skip
+uniform float uHighlightKneeRef; // D3: clip luma P85 at unit gain; 0.0 = unmeasured = the legacy knee 0.18
 uniform float uBlackPoint;      // raw grade.blackPoint (stage 9); 0.0 = the CPU's own skip
 uniform float uWhitePoint;      // raw grade.whitePoint (stage 10); 0.0 = the CPU's own skip
 uniform float uShadows;         // raw grade.shadows (stage 11); 0.0 = the CPU's own skip
@@ -1096,8 +1097,10 @@ vec3 lutManagedPixel(vec3 px) {
     // != 0.0f)`. knee/span are literal-only so they keep const; s/mx/over/
     // t/shoulder/newMx/gain are uniform-derived and must NOT (GLSL ES 3.00).
     if (uHighlights != 0.0) {
-        const float knee = 0.18;
-        const float span = 1.0 - knee;
+        // D3 adaptive knee (core highlightKnee): unmeasured -> the legacy 0.18; measured ->
+        // clamp(P85 * gainScale, 0.02, 0.18). uExposure IS the gain scale (2^ev) stage 14 multiplied by.
+        float knee = uHighlightKneeRef > 0.0 ? clamp(uHighlightKneeRef * uExposure, 0.02, 0.18) : 0.18;
+        float span = 1.0 - knee;
         float s = -uHighlights / 100.0;  // recovery -> +1, lift -> -1
         float mx = max(c.r, max(c.g, c.b));
         if (mx > knee) {

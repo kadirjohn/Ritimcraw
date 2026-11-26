@@ -1161,12 +1161,15 @@ class GlesShaderValidatorTest {
             src.contains("if (uHighlights != 0.0) {"),
         )
         assertTrue(
-            "knee missing",
-            src.contains("const float knee = 0.18;"),
+            "adaptive knee missing (D3: unmeasured -> 0.18, measured -> clamp(P85 * gainScale, 0.02, 0.18))",
+            src.contains(
+                "float knee = uHighlightKneeRef > 0.0 ? " +
+                    "clamp(uHighlightKneeRef * uExposure, 0.02, 0.18) : 0.18;",
+            ),
         )
         assertTrue(
             "span missing",
-            src.contains("const float span = 1.0 - knee;"),
+            src.contains("float span = 1.0 - knee;"),
         )
         assertTrue(
             "strength sign missing (recovery -> +, lift -> -)",

@@ -102,6 +102,7 @@ SCHEMA = [
     ("rawLevelsClipR", "float", "-1.0"),
     ("rawLevelsClipG", "float", "-1.0"),
     ("rawLevelsClipB", "float", "-1.0"),
+    ("highlightKneeRef", "float", "0.0"),
 ]
 
 # Trailing // comments the committed struct members carry (added by hand in

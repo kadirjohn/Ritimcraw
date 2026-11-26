@@ -1647,7 +1647,8 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
                                float wheelMidX, float wheelMidY,
                                float wheelHighX, float wheelHighY,
                                float splitShadowHue, float splitHighlightHue,
-                               float splitBalance) {
+                               float splitBalance,
+                               float highlightKneeRef = 0.0f) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
@@ -1680,6 +1681,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.splitShadowHue = splitShadowHue;
     g.splitHighlightHue = splitHighlightHue;
     g.splitBalance = splitBalance;
+    g.highlightKneeRef = highlightKneeRef;  // D3 (0 = unmeasured = legacy knee 0.18)
     return g;
 }
 
@@ -2575,7 +2577,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloatArray chainWire,
         jfloat rawLevelsWhite, jfloat rawLevelsBlackR, jfloat rawLevelsBlackGr,
         jfloat rawLevelsBlackGb, jfloat rawLevelsBlackB,
-        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB) {
+        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB,
+        jfloat highlightKneeRef) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2641,7 +2644,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              wheelMidX, wheelMidY,
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
-                                             splitBalance),
+                                             splitBalance, highlightKneeRef),
                              chain.get(), lut, binding, stab.input, maxDim,
                              rawLevelsFromArgs(rawLevelsWhite, rawLevelsBlackR,
                                                rawLevelsBlackGr, rawLevelsBlackGb,
@@ -2693,7 +2696,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloatArray chainWire,
         jfloat rawLevelsWhite, jfloat rawLevelsBlackR, jfloat rawLevelsBlackGr,
         jfloat rawLevelsBlackGb, jfloat rawLevelsBlackB,
-        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB) {
+        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB,
+        jfloat highlightKneeRef) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2770,7 +2774,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              wheelMidX, wheelMidY,
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
-                                             splitBalance),
+                                             splitBalance, highlightKneeRef),
                              chain.get(), lut, binding, stab.input, maxDim,
                              rawLevelsFromArgs(rawLevelsWhite, rawLevelsBlackR,
                                                rawLevelsBlackGr, rawLevelsBlackGb,
