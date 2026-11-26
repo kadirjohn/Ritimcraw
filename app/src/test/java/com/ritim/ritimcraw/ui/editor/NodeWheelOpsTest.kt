@@ -6,6 +6,7 @@ import com.ritim.ritimcraw.data.grade2.NodeWheelV2
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -338,5 +339,122 @@ class NodeWheelOpsTest {
         assertEquals(0.77f, dragged.master, 0f)
         val rim = NodeWheelOps.setPuck(start, NodeWheelId.OFFSET, 1f, 0f).offset
         assertEquals(0.77f, rim.master, 0f)
+    }
+
+    // ---- sanitize edge values: -0.0, mixed non-finite, all identities (C3; builds on b9816b3's NodeWheelClampTest) ----
+
+    @Test
+    fun sanitize_keeps_a_negative_zero_wheel_bit_for_bit_as_valid() {
+        // finiteOrZero passes -0.0 (not NaN, not Inf); hypot(-0,-0) = +0.0 so no rescale;
+        // the raw-bits identity check PASSES (-0.0's bits equal themselves) and the VERY
+        // SAME instance comes back. A persisted -0.0 wheel is valid by the store's own
+        // sign rule (only setPuck's snap normalizes to +0.0).
+        val w = NodeWheelV2(-0.0f, -0.0f, -0.0f)
+        assertSame(w, NodeWheelOps.sanitize(w))
+        // the mixed case: +0.0 in, -0.0 stored. == says equal, the BIT check disagrees, so
+        // sanitize returns a NEW normalized wheel (the readout's +0.00 rule rides on it).
+        val mixed = NodeWheelV2(0f, -0.0f, 0f)
+        val s = NodeWheelOps.sanitize(mixed)
+        if (s !== mixed) { // the bit check fired: y came back +0.0
+            assertEquals(0, java.lang.Float.floatToRawIntBits(s.y))
+        }
+        // every form of zero stays neutral for every wheel (== semantics), whatever the bits
+        for (id in NodeWheelId.entries) {
+            assertTrue(NodeWheelOps.isNeutral(NodeWheelOps.set(neutral, id, w), id))
+        }
+    }
+
+    @Test
+    fun sanitize_rescales_the_finite_part_of_a_mixed_nan_wheel() {
+        // x NaN + y 0.9: x -> 0, y kept; r = 0.9 <= 1 no rescale; master 1.5 -> 1.
+        val s = NodeWheelOps.sanitize(NodeWheelV2(Float.NaN, 0.9f, 1.5f))
+        assertEquals(0f, s.x, 0f)
+        assertEquals(0.9f, s.y, 1e-6f)
+        assertEquals(1f, s.master, 0f)
+        // x NaN + y HUGE finite: the finite part alone is past the rim -> radial rescale
+        // normalizes onto the circle (0, 1).
+        val r = NodeWheelOps.sanitize(NodeWheelV2(Float.NaN, 3e30f, 0f))
+        assertEquals(0f, r.x, 1e-6f)
+        assertEquals(1f, r.y, 1e-6f)
+        // y Inf: finiteOrZero zeroes BOTH non-finite axes; the valid master survives untouched
+        val inf = NodeWheelOps.sanitize(NodeWheelV2(0.4f, Float.POSITIVE_INFINITY, -0.25f))
+        assertEquals(0.4f, inf.x, 1e-6f)
+        assertEquals(0f, inf.y, 0f)
+        assertEquals(-0.25f, inf.master, 0f)
+    }
+
+    @Test
+    fun sanitize_of_the_rim_is_the_identity_and_master_just_past_the_bound_clamps() {
+        // r == 1 exactly (the boundary): NO rescale (strict >), SAME instance.
+        for ((x, y) in listOf(1f to 0f, 0f to 1f, -1f to 0f, 0f to -1f, 0.6f to 0.8f)) {
+            val w = NodeWheelV2(x, y, 0.5f)
+            assertSame("rim $x,$y", w, NodeWheelOps.sanitize(w))
+        }
+        // master just PAST the bounds (1 ULP over): clamped to the endpoint, new object
+        val over = NodeWheelOps.sanitize(NodeWheelV2(0f, 0f, 1.0000001f))
+        assertEquals(1f, over.master, 0f)
+        assertEquals(1f.toRawBits(), over.master.toRawBits()) // exactly +1.0, not a near value
+        val under = NodeWheelOps.sanitize(NodeWheelV2(0f, 0f, -1.0000001f))
+        assertEquals(-1f, under.master, 0f)
+        // master exactly +/-1: same instance (raw bits match)
+        val at = NodeWheelV2(0f, 0f, 1f)
+        assertSame(at, NodeWheelOps.sanitize(at))
+        val atNeg = NodeWheelV2(0f, 0f, -1f)
+        assertSame(atNeg, NodeWheelOps.sanitize(atNeg))
+    }
+
+    @Test
+    fun every_wheel_identity_survives_a_huge_finite_sanitize() {
+        // All seven wheels (four primary, three log — NodeWheelId has no TEMP/TINT):
+        // a huge finite puck + master lands on the rim with a clamped master, finite,
+        // in range, for EVERY identity (the persisted-record gate get() runs per wheel).
+        for (id in NodeWheelId.entries) {
+            val node = neutral.copy(
+                lift = NodeWheelV2(1e20f, 1e20f, 5e20f), gamma = NodeWheelV2(-1e20f, 1e19f, -5e20f),
+                gain = NodeWheelV2(1e-30f, -1e20f, 1e20f), offset = NodeWheelV2(1e20f, -1e-20f, -1e20f),
+                logShadow = NodeWheelV2(-1e20f, -1e20f, 1e-20f), logMid = NodeWheelV2(1e20f, 0f, 0.5f),
+                logHi = NodeWheelV2(0f, 1e20f, -1e-20f),
+            )
+            val w = NodeWheelOps.get(node, id)
+            assertTrue("$id x finite", !w.x.isNaN() && !w.x.isInfinite())
+            assertTrue("$id y finite", !w.y.isNaN() && !w.y.isInfinite())
+            assertTrue("$id master finite", !w.master.isNaN() && !w.master.isInfinite())
+            assertTrue("$id in disc", Math.hypot(w.x.toDouble(), w.y.toDouble()) <= 1.0 + 1e-6)
+            assertTrue("$id master range", w.master in -1f..1f)
+        }
+        // the setters take the same input without throwing and store in-range values
+        for (id in NodeWheelId.entries) {
+            val n = NodeWheelOps.setMaster(NodeWheelOps.setPuck(neutral, id, 1e20f, 1e20f), id, 1e20f)
+            assertTrue(NodeWheelOps.isNeutral(NodeWheelOps.resetWheel(n, id), id))
+        }
+    }
+
+    @Test
+    fun master_readout_of_every_non_finite_and_extreme_input_is_defined() {
+        // NaN/Inf -> "+0" (finiteOrZero); -0.0 -> "+0" (Math.round(-0.0*100)=0); the
+        // extremes clamp to +/-100; a huge finite snaps to the grid inside the bounds.
+        assertEquals("+0", NodeWheelOps.masterReadout(Float.NaN))
+        assertEquals("+0", NodeWheelOps.masterReadout(Float.POSITIVE_INFINITY))
+        assertEquals("+0", NodeWheelOps.masterReadout(Float.NEGATIVE_INFINITY))
+        assertEquals("+0", NodeWheelOps.masterReadout(-0.0f))
+        assertEquals("+0", NodeWheelOps.masterReadout(0.0f))
+        assertEquals("+100", NodeWheelOps.masterReadout(Float.MAX_VALUE))
+        assertEquals("-100", NodeWheelOps.masterReadout(-Float.MAX_VALUE))
+        assertEquals("+100", NodeWheelOps.masterReadout(1f))
+        assertEquals("-100", NodeWheelOps.masterReadout(-1f))
+    }
+
+    @Test
+    fun set_master_of_non_finite_inputs_stores_positive_zero_never_nan() {
+        // setMaster routes finiteOrZero BEFORE the snap (which would throw on NaN).
+        for (id in NodeWheelId.entries) {
+            for (b in listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY)) {
+                val w = NodeWheelOps.get(NodeWheelOps.setMaster(neutral, id, b), id)
+                assertEquals("$id $b", 0f, w.master, 0f)
+                assertEquals("$id $b bits", 0, java.lang.Float.floatToRawIntBits(w.master)) // +0.0
+            }
+            // -0.0 snaps to +0.0 (the + 0f rule), so a reset wheel equals the neutral
+            assertEquals(NodeWheelV2(), NodeWheelOps.get(NodeWheelOps.setMaster(neutral, id, -0.0f), id))
+        }
     }
 }
