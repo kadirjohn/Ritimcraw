@@ -362,6 +362,57 @@ class SourceRepository(
     }
 
     /**
+     * The rename that also renames the real file (owner request
+     * 2026-11-26). Order: app-name validation, then the file rename
+     * through [renamer] (main + same-stem .gcsv, rollback on sidecar
+     * failure, never overwriting), then ONE atomic project.json write that
+     * moves the record's uri and name together. A refusal leaves both the
+     * files and the app name untouched. When files cannot be renamed here
+     * (unlisted folder, no write grant, provider refuses) the app-only
+     * rename still happens (APP_ONLY). The id is content-derived, so the
+     * grade, gyro attachment, proxy and exports keep resolving.
+     */
+    fun renameWithFile(id: String, typed: String, renamer: SourceFileRenamer?): ClipRenameResult {
+        // Freeze the original name FIRST: once the file is renamed the old
+        // uri no longer resolves, so the file name could not be read later.
+        val current = backfillOriginalName(id)
+            ?: return ClipRenameResult(RenameStatus.MISSING, null)
+        val name = when (val v = ClipNameRules.validate(typed, current.displayOrId)) {
+            is ClipNameRules.Result.Ok -> v.name
+            ClipNameRules.Result.Unchanged -> return ClipRenameResult(RenameStatus.UNCHANGED, current)
+            else -> return ClipRenameResult(RenameStatus.REFUSED_INVALID, current)
+        }
+        val fileName = try {
+            resolver.displayName(current.uri)
+        } catch (e: Exception) {
+            null
+        }
+        val outcome = if (renamer == null || fileName.isNullOrBlank()) {
+            FileRenameOutcome.Unsupported
+        } else {
+            SourceFileRename.apply(renamer, current.uri, fileName, name)
+        }
+        return when (outcome) {
+            is FileRenameOutcome.Renamed -> ClipRenameResult(
+                RenameStatus.FILE_RENAMED, applyFileRename(id, outcome.newUri, name),
+            )
+            is FileRenameOutcome.Partial -> ClipRenameResult(
+                RenameStatus.PARTIAL, applyFileRename(id, outcome.newUri, name),
+            )
+            FileRenameOutcome.InvalidName ->
+                ClipRenameResult(RenameStatus.REFUSED_INVALID, current)
+            FileRenameOutcome.TargetExists ->
+                ClipRenameResult(RenameStatus.REFUSED_EXISTS, current)
+            FileRenameOutcome.SidecarAmbiguous ->
+                ClipRenameResult(RenameStatus.REFUSED_SIDECAR_AMBIGUOUS, current)
+            FileRenameOutcome.SidecarFailedRolledBack ->
+                ClipRenameResult(RenameStatus.REFUSED_SIDECAR_FAILED, current)
+            FileRenameOutcome.Unsupported ->
+                ClipRenameResult(RenameStatus.APP_ONLY, rename(id, name))
+        }
+    }
+
+    /**
      * Renames a clip (owner request 2026-11-15, the folder-import name
      * dialog): the user-edited name replaces the resolver-derived
      * [MediaSource.displayName] — the record's id, fingerprint and grade
