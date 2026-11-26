@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,11 +29,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
-import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
-import androidx.compose.foundation.lazy.staggeredgrid.items as staggeredItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -64,19 +66,23 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.State
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -98,11 +104,13 @@ import com.ritim.ritimcraw.data.SourceKind
 import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.ui.components.Add
-import com.ritim.ritimcraw.ui.components.AdaptiveMinStaggeredCells
+import com.ritim.ritimcraw.ui.components.AdaptiveLayout
+import com.ritim.ritimcraw.ui.components.FileListRow
+import com.ritim.ritimcraw.ui.components.FormatBadge
+import com.ritim.ritimcraw.ui.components.FormatBadgeStyle
 import com.ritim.ritimcraw.ui.components.ThumbnailRow
 import com.ritim.ritimcraw.ui.components.Check
 import com.ritim.ritimcraw.ui.components.ExpandMore
-import com.ritim.ritimcraw.ui.components.FileListRow
 import com.ritim.ritimcraw.ui.components.GridView
 import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.components.Sort
@@ -124,7 +132,12 @@ enum class LibraryFilter(val labelRes: Int) {
 
 /*
  * Grid columns: the spec's 3 on phones, more on large screens
- * (AdaptiveMinStaggeredCells — owner request 2026-11-23, tablet adaptation).
+ * (AdaptiveMinStaggeredCells' own rule, owner request 2026-11-23 tablet
+ * adaptation). The grid now lays out ROWS (owner request 2026-11-26: rows
+ * must never interleave; a row's height is set by its tallest clip), so
+ * the column count is computed HERE through AdaptiveLayout.gridColumns
+ * — the SAME function AdaptiveMinStaggeredCells/AdaptiveMinGridCells
+ * use — and drives the pure row chunking.
  */
 
 /**
@@ -280,21 +293,34 @@ fun LibraryScreen(
     val context = LocalContext.current
 
     // The two renderings' own scroll states (library toolbar redesign,
-    // 2026-11-16): switching views keeps the FIRST-VISIBLE INDEX AT THE
-    // TOP — the spec's continuity rule. Both states index the SAME
-    // visible list (a grid's firstVisibleItemIndex is the FLAT item
-    // index, the list's own coordinate), so the anchor maps index for
-    // index with no row arithmetic: the same clip stays at the top, in
-    // the grid at its own column of the top row. scrollToItem is a snap,
-    // not an animation — the new view lands already at the anchor
-    // instead of visibly catching up.
+    // 2026-11-16): switching views keeps the SAME CLIP at the top. The
+    // list's firstVisibleItemIndex is the FLAT item index; the grid's is
+    // a ROW index (owner request 2026-11-26: the grid lays out row
+    // containers, one item per ROW), so the anchor maps through the
+    // current chunking — list -> grid carries the clip at the top of
+    // view, grid -> list carries the grid's top row's FIRST clip. A snap
+    // (scrollToItem), not an animation: the new view lands already at
+    // the anchor instead of visibly catching up. The grid's column
+    // count is hoisted to the screen level ([rememberGridColumns]) so
+    // the mapping and the chunking can never disagree.
     val listState = rememberLazyListState()
-    val gridState = rememberLazyStaggeredGridState()
-    LaunchedEffect(viewMode) {
+    val gridState = rememberLazyGridState()
+    val gridColumns by rememberGridColumns()
+    LaunchedEffect(viewMode, visible.size) {
         if (viewMode == LibraryViewMode.GRID) {
-            gridState.scrollToItem(listState.firstVisibleItemIndex)
+            // The clip at the top of the list view: its ROW in the
+            // current column count (LibraryGridRows maps the flat index
+            // to its row; a fresh list shows row 0 either way).
+            gridState.scrollToItem(
+                LibraryGridRows.rowOf(listState.firstVisibleItemIndex, visible.size, gridColumns),
+            )
         } else {
-            listState.scrollToItem(gridState.firstVisibleItemIndex)
+            // The grid's top ROW's first clip, in the list's own flat
+            // coordinate (grid row i holds clips from i * gridColumns).
+            val row = gridState.firstVisibleItemIndex
+            listState.scrollToItem(
+                LibraryGridRows.firstClipOf(row, visible.size, gridColumns),
+            )
         }
     }
 
@@ -583,53 +609,104 @@ fun LibraryScreen(
                             onImport = { picker.launch(arrayOf("*/*")) },
                         )
                     } else if (viewMode == LibraryViewMode.GRID) {
-                        LazyVerticalStaggeredGrid(
-                            state = gridState,
-                            columns = AdaptiveMinStaggeredCells(),
-                            modifier = Modifier.weight(1f).fillMaxWidth(),
-                            // The spec's grid geometry: 16dp screen
-                            // gutters, 4dp to the toolbar above, 8dp
-                            // between cells horizontally, 12dp rows,
-                            // 16dp below (the FAB is gone — the toolbar's
-                            // "+" owns Import — so the bottom keeps only
-                            // the screen's own gutter).
-                            contentPadding = PaddingValues(
-                                start = 16.dp,
-                                end = 16.dp,
-                                top = 4.dp,
-                                bottom = 16.dp,
-                            ),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalItemSpacing = 12.dp,
-                        ) {
-                            staggeredItems(visible, key = { it.id }) { source ->
-                                LibraryGridCell(
-                                    source = source,
-                                    // Pinned to the generation revision —
-                                    // the same owner finding 2026-11-14 the
-                                    // list rows pin theirs to.
-                                    thumbnailPath = remember(thumbnailRevision) {
-                                        thumbnailAt(source.id)
+                        // Rows, not a staggered grid (owner request
+                        // 2026-11-26): a LazyVerticalStaggeredGrid
+                        // interleaves columns by design — a tall tile in
+                        // the row below slid under a wide tile above,
+                        // which read as overlapping rows. The grid now
+                        // lays out one ROW container per item; every
+                        // cell in a row shares the row's height (set by
+                        // the row's tallest clip — the pure
+                        // ThumbnailRow.gridRows decision), so no tile can
+                        // ever cross into the row below, and the
+                        // verticalArrangement spacing keeps rows read as
+                        // rows WITHOUT any divider lines.
+                        //
+                        // The column count must be known at the SCREEN
+                        // level (it drives the row chunking AND the
+                        // view-switch scroll anchor), so it is computed
+                        // from the content width through the SAME pure
+                        // rule the old AdaptiveMinStaggeredCells applied
+                        // (AdaptiveLayout.gridColumns) — see
+                        // [rememberGridColumns], which supplies it; the
+                        // chunk size always equals the real column count
+                        // in both orientations (3 portrait / more
+                        // landscape).
+                        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                            // The rows chunk from the PLACEHOLDER aspects
+                            // (the record's frame size + manual rotation)
+                            // so the layout is stable from the first
+                            // frame — no reflow when icons land: the
+                            // bitmap's own ratio matches the record's
+                            // probed dimensions (the same placeholder
+                            // contract the list rows run), and the box
+                            // height it dictates is the SAME height
+                            // gridTile(aspect) would give that clip.
+                            val rows = remember(visible, gridColumns) {
+                                LibraryGridRows.of(
+                                    sources = visible,
+                                    aspects = visible.map {
+                                        ThumbnailRow.placeholderAspect(
+                                            it.width, it.height, it.manualRotationDeg,
+                                        )
                                     },
-                                    selected = source.id in selection,
-                                    selecting = selecting,
-                                    onToggleSelected = {
-                                        selectedIds = LibrarySelection.toggle(selectedIds, source.id)
-                                    },
-                                    onOpen = { onOpenClip(source.id) },
-                                    onRelink = {
-                                        relinkTargetId = source.id
-                                        relinkPicker.launch(arrayOf("*/*"))
-                                    },
+                                    columns = gridColumns,
                                 )
                             }
+                            LazyVerticalGrid(
+                                state = gridState,
+                                // ONE column of ROW containers: each grid
+                                // item is a full-width Row of [gridColumns]
+                                // cells (the row's own spacedBy(8.dp)
+                                // carries the 8dp cell gap), so a row is
+                                // one layout unit and can never interleave
+                                // with the next. The grid's own slot math
+                                // stays out of the way; the outer padding
+                                // keeps the 16dp gutters.
+                                columns = GridCells.Fixed(1),
+                                modifier = Modifier.fillMaxWidth(),
+                                // The spec's grid geometry, kept: 16dp
+                                // screen gutters, 4dp to the toolbar above,
+                                // 8dp between cells (inside each row),
+                                // 12dp between ROWS (the row separator the
+                                // owner asked for — pure spacing, no
+                                // line), 16dp below.
+                                contentPadding = PaddingValues(
+                                    start = 16.dp,
+                                    end = 16.dp,
+                                    top = 4.dp,
+                                    bottom = 16.dp,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                gridItems(
+                                    rows,
+                                    key = { row -> row.clipIds },
+                                ) { row ->
+                                    LibraryGridRowCells(
+                                        row = row,
+                                        thumbnailAt = thumbnailAt,
+                                        thumbnailRevision = thumbnailRevision,
+                                        selecting = selecting,
+                                        selectedIds = selectedIds,
+                                        onToggleSelected = { id ->
+                                            selectedIds = LibrarySelection.toggle(selectedIds, id)
+                                        },
+                                        onOpen = onOpenClip,
+                                        onRelink = { id ->
+                                            relinkTargetId = id
+                                            relinkPicker.launch(arrayOf("*/*"))
+                                        },
+                                    )
+                                }
+                            }
+                            LibraryThumbnailBackfill(
+                                sources = visible,
+                                thumbnailAt = thumbnailAt,
+                                batchLimit = thumbnailBatchLimit,
+                                onGenerateThumbnails = onGenerateThumbnails,
+                            )
                         }
-                        LibraryThumbnailBackfill(
-                            sources = visible,
-                            thumbnailAt = thumbnailAt,
-                            batchLimit = thumbnailBatchLimit,
-                            onGenerateThumbnails = onGenerateThumbnails,
-                        )
                     } else {
                         LazyColumn(
                             state = listState,
@@ -743,6 +820,31 @@ fun LibraryScreen(
     // query each; a sources change mid-session does NOT re-kick it (the
     // key is Unit, not the list).
     LaunchedEffect(Unit) { onOpenRefresh() }
+}
+
+/**
+ * The Library grid's CURRENT column count (owner request 2026-11-26: the
+ * grid lays out ROWS, so the count must be known in composition to chunk
+ * the clips). Measured from the screen width through
+ * [AdaptiveLayout.gridColumns] — the SAME pure rule the old
+ * AdaptiveMinStaggeredCells applied (and AdaptiveMinGridCells still
+ * applies in the FolderImportBrowser), with the same 16dp gutters and
+ * 8dp cell spacing the grid's own geometry carries: the chunk size
+ * always equals the real column count, 3 on phones, more on tablets,
+ * and it re-derives when an orientation change moves the width.
+ */
+@Composable
+private fun rememberGridColumns(): State<Int> {
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    return remember(density, configuration) {
+        val contentPx = with(density) {
+            (configuration.screenWidthDp.dp - 32.dp).roundToPx() // 2 x 16dp gutter
+        }
+        val spacingPx = with(density) { 8.dp.roundToPx() }
+        val cellMinPx = with(density) { AdaptiveLayout.GRID_CELL_MIN.roundToPx() }
+        mutableStateOf(AdaptiveLayout.gridColumns(contentPx, spacingPx, cellMinPx))
+    }
 }
 
 /**
@@ -1176,13 +1278,24 @@ private fun LibraryRow(
     val status = LibraryRowModel.rowStatus(source)
     val accessLost = status != null
     FileListRow(
-        // The clip's real file name (owner request §2b); the id when the
-        // resolver could not name it — displayOrId is never blank. The
+        // The clip's name WITHOUT its extension (owner request
+        // 2026-11-26: long ".mcraw" names read cleaner; the badge carries
+        // the format) — the id when the resolver could not name it. The
         // DISPLAY copy carries zero-width wrap breaks after '_' and
-        // before '.' (toolbar redesign O1) so the name's two lines break
-        // at its separators, never mid-extension; the record keeps the
-        // real name.
-        fileName = LibraryRowModel.displayWrapName(source.displayOrId),
+        // before '.' (toolbar redesign O1) so the name's lines break at
+        // its separators; the record keeps the real full name (the GRID
+        // view and the rename dialog keep it too — this strip is list
+        // display only, the pure LibraryRowModel.listDisplayName rule).
+        fileName = LibraryRowModel.displayWrapName(LibraryRowModel.listDisplayName(source)),
+        badge = LibraryRowModel.kindBadge(source)?.let { b ->
+            FormatBadge(
+                style = when (b.style) {
+                    LibraryRowModel.BadgeStyle.HIGHLIGHTED -> FormatBadgeStyle.HIGHLIGHTED
+                    LibraryRowModel.BadgeStyle.NEUTRAL -> FormatBadgeStyle.NEUTRAL
+                },
+                text = b.text,
+            )
+        },
         supportingLine = LibraryRowModel.supportingLine(
             source,
             LibraryRowModel.durationText(source),
@@ -1243,8 +1356,68 @@ private fun LibraryRow(
 }
 
 /**
- * One grid cell (library toolbar redesign, 2026-11-16): a square tile —
- * the persisted first-frame PNG fitted inside at its own ratio
+ * One grid ROW (owner request 2026-11-26: rows must never interleave; a
+ * row's height is set by its tallest clip): the row's cells laid out in
+ * the grid's own single column slot, each cell rendering the shared
+ * [LibraryGridRows.Row.rowAspect] box, so every tile in the row is
+ * exactly as tall as the row's tallest clip and NOTHING crosses into
+ * the row below. The grid's 12dp verticalArrangement spacing between row
+ * containers is the row separator the owner asked for — pure spacing,
+ * no line.
+ *
+ * The cells themselves are the SAME [LibraryGridCell] as before (one
+ * target per cell, the 12dp rounded shape-clipped ripple, selection
+ * routing, degraded-record honesty) — only the tile's BOX changed: it
+ * now takes the row's aspect instead of the clip's own, with the image
+ * centered inside at its own ratio (ThumbnailRow.rowTile).
+ */
+@Composable
+private fun LibraryGridRowCells(
+    row: LibraryGridRows.Row,
+    thumbnailAt: (id: String) -> String?,
+    thumbnailRevision: Int,
+    selecting: Boolean,
+    selectedIds: Set<String>,
+    onToggleSelected: (id: String) -> Unit,
+    onOpen: (id: String) -> Unit,
+    onRelink: (id: String) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        row.clips.forEachIndexed { i, source ->
+            key(source.id) {
+                LibraryGridCell(
+                    source = source,
+                    rowAspect = row.rowAspect,
+                    // Equal weight: every cell in the row takes the same
+                    // share of the width — the columns stay exactly as
+                    // even as the old AdaptiveMinStaggeredCells split.
+                    modifier = Modifier.weight(1f),
+                    // Pinned to the generation revision — the same owner
+                    // finding 2026-11-14 the list rows pin theirs to.
+                    thumbnailPath = remember(thumbnailRevision) {
+                        thumbnailAt(source.id)
+                    },
+                    selected = source.id in selectedIds,
+                    selecting = selecting,
+                    onToggleSelected = { onToggleSelected(source.id) },
+                    onOpen = { onOpen(source.id) },
+                    onRelink = { onRelink(source.id) },
+                )
+            }
+        }
+        // The row's trailing empty slots keep no placeholder: the Row's
+        // spacedBy(8.dp) already leaves the remainder blank and the grid
+        // centers nothing — a short last row simply ends early (the
+        // same look the staggered grid gave a partial row).
+    }
+}
+
+/**
+ * One grid cell (library toolbar redesign, 2026-11-16): a tile — the
+ * persisted first-frame PNG fitted inside at its own ratio
  * (ContentScale.Fit, the FileListRow ClipThumbnail contract: letterboxed
  * on the tile's surfaceContainerHigh background, never cropped, never
  * distorted) — with the duration badge at its bottom-end and the file
@@ -1252,6 +1425,14 @@ private fun LibraryRow(
  * rounded-corner shape BEFORE the combinedClickable (the shape-clipped
  * indication rule — the node with the shape is the clickable node), so
  * the ripple stays inside the cell and the tap area is the full cell.
+ *
+ * Owner request 2026-11-26 (row alignment): the tile's box now renders
+ * the ROW's shared aspect ([rowAspect], from the row's tallest clip —
+ * ThumbnailRow.rowTile) instead of the clip's own, so all cells in a
+ * row share one height; the clip's own-ratio image centers inside the
+ * box, filling [ThumbnailRow.rowTile]'s imageWidthFraction of the
+ * width — a wider clip letterboxes horizontally, never cropped, never
+ * distorted, and the row never interleaves with the next.
  *
  * Selection (E2) keeps its exact behavior — the list rows' routing,
  * unchanged: long-press enters selection with this cell checked, taps
@@ -1270,17 +1451,19 @@ private fun LibraryRow(
 @Composable
 private fun LibraryGridCell(
     source: MediaSource,
+    rowAspect: Float,
     thumbnailPath: String?,
     selected: Boolean,
     selecting: Boolean,
     onToggleSelected: () -> Unit,
     onOpen: () -> Unit,
     onRelink: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val status = LibraryRowModel.rowStatus(source)
     val accessLost = status != null
     Column(
-        Modifier
+        modifier
             .fillMaxWidth()
             // Shape-clipped indication: the 12dp rounded cell is the
             // clickable node (clip BEFORE combinedClickable), so the
@@ -1299,13 +1482,14 @@ private fun LibraryGridCell(
                 onLongClick = onToggleSelected,
             ),
     ) {
-        // The tile keeps the clip's OWN ratio (ThumbnailRow.gridTile): the
-        // loaded bitmap's size, or the record's placeholder ratio until it
-        // loads (so cells do not jump). No background, no bands; a very
-        // vertical clip is fitted and centred in a 4:3-portrait box.
-        // The decode: the SAME produceState/BitmapFactory off-UI-thread
-        // pattern the list rows run (cancels when the cell leaves
-        // composition).
+        // The tile's box takes the ROW's shared aspect (all cells in the
+        // row are exactly one height — owner request 2026-11-26); the
+        // clip's image centers inside it at its OWN ratio, loaded bitmap
+        // or placeholder (ThumbnailRow.rowTile decides the width
+        // fraction, so a wider clip letterboxes horizontally and nothing
+        // is ever cropped). The decode: the SAME produceState/BitmapFactory
+        // off-UI-thread pattern the list rows run (cancels when the cell
+        // leaves composition).
         val bitmap by produceState<Bitmap?>(initialValue = null, thumbnailPath) {
             value = withContext(Dispatchers.IO) {
                 try {
@@ -1321,7 +1505,7 @@ private fun LibraryGridCell(
         } else {
             ThumbnailRow.placeholderAspect(source.width, source.height, source.manualRotationDeg)
         }
-        val tile = ThumbnailRow.gridTile(aspect)
+        val tile = ThumbnailRow.rowTile(aspect, rowAspect)
         Box(
             Modifier
                 .fillMaxWidth()
