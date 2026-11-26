@@ -93,6 +93,7 @@ import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailStore
+import com.ritim.ritimcraw.engine.RecoveryBench
 import com.ritim.ritimcraw.engine.StabilizationGate
 import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.CodecMeasurer
@@ -1163,6 +1164,30 @@ fun AppNav(
                     .openFileDescriptor(Uri.parse(clipped.uri), "r")
                     ?.detachFd() ?: -1
                 if (clippedFd >= 0) GradeParitySweep.run(clippedFd, frameIndex = 100)
+                // A frame of the same clip with NO clipped raw site (found by the recovery bench's scan: frame
+                // 1555): stage 3 and Recovery take the GPU's no-clipped-site early exit here, and the sweep
+                // checks that exit against the CPU, which never skips.
+                val unclippedFd = context.contentResolver
+                    .openFileDescriptor(Uri.parse(clipped.uri), "r")
+                    ?.detachFd() ?: -1
+                if (unclippedFd >= 0) GradeParitySweep.run(unclippedFd, frameIndex = 1555)
+            }
+            // DEBUG recovery/neutral-stage-3 cost bench (owner request 2026-11-27), only when the marker file
+            // `files/recbench` exists: clipped frame, unclipped frame of the pembe clip, and the first clip's frame 0.
+            if (java.io.File(context.filesDir, "recbench").exists()) {
+                val benchTargets = buildList {
+                    add(first to 0)
+                    if (clipped != null) {
+                        add(clipped to 100)   // clipped (lamps, neon)
+                        add(clipped to -1)    // a frame with NO clipped raw site (found by scanning)
+                    }
+                }
+                for ((src, frame) in benchTargets) {
+                    val bfd = context.contentResolver
+                        .openFileDescriptor(Uri.parse(src.uri), "r")
+                        ?.detachFd() ?: -1
+                    if (bfd >= 0) RecoveryBench.run(bfd, frame, src.displayName.take(18))
+                }
             }
             // The A2 crop sweep (guide A2): the window pass's crop leg —
             // same DEBUG-only, failure-soft shape as the grade sweep,
