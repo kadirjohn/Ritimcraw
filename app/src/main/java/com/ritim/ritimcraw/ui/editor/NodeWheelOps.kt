@@ -36,7 +36,14 @@ object NodeWheelOps {
     /** Master grid. */
     const val MASTER_STEP = 0.01f
 
-    fun get(node: GradeNodeV2, id: NodeWheelId): NodeWheelV2 = when (id) {
+    /**
+     * The wheel as the editor sees it: [sanitize]d at this boundary, so a persisted record from an older or odd
+     * project (NaN, Infinity, a puck past the rim, a master past 1) never reaches the pad, the readout or the
+     * setters' copy() as-is. A valid wheel comes back as the SAME object, bit for bit.
+     */
+    fun get(node: GradeNodeV2, id: NodeWheelId): NodeWheelV2 = sanitize(raw(node, id))
+
+    private fun raw(node: GradeNodeV2, id: NodeWheelId): NodeWheelV2 = when (id) {
         NodeWheelId.LIFT -> node.lift
         NodeWheelId.GAMMA -> node.gamma
         NodeWheelId.GAIN -> node.gain
@@ -46,7 +53,28 @@ object NodeWheelOps {
         NodeWheelId.LOG_HI -> node.logHi
     }
 
-    fun set(node: GradeNodeV2, id: NodeWheelId, w: NodeWheelV2): GradeNodeV2 = when (id) {
+    private fun finiteOrZero(v: Float): Float = if (v.isNaN() || v.isInfinite()) 0f else v
+
+    /**
+     * Clamps a wheel into its valid range: NaN/Infinity on any component become 0, the puck is pulled inside the
+     * unit disc (radially rescaled when its magnitude passes 1, the engine's own wheelRgb clamp), the master goes
+     * into -1..1. Valid values are returned untouched: the very same instance, nothing snapped or rounded.
+     */
+    fun sanitize(w: NodeWheelV2): NodeWheelV2 {
+        var x = finiteOrZero(w.x)
+        var y = finiteOrZero(w.y)
+        val master = finiteOrZero(w.master).coerceIn(-1f, 1f)
+        val r = hypot(x, y)
+        if (r > 1f) { x /= r; y /= r }
+        return if (x == w.x && y == w.y && master == w.master &&
+            x.toRawBits() == w.x.toRawBits() && y.toRawBits() == w.y.toRawBits() &&
+            master.toRawBits() == w.master.toRawBits()
+        ) w else NodeWheelV2(x, y, master)
+    }
+
+    fun set(node: GradeNodeV2, id: NodeWheelId, w: NodeWheelV2): GradeNodeV2 = setRaw(node, id, sanitize(w))
+
+    private fun setRaw(node: GradeNodeV2, id: NodeWheelId, w: NodeWheelV2): GradeNodeV2 = when (id) {
         NodeWheelId.LIFT -> node.copy(lift = w)
         NodeWheelId.GAMMA -> node.copy(gamma = w)
         NodeWheelId.GAIN -> node.copy(gain = w)
@@ -60,8 +88,9 @@ object NodeWheelOps {
 
     /** Puck to (x, y) in the engine's frame (y up): clamped to the unit disc, snapped to [PUCK_STEP]; master untouched. */
     fun setPuck(node: GradeNodeV2, id: NodeWheelId, x: Float, y: Float): GradeNodeV2 {
-        var cx = x
-        var cy = y
+        // NaN/Infinity from a broken gesture or caller lands on the centre, never in the model (snap would throw).
+        var cx = finiteOrZero(x)
+        var cy = finiteOrZero(y)
         val r = hypot(cx, cy)
         if (r > 1f) { cx /= r; cy /= r }
         val sx = snap(cx, PUCK_STEP).coerceIn(-1f, 1f)
@@ -70,7 +99,7 @@ object NodeWheelOps {
     }
 
     fun setMaster(node: GradeNodeV2, id: NodeWheelId, master: Float): GradeNodeV2 =
-        set(node, id, get(node, id).copy(master = snap(master.coerceIn(-1f, 1f), MASTER_STEP)))
+        set(node, id, get(node, id).copy(master = snap(finiteOrZero(master).coerceIn(-1f, 1f), MASTER_STEP)))
 
     /** Pad double-tap: puck to the centre, master kept. */
     fun resetPuck(node: GradeNodeV2, id: NodeWheelId): GradeNodeV2 =
@@ -94,7 +123,9 @@ object NodeWheelOps {
      * green at 120, blue at 240, magnitude 2/3 * |puck|) mapped around mid grey, so the disc shows what pushing
      * the puck there does. The centre is neutral grey.
      */
-    fun discColor(x: Float, y: Float): Color {
+    fun discColor(rawX: Float, rawY: Float): Color {
+        val x = finiteOrZero(rawX)
+        val y = finiteOrZero(rawY)
         val m = min(1f, hypot(x, y))
         if (m < 1e-6f) return Color(0.5f, 0.5f, 0.5f)
         val th = atan2(y, x)
@@ -114,8 +145,14 @@ object NodeWheelOps {
     fun padDiscColor(padX: Float, padY: Float): Color = discColor(padX, padToWheelY(padY))
 
     /** Readout text, e.g. "x +0.25  y -0.10"; locale-independent. */
-    fun puckReadout(w: NodeWheelV2): String =
-        String.format(java.util.Locale.ROOT, "x %+.2f  y %+.2f", w.x, w.y)
+    fun puckReadout(w0: NodeWheelV2): String {
+        val w = sanitize(w0)
+        return String.format(java.util.Locale.ROOT, "x %+.2f  y %+.2f", w.x, w.y)
+    }
+
+    /** The master slider's readout in percent ("+25"); sanitized like the readout above, so NaN never reaches Math.round. */
+    fun masterReadout(master: Float): String =
+        String.format(java.util.Locale.ROOT, "%+d", Math.round(finiteOrZero(master).coerceIn(-1f, 1f) * 100f))
 
     /** Selection survives a group switch when the wheel is in the new group, else the group's first wheel. */
     fun selectionForGroup(current: NodeWheelId, primary: Boolean): NodeWheelId =

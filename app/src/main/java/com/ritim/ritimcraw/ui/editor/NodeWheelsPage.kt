@@ -150,7 +150,7 @@ internal fun NodeWheelsPage(
             GradeSlider(
                 label = stringResource(R.string.node_wheel_master),
                 value = w.master * 100f, valueRange = -100f..100f, step = 1f,
-                valueLabel = String.format(Locale.ROOT, "%+d", Math.round(w.master * 100f)),
+                valueLabel = NodeWheelOps.masterReadout(w.master),
                 onChange = { latestChange(NodeWheelOps.setMaster(latestNode, wheel, it / 100f)) },
                 onDoubleTapReset = { latestChange(NodeWheelOps.resetMaster(latestNode, wheel)) },
                 onDragActiveChange = onDragActiveChange,
