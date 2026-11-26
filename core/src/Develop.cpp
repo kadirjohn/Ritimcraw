@@ -710,51 +710,30 @@ ImageF demosaicBilinear(const std::vector<float>& cfa, uint32_t w, uint32_t h, C
 // ---- Highlight recovery (docs/HIGHLIGHT_RECOVERY_PLAN.md) ----
 namespace {
 
-// Sums of a (w x h) double field over (2r+1)^2 boxes, clamped at the borders, via an integral image.
-void boxSumsFullRes(const std::vector<double>& src, uint32_t w, uint32_t h, int r, std::vector<double>& out) {
-    const size_t W1 = static_cast<size_t>(w) + 1;
-    std::vector<double> integ(W1 * (static_cast<size_t>(h) + 1), 0.0);
-    for (uint32_t y = 0; y < h; ++y) {
-        double row = 0.0;
-        for (uint32_t x = 0; x < w; ++x) {
-            row += src[static_cast<size_t>(y) * w + x];
-            integ[(static_cast<size_t>(y) + 1) * W1 + x + 1] = integ[static_cast<size_t>(y) * W1 + x + 1] + row;
-        }
-    }
-    out.assign(static_cast<size_t>(w) * h, 0.0);
-    for (uint32_t y = 0; y < h; ++y) {
-        const int y0 = std::max(0, static_cast<int>(y) - r), y1 = std::min(static_cast<int>(h) - 1, static_cast<int>(y) + r);
-        for (uint32_t x = 0; x < w; ++x) {
-            const int x0 = std::max(0, static_cast<int>(x) - r), x1 = std::min(static_cast<int>(w) - 1, static_cast<int>(x) + r);
-            out[static_cast<size_t>(y) * w + x] =
-                integ[static_cast<size_t>(y1 + 1) * W1 + x1 + 1] - integ[static_cast<size_t>(y0) * W1 + x1 + 1] -
-                integ[static_cast<size_t>(y1 + 1) * W1 + x0] + integ[static_cast<size_t>(y0) * W1 + x0];
-        }
-    }
-}
-
-// Block sums (block x block pixels) then the 3x3 block neighbourhood sum, looked up per pixel.
-void blockNeighbourhoodSums(const std::vector<double>& src, uint32_t w, uint32_t h, int block, std::vector<double>& out) {
-    const int bw = (static_cast<int>(w) + block - 1) / block, bh = (static_cast<int>(h) + block - 1) / block;
-    std::vector<double> bs(static_cast<size_t>(bw) * bh, 0.0), ns(static_cast<size_t>(bw) * bh, 0.0);
-    for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x)
-            bs[static_cast<size_t>(y / block) * bw + x / block] += src[static_cast<size_t>(y) * w + x];
-    for (int by = 0; by < bh; ++by)
-        for (int bx = 0; bx < bw; ++bx) {
-            double a = 0.0;
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx) {
-                    const int yy = by + dy, xx = bx + dx;
-                    if (yy >= 0 && yy < bh && xx >= 0 && xx < bw) a += bs[static_cast<size_t>(yy) * bw + xx];
-                }
-            ns[static_cast<size_t>(by) * bw + bx] = a;
-        }
-    out.assign(static_cast<size_t>(w) * h, 0.0);
-    for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x)
-            out[static_cast<size_t>(y) * w + x] = ns[static_cast<size_t>(y / block) * bw + x / block];
-}
+// Night A6 rework (2026-11-26): the reference used to materialize, per needed (c, r) pair,
+// three full-frame double fields plus 15 full-frame scale outputs (a (w+1)x(h+1) integral
+// image per field for the 9x9 scale, dense block sums scattered to every pixel for the four
+// block scales) before a dense select pass — ~4 GB of double traffic per pair at 4K, all
+// sequential. The rework keeps every double operation and its order EXACTLY (the equality
+// oracle core/tests/hr_equivalence.cpp pins the output bit-for-bit; 42/42 fixtures byte-equal),
+// and changes only what is computed WHERE:
+//   1. the three field integrals of the 9x9 scale are built in ONE streaming pass per pair —
+//      the fields themselves never touch memory (ok[c][r] is recomputed per pixel from the
+//      immutable img/clipped), and the integral rows live in a 12-row ring so the pass is
+//      cache-resident instead of a 100 MB image;
+//   2. the 4-corner gather runs only at CONSUMER pixels (the ones whose clip pattern actually
+//      reads ratio[c][r]), during the same pass: a consumer row is visited exactly when its
+//      bottom integral row completes. Non-consumer pixels got a ratio in the old code too,
+//      but nothing ever read it (the apply pass reads only its own pattern's pair);
+//   3. the four block scales are computed LAZILY and per BLOCK: only the blocks containing
+//      consumers that failed the finer scales, plus their 3x3 neighbourhood, are summed —
+//      in the same y-major pixel order the dense build used (identical rounding chain). On a
+//      frame whose consumers resolve at the fine scales the block scales never run;
+//   4. the select and the apply pass walk a compact per-pair consumer list instead of n.
+// Every value the apply pass reads (W/A/B at a consumer, rho = float(A/B), the neutral cap,
+// the headroom/reference gates, the stats tuples and their order) is produced by the same
+// float/double expressions in the same order as before; rework candidates that change any
+// rounding (float integral, sub-rect prefix sums, separable box filters) were discarded.
 
 }  // namespace
 
@@ -775,32 +754,181 @@ void setRecoveryDiagnostics(const RecoveryParams* params, RecoveryStats* stats) 
     gDiagStats = stats;
 }
 
+namespace {
+
+// The 5-scale table of the reference — unchanged (values feed the support tests bit-exactly).
+struct RecoveryScale { int kind; int param; double minSupport; };
+constexpr int kRecoveryScales = 5;
+constexpr double kRecoveryFsup = 0.05;
+const RecoveryScale kRecoveryScaleTable[kRecoveryScales] = {
+    {0, 4, kRecoveryFsup * 81.0},
+    {1, 8, kRecoveryFsup * 9.0 * 64.0},
+    {1, 32, kRecoveryFsup * 9.0 * 1024.0},
+    {1, 128, kRecoveryFsup * 9.0 * 16384.0},
+    {1, 512, kRecoveryFsup * 9.0 * 262144.0},
+};
+constexpr float kRecoveryEps = 1e-4f;
+
+// One (clipped c, reference r) pair's compact result: the consumer pixels (ascending) and
+// their ratio values (>= 0 when a scale had support, else -1 — the old dense array's default).
+struct PairRatios {
+    std::vector<uint32_t> idx;
+    std::vector<float> rho;
+};
+
+// The streaming pass for one pair: builds the three 9x9 integral images in one walk (the
+// support mask/numerator/denominator fields are recomputed per pixel, never materialized),
+// gathers the 4-corner box sums at each consumer row as soon as its bottom integral row is
+// chained, and collects the consumers that need the block scales. Every accumulating
+// expression is the reference's, in the reference's order (see the block comment above).
+void pairRatiosWalk(const ImageF& img, const uint8_t* clipped, uint32_t w, uint32_t h,
+                    int c, int r, const std::vector<uint32_t>& consumers, std::vector<float>& rho,
+                    std::vector<uint32_t>& needBlocks) {
+    const size_t W1 = static_cast<size_t>(w) + 1;
+    // Integral rows y-4..y+5 are live for a consumer row y (r = 4 for the 9x9 scale) — a
+    // 12-slot ring holds them; row 0 is the all-zero border row of the reference integral.
+    constexpr int kRing = 12;
+    std::vector<double> ring[3];
+    for (int f = 0; f < 3; ++f) ring[f].assign(static_cast<size_t>(kRing) * W1, 0.0);
+    const auto rowOf = [&](int f, uint32_t integRow) {
+        return &ring[f][static_cast<size_t>(integRow % kRing) * W1];
+    };
+
+    rho.assign(consumers.size(), -1.0f);
+    size_t ci = 0;
+    const auto gatherRow = [&](int32_t yc) {
+        const uint32_t rowBegin = static_cast<uint32_t>(yc) * w, rowEnd = rowBegin + w;
+        while (ci < consumers.size() && consumers[ci] >= rowBegin && consumers[ci] < rowEnd) {
+            const uint32_t i = consumers[ci];
+            const uint32_t x = i - rowBegin;
+            const int y0 = std::max(0, yc - 4), y1 = std::min(int32_t(h) - 1, yc + 4);
+            const int x0 = std::max(0, int32_t(x) - 4), x1 = std::min(int32_t(w) - 1, int32_t(x) + 4);
+            const double* iw0 = rowOf(0, uint32_t(y0)); const double* iw1 = rowOf(0, uint32_t(y1 + 1));
+            const double* ia0 = rowOf(1, uint32_t(y0)); const double* ia1 = rowOf(1, uint32_t(y1 + 1));
+            const double* ib0 = rowOf(2, uint32_t(y0)); const double* ib1 = rowOf(2, uint32_t(y1 + 1));
+            const double W = iw1[x1 + 1] - iw0[x1 + 1] - iw1[x0] + iw0[x0];
+            const double A = ia1[x1 + 1] - ia0[x1 + 1] - ia1[x0] + ia0[x0];
+            const double B = ib1[x1 + 1] - ib0[x1 + 1] - ib1[x0] + ib0[x0];
+            if (W >= kRecoveryScaleTable[0].minSupport && B > 0.0) {
+                rho[ci] = static_cast<float>(A / B);
+            } else {
+                needBlocks.push_back(i);
+            }
+            ++ci;
+        }
+    };
+
+    for (uint32_t y = 0; y < h; ++y) {
+        const float* px = &img.rgb[static_cast<size_t>(y) * w * 3];
+        const uint8_t* cf = &clipped[static_cast<size_t>(y) * w * 3];
+        const double* prevW = rowOf(0, y); const double* prevA = rowOf(1, y); const double* prevB = rowOf(2, y);
+        double* curW = rowOf(0, y + 1); double* curA = rowOf(1, y + 1); double* curB = rowOf(2, y + 1);
+        double rw = 0.0, ra = 0.0, rb = 0.0;
+        for (uint32_t x = 0; x < w; ++x) {
+            const float vc = px[x * 3 + c], vr = px[x * 3 + r];
+            const bool ok = !cf[x * 3 + c] && !cf[x * 3 + r] && vr > kRecoveryEps && vc >= 0.0f;
+            rw += ok ? 1.0 : 0.0;
+            ra += ok ? static_cast<double>(vc) : 0.0;
+            rb += ok ? static_cast<double>(vr) : 0.0;
+            curW[x + 1] = prevW[x + 1] + rw;
+            curA[x + 1] = prevA[x + 1] + ra;
+            curB[x + 1] = prevB[x + 1] + rb;
+        }
+        curW[0] = 0.0; curA[0] = 0.0; curB[0] = 0.0;  // left border column of every integral row
+        // consumer row yc needs integ rows up to yc+5; walk the chain five rows ahead of it.
+        const int32_t ycReady = int32_t(y) - 4;
+        if (ycReady >= 0) gatherRow(ycReady);
+    }
+    // The walk gathered rows 0..h-6 (yc = y-4 with y <= h-1 +1... yc+5 <= h means yc <= h-5).
+    // Every consumer row yc in [max(0, h-5), h-1] still needs its gather (bottom clamp y1+1 = h).
+    for (int32_t yc = h - 5; yc < int32_t(h); ++yc)
+        if (yc >= 0) gatherRow(yc);
+}
+
+}  // namespace
+
+// Block-scale resolution for one pair: consumers that failed the 9x9 scale try the block
+// scales in order. Sums are computed per needed block, in the reference's y-major order.
+namespace {
+
+void pairRatiosBlocks(const ImageF& img, const uint8_t* clipped, uint32_t w, uint32_t h,
+                      int c, int r, const std::vector<uint32_t>& consumers, std::vector<float>& rho,
+                      std::vector<uint32_t>& pending) {
+    std::vector<uint32_t> pendIn = pending, pendOut;
+    for (int s = 1; s < kRecoveryScales && !pendIn.empty(); ++s) {
+        const int b = kRecoveryScaleTable[s].param;
+        const int bw = (int(w) + b - 1) / b, bh = (int(h) + b - 1) / b;
+        std::vector<double> bs[3];
+        std::vector<uint8_t> bsDone;
+        for (int f = 0; f < 3; ++f) bs[f].assign(size_t(bw) * size_t(bh), 0.0);
+        bsDone.assign(3 * size_t(bw) * size_t(bh), 0);  // per (field, block): one field's done bit must not short-circuit another's
+        // lazily sum one block (y-major pixel order, the reference's accumulation chain)
+        const auto blockSum = [&](int f, int by, int bx) -> double {
+            const size_t id = size_t(by) * bw + bx;
+            if (bsDone[size_t(f) * size_t(bw) * size_t(bh) + id]) return bs[f][id];
+            double acc = 0.0;
+            const uint32_t yEnd = std::min(uint32_t((by + 1) * b), h);
+            const uint32_t xEnd = std::min(uint32_t((bx + 1) * b), w);
+            for (uint32_t y = uint32_t(by * b); y < yEnd; ++y) {
+                const float* px = &img.rgb[size_t(y) * w * 3];
+                const uint8_t* cf = &clipped[size_t(y) * w * 3];
+                for (uint32_t x = uint32_t(bx * b); x < xEnd; ++x) {
+                    const float vc = px[x * 3 + c], vr = px[x * 3 + r];
+                    const bool ok = !cf[x * 3 + c] && !cf[x * 3 + r] && vr > kRecoveryEps && vc >= 0.0f;
+                    const double v = f == 0 ? 1.0 : (f == 1 ? static_cast<double>(vc) : static_cast<double>(vr));
+                    acc += ok ? v : 0.0;
+                }
+            }
+            bs[f][id] = acc;
+            bsDone[size_t(f) * size_t(bw) * size_t(bh) + id] = 1;
+            return acc;
+        };
+        // consumers are ascending, so their blocks are visited in row-major order; memoize
+        // the last (by, bx) so a run of consumers costs one neighbourhood per block.
+        int lastBy = -1, lastBx = -1;
+        double nW = 0.0, nA = 0.0, nB = 0.0;
+        for (uint32_t j = 0; j < pendIn.size(); ++j) {
+            const uint32_t i = pendIn[j];
+            const uint32_t y = i / w, x = i % w;
+            const int by = int(y / uint32_t(b)), bx = int(x / uint32_t(b));
+            if (by != lastBy || bx != lastBx) {  // 3x3 neighbourhood in dy-then-dx order
+                nW = 0.0; nA = 0.0; nB = 0.0;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int yy = by + dy, xx = bx + dx;
+                        if (yy >= 0 && yy < bh && xx >= 0 && xx < bw) {
+                            nW += blockSum(0, yy, xx);
+                            nA += blockSum(1, yy, xx);
+                            nB += blockSum(2, yy, xx);
+                        }
+                    }
+                lastBy = by; lastBx = bx;
+            }
+            // position in the consumer list: pendIn entries carry pixel ids; find rho's slot
+            const size_t slot = std::lower_bound(consumers.begin(), consumers.end(), i) - consumers.begin();
+            if (nW >= kRecoveryScaleTable[s].minSupport && nB > 0.0) rho[slot] = static_cast<float>(nA / nB);
+            else pendOut.push_back(i);
+        }
+        pendIn.swap(pendOut);
+        pendOut.clear();
+    }
+}
+
+}  // namespace
+
 void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const RecoveryParams& params, RecoveryStats* stats) {
     const uint32_t w = img.w, h = img.h;
     if (w == 0 || h == 0 || clipMask.w != w || clipMask.h != h) return;
     const size_t n = static_cast<size_t>(w) * h;
 
-    // Scales: 9x9 box at full resolution, then 3x3 block neighbourhoods on 8/32/128/512-pixel blocks (24..1536 px).
-    // A scale is usable at a pixel when its unclipped-pair support is at least 5% of its area.
-    struct Scale { int kind; int param; double minSupport; };
-    constexpr int kScales = 5;
-    constexpr double fsup = 0.05;  // a scale needs >= 5% of its area as unclipped-pair support
-    const Scale scales[kScales] = {
-        {0, 4, fsup * 81.0},
-        {1, 8, fsup * 9.0 * 64.0},
-        {1, 32, fsup * 9.0 * 1024.0},
-        {1, 128, fsup * 9.0 * 16384.0},
-        {1, 512, fsup * 9.0 * 262144.0},
-    };
-    constexpr float kEps = 1e-4f;
-
     std::vector<uint8_t> clipped(n * 3, 0);
     for (size_t i = 0; i < n; ++i)
         for (int c = 0; c < 3; ++c) clipped[i * 3 + c] = clipMask.rgb[i * 3 + c] >= 0.5f ? 1 : 0;
 
-    // ratio[c][r][i] = estimated v_c / v_r near pixel i, or -1 when no scale has support.
-    std::vector<float> ratio[3][3];
-    bool needPair[3][3] = {};
+    // Consumers of pair (c, r): pixels whose clip pattern READS ratio[c][r] in the apply pass
+    // (1-2 clipped channels, the pattern's deterministic reference choice r). The old code
+    // computed the pair's ratio at every pixel; only these were ever read.
+    PairRatios pair[3][3];
     for (size_t i = 0; i < n; ++i) {
         const uint8_t* cf = &clipped[i * 3];
         const int nc = cf[0] + cf[1] + cf[2];
@@ -809,38 +937,17 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const Recover
         if (!cf[1]) r = 1;
         else r = (img.rgb[i * 3 + 0] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
         for (int c = 0; c < 3; ++c)
-            if (cf[c]) needPair[c][r] = true;
+            if (cf[c]) pair[c][r].idx.push_back(static_cast<uint32_t>(i));
     }
+
     for (int c = 0; c < 3; ++c)
         for (int r = 0; r < 3; ++r) {
-            if (!needPair[c][r]) continue;
-            std::vector<double> wv(n), a(n), b(n);
-            for (size_t i = 0; i < n; ++i) {
-                const float vc = img.rgb[i * 3 + c], vr = img.rgb[i * 3 + r];
-                const bool ok = !clipped[i * 3 + c] && !clipped[i * 3 + r] && vr > kEps && vc >= 0.0f;
-                wv[i] = ok ? 1.0 : 0.0;
-                a[i] = ok ? vc : 0.0;
-                b[i] = ok ? vr : 0.0;
-            }
-            std::vector<double> W[kScales], A[kScales], B[kScales];
-            for (int s = 0; s < kScales; ++s) {
-                if (scales[s].kind == 0) {
-                    boxSumsFullRes(wv, w, h, scales[s].param, W[s]);
-                    boxSumsFullRes(a, w, h, scales[s].param, A[s]);
-                    boxSumsFullRes(b, w, h, scales[s].param, B[s]);
-                } else {
-                    blockNeighbourhoodSums(wv, w, h, scales[s].param, W[s]);
-                    blockNeighbourhoodSums(a, w, h, scales[s].param, A[s]);
-                    blockNeighbourhoodSums(b, w, h, scales[s].param, B[s]);
-                }
-            }
-            ratio[c][r].assign(n, -1.0f);
-            for (size_t i = 0; i < n; ++i)
-                for (int s = 0; s < kScales; ++s)
-                    if (W[s][i] >= scales[s].minSupport && B[s][i] > 0.0) {
-                        ratio[c][r][i] = static_cast<float>(A[s][i] / B[s][i]);
-                        break;
-                    }
+            if (pair[c][r].idx.empty()) continue;
+            std::vector<uint32_t> pending;
+            const uint8_t* cl = clipped.data();
+            pairRatiosWalk(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pending);
+            if (!pending.empty())
+                pairRatiosBlocks(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pending);
         }
 
     for (size_t i = 0; i < n; ++i) {
@@ -860,7 +967,11 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const Recover
         float out[3] = {px[0], px[1], px[2]};
         for (int c = 0; c < 3; ++c) {
             if (!cf[c]) continue;
-            const float rho = ratio[c][r].empty() ? -1.0f : ratio[c][r][i];
+            const PairRatios& pr = pair[c][r];
+            // pr.idx is sorted; the consumer cursor below is exact because the apply pass
+            // visits pixels in ascending order and every (c, r) consumer is in pr.idx.
+            const float rho = pr.idx.empty() ? -1.0f : pr.rho[static_cast<size_t>(
+                std::lower_bound(pr.idx.begin(), pr.idx.end(), static_cast<uint32_t>(i)) - pr.idx.begin())];
             if (rho <= 0.0f) continue;
             const float est = vr * rho;
             if (stats != nullptr && px[c] > 0.0f && est > px[c]) {
