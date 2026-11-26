@@ -7,6 +7,7 @@
 #include <cmath>
 #include <rawedit/Lut.h>
 #include <rawedit/Parallel.h>
+#include <rawedit/Transfer.h>
 
 namespace rawedit {
 
@@ -609,6 +610,122 @@ void denoiseChroma(ImageF& img, float strength) {
 
 void denoiseLuma(ImageF& img, float strength) {
     denoiseLumaImpl(img, strength);
+}
+
+// Glitter suppression (opt-in, Grade.glitterSuppress). A CONDITIONAL 3x3
+// per-channel chroma median taken in Rec.709-encoded ("display-referred")
+// values: c1 = eR - eG, c2 = eB - eG over the 3x3 neighbourhood (clamped
+// edges), e = Rec.709 OETF of the scene-linear value (negatives clamp to 0).
+// A channel is replaced ONLY when it is an outlier: |c - median(c)| >
+// kGlitterThreshold. Then eR' = eG + median(c1) (eB' likewise), decoded with
+// the exact inverse; G is never written, and a pixel that is not an outlier
+// keeps its linear value bit for bit. The upper clamp is NOT applied (values
+// above 1.0 occur after highlight recovery / before the tail's own clamp):
+// clamping eR' to 1 while G stays above 1 would tint clipped whites, so only
+// the lower clamp at 0 is kept.
+//
+// Cost: the OETF is evaluated ONCE per pixel (pass 1 fills eG/c1/c2); the
+// neighbourhood reads are plain loads. The median network only runs for
+// pixels failing a cheap pre-test that is EXACT (not an approximation):
+// if >= 5 of the 9 values (the centre counts itself) lie within +-T of the
+// centre, then at most 4 values lie below and at most 4 above that
+// interval's extremes, so the median (the 5th smallest) lies between two
+// values that are each within T of the centre; float subtraction is monotone,
+// so |fl(median - centre)| <= T and the full rule says "not an outlier".
+// glitterOutlier9 == glitterOutlier9Reference is brute-force tested.
+// The GLSL twin is the POST pass's uGlitter block + the encode pass
+// (GlesShaderSources.kt).
+namespace {
+float glitterOetf(float lin) {
+    lin = std::max(lin, 0.0f);
+    if (lin < 0.018f) return 4.5f * lin;
+    return 1.099f * std::pow(lin, 0.45f) - 0.099f;
+}
+float glitterInvOetf(float v) {
+    if (v < 0.081f) return v / 4.5f;
+    return std::pow((v + 0.099f) / 1.099f, 1.0f / 0.45f);
+}
+inline void glitterSort(float& a, float& b) {
+    const float lo = std::min(a, b);
+    b = std::max(a, b);
+    a = lo;
+}
+// The same 19-exchange selection network as the GLSL twin (an exact median).
+float median9(float (&v)[9]) {
+    glitterSort(v[1], v[2]); glitterSort(v[4], v[5]); glitterSort(v[7], v[8]);
+    glitterSort(v[0], v[1]); glitterSort(v[3], v[4]); glitterSort(v[6], v[7]);
+    glitterSort(v[1], v[2]); glitterSort(v[4], v[5]); glitterSort(v[7], v[8]);
+    glitterSort(v[0], v[3]); glitterSort(v[5], v[8]); glitterSort(v[4], v[7]);
+    glitterSort(v[3], v[6]); glitterSort(v[1], v[4]); glitterSort(v[2], v[5]);
+    glitterSort(v[4], v[7]); glitterSort(v[4], v[2]); glitterSort(v[6], v[4]);
+    glitterSort(v[4], v[2]);
+    return v[4];
+}
+} // namespace
+
+bool glitterOutlier9Reference(const float v[9], float thr, float* median) {
+    float t[9];
+    for (int i = 0; i < 9; ++i) t[i] = v[i];
+    const float m = median9(t);
+    *median = m;
+    return std::fabs(v[4] - m) > thr;
+}
+
+bool glitterOutlier9(const float v[9], float thr, float* median) {
+    const float c = v[4];
+    int nearCount = 0;
+    for (int i = 0; i < 9; ++i)
+        nearCount += std::fabs(v[i] - c) <= thr ? 1 : 0;
+    if (nearCount >= 5)
+        return false; // exact pre-test: the median is within thr of the centre
+    float t[9];
+    for (int i = 0; i < 9; ++i) t[i] = v[i];
+    const float m = median9(t);
+    *median = m;
+    return std::fabs(c - m) > thr;
+}
+
+void suppressGlitter(ImageF& img) {
+    const uint32_t w = img.w, h = img.h;
+    if (w < 1 || h < 1)
+        return;
+    const size_t n = static_cast<size_t>(w) * h;
+    std::vector<float> eg(n), c1(n), c2(n);
+    parallelForRows(h, [&](size_t y0, size_t y1) {
+        for (size_t i = y0 * w; i < y1 * w; ++i) {
+            const float er = glitterOetf(img.rgb[i * 3 + 0]);
+            const float eG = glitterOetf(img.rgb[i * 3 + 1]);
+            const float eb = glitterOetf(img.rgb[i * 3 + 2]);
+            eg[i] = eG;
+            c1[i] = er - eG;
+            c2[i] = eb - eG;
+        }
+    });
+    // Rows are read from c1/c2 (never written), results go to img: no row
+    // dependency, so the stripes can run in parallel.
+    parallelForRows(h, [&](size_t y0, size_t y1) {
+        for (size_t y = y0; y < y1; ++y) {
+            for (size_t x = 0; x < w; ++x) {
+                float v1[9], v2[9];
+                int k = 0;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    const size_t yy = static_cast<size_t>(std::min<long>(std::max<long>(static_cast<long>(y) + dy, 0), static_cast<long>(h) - 1));
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const size_t xx = static_cast<size_t>(std::min<long>(std::max<long>(static_cast<long>(x) + dx, 0), static_cast<long>(w) - 1));
+                        v1[k] = c1[yy * w + xx];
+                        v2[k] = c2[yy * w + xx];
+                        ++k;
+                    }
+                }
+                const size_t i = y * w + x;
+                float m1 = 0.0f, m2 = 0.0f;
+                if (glitterOutlier9(v1, kGlitterThreshold, &m1))
+                    img.rgb[i * 3 + 0] = glitterInvOetf(std::max(eg[i] + m1, 0.0f));
+                if (glitterOutlier9(v2, kGlitterThreshold, &m2))
+                    img.rgb[i * 3 + 2] = glitterInvOetf(std::max(eg[i] + m2, 0.0f));
+            }
+        }
+    });
 }
 
 void unsharpLuma(ImageF& img, float radius, float amount) {
@@ -1424,6 +1541,9 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
         denoiseChroma(img, std::min(std::max(grade.chromaDenoise, 0.0f), 100.0f) / 100.0f);
     if (grade.noiseReduction != 0.0f)
         denoiseLuma(img, std::min(std::max(grade.noiseReduction, 0.0f), 100.0f) / 100.0f);
+    // Stage 8b: glitter suppression (opt-in; off = no call, bit-identical).
+    if (grade.glitterSuppress)
+        suppressGlitter(img);
 
     // ---- Stages 9-13: tone controls (owner request 2026-11-10 section 2). ----
     // These run after camera->Rec.709 and before exposure, on scene-referred

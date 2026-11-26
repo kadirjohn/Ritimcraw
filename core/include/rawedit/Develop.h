@@ -307,7 +307,20 @@ struct Grade {
     float splitShadowHue = -1.0f;    // degrees, -1 = off
     float splitHighlightHue = -1.0f; // degrees, -1 = off
     float splitBalance = 0.0f;       // [-100,100], crossover shift
+    // Glitter suppression (opt-in, default off = exact bypass): conditional 3x3
+    // per-channel chroma median in Rec.709-encoded values after the denoise
+    // stages (stage 8b); only outlier chroma (> kGlitterThreshold) is replaced.
+    bool glitterSuppress = false;
 };
+
+// Glitter suppression outlier threshold: the largest |chroma - 3x3 median| (in
+// Rec.709-encoded units, chroma = R-G or B-G) left untouched. Shared by the
+// CPU oracle and the GLSL twin (GlesShaderSources.GLITTER_THRESHOLD, pinned
+// equal by GlesShaderValidator and a unit test that reads this line).
+#ifndef RAWEDIT_GLITTER_THRESHOLD // measurement-only override (sweep tool)
+#define RAWEDIT_GLITTER_THRESHOLD 0.09f
+#endif
+constexpr float kGlitterThreshold = RAWEDIT_GLITTER_THRESHOLD;
 
 // Linear RGB float image, row-major, 3 floats per pixel (r, g, b).
 struct ImageF {
@@ -325,6 +338,15 @@ struct ImageF {
 // rawedit/Lut.h.
 void denoiseChroma(ImageF& img, float strength);
 void denoiseLuma(ImageF& img, float strength);
+void suppressGlitter(ImageF& img); // stage 8b, Grade.glitterSuppress (see Develop.cpp)
+// The glitter rule on one 3x3 neighbourhood of encoded chroma values (v[4] is
+// the centre, row-major): true + *median when the centre deviates from the
+// median by more than thr, false (median untouched) otherwise. The fast one
+// skips the median network when >= 5 of the 9 values are within thr of the
+// centre (exact); the Reference one always runs it. Equal by construction and
+// by brute-force test; exposed for core/tests/test_glitter.cpp.
+bool glitterOutlier9(const float v[9], float thr, float* median);
+bool glitterOutlier9Reference(const float v[9], float thr, float* median);
 void unsharpLuma(ImageF& img, float radius, float amount);
 void tonemapFrame(ImageF& img, int mode);
 
