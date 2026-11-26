@@ -411,4 +411,193 @@ class NodeCurveOpsTest {
         val (x, y) = NodeCurveOps.pointerToCurve(300f, 12f, 700f, 0f, 35f)
         assertTrue(x in 0f..1f && y in 0f..1f)
     }
+
+    // ---- drag gestures (beginDrag/dragTo — the page's wiring, pinned pure; the device repro fix) ----
+
+    @Test
+    fun pointer_roundtrip_all_four_corners_and_center_maps_back_exactly() {
+        // The y-flip applied EXACTLY ONCE: pad top = curve 1, pad bottom = curve 0, and a curve value maps
+        // back onto the pixel it came from (pointerToCurve -> the draw's own px/py mapping).
+        val w = 1000f
+        val h = 770f
+        val ins = 35f
+        val r = NodeCurveOps.plotRect(w, h, ins)
+        fun roundPx(px: Float, py: Float): Pair<Float, Float> {
+            val (cx, cy) = NodeCurveOps.pointerToCurve(px, py, w, h, ins)
+            return r.left + cx * r.width to r.top + NodeCurveOps.curveToPadY(cy) * r.height
+        }
+        // The four plot corners (pixel positions) and the center, in and out.
+        val corners = listOf(
+            r.left to r.top,                             // top-left = curve (0, 1)
+            r.left to r.top + r.height,                 // bottom-left = curve (0, 0)
+            r.left + r.width to r.top,                  // top-right = curve (1, 1)
+            r.left + r.width to r.top + r.height,       // bottom-right = curve (1, 0)
+            r.left + r.width / 2 to r.top + r.height / 2, // center = curve (0.5, 0.5)
+        )
+        val expected = listOf(
+            0f to 1f, 0f to 0f, 1f to 1f, 1f to 0f, 0.5f to 0.5f,
+        )
+        for (i in corners.indices) {
+            val (cx, cy) = NodeCurveOps.pointerToCurve(corners[i].first, corners[i].second, w, h, ins)
+            assertEquals("corner $i x", expected[i].first, cx, 1e-6f)
+            assertEquals("corner $i y", expected[i].second, cy, 1e-6f)
+            val (bx, by) = roundPx(corners[i].first, corners[i].second)
+            assertEquals("corner $i back-x", corners[i].first, bx, 1e-3f)
+            assertEquals("corner $i back-y", corners[i].second, by, 1e-3f)
+        }
+    }
+
+    @Test
+    fun empty_space_drag_start_adds_a_point_and_moves_the_added_point() {
+        // A drag that starts off every point ADDS one at the start and the ADDED point follows the finger —
+        // not an endpoint (the device repro: the old wiring dragged the (1,1) endpoint instead).
+        val start = NodeCurveOps.beginDrag(neutral, NodeCurveId.R, 0.5f, 0.4f)
+        assertTrue("the start added a point", start.addedPoint)
+        assertEquals(1, start.index)
+        val added = NodeCurveOps.points(start.node, NodeCurveId.R)
+        assertEquals(3, added.size)
+        assertEquals(0.5f, added[1].first, NodeCurveOps.SNAP_STEP)
+        assertEquals(0.4f, added[1].second, NodeCurveOps.SNAP_STEP)
+        // The same pointer event's first move (dispatched before ANY recomposition) already drags the added
+        // point — the start snapshot owns the answer, not a maybe-stale latest node.
+        val first = NodeCurveOps.dragTo(start, NodeCurveId.R, 0.5f, 0.45f)
+        val p1 = NodeCurveOps.points(first, NodeCurveId.R)
+        assertEquals(3, p1.size)
+        assertEquals(0.45f, p1[1].second, NodeCurveOps.SNAP_STEP)
+        assertEquals(0f to 0f, p1[0])
+        assertEquals(1f to 1f, p1[2])
+        // Subsequent moves keep dragging THE added point (index 1), never an endpoint.
+        val second = NodeCurveOps.dragTo(start, NodeCurveId.R, 0.62f, 0.8f)
+        val p2 = NodeCurveOps.points(second, NodeCurveId.R)
+        assertEquals(3, p2.size)
+        assertEquals(0.62f, p2[1].first, NodeCurveOps.SNAP_STEP)
+        assertEquals(0.8f, p2[1].second, NodeCurveOps.SNAP_STEP)
+        assertEquals(0f to 0f, p2[0])
+        assertEquals(1f to 1f, p2[2])
+    }
+
+    @Test
+    fun drag_grab_radius_inside_grabs_outside_starts_an_add_drag() {
+        val n = NodeCurveOps.addPoint(neutral, NodeCurveId.G, 0.5f, 0.5f)
+        // Within the radius of the midpoint: grabs it, no add.
+        val inside = NodeCurveOps.beginDrag(n, NodeCurveId.G, 0.5f + NodeCurveOps.HIT_RADIUS * 0.5f, 0.5f)
+        assertEquals(1, inside.index)
+        assertFalse(inside.addedPoint)
+        assertEquals(3, NodeCurveOps.points(inside.node, NodeCurveId.G).size)
+        // Beyond the radius but ON the line path (the identity diagonal has no point mid-line): an add-drag.
+        val onPath = NodeCurveOps.beginDrag(neutral, NodeCurveId.G, 0.5f, 0.5f)
+        assertTrue(onPath.addedPoint)
+        assertEquals(3, NodeCurveOps.points(onPath.node, NodeCurveId.G).size)
+        // Beyond the radius of EVERY point on the 2-point curve: same add (the diagonal's middle).
+        val far = NodeCurveOps.beginDrag(neutral, NodeCurveId.G, 0.25f, 0.25f)
+        assertTrue(far.addedPoint)
+        assertEquals(3, NodeCurveOps.points(far.node, NodeCurveId.G).size)
+        // At the point cap, a start far from every point grabs nothing and publishes nothing.
+        var capped = neutral
+        repeat(NodeCurveOps.MAX_POINTS) {
+            capped = NodeCurveOps.addPoint(
+                capped, NodeCurveId.Y, (it + 1) / (NodeCurveOps.MAX_POINTS + 1).toFloat(), 0.5f,
+            )
+        }
+        val refused = NodeCurveOps.beginDrag(capped, NodeCurveId.Y, 0.99f, 0.9f)
+        assertFalse(refused.addedPoint)
+        assertEquals(-1, refused.index)
+        assertEquals(NodeCurveOps.MAX_POINTS, NodeCurveOps.points(refused.node, NodeCurveId.Y).size)
+        // dragTo with nothing grabbed is a no-op (the finger moves, the curve does not).
+        assertEquals(refused.node, NodeCurveOps.dragTo(refused, NodeCurveId.Y, 0.3f, 0.3f))
+    }
+
+    @Test
+    fun endpoint_grabs_slide_in_y_only_and_stay_undeletable() {
+        // A grab ON the (1,1) endpoint follows the endpoint's OWN rule: y moves, x stays 1 (and the
+        // delete path still refuses it).
+        val start = NodeCurveOps.beginDrag(neutral, NodeCurveId.B, 0.99f, 0.995f)
+        assertEquals(1, start.index)
+        assertFalse(start.addedPoint)
+        val dragged = NodeCurveOps.dragTo(start, NodeCurveId.B, 0.8f, 0.75f)
+        val pts = NodeCurveOps.points(dragged, NodeCurveId.B)
+        assertEquals(2, pts.size)
+        assertEquals(1f, pts[1].first, 0f) // x pinned: the endpoint's own rule
+        assertEquals(0.75f, pts[1].second, NodeCurveOps.SNAP_STEP)
+        assertEquals(0f to 0f, pts[0])
+        // and the endpoint is never deletable (double-tap on it refuses, the curve keeps both ends)
+        assertEquals(2, NodeCurveOps.get(NodeCurveOps.deletePointAt(dragged, NodeCurveId.B, 1), NodeCurveId.B).points.size)
+        // mid-points move in BOTH x and y (the endpoint rule is only for the ends)
+        val mid = NodeCurveOps.addPoint(dragged, NodeCurveId.B, 0.5f, 0.5f)
+        val midDrag = NodeCurveOps.dragTo(NodeCurveOps.beginDrag(mid, NodeCurveId.B, 0.51f, 0.51f), NodeCurveId.B, 0.3f, 0.9f)
+        val m = NodeCurveOps.points(midDrag, NodeCurveId.B)
+        assertEquals(0.3f, m[1].first, NodeCurveOps.SNAP_STEP)
+        assertEquals(0.9f, m[1].second, NodeCurveOps.SNAP_STEP)
+        assertEquals(1f, m[2].first, 0f)
+        assertEquals(0.75f, m[2].second, NodeCurveOps.SNAP_STEP) // untouched by the mid-point's drag
+    }
+
+    @Test
+    fun drag_start_near_an_existing_x_collapses_onto_it_not_a_duplicate() {
+        // The same-x collision guard through the drag path: a start whose x shares a lattice cell with an
+        // existing point MOVES that point (addPoint's collapse rule) — it never stacks a near-duplicate.
+        val n = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, 0.5f, 0.5f)
+        val start = NodeCurveOps.beginDrag(n, NodeCurveId.Y, 0.5015f, 0.05f) // 0.0015 < SNAP_STEP/2: same cell
+        val pts = NodeCurveOps.points(start.node, NodeCurveId.Y)
+        assertEquals("no near-duplicate stacked", 3, pts.size)
+        assertTrue("the collapse is a publish (the point teleported to the finger)", start.addedPoint)
+        assertEquals(0.5f, pts[1].first, 0f) // x snaps back onto the shared cell's centre
+        assertEquals(0.05f, pts[1].second, NodeCurveOps.SNAP_STEP)
+        // xs stay strictly ascending and on the lattice: no two points share a cell
+        val xs = pts.map { it.first }
+        assertEquals(xs, xs.sorted())
+        for (i in 1 until xs.size) assertTrue("cell gap at $i", xs[i] - xs[i - 1] >= NodeCurveOps.SNAP_STEP * 0.99f)
+        // A start a full cell away is NOT a collapse: a genuine new point (adjacent cells are both kept).
+        val adjacent = NodeCurveOps.beginDrag(n, NodeCurveId.Y, 0.503f, 0.05f)
+        assertEquals(4, NodeCurveOps.points(adjacent.node, NodeCurveId.Y).size)
+        val axs = NodeCurveOps.points(adjacent.node, NodeCurveId.Y).map { it.first }
+        assertEquals(axs, axs.sorted())
+        for (i in 1 until axs.size) assertTrue("cell gap at $i", axs[i] - axs[i - 1] >= NodeCurveOps.SNAP_STEP * 0.99f)
+    }
+
+    @Test
+    fun add_drag_is_one_undo_step_restoring_the_pre_drag_identity() {
+        // The device repro path through the real history: an add-drag's frames (the published add + the
+        // moves) record as ONE NODE_GESTURE step; one undo restores the pre-drag identity.
+        val history = GradeHistory(grade, listOf(neutral))
+        val start = NodeCurveOps.beginDrag(neutral, NodeCurveId.G, 0.5f, 0.5f)
+        history.recordNodes(listOf(start.node), GradeHistory.NODE_GESTURE)
+        var cur = start.node
+        for (y in listOf(0.55f, 0.6f, 0.68f)) {
+            cur = NodeCurveOps.dragTo(start, NodeCurveId.G, 0.5f, y)
+            history.recordNodes(listOf(cur), GradeHistory.NODE_GESTURE)
+        }
+        history.settle() // drag end (the screen's onDragActiveChange(false) + the settle job)
+        val back = history.undoSnapshot()!!
+        assertEquals(listOf(neutral), back.nodes) // ONE undo: the whole gesture, pre-add state
+        assertNull(history.undoSnapshot()) // nothing deeper to undo — exactly one step was taken
+        assertEquals(listOf(cur), history.redoSnapshot()!!.nodes)
+    }
+
+    @Test
+    fun device_repro_mid_line_drag_up_adds_a_rising_midpoint_endpoint_fixed() {
+        // The owner's device observation as a pure test: finger on the middle of the default diagonal
+        // (x~0.5), drag UP ~100px on a 1000x660 canvas. A NEW midpoint appears, its y RISES, and the
+        // (1,1) endpoint is UNCHANGED (the old wiring dragged the endpoint down to the finger instead).
+        val w = 1000f
+        val h = 660f
+        val ins = 35f
+        val midPx = NodeCurveOps.pointerToCurve(500f, 330f, w, h, ins)   // on the diagonal, mid-plot
+        val upPx = NodeCurveOps.pointerToCurve(500f, 230f, w, h, ins)    // 100px up
+        assertEquals(0.5f, midPx.first, 1e-3f)
+        assertTrue("finger up = curve y UP", upPx.second > midPx.second)
+        val start = NodeCurveOps.beginDrag(neutral, NodeCurveId.Y, midPx.first, midPx.second)
+        assertTrue(start.addedPoint)
+        // The same pointer event's first move, before any recomposition could refresh a latest node.
+        val after = NodeCurveOps.dragTo(start, NodeCurveId.Y, upPx.first, upPx.second)
+        val pts = NodeCurveOps.points(after, NodeCurveId.Y)
+        assertEquals("a NEW midpoint exists", 3, pts.size)
+        assertEquals("midpoint x follows the finger", upPx.first, pts[1].first, NodeCurveOps.SNAP_STEP)
+        assertTrue(
+            "midpoint y INCREASED (was ${pts[1].second})",
+            pts[1].second > midPx.second,
+        )
+        assertEquals(0f to 0f, pts[0])                 // black point untouched
+        assertEquals(1f to 1f, pts[2])                // white point untouched — the device repro fixed
+    }
 }
