@@ -733,7 +733,7 @@
     <string name="editor_clip_info_original_name">Orijinal ad</string>
     <string name="rename_file_note_app_only">Yalnızca Ritimcraw içinde yeniden adlandırıldı. Depolamadaki dosya adlandırılmadı (klasör yazma izni ister: klasörü yeniden seçin).</string>
     <string name="rename_file_exists">Klasörde bu adla bir dosya zaten var. Hiçbir şey yeniden adlandırılmadı.</string>
-    <string name="rename_file_invalid">Bu ad dosya adı olarak kullanılamaz (/ \\ : * ? " &lt; &gt; | olmaz, sonda nokta olmaz).</string>
+    <string name="rename_file_invalid">Bu ad dosya adı olarak kullanılamaz (/ \\ : * ? \" &lt; &gt; | olmaz, sonda nokta olmaz).</string>
     <string name="rename_file_sidecar_ambiguous">Birden fazla .gcsv günlüğü bu klibe uyuyor. Hiçbir şey yeniden adlandırılmadı.</string>
     <string name="rename_file_sidecar_failed">.gcsv gyro dosyası yeniden adlandırılamadı. Hiçbir şey değişmedi.</string>
     <string name="rename_file_partial">Klip dosyası yeniden adlandırıldı ancak .gcsv günlüğü eski adını korudu.</string>
