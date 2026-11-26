@@ -2507,6 +2507,15 @@ fun AppNav(
                                 queue.cancel(job.id)
                                 exportJobs = stores.exports.all()
                             },
+                            // Delete (owner request 2026-11-26): the store
+                            // removes the job records only — same meaning as
+                            // Clear, per-id — and repeats the live-guard
+                            // under its own lock. No kick needed: nothing
+                            // runnable changed.
+                            onDelete = { ids ->
+                                stores.exports.delete(ids)
+                                exportJobs = stores.exports.all()
+                            },
                         )
                         Destination.SETTINGS -> SettingsScreen(
                             // The report's data source, hoisted above: the

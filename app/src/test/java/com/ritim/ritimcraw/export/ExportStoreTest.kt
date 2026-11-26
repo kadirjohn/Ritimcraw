@@ -557,6 +557,102 @@ class ExportStoreTest {
         assertTrue(ExportStore(file).all().isEmpty())
     }
 
+    // ---- delete(ids) (owner request 2026-11-26: individual rows) ----
+
+    @Test
+    fun delete_removes_only_the_named_terminal_rows() {
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "a", state = State.DONE))
+        store.add(job(id = "b", state = State.FAILED))
+        store.add(job(id = "c", state = State.CANCELLED))
+
+        val removed = store.delete(setOf("a", "c"))
+
+        assertEquals(2, removed)
+        assertEquals(listOf("b"), ExportStore(file).all().map { it.id })
+        assertEquals(State.FAILED, ExportStore(file).all().single().state)
+    }
+
+    @Test
+    fun delete_never_removes_the_two_live_states() {
+        // LIVE-SAFETY: a QUEUED or RUNNING row can only be cancelled —
+        // deleting a live row would orphan the encoder the queue still
+        // drives. The store repeats the rule at the write, under its
+        // lock, so a race can never remove a live row.
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "q", state = State.QUEUED))
+        store.add(job(id = "r", state = State.RUNNING))
+        store.add(job(id = "d", state = State.DONE))
+
+        val removed = store.delete(setOf("q", "r", "d"))
+
+        assertEquals(1, removed)
+        assertEquals(
+            listOf("q", "r"),
+            ExportStore(file).all().map { it.id },
+        )
+        assertEquals(State.QUEUED, ExportStore(file).all()[0].state)
+        assertEquals(State.RUNNING, ExportStore(file).all()[1].state)
+    }
+
+    @Test
+    fun delete_is_a_noop_for_unknown_and_missing_ids() {
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "a", state = State.DONE))
+
+        // Unknown id: nothing removed, no write, queue unchanged.
+        assertEquals(0, store.delete(setOf("nope")))
+        // Empty set: no write at all.
+        assertEquals(0, store.delete(emptySet()))
+        // An already-deleted id asked twice: the second call is a no-op.
+        assertEquals(1, store.delete(setOf("a")))
+        assertEquals(0, store.delete(setOf("a")))
+
+        assertTrue(ExportStore(file).all().isEmpty())
+    }
+
+    @Test
+    fun delete_persists_and_keeps_the_survivors_order() {
+        val file = projectFile()
+        val store = ExportStore(file)
+        store.add(job(id = "a", state = State.DONE))
+        store.add(job(id = "b", state = State.DONE))
+        store.add(job(id = "c", state = State.DONE))
+        store.add(job(id = "d", state = State.DONE))
+
+        store.delete(setOf("b", "d"))
+
+        // New store over the same file = app close + reopen: the removal
+        // persisted and the queue order of the survivors is intact.
+        assertEquals(listOf("a", "c"), ExportStore(file).all().map { it.id })
+    }
+
+    @Test
+    fun delete_preserves_the_grades_and_sources_sections() {
+        // The same merge-aware write clear() runs: deleting rows must not
+        // touch the sibling sections of project.json.
+        val file = projectFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            """
+            {"version":1,"grades":{"clip-a":{"exposureEv":0.5}},"sources":[]}
+            """.trimIndent(),
+        )
+        val store = ExportStore(file)
+        store.add(job(id = "a", state = State.DONE))
+
+        store.delete(setOf("a"))
+
+        val text = ExportStore(file).let { file.readText() }
+        assertTrue(text.contains("\"grades\""))
+        assertTrue(text.contains("clip-a"))
+        assertTrue(text.contains("\"sources\""))
+        assertTrue(ExportStore(file).all().isEmpty())
+    }
+
     @Test
     fun old_export_row_with_started_at_still_parses() {
         // A project.json written while the ETA was anchored on startedAtMs

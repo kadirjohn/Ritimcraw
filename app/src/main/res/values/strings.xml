@@ -456,7 +456,13 @@
     <string name="exports_job_failed_cause">Cause: %1$s</string>
     <string name="exports_job_failed_written">Nothing was written.</string>
     <string name="exports_job_retry">Retry</string>
-    <string name="exports_clear">Clear</string>
+    <string name="exports_clear">Clear all</string>
+    <string name="exports_clear_content_description">Clear all exports</string>
+    <string name="exports_select">Select</string>
+    <string name="exports_selection_count">%1$d selected</string>
+    <string name="exports_selection_close">Exit selection</string>
+    <string name="exports_selection_delete">Delete exports</string>
+    <string name="exports_delete_swipe">Delete export</string>
     <!-- Export foreground notification (owner finding 2026-11-14): the
          visible side of the process priority that keeps a backgrounded
          export alive. IMPORTANCE_LOW channel — silent, no heads-up. -->
