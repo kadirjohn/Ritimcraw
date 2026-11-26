@@ -78,6 +78,13 @@ namespace {
 // open signatures stay untouched. Pipelines compile them lazily on the first recovery draw.
 // DEBUG: `setprop debug.ritim.rectime 1` makes the PRE / recovery passes bracket themselves with glFinish and
 // log their GPU wall time ("ritim-trace rectime"); off by default, one property read per frame.
+// DEBUG A/B switches (off by default; one property read per frame): `setprop debug.ritim.recnoexit 1` disables the
+// no-clipped-site early exit, so the same build measures the before and the after.
+bool debugPropOn(const char* name) {
+    char v[PROP_VALUE_MAX] = {0};
+    return __system_property_get(name, v) > 0 && v[0] == '1';
+}
+
 bool recoveryTimingOn() {
     char v[PROP_VALUE_MAX] = {0};
     return __system_property_get("debug.ritim.rectime", v) > 0 && v[0] == '1';
@@ -506,7 +513,7 @@ struct GpuDevelopPipeline::Impl {
     int recLvlW[5] = {0, 0, 0, 0, 0}, recLvlH[5] = {0, 0, 0, 0, 0};
     uint32_t recW = 0, recH = 0;
     bool ensureRecovery(uint32_t w, uint32_t h, std::string* detail);
-    bool recoveryDraw(const DevelopFrameRequest& req, uint32_t w, uint32_t h, const float* black,
+    bool recoveryDraw(const DevelopFrameRequest& req, const rawedit::RecoveryClipLevels& levels, uint32_t w, uint32_t h, const float* black,
                       const float* range, const float* invNeutral, const int* cell, bool applyShading,
                       const float* cam2rgb, bool hasProfile, std::string* detail);
     void recoveryRelease();
@@ -1876,6 +1883,28 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // chain honestly (the preview's rule: it always covered the one fused
     // draw; the chain is the new one draw).
     const SteadyClock::time_point tDevelop0 = SteadyClock::now();
+    // Clip levels, measured ONCE per frame (the CPU oracle's own function) for stage 3 and Recovery; an explicit
+    // user clip threshold replaces the measured one per channel (developCpu's rule). EARLY EXIT: when no channel
+    // reaches its threshold NO site is flagged, so stage 3 and Recovery are exact no-ops (Recovery's chain would
+    // hand back the plain develop; stage 3 only ever touches cells that hold a flagged site). The frame then
+    // takes the cheap path with both off, bit-identically. Not taken when the override moves black/white: the
+    // measured maxNorm lives in the metadata levels' domain, the shader's norm in the overridden one.
+    rawedit::RecoveryClipLevels clipLv;
+    bool useRecovery = req.highlightRecovery;
+    bool useHr = req.highlightReconstruction;
+    if (!yuvIn && (useRecovery || useHr)) {
+        clipLv = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
+        for (int c = 0; c < 3; ++c)
+            if (req.rawLevels.overridesThreshold(c)) clipLv.threshold[c] = req.rawLevels.threshold[c];
+        bool levelsMoved = req.rawLevels.overridesWhite();
+        for (int slot = 0; slot < 4; ++slot) levelsMoved = levelsMoved || req.rawLevels.overridesBlack(slot);
+        bool anyCanClip = false;
+        for (int c = 0; c < 3; ++c) anyCanClip = anyCanClip || clipLv.maxNorm[c] >= clipLv.threshold[c];
+        if (!anyCanClip && !levelsMoved && !debugPropOn("debug.ritim.recnoexit")) {
+            useRecovery = false;
+            useHr = false;
+        }
+    }
     if (yuvIn) {
         // E0b-4b: pass 1 is the YUV pass, into the same texA the PRE pass fills (reduced dims).
         glUseProgram(yuvProgram);
@@ -1886,10 +1915,10 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
         setEncodedYuvUniforms(yuvProgram, req.yuv->params);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         if (glErrorAfter("glDrawArrays(encoded-yuv)", &r.detail) != GL_NO_ERROR) return r;
-    } else if (req.highlightRecovery) {
+    } else if (useRecovery) {
         // Highlight recovery replaces PRE (stage 3 + the camera matrix move after the recovery math); the
         // chain from texA onward is unchanged.
-        if (!recoveryDraw(req, w, h, black, range, invNeutral, cell, applyShading, cam2rgb, hasProfile,
+        if (!recoveryDraw(req, clipLv, w, h, black, range, invNeutral, cell, applyShading, cam2rgb, hasProfile,
                           &r.detail)) {
             return r;
         }
@@ -1908,17 +1937,13 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     glUniform2i(shadingSizeLoc,
                 static_cast<GLint>(applyShading ? req.meta->shadingW : 1),
                 static_cast<GLint>(applyShading ? req.meta->shadingH : 1));
-    glUniform1i(hrLoc, req.highlightReconstruction ? 1 : 0);
+    glUniform1i(hrLoc, useHr ? 1 : 0);
     glUniform3f(hrGainLoc, hrGain[0], hrGain[1], hrGain[2]);
     // Stage 3 flags clipped sites with the per-frame measured thresholds (the CPU oracle's own function, so
     // the two paths cannot disagree about which sites are clipped); a grade without stage 3 needs none.
-    if (req.highlightReconstruction) {
-        rawedit::RecoveryClipLevels lv = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
-        // D1: an explicit user clip threshold replaces the measured one per channel (developCpu's own rule).
-        for (int c = 0; c < 3; ++c)
-            if (req.rawLevels.overridesThreshold(c)) lv.threshold[c] = req.rawLevels.threshold[c];
+    if (useHr) {
         if (clipUseLoc >= 0) glUniform1i(clipUseLoc, 1);
-        if (clipThrLoc >= 0) glUniform3f(clipThrLoc, lv.threshold[0], lv.threshold[1], lv.threshold[2]);
+        if (clipThrLoc >= 0) glUniform3f(clipThrLoc, clipLv.threshold[0], clipLv.threshold[1], clipLv.threshold[2]);
     } else {
         if (clipUseLoc >= 0) glUniform1i(clipUseLoc, 0);
     }
@@ -2623,7 +2648,7 @@ bool GpuDevelopPipeline::Impl::ensureRecovery(uint32_t w, uint32_t h, std::strin
     return true;
 }
 
-bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint32_t w, uint32_t h,
+bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, const rawedit::RecoveryClipLevels& levels, uint32_t w, uint32_t h,
                                             const float* black, const float* range, const float* invNeutral,
                                             const int* cell, bool applyShading, const float* cam2rgb,
                                             bool hasProfile, std::string* detail) {
@@ -2631,11 +2656,8 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
     const bool timing = recoveryTimingOn();
     if (timing) glFinish();
     const double t0 = timing ? nowMs() : 0.0;
-    // The clip thresholds: measured CPU-side from the raw CFA (the CPU oracle's own function, so the GPU
-    // cannot disagree about which sites are clipped).
-    rawedit::RecoveryClipLevels levels = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
-    for (int c = 0; c < 3; ++c)  // D1: the user's clip thresholds win per channel (developCpu's own rule)
-        if (req.rawLevels.overridesThreshold(c)) levels.threshold[c] = req.rawLevels.threshold[c];
+    // The clip thresholds arrive measured (draw() ran the CPU oracle's own recoveryClipLevels once, user clip
+    // thresholds applied), so the GPU cannot disagree about which sites are clipped.
     const double tLv = timing ? nowMs() : 0.0;
     // Ordered pair p = c*2 + (r > c ? r-1 : r). A pair is needed when its c can clip and (green can clip, so
     // any reference may be chosen) or (the reference is green, the only choice while green never clips).
