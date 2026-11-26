@@ -909,6 +909,7 @@ DevelopFrameResult DevelopSession::renderFrame(
         const DevelopFrameRequest& req, const DevelopGrade& grade) {
     DevelopFrameRequest folded = req;
     applyGradeToRequest(grade, &folded);
+    folded.rawLevels = rawLevelsFromGrade<rawedit::RawLevelsOverride>(grade);
     if (impl_ != nullptr) {
         std::lock_guard<std::mutex> stateLock(impl_->mutex);
         if (impl_->colorNodesActive) {
@@ -1084,6 +1085,7 @@ DevelopFrameResult DevelopSession::renderFrameToEncoder(
         int64_t ptsUs, int rotationDeg) {
     DevelopFrameRequest folded = req;
     applyGradeToRequest(grade, &folded);
+    folded.rawLevels = rawLevelsFromGrade<rawedit::RawLevelsOverride>(grade);
     if (impl_ != nullptr) {
         std::lock_guard<std::mutex> stateLock(impl_->mutex);
         if (impl_->colorNodesActive) {

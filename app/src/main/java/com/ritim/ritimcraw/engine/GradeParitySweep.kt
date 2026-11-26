@@ -12,6 +12,7 @@ import com.ritim.ritimcraw.data.grade2.GradeNodeV2
 import com.ritim.ritimcraw.data.grade2.ClipGradeV2
 import com.ritim.ritimcraw.export.NativeGpuDevelop
 import java.util.concurrent.ExecutionException
+import kotlin.math.roundToInt
 
 /**
  * GPU-vs-CPU PER-CONTROL parity sweep ("parity case 3", owner report
@@ -395,6 +396,33 @@ object GradeParitySweep {
         }
     }
 
+    /** The RAW Levels override cases for a frame whose resolved white / first black are given (RAW code units). */
+    internal fun rawLevelsCases(white: Int, black: Int): List<Case> {
+        val range = (white - black).toFloat()
+        val w = (white - 0.15f * range).roundToInt().toFloat()   // a white 15% below the real one: bright areas clip
+        val b = (black + 0.03f * range).roundToInt().toFloat()   // a black 3% above the real one
+        return listOf(
+            Case("rawlevels", "white -15%", GradeK(rawLevelsWhite = w)),
+            Case(
+                "rawlevels", "black +3%",
+                GradeK(rawLevelsBlackR = b, rawLevelsBlackGr = b, rawLevelsBlackGb = b, rawLevelsBlackB = b),
+            ),
+            Case(
+                "rawlevels", "white+black",
+                GradeK(
+                    rawLevelsWhite = w, rawLevelsBlackR = b, rawLevelsBlackGr = b, rawLevelsBlackGb = b,
+                    rawLevelsBlackB = b,
+                ),
+            ),
+            Case("rawlevels", "clip 0.97", GradeK(rawLevelsClipR = 0.97f, rawLevelsClipG = 0.97f, rawLevelsClipB = 0.97f)),
+            Case("rawlevels", "white -15% recovery", GradeK(rawLevelsWhite = w, highlightRecovery = true)),
+            Case(
+                "rawlevels", "white+clip, neutral stage 3",
+                GradeK(rawLevelsWhite = w, rawLevelsClipR = 0.9f, rawLevelsClipG = 0.9f, rawLevelsClipB = 0.9f),
+            ),
+        )
+    }
+
     private fun runBlocking(fd: Int, frameIndex: Int): String? {
         if (!NativeSource.nativeAvailable) {
             Log.w(TAG, "grade-sweep aborted: ${NativeSource.nativeUnavailableMessage}")
@@ -436,7 +464,16 @@ object GradeParitySweep {
             Log.i(TAG, line(Case("neutral", "default", neutralGrade), base, 0.0, 0.0))
             val rows = ArrayList<Triple<Case, Stats, Pair<Double, Double>>>()
             var skipped = 0
-            for (c in cases()) {
+            // D1 RAW Levels (GPU binding, 2026-11-27): override cases relative to THIS frame's own levels, so the
+            // overrides are meaningful whatever the clip's bit depth; GPU = CPU must hold with the setting SET
+            // (an empty override is the bit-identical default every other case already covers).
+            val levelsRef = NativeSource.jniRawHistogram(clip, frameIndex)?.let { RawHistogram.fromJni(it) }
+            val rawLevelCases = if (levelsRef != null && levelsRef.whiteUsed > levelsRef.blackUsed[0] + 64) {
+                rawLevelsCases(levelsRef.whiteUsed, levelsRef.blackUsed[0])
+            } else {
+                emptyList()
+            }
+            for (c in cases() + rawLevelCases) {
                 val lut = if (c.lutPath == LUT_TEST_CUBE) writeSweepCube().path else c.lutPath
                 val g = gpu(c.grade, c.warpM, lut)
                 val cpuRef = cpu(c.grade, lut)

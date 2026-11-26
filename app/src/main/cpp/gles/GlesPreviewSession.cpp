@@ -2043,6 +2043,7 @@ PreviewFrameResult PreviewSession::renderFrame(
         const PreviewFrameRequest& req, const DevelopGrade& grade) {
     PreviewFrameRequest folded = req;
     applyGradeToRequest(grade, &folded);
+    folded.rawLevels = rawLevelsFromGrade<rawedit::RawLevelsOverride>(grade);
     // F1-5: the color model chain's fold. The session's OWNED color-chain
     // state (setColorModelChain's deep copies, swapped under the mutex)
     // is what the request borrows — the engine thread's next edit cannot
