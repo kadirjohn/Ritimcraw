@@ -153,4 +153,187 @@ class NodeWheelOpsTest {
         val back = history.undoSnapshot()!!
         assertEquals(listOf(a, neutral), back.nodes)
     }
+
+    // ---- edge values: extremes, wrap-around, clamps, zero/identity (A8) ----
+
+    @Test
+    fun set_puck_at_the_exact_rim_clamps_and_keeps_a_grid_position() {
+        // r == 1 is the boundary: NO rescale runs (r > 1 is strict), the
+        // snap must keep the puck EXACTLY on the rim grid, never nudge it
+        // inward — the engine clamps at magnitude 1 and a rim value must
+        // survive as maximum saturation.
+        for ((x, y) in listOf(1f to 0f, 0f to 1f, -1f to 0f, 0f to -1f)) {
+            val w = NodeWheelOps.get(NodeWheelOps.setPuck(neutral, NodeWheelId.GAIN, x, y), NodeWheelId.GAIN)
+            assertEquals(x, w.x, 1e-6f)
+            assertEquals(y, w.y, 1e-6f)
+            assertEquals(1f, Math.hypot(w.x.toDouble(), w.y.toDouble()).toFloat(), 1e-6f)
+        }
+    }
+
+    @Test
+    fun set_puck_just_outside_the_rim_rescales_then_snaps_inward() {
+        // r slightly over 1: the rescale normalizes onto the unit circle
+        // (magnitude stops at 1), and the grid snap then moves the puck to
+        // the NEAREST grid point — the diagonal lands at (0.70, 0.70),
+        // magnitude 0.99. The clamp owns "never past the rim"; it does NOT
+        // promise rim-exact storage off the cardinal axes.
+        val w = NodeWheelOps.get(
+            NodeWheelOps.setPuck(neutral, NodeWheelId.LIFT, 0.708f, 0.708f), // r ~ 1.00113
+            NodeWheelId.LIFT,
+        )
+        assertEquals(0.70f, w.x, 1e-6f)
+        assertEquals(0.70f, w.y, 1e-6f)
+        assertTrue(Math.hypot(w.x.toDouble(), w.y.toDouble()) <= 1.0 + NodeWheelOps.PUCK_STEP)
+        // A cardinal just-outside input stays rim-exact: the rescale gives
+        // (1, 0) and the snap keeps it there.
+        val c = NodeWheelOps.get(NodeWheelOps.setPuck(neutral, NodeWheelId.LIFT, 1.0000001f, 0f), NodeWheelId.LIFT)
+        assertEquals(1f, c.x, 1e-6f)
+        assertEquals(0f, c.y, 1e-6f)
+    }
+
+    @Test
+    fun large_finite_coordinates_collapse_to_the_rim_grid() {
+        // A flung pointer or a unit bug far outside the disc: FINITE float
+        // extremes (hypot < Float.MAX) land on the rim as finite grid
+        // values — never NaN, never a magnitude past 1.
+        val w = NodeWheelOps.get(
+            NodeWheelOps.setPuck(neutral, NodeWheelId.OFFSET, 1e18f, 1e18f),
+            NodeWheelId.OFFSET,
+        )
+        assertFalse(w.x.isNaN() || w.x.isInfinite())
+        assertFalse(w.y.isNaN() || w.y.isInfinite())
+        assertEquals(0.70f, w.x, 1e-6f)
+        assertEquals(0.70f, w.y, 1e-6f)
+        assertTrue(Math.hypot(w.x.toDouble(), w.y.toDouble()) <= 1.0 + NodeWheelOps.PUCK_STEP)
+    }
+
+    @Test
+    fun sub_grid_input_snaps_to_a_grid_multiple_including_zero() {
+        // The stored value is always an exact multiple of PUCK_STEP (the
+        // pad's drag events arrive at pixel granularity): membership both
+        // sides of zero, and jitter INSIDE half a grid step still centers.
+        fun onGrid(v: Float): Boolean = (v / NodeWheelOps.PUCK_STEP).let { Math.abs(it - it.toDouble().let { u -> Math.round(u).toDouble() }) < 1e-4 }
+        for ((x, y) in listOf(0.026f to 0.026f, -0.026f to 0.026f, 0.001f to -0.001f, 0.123f to -0.128f)) {
+            val w = NodeWheelOps.get(NodeWheelOps.setPuck(neutral, NodeWheelId.LOG_SHADOW, x, y), NodeWheelId.LOG_SHADOW)
+            assertTrue("x=$x -> ${w.x}", onGrid(w.x))
+            assertTrue("y=$y -> ${w.y}", onGrid(w.y))
+        }
+        // Inside half a step of zero: the identity position, positive zero.
+        val z = NodeWheelOps.get(NodeWheelOps.setPuck(neutral, NodeWheelId.LOG_SHADOW, 0.001f, -0.001f), NodeWheelId.LOG_SHADOW)
+        assertEquals(0f, z.x, 0f)
+        assertEquals(0f, z.y, 0f)
+        assertEquals(0, java.lang.Float.floatToRawIntBits(z.x)) // not -0.0
+    }
+
+    @Test
+    fun the_zero_puck_is_identity_and_neutral_for_every_wheel() {
+        for (id in NodeWheelId.entries) {
+            assertTrue(NodeWheelOps.isNeutral(NodeWheelOps.setPuck(neutral, id, 0.004f, -0.004f), id))
+            assertEquals(NodeWheelV2(), NodeWheelOps.get(NodeWheelOps.setPuck(neutral, id, 0f, 0f), id))
+        }
+    }
+
+    @Test
+    fun master_at_the_clamp_bounds_is_endpoint_valued_and_snaps_inside() {
+        // Exactly +/-1 stays exactly on the endpoint (no float drift past
+        // the bound); just-inside values snap onto the 0.01 grid.
+        for (id in NodeWheelId.entries) {
+            assertEquals(1f, NodeWheelOps.get(NodeWheelOps.setMaster(neutral, id, 1f), id).master, 0f)
+            assertEquals(-1f, NodeWheelOps.get(NodeWheelOps.setMaster(neutral, id, -1f), id).master, 0f)
+            assertEquals(0.42f, NodeWheelOps.get(NodeWheelOps.setMaster(neutral, id, 0.424f), id).master, 1e-6f)
+            assertEquals(-0.42f, NodeWheelOps.get(NodeWheelOps.setMaster(neutral, id, -0.424f), id).master, 1e-6f)
+        }
+        // A master far past the clamp lands ON the bound, not past it.
+        assertEquals(1f, NodeWheelOps.get(NodeWheelOps.setMaster(neutral, NodeWheelId.GAMMA, 89f), NodeWheelId.GAMMA).master, 0f)
+        assertEquals(-1f, NodeWheelOps.get(NodeWheelOps.setMaster(neutral, NodeWheelId.GAMMA, -89f), NodeWheelId.GAMMA).master, 0f)
+    }
+
+    @Test
+    fun disc_colour_clamps_magnitude_beyond_the_rim() {
+        // padDiscColor runs on PAD coordinates; a drag event can arrive
+        // outside the disc before the clamp. m >= 1 saturates at the rim: a
+        // 10x input shows the SAME rim colour as the 1x one.
+        val rim = NodeWheelOps.discColor(0.6f, 0.8f) // r = 1
+        val far = NodeWheelOps.discColor(6f, 8f)    // r = 10 -> m clamps to 1
+        assertEquals(rim.red, far.red, 0.01f)
+        assertEquals(rim.green, far.green, 0.01f)
+        assertEquals(rim.blue, far.blue, 0.01f)
+    }
+
+    @Test
+    fun disc_colour_is_continuous_across_the_zero_magnitude_threshold() {
+        // The 1e-6 neutral-grey special case must agree with the limit of
+        // the general branch — no visible seam at the disc centre.
+        val mid = NodeWheelOps.discColor(1e-7f, 0f)
+        assertEquals(0.5f, mid.red, 0.01f)
+        assertEquals(0.5f, mid.green, 0.01f)
+        assertEquals(0.5f, mid.blue, 0.01f)
+        val justOver = NodeWheelOps.discColor(1e-5f, 0f)
+        assertEquals(0.5f, justOver.red, 0.01f)
+        assertEquals(0.5f, justOver.green, 0.01f)
+        assertEquals(0.5f, justOver.blue, 0.01f)
+    }
+
+    @Test
+    fun wraparound_composite_angles_are_the_colour_between_the_primaries() {
+        // The wheel wraps continuously: 60deg between red and green is the
+        // yellow band (both channels up), 180deg is the negative-red
+        // (cyan) point, 300deg the magenta band.
+        fun at(deg: Float) = NodeWheelOps.discColor(
+            Math.cos(Math.toRadians(deg.toDouble())).toFloat(),
+            Math.sin(Math.toRadians(deg.toDouble())).toFloat(),
+        )
+        val yellow = at(60f)
+        assertTrue("yellow r=${yellow.red}", yellow.red > 0.5f && yellow.green > 0.5f && yellow.blue < 0.5f)
+        val cyan = at(180f)
+        assertTrue("cyan", cyan.red < 0.5f && cyan.blue > 0.5f && cyan.green > 0.5f)
+        val magenta = at(300f)
+        assertTrue("magenta", m_true(magenta))
+        // A wrap both sides of 0 reads the SAME hue: -1deg == 359deg.
+        assertEquals(at(1f).red, at(-1f).red, 0.02f)
+        assertEquals(at(1f).green, at(-1f).green, 0.02f)
+    }
+
+    private fun m_true(c: androidx.compose.ui.graphics.Color) =
+        c.red > 0.5f && c.blue > 0.5f && c.green < 0.5f
+
+    @Test
+    fun the_disc_edge_is_endpoint_saturated_under_the_format_map() {
+        // The 0.75 gain maps the 2/3-magnitude rim without hitting the
+        // coerceIn ceiling at the primaries (k * 2/3 = 2/3 -> 0.5 + 0.5 =
+        // 1.0): the rim red channel saturates exactly, and the OPPOSITE
+        // rim (anti-primary) stays ABOVE the floor — never negative.
+        val redRim = NodeWheelOps.discColor(1f, 0f)
+        assertEquals(1f, redRim.red, 0.01f)
+        val antiRed = NodeWheelOps.discColor(-1f, 0f)
+        assertEquals(0f, antiRed.red, 0.01f)
+        assertTrue(antiRed.green > 0.45f && antiRed.blue > 0.45f)
+    }
+
+    @Test
+    fun readout_formats_extremes_and_zeros_without_locale_help() {
+        assertEquals("x +1.00  y +1.00", NodeWheelOps.puckReadout(NodeWheelV2(1f, 1f, 0.9f)))
+        assertEquals("x -1.00  y -1.00", NodeWheelOps.puckReadout(NodeWheelV2(-1f, -1f, 0.9f)))
+        // The STORED path never holds -0.0 (setPuck normalizes), so the
+        // readout of every stored identity is +0.00 both axes.
+        val stored = NodeWheelOps.get(NodeWheelOps.setPuck(neutral, NodeWheelId.LOG_HI, 0.001f, -0.001f), NodeWheelId.LOG_HI)
+        assertEquals("x +0.00  y +0.00", NodeWheelOps.puckReadout(stored))
+        assertEquals("x +0.05  y -0.05", NodeWheelOps.puckReadout(NodeWheelOps.get(NodeWheelOps.setPuck(neutral, NodeWheelId.LIFT, 0.051f, -0.049f), NodeWheelId.LIFT)))
+        // A wheel built by hand outside the setter CAN carry a true -0.0:
+        // the format keeps the STORE's sign rule (String.format %+.2f) —
+        // pinned as-is so a locale fix never silently changes the sign.
+        assertEquals("x +0.00  y -0.00", NodeWheelOps.puckReadout(NodeWheelV2(0.0f, -0.0f, 0f)))
+    }
+
+    @Test
+    fun set_puck_keeps_the_master_untouched_at_the_uneven_grid_extremes() {
+        // A dragged puck at diagonal extremes must preserve third-channel
+        // state: the master survives every clamp path (rim rescale, snap,
+        // coerce).
+        val start = NodeWheelOps.set(neutral, NodeWheelId.OFFSET, NodeWheelV2(0.3f, -0.4f, 0.77f))
+        val dragged = NodeWheelOps.setPuck(start, NodeWheelId.OFFSET, 40f, -40f).offset
+        assertEquals(0.77f, dragged.master, 0f)
+        val rim = NodeWheelOps.setPuck(start, NodeWheelId.OFFSET, 1f, 0f).offset
+        assertEquals(0.77f, rim.master, 0f)
+    }
 }

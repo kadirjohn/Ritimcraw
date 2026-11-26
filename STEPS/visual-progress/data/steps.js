@@ -15097,6 +15097,40 @@ window.STEPS_DATA = {
    "sources": []
   },
   {
+   "id": "night-a8-test-coverage",
+   "title": "pure logic test coverage suite",
+   "date": "2026-11-26",
+   "status": "done",
+   "commit": {
+    "hash": "bc3e958",
+    "date": "2026-11-26"
+   },
+   "tests": ":app:assembleDebug + :app:testDebugUnitTest --rerun (offline): 3089 tests, 0 failures; build-desktop.sh exit 0 (all core doctest suites green)",
+   "description": "Pure-logic test coverage on four night-file targets, tests only, production untouched. GradeHistory (16 existing + 8 new): the open entry + single touch + settle + resetScope ORDER on top of the merged label-double-tap fix state; NodeWheelOps (13 existing + 11 new): rim/exact-extreme/wrap-around/clamp/zero-identity/saturation edge values; PlayerBarVisibility skipped (exists only on the unmerged feat-autohide-player-bar branch, which ships its own 163-line test); ClipNameRules skipped as such, but main's rename seam (SourceRepository.rename) was extended with the inner-spacing/extension/length edges so the branch's future NAME_MAX clamp lands as a conscious change.",
+   "added": [
+    "8 GradeHistoryTest methods: full double-tap call order, second-mark wins, discrete edit blocks collapse, no-growth window, scope without mark, thrown scope cleanup, redo across resetScope, capacity-boundary mark",
+    "11 NodeWheelOpsTest methods: exact-rim clamp, just-outside rescale-then-snap, huge finite inputs, sub-grid snapping to positive zero, zero-puck identity per wheel, master clamp bounds, disc magnitude clamp, zero-magnitude seam continuity, wraparound composite angles, endpoint saturation, readout extremes",
+    "1 SourceRepositoryTest method: rename keeps inner spacing, extension and unbounded length verbatim on main"
+   ],
+   "removed": [],
+   "changed": [],
+   "files": [
+    {
+     "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/GradeHistoryTest.kt",
+     "change": "M"
+    },
+    {
+     "path": "app/src/test/java/com/ritim/ritimcraw/ui/editor/NodeWheelOpsTest.kt",
+     "change": "M"
+    },
+    {
+     "path": "app/src/test/java/com/ritim/ritimcraw/data/SourceRepositoryTest.kt",
+     "change": "M"
+    }
+   ],
+   "sources": []
+  },
+  {
    "id": "p01-node-undo",
    "title": "node undo",
    "date": "2026-11-26",
