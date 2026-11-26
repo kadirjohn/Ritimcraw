@@ -119,7 +119,7 @@ class ProxyCache(
             val stale = when {
                 name.endsWith(TMP) -> base !in open
                 name.endsWith(".mp4") -> (base + ".json") !in set
-                name.endsWith(".json") -> (base + ".mp4") !in set || readManifest(name) == null
+                name.endsWith(".json") -> (base + ".mp4") !in set || !manifestMatchesName(name, base)
                 else -> false
             }
             if (stale && storage.delete(name)) n++
@@ -199,6 +199,12 @@ class ProxyCache(
 
     private fun readManifest(name: String): ProxyManifest? =
         storage.read(name)?.let { ProxyManifestCodec.parse(it) }
+
+    /** A manifest is kept only if it parses AND its fingerprint/sigHash are the ones its file name encodes. */
+    private fun manifestMatchesName(name: String, base: String): Boolean {
+        val m = readManifest(name) ?: return false
+        return "${m.fingerprint}-${m.sigHash}" == base
+    }
 
     private fun readEntry(key: ProxyKey): ProxyEntry? {
         val m = readManifest(man(key)) ?: return null

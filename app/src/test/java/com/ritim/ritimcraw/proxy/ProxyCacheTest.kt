@@ -432,18 +432,11 @@ class ProxyCacheTest {
         )
         assertNull(c.playable(k))
         assertTrue(c.entries().isEmpty())
-        // FINDING (night C3, NOT fixed per rules): sweep does NOT reap this pair. The
-        // .json branch of sweep() only deletes a manifest that fails to PARSE
-        // (ProxyCache.kt:121-123); this one parses (its fields just mismatch the
-        // file name), so both files linger on disk forever — invisible to every
-        // gate (playable/entries/totalBytes) but never cleaned. Input: a manifest
-        // renamed onto another key's baseName (or a torn write of a different
-        // key's manifest). Expected (arguably): sweep removes the mismatched pair
-        // (2 files); actual: sweep returns 0 and both files remain. Pinned as-is
-        // with this TODO; the fix (a key-match check in sweep's json branch)
-        // belongs to the owner.
-        assertEquals(0, c.sweep()) // TODO C3 finding: mismatched-but-parseable manifests linger
-        assertEquals(2, storage.names().size) // the pair is still on disk
+        // Fixed (was night C3 finding): sweep's json branch also reaps a manifest that parses
+        // but does not match the file name; the video then has no manifest and goes next pass.
+        assertEquals(1, c.sweep())
+        assertEquals(1, c.sweep())
+        assertEquals(0, storage.names().size)
     }
 
     @Test fun evictionPrefersTheOldestLastAccessThenTheOldestCreatedThenTheName() {
