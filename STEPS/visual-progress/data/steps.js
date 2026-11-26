@@ -14916,8 +14916,12 @@ window.STEPS_DATA = {
    "id": "a7-8k-cpu-stripes",
    "title": "striped 8k cpu export fallback",
    "date": "2026-11-26",
-   "status": "in-progress",
-   "commit": null,
+   "status": "done",
+   "commit": {
+    "hash": "dd0b57f",
+    "date": "2026-11-26",
+    "merge_subject": "merge: striped 8k cpu export fallback"
+   },
    "tests": "gates green on branch: bash tools/build-desktop.sh EXIT=0 (37 doctest suites; new test_develop_stripes 10 cases incl. adversarial 960x540 bit-exact equality); gradle :app:assembleDebug :app:testDebugUnitTest --rerun EXIT=0 (3083 tests, 0 failures); 8K equality hand-run: stripe_measure equal = byte-exact (hash 49ca95d35b8b6fae, 99,532,800 bytes)",
    "description": "The encoded export's CPU oracle refused an 8K frame outright (planes + full-frame ARGB IntArray + RGB888 ~= 281 MB over a 256 MB heap; the short refusal was EncodedExportPlanner.cpuFallbackRefusal, called from EncodedMp4Session.renderFrame). The core's developEncoded already develops exactly the rows its YuvFrame holds, so the striped path is a stripe CONTRACT around it, not new math: planEncodedStripes (even boundaries for the 2x2 chroma phase) + kEncodedStripeMargin. The margin is the STACKED chain reach, measured by an adversarial sweep: chroma denoise 4 rows + luma denoise (reads post-chroma) 1 + sharpness (reads post-luma) 2 + detail (reads post-sharp) 2 = 9, plus even for the chroma phase = 10; margins below 10 pass small fixtures only on content luck (the 960-wide fixture exposed it), every odd margin fails the chroma phase. The JNI striped entry develops stripes with bounded per-stripe GetByteArrayRegion copies and writes the single full-frame RGB888 output; the whole-frame path is UNTOUCHED and still serves <= 4K (all pre-A7 export bytes identical). The refusal now fires only when even the stripe budget is exceeded: 8K 8-bit fits (planes + RGB888 = 149.3 MB, zero-copy NV12 view), 8K 10-bit honestly stays refused (199 MB > the 0.7 share) and so do cropped/scaled 8K jobs (the downstream rotate/scale still holds whole frames). Peak RSS at 8K via /usr/bin/time -l: whole 1,207,795,712 B vs striped 608,534,528 B (-599 MB, 49.6%).",
    "added": [
@@ -15740,8 +15744,12 @@ window.STEPS_DATA = {
    "id": "r6-recovery-cpu-perf",
    "title": "recovery cpu reference sped up bit-identically",
    "date": "2026-11-26",
-   "status": "in-progress",
-   "commit": null,
+   "status": "done",
+   "commit": {
+    "hash": "04947fe",
+    "date": "2026-11-26",
+    "merge_subject": "merge: recovery cpu speedup bit identical"
+   },
    "tests": "hr_equivalence oracle 42/42 fixtures byte-equal (images AND stats, synthetic + real 4K frame) after each commit; build-desktop.sh EXIT=0 twice; gradle :app:assembleDebug :app:testDebugUnitTest --rerun EXIT=0 twice, 3068 tests, 0 failures; M1 quality numbers unchanged (0.0105 / 0.0228, max 1.854, below-region 0)",
    "description": "Night A6. recoverClippedHighlights at 4K walked, per needed (c,r) pair, three full-frame double fields plus 15 full-frame scale outputs (an integral image per field for the 9x9 scale; dense block sums scattered to every pixel for the four block scales) before a dense select pass - roughly 4 GB of double traffic per pair, all sequential. Reworked with every double expression and rounding order kept, enforced by a new byte-equality oracle (hr_equivalence, 42 deterministic synthetic fixtures under default/shipped/gated params plus one real 4K frame; the driver was recorded against the pre-rework binary and verified after each optimization commit): one streaming pass per pair builds all three 9x9 integrals in a 12-row ring (fields recomputed per pixel, never materialized), the 4-corner gather runs at consumer pixels only inside the same pass, the block scales sum lazily per needed block in the reference's y-major order and only for consumers that failed the finer scales, and the select/apply walk compact per-pair consumer lists. A second commit wires the passes to the fixed parallelForRows pool (row-parallel scans and apply, the six pair jobs chunked as rows, per-chunk stats merged in row order). Speedups (Apple M3 medians): synthetic 4K heavy-discs 3852 -> 149 ms (25.8x), blob-clusters 4478 -> 240 ms (18.7x), no-clip control 13.4 -> 7.3 ms; real clipped 4K frame (clip57 f0) developCpu recovery-on/off delta 1332 -> 83 ms (16.0x). clip24b f0 (barely clipped) 60 -> 54 ms: there the delta is dominated by the clip-mask demosaic, not recovery. Considered and discarded as non-bit-identical by construction: float integral image, sub-rectangle prefix sums, separable running-window box filters.",
    "added": [

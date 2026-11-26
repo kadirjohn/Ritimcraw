@@ -2,8 +2,12 @@
  "id": "a7-8k-cpu-stripes",
  "title": "striped 8k cpu export fallback",
  "date": "2026-11-26",
- "status": "in-progress",
- "commit": null,
+ "status": "done",
+ "commit": {
+  "hash": "dd0b57f",
+  "date": "2026-11-26",
+  "merge_subject": "merge: striped 8k cpu export fallback"
+ },
  "tests": "gates green on branch: bash tools/build-desktop.sh EXIT=0 (37 doctest suites; new test_develop_stripes 10 cases incl. adversarial 960x540 bit-exact equality); gradle :app:assembleDebug :app:testDebugUnitTest --rerun EXIT=0 (3083 tests, 0 failures); 8K equality hand-run: stripe_measure equal = byte-exact (hash 49ca95d35b8b6fae, 99,532,800 bytes)",
  "description": "The encoded export's CPU oracle refused an 8K frame outright (planes + full-frame ARGB IntArray + RGB888 ~= 281 MB over a 256 MB heap; the short refusal was EncodedExportPlanner.cpuFallbackRefusal, called from EncodedMp4Session.renderFrame). The core's developEncoded already develops exactly the rows its YuvFrame holds, so the striped path is a stripe CONTRACT around it, not new math: planEncodedStripes (even boundaries for the 2x2 chroma phase) + kEncodedStripeMargin. The margin is the STACKED chain reach, measured by an adversarial sweep: chroma denoise 4 rows + luma denoise (reads post-chroma) 1 + sharpness (reads post-luma) 2 + detail (reads post-sharp) 2 = 9, plus even for the chroma phase = 10; margins below 10 pass small fixtures only on content luck (the 960-wide fixture exposed it), every odd margin fails the chroma phase. The JNI striped entry develops stripes with bounded per-stripe GetByteArrayRegion copies and writes the single full-frame RGB888 output; the whole-frame path is UNTOUCHED and still serves <= 4K (all pre-A7 export bytes identical). The refusal now fires only when even the stripe budget is exceeded: 8K 8-bit fits (planes + RGB888 = 149.3 MB, zero-copy NV12 view), 8K 10-bit honestly stays refused (199 MB > the 0.7 share) and so do cropped/scaled 8K jobs (the downstream rotate/scale still holds whole frames). Peak RSS at 8K via /usr/bin/time -l: whole 1,207,795,712 B vs striped 608,534,528 B (-599 MB, 49.6%).",
  "added": [
