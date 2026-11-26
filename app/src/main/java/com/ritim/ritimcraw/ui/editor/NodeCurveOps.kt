@@ -129,6 +129,41 @@ object NodeCurveOps {
         return if (bestD <= HIT_RADIUS) best else -1
     }
 
+    // ---- drag gestures (the page's pointer wiring, pure so the wiring is testable) ----
+
+    /**
+     * One drag gesture's captured start: the node the grabbed [index] resolves against (-1 = nothing
+     * grabbed), and whether the start ADDED a point (the page publishes [node] immediately so the new dot
+     * is visible before the first move arrives).
+     *
+     * The start SNAPSHOT is the add-drag fix: Compose dispatches onDragStart and the first onDrag in the
+     * SAME pointer event (foundation's DragGestureDetector), before any recomposition could refresh a
+     * rememberUpdatedState node — a move that resolved its index against the PRE-add node hit the wrong
+     * point (index 1 of the identity two-point curve is the (1,1) endpoint, so a mid-line add-drag dragged
+     * the white point down to the finger and never showed the new dot). [dragTo] applies every move of the
+     * gesture to [node], so the index stays valid for the whole gesture.
+     */
+    data class CurveDragStart(val node: GradeNodeV2, val index: Int, val addedPoint: Boolean)
+
+    /**
+     * Begins a drag at curve position (x, y): a start ON an existing point (within [HIT_RADIUS]) grabs it;
+     * a start OFF every point ADDS one there and grabs it (the design's "boş alanda başlayan sürükleme
+     * nokta ekler"). A near-duplicate x collapses onto the existing point (addPoint's own rule); at the
+     * point cap the add refuses and a touch near an existing point still grabs it (nothing is published —
+     * addedPoint false), a touch far from every point grabs nothing (index -1, [dragTo] a no-op).
+     */
+    fun beginDrag(node: GradeNodeV2, id: NodeCurveId, x: Float, y: Float): CurveDragStart {
+        val hit = hitTest(node, id, x, y)
+        if (hit >= 0) return CurveDragStart(node, hit, addedPoint = false)
+        val grown = addPoint(node, id, x, y)
+        val at = points(grown, id).indexOfFirst { dist(it, x, y) < 3f * SNAP_STEP }
+        return CurveDragStart(grown, at, addedPoint = grown != node)
+    }
+
+    /** One drag move: the grabbed point to (x, y), applied to the START's snapshot (see [CurveDragStart]). */
+    fun dragTo(start: CurveDragStart, id: NodeCurveId, x: Float, y: Float): GradeNodeV2 =
+        if (start.index < 0) start.node else setPointAt(start.node, id, start.index, x, y)
+
     /**
      * Deletes point [index]. An endpoint deletion is refused (the identity curbs stay; pulling (0,0) or
      * (1,1) off would strand the flat-end clamps); a curve that would drop below two points keeps the two

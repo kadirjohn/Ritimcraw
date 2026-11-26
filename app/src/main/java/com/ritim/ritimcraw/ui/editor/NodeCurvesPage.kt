@@ -19,7 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -39,7 +39,6 @@ import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.grade2.GradeNodeV2
 import java.util.Locale
-import kotlin.math.hypot
 
 /**
  * F1-8c: the selected node's Curves page (docs/F1_8_COLOR_UI_DESIGN.md section 3, "Eğriler" — a Compose
@@ -128,10 +127,13 @@ private val PLOT_HEIGHT = 220.dp
 private fun pointsReadout(n: Int): String = String.format(Locale.ROOT, "%d / %d", n, NodeCurveOps.MAX_POINTS)
 
 /**
- * The plot canvas. The drag state: the grabbed point index, remembered so the draw can highlight it —
- * the gesture lambdas read the LATEST node through rememberUpdatedState, so a recomposition mid-drag
- * keeps the grab. Both gesture jobs restart per channel change (pointerInput(curve)), which ALSO ends a
- * grab cleanly: a channel switch mid-drag drops the pointer job and dragIndex resets with it.
+ * The plot canvas. The drag state: the gesture's captured start ([NodeCurveOps.CurveDragStart], remembered
+ * so the draw can ring the grabbed point) — every move of the gesture applies to that START snapshot, so
+ * the grabbed index resolves against the curve it was computed from even for the move Compose dispatches
+ * in the SAME pointer event as the drag start (before any recomposition could refresh a
+ * rememberUpdatedState node; the old index-only wiring dragged the wrong point on an add-drag). Both
+ * gesture jobs restart per channel change (pointerInput(curve)), which ALSO ends a grab cleanly: a channel
+ * switch mid-drag drops the pointer job and the start resets with it.
  */
 @Composable
 private fun CurveCanvas(
@@ -144,7 +146,7 @@ private fun CurveCanvas(
     val latestNode by rememberUpdatedState(node)
     val latestChange by rememberUpdatedState(onNodeChange)
     val onDragActive by rememberUpdatedState(onDragActiveChange)
-    var dragIndex by remember(curve) { mutableIntStateOf(-1) }
+    var dragStart by remember(curve) { mutableStateOf<NodeCurveOps.CurveDragStart?>(null) }
     val scheme = MaterialTheme.colorScheme
     // The plot keeps its thumb circles inside the boundary: 10px inset (a 8px radius point at the rim).
     val inset = 10.dp
@@ -184,30 +186,26 @@ private fun CurveCanvas(
                             val (cx, cy) = NodeCurveOps.pointerToCurve(
                                 pos.x, pos.y, size.width.toFloat(), size.height.toFloat(), ins,
                             )
-                            val hit = NodeCurveOps.hitTest(latestNode, curve, cx, cy)
-                            if (hit >= 0) {
-                                dragIndex = hit
-                            } else {
-                                // Off every point: add one here and grab it (the design's add).
-                                val added = NodeCurveOps.addPoint(latestNode, curve, cx, cy)
-                                val at = NodeCurveOps.points(added, curve).indexOfFirst {
-                                    hypot(it.first - cx, it.second - cy) < 3f * NodeCurveOps.SNAP_STEP
-                                }
-                                dragIndex = at
-                                if (at >= 0) latestChange(added)
+                            val start = NodeCurveOps.beginDrag(latestNode, curve, cx, cy)
+                            dragStart = start
+                            if (start.addedPoint) {
+                                // Publish the add immediately: the new dot is visible before the
+                                // first move event arrives (and even if the finger never moves again).
+                                latestChange(start.node)
                             }
                         },
-                        onDragEnd = { onDragActive(false); dragIndex = -1 },
-                        onDragCancel = { onDragActive(false); dragIndex = -1 },
+                        onDragEnd = { onDragActive(false); dragStart = null },
+                        onDragCancel = { onDragActive(false); dragStart = null },
                     ) { change, _ ->
                         change.consume()
-                        if (dragIndex < 0) return@detectDragGestures
+                        val start = dragStart ?: return@detectDragGestures
+                        if (start.index < 0) return@detectDragGestures
                         val ins = inset.toPx()
                         val (cx, cy) = NodeCurveOps.pointerToCurve(
                             change.position.x, change.position.y,
                             size.width.toFloat(), size.height.toFloat(), ins,
                         )
-                        latestChange(NodeCurveOps.setPointAt(latestNode, curve, dragIndex, cx, cy))
+                        latestChange(NodeCurveOps.dragTo(start, curve, cx, cy))
                     }
                 },
         ) {
@@ -261,7 +259,7 @@ private fun CurveCanvas(
             // The control points: 6dp dots, the grabbed one ringed to 8dp.
             NodeCurveOps.points(node, curve).forEachIndexed { i, p ->
                 val c = Offset(px(p.first), py(p.second))
-                if (i == dragIndex) {
+                if (i == dragStart?.index) {
                     drawCircle(scheme.onSurface, radius = 8.dp.toPx() / 2f, center = c)
                 }
                 drawCircle(curveColor(curve, scheme), radius = 6.dp.toPx() / 2f, center = c)
