@@ -1172,7 +1172,93 @@ RecoveryClipLevels recoveryClipLevels(const uint16_t* cfa, const FrameInfo& info
     return out;
 }
 
-ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut, const CompiledLutBinding* binding) {
+// ---- D1 "Measure" (docs/DCG_PLAN.md, report P1) --------------------------
+// The candidate generator over one frame's measured numbers. The gates are
+// recoveryClipLevels' own (the ground truth the A2 test pins): a candidate
+// white exists only where green itself saturates with a sharp peak
+// (maxNorm >= 0.995, >= 16 sites at the peak, >= 25% band share). An
+// unreliable plateau yields NO_CANDIDATE — the report's "never fabricate
+// numbers" — and the blacks stay what the frame already resolves to (the
+// measurement certifies the existing calibration; a black candidate would
+// need masked optical black or a dark-frame recording, which the frame
+// itself cannot supply).
+
+// Inverse of the stage-1 per-site normalization for one slot: the RAW code
+// that normalizes to `normV`. Monotone (recoveryClipLevels binary-searches
+// this same expression), so a linear scan from the rounded guess is exact.
+namespace {
+float rawCodeOfNorm(float blackSlot, float rangeSlot, float normV) {
+    // (code - black) / range = normV  =>  code = black + normV * range.
+    const float code = blackSlot + normV * rangeSlot;
+    if (!(code >= 0.0f)) return 0.0f;
+    if (code > 65535.0f) return 65535.0f;
+    return code;
+}
+}  // namespace
+
+RawLevelsCandidate measureRawLevelsCandidate(const uint16_t* cfa,
+                                              const FrameInfo& info,
+                                              const RawMeta& meta) {
+    RawLevelsCandidate out;
+    // The measurement's level resolution: the same stage-1 chain (frame
+    // dynamic > container metadata) recoveryClipLevels resolves internally,
+    // resolved here through the shared D1 rule with an empty override —
+    // identical numbers, one source of truth.
+    float white;
+    float black[4];
+    resolveRawLevels(RawLevelsOverride(), info, meta, white, black);
+    float range[4];
+    for (int slot = 0; slot < 4; ++slot)
+        range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
+
+    const RecoveryClipLevels lv = recoveryClipLevels(cfa, info, meta);
+    for (int c = 0; c < 3; ++c) {
+        out.maxNorm[c] = lv.maxNorm[c];
+        out.plateau[c] = lv.plateau[c];
+        out.topCount[c] = lv.topCount[c];
+    }
+    // The blacks the frame already resolves to (certified, not invented):
+    // a candidate always carries them so the UI can show "what you have
+    // vs what was measured" without a second resolution call.
+    for (int slot = 0; slot < 4; ++slot)
+        out.black[slot] = black[slot];
+
+    // The gates, recomputed from the measured numbers (recoveryClipLevels'
+    // own thresholds; the A2 unit contracts pin them on synthetic frames):
+    // green must saturate at the top of the range with a SHARP peak — a
+    // pile below the 0.995 gate or a smooth bright patch never certifies a
+    // white candidate. R/B piggy-back thresholds (their own sharp peaks
+    // while green saturates) ride along as thresholds; they never supply
+    // the white.
+    constexpr uint64_t kMinPlateau = 16;
+    constexpr float kNormGate = 0.995f;
+    const auto sharp = [&](int c) {
+        return lv.plateau[c] >= kMinPlateau && lv.topCount[c] >= kMinPlateau
+            && lv.topCount[c] * 4 >= lv.plateau[c];
+    };
+    const bool gSaturated = lv.maxNorm[1] >= kNormGate && sharp(1);
+    if (!gSaturated)
+        return out;  // NoCandidate: no fabricated numbers, measured stats only
+
+    // The candidate white: green's measured plateau mapped back to a RAW
+    // code through the G slot's own normalization (both green slots share
+    // one G channel; the plateau is the channel maximum's code, monotone).
+    // Slots 1 and 3 are the two green positions in the 2x2 (r, g, g, b)
+    // order; the G channel's maxNorm is the max over both, so the inverse
+    // through either slot's range reproduces the same code when the
+    // greens share a black (the near-universal case; a split pair takes
+    // the first green's slot, the honest convention).
+    const float gNorm = lv.maxNorm[1];
+    out.white = rawCodeOfNorm(black[1], range[1], gNorm);
+    // The thresholds the recovery stages would use, measured (R/B only
+    // where their own peaks were sharp under green's saturation).
+    for (int c = 0; c < 3; ++c)
+        out.threshold[c] = lv.threshold[c];
+    out.verdict = RawLevelsCandidate::Verdict::Candidate;
+    return out;
+}
+
+ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut, const CompiledLutBinding* binding, const RawLevelsOverride& rawLevels) {
     const uint32_t w = info.width;
     const uint32_t h = info.height;
     ImageF img;
@@ -1191,17 +1277,14 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // 2026-11-11 section 3: Android Camera2 defines dynamic black/white
     // levels as per-frame RAW calibration); the FrameInfo sentinel -1
     // means "this frame did not report a level", and the container
-    // RawMeta values are the fallback. Hoisted out of the loop: the
-    // chosen levels are constant for the whole frame.
-    const bool useFrameBlack = info.dynamicBlack[0] >= 0;
-    const float white = info.dynamicWhite > 0
-        ? static_cast<float>(info.dynamicWhite)
-        : static_cast<float>(meta.white);
+    // RawMeta values are the fallback. The D1 RAW Levels override grafts
+    // onto that chain PER SLOT (resolveRawLevels — the one shared rule;
+    // an all-sentinel override keeps this bit-identical to the pre-D1
+    // expression). Hoisted out of the loop: the chosen levels are
+    // constant for the whole frame.
+    float white;
     float black[4];
-    for (int slot = 0; slot < 4; ++slot)
-        black[slot] = useFrameBlack
-            ? static_cast<float>(info.dynamicBlack[slot])
-            : static_cast<float>(meta.black[slot]);
+    resolveRawLevels(rawLevels, info, meta, white, black);
     float range[4];
     for (int slot = 0; slot < 4; ++slot)
         range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
@@ -1225,7 +1308,14 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     std::vector<float> clipMaskCfa;
     RecoveryClipLevels recLevels;
     if (grade.highlightRecovery || grade.highlightReconstruction) {
-        const RecoveryClipLevels levels = recoveryClipLevels(cfa, info, meta);
+        RecoveryClipLevels levels = recoveryClipLevels(cfa, info, meta);
+        // D1: the RAW Levels override's clip-mask thresholds replace the
+        // measured ones per channel (an explicit user calibration wins over
+        // the per-frame plateau detection; a sentinel threshold keeps the
+        // measured value — the whole point of omit-when-default).
+        for (int c = 0; c < 3; ++c)
+            if (rawLevels.overridesThreshold(c))
+                levels.threshold[c] = rawLevels.threshold[c];
         recLevels = levels;
         preClip.resize(n);
         for (uint32_t y = 0; y < h; ++y)
@@ -1820,7 +1910,9 @@ std::vector<uint16_t> developLinear(const uint16_t* cfa, const FrameInfo& info,
     const size_t n = static_cast<size_t>(w) * h;
 
     // Stage 1: black/white normalization per CFA channel — copied from
-    // developCpu stage 1 (same frame-preferred rule, same slot mapping).
+    // developCpu stage 1 (same frame-preferred rule, same slot mapping;
+    // D1 note: the linear DNG export keeps the RESOLVED levels — it takes
+    // no RawLevelsOverride, the export path resolves once at the seam).
     std::vector<float> norm(n);
     const bool useFrameBlack = info.dynamicBlack[0] >= 0;
     const float white = info.dynamicWhite > 0

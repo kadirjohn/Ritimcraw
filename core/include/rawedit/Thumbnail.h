@@ -70,10 +70,15 @@ namespace rawedit {
 // export runs — the acceptance check compares them on-device. nullptr =
 // the legacy sequence, bit-identical; appended AFTER lut with a nullptr
 // default so no existing call site changes.
+// rawLevels: the D1 per-clip RAW Levels override (Develop.h), forwarded
+// to the inner developCpu so the preview resolves levels the SAME way
+// the export does. Empty default = the pre-D1 resolution, bit-identical;
+// appended LAST so no existing call site changes.
 ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
                         const RawMeta& meta, const Grade& grade, int strideEvery,
                         const Lut* lut = nullptr,
-                        const CompiledLutBinding* binding = nullptr);
+                        const CompiledLutBinding* binding = nullptr,
+                        const RawLevelsOverride& rawLevels = RawLevelsOverride());
 
 // The reduction itself, shared by developThumbnail and the GPU preview
 // path (one implementation, no copy to drift): bins the full CFA [cfa]

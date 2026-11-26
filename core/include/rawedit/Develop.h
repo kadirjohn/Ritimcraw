@@ -347,8 +347,110 @@ void tonemapFrame(ImageF& img, int mode);
 //        SceneToDisplay: the LUT branch is already rendered, tonemap
 //        never fires on top of it). Appended AFTER lut with a nullptr
 //        default so no existing call site changes.
+// D1 (docs/DCG_PLAN.md, report P1): the reversible per-clip "RAW Levels"
+// override. One white plus four blacks (the 2x2 cell-slot order of
+// RawMeta::black / FrameInfo::dynamicBlack: r, g, g, b) plus an optional
+// per-channel clip-mask threshold set (0..1 normalized, the semantics of
+// RecoveryClipLevels::threshold). NOT part of Grade: unlike the grade's
+// tone controls this overrides the RAW calibration itself (metadata the
+// sensor wrote, not a look), and unlike the LUT it is per-clip sensor
+// data, so it travels as its own value type through the layers that
+// resolve levels. empty() is the default and means "resolve the way
+// developCpu always resolved" (frame dynamic > container metadata) —
+// with an empty override the normalization math is bit-identical.
+//
+// All values are RAW code units (uint16-domain floats, validated to
+// 0..65535 and white > every black on the rawedit side; the Kotlin
+// mirror validates identically before it ever reaches the seam).
+struct RawLevelsOverride {
+    float white = -1.0f;             // < 0 = not overridden (resolve)
+    float black[4] = {-1, -1, -1, -1}; // slot < 0 = resolve that slot
+    float threshold[3] = {-1, -1, -1}; // channel < 0 = measured/default
+    bool overridesBlack(int slot) const { return black[slot] >= 0.0f; }
+    bool overridesWhite() const { return white >= 0.0f; }
+    bool overridesThreshold(int c) const { return threshold[c] >= 0.0f; }
+    bool empty() const {
+        if (overridesWhite()) return false;
+        for (int s = 0; s < 4; ++s) if (overridesBlack(s)) return false;
+        for (int c = 0; c < 3; ++c) if (overridesThreshold(c)) return false;
+        return true;
+    }
+};
+
+// D1 stage-1 level resolution, ONE shared rule: the override (when the
+// slot carries one) > the frame's dynamic levels > the container
+// metadata — the same fallback chain developCpu's stage 1 always used
+// (owner request 2026-11-11 section 3, the Android Camera2 dynamic-black/
+// white rule), with the user's override grafted on top per slot. Every
+// consumer that must agree with the develop path (the RAW histogram's
+// domain mapping, the "Measure" candidate generator, the DNG writer's
+// level tags, future GPU binding) resolves through THIS function, never
+// a private copy. An all-sentinel override makes the outputs identical
+// to a null override (the resolve branch is a no-op).
+//
+// Returns the resolved white and the four blacks in `outWhite` /
+// `outBlack` (RAW code units as floats). The stage-1 arithmetic below
+// (range, the per-site (v - b) / (w - b)) is the caller's — this
+// resolver only picks the numbers, so all callers share one answer.
+inline void resolveRawLevels(const RawLevelsOverride& levels,
+                             const FrameInfo& info, const RawMeta& meta,
+                             float& outWhite, float outBlack[4]) {
+    const bool useFrameBlack = info.dynamicBlack[0] >= 0;
+    const float white = info.dynamicWhite > 0
+        ? static_cast<float>(info.dynamicWhite)
+        : static_cast<float>(meta.white);
+    outWhite = levels.overridesWhite() ? levels.white : white;
+    for (int slot = 0; slot < 4; ++slot) {
+        const float resolved = useFrameBlack
+            ? static_cast<float>(info.dynamicBlack[slot])
+            : static_cast<float>(meta.black[slot]);
+        outBlack[slot] = levels.overridesBlack(slot) ? levels.black[slot] : resolved;
+    }
+}
+
+// D1 "Measure" (docs/DCG_PLAN.md D1: "Measure" fills candidates, "Back to
+// metadata" restores): a candidate generator over ONE frame's measured
+// numbers — the same per-frame, per-channel plateau statistics
+// recoveryClipLevels computes (maxNorm / plateau / topCount, the
+// sharp-peak gates: maxNorm >= 0.995, >= 16 sites, >= 25% band share,
+// R/B gated on green saturation). The candidate's white/black values are
+// RAW code units derived from the measured normalized plateaus mapped
+// back through the SAME stage-1 normalization recoveryClipLevels used
+// (monotone, so the inverse is exact); when the plateau is unreliable
+// the verdict is NO_CANDIDATE and NO numbers are fabricated (report P1:
+// "if the plateau is unreliable ... return 'no candidate', never
+// fabricate numbers"). The confidence verdict is data the UI will show;
+// the pure layer only computes it.
+struct RawLevelsCandidate {
+    enum class Verdict { NoCandidate, Candidate };
+    Verdict verdict = Verdict::NoCandidate;
+    // Valid only for Candidate: the measured white (RAW code units, the
+    // G plateau's code, clamped to the stage-1 range) and the four
+    // measured blacks (the same per-slot pedestal the frame already
+    // resolves to — the measurement certifies the existing calibration,
+    // it does not invent a new one).
+    float white = -1.0f;
+    float black[4] = {-1, -1, -1, -1};
+    // The clip thresholds the recovery stages would use (normalized).
+    float threshold[3] = {-1, -1, -1};
+    // The measured numbers behind the verdict (per channel R, G, B).
+    float maxNorm[3] = {0.0f, 0.0f, 0.0f};
+    uint64_t plateau[3] = {0, 0, 0};
+    uint64_t topCount[3] = {0, 0, 0};
+};
+RawLevelsCandidate measureRawLevelsCandidate(const uint16_t* cfa,
+                                              const FrameInfo& info,
+                                              const RawMeta& meta);
+
 // Returns a (width x height) ImageF in the linear working space.
-ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut = nullptr, const CompiledLutBinding* binding = nullptr);
+// rawLevels (D1, appended LAST with an empty default): the per-clip RAW
+// Levels override. An empty override (all sentinels) keeps the stage-1
+// resolution bit-identical to the pre-D1 pipeline — the resolve branch
+// is a pure no-op, so every existing call site (developThumbnail, the
+// bridge's developToArgb, the export body) is unchanged without passing
+// it; when a slot carries a value it wins over the frame's dynamic level
+// and the container metadata (resolveRawLevels, the shared rule).
+ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut = nullptr, const CompiledLutBinding* binding = nullptr, const RawLevelsOverride& rawLevels = RawLevelsOverride());
 
 // Bilinearly samples the lens shading gain map at normalized sensor
 // coordinates (u, v in [0,1]). plane selects the CFA channel plane (0..3,
