@@ -37,8 +37,7 @@ local.properties
 !debug.keystore
 
 # Adım kayıtları — repoya dahil edilmez
-STEPS/*
-!STEPS/visual-progress/
+STEPS/
 
 # GSD planlama dosyaları — yerel çalışma notları
 .planning/
