@@ -54,6 +54,7 @@ import com.ritim.ritimcraw.ui.components.Cpu
 import com.ritim.ritimcraw.ui.components.Eye
 import com.ritim.ritimcraw.ui.components.Folder
 import com.ritim.ritimcraw.ui.components.Gauge
+import com.ritim.ritimcraw.ui.components.PlayerBar
 import com.ritim.ritimcraw.ui.components.Report
 import com.ritim.ritimcraw.ui.components.ScreenHeader
 import com.ritim.ritimcraw.ui.components.SettingsGroup
@@ -199,6 +200,9 @@ fun SettingsScreen(
     // (SystemMonitorStore) and shows/hides the strip above every screen.
     systemMonitorVisible: Boolean = true,
     onSystemMonitorVisibleChange: (Boolean) -> Unit = {},
+    // ---- Auto-hide media player bar (owner request 2026-11-26) ----
+    autoHidePlayerBar: Boolean = false,
+    onAutoHidePlayerBarChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // The Device report row's navigation: AppNav owns the route flag
@@ -251,7 +255,7 @@ fun SettingsScreen(
                 expandedText = stringResource(R.string.settings_expanded),
                 collapsedText = stringResource(R.string.settings_collapsed),
                 index = 0,
-                count = 2,
+                count = 3,
             ) {
                 AppSegmentedControl(
                     options = listOf(
@@ -286,7 +290,7 @@ fun SettingsScreen(
                 expandedText = stringResource(R.string.settings_expanded),
                 collapsedText = stringResource(R.string.settings_collapsed),
                 index = 1,
-                count = 2,
+                count = 3,
             ) {
                 AppSegmentedControl(
                     options = listOf(
@@ -302,8 +306,21 @@ fun SettingsScreen(
                     },
                 )
             }
+            SettingRowSwitch(
+                icon = PlayerBar,
+                title = stringResource(R.string.settings_auto_hide_player_bar),
+                hint = if (autoHidePlayerBar) {
+                    stringResource(R.string.settings_auto_hide_player_bar_hint_on)
+                } else {
+                    stringResource(R.string.settings_auto_hide_player_bar_hint_off)
+                },
+                checked = autoHidePlayerBar,
+                onCheckedChange = onAutoHidePlayerBarChange,
+                index = 2,
+                count = 3,
+            )
         }
-        // ---- Storage & device ----
+                // ---- Storage & device ----
         SettingsSectionLabel(text = stringResource(R.string.settings_section_storage_device))
         SettingsGroup {
             SettingRowNavigation(

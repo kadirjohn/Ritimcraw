@@ -184,6 +184,17 @@ val Gauge: ImageVector = strokeIcon(
     ),
 )
 
+/** player bar (Auto hide media player bar): a frame with a play-and-seek strip at the bottom. */
+val PlayerBar: ImageVector = strokeIcon(
+    name = "PlayerBar",
+    paths = listOf(
+        "M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z",
+        "M3 15h18",
+        "M7 17.5h.01",
+        "M10 17.5h8",
+    ),
+)
+
 /** activity (Preview stats readback). */
 val Activity: ImageVector = strokeIcon(
     name = "Activity",

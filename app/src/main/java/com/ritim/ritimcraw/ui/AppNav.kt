@@ -76,6 +76,7 @@ import com.ritim.ritimcraw.data.ImportFolderStore
 import com.ritim.ritimcraw.data.PreviewQualityStore
 import com.ritim.ritimcraw.data.PreviewStatsStore
 import com.ritim.ritimcraw.data.SystemMonitorStore
+import com.ritim.ritimcraw.data.AutoHidePlayerBarStore
 import com.ritim.ritimcraw.ui.components.SystemMonitorBar
 import com.ritim.ritimcraw.data.PreviewStatsToggle
 import com.ritim.ritimcraw.data.RenderBackendStore
@@ -203,6 +204,11 @@ fun AppNav(
         SystemMonitorStore(File(context.filesDir, "project.json"))
     }
     var systemMonitorVisible by remember { mutableStateOf(systemMonitorStore.get()) }
+    // Compact editor mode: the media player bar auto-hides while playing.
+    val autoHidePlayerBarStore = remember {
+        AutoHidePlayerBarStore(File(context.filesDir, "project.json"))
+    }
+    var autoHidePlayerBar by remember { mutableStateOf(autoHidePlayerBarStore.get()) }
     val stores = remember {
         val project = File(context.filesDir, "project.json")
         Stores(
@@ -1865,6 +1871,7 @@ fun AppNav(
                         // renders read it per request; pause/clip-end
                         // settle semantics are unchanged inside the editor.
                         previewQuality = previewQuality,
+                        autoHidePlayerBar = autoHidePlayerBar,
                         // ---- Manual rotation (owner request 2026-11-11 §5) ----
                         // The editor displays the persisted delta; a rotate
                         // tap accumulates ±90 through the pure
@@ -2507,6 +2514,11 @@ fun AppNav(
                             // updates that state, and the recomposition
                             // re-tints the whole app.
                             themeMode = themeMode,
+                            autoHidePlayerBar = autoHidePlayerBar,
+                            onAutoHidePlayerBarChange = { on ->
+                                autoHidePlayerBarStore.put(on)
+                                autoHidePlayerBar = on
+                            },
                             systemMonitorVisible = systemMonitorVisible,
                             onSystemMonitorVisibleChange = { visible ->
                                 systemMonitorStore.put(visible)

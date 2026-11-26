@@ -641,6 +641,10 @@
         <item quantity="one">1 clip will be removed from the library. The original file stays on your device.</item>
         <item quantity="other">%1$d clips will be removed from the library. The original files stay on your device.</item>
     </plurals>
+    <string name="settings_auto_hide_player_bar">Auto hide media player bar</string>
+    <string name="settings_auto_hide_player_bar_hint_on">Hides after a few seconds, playing or paused; tap the video to show it, double tap to play or pause</string>
+    <string name="settings_auto_hide_player_bar_hint_off">Always shown</string>
+    <string name="editor_show_controls">Show playback controls</string>
     <string name="settings_system_monitor">System monitor</string>
     <string name="settings_system_monitor_hint_on">GPU, CPU, RAM and storage shown at the top</string>
     <string name="settings_system_monitor_hint_off">Hidden</string>

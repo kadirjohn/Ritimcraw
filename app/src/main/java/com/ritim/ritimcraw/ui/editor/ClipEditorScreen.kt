@@ -9,6 +9,15 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.gestures.AnchoredDraggableState
 import androidx.compose.foundation.gestures.DraggableAnchors
 import androidx.compose.foundation.gestures.animateTo
@@ -36,6 +45,12 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.rememberTooltipState
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -68,6 +83,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -989,6 +1005,11 @@ fun ClipEditorScreen(
     // persisted level and hands it in; the DEFAULT keeps every caller
     // that does not pass one bit-identical to the pre-picker tiers.
     previewQuality: PreviewQuality = PreviewQuality.DEFAULT,
+    // ---- Auto-hide media player bar (owner request 2026-11-26) ----
+    // Settings toggle (AutoHidePlayerBarStore, default OFF = today's layout).
+    // ON: while playing, the transport bar hides after ~3 s of inactivity,
+    // a video tap shows it, a double tap toggles play/pause.
+    autoHidePlayerBar: Boolean = false,
     // ---- Manual rotation (owner request 2026-11-11 §5) ----
     // The clip's persisted manual rotation delta (0/90/180/270). No local
     // state: the persisted MediaSource record IS the state (AppNav reads
@@ -3700,6 +3721,67 @@ fun ClipEditorScreen(
         // frame, playback position, grade, per-category scroll states and
         // the render session all live in the remember blocks these lambdas
         // capture (section 18).
+        // ---- Auto-hide player bar (owner request 2026-11-26) ----
+        // Compact mode applies to the normal workspace only: fullscreen keeps
+        // its own chrome-toggle tap. The decisions live in the pure
+        // PlayerBarVisibility (JVM-tested); this block only mirrors them into
+        // compose state, drives the inactivity timer and the animation.
+        val compactBar = autoHidePlayerBar && !fullscreen
+        val barLogic = remember { PlayerBarVisibility() }
+        var barVisible by remember { mutableStateOf(true) }
+        var barPressTick by remember { mutableStateOf(0) }
+        val barTransition = remember { MutableTransitionState(true) }
+        LaunchedEffect(compactBar) {
+            barLogic.setAutoHide(compactBar, SystemClock.uptimeMillis())
+            barVisible = barLogic.visible
+        }
+        LaunchedEffect(isPlaying) {
+            barLogic.setPlaying(isPlaying, SystemClock.uptimeMillis())
+            barVisible = barLogic.visible
+        }
+        LaunchedEffect(compactBar, isPlaying, barVisible, barPressTick) {
+            if (!compactBar || !barVisible) return@LaunchedEffect
+            while (true) {
+                val ms = barLogic.msUntilHide(SystemClock.uptimeMillis()) ?: break
+                if (ms > 0L) {
+                    delay(ms)
+                } else {
+                    if (barLogic.tick(SystemClock.uptimeMillis())) barVisible = false
+                    break
+                }
+            }
+        }
+        // The hide/show animation resizes the preview region: the SurfaceView
+        // keeps its size until it settles (the panel animation's mechanism).
+        val barAnimating = compactBar && !barTransition.isIdle
+        val showControlsLabel = stringResource(R.string.editor_show_controls)
+        // Play/pause, shared by the transport button and the double tap.
+        val togglePlayPause: () -> Unit = {
+            if (isPlaying) {
+                // Pause keeps the position (owner request §1) and
+                // lands on the source resolution (section 2) —
+                // progressively: the fast 1280px tier sharpens the
+                // coarse playback frame first (~9x cheaper than the
+                // full-res develop), then the full-res follow-up
+                // replaces it. A later seek still wins by render
+                // sequence (offerIfEmpty never displaces it).
+                isPlaying = false
+                requestRender(
+                    positionFrame, grade,
+                    PreviewTiers.PAUSED_MAX_DIM, cached = true,
+                    followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                )
+            } else {
+                // Resume from the selected position; at the very end,
+                // a fresh play restarts from the first frame.
+                if (pts != null && positionFrame >= pts.size - 1) {
+                    positionFrame = 0
+                }
+                isPlaying = true
+                applyTierEvent(SliderTiers.Event.PlaybackStarted)
+            }
+        }
+
         val previewRegion: @Composable ColumnScope.() -> Unit = {
             // Flexing preview region (owner request 2026-11-11d §11.7):
             // the preview takes whatever the panel leaves — collapsed
@@ -3788,7 +3870,7 @@ fun ClipEditorScreen(
                     // must never block on the engine.
                     gpuWindowActive = gpuActive,
                     gpuWindowServing = gpuWindowLive,
-                    freezeSurfaceSize = panelDrag.isAnimationRunning,
+                    freezeSurfaceSize = panelDrag.isAnimationRunning || barAnimating,
                     // DEBUG path badge (2026-11-23): reuses the served
                     // verdict the trace's backend= field reads.
                     debugPathBadge = if (RenderTrace.enabled) {
@@ -3854,7 +3936,19 @@ fun ClipEditorScreen(
                     // get the feature through this one call site.
                     modifier = Modifier
                         .fillMaxWidth()
-                        .pointerInput(fullscreen) {
+                        // TalkBack: while the bar is hidden the video itself
+                        // offers "show playback controls" (activate = show).
+                        .semantics {
+                            if (compactBar && !barVisible) {
+                                contentDescription = showControlsLabel
+                                onClick(label = showControlsLabel) {
+                                    barLogic.onBarInteraction(SystemClock.uptimeMillis())
+                                    barVisible = barLogic.visible
+                                    true
+                                }
+                            }
+                        }
+                        .pointerInput(fullscreen, compactBar) {
                             val longPressTimeout = viewConfiguration.longPressTimeoutMillis
                             val slop = viewConfiguration.touchSlop
                             awaitEachGesture {
@@ -3901,6 +3995,17 @@ fun ClipEditorScreen(
                                 if (endedEarly != null) {
                                     if (cleanTap && EditorPreviewLogic.togglesFullscreenChrome(fullscreen)) {
                                         fullscreenChromeVisible = !fullscreenChromeVisible
+                                    } else if (cleanTap && compactBar) {
+                                        // Compact bar: a tap shows the bar and
+                                        // restarts its timer (never pauses); a
+                                        // quick second tap toggles playback.
+                                        val result = barLogic.onVideoTap(SystemClock.uptimeMillis())
+                                        barVisible = barLogic.visible
+                                        if (result == PlayerBarVisibility.TapResult.TOGGLE_PLAYBACK &&
+                                            pts != null && pts.size > 1
+                                        ) {
+                                            togglePlayPause()
+                                        }
                                     }
                                     return@awaitEachGesture
                                 }
@@ -4199,40 +4304,38 @@ fun ClipEditorScreen(
             // tap; a hidden transport never contributes to the anchor math
             // (transportHeight stays at its last measured value only while
             // the panel is hidden too — both are outside this branch).
-            if (!fullscreen || fullscreenChromeVisible) {
-            TransportRow(
-                modifier = Modifier
+            // Compact mode animates the bar's height away (the preview and the
+            // panel take the space); otherwise the exact old show/hide.
+            barTransition.targetState =
+                (!fullscreen || fullscreenChromeVisible) && (!compactBar || barVisible)
+            Box(
+                Modifier
+                    .fillMaxWidth()
                     .onSizeChanged { transportHeight = it.height },
+            ) {
+            AnimatedVisibility(
+                visibleState = barTransition,
+                enter = if (compactBar) expandVertically() + fadeIn() else EnterTransition.None,
+                exit = if (compactBar) shrinkVertically() + fadeOut() else ExitTransition.None,
+            ) {
+            TransportRow(
+                modifier = Modifier.pointerInput(Unit) {
+                    // Any touch on the bar keeps it up (never consumed).
+                    awaitPointerEventScope {
+                        while (true) {
+                            val ev = awaitPointerEvent(PointerEventPass.Initial)
+                            val down = ev.changes.any { it.pressed }
+                            barLogic.setBarPressed(down, SystemClock.uptimeMillis())
+                            barPressTick++
+                        }
+                    }
+                },
                 isPlaying = isPlaying,
                 enabled = pts != null && pts.size > 1,
                 elapsedUs = elapsedUs,
                 totalUs = totalUs,
                 fraction = seekFraction,
-                onPlayPause = {
-                    if (isPlaying) {
-                        // Pause keeps the position (owner request §1) and
-                        // lands on the source resolution (section 2) —
-                        // progressively: the fast 1280px tier sharpens the
-                        // coarse playback frame first (~9x cheaper than the
-                        // full-res develop), then the full-res follow-up
-                        // replaces it. A later seek still wins by render
-                        // sequence (offerIfEmpty never displaces it).
-                        isPlaying = false
-                        requestRender(
-                            positionFrame, grade,
-                            PreviewTiers.PAUSED_MAX_DIM, cached = true,
-                            followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
-                        )
-                    } else {
-                        // Resume from the selected position; at the very end,
-                        // a fresh play restarts from the first frame.
-                        if (pts != null && positionFrame >= pts.size - 1) {
-                            positionFrame = 0
-                        }
-                        isPlaying = true
-                        applyTierEvent(SliderTiers.Event.PlaybackStarted)
-                    }
-                },
+                onPlayPause = togglePlayPause,
                 onSeekFraction = { fraction ->
                     val p = pts ?: return@TransportRow
                     // Dragging shows the selected frame immediately (low
@@ -4360,6 +4463,9 @@ fun ClipEditorScreen(
                     }
                 },
             )
+            }
+            }
+            if (!fullscreen || fullscreenChromeVisible) {
             // AUD-02 honesty row: a non-ATTACHED source shows its state
             // under the transport (the user sees WHY the preview is silent
             // — DESIGN.md's honest-state language, minimal). ATTACHED (the
@@ -5542,6 +5648,7 @@ private fun lutRoleLabel(r: LutRole): Int = when (r) {
  * stays the slider path (drag frames and tap-to-position jumps, one
  * gesture = one undo step).
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LightPanel(
     grade: GradeK,
@@ -5569,43 +5676,55 @@ private fun LightPanel(
             },
             onDragActiveChange = onDragActiveChange,
         )
-        GradeSlider(
-            label = stringResource(R.string.editor_slider_highlights),
-            value = grade.highlights,
-            valueRange = -100f..100f,
-            step = SliderSteps.UNIT_STEP,
-            valueLabel = Format.formatSigned(grade.highlights.toInt()),
-            onChange = { v -> onChange(grade.copy(highlights = SliderSteps.snapHighlights(v))) },
-            onDoubleTapReset = {
-                onReset(SliderSteps.resetToDefault(SliderSteps.Axis.HIGHLIGHTS, grade))
-            },
-            onDragActiveChange = onDragActiveChange,
-        )
-        if (showRecovery) {
-            // Highlight Recovery: toggles ONLY GradeK.highlightRecovery, as one discrete undo step (the onReset
-            // route); it never touches the Highlights slider above, and the second press only switches it off.
-            val on = grade.highlightRecovery
-            val desc = stringResource(R.string.editor_highlight_recovery_desc)
-            val content: @Composable RowScope.() -> Unit = {
-                Icon(
-                    painter = painterResource(R.drawable.ic_highlight_recovery),
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
+        // The Highlights control. On MCRAW sources the Recovery toggle sits at the end of THIS row (a
+        // 48dp icon toggle beside the slider's value readout), so it belongs to the Highlights control
+        // and adds no height between sliders. Elsewhere the slider is exactly what it was.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                GradeSlider(
+                    label = stringResource(R.string.editor_slider_highlights),
+                    value = grade.highlights,
+                    valueRange = -100f..100f,
+                    step = SliderSteps.UNIT_STEP,
+                    valueLabel = Format.formatSigned(grade.highlights.toInt()),
+                    onChange = { v -> onChange(grade.copy(highlights = SliderSteps.snapHighlights(v))) },
+                    onDoubleTapReset = {
+                        onReset(SliderSteps.resetToDefault(SliderSteps.Axis.HIGHLIGHTS, grade))
+                    },
+                    onDragActiveChange = onDragActiveChange,
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(stringResource(R.string.editor_highlight_recovery))
             }
-            val buttonModifier = Modifier
-                .heightIn(min = 48.dp)
-                .semantics {
-                    contentDescription = desc
-                    stateDescription = if (on) "on" else "off"
+            if (showRecovery) {
+                // Highlight Recovery: toggles ONLY GradeK.highlightRecovery, as one discrete undo step (the
+                // onReset route); it never touches the Highlights slider, and the second press only switches
+                // it off.
+                val on = grade.highlightRecovery
+                val label = stringResource(R.string.editor_highlight_recovery)
+                val desc = stringResource(R.string.editor_highlight_recovery_desc)
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                    tooltip = { PlainTooltip { Text(label) } },
+                    state = rememberTooltipState(),
+                ) {
+                    IconToggleButton(
+                        checked = on,
+                        onCheckedChange = { onReset(grade.copy(highlightRecovery = it)) },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .semantics { contentDescription = desc },
+                        colors = IconButtonDefaults.iconToggleButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            checkedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            checkedContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        ),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_highlight_recovery),
+                            contentDescription = null,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
-            val toggle = { onReset(grade.copy(highlightRecovery = !grade.highlightRecovery)) }
-            if (on) {
-                FilledTonalButton(onClick = toggle, modifier = buttonModifier, content = content)
-            } else {
-                OutlinedButton(onClick = toggle, modifier = buttonModifier, content = content)
             }
         }
         GradeSlider(
