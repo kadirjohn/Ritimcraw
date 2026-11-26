@@ -99,6 +99,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import androidx.compose.ui.layout.layout
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.CropState
 import com.ritim.ritimcraw.data.GradeK
@@ -3959,6 +3961,23 @@ fun ClipEditorScreen(
         // The hide/show animation resizes the preview region: the SurfaceView
         // keeps its size until it settles (the panel animation's mechanism).
         val barAnimating = compactBar && !barTransition.isIdle
+        // Debug trace (owner request 2026-11-26): surfaceChanged callbacks that land while the bar fades; the
+        // overlay design must keep this at 0. Logged once per transition under the render trace tag.
+        var barTransitionResizes by remember { mutableStateOf(0) }
+        var barTransitionSeen by remember { mutableStateOf(false) }
+        LaunchedEffect(barTransition.isIdle) {
+            if (!RenderTrace.enabled) return@LaunchedEffect
+            if (!barTransition.isIdle) {
+                barTransitionSeen = true
+            } else if (barTransitionSeen) {
+                Log.i(
+                    RenderTrace.TAG,
+                    "bar transition surfaceChanged=$barTransitionResizes visible=${barTransition.currentState}",
+                )
+                barTransitionSeen = false
+                barTransitionResizes = 0
+            }
+        }
         val showControlsLabel = stringResource(R.string.editor_show_controls)
         // Play/pause, shared by the transport button and the double tap.
         val togglePlayPause: () -> Unit = {
@@ -4101,7 +4120,10 @@ fun ClipEditorScreen(
                     // freeze verdict holding. Debug compositor only; null in
                     // release, the same gate as debugPathBadge beside it.
                     debugOnSurfaceResized = if (RenderTrace.enabled) {
-                        { panelAnimTrace.onSurfaceResize() }
+                        {
+                            panelAnimTrace.onSurfaceResize()
+                            if (!barTransition.isIdle) barTransitionResizes++
+                        }
                     } else {
                         null
                     },
@@ -4542,18 +4564,36 @@ fun ClipEditorScreen(
             // panel take the space); otherwise the exact old show/hide.
             barTransition.targetState =
                 (!fullscreen || fullscreenChromeVisible) && (!compactBar || barVisible)
+            // Auto-hide (owner decision 2026-11-26): the bar is an OVERLAY on the bottom of the preview and only
+            // fades. It takes ZERO layout height (placed one bar-height UP over the preview), so showing or hiding
+            // it never resizes the preview region and the SurfaceView never recreates its buffer (the black
+            // frame). The panel anchors read transportHeight == 0 and stay constant.
             Box(
                 Modifier
                     .fillMaxWidth()
+                    .then(
+                        if (compactBar) {
+                            Modifier.layout { measurable, constraints ->
+                                val placeable = measurable.measure(constraints)
+                                layout(placeable.width, 0) { placeable.place(0, -placeable.height) }
+                            }
+                        } else {
+                            Modifier
+                        },
+                    )
                     .onSizeChanged { transportHeight = it.height },
             ) {
             AnimatedVisibility(
                 visibleState = barTransition,
-                enter = if (compactBar) expandVertically() + fadeIn() else EnterTransition.None,
-                exit = if (compactBar) shrinkVertically() + fadeOut() else ExitTransition.None,
+                enter = if (compactBar) fadeIn() else EnterTransition.None,
+                exit = if (compactBar) fadeOut() else ExitTransition.None,
             ) {
             TransportRow(
-                modifier = Modifier.pointerInput(Unit) {
+                modifier = Modifier
+                    .then(
+                        if (compactBar) Modifier.background(Color.Black.copy(alpha = 0.55f)) else Modifier,
+                    )
+                    .pointerInput(Unit) {
                     // Any touch on the bar keeps it up (never consumed).
                     awaitPointerEventScope {
                         while (true) {
