@@ -258,6 +258,19 @@ struct TemporalSettings {
     int64_t frameDurationUs = 0;
     float prevPairMafd = -1.0f; // < 0 = unknown: absolute MAFD gate only
     float nextPairMafd = -1.0f; // < 0 = unknown: absolute MAFD gate only
+    // Round 2 (2026-11-26, docs/TEMPORAL_NR.md): per-neighbor weight cap
+    // for FULL-CONFIDENCE STATIC blocks only — the static path taken at
+    // zero motion with the residual at or below the full-taper point
+    // (1.5 sigma), where both the metadata sigma taper and the measured
+    // floor gate passed with margin. Every other block (motion path,
+    // taper-diminished static) keeps the legacy cap 0.40, and a default of
+    // 0.40 reproduces the pre-round-2 merge bit for bit (same expression
+    // shape, same value). The researched band (2026-11-11) is 0.35-0.5:
+    // 0.50 deepens static denoise ~4% in sigma on the measured fixture
+    // while the ghost metrics (moving-edge band MAF/bias/edge lag) stay
+    // put — the boost changes a weight, never an ADMIT decision. The
+    // morning owner flips the caller; not wired to the bridge yet.
+    float staticBlockCap = 0.50f;
 };
 
 // Per-neighbor outcome, for tests and the perf report.

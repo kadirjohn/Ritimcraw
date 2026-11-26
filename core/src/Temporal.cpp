@@ -603,8 +603,19 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
     // callers and tests) and decays nothing.
     const float capPrev = cap * distanceDecay(settings.prevDPtsUs, settings.frameDurationUs);
     const float capNext = cap * distanceDecay(settings.nextDPtsUs, settings.frameDurationUs);
+    // Round-2 flag (staticBlockCap): the FULL-CONFIDENCE STATIC block cap,
+    // scaled and decayed through the SAME expression shape as capPrev/
+    // capNext, so the default 0.40 reproduces the legacy weights bit for
+    // bit and the boost only ever raises a static block's weight.
+    const float capStatic = settings.staticBlockCap
+        * std::min(std::max(settings.strength, 0.0f), 100.0f) / 100.0f;
+    const float capStaticPrev = capStatic
+        * distanceDecay(settings.prevDPtsUs, settings.frameDurationUs);
+    const float capStaticNext = capStatic
+        * distanceDecay(settings.nextDPtsUs, settings.frameDurationUs);
     auto evaluate = [&](NeighborEval& e, const NoiseProfile* np, float capN,
-                        float prevPairMafd, const std::vector<MotionVector>* seed,
+                        float staticCapN, float prevPairMafd,
+                        const std::vector<MotionVector>* seed,
                         float seedAccept) {
         if (!e.present || !centerOk || capN <= 0.0f)
             return;
@@ -702,9 +713,16 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
                 const float gate = kFloorGate * e.noiseFloor;
                 MotionVector use{0, 0, mad0};
                 float conf = 0.0f;
+                // Round-2 boost eligibility: the static path taken AND the
+                // residual at/below the full-taper point (conf will be
+                // exactly 1.0) — the double-gated (sigma taper + measured
+                // floor) zero-motion agreement. Motion-path blocks never
+                // take the boosted cap, whatever their confidence.
+                bool staticFull = false;
                 const float r0 = sig > 1e-9f ? mad0 / sig : 1e9f;
                 if (r0 <= kResidualTaperZero && mad0 <= gate) {
                     conf = residualTaper(r0);
+                    staticFull = r0 <= kResidualTaperFull;
                 } else {
                     // MOTION path: F/B consistency (UnFlow criterion,
                     // 1.0 proxy-px per axis) + the hard floor gate on the
@@ -738,7 +756,15 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
                 // align — flat rejection is the conservative answer.
                 if (conf >= kMinConfidence) {
                     e.fwd[bi] = use; // the merge warps by this vector
-                    e.blockWeight[bi] = capN * conf;
+                    float w = capN * conf;
+                    // Round-2 flag (default == legacy cap -> identical
+                    // value): a full-confidence static block may take the
+                    // caller's higher static cap. The weight is the ONLY
+                    // thing that moves — every gate above already decided
+                    // the block independently of the cap.
+                    if (staticFull && staticCapN > w)
+                        w = staticCapN;
+                    e.blockWeight[bi] = w;
                     ++accepted;
                 }
             }
@@ -750,8 +776,8 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
         if (!e.eligible)
             std::fill(e.blockWeight.begin(), e.blockWeight.end(), 0.0f);
     };
-    evaluate(ev, settings.prevNoise, capPrev, settings.prevPairMafd,
-             nullptr, 0.0f);
+    evaluate(ev, settings.prevNoise, capPrev, capStaticPrev,
+             settings.prevPairMafd, nullptr, 0.0f);
     // Item #4: the next side's forward search is seeded from the prev
     // side's backward field, but ONLY when the prev side is ELIGIBLE
     // (global gates AND local block gates passed, so the fields exist and
@@ -766,8 +792,9 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
          && ev.bw != 0 && ev.noiseFloor > 0.0f)
             ? &ev.bwd
             : nullptr;
-    evaluate(en, settings.nextNoise, capNext, settings.nextPairMafd,
-             nextSeed, ev.eligible ? ev.noiseFloor : 0.0f);
+    evaluate(en, settings.nextNoise, capNext, capStaticNext,
+             settings.nextPairMafd, nextSeed,
+             ev.eligible ? ev.noiseFloor : 0.0f);
     const double t3 = nowMs();
 
     // ---- merge (or exact copy when no neighbor survived) ----

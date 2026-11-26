@@ -186,6 +186,13 @@ echo "== building tests =="
 # the focal scale k solved in closed form (linear-in-f translation); the
 # boxed 1.216-1.22 slope finding of the gyro cross-check becomes a measured
 # number.
+# temporal_measure: Temporal NR round-2 measurement harness
+# (docs/TEMPORAL_NR.md) — real-clip temporal noise std on a static region
+# + synthetic moving-edge ghost metrics with a clean reference. Run by
+# hand: `temporal_measure noise <clip.mcraw> <center> [strength]` /
+# `temporal_measure ghost [strength]`; not a test.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/temporal_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/temporal_measure"
 # test_focus_fit: the focal-fit layer's recovery proofs (closed form recovers
 # a known k, 1.0 passes through, noise widens the honest window, prediction
 # scaling is exactly linear, Lost/outside pairs are gated out).
